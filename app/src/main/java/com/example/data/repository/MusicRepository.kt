@@ -7,6 +7,7 @@ import com.example.data.local.PlaylistWithTracks
 import com.example.data.local.TrackEntity
 import com.example.data.model.MusicTrack
 import com.example.data.remote.MusicDataSource
+import com.example.data.remote.OnlineMusicApiService
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -21,9 +22,27 @@ data class SearchResultCategory(
 class MusicRepository(private val musicDao: MusicDao) {
 
     suspend fun getInitialCatalog(): List<MusicTrack> {
-        val likedEntities = musicDao.getFavoriteTracks().first()
+        val likedEntities = try {
+            musicDao.getFavoriteTracks().first()
+        } catch (e: Exception) {
+            emptyList()
+        }
         val likedIds = likedEntities.map { it.id }.toSet()
-        return MusicDataSource.curatedTracks.map { track ->
+
+        // Fetch online trending tracks to enrich the catalog with real streaming music
+        val onlineTrending = try {
+            OnlineMusicApiService.getTrendingSongs(limit = 25)
+        } catch (e: Exception) {
+            emptyList()
+        }
+
+        val combined = if (onlineTrending.isNotEmpty()) {
+            onlineTrending + MusicDataSource.curatedTracks
+        } else {
+            MusicDataSource.curatedTracks
+        }
+
+        return combined.distinctBy { it.id }.map { track ->
             track.copy(isLiked = likedIds.contains(track.id))
         }
     }
@@ -105,7 +124,7 @@ class MusicRepository(private val musicDao: MusicDao) {
         musicDao.removeTrackFromPlaylist(playlistId, trackId)
     }
 
-    fun search(query: String): SearchResultCategory {
+    suspend fun search(query: String): SearchResultCategory {
         if (query.isBlank()) {
             return SearchResultCategory(
                 topResult = null,
@@ -114,18 +133,39 @@ class MusicRepository(private val musicDao: MusicDao) {
                 artists = emptyList()
             )
         }
+
+        val likedEntities = try {
+            musicDao.getFavoriteTracks().first()
+        } catch (e: Exception) {
+            emptyList()
+        }
+        val likedIds = likedEntities.map { it.id }.toSet()
+
+        // 1. Search online JioSaavn library for any song in the world
+        val onlineTracks = try {
+            OnlineMusicApiService.searchSongs(query.trim(), limit = 30)
+        } catch (e: Exception) {
+            emptyList()
+        }
+
+        // 2. Search local curated catalog as well
         val q = query.trim().lowercase()
-        val matchedTracks = MusicDataSource.curatedTracks.filter {
+        val localMatches = MusicDataSource.curatedTracks.filter {
             it.title.lowercase().contains(q) ||
             it.artist.lowercase().contains(q) ||
             it.album.lowercase().contains(q) ||
             it.genre.lowercase().contains(q)
         }
 
-        val top = matchedTracks.firstOrNull()
-        val songs = matchedTracks
-        val albums = matchedTracks.map { it.album }.distinct()
-        val artists = matchedTracks.map { it.artist }.distinct()
+        // Combine: Online results first, followed by unique local tracks
+        val allMatches = (onlineTracks + localMatches)
+            .distinctBy { "${it.title.lowercase()}_${it.artist.lowercase()}" }
+            .map { it.copy(isLiked = likedIds.contains(it.id)) }
+
+        val top = allMatches.firstOrNull()
+        val songs = allMatches
+        val albums = allMatches.map { it.album }.filter { it.isNotBlank() && it != "Single" && it != "Online Stream" }.distinct()
+        val artists = allMatches.map { it.artist }.filter { it.isNotBlank() && it != "Unknown Artist" }.distinct()
 
         return SearchResultCategory(
             topResult = top,
@@ -133,5 +173,30 @@ class MusicRepository(private val musicDao: MusicDao) {
             albums = albums,
             artists = artists
         )
+    }
+
+    suspend fun getTracksByGenre(genre: String): List<MusicTrack> {
+        val likedEntities = try {
+            musicDao.getFavoriteTracks().first()
+        } catch (e: Exception) {
+            emptyList()
+        }
+        val likedIds = likedEntities.map { it.id }.toSet()
+
+        val onlineGenreTracks = try {
+            OnlineMusicApiService.getSongsByGenre(genre, limit = 25)
+        } catch (e: Exception) {
+            emptyList()
+        }
+
+        val localGenreTracks = if (genre.equals("All", ignoreCase = true)) {
+            MusicDataSource.curatedTracks
+        } else {
+            MusicDataSource.curatedTracks.filter { it.genre.equals(genre, ignoreCase = true) }
+        }
+
+        return (onlineGenreTracks + localGenreTracks)
+            .distinctBy { "${it.title.lowercase()}_${it.artist.lowercase()}" }
+            .map { it.copy(isLiked = likedIds.contains(it.id)) }
     }
 }

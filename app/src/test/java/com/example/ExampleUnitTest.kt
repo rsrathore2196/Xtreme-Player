@@ -37,4 +37,13 @@ class ExampleUnitTest {
         AudioEffectsManager.setEnabled(true)
         assertTrue(AudioEffectsManager.effectsState.value.isEnabled)
     }
+
+    @Test
+    fun testOnlineMediaUrlDecryption() {
+        val enc = "ID2ieOjCrwfgWvL5sXl4B1ImC5QfbsDyv3kckaxpVLl7xtSDPAkZRx2kSesY7U8jBhHEhKdOMEcn80dFQJHaPRw7tS9a8Gtq"
+        val decrypted = com.example.data.remote.OnlineMusicApiService.decryptMediaUrl(enc)
+        org.junit.Assert.assertNotNull(decrypted)
+        assertTrue(decrypted!!.endsWith("_320.mp4"))
+        assertTrue(decrypted.startsWith("https://"))
+    }
 }

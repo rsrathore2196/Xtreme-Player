@@ -311,7 +311,9 @@ fun SearchScreen(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(vertical = 6.dp),
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .clickable { onQueryChange(artist) }
+                                    .padding(vertical = 8.dp, horizontal = 4.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Box(
@@ -331,7 +333,7 @@ fun SearchScreen(
                                 Spacer(modifier = Modifier.width(12.dp))
                                 Column {
                                     Text(text = artist, color = TextPrimary, fontWeight = FontWeight.SemiBold)
-                                    Text(text = "Artist", color = TextMuted, fontSize = 12.sp)
+                                    Text(text = "Artist • Tap to view songs", color = TextMuted, fontSize = 12.sp)
                                 }
                             }
                         }
@@ -340,7 +342,9 @@ fun SearchScreen(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(vertical = 6.dp),
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .clickable { onQueryChange(album) }
+                                    .padding(vertical = 8.dp, horizontal = 4.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Box(
@@ -360,7 +364,7 @@ fun SearchScreen(
                                 Spacer(modifier = Modifier.width(12.dp))
                                 Column {
                                     Text(text = album, color = TextPrimary, fontWeight = FontWeight.SemiBold)
-                                    Text(text = "Album • 320kbps Remaster", color = TextMuted, fontSize = 12.sp)
+                                    Text(text = "Album • Tap to view songs", color = TextMuted, fontSize = 12.sp)
                                 }
                             }
                         }
@@ -381,14 +385,14 @@ fun SearchScreen(
                     Spacer(modifier = Modifier.height(14.dp))
 
                     val browseCategories = listOf(
-                        Pair("Synthwave", Brush.linearGradient(listOf(Color(0xFF8B5CF6), Color(0xFFEC4899)))),
-                        Pair("Electronic", Brush.linearGradient(listOf(Color(0xFF06B6D4), Color(0xFF3B82F6)))),
-                        Pair("Chillhop", Brush.linearGradient(listOf(Color(0xFF10B981), Color(0xFF14B8A6)))),
-                        Pair("Rock", Brush.linearGradient(listOf(Color(0xFFEF4444), Color(0xFFF97316)))),
                         Pair("Pop", Brush.linearGradient(listOf(Color(0xFFF59E0B), Color(0xFFE11D48)))),
-                        Pair("Jazz", Brush.linearGradient(listOf(Color(0xFF6366F1), Color(0xFF4F46E5)))),
                         Pair("Hip-Hop", Brush.linearGradient(listOf(Color(0xFFD97706), Color(0xFFB45309)))),
-                        Pair("Ambient", Brush.linearGradient(listOf(Color(0xFF0284C7), Color(0xFF0D9488))))
+                        Pair("Rock", Brush.linearGradient(listOf(Color(0xFFEF4444), Color(0xFFF97316)))),
+                        Pair("Electronic", Brush.linearGradient(listOf(Color(0xFF06B6D4), Color(0xFF3B82F6)))),
+                        Pair("Bollywood", Brush.linearGradient(listOf(Color(0xFFEC4899), Color(0xFF8B5CF6)))),
+                        Pair("Punjabi", Brush.linearGradient(listOf(Color(0xFF10B981), Color(0xFF059669)))),
+                        Pair("Lo-Fi", Brush.linearGradient(listOf(Color(0xFF8B5CF6), Color(0xFF6366F1)))),
+                        Pair("Synthwave", Brush.linearGradient(listOf(Color(0xFF6366F1), Color(0xFF4F46E5))))
                     )
 
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {

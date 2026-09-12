@@ -17,6 +17,10 @@ import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionResult
+import androidx.media3.exoplayer.DefaultRenderersFactory
+import androidx.media3.exoplayer.Renderer
+import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
+import androidx.media3.exoplayer.video.VideoRendererEventListener
 import com.example.MainActivity
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
@@ -36,12 +40,28 @@ class MusicService : MediaSessionService() {
             .setUsage(C.USAGE_MEDIA)
             .build()
 
-        // 2. High-Fidelity 320kbps Audio Pipeline with Caching
+        // 2. Audio-only Renderers Factory: suppresses video codecs to prevent C2 resource queries on audio streams
+        val audioOnlyRenderersFactory = object : DefaultRenderersFactory(this) {
+            override fun buildVideoRenderers(
+                context: android.content.Context,
+                extensionRendererMode: Int,
+                mediaCodecSelector: MediaCodecSelector,
+                enableDecoderFallback: Boolean,
+                eventHandler: android.os.Handler,
+                eventListener: VideoRendererEventListener,
+                allowedVideoJoiningTimeMs: Long,
+                out: java.util.ArrayList<Renderer>
+            ) {
+                // Audio player only: do not build video renderers or query video C2 component interfaces
+            }
+        }.setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF)
+
+        // 3. High-Fidelity 320kbps Audio Pipeline with Caching
         val cacheDataSourceFactory = MusicCache.createCacheDataSourceFactory(this)
         val mediaSourceFactory = DefaultMediaSourceFactory(this)
             .setDataSourceFactory(cacheDataSourceFactory)
 
-        val player = ExoPlayer.Builder(this)
+        val player = ExoPlayer.Builder(this, audioOnlyRenderersFactory)
             .setAudioAttributes(audioAttributes, /* handleAudioFocus = */ true)
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_NETWORK)
@@ -52,7 +72,7 @@ class MusicService : MediaSessionService() {
 
         exoPlayer = player
 
-        // 3. Audio Effects & Equalizer real-time pipeline
+        // 4. Audio Effects & Equalizer real-time pipeline (attached on active playback session)
         player.addAnalyticsListener(object : androidx.media3.exoplayer.analytics.AnalyticsListener {
             override fun onAudioSessionIdChanged(
                 eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
@@ -63,10 +83,17 @@ class MusicService : MediaSessionService() {
                 }
             }
         })
-        val initialSessionId = player.audioSessionId
-        if (initialSessionId != C.AUDIO_SESSION_ID_UNSET && initialSessionId > 0) {
-            com.example.playback.AudioEffectsManager.attachAudioSession(initialSessionId)
-        }
+
+        player.addListener(object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_READY) {
+                    val sessionId = player.audioSessionId
+                    if (sessionId != C.AUDIO_SESSION_ID_UNSET && sessionId > 0) {
+                        com.example.playback.AudioEffectsManager.attachAudioSession(sessionId)
+                    }
+                }
+            }
+        })
 
         // 4. PendingIntent to reopen Xtreme Player UI on notification click
         val activityIntent = Intent(this, MainActivity::class.java).apply {

@@ -1,5 +1,6 @@
 package com.example.playback
 
+import android.media.audiofx.AudioEffect
 import android.media.audiofx.BassBoost
 import android.media.audiofx.Equalizer
 import android.media.audiofx.Virtualizer
@@ -8,6 +9,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import java.util.UUID
 
 data class BandState(
     val index: Short,
@@ -64,6 +66,15 @@ object AudioEffectsManager {
     )
     val effectsState: StateFlow<AudioEffectsState> = _effectsState.asStateFlow()
 
+    private fun isEffectTypeAvailable(type: UUID): Boolean {
+        return try {
+            val descriptors = AudioEffect.queryEffects() ?: return false
+            descriptors.any { it.type == type }
+        } catch (t: Throwable) {
+            false
+        }
+    }
+
     @Synchronized
     fun attachAudioSession(sessionId: Int) {
         if (sessionId <= 0 || sessionId == currentSessionId) return
@@ -71,94 +82,100 @@ object AudioEffectsManager {
         currentSessionId = sessionId
         releaseEffects()
 
-        try {
-            // 1. Initialize Equalizer
-            val eq = Equalizer(0, sessionId)
-            eq.enabled = _effectsState.value.isEnabled
-            equalizer = eq
-
-            val numBands = eq.numberOfBands
-            val levelRange = try {
-                eq.bandLevelRange
-            } catch (e: Exception) {
-                shortArrayOf(-1500, 1500)
-            }
-            val minLevel = levelRange.getOrElse(0) { -1500 }
-            val maxLevel = levelRange.getOrElse(1) { 1500 }
-
-            val bandsList = mutableListOf<BandState>()
-            for (i in 0 until numBands) {
-                val bandIndex = i.toShort()
-                val centerFreq = try {
-                    eq.getCenterFreq(bandIndex) / 1000 // mHz to Hz
-                } catch (e: Exception) {
-                    defaultFrequencies.getOrElse(i) { 1000 * (i + 1) }
-                }
-                val currentLevel = try {
-                    eq.getBandLevel(bandIndex)
-                } catch (e: Exception) {
-                    0.toShort()
-                }
-                bandsList.add(
-                    BandState(
-                        index = bandIndex,
-                        centerFreqHz = centerFreq,
-                        levelMb = currentLevel,
-                        minLevelMb = minLevel,
-                        maxLevelMb = maxLevel
-                    )
-                )
-            }
-
-            // Read hardware presets if available
-            val hwPresets = mutableListOf<String>()
+        // 1. Initialize Equalizer (only if system hardware/HAL reports availability)
+        if (isEffectTypeAvailable(AudioEffect.EFFECT_TYPE_EQUALIZER)) {
             try {
-                for (p in 0 until eq.numberOfPresets) {
-                    hwPresets.add(eq.getPresetName(p.toShort()))
+                val eq = Equalizer(0, sessionId)
+                eq.enabled = _effectsState.value.isEnabled
+                equalizer = eq
+
+                val numBands = eq.numberOfBands
+                val levelRange = try {
+                    eq.bandLevelRange
+                } catch (e: Exception) {
+                    shortArrayOf(-1500, 1500)
                 }
-            } catch (e: Exception) {
-                Log.w(TAG, "Hardware presets not queried: ${e.message}")
-            }
+                val minLevel = levelRange.getOrElse(0) { -1500 }
+                val maxLevel = levelRange.getOrElse(1) { 1500 }
 
-            val finalPresets = if (hwPresets.isNotEmpty()) {
-                (listOf("Flat", "Bass Boost", "Electronic") + hwPresets).distinct()
-            } else {
-                _effectsState.value.availablePresets
-            }
+                val bandsList = mutableListOf<BandState>()
+                for (i in 0 until numBands) {
+                    val bandIndex = i.toShort()
+                    val centerFreq = try {
+                        eq.getCenterFreq(bandIndex) / 1000 // mHz to Hz
+                    } catch (e: Exception) {
+                        defaultFrequencies.getOrElse(i) { 1000 * (i + 1) }
+                    }
+                    val currentLevel = try {
+                        eq.getBandLevel(bandIndex)
+                    } catch (e: Exception) {
+                        0.toShort()
+                    }
+                    bandsList.add(
+                        BandState(
+                            index = bandIndex,
+                            centerFreqHz = centerFreq,
+                            levelMb = currentLevel,
+                            minLevelMb = minLevel,
+                            maxLevelMb = maxLevel
+                        )
+                    )
+                }
 
-            _effectsState.update {
-                it.copy(
-                    audioSessionId = sessionId,
-                    bands = if (bandsList.isNotEmpty()) bandsList else it.bands,
-                    availablePresets = finalPresets
-                )
+                // Read hardware presets if available
+                val hwPresets = mutableListOf<String>()
+                try {
+                    for (p in 0 until eq.numberOfPresets) {
+                        hwPresets.add(eq.getPresetName(p.toShort()))
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Hardware presets not queried: ${e.message}")
+                }
+
+                val finalPresets = if (hwPresets.isNotEmpty()) {
+                    (listOf("Flat", "Bass Boost", "Electronic") + hwPresets).distinct()
+                } else {
+                    _effectsState.value.availablePresets
+                }
+
+                _effectsState.update {
+                    it.copy(
+                        audioSessionId = sessionId,
+                        bands = if (bandsList.isNotEmpty()) bandsList else it.bands,
+                        availablePresets = finalPresets
+                    )
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "Equalizer could not be initialized on session $sessionId: ${t.message}")
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to initialize Equalizer: ${e.message}")
         }
 
-        // 2. Initialize BassBoost
-        try {
-            val bb = BassBoost(0, sessionId)
-            if (bb.strengthSupported) {
-                bb.enabled = _effectsState.value.isEnabled
-                bb.setStrength(_effectsState.value.bassBoostStrength.toShort())
-                bassBoost = bb
+        // 2. Initialize BassBoost (only if system hardware/HAL reports availability)
+        if (isEffectTypeAvailable(AudioEffect.EFFECT_TYPE_BASS_BOOST)) {
+            try {
+                val bb = BassBoost(0, sessionId)
+                if (bb.strengthSupported) {
+                    bb.enabled = _effectsState.value.isEnabled
+                    bb.setStrength(_effectsState.value.bassBoostStrength.toShort())
+                    bassBoost = bb
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "BassBoost could not be initialized on session $sessionId: ${t.message}")
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to initialize BassBoost: ${e.message}")
         }
 
-        // 3. Initialize Virtualizer
-        try {
-            val virt = Virtualizer(0, sessionId)
-            if (virt.strengthSupported) {
-                virt.enabled = _effectsState.value.isEnabled
-                virt.setStrength(_effectsState.value.virtualizerStrength.toShort())
-                virtualizer = virt
+        // 3. Initialize Virtualizer (only if system hardware/HAL reports availability)
+        if (isEffectTypeAvailable(AudioEffect.EFFECT_TYPE_VIRTUALIZER)) {
+            try {
+                val virt = Virtualizer(0, sessionId)
+                if (virt.strengthSupported) {
+                    virt.enabled = _effectsState.value.isEnabled
+                    virt.setStrength(_effectsState.value.virtualizerStrength.toShort())
+                    virtualizer = virt
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "Virtualizer could not be initialized on session $sessionId: ${t.message}")
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to initialize Virtualizer: ${e.message}")
         }
 
         // Apply current preset to the newly attached session

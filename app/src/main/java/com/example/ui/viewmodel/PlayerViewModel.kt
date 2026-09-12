@@ -127,20 +127,29 @@ class PlayerViewModel(
     }
 
     fun selectGenre(genre: String) {
-        _searchState.update { it.copy(selectedGenre = genre) }
-        if (genre == "All") {
-            _searchState.update {
-                it.copy(result = repository.search(_searchState.value.query))
+        _searchState.update { it.copy(selectedGenre = genre, isSearching = true) }
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch {
+            if (genre == "All") {
+                val results = repository.search(_searchState.value.query)
+                _searchState.update { it.copy(result = results, isSearching = false) }
+            } else {
+                val tracks = repository.getTracksByGenre(genre)
+                val results = SearchResultCategory(
+                    topResult = tracks.firstOrNull(),
+                    songs = tracks,
+                    albums = tracks.map { it.album }.filter { it.isNotBlank() && it != "Single" && it != "Online Stream" }.distinct(),
+                    artists = tracks.map { it.artist }.filter { it.isNotBlank() && it != "Unknown Artist" }.distinct()
+                )
+                _searchState.update { it.copy(result = results, isSearching = false) }
             }
-        } else {
-            val filtered = MusicDataSource.curatedTracks.filter { it.genre.equals(genre, ignoreCase = true) }
-            val results = SearchResultCategory(
-                topResult = filtered.firstOrNull(),
-                songs = filtered,
-                albums = filtered.map { it.album }.distinct(),
-                artists = filtered.map { it.artist }.distinct()
-            )
-            _searchState.update { it.copy(result = results) }
+        }
+    }
+
+    fun refreshCatalog() {
+        viewModelScope.launch {
+            val freshCatalog = repository.getInitialCatalog()
+            _catalogTracks.value = freshCatalog
         }
     }
 

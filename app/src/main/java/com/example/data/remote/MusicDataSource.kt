@@ -130,13 +130,16 @@ object MusicDataSource {
 
     val genres = listOf(
         "All",
-        "Synthwave",
-        "Electronic",
-        "Chillhop",
-        "Rock",
         "Pop",
-        "Jazz",
         "Hip-Hop",
+        "Rock",
+        "Electronic",
+        "Bollywood",
+        "Punjabi",
+        "Synthwave",
+        "Chillhop",
+        "Lo-Fi",
+        "Jazz",
         "Ambient"
     )
 
