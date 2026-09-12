@@ -32,13 +32,13 @@ data class BandState(
 }
 
 data class AudioEffectsState(
-    val isEnabled: Boolean = true,
-    val crystalClarityEnabled: Boolean = true,
-    val bassBoostStrength: Int = 350, // 0..1000
-    val virtualizerStrength: Int = 650, // 0..1000
+    val isEnabled: Boolean = false, // OFF by default: user must explicitly enable if interested
+    val crystalClarityEnabled: Boolean = false, // OFF by default
+    val bassBoostStrength: Int = 0, // 0..1000
+    val virtualizerStrength: Int = 0, // 0..1000
     val bands: List<BandState> = emptyList(),
-    val selectedPreset: String = "Crystal Clarity",
-    val availablePresets: List<String> = listOf("Crystal Clarity", "Studio Master", "Bass Boost", "Electronic", "Rock", "Dance", "Vocal", "Acoustic", "Hip-Hop", "Flat"),
+    val selectedPreset: String = "Flat",
+    val availablePresets: List<String> = listOf("Flat", "Crystal Clarity", "Studio Master", "Bass Boost", "Electronic", "Rock", "Dance", "Vocal", "Acoustic", "Hip-Hop"),
     val audioSessionId: Int = 0
 )
 

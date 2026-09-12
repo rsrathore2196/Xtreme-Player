@@ -17,8 +17,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -96,7 +98,7 @@ fun ExpandedPlayerScreen(
     onToggleRepeat: () -> Unit,
     onToggleFavorite: (MusicTrack) -> Unit,
     onOpenQueue: () -> Unit,
-    onOpenEqualizer: () -> Unit,
+    onOpenEqualizer: () -> Unit = {},
     onAddToPlaylist: (MusicTrack) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -139,10 +141,13 @@ fun ExpandedPlayerScreen(
             )
             .statusBarsPadding()
             .padding(horizontal = 24.dp)
-            .testTag("expanded_player_screen")
+            .testTag("expanded_player_screen"),
+        contentAlignment = Alignment.TopCenter
     ) {
         Column(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .widthIn(max = 500.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween
         ) {
@@ -197,16 +202,8 @@ fun ExpandedPlayerScreen(
                     DropdownMenu(
                         expanded = isMenuOpen,
                         onDismissRequest = { isMenuOpen = false },
-                        modifier = Modifier.background(Color(0xFF1E222B))
+                        modifier = Modifier.background(Color(0xFF0F2238))
                     ) {
-                        DropdownMenuItem(
-                            text = { Text("320kbps Equalizer", color = TextPrimary) },
-                            leadingIcon = { Icon(Icons.Default.GraphicEq, contentDescription = null, tint = XtremeGreen) },
-                            onClick = {
-                                isMenuOpen = false
-                                onOpenEqualizer()
-                            }
-                        )
                         DropdownMenuItem(
                             text = { Text("Add to Playlist", color = TextPrimary) },
                             leadingIcon = { Icon(Icons.AutoMirrored.Filled.PlaylistAdd, contentDescription = null, tint = XtremeCyan) },
@@ -249,7 +246,7 @@ fun ExpandedPlayerScreen(
                         .background(
                             Brush.radialGradient(
                                 colors = listOf(
-                                    XtremeGreen.copy(alpha = 0.35f),
+                                    XtremeLightBlue.copy(alpha = 0.35f),
                                     XtremeCyan.copy(alpha = 0.2f),
                                     Color.Transparent
                                 )
@@ -264,6 +261,7 @@ fun ExpandedPlayerScreen(
                     contentScale = ContentScale.Crop,
                     modifier = Modifier
                         .fillMaxWidth(albumArtScale)
+                        .sizeIn(maxWidth = 330.dp, maxHeight = 330.dp)
                         .aspectRatio(1f)
                         .shadow(
                             elevation = 28.dp,
@@ -546,33 +544,17 @@ fun ExpandedPlayerScreen(
                     )
                 }
 
-                // Action Buttons: Equalizer & Up Next Queue
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(
-                        onClick = onOpenEqualizer,
-                        modifier = Modifier.testTag("player_equalizer_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.GraphicEq,
-                            contentDescription = "Equalizer & Audio Effects",
-                            tint = XtremeGreen,
-                            modifier = Modifier.size(24.dp)
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.width(4.dp))
-
-                    IconButton(
-                        onClick = onOpenQueue,
-                        modifier = Modifier.testTag("player_queue_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.QueueMusic,
-                            contentDescription = "Up-Next Queue",
-                            tint = TextPrimary,
-                            modifier = Modifier.size(26.dp)
-                        )
-                    }
+                // Action Button: Up Next Queue
+                IconButton(
+                    onClick = onOpenQueue,
+                    modifier = Modifier.testTag("player_queue_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                        contentDescription = "Up-Next Queue",
+                        tint = XtremeLightBlue,
+                        modifier = Modifier.size(26.dp)
+                    )
                 }
             }
         }

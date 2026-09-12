@@ -183,14 +183,14 @@ fun MiniPlayer(
                             Box(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(4.dp))
-                                    .background(XtremeGreen.copy(alpha = 0.18f))
+                                    .background(XtremeLightBlue.copy(alpha = 0.18f))
                                     .padding(horizontal = 5.dp, vertical = 1.dp)
                             ) {
                                 Text(
                                     text = "${uiState.selectedQuality.kbps}k",
                                     fontSize = 9.sp,
                                     fontWeight = FontWeight.ExtraBold,
-                                    color = XtremeGreen
+                                    color = XtremeLightBlue
                                 )
                             }
                             Spacer(modifier = Modifier.width(6.dp))

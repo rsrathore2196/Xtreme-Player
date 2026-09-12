@@ -293,8 +293,7 @@ fun MainNavigationScaffold(
                                 recentlyPlayed = recentlyPlayed,
                                 playerUiState = playerUiState,
                                 onTrackClick = { track, queue -> viewModel.playTrack(track, queue) },
-                                onToggleFavorite = { track -> viewModel.toggleLike(track) },
-                                onOpenEqualizer = { isEqualizerOpen = true }
+                                onToggleFavorite = { track -> viewModel.toggleLike(track) }
                             )
                             1 -> SearchScreen(
                                 searchState = searchState,
@@ -318,6 +317,7 @@ fun MainNavigationScaffold(
                                 effectsState = effectsState,
                                 onAudioQualitySelected = { quality -> viewModel.setAudioQuality(quality) },
                                 onCrystalClarityToggle = { enabled -> viewModel.setCrystalClarityEnabled(enabled) },
+                                onToggleEqualizer = { enabled -> viewModel.setEqualizerEnabled(enabled) },
                                 onOpenEqualizer = { isEqualizerOpen = true },
                                 onSelectPreset = { preset -> viewModel.setEqualizerPreset(preset) }
                             )
@@ -357,7 +357,6 @@ fun MainNavigationScaffold(
                 onToggleRepeat = { viewModel.toggleRepeat() },
                 onToggleFavorite = { track -> viewModel.toggleLike(track) },
                 onOpenQueue = { isQueueOpen = true },
-                onOpenEqualizer = { isEqualizerOpen = true },
                 onAddToPlaylist = { track -> trackToAddToPlaylist = track }
             )
         }

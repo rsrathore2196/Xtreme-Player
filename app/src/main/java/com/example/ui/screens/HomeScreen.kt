@@ -16,7 +16,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -74,19 +76,25 @@ fun HomeScreen(
     playerUiState: PlayerUiState,
     onTrackClick: (MusicTrack, List<MusicTrack>) -> Unit,
     onToggleFavorite: (MusicTrack) -> Unit,
-    onOpenEqualizer: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val greeting = rememberGreeting()
     val currentPlayingId = playerUiState.currentTrack?.id
 
-    LazyColumn(
+    Box(
         modifier = modifier
             .fillMaxSize()
-            .background(XtremeGradients.ScreenBackground)
-            .testTag("home_screen"),
-        contentPadding = PaddingValues(bottom = 120.dp)
+            .background(XtremeGradients.ScreenBackground),
+        contentAlignment = Alignment.TopCenter
     ) {
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .widthIn(max = 640.dp)
+                .statusBarsPadding()
+                .testTag("home_screen"),
+            contentPadding = PaddingValues(bottom = 120.dp)
+        ) {
         // HEADER BAR WITH APP LOGO
         item {
             Column(
@@ -96,73 +104,41 @@ fun HomeScreen(
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Image(
-                            painter = painterResource(id = R.drawable.ic_xtreme_logo),
-                            contentDescription = "Xtreme Player Logo",
-                            modifier = Modifier.size(36.dp)
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    text = "XTREME",
-                                    style = MaterialTheme.typography.titleLarge.copy(
-                                        fontWeight = FontWeight.Black,
-                                        letterSpacing = 2.sp,
-                                        color = XtremeLightBlue
-                                    )
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = "PLAYER",
-                                    style = MaterialTheme.typography.titleLarge.copy(
-                                        fontWeight = FontWeight.Black,
-                                        letterSpacing = 2.sp,
-                                        color = TextPrimary
-                                    )
-                                )
-                            }
+                    Image(
+                        painter = painterResource(id = R.drawable.ic_xtreme_logo),
+                        contentDescription = "Xtreme Player Logo",
+                        modifier = Modifier.size(38.dp)
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                text = greeting,
-                                style = MaterialTheme.typography.bodyMedium.copy(
-                                    color = TextSecondary,
-                                    fontWeight = FontWeight.Medium
+                                text = "XTREME",
+                                style = MaterialTheme.typography.titleLarge.copy(
+                                    fontWeight = FontWeight.Black,
+                                    letterSpacing = 2.sp,
+                                    color = XtremeLightBlue
                                 )
-                            )
-                        }
-                    }
-
-                    // 320k Lossless Badge & EQ quick access
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = Color(0xFF102035),
-                        border = BorderStroke(1.dp, Color(0xFF1D3B60)),
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(12.dp))
-                            .clickable { onOpenEqualizer() }
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(7.dp)
-                                    .clip(CircleShape)
-                                    .background(XtremeLightBlue)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = "${playerUiState.selectedQuality.kbps} KBPS",
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                color = XtremeLightBlue
+                                text = "PLAYER",
+                                style = MaterialTheme.typography.titleLarge.copy(
+                                    fontWeight = FontWeight.Black,
+                                    letterSpacing = 2.sp,
+                                    color = TextPrimary
+                                )
                             )
                         }
+                        Text(
+                            text = greeting,
+                            style = MaterialTheme.typography.bodyMedium.copy(
+                                color = TextSecondary,
+                                fontWeight = FontWeight.Medium
+                            )
+                        )
                     }
                 }
             }
@@ -400,6 +376,7 @@ fun HomeScreen(
             )
         }
     }
+}
 }
 
 @Composable

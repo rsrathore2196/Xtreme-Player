@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -78,13 +79,19 @@ fun PlaylistDetailScreen(
         )
     )
 
-    Column(
+    Box(
         modifier = modifier
             .fillMaxSize()
-            .background(backgroundBrush)
-            .statusBarsPadding()
-            .testTag("playlist_detail_screen")
+            .background(backgroundBrush),
+        contentAlignment = Alignment.TopCenter
     ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .widthIn(max = 640.dp)
+                .statusBarsPadding()
+                .testTag("playlist_detail_screen")
+        ) {
         // TOP NAVIGATION BAR
         Row(
             modifier = Modifier
@@ -264,4 +271,5 @@ fun PlaylistDetailScreen(
             }
         }
     }
+}
 }
