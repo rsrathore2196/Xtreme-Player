@@ -33,11 +33,12 @@ data class BandState(
 
 data class AudioEffectsState(
     val isEnabled: Boolean = true,
-    val bassBoostStrength: Int = 600, // 0..1000
-    val virtualizerStrength: Int = 450, // 0..1000
+    val crystalClarityEnabled: Boolean = true,
+    val bassBoostStrength: Int = 350, // 0..1000
+    val virtualizerStrength: Int = 650, // 0..1000
     val bands: List<BandState> = emptyList(),
-    val selectedPreset: String = "Electronic",
-    val availablePresets: List<String> = listOf("Flat", "Bass Boost", "Electronic", "Rock", "Dance", "Vocal", "Acoustic", "Hip-Hop"),
+    val selectedPreset: String = "Crystal Clarity",
+    val availablePresets: List<String> = listOf("Crystal Clarity", "Studio Master", "Bass Boost", "Electronic", "Rock", "Dance", "Vocal", "Acoustic", "Hip-Hop", "Flat"),
     val audioSessionId: Int = 0
 )
 
@@ -268,6 +269,8 @@ object AudioEffectsManager {
 
         // Custom curve calculations (in mB, where 100 mB = 1 dB)
         val bandDbs: List<Short> = when (presetName.lowercase()) {
+            "crystal clarity" -> listOf(200, -100, 200, 550, 850)
+            "studio master" -> listOf(150, 0, 150, 400, 650)
             "bass boost" -> listOf(900, 600, 100, 0, 0)
             "electronic" -> listOf(700, 300, -100, 400, 800)
             "rock" -> listOf(600, 200, -200, 300, 700)
@@ -290,6 +293,8 @@ object AudioEffectsManager {
 
         // Also adjust bass boost and virtualizer according to preset
         val targetBass = when (presetName.lowercase()) {
+            "crystal clarity" -> 350
+            "studio master" -> 300
             "bass boost" -> 950
             "electronic" -> 750
             "dance" -> 800
@@ -299,6 +304,8 @@ object AudioEffectsManager {
             else -> 400
         }
         val targetVirt = when (presetName.lowercase()) {
+            "crystal clarity" -> 650
+            "studio master" -> 500
             "electronic" -> 700
             "dance" -> 650
             "rock" -> 500
@@ -313,8 +320,19 @@ object AudioEffectsManager {
             it.copy(
                 bands = updatedBands,
                 bassBoostStrength = targetBass,
-                virtualizerStrength = targetVirt
+                virtualizerStrength = targetVirt,
+                crystalClarityEnabled = presetName.equals("Crystal Clarity", ignoreCase = true)
             )
+        }
+    }
+
+    @Synchronized
+    fun setCrystalClarityEnabled(enabled: Boolean) {
+        _effectsState.update { it.copy(crystalClarityEnabled = enabled) }
+        if (enabled) {
+            applyPreset("Crystal Clarity")
+        } else {
+            applyPreset("Flat")
         }
     }
 

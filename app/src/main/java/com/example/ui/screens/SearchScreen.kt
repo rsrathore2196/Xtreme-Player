@@ -1,6 +1,8 @@
 package com.example.ui.screens
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -55,7 +57,9 @@ import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import com.example.ui.theme.XtremeCyan
+import com.example.ui.theme.XtremeGradients
 import com.example.ui.theme.XtremeGreen
+import com.example.ui.theme.XtremeLightBlue
 import com.example.ui.theme.XtremePurple
 import com.example.ui.theme.XtremeRose
 import com.example.ui.viewmodel.SearchUiState
@@ -73,9 +77,18 @@ fun SearchScreen(
     val currentPlayingId = playerUiState.currentTrack?.id
     val hasQuery = searchState.query.isNotBlank()
 
+    val backgroundBrush = Brush.verticalGradient(
+        colors = listOf(
+            Color(0xFF0F253F),
+            Color(0xFF0A1524),
+            Color(0xFF060D17)
+        )
+    )
+
     LazyColumn(
         modifier = modifier
             .fillMaxSize()
+            .background(backgroundBrush)
             .testTag("search_screen"),
         contentPadding = PaddingValues(bottom = 120.dp)
     ) {
@@ -110,7 +123,7 @@ fun SearchScreen(
                         Icon(
                             imageVector = Icons.Default.Search,
                             contentDescription = "Search",
-                            tint = XtremeGreen
+                            tint = XtremeLightBlue
                         )
                     },
                     trailingIcon = {
@@ -118,7 +131,7 @@ fun SearchScreen(
                             CircularProgressIndicator(
                                 modifier = Modifier.size(18.dp),
                                 strokeWidth = 2.dp,
-                                color = XtremeGreen
+                                color = XtremeLightBlue
                             )
                         } else if (hasQuery) {
                             IconButton(onClick = { onQueryChange("") }) {
@@ -133,10 +146,10 @@ fun SearchScreen(
                     singleLine = true,
                     shape = RoundedCornerShape(16.dp),
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedContainerColor = Color(0xFF161822),
-                        unfocusedContainerColor = Color(0xFF161822),
-                        focusedBorderColor = XtremeGreen,
-                        unfocusedBorderColor = Color(0xFF262A37),
+                        focusedContainerColor = Color(0xFF0F2238),
+                        unfocusedContainerColor = Color(0xFF0F2238),
+                        focusedBorderColor = XtremeLightBlue,
+                        unfocusedBorderColor = Color(0xFF1B3C64),
                         focusedTextColor = TextPrimary,
                         unfocusedTextColor = TextPrimary
                     ),
@@ -158,14 +171,15 @@ fun SearchScreen(
                     val isSelected = searchState.selectedGenre.equals(genre, ignoreCase = true)
                     Surface(
                         shape = RoundedCornerShape(20.dp),
-                        color = if (isSelected) XtremeGreen else Color(0xFF191C25),
+                        color = if (isSelected) XtremeLightBlue else Color(0xFF0F2238),
+                        border = if (!isSelected) BorderStroke(1.dp, Color(0xFF1B3C64)) else null,
                         modifier = Modifier
                             .clip(RoundedCornerShape(20.dp))
                             .clickable { onSelectGenre(genre) }
                     ) {
                         Text(
                             text = genre,
-                            color = if (isSelected) Color.Black else TextSecondary,
+                            color = if (isSelected) Color(0xFF031428) else TextSecondary,
                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
                             fontSize = 13.sp,
                             modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
@@ -194,7 +208,8 @@ fun SearchScreen(
 
                         Card(
                             shape = RoundedCornerShape(18.dp),
-                            colors = CardDefaults.cardColors(containerColor = Color(0xFF181C26)),
+                            colors = CardDefaults.cardColors(containerColor = Color(0xFF0F2238)),
+                            border = BorderStroke(1.dp, Color(0xFF1B3C64)),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable { onTrackClick(top, results.songs) }
@@ -236,12 +251,12 @@ fun SearchScreen(
                                     )
                                     Spacer(modifier = Modifier.height(4.dp))
                                     Surface(
-                                        color = XtremeGreen.copy(alpha = 0.15f),
+                                        color = XtremeLightBlue.copy(alpha = 0.15f),
                                         shape = RoundedCornerShape(4.dp)
                                     ) {
                                         Text(
                                             text = "HQ • 320 KBPS",
-                                            color = XtremeGreen,
+                                            color = XtremeLightBlue,
                                             fontWeight = FontWeight.Bold,
                                             fontSize = 9.sp,
                                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
@@ -254,13 +269,13 @@ fun SearchScreen(
                                     modifier = Modifier
                                         .size(46.dp)
                                         .clip(CircleShape)
-                                        .background(XtremeGreen),
+                                        .background(XtremeGradients.ButtonGradient),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.PlayArrow,
                                         contentDescription = "Play",
-                                        tint = Color.Black,
+                                        tint = Color(0xFF031428),
                                         modifier = Modifier.size(28.dp)
                                     )
                                 }
@@ -320,13 +335,13 @@ fun SearchScreen(
                                     modifier = Modifier
                                         .size(40.dp)
                                         .clip(CircleShape)
-                                        .background(Color(0xFF222633)),
+                                        .background(Color(0xFF163255)),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.Person,
                                         contentDescription = null,
-                                        tint = XtremeCyan,
+                                        tint = XtremeLightBlue,
                                         modifier = Modifier.size(22.dp)
                                     )
                                 }
@@ -351,13 +366,13 @@ fun SearchScreen(
                                     modifier = Modifier
                                         .size(40.dp)
                                         .clip(RoundedCornerShape(8.dp))
-                                        .background(Color(0xFF222633)),
+                                        .background(Color(0xFF163255)),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.Album,
                                         contentDescription = null,
-                                        tint = XtremePurple,
+                                        tint = XtremeLightBlue,
                                         modifier = Modifier.size(22.dp)
                                     )
                                 }

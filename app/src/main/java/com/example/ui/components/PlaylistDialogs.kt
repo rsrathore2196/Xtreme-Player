@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -48,6 +49,7 @@ import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import com.example.ui.theme.XtremeCyan
 import com.example.ui.theme.XtremeGreen
+import com.example.ui.theme.XtremeLightBlue
 
 @Composable
 fun CreatePlaylistDialog(
@@ -60,7 +62,8 @@ fun CreatePlaylistDialog(
     Dialog(onDismissRequest = onDismiss) {
         Card(
             shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF161820)),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF0F2238)),
+            border = BorderStroke(1.dp, Color(0xFF1B3C64)),
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(
@@ -82,12 +85,12 @@ fun CreatePlaylistDialog(
                     value = title,
                     onValueChange = { title = it },
                     label = { Text("Playlist Name") },
-                    placeholder = { Text("e.g. Cyberpunk Nights 320k") },
+                    placeholder = { Text("e.g. Chill Beats 320k") },
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = XtremeGreen,
-                        unfocusedBorderColor = Color(0xFF2E3342),
-                        focusedLabelColor = XtremeGreen,
+                        focusedBorderColor = XtremeLightBlue,
+                        unfocusedBorderColor = Color(0xFF1E3A60),
+                        focusedLabelColor = XtremeLightBlue,
                         unfocusedLabelColor = TextSecondary,
                         focusedTextColor = TextPrimary,
                         unfocusedTextColor = TextPrimary
@@ -103,9 +106,9 @@ fun CreatePlaylistDialog(
                     label = { Text("Description (Optional)") },
                     placeholder = { Text("High bitrate music collection") },
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = XtremeGreen,
-                        unfocusedBorderColor = Color(0xFF2E3342),
-                        focusedLabelColor = XtremeGreen,
+                        focusedBorderColor = XtremeLightBlue,
+                        unfocusedBorderColor = Color(0xFF1E3A60),
+                        focusedLabelColor = XtremeLightBlue,
                         unfocusedLabelColor = TextSecondary,
                         focusedTextColor = TextPrimary,
                         unfocusedTextColor = TextPrimary
@@ -131,8 +134,8 @@ fun CreatePlaylistDialog(
                         },
                         enabled = title.isNotBlank(),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = XtremeGreen,
-                            contentColor = Color.Black
+                            containerColor = XtremeLightBlue,
+                            contentColor = Color(0xFF031428)
                         )
                     ) {
                         Text("CREATE", fontWeight = FontWeight.Bold)
@@ -154,7 +157,8 @@ fun AddToPlaylistDialog(
     Dialog(onDismissRequest = onDismiss) {
         Card(
             shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF161820)),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF0F2238)),
+            border = BorderStroke(1.dp, Color(0xFF1B3C64)),
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(
@@ -182,7 +186,7 @@ fun AddToPlaylistDialog(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(12.dp))
-                        .background(Color(0xFF20232D))
+                        .background(Color(0xFF13253F))
                         .clickable {
                             onDismiss()
                             onCreateNewPlaylist()
@@ -193,13 +197,13 @@ fun AddToPlaylistDialog(
                     Icon(
                         imageVector = Icons.Default.Add,
                         contentDescription = null,
-                        tint = XtremeGreen,
+                        tint = XtremeLightBlue,
                         modifier = Modifier.size(22.dp)
                     )
                     Spacer(modifier = Modifier.width(12.dp))
                     Text(
                         text = "Create New Playlist",
-                        color = XtremeGreen,
+                        color = XtremeLightBlue,
                         fontWeight = FontWeight.SemiBold,
                         fontSize = 14.sp
                     )
@@ -226,7 +230,7 @@ fun AddToPlaylistDialog(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(10.dp))
-                                    .background(Color(0xFF1B1D25))
+                                    .background(Color(0xFF13253F))
                                     .clickable {
                                         onPlaylistSelected(playlist.playlistId)
                                         onDismiss()
@@ -237,7 +241,7 @@ fun AddToPlaylistDialog(
                                 Icon(
                                     imageVector = Icons.AutoMirrored.Filled.QueueMusic,
                                     contentDescription = null,
-                                    tint = XtremeCyan,
+                                    tint = XtremeLightBlue,
                                     modifier = Modifier.size(20.dp)
                                 )
                                 Spacer(modifier = Modifier.width(10.dp))

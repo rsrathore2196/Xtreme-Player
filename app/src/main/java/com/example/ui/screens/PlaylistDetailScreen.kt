@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -35,6 +36,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
@@ -51,6 +53,7 @@ import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import com.example.ui.theme.XtremeCyan
 import com.example.ui.theme.XtremeGreen
+import com.example.ui.theme.XtremeLightBlue
 
 @Composable
 fun PlaylistDetailScreen(
@@ -67,10 +70,18 @@ fun PlaylistDetailScreen(
     val tracks = playlistWithTracks.tracks.map { it.toMusicTrack() }
     val currentPlayingId = playerUiState.currentTrack?.id
 
+    val backgroundBrush = Brush.verticalGradient(
+        colors = listOf(
+            Color(0xFF0F253F),
+            Color(0xFF0A1524),
+            Color(0xFF060D17)
+        )
+    )
+
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(Color(0xFF0A0B0E))
+            .background(backgroundBrush)
             .statusBarsPadding()
             .testTag("playlist_detail_screen")
     ) {
@@ -120,10 +131,10 @@ fun PlaylistDetailScreen(
                             .shadow(
                                 elevation = 20.dp,
                                 shape = RoundedCornerShape(16.dp),
-                                spotColor = XtremeCyan.copy(alpha = 0.4f)
+                                spotColor = XtremeLightBlue.copy(alpha = 0.4f)
                             )
                             .clip(RoundedCornerShape(16.dp))
-                            .background(Color(0xFF222631))
+                            .background(Color(0xFF162B46))
                     )
 
                     Spacer(modifier = Modifier.height(16.dp))
@@ -153,7 +164,7 @@ fun PlaylistDetailScreen(
                     Text(
                         text = "${tracks.size} tracks • 320kbps High Fidelity",
                         style = MaterialTheme.typography.bodySmall.copy(
-                            color = XtremeGreen,
+                            color = XtremeLightBlue,
                             fontWeight = FontWeight.SemiBold
                         ),
                         modifier = Modifier.padding(top = 6.dp)
@@ -174,8 +185,8 @@ fun PlaylistDetailScreen(
                             },
                             enabled = tracks.isNotEmpty(),
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = XtremeGreen,
-                                contentColor = Color.Black
+                                containerColor = XtremeLightBlue,
+                                contentColor = Color(0xFF031428)
                             ),
                             shape = CircleShape,
                             modifier = Modifier.height(46.dp)
@@ -199,6 +210,7 @@ fun PlaylistDetailScreen(
                                 }
                             },
                             enabled = tracks.isNotEmpty(),
+                            border = BorderStroke(1.dp, Color(0xFF1B3C64)),
                             shape = CircleShape,
                             modifier = Modifier.height(46.dp)
                         ) {

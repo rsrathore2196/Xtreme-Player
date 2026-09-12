@@ -1,10 +1,8 @@
 package com.example.ui.theme
 
 import android.app.Activity
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.Color
@@ -14,15 +12,15 @@ import androidx.core.view.WindowCompat
 
 private val DarkColorScheme =
   darkColorScheme(
-    primary = XtremeGreen,
-    onPrimary = Color.Black,
-    primaryContainer = Color(0xFF0F3D20),
-    onPrimaryContainer = Color(0xFF6CF89B),
+    primary = XtremeLightBlue,
+    onPrimary = Color(0xFF031428),
+    primaryContainer = Color(0xFF0C2B4E),
+    onPrimaryContainer = Color(0xFFBAE6FD),
     secondary = XtremeCyan,
-    onSecondary = Color.Black,
-    secondaryContainer = Color(0xFF003844),
-    onSecondaryContainer = Color(0xFF7DEFFF),
-    tertiary = XtremePurple,
+    onSecondary = Color(0xFF021A2A),
+    secondaryContainer = Color(0xFF083344),
+    onSecondaryContainer = Color(0xFF67E8F9),
+    tertiary = XtremeDeepBlue,
     onTertiary = Color.White,
     background = XtremeBackground,
     onBackground = TextPrimary,
@@ -32,8 +30,6 @@ private val DarkColorScheme =
     onSurfaceVariant = TextSecondary,
     outline = XtremeBorder
   )
-
-private val LightColorScheme = DarkColorScheme
 
 @Composable
 fun MyApplicationTheme(

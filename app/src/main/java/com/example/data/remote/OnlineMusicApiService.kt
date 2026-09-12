@@ -26,9 +26,9 @@ object OnlineMusicApiService {
     }
 
     /**
-     * Decrypts JioSaavn's DES-ECB encrypted media URL and upgrades it to 320kbps MP4 stream.
+     * Decrypts JioSaavn's DES-ECB encrypted media URL and upgrades it to requested kbps stream.
      */
-    fun decryptMediaUrl(encryptedUrl: String): String? {
+    fun decryptMediaUrl(encryptedUrl: String, targetQuality: String = "320"): String? {
         if (encryptedUrl.isBlank()) return null
         return try {
             val keyBytes = DES_KEY.toByteArray(Charsets.UTF_8)
@@ -44,14 +44,22 @@ object OnlineMusicApiService {
             val decryptedBytes = cipher.doFinal(decodedBytes)
             val rawUrl = String(decryptedBytes, Charsets.UTF_8)
 
-            // Upgrade stream quality to 320kbps MP4/AAC
-            rawUrl.replace("_96.mp4", "_320.mp4")
-                .replace("_160.mp4", "_320.mp4")
-                .replace(".m4a", "_320.mp4")
+            formatUrlForQuality(rawUrl, targetQuality)
         } catch (e: Exception) {
             Log.e(TAG, "Error decrypting media URL: ${e.message}")
             null
         }
+    }
+
+    /**
+     * Formats an audio stream URL to the requested bitrate quality (320, 160, 96).
+     */
+    fun formatUrlForQuality(rawUrl: String, quality: String): String {
+        val targetSuffix = "_$quality.mp4"
+        return rawUrl.replace("_320.mp4", targetSuffix)
+            .replace("_160.mp4", targetSuffix)
+            .replace("_96.mp4", targetSuffix)
+            .replace(".m4a", targetSuffix)
     }
 
     /**

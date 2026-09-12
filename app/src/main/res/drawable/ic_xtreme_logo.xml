@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:aapt="http://schemas.android.com/aapt"
-    android:width="108dp"
-    android:height="108dp"
+    android:width="48dp"
+    android:height="48dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
 
@@ -123,7 +123,6 @@
     </path>
 
     <!-- Center 3D Play Button Triangle (▶) -->
-    <!-- Outer Play Arrow with dimensional bevel -->
     <path
         android:pathData="M42,39 L65,54 L42,69 Z">
         <aapt:attr name="android:fillColor">
@@ -140,13 +139,12 @@
         </aapt:attr>
     </path>
 
-    <!-- Inner Triangle Cutout creating the signature hollow 3D play button in logo -->
+    <!-- Inner Triangle Cutout -->
     <path
         android:pathData="M46,45 L58,54 L46,63 Z"
         android:fillColor="#081A36" />
 
     <!-- Three Radiating Sound Waves on the right () ) ) -->
-    <!-- Sound Wave 1 (Inner Arc) -->
     <path
         android:pathData="M66,47 A10,10 0 0,1 66,61"
         android:strokeWidth="3.2"
@@ -164,7 +162,6 @@
         </aapt:attr>
     </path>
 
-    <!-- Sound Wave 2 (Middle Arc) -->
     <path
         android:pathData="M72,42 A17,17 0 0,1 72,66"
         android:strokeWidth="3.2"
@@ -182,7 +179,6 @@
         </aapt:attr>
     </path>
 
-    <!-- Sound Wave 3 (Outer Arc) -->
     <path
         android:pathData="M78,37 A24,24 0 0,1 78,71"
         android:strokeWidth="3.2"

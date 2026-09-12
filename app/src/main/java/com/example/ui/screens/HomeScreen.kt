@@ -1,5 +1,7 @@
 package com.example.ui.screens
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -42,11 +44,13 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.example.R
 import com.example.data.model.MusicTrack
 import com.example.data.remote.MixItem
 import com.example.data.remote.MusicDataSource
@@ -54,8 +58,12 @@ import com.example.playback.PlayerUiState
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
+import com.example.ui.theme.XtremeBorder
+import com.example.ui.theme.XtremeCard
 import com.example.ui.theme.XtremeCyan
+import com.example.ui.theme.XtremeGradients
 import com.example.ui.theme.XtremeGreen
+import com.example.ui.theme.XtremeLightBlue
 import com.example.ui.theme.XtremeRose
 import java.util.Calendar
 
@@ -75,10 +83,11 @@ fun HomeScreen(
     LazyColumn(
         modifier = modifier
             .fillMaxSize()
+            .background(XtremeGradients.ScreenBackground)
             .testTag("home_screen"),
         contentPadding = PaddingValues(bottom = 120.dp)
     ) {
-        // HEADER BAR
+        // HEADER BAR WITH APP LOGO
         item {
             Column(
                 modifier = Modifier
@@ -90,62 +99,69 @@ fun HomeScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                text = "XTREME",
-                                style = MaterialTheme.typography.titleLarge.copy(
-                                    fontWeight = FontWeight.Black,
-                                    letterSpacing = 2.sp,
-                                    color = XtremeGreen
-                                )
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "PLAYER",
-                                style = MaterialTheme.typography.titleLarge.copy(
-                                    fontWeight = FontWeight.Black,
-                                    letterSpacing = 2.sp,
-                                    color = TextPrimary
-                                )
-                            )
-                        }
-                        Text(
-                            text = greeting,
-                            style = MaterialTheme.typography.bodyMedium.copy(
-                                color = TextSecondary,
-                                fontWeight = FontWeight.Medium
-                            )
-                        )
-                    }
-
-                    // 320k Lossless Badge & EQ quick access
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = Color(0xFF191D26),
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(12.dp))
-                                .clickable { onOpenEqualizer() }
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(7.dp)
-                                        .clip(CircleShape)
-                                        .background(XtremeGreen)
+                        Image(
+                            painter = painterResource(id = R.drawable.ic_xtreme_logo),
+                            contentDescription = "Xtreme Player Logo",
+                            modifier = Modifier.size(36.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = "XTREME",
+                                    style = MaterialTheme.typography.titleLarge.copy(
+                                        fontWeight = FontWeight.Black,
+                                        letterSpacing = 2.sp,
+                                        color = XtremeLightBlue
+                                    )
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = "320 KBPS",
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    color = XtremeGreen
+                                    text = "PLAYER",
+                                    style = MaterialTheme.typography.titleLarge.copy(
+                                        fontWeight = FontWeight.Black,
+                                        letterSpacing = 2.sp,
+                                        color = TextPrimary
+                                    )
                                 )
                             }
+                            Text(
+                                text = greeting,
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    color = TextSecondary,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            )
+                        }
+                    }
+
+                    // 320k Lossless Badge & EQ quick access
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color(0xFF102035),
+                        border = BorderStroke(1.dp, Color(0xFF1D3B60)),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable { onOpenEqualizer() }
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(7.dp)
+                                    .clip(CircleShape)
+                                    .background(XtremeLightBlue)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "${playerUiState.selectedQuality.kbps} KBPS",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = XtremeLightBlue
+                            )
                         }
                     }
                 }
@@ -240,18 +256,23 @@ fun HomeScreen(
                                     )
                                 }
 
-                                // Play Circle Button
+                                // Play Circle Button with vibrant gradient
                                 Box(
                                     modifier = Modifier
                                         .size(46.dp)
+                                        .shadow(
+                                            elevation = 10.dp,
+                                            shape = CircleShape,
+                                            spotColor = XtremeLightBlue.copy(alpha = 0.6f)
+                                        )
                                         .clip(CircleShape)
-                                        .background(XtremeGreen),
+                                        .background(XtremeGradients.ButtonGradient),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.PlayArrow,
                                         contentDescription = "Play",
-                                        tint = Color.Black,
+                                        tint = Color(0xFF031428),
                                         modifier = Modifier.size(28.dp)
                                     )
                                 }
@@ -385,7 +406,8 @@ fun HomeScreen(
 fun MixCard(mix: MixItem, onClick: () -> Unit) {
     Card(
         shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF161922)),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF101F33)),
+        border = BorderStroke(1.dp, Color(0xFF1B3454)),
         modifier = Modifier
             .width(145.dp)
             .clickable { onClick() }
@@ -428,7 +450,8 @@ fun QuickPickCard(
 ) {
     Surface(
         shape = RoundedCornerShape(10.dp),
-        color = if (isPlaying) Color(0xFF1E2825) else Color(0xFF171A23),
+        color = if (isPlaying) Color(0xFF132A47) else Color(0xFF0F1E32),
+        border = if (isPlaying) BorderStroke(1.dp, XtremeLightBlue.copy(alpha = 0.6f)) else BorderStroke(1.dp, Color(0xFF182F4D)),
         modifier = modifier
             .clip(RoundedCornerShape(10.dp))
             .clickable { onClick() }
@@ -449,7 +472,7 @@ fun QuickPickCard(
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = track.title,
-                    color = if (isPlaying) XtremeGreen else TextPrimary,
+                    color = if (isPlaying) XtremeLightBlue else TextPrimary,
                     fontWeight = FontWeight.SemiBold,
                     fontSize = 12.sp,
                     maxLines = 1,
@@ -479,7 +502,7 @@ fun TrackListItem(
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
-            .background(if (isPlaying) Color(0xFF1C2220) else Color.Transparent)
+            .background(if (isPlaying) Color(0xFF122742) else Color.Transparent)
             .clickable { onClick() }
             .padding(vertical = 8.dp, horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -492,7 +515,7 @@ fun TrackListItem(
             modifier = Modifier
                 .size(48.dp)
                 .clip(RoundedCornerShape(10.dp))
-                .background(Color(0xFF222631))
+                .background(Color(0xFF1B2F4A))
         )
 
         Spacer(modifier = Modifier.width(12.dp))
@@ -501,7 +524,7 @@ fun TrackListItem(
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = track.title,
-                color = if (isPlaying) XtremeGreen else TextPrimary,
+                color = if (isPlaying) XtremeLightBlue else TextPrimary,
                 fontWeight = if (isPlaying) FontWeight.Bold else FontWeight.Medium,
                 fontSize = 14.sp,
                 maxLines = 1,
@@ -513,14 +536,14 @@ fun TrackListItem(
                 Box(
                     modifier = Modifier
                         .clip(RoundedCornerShape(3.dp))
-                        .background(XtremeGreen.copy(alpha = 0.15f))
+                        .background(XtremeLightBlue.copy(alpha = 0.15f))
                         .padding(horizontal = 4.dp, vertical = 1.dp)
                 ) {
                     Text(
                         text = "320k",
                         fontSize = 9.sp,
                         fontWeight = FontWeight.Bold,
-                        color = XtremeGreen
+                        color = XtremeLightBlue
                     )
                 }
                 Spacer(modifier = Modifier.width(6.dp))
@@ -539,7 +562,7 @@ fun TrackListItem(
             Icon(
                 imageVector = Icons.Default.Equalizer,
                 contentDescription = "Playing",
-                tint = XtremeGreen,
+                tint = XtremeLightBlue,
                 modifier = Modifier.size(20.dp)
             )
             Spacer(modifier = Modifier.width(8.dp))

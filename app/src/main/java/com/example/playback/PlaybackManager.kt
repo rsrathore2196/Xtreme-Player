@@ -36,9 +36,10 @@ data class PlayerUiState(
     val isShuffle: Boolean = false,
     val repeatMode: RepeatMode = RepeatMode.OFF,
     val isFavorite: Boolean = false,
+    val selectedQuality: AudioQuality = AudioQuality.EXTREME_320,
     val qualityBadge: String = "HD • 320 kbps",
     val errorMessage: String? = null,
-    val equalizerPreset: String = "Default (Flat)"
+    val equalizerPreset: String = "Crystal Clarity"
 )
 
 enum class RepeatMode {
@@ -295,6 +296,43 @@ class PlaybackManager(private val context: Context) {
         _uiState.update { it.copy(equalizerPreset = preset) }
     }
 
+    fun setAudioQuality(quality: AudioQuality) {
+        _uiState.update {
+            it.copy(
+                selectedQuality = quality,
+                qualityBadge = quality.badge
+            )
+        }
+        val currentTrack = _uiState.value.currentTrack ?: return
+        val player = controller ?: return
+        if (currentTrack.audioUrl.contains("saavncdn.com")) {
+            val updatedUrl = com.example.data.remote.OnlineMusicApiService.formatUrlForQuality(
+                currentTrack.audioUrl,
+                quality.id
+            )
+            val updatedTrack = currentTrack.copy(
+                audioUrl = updatedUrl,
+                bitrateKbps = quality.kbps,
+                qualityBadge = quality.badge
+            )
+            val currentPos = player.currentPosition
+            val wasPlaying = player.isPlaying
+            val currentIdx = player.currentMediaItemIndex
+            val mediaItem = updatedTrack.toMediaItem()
+            if (currentIdx in 0 until player.mediaItemCount) {
+                player.replaceMediaItem(currentIdx, mediaItem)
+                player.seekTo(currentIdx, currentPos)
+                if (wasPlaying) player.play()
+            }
+            _uiState.update {
+                it.copy(
+                    currentTrack = updatedTrack,
+                    qualityBadge = quality.badge
+                )
+            }
+        }
+    }
+
     fun release() {
         progressTickerJob?.cancel()
         controller?.release()
@@ -303,9 +341,18 @@ class PlaybackManager(private val context: Context) {
     }
 
     private fun MusicTrack.toMediaItem(): MediaItem {
+        val targetQuality = _uiState.value.selectedQuality
+        val effectiveUrl = if (audioUrl.contains("saavncdn.com")) {
+            com.example.data.remote.OnlineMusicApiService.formatUrlForQuality(audioUrl, targetQuality.id)
+        } else {
+            audioUrl
+        }
+        val effectiveBitrate = if (audioUrl.contains("saavncdn.com")) targetQuality.kbps else bitrateKbps
+        val effectiveBadge = if (audioUrl.contains("saavncdn.com")) targetQuality.badge else qualityBadge
+
         return MediaItem.Builder()
             .setMediaId(id)
-            .setUri(audioUrl)
+            .setUri(effectiveUrl)
             .setMediaMetadata(
                 MediaMetadata.Builder()
                     .setTitle(title)
@@ -313,8 +360,8 @@ class PlaybackManager(private val context: Context) {
                     .setAlbumTitle(album)
                     .setArtworkUri(Uri.parse(coverUrl))
                     .setExtras(Bundle().apply {
-                        putInt("bitrate", bitrateKbps)
-                        putString("qualityBadge", qualityBadge)
+                        putInt("bitrate", effectiveBitrate)
+                        putString("qualityBadge", effectiveBadge)
                         putString("genre", genre)
                     })
                     .build()

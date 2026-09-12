@@ -45,6 +45,7 @@ import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import com.example.ui.theme.XtremeCyan
 import com.example.ui.theme.XtremeGreen
+import com.example.ui.theme.XtremeLightBlue
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -60,7 +61,7 @@ fun QueueBottomSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        containerColor = Color(0xFF14161E),
+        containerColor = Color(0xFF0B1726),
         dragHandle = {
             Box(
                 modifier = Modifier
@@ -68,7 +69,7 @@ fun QueueBottomSheet(
                     .width(40.dp)
                     .height(4.dp)
                     .clip(RoundedCornerShape(2.dp))
-                    .background(Color(0xFF333845))
+                    .background(Color(0xFF1B3C64))
             )
         }
     ) {
@@ -84,7 +85,7 @@ fun QueueBottomSheet(
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.QueueMusic,
                     contentDescription = null,
-                    tint = XtremeCyan,
+                    tint = XtremeLightBlue,
                     modifier = Modifier.size(24.dp)
                 )
                 Spacer(modifier = Modifier.width(10.dp))
@@ -121,7 +122,7 @@ fun QueueBottomSheet(
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(12.dp))
                             .background(
-                                if (isCurrentlyPlaying) Color(0xFF1E262E) else Color(0xFF191B22)
+                                if (isCurrentlyPlaying) Color(0xFF163456) else Color(0xFF0F2238)
                             )
                             .clickable { onTrackClick(track) }
                             .padding(horizontal = 10.dp, vertical = 8.dp),
@@ -142,7 +143,7 @@ fun QueueBottomSheet(
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = track.title,
-                                color = if (isCurrentlyPlaying) XtremeGreen else TextPrimary,
+                                color = if (isCurrentlyPlaying) XtremeLightBlue else TextPrimary,
                                 fontWeight = if (isCurrentlyPlaying) FontWeight.Bold else FontWeight.Medium,
                                 fontSize = 14.sp,
                                 maxLines = 1,
@@ -153,7 +154,7 @@ fun QueueBottomSheet(
                                     Icon(
                                         imageVector = Icons.Default.Equalizer,
                                         contentDescription = null,
-                                        tint = XtremeGreen,
+                                        tint = XtremeLightBlue,
                                         modifier = Modifier.size(14.dp)
                                     )
                                     Spacer(modifier = Modifier.width(4.dp))

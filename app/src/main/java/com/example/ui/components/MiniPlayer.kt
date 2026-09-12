@@ -1,6 +1,13 @@
 package com.example.ui.components
 
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -35,6 +42,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -51,7 +59,9 @@ import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import com.example.ui.theme.XtremeCyan
+import com.example.ui.theme.XtremeGradients
 import com.example.ui.theme.XtremeGreen
+import com.example.ui.theme.XtremeLightBlue
 
 @Composable
 fun MiniPlayer(
@@ -72,6 +82,12 @@ fun MiniPlayer(
 
     val animatedProgress by animateFloatAsState(targetValue = progress, label = "mini_progress")
 
+    val playPauseScale by animateFloatAsState(
+        targetValue = if (uiState.isPlaying) 1.05f else 1.0f,
+        animationSpec = spring(dampingRatio = 0.6f),
+        label = "play_pause_scale"
+    )
+
     Surface(
         modifier = modifier
             .fillMaxWidth()
@@ -79,7 +95,7 @@ fun MiniPlayer(
             .shadow(
                 elevation = 16.dp,
                 shape = RoundedCornerShape(16.dp),
-                spotColor = XtremeGreen.copy(alpha = 0.35f),
+                spotColor = XtremeLightBlue.copy(alpha = 0.45f),
                 ambientColor = Color.Black
             )
             .clip(RoundedCornerShape(16.dp))
@@ -101,7 +117,8 @@ fun MiniPlayer(
                 )
             }
             .testTag("mini_player_container"),
-        color = Color(0xFF181B22),
+        color = Color(0xFF101E32),
+        border = BorderStroke(1.dp, Color(0xFF1C375C)),
         tonalElevation = 6.dp
     ) {
         Box(
@@ -110,8 +127,8 @@ fun MiniPlayer(
                 .background(
                     Brush.horizontalGradient(
                         colors = listOf(
-                            Color(0xFF1E222B),
-                            Color(0xFF14171E)
+                            Color(0xFF122339),
+                            Color(0xFF0F1D2E)
                         )
                     )
                 )
@@ -141,17 +158,28 @@ fun MiniPlayer(
                         modifier = Modifier.weight(1f),
                         verticalArrangement = Arrangement.Center
                     ) {
-                        Text(
-                            text = track.title,
-                            style = MaterialTheme.typography.titleSmall.copy(
-                                fontWeight = FontWeight.Bold,
-                                color = TextPrimary
-                            ),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            // 320 kbps badge
+                            Text(
+                                text = track.title,
+                                style = MaterialTheme.typography.titleSmall.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = TextPrimary
+                                ),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false)
+                            )
+                            if (uiState.isPlaying) {
+                                Spacer(modifier = Modifier.width(6.dp))
+                                MiniAnimatedEqualizerBars()
+                            }
+                        }
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(top = 2.dp)
+                        ) {
+                            // Dynamic Bitrate Badge
                             Box(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(4.dp))
@@ -159,7 +187,7 @@ fun MiniPlayer(
                                     .padding(horizontal = 5.dp, vertical = 1.dp)
                             ) {
                                 Text(
-                                    text = "320k",
+                                    text = "${uiState.selectedQuality.kbps}k",
                                     fontSize = 9.sp,
                                     fontWeight = FontWeight.ExtraBold,
                                     color = XtremeGreen
@@ -179,7 +207,7 @@ fun MiniPlayer(
 
                     Spacer(modifier = Modifier.width(8.dp))
 
-                    // Play / Pause Button with Loading Indicator
+                    // Play / Pause Button with Loading Indicator and Spring Animation
                     Box(
                         contentAlignment = Alignment.Center,
                         modifier = Modifier.size(42.dp)
@@ -188,21 +216,30 @@ fun MiniPlayer(
                             CircularProgressIndicator(
                                 modifier = Modifier.size(28.dp),
                                 strokeWidth = 2.5.dp,
-                                color = XtremeGreen
+                                color = XtremeLightBlue
                             )
                         } else {
                             IconButton(
                                 onClick = onPlayPauseClick,
                                 modifier = Modifier
                                     .size(42.dp)
+                                    .scale(playPauseScale)
                                     .clip(CircleShape)
-                                    .background(Color(0xFF282C37))
+                                    .background(
+                                        if (uiState.isPlaying) {
+                                            XtremeGradients.ButtonGradient
+                                        } else {
+                                            Brush.linearGradient(
+                                                listOf(Color(0xFF1B3252), Color(0xFF15263E))
+                                            )
+                                        }
+                                    )
                                     .testTag("mini_player_play_pause")
                             ) {
                                 Icon(
                                     imageVector = if (uiState.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                                     contentDescription = if (uiState.isPlaying) "Pause" else "Play",
-                                    tint = TextPrimary,
+                                    tint = if (uiState.isPlaying) Color(0xFF031428) else Color.White,
                                     modifier = Modifier.size(24.dp)
                                 )
                             }
@@ -233,10 +270,73 @@ fun MiniPlayer(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(2.5.dp),
-                    color = XtremeGreen,
-                    trackColor = Color(0xFF262B36),
+                    color = XtremeLightBlue,
+                    trackColor = Color(0xFF142740),
                 )
             }
         }
+    }
+}
+
+@Composable
+fun MiniAnimatedEqualizerBars() {
+    val transition = rememberInfiniteTransition(label = "mini_eq_transition")
+
+    val height1 by transition.animateFloat(
+        initialValue = 4f,
+        targetValue = 14f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(400),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "eq_bar_1"
+    )
+
+    val height2 by transition.animateFloat(
+        initialValue = 12f,
+        targetValue = 5f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(350),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "eq_bar_2"
+    )
+
+    val height3 by transition.animateFloat(
+        initialValue = 6f,
+        targetValue = 15f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(450),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "eq_bar_3"
+    )
+
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        verticalAlignment = Alignment.Bottom,
+        modifier = Modifier.height(14.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .width(2.5.dp)
+                .height(height1.dp)
+                .clip(RoundedCornerShape(1.dp))
+                .background(XtremeGreen)
+        )
+        Box(
+            modifier = Modifier
+                .width(2.5.dp)
+                .height(height2.dp)
+                .clip(RoundedCornerShape(1.dp))
+                .background(XtremeGreen)
+        )
+        Box(
+            modifier = Modifier
+                .width(2.5.dp)
+                .height(height3.dp)
+                .clip(RoundedCornerShape(1.dp))
+                .background(XtremeGreen)
+        )
     }
 }

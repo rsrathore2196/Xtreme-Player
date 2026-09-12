@@ -1,6 +1,8 @@
 package com.example.ui.screens
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -63,7 +65,9 @@ import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import com.example.ui.theme.XtremeCyan
+import com.example.ui.theme.XtremeGradients
 import com.example.ui.theme.XtremeGreen
+import com.example.ui.theme.XtremeLightBlue
 import com.example.ui.theme.XtremePurple
 import com.example.ui.theme.XtremeRose
 
@@ -83,9 +87,18 @@ fun LibraryScreen(
 
     val currentPlayingId = playerUiState.currentTrack?.id
 
+    val backgroundBrush = Brush.verticalGradient(
+        colors = listOf(
+            Color(0xFF0F253F),
+            Color(0xFF0A1524),
+            Color(0xFF060D17)
+        )
+    )
+
     LazyColumn(
         modifier = modifier
             .fillMaxSize()
+            .background(backgroundBrush)
             .testTag("library_screen"),
         contentPadding = PaddingValues(bottom = 120.dp)
     ) {
@@ -117,13 +130,17 @@ fun LibraryScreen(
                         modifier = Modifier
                             .size(42.dp)
                             .clip(CircleShape)
-                            .background(Color(0xFF1E222D))
+                            .background(
+                                Brush.linearGradient(
+                                    listOf(Color(0xFF163255), Color(0xFF1B3D66))
+                                )
+                            )
                             .testTag("create_playlist_button")
                     ) {
                         Icon(
                             imageVector = Icons.Default.Add,
                             contentDescription = "Create Playlist",
-                            tint = XtremeGreen,
+                            tint = XtremeLightBlue,
                             modifier = Modifier.size(24.dp)
                         )
                     }
@@ -135,11 +152,11 @@ fun LibraryScreen(
                 TabRow(
                     selectedTabIndex = selectedTab,
                     containerColor = Color.Transparent,
-                    contentColor = XtremeGreen,
+                    contentColor = XtremeLightBlue,
                     indicator = { tabPositions ->
                         TabRowDefaults.SecondaryIndicator(
                             modifier = Modifier.tabIndicatorOffset(tabPositions[selectedTab]),
-                            color = XtremeGreen
+                            color = XtremeLightBlue
                         )
                     },
                     divider = {}
@@ -152,7 +169,7 @@ fun LibraryScreen(
                                 Text(
                                     text = title,
                                     fontWeight = if (selectedTab == index) FontWeight.Bold else FontWeight.Normal,
-                                    color = if (selectedTab == index) XtremeGreen else TextSecondary,
+                                    color = if (selectedTab == index) XtremeLightBlue else TextSecondary,
                                     fontSize = 14.sp
                                 )
                             }
@@ -169,7 +186,8 @@ fun LibraryScreen(
                 item {
                     Card(
                         shape = RoundedCornerShape(18.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFF181B24)),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF0F2238)),
+                        border = BorderStroke(1.dp, Color(0xFF1B3C64)),
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 20.dp, vertical = 6.dp)
@@ -191,7 +209,7 @@ fun LibraryScreen(
                                     .clip(RoundedCornerShape(12.dp))
                                     .background(
                                         Brush.linearGradient(
-                                            listOf(Color(0xFF4C1D95), Color(0xFFEC4899))
+                                            listOf(Color(0xFF0F4C81), Color(0xFF00B4D8))
                                         )
                                     ),
                                 contentAlignment = Alignment.Center
@@ -227,13 +245,13 @@ fun LibraryScreen(
                                     modifier = Modifier
                                         .size(38.dp)
                                         .clip(CircleShape)
-                                        .background(XtremeGreen),
+                                        .background(XtremeGradients.ButtonGradient),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.PlayArrow,
                                         contentDescription = "Play Liked",
-                                        tint = Color.Black,
+                                        tint = Color(0xFF031428),
                                         modifier = Modifier.size(22.dp)
                                     )
                                 }
@@ -273,8 +291,8 @@ fun LibraryScreen(
                             Button(
                                 onClick = onCreatePlaylistClick,
                                 colors = ButtonDefaults.buttonColors(
-                                    containerColor = XtremeGreen,
-                                    contentColor = Color.Black
+                                    containerColor = XtremeLightBlue,
+                                    contentColor = Color(0xFF031428)
                                 )
                             ) {
                                 Text("Create Playlist", fontWeight = FontWeight.Bold)
@@ -353,7 +371,8 @@ fun LibraryScreen(
                     Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)) {
                         Card(
                             shape = RoundedCornerShape(16.dp),
-                            colors = CardDefaults.cardColors(containerColor = Color(0xFF161922)),
+                            colors = CardDefaults.cardColors(containerColor = Color(0xFF0F2238)),
+                            border = BorderStroke(1.dp, Color(0xFF1B3C64)),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Row(
@@ -364,13 +383,13 @@ fun LibraryScreen(
                                     modifier = Modifier
                                         .size(44.dp)
                                         .clip(CircleShape)
-                                        .background(XtremeCyan.copy(alpha = 0.2f)),
+                                        .background(XtremeLightBlue.copy(alpha = 0.2f)),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.DownloadDone,
                                         contentDescription = null,
-                                        tint = XtremeCyan,
+                                        tint = XtremeLightBlue,
                                         modifier = Modifier.size(24.dp)
                                     )
                                 }
@@ -430,7 +449,8 @@ fun PlaylistRowItem(
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
-            .background(Color(0xFF181B23))
+            .background(Color(0xFF0F2238))
+            .border(BorderStroke(1.dp, Color(0xFF193659)), RoundedCornerShape(14.dp))
             .clickable { onClick() }
             .padding(10.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -442,7 +462,7 @@ fun PlaylistRowItem(
             modifier = Modifier
                 .size(54.dp)
                 .clip(RoundedCornerShape(10.dp))
-                .background(Color(0xFF262934))
+                .background(Color(0xFF162B46))
         )
 
         Spacer(modifier = Modifier.width(14.dp))

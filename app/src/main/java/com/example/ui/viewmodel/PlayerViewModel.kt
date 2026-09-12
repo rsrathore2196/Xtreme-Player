@@ -219,6 +219,14 @@ class PlayerViewModel(
         com.example.playback.AudioEffectsManager.applyPreset(preset)
     }
 
+    fun setAudioQuality(quality: com.example.playback.AudioQuality) {
+        playbackManager.setAudioQuality(quality)
+    }
+
+    fun setCrystalClarityEnabled(enabled: Boolean) {
+        com.example.playback.AudioEffectsManager.setCrystalClarityEnabled(enabled)
+    }
+
     fun resetEqualizer() {
         com.example.playback.AudioEffectsManager.resetAll()
     }

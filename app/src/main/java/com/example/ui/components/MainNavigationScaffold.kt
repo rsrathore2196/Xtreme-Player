@@ -5,9 +5,17 @@ import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,9 +27,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -48,15 +58,18 @@ import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.LibraryScreen
 import com.example.ui.screens.PlaylistDetailScreen
 import com.example.ui.screens.SearchScreen
+import com.example.ui.screens.SettingsScreen
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.XtremeGreen
+import com.example.ui.theme.XtremeLightBlue
 import com.example.ui.viewmodel.PlayerViewModel
 
 enum class NavigationTab(val title: String) {
     HOME("Home"),
     SEARCH("Search"),
-    LIBRARY("Library")
+    LIBRARY("Library"),
+    SETTINGS("Settings")
 }
 
 @Composable
@@ -100,7 +113,7 @@ fun MainNavigationScaffold(
         }
     }
 
-    Box(modifier = modifier.fillMaxSize().background(Color(0xFF0A0B0E))) {
+    Box(modifier = modifier.fillMaxSize().background(Color(0xFF060D17))) {
         Scaffold(
             bottomBar = {
                 Column(
@@ -121,7 +134,7 @@ fun MainNavigationScaffold(
 
                     // Bottom Navigation Bar
                     NavigationBar(
-                        containerColor = Color(0xFF10121A),
+                        containerColor = Color(0xFF071220),
                         tonalElevation = 8.dp,
                         modifier = Modifier.testTag("bottom_navigation_bar")
                     ) {
@@ -145,11 +158,11 @@ fun MainNavigationScaffold(
                                 )
                             },
                             colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = XtremeGreen,
-                                selectedTextColor = XtremeGreen,
+                                selectedIconColor = XtremeLightBlue,
+                                selectedTextColor = XtremeLightBlue,
                                 unselectedIconColor = TextMuted,
                                 unselectedTextColor = TextMuted,
-                                indicatorColor = Color(0xFF1C2220)
+                                indicatorColor = Color(0xFF163255)
                             )
                         )
 
@@ -173,11 +186,11 @@ fun MainNavigationScaffold(
                                 )
                             },
                             colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = XtremeGreen,
-                                selectedTextColor = XtremeGreen,
+                                selectedIconColor = XtremeLightBlue,
+                                selectedTextColor = XtremeLightBlue,
                                 unselectedIconColor = TextMuted,
                                 unselectedTextColor = TextMuted,
-                                indicatorColor = Color(0xFF1C2220)
+                                indicatorColor = Color(0xFF163255)
                             )
                         )
 
@@ -200,17 +213,45 @@ fun MainNavigationScaffold(
                                 )
                             },
                             colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = XtremeGreen,
-                                selectedTextColor = XtremeGreen,
+                                selectedIconColor = XtremeLightBlue,
+                                selectedTextColor = XtremeLightBlue,
                                 unselectedIconColor = TextMuted,
                                 unselectedTextColor = TextMuted,
-                                indicatorColor = Color(0xFF1C2220)
+                                indicatorColor = Color(0xFF163255)
+                            )
+                        )
+
+                        NavigationBarItem(
+                            selected = selectedTabIndex == 3,
+                            onClick = {
+                                selectedTabIndex = 3
+                                viewModel.closePlaylist()
+                            },
+                            icon = {
+                                Icon(
+                                    imageVector = if (selectedTabIndex == 3) Icons.Default.Settings else Icons.Outlined.Settings,
+                                    contentDescription = "Settings"
+                                )
+                            },
+                            label = {
+                                Text(
+                                    text = "Settings",
+                                    fontSize = 11.sp,
+                                    fontWeight = if (selectedTabIndex == 3) FontWeight.Bold else FontWeight.Normal
+                                )
+                            },
+                            colors = NavigationBarItemDefaults.colors(
+                                selectedIconColor = XtremeLightBlue,
+                                selectedTextColor = XtremeLightBlue,
+                                unselectedIconColor = TextMuted,
+                                unselectedTextColor = TextMuted,
+                                indicatorColor = Color(0xFF163255)
                             )
                         )
                     }
                 }
             },
-            containerColor = Color(0xFF0A0B0E)
+            containerColor = Color(0xFF060D17)
         ) { innerPadding ->
             Box(
                 modifier = Modifier
@@ -232,42 +273,77 @@ fun MainNavigationScaffold(
                         }
                     )
                 } else {
-                    when (selectedTabIndex) {
-                        0 -> HomeScreen(
-                            catalogTracks = catalogTracks,
-                            recentlyPlayed = recentlyPlayed,
-                            playerUiState = playerUiState,
-                            onTrackClick = { track, queue -> viewModel.playTrack(track, queue) },
-                            onToggleFavorite = { track -> viewModel.toggleLike(track) },
-                            onOpenEqualizer = { isEqualizerOpen = true }
-                        )
-                        1 -> SearchScreen(
-                            searchState = searchState,
-                            playerUiState = playerUiState,
-                            onQueryChange = { q -> viewModel.onSearchQueryChange(q) },
-                            onSelectGenre = { g -> viewModel.selectGenre(g) },
-                            onTrackClick = { track, queue -> viewModel.playTrack(track, queue) },
-                            onToggleFavorite = { track -> viewModel.toggleLike(track) }
-                        )
-                        2 -> LibraryScreen(
-                            favoriteTracks = favoriteTracks,
-                            playlists = playlists,
-                            playerUiState = playerUiState,
-                            onTrackClick = { track, queue -> viewModel.playTrack(track, queue) },
-                            onToggleFavorite = { track -> viewModel.toggleLike(track) },
-                            onOpenPlaylist = { id -> viewModel.openPlaylist(id) },
-                            onCreatePlaylistClick = { isCreatePlaylistOpen = true }
-                        )
+                    AnimatedContent(
+                        targetState = selectedTabIndex,
+                        transitionSpec = {
+                            if (targetState > initialState) {
+                                (slideInHorizontally { width -> width / 4 } + fadeIn())
+                                    .togetherWith(slideOutHorizontally { width -> -width / 4 } + fadeOut())
+                            } else {
+                                (slideInHorizontally { width -> -width / 4 } + fadeIn())
+                                    .togetherWith(slideOutHorizontally { width -> width / 4 } + fadeOut())
+                            }
+                        },
+                        label = "tab_navigation_transition",
+                        modifier = Modifier.fillMaxSize()
+                    ) { tabIndex ->
+                        when (tabIndex) {
+                            0 -> HomeScreen(
+                                catalogTracks = catalogTracks,
+                                recentlyPlayed = recentlyPlayed,
+                                playerUiState = playerUiState,
+                                onTrackClick = { track, queue -> viewModel.playTrack(track, queue) },
+                                onToggleFavorite = { track -> viewModel.toggleLike(track) },
+                                onOpenEqualizer = { isEqualizerOpen = true }
+                            )
+                            1 -> SearchScreen(
+                                searchState = searchState,
+                                playerUiState = playerUiState,
+                                onQueryChange = { q -> viewModel.onSearchQueryChange(q) },
+                                onSelectGenre = { g -> viewModel.selectGenre(g) },
+                                onTrackClick = { track, queue -> viewModel.playTrack(track, queue) },
+                                onToggleFavorite = { track -> viewModel.toggleLike(track) }
+                            )
+                            2 -> LibraryScreen(
+                                favoriteTracks = favoriteTracks,
+                                playlists = playlists,
+                                playerUiState = playerUiState,
+                                onTrackClick = { track, queue -> viewModel.playTrack(track, queue) },
+                                onToggleFavorite = { track -> viewModel.toggleLike(track) },
+                                onOpenPlaylist = { id -> viewModel.openPlaylist(id) },
+                                onCreatePlaylistClick = { isCreatePlaylistOpen = true }
+                            )
+                            3 -> SettingsScreen(
+                                playerUiState = playerUiState,
+                                effectsState = effectsState,
+                                onAudioQualitySelected = { quality -> viewModel.setAudioQuality(quality) },
+                                onCrystalClarityToggle = { enabled -> viewModel.setCrystalClarityEnabled(enabled) },
+                                onOpenEqualizer = { isEqualizerOpen = true },
+                                onSelectPreset = { preset -> viewModel.setEqualizerPreset(preset) }
+                            )
+                        }
                     }
                 }
             }
         }
 
-        // FULL SCREEN EXPANDED PLAYER (Animates vertically)
+        // FULL SCREEN EXPANDED PLAYER (Animates vertically with smooth spring)
         AnimatedVisibility(
             visible = isPlayerExpanded && playerUiState.currentTrack != null,
-            enter = slideInVertically(initialOffsetY = { it }),
-            exit = slideOutVertically(targetOffsetY = { it }),
+            enter = slideInVertically(
+                initialOffsetY = { it },
+                animationSpec = spring(
+                    dampingRatio = 0.85f,
+                    stiffness = Spring.StiffnessMediumLow
+                )
+            ) + fadeIn(),
+            exit = slideOutVertically(
+                targetOffsetY = { it },
+                animationSpec = spring(
+                    dampingRatio = 0.85f,
+                    stiffness = Spring.StiffnessMediumLow
+                )
+            ) + fadeOut(),
             modifier = Modifier.fillMaxSize()
         ) {
             ExpandedPlayerScreen(

@@ -4,6 +4,7 @@ import android.content.Intent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -78,7 +79,9 @@ import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import com.example.ui.theme.XtremeCyan
+import com.example.ui.theme.XtremeGradients
 import com.example.ui.theme.XtremeGreen
+import com.example.ui.theme.XtremeLightBlue
 import com.example.ui.theme.XtremeRose
 
 @Composable
@@ -128,9 +131,9 @@ fun ExpandedPlayerScreen(
             .background(
                 Brush.verticalGradient(
                     colors = listOf(
-                        Color(0xFF16231C), // Ambient dark emerald/cyan top glow
-                        Color(0xFF0F1116),
-                        Color(0xFF090A0D)
+                        Color(0xFF0D233C), // Ambient dark light blue glow
+                        Color(0xFF091626),
+                        Color(0xFF050E1A)
                     )
                 )
             )
@@ -165,7 +168,7 @@ fun ExpandedPlayerScreen(
 
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        text = "PLAYING FROM XTREME 320K",
+                        text = "PLAYING FROM XTREME • ${uiState.selectedQuality.kbps}K",
                         style = MaterialTheme.typography.labelSmall.copy(
                             color = TextMuted,
                             letterSpacing = 1.2.sp,
@@ -176,7 +179,7 @@ fun ExpandedPlayerScreen(
                     Text(
                         text = track.genre,
                         style = MaterialTheme.typography.bodySmall.copy(
-                            color = XtremeGreen,
+                            color = XtremeLightBlue,
                             fontWeight = FontWeight.SemiBold
                         )
                     )
@@ -265,11 +268,11 @@ fun ExpandedPlayerScreen(
                         .shadow(
                             elevation = 28.dp,
                             shape = RoundedCornerShape(24.dp),
-                            spotColor = XtremeGreen.copy(alpha = 0.5f),
+                            spotColor = XtremeLightBlue.copy(alpha = 0.5f),
                             ambientColor = Color.Black
                         )
                         .clip(RoundedCornerShape(24.dp))
-                        .background(Color(0xFF222631))
+                        .background(Color(0xFF14243B))
                 )
             }
 
@@ -336,9 +339,9 @@ fun ExpandedPlayerScreen(
                         isUserScrubbing = false
                     },
                     colors = SliderDefaults.colors(
-                        thumbColor = XtremeGreen,
-                        activeTrackColor = XtremeGreen,
-                        inactiveTrackColor = Color(0xFF2B313F)
+                        thumbColor = XtremeLightBlue,
+                        activeTrackColor = XtremeLightBlue,
+                        inactiveTrackColor = Color(0xFF1C3454)
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
@@ -361,9 +364,10 @@ fun ExpandedPlayerScreen(
                         )
                     )
 
-                    // 320 kbps High Quality Audio Badge
+                    // High Quality Audio Badge
                     Surface(
-                        color = XtremeGreen.copy(alpha = 0.16f),
+                        color = Color(0xFF10233B),
+                        border = BorderStroke(1.dp, Color(0xFF1F416A)),
                         shape = RoundedCornerShape(6.dp),
                         modifier = Modifier.padding(horizontal = 4.dp)
                     ) {
@@ -375,13 +379,13 @@ fun ExpandedPlayerScreen(
                                 modifier = Modifier
                                     .size(6.dp)
                                     .clip(CircleShape)
-                                    .background(XtremeGreen)
+                                    .background(XtremeLightBlue)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = "HQ • 320 KBPS",
+                                text = uiState.qualityBadge.uppercase(),
                                 style = MaterialTheme.typography.labelSmall.copy(
-                                    color = XtremeGreen,
+                                    color = XtremeLightBlue,
                                     fontWeight = FontWeight.ExtraBold,
                                     fontSize = 10.sp,
                                     letterSpacing = 0.5.sp
@@ -413,7 +417,7 @@ fun ExpandedPlayerScreen(
                     Icon(
                         imageVector = Icons.Default.Shuffle,
                         contentDescription = "Shuffle",
-                        tint = if (uiState.isShuffle) XtremeGreen else TextMuted,
+                        tint = if (uiState.isShuffle) XtremeLightBlue else TextMuted,
                         modifier = Modifier.size(24.dp)
                     )
                 }
@@ -434,7 +438,7 @@ fun ExpandedPlayerScreen(
                     )
                 }
 
-                // Play / Pause Raised Button
+                // Play / Pause Raised Button with Gradient
                 Box(
                     contentAlignment = Alignment.Center,
                     modifier = Modifier.size(72.dp)
@@ -443,7 +447,7 @@ fun ExpandedPlayerScreen(
                         CircularProgressIndicator(
                             modifier = Modifier.size(56.dp),
                             strokeWidth = 3.5.dp,
-                            color = XtremeGreen
+                            color = XtremeLightBlue
                         )
                     } else {
                         IconButton(
@@ -454,19 +458,19 @@ fun ExpandedPlayerScreen(
                             modifier = Modifier
                                 .size(68.dp)
                                 .shadow(
-                                    elevation = 14.dp,
+                                    elevation = 16.dp,
                                     shape = CircleShape,
-                                    spotColor = XtremeGreen.copy(alpha = 0.7f),
+                                    spotColor = XtremeLightBlue.copy(alpha = 0.8f),
                                     ambientColor = Color.Black
                                 )
                                 .clip(CircleShape)
-                                .background(XtremeGreen)
+                                .background(XtremeGradients.ButtonGradient)
                                 .testTag("expanded_player_play_pause")
                         ) {
                             Icon(
                                 imageVector = if (uiState.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                                 contentDescription = if (uiState.isPlaying) "Pause" else "Play",
-                                tint = Color.Black,
+                                tint = Color(0xFF031428),
                                 modifier = Modifier.size(36.dp)
                             )
                         }
@@ -497,7 +501,7 @@ fun ExpandedPlayerScreen(
                     }
                     val tint = when (uiState.repeatMode) {
                         RepeatMode.OFF -> TextMuted
-                        else -> XtremeGreen
+                        else -> XtremeLightBlue
                     }
                     Icon(
                         imageVector = icon,

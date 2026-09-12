@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -53,6 +54,7 @@ import com.example.ui.theme.TextSecondary
 import com.example.ui.theme.XtremeCard
 import com.example.ui.theme.XtremeCyan
 import com.example.ui.theme.XtremeGreen
+import com.example.ui.theme.XtremeLightBlue
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -71,7 +73,8 @@ fun EqualizerDialog(
     Dialog(onDismissRequest = onDismiss) {
         Card(
             shape = RoundedCornerShape(24.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF13151D)),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF0F1E33)),
+            border = BorderStroke(1.dp, Color(0xFF1B3A62)),
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(vertical = 12.dp)
@@ -95,15 +98,15 @@ fun EqualizerDialog(
                                 .size(40.dp)
                                 .clip(CircleShape)
                                 .background(
-                                    if (effectsState.isEnabled) XtremeGreen.copy(alpha = 0.2f)
-                                    else Color(0xFF232733)
+                                    if (effectsState.isEnabled) XtremeLightBlue.copy(alpha = 0.2f)
+                                    else Color(0xFF1A2B42)
                                 ),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
                                 imageVector = Icons.Default.GraphicEq,
                                 contentDescription = null,
-                                tint = if (effectsState.isEnabled) XtremeGreen else TextMuted,
+                                tint = if (effectsState.isEnabled) XtremeLightBlue else TextMuted,
                                 modifier = Modifier.size(22.dp)
                             )
                         }
@@ -119,7 +122,7 @@ fun EqualizerDialog(
                             Text(
                                 text = if (effectsState.isEnabled) "Real-time DSP Active (320k)" else "Effects Bypassed",
                                 style = MaterialTheme.typography.bodySmall.copy(
-                                    color = if (effectsState.isEnabled) XtremeGreen else TextMuted,
+                                    color = if (effectsState.isEnabled) XtremeLightBlue else TextMuted,
                                     fontSize = 11.sp
                                 )
                             )
@@ -130,10 +133,10 @@ fun EqualizerDialog(
                         checked = effectsState.isEnabled,
                         onCheckedChange = onEnableChanged,
                         colors = SwitchDefaults.colors(
-                            checkedThumbColor = Color.Black,
-                            checkedTrackColor = XtremeGreen,
+                            checkedThumbColor = Color(0xFF031428),
+                            checkedTrackColor = XtremeLightBlue,
                             uncheckedThumbColor = TextMuted,
-                            uncheckedTrackColor = Color(0xFF282C3A)
+                            uncheckedTrackColor = Color(0xFF1D3554)
                         ),
                         modifier = Modifier.testTag("equalizer_master_switch")
                     )
@@ -184,14 +187,19 @@ fun EqualizerDialog(
                                 .clickable(enabled = effectsState.isEnabled) {
                                     onPresetSelected(preset)
                                 },
-                            color = if (isSelected && effectsState.isEnabled) XtremeGreen
-                                    else if (isSelected) Color(0xFF323644)
-                                    else XtremeCard,
+                            color = if (isSelected && effectsState.isEnabled) XtremeLightBlue
+                                    else if (isSelected) Color(0xFF1B3252)
+                                    else Color(0xFF14243C),
+                            border = BorderStroke(
+                                1.dp,
+                                if (isSelected && effectsState.isEnabled) XtremeLightBlue
+                                else Color(0xFF1F3D64)
+                            ),
                             shape = RoundedCornerShape(16.dp)
                         ) {
                             Text(
                                 text = preset,
-                                color = if (isSelected && effectsState.isEnabled) Color.Black else TextSecondary,
+                                color = if (isSelected && effectsState.isEnabled) Color(0xFF031428) else TextSecondary,
                                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
                                 fontSize = 12.sp,
                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
@@ -210,7 +218,8 @@ fun EqualizerDialog(
                     // Bass Boost Card
                     Card(
                         shape = RoundedCornerShape(14.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFF1A1D27)),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF13253F)),
+                        border = BorderStroke(1.dp, Color(0xFF1D3B62)),
                         modifier = Modifier.weight(1f)
                     ) {
                         Column(modifier = Modifier.padding(12.dp)) {
@@ -227,7 +236,7 @@ fun EqualizerDialog(
                                 )
                                 Text(
                                     text = "${(effectsState.bassBoostStrength / 10)}%",
-                                    color = XtremeGreen,
+                                    color = XtremeLightBlue,
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold
                                 )
@@ -237,9 +246,9 @@ fun EqualizerDialog(
                                 onValueChange = { onBassBoostChanged((it * 1000).toInt()) },
                                 enabled = effectsState.isEnabled,
                                 colors = SliderDefaults.colors(
-                                    thumbColor = XtremeGreen,
-                                    activeTrackColor = XtremeGreen,
-                                    inactiveTrackColor = Color(0xFF282C3A)
+                                    thumbColor = XtremeLightBlue,
+                                    activeTrackColor = XtremeLightBlue,
+                                    inactiveTrackColor = Color(0xFF1C3454)
                                 ),
                                 modifier = Modifier.fillMaxWidth()
                             )
@@ -249,7 +258,8 @@ fun EqualizerDialog(
                     // Virtualizer Card
                     Card(
                         shape = RoundedCornerShape(14.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFF1A1D27)),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF13253F)),
+                        border = BorderStroke(1.dp, Color(0xFF1D3B62)),
                         modifier = Modifier.weight(1f)
                     ) {
                         Column(modifier = Modifier.padding(12.dp)) {
@@ -278,7 +288,7 @@ fun EqualizerDialog(
                                 colors = SliderDefaults.colors(
                                     thumbColor = XtremeCyan,
                                     activeTrackColor = XtremeCyan,
-                                    inactiveTrackColor = Color(0xFF282C3A)
+                                    inactiveTrackColor = Color(0xFF1C3454)
                                 ),
                                 modifier = Modifier.fillMaxWidth()
                             )
@@ -324,7 +334,7 @@ fun EqualizerDialog(
                     TextButton(onClick = onDismiss) {
                         Text(
                             text = "APPLY & CLOSE",
-                            color = XtremeGreen,
+                            color = XtremeLightBlue,
                             fontWeight = FontWeight.Bold
                         )
                     }
@@ -347,7 +357,7 @@ private fun BandSliderRow(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
-            .background(Color(0xFF171A24))
+            .background(Color(0xFF112239))
             .padding(horizontal = 12.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -369,9 +379,9 @@ private fun BandSliderRow(
             },
             enabled = isEnabled,
             colors = SliderDefaults.colors(
-                thumbColor = XtremeGreen,
-                activeTrackColor = XtremeGreen,
-                inactiveTrackColor = Color(0xFF282C3A)
+                thumbColor = XtremeLightBlue,
+                activeTrackColor = XtremeLightBlue,
+                inactiveTrackColor = Color(0xFF1C3454)
             ),
             modifier = Modifier.weight(1f)
         )
@@ -381,7 +391,7 @@ private fun BandSliderRow(
             text = band.displayLevelDb,
             fontSize = 11.sp,
             fontWeight = FontWeight.SemiBold,
-            color = if (isEnabled) XtremeGreen else TextMuted,
+            color = if (isEnabled) XtremeLightBlue else TextMuted,
             textAlign = TextAlign.End,
             modifier = Modifier.width(54.dp)
         )
