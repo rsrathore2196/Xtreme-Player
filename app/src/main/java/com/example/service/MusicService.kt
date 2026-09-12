@@ -54,8 +54,10 @@ class MusicService : MediaSessionService() {
             ) {
                 // Audio player only: do not build video renderers or query video C2 component interfaces
             }
-        }.setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF)
-            .setEnableAudioFloatOutput(true)
+        }
+            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF)
+            .setEnableDecoderFallback(true)
+            .setEnableAudioFloatOutput(false)
 
         // 3. High-Fidelity 320kbps Audio Pipeline with Caching
         val cacheDataSourceFactory = MusicCache.createCacheDataSourceFactory(this)
