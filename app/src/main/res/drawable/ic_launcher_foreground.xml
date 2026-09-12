@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Centered within 66dp safe zone (21dp to 87dp) -->
+    <!-- Stylized neon 'X' soundwave audio pulse -->
+    <path
+        android:pathData="M34,42 L42,54 L34,66"
+        android:strokeWidth="4.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:startX="34"
+                android:startY="42"
+                android:endX="42"
+                android:endY="66"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#00E5FF" />
+                <item android:offset="1.0" android:color="#1ED760" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- Center Audio Equalizer bars -->
+    <path
+        android:pathData="M48,46 L48,62 M55,36 L55,72 M62,42 L62,66"
+        android:strokeWidth="4"
+        android:strokeLineCap="round">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:startX="48"
+                android:startY="36"
+                android:endX="62"
+                android:endY="72"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#00E5FF" />
+                <item android:offset="1.0" android:color="#1ED760" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- Right stylized chevron completing the energetic audio vibe -->
+    <path
+        android:pathData="M74,42 L66,54 L74,66"
+        android:strokeWidth="4.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:startX="66"
+                android:startY="42"
+                android:endX="74"
+                android:endY="66"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#1ED760" />
+                <item android:offset="1.0" android:color="#00E5FF" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- Glowing small accent dot -->
+    <path
+        android:pathData="M55,27m-2.5,0a2.5,2.5 0 1,1 5,0a2.5,2.5 0 1,1 -5,0"
+        android:fillColor="#1ED760" />
+</vector>

@@ -1,0 +1,6 @@
+{
+  "name": "Xtreme Player",
+  "description": "Modern online music streaming player with 320kbps playback, Spotify-inspired UI, search, playlists, and library.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
