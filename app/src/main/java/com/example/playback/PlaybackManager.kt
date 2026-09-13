@@ -4,12 +4,14 @@ import android.content.ComponentName
 import android.content.Context
 import android.net.Uri
 import android.os.Bundle
+import android.util.Log
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.example.data.model.MusicTrack
+import com.example.data.model.toMediaItem
 import com.example.service.MusicService
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
@@ -47,6 +49,7 @@ enum class RepeatMode {
 }
 
 class PlaybackManager(private val context: Context) {
+    private val TAG = "PlaybackManager"
 
     private val scope = CoroutineScope(Dispatchers.Main + Job())
     private var controllerFuture: ListenableFuture<MediaController>? = null
@@ -63,20 +66,31 @@ class PlaybackManager(private val context: Context) {
     }
 
     private fun initMediaController() {
-        val sessionToken = SessionToken(context, ComponentName(context, MusicService::class.java))
-        controllerFuture = MediaController.Builder(context, sessionToken).buildAsync()
-        controllerFuture?.addListener({
-            try {
-                controller = controllerFuture?.get()
-                setupPlayerListener()
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }, MoreExecutors.directExecutor())
+        try {
+            val sessionToken = SessionToken(context, ComponentName(context, MusicService::class.java))
+            controllerFuture = MediaController.Builder(context, sessionToken).buildAsync()
+            controllerFuture?.addListener({
+                try {
+                    controller = controllerFuture?.get()
+                    setupPlayerListener()
+                    Log.i(TAG, "MediaController initialized successfully")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to initialize MediaController: ${e.message}", e)
+                    _uiState.update { it.copy(errorMessage = "Player initialization failed") }
+                }
+            }, MoreExecutors.directExecutor())
+        } catch (e: Exception) {
+            Log.e(TAG, "Error setting up MediaController: ${e.message}", e)
+            _uiState.update { it.copy(errorMessage = "Failed to initialize player: ${e.message}") }
+        }
     }
 
     private fun setupPlayerListener() {
-        val player = controller ?: return
+        val player = controller
+        if (player == null) {
+            Log.e(TAG, "Cannot setup listener: player is null")
+            return
+        }
 
         player.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -86,6 +100,7 @@ class PlaybackManager(private val context: Context) {
                 } else {
                     stopProgressTicker()
                 }
+                Log.d(TAG, "Playing state changed: $isPlaying")
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
@@ -98,6 +113,7 @@ class PlaybackManager(private val context: Context) {
                         bufferedPositionMs = player.bufferedPosition.coerceAtLeast(0L)
                     )
                 }
+                Log.d(TAG, "Playback state changed: $playbackState, duration: $duration")
             }
 
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
@@ -124,6 +140,7 @@ class PlaybackManager(private val context: Context) {
                             isFavorite = matchedTrack.isLiked
                         )
                     }
+                    Log.i(TAG, "Media item transitioned to: ${matchedTrack.title}")
                 }
             }
 
@@ -136,11 +153,13 @@ class PlaybackManager(private val context: Context) {
             }
 
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                val errorMsg = "Audio playback error: ${error.message}"
+                Log.e(TAG, errorMsg, error)
                 _uiState.update {
                     it.copy(
                         isLoading = false,
                         isPlaying = false,
-                        errorMessage = "Audio playback error: ${error.message}"
+                        errorMessage = errorMsg
                     )
                 }
             }
@@ -163,181 +182,300 @@ class PlaybackManager(private val context: Context) {
     }
 
     private fun updateProgressValues() {
-        val player = controller ?: return
-        val pos = player.currentPosition.coerceAtLeast(0L)
-        val dur = if (player.duration > 0) player.duration else _uiState.value.durationMs
-        val buf = player.bufferedPosition.coerceAtLeast(0L)
-        _uiState.update {
-            it.copy(
-                currentPositionMs = pos,
-                durationMs = dur,
-                bufferedPositionMs = buf
-            )
+        val player = controller
+        if (player == null) {
+            Log.w(TAG, "Cannot update progress: player is null")
+            return
+        }
+
+        try {
+            val pos = player.currentPosition.coerceAtLeast(0L)
+            val dur = if (player.duration > 0) player.duration else _uiState.value.durationMs
+            val buf = player.bufferedPosition.coerceAtLeast(0L)
+            _uiState.update {
+                it.copy(
+                    currentPositionMs = pos,
+                    durationMs = dur,
+                    bufferedPositionMs = buf
+                )
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error updating progress values: ${e.message}", e)
         }
     }
 
     fun playTrack(track: MusicTrack, queue: List<MusicTrack> = listOf(track)) {
-        val player = controller ?: return
-        activeQueue = queue.toMutableList()
+        val player = controller
+        if (player == null) {
+            Log.e(TAG, "Cannot play track: player is null")
+            _uiState.update {
+                it.copy(
+                    isPlaying = false,
+                    errorMessage = "Player not initialized"
+                )
+            }
+            return
+        }
 
-        val mediaItems = queue.map { it.toMediaItem() }
-        val startIndex = queue.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
+        try {
+            activeQueue = queue.toMutableList()
 
-        player.setMediaItems(mediaItems, startIndex, 0L)
-        player.prepare()
-        player.play()
+            val mediaItems = queue.map { it.toMediaItem() }
+            val startIndex = queue.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
 
-        _uiState.update {
-            it.copy(
-                currentTrack = track,
-                queue = activeQueue,
-                currentIndex = startIndex,
-                isPlaying = true,
-                isLoading = true,
-                durationMs = track.durationMs,
-                currentPositionMs = 0L,
-                qualityBadge = track.qualityBadge,
-                isFavorite = track.isLiked,
-                errorMessage = null
-            )
+            player.setMediaItems(mediaItems, startIndex, 0L)
+            player.prepare()
+            player.play()
+
+            _uiState.update {
+                it.copy(
+                    currentTrack = track,
+                    queue = activeQueue,
+                    currentIndex = startIndex,
+                    isPlaying = true,
+                    isLoading = true,
+                    durationMs = track.durationMs,
+                    currentPositionMs = 0L,
+                    qualityBadge = track.qualityBadge,
+                    isFavorite = track.isLiked,
+                    errorMessage = null
+                )
+            }
+            Log.i(TAG, "Playing track: ${track.title}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error playing track: ${e.message}", e)
+            _uiState.update {
+                it.copy(
+                    isPlaying = false,
+                    errorMessage = "Failed to play track: ${e.message}"
+                )
+            }
         }
     }
 
     fun playPause() {
-        val player = controller ?: return
-        if (player.isPlaying) {
-            player.pause()
-        } else {
-            if (player.playbackState == Player.STATE_IDLE || player.playbackState == Player.STATE_ENDED) {
-                player.prepare()
+        val player = controller
+        if (player == null) {
+            Log.e(TAG, "Cannot toggle play/pause: player is null")
+            return
+        }
+
+        try {
+            if (player.isPlaying) {
+                player.pause()
+            } else {
+                if (player.playbackState == Player.STATE_IDLE || player.playbackState == Player.STATE_ENDED) {
+                    player.prepare()
+                }
+                player.play()
             }
-            player.play()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error toggling play/pause: ${e.message}", e)
         }
     }
 
     fun seekTo(positionMs: Long) {
-        val player = controller ?: return
-        player.seekTo(positionMs)
-        _uiState.update { it.copy(currentPositionMs = positionMs) }
+        val player = controller
+        if (player == null) {
+            Log.e(TAG, "Cannot seek: player is null")
+            return
+        }
+
+        try {
+            player.seekTo(positionMs)
+            _uiState.update { it.copy(currentPositionMs = positionMs) }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error seeking to $positionMs: ${e.message}", e)
+        }
     }
 
     fun skipNext() {
-        val player = controller ?: return
-        if (player.hasNextMediaItem()) {
-            player.seekToNextMediaItem()
-        } else if (activeQueue.isNotEmpty()) {
-            // Loop back to first if list has tracks
-            player.seekTo(0, 0L)
+        val player = controller
+        if (player == null) {
+            Log.e(TAG, "Cannot skip next: player is null")
+            return
+        }
+
+        try {
+            if (player.hasNextMediaItem()) {
+                player.seekToNextMediaItem()
+            } else if (activeQueue.isNotEmpty()) {
+                // Loop back to first if list has tracks
+                player.seekTo(0, 0L)
+            }
+            Log.d(TAG, "Skipped to next track")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error skipping next: ${e.message}", e)
         }
     }
 
     fun skipPrevious() {
-        val player = controller ?: return
-        if (player.currentPosition > 3000) {
-            player.seekTo(0)
-        } else if (player.hasPreviousMediaItem()) {
-            player.seekToPreviousMediaItem()
-        } else {
-            player.seekTo(0)
+        val player = controller
+        if (player == null) {
+            Log.e(TAG, "Cannot skip previous: player is null")
+            return
+        }
+
+        try {
+            if (player.currentPosition > 3000) {
+                player.seekTo(0)
+            } else if (player.hasPreviousMediaItem()) {
+                player.seekToPreviousMediaItem()
+            } else {
+                player.seekTo(0)
+            }
+            Log.d(TAG, "Skipped to previous track")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error skipping previous: ${e.message}", e)
         }
     }
 
     fun toggleShuffle() {
-        val player = controller ?: return
-        val newShuffle = !_uiState.value.isShuffle
-        player.shuffleModeEnabled = newShuffle
-        _uiState.update { it.copy(isShuffle = newShuffle) }
+        val player = controller
+        if (player == null) {
+            Log.e(TAG, "Cannot toggle shuffle: player is null")
+            return
+        }
+
+        try {
+            val newShuffle = !_uiState.value.isShuffle
+            player.shuffleModeEnabled = newShuffle
+            _uiState.update { it.copy(isShuffle = newShuffle) }
+            Log.d(TAG, "Shuffle toggled: $newShuffle")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error toggling shuffle: ${e.message}", e)
+        }
     }
 
     fun toggleRepeat() {
-        val player = controller ?: return
-        val current = _uiState.value.repeatMode
-        val next = when (current) {
-            RepeatMode.OFF -> RepeatMode.ALL
-            RepeatMode.ALL -> RepeatMode.ONE
-            RepeatMode.ONE -> RepeatMode.OFF
+        val player = controller
+        if (player == null) {
+            Log.e(TAG, "Cannot toggle repeat: player is null")
+            return
         }
-        player.repeatMode = when (next) {
-            RepeatMode.OFF -> Player.REPEAT_MODE_OFF
-            RepeatMode.ALL -> Player.REPEAT_MODE_ALL
-            RepeatMode.ONE -> Player.REPEAT_MODE_ONE
+
+        try {
+            val current = _uiState.value.repeatMode
+            val next = when (current) {
+                RepeatMode.OFF -> RepeatMode.ALL
+                RepeatMode.ALL -> RepeatMode.ONE
+                RepeatMode.ONE -> RepeatMode.OFF
+            }
+            player.repeatMode = when (next) {
+                RepeatMode.OFF -> Player.REPEAT_MODE_OFF
+                RepeatMode.ALL -> Player.REPEAT_MODE_ALL
+                RepeatMode.ONE -> Player.REPEAT_MODE_ONE
+            }
+            _uiState.update { it.copy(repeatMode = next) }
+            Log.d(TAG, "Repeat mode changed to: $next")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error toggling repeat: ${e.message}", e)
         }
-        _uiState.update { it.copy(repeatMode = next) }
     }
 
     fun updateFavoriteStatus(trackId: String, isLiked: Boolean) {
-        val current = _uiState.value.currentTrack
-        if (current?.id == trackId) {
-            _uiState.update {
-                it.copy(
-                    currentTrack = current.copy(isLiked = isLiked),
-                    isFavorite = isLiked
-                )
+        try {
+            val current = _uiState.value.currentTrack
+            if (current?.id == trackId) {
+                _uiState.update {
+                    it.copy(
+                        currentTrack = current.copy(isLiked = isLiked),
+                        isFavorite = isLiked
+                    )
+                }
             }
-        }
-        // Also update inside activeQueue
-        val idx = activeQueue.indexOfFirst { it.id == trackId }
-        if (idx >= 0) {
-            activeQueue[idx] = activeQueue[idx].copy(isLiked = isLiked)
-            _uiState.update { it.copy(queue = activeQueue.toList()) }
+            // Also update inside activeQueue
+            val idx = activeQueue.indexOfFirst { it.id == trackId }
+            if (idx >= 0) {
+                activeQueue[idx] = activeQueue[idx].copy(isLiked = isLiked)
+                _uiState.update { it.copy(queue = activeQueue.toList()) }
+            }
+            Log.d(TAG, "Updated favorite status for track $trackId: $isLiked")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error updating favorite status: ${e.message}", e)
         }
     }
 
     fun reorderQueue(fromIndex: Int, toIndex: Int) {
-        if (fromIndex in activeQueue.indices && toIndex in activeQueue.indices) {
-            val item = activeQueue.removeAt(fromIndex)
-            activeQueue.add(toIndex, item)
-            controller?.moveMediaItem(fromIndex, toIndex)
-            _uiState.update { it.copy(queue = activeQueue.toList()) }
+        try {
+            if (fromIndex in activeQueue.indices && toIndex in activeQueue.indices) {
+                val item = activeQueue.removeAt(fromIndex)
+                activeQueue.add(toIndex, item)
+                controller?.moveMediaItem(fromIndex, toIndex)
+                _uiState.update { it.copy(queue = activeQueue.toList()) }
+                Log.d(TAG, "Reordered queue: moved item from $fromIndex to $toIndex")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error reordering queue: ${e.message}", e)
         }
     }
 
     fun setEqualizerPreset(preset: String) {
-        _uiState.update { it.copy(equalizerPreset = preset) }
+        try {
+            _uiState.update { it.copy(equalizerPreset = preset) }
+            Log.d(TAG, "Equalizer preset changed to: $preset")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error setting equalizer preset: ${e.message}", e)
+        }
     }
 
     fun setAudioQuality(quality: AudioQuality) {
-        _uiState.update {
-            it.copy(
-                selectedQuality = quality,
-                qualityBadge = quality.badge
-            )
+        val player = controller
+        if (player == null) {
+            Log.e(TAG, "Cannot set audio quality: player is null")
+            return
         }
-        val currentTrack = _uiState.value.currentTrack ?: return
-        val player = controller ?: return
-        if (currentTrack.audioUrl.contains("saavncdn.com")) {
-            val updatedUrl = com.example.data.remote.OnlineMusicApiService.formatUrlForQuality(
-                currentTrack.audioUrl,
-                quality.id
-            )
-            val updatedTrack = currentTrack.copy(
-                audioUrl = updatedUrl,
-                bitrateKbps = quality.kbps,
-                qualityBadge = quality.badge
-            )
-            val currentPos = player.currentPosition
-            val wasPlaying = player.isPlaying
-            val currentIdx = player.currentMediaItemIndex
-            val mediaItem = updatedTrack.toMediaItem()
-            if (currentIdx in 0 until player.mediaItemCount) {
-                player.replaceMediaItem(currentIdx, mediaItem)
-                player.seekTo(currentIdx, currentPos)
-                if (wasPlaying) player.play()
-            }
+
+        try {
             _uiState.update {
                 it.copy(
-                    currentTrack = updatedTrack,
+                    selectedQuality = quality,
                     qualityBadge = quality.badge
                 )
             }
+            val currentTrack = _uiState.value.currentTrack ?: return
+            if (currentTrack.audioUrl.contains("saavncdn.com")) {
+                val updatedUrl = com.example.data.remote.OnlineMusicApiService.formatUrlForQuality(
+                    currentTrack.audioUrl,
+                    quality.id
+                )
+                val updatedTrack = currentTrack.copy(
+                    audioUrl = updatedUrl,
+                    bitrateKbps = quality.kbps,
+                    qualityBadge = quality.badge
+                )
+                val currentPos = player.currentPosition
+                val wasPlaying = player.isPlaying
+                val currentIdx = player.currentMediaItemIndex
+                val mediaItem = updatedTrack.toMediaItem()
+                if (currentIdx in 0 until player.mediaItemCount) {
+                    player.replaceMediaItem(currentIdx, mediaItem)
+                    player.seekTo(currentIdx, currentPos)
+                    if (wasPlaying) player.play()
+                }
+                _uiState.update {
+                    it.copy(
+                        currentTrack = updatedTrack,
+                        qualityBadge = quality.badge
+                    )
+                }
+                Log.i(TAG, "Audio quality changed to: ${quality.id}")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error setting audio quality: ${e.message}", e)
         }
     }
 
     fun release() {
-        progressTickerJob?.cancel()
-        controller?.release()
-        controllerFuture?.let { MediaController.releaseFuture(it) }
-        controller = null
+        try {
+            progressTickerJob?.cancel()
+            controller?.release()
+            controllerFuture?.let { MediaController.releaseFuture(it) }
+            controller = null
+            Log.i(TAG, "PlaybackManager released successfully")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error releasing resources: ${e.message}", e)
+        }
     }
 
     private fun MusicTrack.toMediaItem(): MediaItem {
