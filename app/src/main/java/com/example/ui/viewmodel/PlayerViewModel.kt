@@ -67,31 +67,22 @@ class PlayerViewModel(
         _isDarkMode.value = !_isDarkMode.value
     }
 
-    private val _selectedAiMoodId = MutableStateFlow("auto")
-    val selectedAiMoodId: StateFlow<String> = _selectedAiMoodId.asStateFlow()
-
-    fun selectAiMood(moodId: String) {
-        _selectedAiMoodId.value = moodId
-    }
-
-    val aiMoodProfile: StateFlow<com.example.ui.ai.AiMoodProfile> = kotlinx.coroutines.flow.combine(
-        _selectedAiMoodId,
+    val homeShelves: StateFlow<List<com.example.ui.ai.HomeShelf>> = kotlinx.coroutines.flow.combine(
         playbackManager.uiState,
         recentlyPlayed,
         favoriteTracks,
         _catalogTracks
-    ) { moodId, uiState, recent, favs, catalog ->
-        com.example.ui.ai.AiMoodEngine.evaluateMood(
-            selectedMoodId = moodId,
+    ) { uiState, recent, favs, catalog ->
+        com.example.ui.ai.AiMoodEngine.generatePersonalizedShelves(
             lastPlayedTrack = uiState.currentTrack,
             recentlyPlayed = recent,
             favoriteTracks = favs,
-            allTracks = catalog
+            catalogTracks = catalog
         )
     }.stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5000L),
-        com.example.ui.ai.AiMoodEngine.evaluateMood("auto", null, emptyList(), emptyList(), emptyList())
+        emptyList()
     )
 
     init {

@@ -103,6 +103,7 @@ import coil.request.SuccessResult
 import com.example.data.model.MusicTrack
 import com.example.playback.PlayerUiState
 import com.example.playback.RepeatMode
+import com.example.ui.theme.LocalAppColors
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
@@ -133,6 +134,8 @@ fun ExpandedPlayerScreen(
     val track = uiState.currentTrack ?: return
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
+    val appColors = LocalAppColors.current
+    val isDark = appColors.isDark
 
     var isMenuOpen by remember { mutableStateOf(false) }
     var isUserScrubbing by remember { mutableStateOf(false) }
@@ -220,7 +223,7 @@ fun ExpandedPlayerScreen(
                 onClick = { /* consume background clicks to prevent touch pass-through */ }
             )
             .testTag("expanded_player_screen"),
-        color = Color(0xFF020610) // 100% OPAQUE base - ZERO reflection, ZERO transparency
+        color = if (isDark) Color(0xFF020610) else Color(0xFFFFFFFF) // 100% OPAQUE base - ZERO reflection, ZERO transparency
     ) {
         Box(
             modifier = Modifier.fillMaxSize(),
@@ -229,7 +232,8 @@ fun ExpandedPlayerScreen(
             // Animated Bokeh Mode Background Layer
             PlayerBokehBackground(
                 dominantColor = animatedDominantColor,
-                accentColor = animatedAccentColor
+                accentColor = animatedAccentColor,
+                isDark = isDark
             )
 
             Column(
@@ -293,7 +297,9 @@ fun ExpandedPlayerScreen(
                     DropdownMenu(
                         expanded = isMenuOpen,
                         onDismissRequest = { isMenuOpen = false },
-                        modifier = Modifier.background(Color(0xFF0F2238))
+                        modifier = Modifier
+                            .background(if (isDark) Color(0xFF0F2238) else Color.White)
+                            .border(BorderStroke(1.dp, if (isDark) Color(0xFF1E3A5F) else Color(0xFFDBEAFE)), RoundedCornerShape(8.dp))
                     ) {
                         DropdownMenuItem(
                             text = { Text("Add to Playlist", color = TextPrimary) },
@@ -416,15 +422,23 @@ fun ExpandedPlayerScreen(
                                 .graphicsLayer { rotationY = 180f }
                                 .background(
                                     Brush.verticalGradient(
-                                        listOf(
-                                            animatedDominantColor.copy(alpha = 0.95f),
-                                            Color(0xFF0D1C2E),
-                                            Color(0xFF071220)
-                                        )
+                                        if (isDark) {
+                                            listOf(
+                                                animatedDominantColor.copy(alpha = 0.95f),
+                                                Color(0xFF0D1C2E),
+                                                Color(0xFF071220)
+                                            )
+                                        } else {
+                                            listOf(
+                                                Color.White,
+                                                Color(0xFFF0F6FF),
+                                                Color(0xFFE2EDFB)
+                                            )
+                                        }
                                     )
                                 )
                                 .border(
-                                    BorderStroke(1.5.dp, animatedAccentColor.copy(alpha = 0.65f)),
+                                    BorderStroke(1.5.dp, if (isDark) animatedAccentColor.copy(alpha = 0.65f) else Color(0xFF93C5FD)),
                                     RoundedCornerShape(24.dp)
                                 )
                                 .padding(20.dp),
@@ -572,9 +586,9 @@ fun ExpandedPlayerScreen(
                         isUserScrubbing = false
                     },
                     colors = SliderDefaults.colors(
-                        thumbColor = XtremeLightBlue,
-                        activeTrackColor = XtremeLightBlue,
-                        inactiveTrackColor = Color(0xFF1C3454)
+                        thumbColor = if (isDark) XtremeLightBlue else Color(0xFF0284C7),
+                        activeTrackColor = if (isDark) XtremeLightBlue else Color(0xFF0284C7),
+                        inactiveTrackColor = if (isDark) Color(0xFF1C3454) else Color(0xFFDBEAFE)
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
@@ -599,8 +613,8 @@ fun ExpandedPlayerScreen(
 
                     // High Quality Audio Badge
                     Surface(
-                        color = Color(0xFF10233B),
-                        border = BorderStroke(1.dp, Color(0xFF1F416A)),
+                        color = if (isDark) Color(0xFF10233B) else Color(0xFFEFF6FF),
+                        border = BorderStroke(1.dp, if (isDark) Color(0xFF1F416A) else Color(0xFFBFDBFE)),
                         shape = RoundedCornerShape(6.dp),
                         modifier = Modifier.padding(horizontal = 4.dp)
                     ) {
@@ -612,13 +626,13 @@ fun ExpandedPlayerScreen(
                                 modifier = Modifier
                                     .size(6.dp)
                                     .clip(CircleShape)
-                                    .background(XtremeLightBlue)
+                                    .background(if (isDark) XtremeLightBlue else Color(0xFF0284C7))
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
                                 text = uiState.qualityBadge.uppercase(),
                                 style = MaterialTheme.typography.labelSmall.copy(
-                                    color = XtremeLightBlue,
+                                    color = if (isDark) XtremeLightBlue else Color(0xFF0284C7),
                                     fontWeight = FontWeight.ExtraBold,
                                     fontSize = 10.sp,
                                     letterSpacing = 0.5.sp
@@ -650,7 +664,7 @@ fun ExpandedPlayerScreen(
                     Icon(
                         imageVector = Icons.Default.Shuffle,
                         contentDescription = "Shuffle",
-                        tint = if (uiState.isShuffle) XtremeLightBlue else TextMuted,
+                        tint = if (uiState.isShuffle) (if (isDark) XtremeLightBlue else Color(0xFF0284C7)) else TextMuted,
                         modifier = Modifier.size(24.dp)
                     )
                 }
@@ -697,13 +711,16 @@ fun ExpandedPlayerScreen(
                                     ambientColor = Color.Black
                                 )
                                 .clip(CircleShape)
-                                .background(XtremeGradients.ButtonGradient)
+                                .background(
+                                    if (isDark) XtremeGradients.ButtonGradient
+                                    else Brush.linearGradient(listOf(Color(0xFF0284C7), Color(0xFF2563EB)))
+                                )
                                 .testTag("expanded_player_play_pause")
                         ) {
                             Icon(
                                 imageVector = if (uiState.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                                 contentDescription = if (uiState.isPlaying) "Pause" else "Play",
-                                tint = Color(0xFF031428),
+                                tint = if (isDark) Color(0xFF031428) else Color.White,
                                 modifier = Modifier.size(36.dp)
                             )
                         }
@@ -734,7 +751,7 @@ fun ExpandedPlayerScreen(
                     }
                     val tint = when (uiState.repeatMode) {
                         RepeatMode.OFF -> TextMuted
-                        else -> XtremeLightBlue
+                        else -> if (isDark) XtremeLightBlue else Color(0xFF0284C7)
                     }
                     Icon(
                         imageVector = icon,
@@ -760,20 +777,21 @@ fun ExpandedPlayerScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
                         .clip(RoundedCornerShape(12.dp))
-                        .background(Color(0xFF181B22))
+                        .background(if (isDark) Color(0xFF181B22) else Color(0xFFEFF6FF))
+                        .border(BorderStroke(1.dp, if (isDark) Color(0xFF263238) else Color(0xFFDBEAFE)), RoundedCornerShape(12.dp))
                         .padding(horizontal = 12.dp, vertical = 8.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Speaker,
                         contentDescription = null,
-                        tint = XtremeCyan,
+                        tint = if (isDark) XtremeCyan else Color(0xFF0284C7),
                         modifier = Modifier.size(16.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = "Lossless Output • 24-bit/48kHz",
                         style = MaterialTheme.typography.bodySmall.copy(
-                            color = TextSecondary,
+                            color = if (isDark) TextSecondary else Color(0xFF1E40AF),
                             fontSize = 11.sp
                         )
                     )
@@ -787,7 +805,7 @@ fun ExpandedPlayerScreen(
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.QueueMusic,
                         contentDescription = "Up-Next Queue",
-                        tint = XtremeLightBlue,
+                        tint = if (isDark) XtremeLightBlue else Color(0xFF0284C7),
                         modifier = Modifier.size(26.dp)
                     )
                 }
@@ -805,7 +823,7 @@ private fun formatTime(timeMs: Long): String {
 }
 
 @Composable
-private fun CreditDetailRow(label: String, value: String) {
+private fun CreditDetailRow(label: String, value: String, isDark: Boolean = true) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -816,13 +834,13 @@ private fun CreditDetailRow(label: String, value: String) {
         Text(
             text = label,
             fontSize = 11.sp,
-            color = TextMuted,
+            color = if (isDark) TextMuted else Color(0xFF64748B),
             fontWeight = FontWeight.Medium
         )
         Text(
             text = value,
             fontSize = 12.sp,
-            color = TextPrimary,
+            color = if (isDark) TextPrimary else Color(0xFF0F172A),
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -838,6 +856,7 @@ private fun CreditDetailRow(label: String, value: String) {
 private fun PlayerBokehBackground(
     dominantColor: Color,
     accentColor: Color,
+    isDark: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "bokeh_transition")
@@ -877,7 +896,10 @@ private fun PlayerBokehBackground(
         val h = size.height
 
         // 1. Solid opaque base fill: guarantees no bleed-through from background screen
-        drawRect(color = Color(0xFF020610))
+        drawRect(color = if (isDark) Color(0xFF020610) else Color(0xFFF8FAFC))
+
+        val dominantAlpha = if (isDark) 0.85f else 0.28f
+        val accentAlpha = if (isDark) 0.75f else 0.24f
 
         // 2. Large deep bokeh orb (Dominant album color) floating upper-left
         val orb1Center = Offset(
@@ -888,8 +910,8 @@ private fun PlayerBokehBackground(
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(
-                    dominantColor.copy(alpha = 0.85f * pulseAnim),
-                    dominantColor.copy(alpha = 0.40f * pulseAnim),
+                    dominantColor.copy(alpha = dominantAlpha * pulseAnim),
+                    dominantColor.copy(alpha = (dominantAlpha * 0.45f) * pulseAnim),
                     Color.Transparent
                 ),
                 center = orb1Center,
@@ -908,8 +930,8 @@ private fun PlayerBokehBackground(
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(
-                    accentColor.copy(alpha = 0.75f * pulseAnim),
-                    accentColor.copy(alpha = 0.30f),
+                    accentColor.copy(alpha = accentAlpha * pulseAnim),
+                    accentColor.copy(alpha = accentAlpha * 0.40f),
                     Color.Transparent
                 ),
                 center = orb2Center,
@@ -927,11 +949,19 @@ private fun PlayerBokehBackground(
         val orb3Radius = w * 0.72f
         drawCircle(
             brush = Brush.radialGradient(
-                colors = listOf(
-                    Color(0xFF0284C7).copy(alpha = 0.60f * pulseAnim),
-                    dominantColor.copy(alpha = 0.25f),
-                    Color.Transparent
-                ),
+                colors = if (isDark) {
+                    listOf(
+                        Color(0xFF0284C7).copy(alpha = 0.60f * pulseAnim),
+                        dominantColor.copy(alpha = 0.25f),
+                        Color.Transparent
+                    )
+                } else {
+                    listOf(
+                        Color(0xFF38BDF8).copy(alpha = 0.25f * pulseAnim),
+                        Color(0xFF60A5FA).copy(alpha = 0.10f),
+                        Color.Transparent
+                    )
+                },
                 center = orb3Center,
                 radius = orb3Radius
             ),
@@ -945,7 +975,10 @@ private fun PlayerBokehBackground(
         val discACenter = Offset(w * 0.82f, h * 0.18f + 25f * (floatAnim1 - 0.5f))
         drawCircle(
             brush = Brush.radialGradient(
-                colors = listOf(accentColor.copy(alpha = 0.48f * pulseAnim), Color.Transparent),
+                colors = listOf(
+                    accentColor.copy(alpha = (if (isDark) 0.48f else 0.18f) * pulseAnim),
+                    Color.Transparent
+                ),
                 center = discACenter,
                 radius = discARadius
             ),
@@ -958,7 +991,10 @@ private fun PlayerBokehBackground(
         val discBCenter = Offset(w * 0.12f, h * 0.50f - 30f * (floatAnim2 - 0.5f))
         drawCircle(
             brush = Brush.radialGradient(
-                colors = listOf(dominantColor.copy(alpha = 0.52f), Color.Transparent),
+                colors = listOf(
+                    dominantColor.copy(alpha = if (isDark) 0.52f else 0.20f),
+                    Color.Transparent
+                ),
                 center = discBCenter,
                 radius = discBRadius
             ),
@@ -971,7 +1007,10 @@ private fun PlayerBokehBackground(
         val discCCenter = Offset(w * 0.84f, h * 0.80f + 20f * (floatAnim1 - 0.5f))
         drawCircle(
             brush = Brush.radialGradient(
-                colors = listOf(Color(0xFF00E5FF).copy(alpha = 0.40f * pulseAnim), Color.Transparent),
+                colors = listOf(
+                    (if (isDark) Color(0xFF00E5FF) else Color(0xFF0284C7)).copy(alpha = (if (isDark) 0.40f else 0.15f) * pulseAnim),
+                    Color.Transparent
+                ),
                 center = discCCenter,
                 radius = discCRadius
             ),
@@ -984,7 +1023,10 @@ private fun PlayerBokehBackground(
         val discDCenter = Offset(w * 0.50f, h * 0.36f)
         drawCircle(
             brush = Brush.radialGradient(
-                colors = listOf(Color.White.copy(alpha = 0.22f), Color.Transparent),
+                colors = listOf(
+                    (if (isDark) Color.White else Color(0xFF0284C7)).copy(alpha = if (isDark) 0.22f else 0.08f),
+                    Color.Transparent
+                ),
                 center = discDCenter,
                 radius = discDRadius
             ),
@@ -993,15 +1035,21 @@ private fun PlayerBokehBackground(
         )
 
         // 6. Deep cinematographic vignette overlay: ensures text and controls have pristine contrast
-        drawRect(
-            brush = Brush.verticalGradient(
-                colors = listOf(
-                    Color(0xFF020610).copy(alpha = 0.40f),
-                    Color.Transparent,
-                    Color(0xFF020610).copy(alpha = 0.65f),
-                    Color(0xFF020610).copy(alpha = 0.95f)
-                )
+        val vignetteColors = if (isDark) {
+            listOf(
+                Color(0xFF020610).copy(alpha = 0.40f),
+                Color.Transparent,
+                Color(0xFF020610).copy(alpha = 0.65f),
+                Color(0xFF020610).copy(alpha = 0.95f)
             )
-        )
+        } else {
+            listOf(
+                Color.White.copy(alpha = 0.35f),
+                Color.Transparent,
+                Color.White.copy(alpha = 0.45f),
+                Color.White.copy(alpha = 0.90f)
+            )
+        }
+        drawRect(brush = Brush.verticalGradient(colors = vignetteColors))
     }
 }

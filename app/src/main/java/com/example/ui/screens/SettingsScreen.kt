@@ -576,35 +576,37 @@ fun SettingsScreen(
                                 color = TextMuted
                             )
 
-                            Row(
+                            Column(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                // Night / Dark Mode Button
+                                // Night / Dark Mode Row
                                 Surface(
                                     onClick = { if (!isDarkMode) onToggleDarkMode() },
                                     shape = RoundedCornerShape(14.dp),
-                                    color = if (isDarkMode) XtremeLightBlue.copy(alpha = 0.15f) else Color.Transparent,
+                                    color = if (isDarkMode) (if (isDarkMode) XtremeLightBlue.copy(alpha = 0.15f) else Color(0xFF0284C7).copy(alpha = 0.10f)) else Color.Transparent,
                                     border = BorderStroke(
                                         width = if (isDarkMode) 2.dp else 1.dp,
                                         color = if (isDarkMode) XtremeLightBlue else XtremeBorder
                                     ),
                                     modifier = Modifier
-                                        .weight(1f)
+                                        .fillMaxWidth()
                                         .testTag("theme_button_dark")
                                 ) {
-                                    Column(
-                                        modifier = Modifier.padding(14.dp),
-                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(14.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
                                     ) {
                                         Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.weight(1f)
                                         ) {
                                             Box(
                                                 modifier = Modifier
-                                                    .size(36.dp)
+                                                    .size(42.dp)
                                                     .clip(CircleShape)
                                                     .background(
                                                         Brush.linearGradient(
@@ -618,58 +620,63 @@ fun SettingsScreen(
                                                     imageVector = Icons.Default.DarkMode,
                                                     contentDescription = null,
                                                     tint = if (isDarkMode) XtremeLightBlue else Color(0xFF90A4AE),
-                                                    modifier = Modifier.size(18.dp)
+                                                    modifier = Modifier.size(22.dp)
                                                 )
                                             }
 
-                                            Icon(
-                                                imageVector = if (isDarkMode) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
-                                                contentDescription = null,
-                                                tint = if (isDarkMode) XtremeLightBlue else Color(0xFF4A6572),
-                                                modifier = Modifier.size(20.dp)
-                                            )
+                                            Spacer(modifier = Modifier.width(14.dp))
+
+                                            Column {
+                                                Text(
+                                                    text = "Night Mode",
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 15.sp,
+                                                    color = if (isDarkMode) XtremeLightBlue else TextPrimary
+                                                )
+                                                Text(
+                                                    text = "Black & Night Blue gradient canvas",
+                                                    fontSize = 12.sp,
+                                                    color = TextMuted
+                                                )
+                                            }
                                         }
 
-                                        Text(
-                                            text = "Night Mode",
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 14.sp,
-                                            color = if (isDarkMode) XtremeLightBlue else TextPrimary
-                                        )
-                                        Text(
-                                            text = "Black & Night Blue gradient canvas",
-                                            fontSize = 11.sp,
-                                            color = TextMuted,
-                                            lineHeight = 15.sp
+                                        Icon(
+                                            imageVector = if (isDarkMode) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                                            contentDescription = null,
+                                            tint = if (isDarkMode) XtremeLightBlue else Color(0xFF4A6572),
+                                            modifier = Modifier.size(24.dp)
                                         )
                                     }
                                 }
 
-                                // Light Mode Button
+                                // Light Mode Row
                                 Surface(
                                     onClick = { if (isDarkMode) onToggleDarkMode() },
                                     shape = RoundedCornerShape(14.dp),
-                                    color = if (!isDarkMode) XtremeLightBlue.copy(alpha = 0.15f) else Color.Transparent,
+                                    color = if (!isDarkMode) (if (isDarkMode) XtremeLightBlue.copy(alpha = 0.15f) else Color(0xFF0284C7).copy(alpha = 0.12f)) else Color.Transparent,
                                     border = BorderStroke(
                                         width = if (!isDarkMode) 2.dp else 1.dp,
-                                        color = if (!isDarkMode) XtremeLightBlue else XtremeBorder
+                                        color = if (!isDarkMode) (if (isDarkMode) XtremeLightBlue else Color(0xFF0284C7)) else XtremeBorder
                                     ),
                                     modifier = Modifier
-                                        .weight(1f)
+                                        .fillMaxWidth()
                                         .testTag("theme_button_light")
                                 ) {
-                                    Column(
-                                        modifier = Modifier.padding(14.dp),
-                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(14.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
                                     ) {
                                         Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.weight(1f)
                                         ) {
                                             Box(
                                                 modifier = Modifier
-                                                    .size(36.dp)
+                                                    .size(42.dp)
                                                     .clip(CircleShape)
                                                     .background(
                                                         Brush.linearGradient(
@@ -683,29 +690,32 @@ fun SettingsScreen(
                                                     imageVector = Icons.Default.LightMode,
                                                     contentDescription = null,
                                                     tint = if (!isDarkMode) Color(0xFF0066CC) else Color(0xFF90A4AE),
-                                                    modifier = Modifier.size(18.dp)
+                                                    modifier = Modifier.size(22.dp)
                                                 )
                                             }
 
-                                            Icon(
-                                                imageVector = if (!isDarkMode) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
-                                                contentDescription = null,
-                                                tint = if (!isDarkMode) Color(0xFF0066CC) else Color(0xFF4A6572),
-                                                modifier = Modifier.size(20.dp)
-                                            )
+                                            Spacer(modifier = Modifier.width(14.dp))
+
+                                            Column {
+                                                Text(
+                                                    text = "Light Mode",
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 15.sp,
+                                                    color = if (!isDarkMode) Color(0xFF0066CC) else TextPrimary
+                                                )
+                                                Text(
+                                                    text = "Crisp white & royal blue daylight palette",
+                                                    fontSize = 12.sp,
+                                                    color = TextMuted
+                                                )
+                                            }
                                         }
 
-                                        Text(
-                                            text = "Light Mode",
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 14.sp,
-                                            color = if (!isDarkMode) Color(0xFF0066CC) else TextPrimary
-                                        )
-                                        Text(
-                                            text = "Crisp white & royal blue daylight palette",
-                                            fontSize = 11.sp,
-                                            color = TextMuted,
-                                            lineHeight = 15.sp
+                                        Icon(
+                                            imageVector = if (!isDarkMode) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                                            contentDescription = null,
+                                            tint = if (!isDarkMode) Color(0xFF0066CC) else Color(0xFF4A6572),
+                                            modifier = Modifier.size(24.dp)
                                         )
                                     }
                                 }

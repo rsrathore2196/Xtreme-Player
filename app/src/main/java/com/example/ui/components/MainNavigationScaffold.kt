@@ -94,7 +94,7 @@ fun MainNavigationScaffold(
     val selectedPlaylistWithTracks by viewModel.selectedPlaylistTracks.collectAsState()
     val effectsState by viewModel.effectsState.collectAsState()
     val isDarkMode by viewModel.isDarkMode.collectAsState()
-    val aiMoodProfile by viewModel.aiMoodProfile.collectAsState()
+    val homeShelves by viewModel.homeShelves.collectAsState()
 
     var selectedTabIndex by remember { mutableIntStateOf(0) }
     var isPlayerExpanded by remember { mutableStateOf(false) }
@@ -336,8 +336,7 @@ fun MainNavigationScaffold(
                                 catalogTracks = catalogTracks,
                                 recentlyPlayed = recentlyPlayed,
                                 playerUiState = playerUiState,
-                                aiMoodProfile = aiMoodProfile,
-                                onSelectAiMood = { moodId -> viewModel.selectAiMood(moodId) },
+                                shelves = homeShelves,
                                 onTrackClick = { track, queue -> viewModel.playTrack(track, queue) },
                                 onToggleFavorite = { track -> viewModel.toggleLike(track) }
                             )
