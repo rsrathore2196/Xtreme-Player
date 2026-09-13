@@ -14,7 +14,7 @@ Stream millions of online tracks in studio-grade **320 kbps high-res audio**, ma
 - **Background Playback & Media Controls:** Persistent Android 13+ lock screen and notification controls powered by AndroidX Media3.
 
 ### 🎨 Clean & Modern Material UI
-- **Material 3 Design:** Sleek, minimalistic aesthetic with dynamic AMOLED dark mode and fluid animations.
+- **Material 3 Design:** Sleek, minimalistic aesthetic with dynamic AMOLED dark mode or Material light mode and fluid animations.
 - **Modern Full-Screen Player:** Ambient artwork glow, dynamic color palette matching, real-time waveform scrubbing, and tactile haptic controls.
 - **Persistent Mini-Player:** Floating mini-player with swipe-to-skip gestures and seamless bottom-sheet expansion.
 
