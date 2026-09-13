@@ -9,7 +9,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [TrackEntity::class, PlaylistEntity::class, PlaylistTrackCrossRef::class],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class MusicDatabase : RoomDatabase() {
@@ -19,15 +19,26 @@ abstract class MusicDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: MusicDatabase? = null
 
-        /**
-         * Migration from version 1 to version 2.
-         * This prevents destructive deletion of user data.
-         */
         private val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(database: SupportSQLiteDatabase) {
-                // Add any schema changes here without deleting data
-                // Example: Add new columns with default values
-                // database.execSQL("ALTER TABLE tracks ADD COLUMN language TEXT DEFAULT 'Unknown'")
+                // Version 1 to 2 transition
+            }
+        }
+
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                try {
+                    database.execSQL("ALTER TABLE tracks ADD COLUMN singers TEXT NOT NULL DEFAULT ''")
+                } catch (_: Exception) {}
+                try {
+                    database.execSQL("ALTER TABLE tracks ADD COLUMN writer TEXT NOT NULL DEFAULT ''")
+                } catch (_: Exception) {}
+                try {
+                    database.execSQL("ALTER TABLE tracks ADD COLUMN language TEXT NOT NULL DEFAULT ''")
+                } catch (_: Exception) {}
+                try {
+                    database.execSQL("ALTER TABLE tracks ADD COLUMN year TEXT NOT NULL DEFAULT ''")
+                } catch (_: Exception) {}
             }
         }
 
@@ -38,10 +49,8 @@ abstract class MusicDatabase : RoomDatabase() {
                     MusicDatabase::class.java,
                     "xtreme_music_db"
                 )
-                    .addMigrations(MIGRATION_1_2)
-                    // Only enable destructive migration during development
-                    // Remove this line before production release
-                    .fallbackToDestructiveMigration()
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .fallbackToDestructiveMigrationOnDowngrade()
                     .build()
                 INSTANCE = instance
                 instance

@@ -201,6 +201,17 @@ object OnlineMusicApiService {
 
                 if (audioUrl.isNullOrBlank()) continue
 
+                val rawSingers = item.optString("singers", "").ifBlank { cleanArtist }
+                val cleanSingers = cleanHtml(rawSingers)
+
+                val rawWriter = item.optString("music", "").ifBlank {
+                    item.optString("starring", "").ifBlank { "Original Composer" }
+                }
+                val cleanWriter = cleanHtml(rawWriter)
+
+                val rawLanguage = item.optString("language", "Hindi").replaceFirstChar { it.uppercase() }
+                val rawYear = item.optString("year", "")
+
                 val durationSec = item.optString("duration", "210").toLongOrNull() ?: 210L
                 val durationMs = durationSec * 1000L
 
@@ -219,7 +230,11 @@ object OnlineMusicApiService {
                         genre = fallbackGenre,
                         bitrateKbps = if (is320k) 320 else 160,
                         qualityBadge = badge,
-                        isLiked = false
+                        isLiked = false,
+                        singers = cleanSingers,
+                        writer = cleanWriter,
+                        language = rawLanguage,
+                        year = rawYear
                     )
                 )
             }

@@ -23,7 +23,11 @@ data class TrackEntity(
     val isLiked: Boolean = false,
     val isCached: Boolean = false,
     val lastPlayedAt: Long = 0L,
-    val addedAt: Long = System.currentTimeMillis()
+    val addedAt: Long = System.currentTimeMillis(),
+    val singers: String = "",
+    val writer: String = "",
+    val language: String = "",
+    val year: String = ""
 ) {
     fun toMusicTrack(): MusicTrack = MusicTrack(
         id = id,
@@ -37,7 +41,11 @@ data class TrackEntity(
         qualityBadge = qualityBadge,
         genre = genre,
         isLiked = isLiked,
-        isCached = isCached
+        isCached = isCached,
+        singers = singers,
+        writer = writer,
+        language = if (language.isNotBlank()) language else "Hindi",
+        year = year
     )
 
     companion object {
@@ -54,7 +62,11 @@ data class TrackEntity(
             genre = track.genre,
             isLiked = track.isLiked,
             isCached = track.isCached,
-            lastPlayedAt = lastPlayedAt
+            lastPlayedAt = lastPlayedAt,
+            singers = track.singers,
+            writer = track.writer,
+            language = track.language,
+            year = track.year
         )
     }
 }

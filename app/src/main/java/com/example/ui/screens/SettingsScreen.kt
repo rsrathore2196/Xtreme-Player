@@ -10,6 +10,7 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -31,10 +32,14 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.LightMode
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.RadioButtonChecked
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
@@ -61,6 +66,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
@@ -77,6 +83,7 @@ import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import com.example.ui.theme.XtremeBorder
+import com.example.ui.theme.XtremeCard
 import com.example.ui.theme.XtremeCyan
 import com.example.ui.theme.XtremeGradients
 import com.example.ui.theme.XtremeLightBlue
@@ -86,6 +93,8 @@ import com.example.ui.theme.XtremeLightBlue
 fun SettingsScreen(
     playerUiState: PlayerUiState,
     effectsState: AudioEffectsState,
+    isDarkMode: Boolean = true,
+    onToggleDarkMode: () -> Unit = {},
     onAudioQualitySelected: (AudioQuality) -> Unit,
     onCrystalClarityToggle: (Boolean) -> Unit,
     onToggleEqualizer: (Boolean) -> Unit,
@@ -108,8 +117,8 @@ fun SettingsScreen(
                 .statusBarsPadding()
                 .padding(horizontal = 16.dp)
                 .testTag("settings_screen"),
-            contentPadding = PaddingValues(top = 16.dp, bottom = 120.dp),
-            verticalArrangement = Arrangement.spacedBy(20.dp)
+            contentPadding = PaddingValues(top = 6.dp, bottom = 120.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             // Top Header with Logo
             item {
@@ -169,11 +178,11 @@ fun SettingsScreen(
                         Card(
                             shape = RoundedCornerShape(16.dp),
                             colors = CardDefaults.cardColors(
-                                containerColor = if (effectsState.isEnabled) Color(0xFF0F2238) else Color(0xFF0C1726)
+                                containerColor = if (effectsState.isEnabled) XtremeLightBlue.copy(alpha = 0.12f) else XtremeCard
                             ),
                             border = BorderStroke(
                                 1.dp,
-                                if (effectsState.isEnabled) XtremeLightBlue.copy(alpha = 0.6f) else Color(0xFF1B3554)
+                                if (effectsState.isEnabled) XtremeLightBlue.copy(alpha = 0.6f) else XtremeBorder
                             ),
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -318,8 +327,8 @@ fun SettingsScreen(
                         // Audio Effect Options Card
                         Card(
                             shape = RoundedCornerShape(14.dp),
-                            colors = CardDefaults.cardColors(containerColor = Color(0xFF0C1726)),
-                            border = BorderStroke(1.dp, Color(0xFF1B3554)),
+                            colors = CardDefaults.cardColors(containerColor = XtremeCard),
+                            border = BorderStroke(1.dp, XtremeBorder),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .testTag("audio_effects_card")
@@ -369,8 +378,8 @@ fun SettingsScreen(
                 ) {
                     Card(
                         shape = RoundedCornerShape(16.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFF0C1726)),
-                        border = BorderStroke(1.dp, Color(0xFF1B3554)),
+                        colors = CardDefaults.cardColors(containerColor = XtremeCard),
+                        border = BorderStroke(1.dp, XtremeBorder),
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("audio_quality_card")
@@ -426,8 +435,8 @@ fun SettingsScreen(
                 ) {
                     Card(
                         shape = RoundedCornerShape(16.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFF0C1726)),
-                        border = BorderStroke(1.dp, Color(0xFF1B3554)),
+                        colors = CardDefaults.cardColors(containerColor = XtremeCard),
+                        border = BorderStroke(1.dp, XtremeBorder),
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("playback_card")
@@ -537,7 +546,176 @@ fun SettingsScreen(
                 }
             }
 
-            // SECTION 4: About App
+            // SECTION 4: App Appearance & Theme
+            item {
+                SettingsSection(
+                    title = "App Theme & Appearance",
+                    icon = Icons.Default.Palette
+                ) {
+                    Card(
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = XtremeCard),
+                        border = BorderStroke(1.dp, XtremeBorder),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("theme_settings_card")
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            Text(
+                                text = "Select App Color Scheme",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp,
+                                color = TextPrimary
+                            )
+                            Text(
+                                text = "Choose between the midnight blue dark theme or daylight blue theme.",
+                                fontSize = 12.sp,
+                                color = TextMuted
+                            )
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                // Night / Dark Mode Button
+                                Surface(
+                                    onClick = { if (!isDarkMode) onToggleDarkMode() },
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = if (isDarkMode) XtremeLightBlue.copy(alpha = 0.15f) else Color.Transparent,
+                                    border = BorderStroke(
+                                        width = if (isDarkMode) 2.dp else 1.dp,
+                                        color = if (isDarkMode) XtremeLightBlue else XtremeBorder
+                                    ),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("theme_button_dark")
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(14.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(36.dp)
+                                                    .clip(CircleShape)
+                                                    .background(
+                                                        Brush.linearGradient(
+                                                            listOf(Color(0xFF000206), Color(0xFF0A1828))
+                                                        )
+                                                    )
+                                                    .border(BorderStroke(1.dp, Color(0xFF1E3A5F)), CircleShape),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.DarkMode,
+                                                    contentDescription = null,
+                                                    tint = if (isDarkMode) XtremeLightBlue else Color(0xFF90A4AE),
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            }
+
+                                            Icon(
+                                                imageVector = if (isDarkMode) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                                                contentDescription = null,
+                                                tint = if (isDarkMode) XtremeLightBlue else Color(0xFF4A6572),
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+
+                                        Text(
+                                            text = "Night Mode",
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 14.sp,
+                                            color = if (isDarkMode) XtremeLightBlue else TextPrimary
+                                        )
+                                        Text(
+                                            text = "Black & Night Blue gradient canvas",
+                                            fontSize = 11.sp,
+                                            color = TextMuted,
+                                            lineHeight = 15.sp
+                                        )
+                                    }
+                                }
+
+                                // Light Mode Button
+                                Surface(
+                                    onClick = { if (isDarkMode) onToggleDarkMode() },
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = if (!isDarkMode) XtremeLightBlue.copy(alpha = 0.15f) else Color.Transparent,
+                                    border = BorderStroke(
+                                        width = if (!isDarkMode) 2.dp else 1.dp,
+                                        color = if (!isDarkMode) XtremeLightBlue else XtremeBorder
+                                    ),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("theme_button_light")
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(14.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(36.dp)
+                                                    .clip(CircleShape)
+                                                    .background(
+                                                        Brush.linearGradient(
+                                                            listOf(Color(0xFFFFFFFF), Color(0xFFE2EDFB))
+                                                        )
+                                                    )
+                                                    .border(BorderStroke(1.dp, Color(0xFFB0BEC5)), CircleShape),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.LightMode,
+                                                    contentDescription = null,
+                                                    tint = if (!isDarkMode) Color(0xFF0066CC) else Color(0xFF90A4AE),
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            }
+
+                                            Icon(
+                                                imageVector = if (!isDarkMode) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                                                contentDescription = null,
+                                                tint = if (!isDarkMode) Color(0xFF0066CC) else Color(0xFF4A6572),
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+
+                                        Text(
+                                            text = "Light Mode",
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 14.sp,
+                                            color = if (!isDarkMode) Color(0xFF0066CC) else TextPrimary
+                                        )
+                                        Text(
+                                            text = "Crisp white & royal blue daylight palette",
+                                            fontSize = 11.sp,
+                                            color = TextMuted,
+                                            lineHeight = 15.sp
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // SECTION 5: About App
             item {
                 SettingsSection(
                     title = "About App",
@@ -545,8 +723,8 @@ fun SettingsScreen(
                 ) {
                     Card(
                         shape = RoundedCornerShape(16.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFF0C1726)),
-                        border = BorderStroke(1.dp, Color(0xFF1B3554)),
+                        colors = CardDefaults.cardColors(containerColor = XtremeCard),
+                        border = BorderStroke(1.dp, XtremeBorder),
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("about_app_card")

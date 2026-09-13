@@ -53,6 +53,7 @@ import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import com.example.ui.theme.XtremeCyan
+import com.example.ui.theme.XtremeGradients
 import com.example.ui.theme.XtremeGreen
 import com.example.ui.theme.XtremeLightBlue
 
@@ -71,18 +72,10 @@ fun PlaylistDetailScreen(
     val tracks = playlistWithTracks.tracks.map { it.toMusicTrack() }
     val currentPlayingId = playerUiState.currentTrack?.id
 
-    val backgroundBrush = Brush.verticalGradient(
-        colors = listOf(
-            Color(0xFF0F253F),
-            Color(0xFF0A1524),
-            Color(0xFF060D17)
-        )
-    )
-
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(backgroundBrush),
+            .background(XtremeGradients.ScreenBackground),
         contentAlignment = Alignment.TopCenter
     ) {
         Column(

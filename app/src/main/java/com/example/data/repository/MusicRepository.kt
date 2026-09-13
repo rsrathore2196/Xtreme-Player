@@ -81,13 +81,8 @@ class MusicRepository(private val musicDao: MusicDao) {
 
     suspend fun markTrackPlayed(track: MusicTrack) {
         val now = System.currentTimeMillis()
-        val existing = musicDao.getTrackById(track.id)
-        if (existing != null) {
-            musicDao.updateLastPlayed(track.id, now)
-        } else {
-            val entity = TrackEntity.fromMusicTrack(track, lastPlayedAt = now)
-            musicDao.insertOrUpdateTrack(entity)
-        }
+        val entity = TrackEntity.fromMusicTrack(track, lastPlayedAt = now)
+        musicDao.insertOrUpdateTrack(entity)
     }
 
     suspend fun createPlaylist(title: String, description: String, coverUrl: String = ""): Long {
@@ -107,11 +102,9 @@ class MusicRepository(private val musicDao: MusicDao) {
     }
 
     suspend fun addTrackToPlaylist(playlistId: Long, track: MusicTrack) {
-        // Ensure track is stored in DB
-        val existing = musicDao.getTrackById(track.id)
-        if (existing == null) {
-            musicDao.insertOrUpdateTrack(TrackEntity.fromMusicTrack(track))
-        }
+        // Always ensure complete track entity is stored in DB so relationships persist
+        val entity = TrackEntity.fromMusicTrack(track)
+        musicDao.insertOrUpdateTrack(entity)
         musicDao.insertPlaylistTrackRef(
             PlaylistTrackCrossRef(
                 playlistId = playlistId,

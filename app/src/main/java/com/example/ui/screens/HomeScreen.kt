@@ -74,6 +74,8 @@ fun HomeScreen(
     catalogTracks: List<MusicTrack>,
     recentlyPlayed: List<MusicTrack>,
     playerUiState: PlayerUiState,
+    aiMoodProfile: com.example.ui.ai.AiMoodProfile? = null,
+    onSelectAiMood: (String) -> Unit = {},
     onTrackClick: (MusicTrack, List<MusicTrack>) -> Unit,
     onToggleFavorite: (MusicTrack) -> Unit,
     modifier: Modifier = Modifier
@@ -100,7 +102,7 @@ fun HomeScreen(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 16.dp)
+                    .padding(start = 20.dp, end = 20.dp, top = 6.dp, bottom = 8.dp)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -139,6 +141,145 @@ fun HomeScreen(
                                 fontWeight = FontWeight.Medium
                             )
                         )
+                    }
+                }
+            }
+        }
+
+        // SMART AI MOOD & VIBE UNDERSTANDING
+        if (aiMoodProfile != null) {
+            item {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp, bottom = 10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Surface(
+                                color = XtremeCyan.copy(alpha = 0.15f),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text(
+                                    text = "SMART AI MOOD",
+                                    color = XtremeCyan,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    letterSpacing = 0.8.sp,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "${aiMoodProfile.moodEmoji} ${aiMoodProfile.detectedMoodTitle}",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = TextPrimary
+                            )
+                        }
+                    }
+
+                    Text(
+                        text = aiMoodProfile.reasoning,
+                        fontSize = 11.sp,
+                        color = TextMuted,
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Mood Selector Filter Chips using availableMoods
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 20.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(com.example.ui.ai.AiMoodEngine.availableMoods) { category ->
+                            val isSelected = category.id == aiMoodProfile.activeMoodId
+                            Surface(
+                                onClick = { onSelectAiMood(category.id) },
+                                shape = RoundedCornerShape(12.dp),
+                                color = if (isSelected) XtremeLightBlue.copy(alpha = 0.22f) else Color(0xFF0D1C2E),
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (isSelected) XtremeLightBlue else Color(0xFF1B3552)
+                                )
+                            ) {
+                                Text(
+                                    text = "${category.emoji} ${category.title}",
+                                    color = if (isSelected) XtremeLightBlue else TextSecondary,
+                                    fontSize = 12.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    if (aiMoodProfile.matchingTracks.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = 20.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            items(aiMoodProfile.matchingTracks) { track ->
+                                Column(
+                                    modifier = Modifier
+                                        .width(120.dp)
+                                        .clickable { onTrackClick(track, aiMoodProfile.matchingTracks) }
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(120.dp)
+                                            .clip(RoundedCornerShape(14.dp))
+                                            .background(Color(0xFF14243B))
+                                    ) {
+                                        AsyncImage(
+                                            model = track.coverUrl,
+                                            contentDescription = track.title,
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                        Surface(
+                                            color = Color.Black.copy(alpha = 0.6f),
+                                            shape = RoundedCornerShape(6.dp),
+                                            modifier = Modifier
+                                                .align(Alignment.BottomStart)
+                                                .padding(6.dp)
+                                        ) {
+                                            Text(
+                                                text = "${track.bitrateKbps}K",
+                                                color = XtremeCyan,
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                            )
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(
+                                        text = track.title,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = TextPrimary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = track.artist,
+                                        fontSize = 10.sp,
+                                        color = TextMuted,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -383,8 +524,8 @@ fun HomeScreen(
 fun MixCard(mix: MixItem, onClick: () -> Unit) {
     Card(
         shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF101F33)),
-        border = BorderStroke(1.dp, Color(0xFF1B3454)),
+        colors = CardDefaults.cardColors(containerColor = XtremeCard),
+        border = BorderStroke(1.dp, XtremeBorder),
         modifier = Modifier
             .width(145.dp)
             .clickable { onClick() }
@@ -427,8 +568,8 @@ fun QuickPickCard(
 ) {
     Surface(
         shape = RoundedCornerShape(10.dp),
-        color = if (isPlaying) Color(0xFF132A47) else Color(0xFF0F1E32),
-        border = if (isPlaying) BorderStroke(1.dp, XtremeLightBlue.copy(alpha = 0.6f)) else BorderStroke(1.dp, Color(0xFF182F4D)),
+        color = if (isPlaying) XtremeCard.copy(alpha = 0.85f) else XtremeCard,
+        border = if (isPlaying) BorderStroke(1.dp, XtremeLightBlue) else BorderStroke(1.dp, XtremeBorder),
         modifier = modifier
             .clip(RoundedCornerShape(10.dp))
             .clickable { onClick() }
@@ -479,7 +620,7 @@ fun TrackListItem(
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
-            .background(if (isPlaying) Color(0xFF122742) else Color.Transparent)
+            .background(if (isPlaying) XtremeCard else Color.Transparent)
             .clickable { onClick() }
             .padding(vertical = 8.dp, horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -492,7 +633,7 @@ fun TrackListItem(
             modifier = Modifier
                 .size(48.dp)
                 .clip(RoundedCornerShape(10.dp))
-                .background(Color(0xFF1B2F4A))
+                .background(XtremeBorder)
         )
 
         Spacer(modifier = Modifier.width(12.dp))

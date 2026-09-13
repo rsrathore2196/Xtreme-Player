@@ -21,7 +21,7 @@ class XtremeMusicApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        instance = this
+        _instance = this
 
         // Initialize security configuration
         try {
@@ -65,18 +65,15 @@ class XtremeMusicApp : Application() {
     }
 
     companion object {
-        lateinit var instance: XtremeMusicApp
-            private set
+        private var _instance: XtremeMusicApp? = null
 
-        /**
-         * Get the application instance with null safety.
-         * Throws an exception if the app hasn't been initialized.
-         */
+        @JvmStatic
         fun getInstance(): XtremeMusicApp {
-            if (!::instance.isInitialized) {
-                throw RuntimeException("XtremeMusicApp instance not initialized")
-            }
-            return instance
+            return _instance ?: throw IllegalStateException("XtremeMusicApp instance not initialized")
         }
+
+        val instance: XtremeMusicApp
+            @JvmName("getAppInstance")
+            get() = getInstance()
     }
 }

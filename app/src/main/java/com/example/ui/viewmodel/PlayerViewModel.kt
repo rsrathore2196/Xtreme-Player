@@ -56,6 +56,44 @@ class PlayerViewModel(
     val playlists: StateFlow<List<PlaylistEntity>> = repository.getAllPlaylists()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
 
+    private val _isDarkMode = MutableStateFlow(true)
+    val isDarkMode: StateFlow<Boolean> = _isDarkMode.asStateFlow()
+
+    fun setDarkMode(enabled: Boolean) {
+        _isDarkMode.value = enabled
+    }
+
+    fun toggleDarkMode() {
+        _isDarkMode.value = !_isDarkMode.value
+    }
+
+    private val _selectedAiMoodId = MutableStateFlow("auto")
+    val selectedAiMoodId: StateFlow<String> = _selectedAiMoodId.asStateFlow()
+
+    fun selectAiMood(moodId: String) {
+        _selectedAiMoodId.value = moodId
+    }
+
+    val aiMoodProfile: StateFlow<com.example.ui.ai.AiMoodProfile> = kotlinx.coroutines.flow.combine(
+        _selectedAiMoodId,
+        playbackManager.uiState,
+        recentlyPlayed,
+        favoriteTracks,
+        _catalogTracks
+    ) { moodId, uiState, recent, favs, catalog ->
+        com.example.ui.ai.AiMoodEngine.evaluateMood(
+            selectedMoodId = moodId,
+            lastPlayedTrack = uiState.currentTrack,
+            recentlyPlayed = recent,
+            favoriteTracks = favs,
+            allTracks = catalog
+        )
+    }.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5000L),
+        com.example.ui.ai.AiMoodEngine.evaluateMood("auto", null, emptyList(), emptyList(), emptyList())
+    )
+
     init {
         loadCatalog()
     }

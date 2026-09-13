@@ -7,10 +7,16 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
@@ -19,6 +25,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -59,6 +66,7 @@ import com.example.ui.screens.LibraryScreen
 import com.example.ui.screens.PlaylistDetailScreen
 import com.example.ui.screens.SearchScreen
 import com.example.ui.screens.SettingsScreen
+import com.example.ui.theme.LocalAppColors
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.XtremeGreen
@@ -85,6 +93,8 @@ fun MainNavigationScaffold(
     val searchState by viewModel.searchState.collectAsState()
     val selectedPlaylistWithTracks by viewModel.selectedPlaylistTracks.collectAsState()
     val effectsState by viewModel.effectsState.collectAsState()
+    val isDarkMode by viewModel.isDarkMode.collectAsState()
+    val aiMoodProfile by viewModel.aiMoodProfile.collectAsState()
 
     var selectedTabIndex by remember { mutableIntStateOf(0) }
     var isPlayerExpanded by remember { mutableStateOf(false) }
@@ -113,7 +123,9 @@ fun MainNavigationScaffold(
         }
     }
 
-    Box(modifier = modifier.fillMaxSize().background(Color(0xFF060D17))) {
+    val appColors = LocalAppColors.current
+
+    Box(modifier = modifier.fillMaxSize().background(appColors.scaffoldBackground)) {
         Scaffold(
             bottomBar = {
                 Column(
@@ -121,8 +133,24 @@ fun MainNavigationScaffold(
                         .fillMaxWidth()
                         .navigationBarsPadding()
                 ) {
-                    // Floating MiniPlayer (Visible if a track is active and player is not expanded)
-                    if (playerUiState.currentTrack != null && !isPlayerExpanded) {
+                    // Floating MiniPlayer (Animated smoothly in and out)
+                    AnimatedVisibility(
+                        visible = playerUiState.currentTrack != null && !isPlayerExpanded,
+                        enter = slideInVertically(
+                            animationSpec = spring(
+                                dampingRatio = 0.8f,
+                                stiffness = Spring.StiffnessMediumLow
+                            ),
+                            initialOffsetY = { it }
+                        ) + fadeIn(animationSpec = tween(260)) + expandVertically(),
+                        exit = slideOutVertically(
+                            animationSpec = spring(
+                                dampingRatio = 0.85f,
+                                stiffness = Spring.StiffnessMediumLow
+                            ),
+                            targetOffsetY = { it }
+                        ) + fadeOut(animationSpec = tween(200)) + shrinkVertically()
+                    ) {
                         MiniPlayer(
                             uiState = playerUiState,
                             onPlayPauseClick = { viewModel.togglePlayPause() },
@@ -133,8 +161,16 @@ fun MainNavigationScaffold(
                     }
 
                     // Bottom Navigation Bar
+                    val tabItemColors = NavigationBarItemDefaults.colors(
+                        selectedIconColor = appColors.bottomBarSelectedIcon,
+                        selectedTextColor = appColors.bottomBarSelectedIcon,
+                        unselectedIconColor = appColors.bottomBarUnselectedIcon,
+                        unselectedTextColor = appColors.bottomBarUnselectedIcon,
+                        indicatorColor = appColors.bottomBarIndicator
+                    )
+
                     NavigationBar(
-                        containerColor = Color(0xFF071220),
+                        containerColor = appColors.bottomBarBackground,
                         tonalElevation = 8.dp,
                         modifier = Modifier.testTag("bottom_navigation_bar")
                     ) {
@@ -157,13 +193,7 @@ fun MainNavigationScaffold(
                                     fontWeight = if (selectedTabIndex == 0) FontWeight.Bold else FontWeight.Normal
                                 )
                             },
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = XtremeLightBlue,
-                                selectedTextColor = XtremeLightBlue,
-                                unselectedIconColor = TextMuted,
-                                unselectedTextColor = TextMuted,
-                                indicatorColor = Color(0xFF163255)
-                            )
+                            colors = tabItemColors
                         )
 
                         NavigationBarItem(
@@ -185,13 +215,7 @@ fun MainNavigationScaffold(
                                     fontWeight = if (selectedTabIndex == 1) FontWeight.Bold else FontWeight.Normal
                                 )
                             },
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = XtremeLightBlue,
-                                selectedTextColor = XtremeLightBlue,
-                                unselectedIconColor = TextMuted,
-                                unselectedTextColor = TextMuted,
-                                indicatorColor = Color(0xFF163255)
-                            )
+                            colors = tabItemColors
                         )
 
                         NavigationBarItem(
@@ -212,13 +236,7 @@ fun MainNavigationScaffold(
                                     fontWeight = if (selectedTabIndex == 2) FontWeight.Bold else FontWeight.Normal
                                 )
                             },
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = XtremeLightBlue,
-                                selectedTextColor = XtremeLightBlue,
-                                unselectedIconColor = TextMuted,
-                                unselectedTextColor = TextMuted,
-                                indicatorColor = Color(0xFF163255)
-                            )
+                            colors = tabItemColors
                         )
 
                         NavigationBarItem(
@@ -240,49 +258,75 @@ fun MainNavigationScaffold(
                                     fontWeight = if (selectedTabIndex == 3) FontWeight.Bold else FontWeight.Normal
                                 )
                             },
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = XtremeLightBlue,
-                                selectedTextColor = XtremeLightBlue,
-                                unselectedIconColor = TextMuted,
-                                unselectedTextColor = TextMuted,
-                                indicatorColor = Color(0xFF163255)
-                            )
+                            colors = tabItemColors
                         )
                     }
                 }
             },
-            containerColor = Color(0xFF060D17)
+            contentWindowInsets = WindowInsets(0.dp),
+            containerColor = appColors.scaffoldBackground
         ) { innerPadding ->
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(innerPadding)
             ) {
-                // If playlist detail is open, show it
+                // If playlist detail is open, show it with a smooth animated transition
                 val currentPlaylist = selectedPlaylistWithTracks
-                if (currentPlaylist != null) {
-                    PlaylistDetailScreen(
-                        playlistWithTracks = currentPlaylist,
-                        playerUiState = playerUiState,
-                        onBackClick = { viewModel.closePlaylist() },
-                        onPlayTrack = { track, queue -> viewModel.playTrack(track, queue) },
-                        onToggleFavorite = { track -> viewModel.toggleLike(track) },
-                        onDeletePlaylist = { viewModel.deletePlaylist(currentPlaylist.playlist.playlistId) },
-                        onRemoveTrack = { trackId ->
-                            viewModel.removeTrackFromPlaylist(currentPlaylist.playlist.playlistId, trackId)
-                        }
-                    )
-                } else {
+                AnimatedVisibility(
+                    visible = currentPlaylist != null,
+                    enter = slideInHorizontally(
+                        initialOffsetX = { it },
+                        animationSpec = spring(dampingRatio = 0.85f, stiffness = Spring.StiffnessMediumLow)
+                    ) + fadeIn(animationSpec = tween(260)),
+                    exit = slideOutHorizontally(
+                        targetOffsetX = { it },
+                        animationSpec = spring(dampingRatio = 0.88f, stiffness = Spring.StiffnessMediumLow)
+                    ) + fadeOut(animationSpec = tween(200))
+                ) {
+                    currentPlaylist?.let { playlist ->
+                        PlaylistDetailScreen(
+                            playlistWithTracks = playlist,
+                            playerUiState = playerUiState,
+                            onBackClick = { viewModel.closePlaylist() },
+                            onPlayTrack = { track, queue -> viewModel.playTrack(track, queue) },
+                            onToggleFavorite = { track -> viewModel.toggleLike(track) },
+                            onDeletePlaylist = { viewModel.deletePlaylist(playlist.playlist.playlistId) },
+                            onRemoveTrack = { trackId ->
+                                viewModel.removeTrackFromPlaylist(playlist.playlist.playlistId, trackId)
+                            }
+                        )
+                    }
+                }
+
+                if (currentPlaylist == null) {
                     AnimatedContent(
                         targetState = selectedTabIndex,
                         transitionSpec = {
-                            if (targetState > initialState) {
-                                (slideInHorizontally { width -> width / 4 } + fadeIn())
-                                    .togetherWith(slideOutHorizontally { width -> -width / 4 } + fadeOut())
-                            } else {
-                                (slideInHorizontally { width -> -width / 4 } + fadeIn())
-                                    .togetherWith(slideOutHorizontally { width -> width / 4 } + fadeOut())
-                            }
+                            val isForward = targetState > initialState
+                            val slideDistanceFraction = 0.15f
+
+                            val enterTransition = slideInHorizontally(
+                                animationSpec = tween(360, easing = FastOutSlowInEasing),
+                                initialOffsetX = { width -> if (isForward) (width * slideDistanceFraction).toInt() else -(width * slideDistanceFraction).toInt() }
+                            ) + scaleIn(
+                                initialScale = 0.94f,
+                                animationSpec = tween(360, easing = FastOutSlowInEasing)
+                            ) + fadeIn(
+                                animationSpec = tween(280)
+                            )
+
+                            val exitTransition = slideOutHorizontally(
+                                animationSpec = tween(300, easing = FastOutSlowInEasing),
+                                targetOffsetX = { width -> if (isForward) -(width * slideDistanceFraction).toInt() else (width * slideDistanceFraction).toInt() }
+                            ) + scaleOut(
+                                targetScale = 0.97f,
+                                animationSpec = tween(300, easing = FastOutSlowInEasing)
+                            ) + fadeOut(
+                                animationSpec = tween(220)
+                            )
+
+                            enterTransition.togetherWith(exitTransition)
                         },
                         label = "tab_navigation_transition",
                         modifier = Modifier.fillMaxSize()
@@ -292,6 +336,8 @@ fun MainNavigationScaffold(
                                 catalogTracks = catalogTracks,
                                 recentlyPlayed = recentlyPlayed,
                                 playerUiState = playerUiState,
+                                aiMoodProfile = aiMoodProfile,
+                                onSelectAiMood = { moodId -> viewModel.selectAiMood(moodId) },
                                 onTrackClick = { track, queue -> viewModel.playTrack(track, queue) },
                                 onToggleFavorite = { track -> viewModel.toggleLike(track) }
                             )
@@ -315,6 +361,8 @@ fun MainNavigationScaffold(
                             3 -> SettingsScreen(
                                 playerUiState = playerUiState,
                                 effectsState = effectsState,
+                                isDarkMode = isDarkMode,
+                                onToggleDarkMode = { viewModel.toggleDarkMode() },
                                 onAudioQualitySelected = { quality -> viewModel.setAudioQuality(quality) },
                                 onCrystalClarityToggle = { enabled -> viewModel.setCrystalClarityEnabled(enabled) },
                                 onToggleEqualizer = { enabled -> viewModel.setEqualizerEnabled(enabled) },

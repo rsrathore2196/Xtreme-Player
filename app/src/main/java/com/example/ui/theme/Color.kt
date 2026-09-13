@@ -1,36 +1,167 @@
 package com.example.ui.theme
 
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 
-// Xtreme Player - Signature Light Blue & Electric Navy Palette (Matched with 3D Logo)
-val XtremeBackground = Color(0xFF070F1E)       // Deep atmospheric midnight navy
-val XtremeSurface = Color(0xFF0D182A)          // Surface navy
-val XtremeCard = Color(0xFF132238)             // Elevated card navy
-val XtremeCardElevated = Color(0xFF192B45)     // Higher elevated surface
-val XtremeBorder = Color(0xFF1E3554)           // Crisp card outline
-val XtremeBorderGlow = Color(0x6638BDF8)       // Light blue glowing border
+data class AppThemeColors(
+    val isDark: Boolean,
+    val screenBackground: Brush,
+    val scaffoldBackground: Color,
+    val cardBackground: Color,
+    val cardBackgroundElevated: Color,
+    val cardBorder: Color,
+    val textPrimary: Color,
+    val textSecondary: Color,
+    val textMuted: Color,
+    val primaryAccent: Color,
+    val secondaryAccent: Color,
+    val bottomBarBackground: Color,
+    val bottomBarIndicator: Color,
+    val bottomBarSelectedIcon: Color,
+    val bottomBarUnselectedIcon: Color,
+    val miniPlayerBackground: Brush,
+    val miniPlayerBorder: Color,
+    val inputBackground: Color,
+    val chipBackground: Color,
+    val chipBorder: Color,
+    val dividerColor: Color
+)
 
-// Signature Accent Tones from Logo
+// Night / Dark Theme: Black and Night Blue Combination
+val DarkAppColors = AppThemeColors(
+    isDark = true,
+    screenBackground = Brush.verticalGradient(
+        colors = listOf(
+            Color(0xFF081426), // Night Blue
+            Color(0xFF040A14), // Midnight Navy
+            Color(0xFF000206)  // Pure Black
+        )
+    ),
+    scaffoldBackground = Color(0xFF020610),
+    cardBackground = Color(0xFF0B1728),
+    cardBackgroundElevated = Color(0xFF102038),
+    cardBorder = Color(0xFF162F4D),
+    textPrimary = Color(0xFFF0F9FF), // Crisp ice white
+    textSecondary = Color(0xFF93C5FD), // Soft sky blue
+    textMuted = Color(0xFF64748B),
+    primaryAccent = Color(0xFF38BDF8), // Electric Light Blue
+    secondaryAccent = Color(0xFF00E5FF), // Cyan
+    bottomBarBackground = Color(0xFF040A14),
+    bottomBarIndicator = Color(0xFF122C4A),
+    bottomBarSelectedIcon = Color(0xFF38BDF8),
+    bottomBarUnselectedIcon = Color(0xFF64748B),
+    miniPlayerBackground = Brush.horizontalGradient(
+        colors = listOf(
+            Color(0xFF0E1F36),
+            Color(0xFF091424)
+        )
+    ),
+    miniPlayerBorder = Color(0xFF1A385C),
+    inputBackground = Color(0xFF091424),
+    chipBackground = Color(0xFF0E1E33),
+    chipBorder = Color(0xFF1B3552),
+    dividerColor = Color(0xFF122842)
+)
+
+// Light Theme: Beautiful White Background with Blue Color Combination
+val LightAppColors = AppThemeColors(
+    isDark = false,
+    screenBackground = Brush.verticalGradient(
+        colors = listOf(
+            Color(0xFFFFFFFF), // Pure Crisp White
+            Color(0xFFF1F6FD), // Soft Frosted Blue
+            Color(0xFFE2EDFB)  // Sky Pastel Blue
+        )
+    ),
+    scaffoldBackground = Color(0xFFF8FAFD),
+    cardBackground = Color(0xFFFFFFFF),
+    cardBackgroundElevated = Color(0xFFF0F6FF),
+    cardBorder = Color(0xFFDBEAFE), // Soft baby blue border
+    textPrimary = Color(0xFF0F172A), // Deep slate / navy high-contrast
+    textSecondary = Color(0xFF1E40AF), // Rich royal blue
+    textMuted = Color(0xFF64748B), // Slate muted
+    primaryAccent = Color(0xFF0284C7), // Vibrant Ocean Blue
+    secondaryAccent = Color(0xFF2563EB), // Deep Royal Blue
+    bottomBarBackground = Color(0xFFFFFFFF),
+    bottomBarIndicator = Color(0xFFDBEAFE),
+    bottomBarSelectedIcon = Color(0xFF0284C7),
+    bottomBarUnselectedIcon = Color(0xFF94A3B8),
+    miniPlayerBackground = Brush.horizontalGradient(
+        colors = listOf(
+            Color(0xFFFFFFFF),
+            Color(0xFFEFF6FF)
+        )
+    ),
+    miniPlayerBorder = Color(0xFFBFDBFE),
+    inputBackground = Color(0xFFF1F5F9),
+    chipBackground = Color(0xFFF0F6FF),
+    chipBorder = Color(0xFFDBEAFE),
+    dividerColor = Color(0xFFE2E8F0)
+)
+
+val LocalAppColors = compositionLocalOf { DarkAppColors }
+
+// Base static constants for themes & non-composable scopes
+val StaticDarkBackground = Color(0xFF070F1E)
+val StaticDarkSurface = Color(0xFF0D182A)
+val StaticDarkCard = Color(0xFF132238)
+val StaticDarkBorder = Color(0xFF1E3554)
+val StaticTextPrimary = Color(0xFFF0F9FF)
+
+// Dynamic Composable Color Accessors
+val TextPrimary: Color
+    @Composable
+    get() = LocalAppColors.current.textPrimary
+
+val TextSecondary: Color
+    @Composable
+    get() = LocalAppColors.current.textSecondary
+
+val TextMuted: Color
+    @Composable
+    get() = LocalAppColors.current.textMuted
+
+val XtremeBackground: Color
+    @Composable
+    get() = LocalAppColors.current.scaffoldBackground
+
+val XtremeSurface: Color
+    @Composable
+    get() = LocalAppColors.current.cardBackground
+
+val XtremeCard: Color
+    @Composable
+    get() = LocalAppColors.current.cardBackground
+
+val XtremeCardElevated: Color
+    @Composable
+    get() = LocalAppColors.current.cardBackgroundElevated
+
+val XtremeBorder: Color
+    @Composable
+    get() = LocalAppColors.current.cardBorder
+
+val XtremeBorderGlow: Color
+    @Composable
+    get() = if (LocalAppColors.current.isDark) Color(0x6638BDF8) else Color(0x440284C7)
+
+// Signature Accent Tones
 val XtremeLightBlue = Color(0xFF38BDF8)        // Primary vibrant light blue (Sky 400)
 val XtremeCyan = Color(0xFF00E5FF)             // Electric luminous cyan
 val XtremeDeepBlue = Color(0xFF0284C7)         // Deep electric blue (Sky 600)
 val XtremeIce = Color(0xFFBAE6FD)              // Ice light blue highlight (Sky 200)
-val XtremeGreen = Color(0xFF38BDF8)            // Mapped to signature light blue for seamless integration across all views!
+val XtremeGreen = Color(0xFF38BDF8)            // Mapped to signature light blue
 val XtremePurple = Color(0xFF818CF8)           // Indigo/sky harmony
 val XtremeRose = Color(0xFFF43F5E)             // Favorite heart accent
-
-val TextPrimary = Color(0xFFF0F9FF)            // Crisp ice white (high contrast)
-val TextSecondary = Color(0xFF93C5FD)          // Soft sky blue (readable secondary)
-val TextMuted = Color(0xFF627D98)              // Muted cool slate
 
 val SliderTrackColor = Color(0xFF1E3554)
 val SliderThumbColor = Color(0xFF38BDF8)
 val SliderBufferedColor = Color(0xFF2E4E75)
 
-// Eye-catching Signature Gradients matching the 3D Light Blue Logo
+// Eye-catching Signature Gradients matching the theme
 object XtremeGradients {
-    // Primary Vibrant Logo Gradient (Cyan -> Sky Blue -> Electric Blue)
     val LogoGradient = Brush.linearGradient(
         colors = listOf(
             Color(0xFF00E5FF),
@@ -46,33 +177,48 @@ object XtremeGradients {
         )
     )
 
-    // Full Screen Background Gradient
-    val ScreenBackground = Brush.verticalGradient(
-        colors = listOf(
-            Color(0xFF0C192E), // Top subtle ambient light blue tint
-            Color(0xFF070F1E),
-            Color(0xFF040812)
-        )
-    )
+    val ScreenBackground: Brush
+        @Composable
+        get() = LocalAppColors.current.screenBackground
 
-    // Player Ambient Gradient
-    val PlayerAmbient = Brush.verticalGradient(
-        colors = listOf(
-            Color(0xFF0E2545), // Luminous top blue glow
-            Color(0xFF091424),
-            Color(0xFF050B14)
-        )
-    )
+    val PlayerAmbient: Brush
+        @Composable
+        get() = if (LocalAppColors.current.isDark) {
+            Brush.verticalGradient(
+                colors = listOf(
+                    Color(0xFF0E2545),
+                    Color(0xFF091424),
+                    Color(0xFF050B14)
+                )
+            )
+        } else {
+            Brush.verticalGradient(
+                colors = listOf(
+                    Color(0xFFE0F2FE),
+                    Color(0xFFF0F9FF),
+                    Color(0xFFFFFFFF)
+                )
+            )
+        }
 
-    // Card Glass / Depth Gradient
-    val CardGradient = Brush.linearGradient(
-        colors = listOf(
-            Color(0xFF14243B),
-            Color(0xFF0F1B2D)
-        )
-    )
+    val CardGradient: Brush
+        @Composable
+        get() = if (LocalAppColors.current.isDark) {
+            Brush.linearGradient(
+                colors = listOf(
+                    Color(0xFF14243B),
+                    Color(0xFF0F1B2D)
+                )
+            )
+        } else {
+            Brush.linearGradient(
+                colors = listOf(
+                    Color(0xFFFFFFFF),
+                    Color(0xFFF8FAFC)
+                )
+            )
+        }
 
-    // Button & Active Indicator Gradient
     val ButtonGradient = Brush.horizontalGradient(
         colors = listOf(
             Color(0xFF0284C7),
@@ -81,11 +227,22 @@ object XtremeGradients {
         )
     )
 
-    // Subtle Chip Gradient
-    val ChipGradient = Brush.linearGradient(
-        colors = listOf(
-            Color(0xFF172B46),
-            Color(0xFF101E31)
-        )
-    )
+    val ChipGradient: Brush
+        @Composable
+        get() = if (LocalAppColors.current.isDark) {
+            Brush.linearGradient(
+                colors = listOf(
+                    Color(0xFF172B46),
+                    Color(0xFF101E31)
+                )
+            )
+        } else {
+            Brush.linearGradient(
+                colors = listOf(
+                    Color(0xFFF0F6FF),
+                    Color(0xFFE2E8F0)
+                )
+            )
+        }
 }
+

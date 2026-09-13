@@ -55,6 +55,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.playback.PlayerUiState
+import com.example.ui.theme.LocalAppColors
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
@@ -117,21 +118,14 @@ fun MiniPlayer(
                 )
             }
             .testTag("mini_player_container"),
-        color = Color(0xFF101E32),
-        border = BorderStroke(1.dp, Color(0xFF1C375C)),
+        color = LocalAppColors.current.cardBackground,
+        border = BorderStroke(1.dp, LocalAppColors.current.miniPlayerBorder),
         tonalElevation = 6.dp
     ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(
-                    Brush.horizontalGradient(
-                        colors = listOf(
-                            Color(0xFF122339),
-                            Color(0xFF0F1D2E)
-                        )
-                    )
-                )
+                .background(LocalAppColors.current.miniPlayerBackground)
         ) {
             Column(modifier = Modifier.fillMaxWidth()) {
                 Row(

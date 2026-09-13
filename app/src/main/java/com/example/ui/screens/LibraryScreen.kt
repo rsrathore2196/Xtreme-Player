@@ -66,6 +66,8 @@ import com.example.playback.PlayerUiState
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
+import com.example.ui.theme.XtremeBorder
+import com.example.ui.theme.XtremeCard
 import com.example.ui.theme.XtremeCyan
 import com.example.ui.theme.XtremeGradients
 import com.example.ui.theme.XtremeGreen
@@ -85,22 +87,14 @@ fun LibraryScreen(
     modifier: Modifier = Modifier
 ) {
     var selectedTab by remember { mutableIntStateOf(0) }
-    val tabs = listOf("Playlists", "Liked Songs", "320k Cache")
+    val tabs = listOf("Playlists", "Liked Songs")
 
     val currentPlayingId = playerUiState.currentTrack?.id
-
-    val backgroundBrush = Brush.verticalGradient(
-        colors = listOf(
-            Color(0xFF0F253F),
-            Color(0xFF0A1524),
-            Color(0xFF060D17)
-        )
-    )
 
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(backgroundBrush),
+            .background(XtremeGradients.ScreenBackground),
         contentAlignment = Alignment.TopCenter
     ) {
         LazyColumn(
@@ -113,7 +107,7 @@ fun LibraryScreen(
         ) {
         // TOP BAR
         item {
-            Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp)) {
+            Column(modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 6.dp, bottom = 10.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -128,7 +122,7 @@ fun LibraryScreen(
                             )
                         )
                         Text(
-                            text = "Saved music, offline cache & custom mixes",
+                            text = "Saved music, custom playlists & liked songs",
                             style = MaterialTheme.typography.bodySmall.copy(color = TextMuted)
                         )
                     }
@@ -155,7 +149,7 @@ fun LibraryScreen(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(12.dp))
 
                 // TAB ROW
                 TabRow(
@@ -195,8 +189,8 @@ fun LibraryScreen(
                 item {
                     Card(
                         shape = RoundedCornerShape(18.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFF0F2238)),
-                        border = BorderStroke(1.dp, Color(0xFF1B3C64)),
+                        colors = CardDefaults.cardColors(containerColor = XtremeCard),
+                        border = BorderStroke(1.dp, XtremeBorder),
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 20.dp, vertical = 6.dp)
@@ -373,77 +367,6 @@ fun LibraryScreen(
                     }
                 }
             }
-
-            2 -> {
-                // 320K CACHE TAB
-                item {
-                    Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)) {
-                        Card(
-                            shape = RoundedCornerShape(16.dp),
-                            colors = CardDefaults.cardColors(containerColor = Color(0xFF0F2238)),
-                            border = BorderStroke(1.dp, Color(0xFF1B3C64)),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(16.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(44.dp)
-                                        .clip(CircleShape)
-                                        .background(XtremeLightBlue.copy(alpha = 0.2f)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.DownloadDone,
-                                        contentDescription = null,
-                                        tint = XtremeLightBlue,
-                                        modifier = Modifier.size(24.dp)
-                                    )
-                                }
-                                Spacer(modifier = Modifier.width(14.dp))
-                                Column {
-                                    Text(
-                                        text = "SimpleCache LRU Active",
-                                        style = MaterialTheme.typography.titleMedium.copy(
-                                            fontWeight = FontWeight.Bold,
-                                            color = TextPrimary
-                                        )
-                                    )
-                                    Text(
-                                        text = "150 MB buffer for zero-lag 320kbps playback",
-                                        style = MaterialTheme.typography.bodySmall.copy(
-                                            color = TextSecondary
-                                        )
-                                    )
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        Text(
-                            text = "Cached Stream Buffers",
-                            style = MaterialTheme.typography.titleMedium.copy(
-                                fontWeight = FontWeight.Bold,
-                                color = TextPrimary
-                            )
-                        )
-                    }
-                }
-
-                // Show top 3 cached tracks for offline inspection
-                items(favoriteTracks.take(4)) { track ->
-                    TrackListItem(
-                        track = track.copy(isCached = true),
-                        isPlaying = track.id == currentPlayingId,
-                        onClick = { onTrackClick(track, favoriteTracks) },
-                        onToggleFavorite = { onToggleFavorite(track) },
-                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
-                    )
-                }
-            }
         }
     }
 }
@@ -459,8 +382,8 @@ fun PlaylistRowItem(
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
-            .background(Color(0xFF0F2238))
-            .border(BorderStroke(1.dp, Color(0xFF193659)), RoundedCornerShape(14.dp))
+            .background(XtremeCard)
+            .border(BorderStroke(1.dp, XtremeBorder), RoundedCornerShape(14.dp))
             .clickable { onClick() }
             .padding(10.dp),
         verticalAlignment = Alignment.CenterVertically

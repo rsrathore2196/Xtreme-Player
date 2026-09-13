@@ -1,11 +1,26 @@
 package com.example.ui.components
 
 import android.content.Intent
+import android.graphics.drawable.BitmapDrawable
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode as AnimationRepeatMode
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,6 +30,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
@@ -23,6 +39,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
@@ -30,6 +48,7 @@ import androidx.compose.material.icons.filled.Cast
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
@@ -41,6 +60,7 @@ import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Speaker
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -52,6 +72,7 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -63,6 +84,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -73,7 +95,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.palette.graphics.Palette
+import coil.ImageLoader
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import coil.request.SuccessResult
 import com.example.data.model.MusicTrack
 import com.example.playback.PlayerUiState
 import com.example.playback.RepeatMode
@@ -85,6 +111,8 @@ import com.example.ui.theme.XtremeGradients
 import com.example.ui.theme.XtremeGreen
 import com.example.ui.theme.XtremeLightBlue
 import com.example.ui.theme.XtremeRose
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 fun ExpandedPlayerScreen(
@@ -109,6 +137,49 @@ fun ExpandedPlayerScreen(
     var isMenuOpen by remember { mutableStateOf(false) }
     var isUserScrubbing by remember { mutableStateOf(false) }
     var scrubPosition by remember { mutableFloatStateOf(0f) }
+    var isFlipped by remember(track.id) { mutableStateOf(false) }
+
+    // Dynamic color extracted from album art
+    var dominantColor by remember(track.id) { mutableStateOf(Color(0xFF0F2B48)) }
+    var accentColor by remember(track.id) { mutableStateOf(XtremeLightBlue) }
+
+    LaunchedEffect(track.coverUrl) {
+        if (track.coverUrl.isNotBlank()) {
+            withContext(Dispatchers.IO) {
+                try {
+                    val loader = ImageLoader(context)
+                    val request = ImageRequest.Builder(context)
+                        .data(track.coverUrl)
+                        .allowHardware(false)
+                        .build()
+                    val result = (loader.execute(request) as? SuccessResult)?.drawable
+                    val bitmap = (result as? BitmapDrawable)?.bitmap
+                    if (bitmap != null) {
+                        val palette = Palette.from(bitmap).generate()
+                        val dom = palette.getDarkVibrantColor(
+                            palette.getDominantColor(android.graphics.Color.parseColor("#0F2B48"))
+                        )
+                        val acc = palette.getLightVibrantColor(
+                            palette.getVibrantColor(android.graphics.Color.parseColor("#38BDF8"))
+                        )
+                        dominantColor = Color(dom)
+                        accentColor = Color(acc)
+                    }
+                } catch (_: Exception) {}
+            }
+        }
+    }
+
+    val animatedDominantColor by animateColorAsState(
+        targetValue = dominantColor,
+        animationSpec = tween(600),
+        label = "dominant_color"
+    )
+    val animatedAccentColor by animateColorAsState(
+        targetValue = accentColor,
+        animationSpec = tween(600),
+        label = "accent_color"
+    )
 
     val trackDuration = if (uiState.durationMs > 0) uiState.durationMs else track.durationMs
     val currentPosition = if (isUserScrubbing) {
@@ -127,30 +198,50 @@ fun ExpandedPlayerScreen(
         label = "album_art_scale"
     )
 
-    Box(
+    val flipRotation by animateFloatAsState(
+        targetValue = if (isFlipped) 180f else 0f,
+        animationSpec = spring(
+            dampingRatio = 0.75f,
+            stiffness = Spring.StiffnessMediumLow
+        ),
+        label = "flip_card_rotation"
+    )
+
+    Surface(
         modifier = modifier
             .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    colors = listOf(
-                        Color(0xFF0D233C), // Ambient dark light blue glow
-                        Color(0xFF091626),
-                        Color(0xFF050E1A)
-                    )
-                )
+            .pointerInput(Unit) {
+                // Intercept and consume all touch and gesture events so underlying screens never move
+                detectTapGestures { }
+            }
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = { /* consume background clicks to prevent touch pass-through */ }
             )
-            .statusBarsPadding()
-            .padding(horizontal = 24.dp)
             .testTag("expanded_player_screen"),
-        contentAlignment = Alignment.TopCenter
+        color = Color(0xFF020610) // 100% OPAQUE base - ZERO reflection, ZERO transparency
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .widthIn(max = 500.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.SpaceBetween
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.TopCenter
         ) {
+            // Animated Bokeh Mode Background Layer
+            PlayerBokehBackground(
+                dominantColor = animatedDominantColor,
+                accentColor = animatedAccentColor
+            )
+
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+                    .padding(horizontal = 24.dp)
+                    .widthIn(max = 500.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.SpaceBetween
+            ) {
             // TOP BAR
             Row(
                 modifier = Modifier
@@ -184,7 +275,7 @@ fun ExpandedPlayerScreen(
                     Text(
                         text = track.genre,
                         style = MaterialTheme.typography.bodySmall.copy(
-                            color = XtremeLightBlue,
+                            color = animatedAccentColor,
                             fontWeight = FontWeight.SemiBold
                         )
                     )
@@ -231,47 +322,191 @@ fun ExpandedPlayerScreen(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // CENTER ALBUM ART WITH AMBIENT GLOW
+            // CENTER 3D FLIPPABLE ALBUM ART / CREDITS CARD WITH DYNAMIC GLOW
             Box(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth(),
                 contentAlignment = Alignment.Center
             ) {
-                // Ambient Glow Layer
+                // Adaptive Ambient Glow Layer matching album art
                 Box(
                     modifier = Modifier
-                        .size(260.dp)
-                        .clip(RoundedCornerShape(32.dp))
+                        .size(280.dp)
+                        .clip(RoundedCornerShape(36.dp))
                         .background(
                             Brush.radialGradient(
                                 colors = listOf(
-                                    XtremeLightBlue.copy(alpha = 0.35f),
-                                    XtremeCyan.copy(alpha = 0.2f),
+                                    animatedAccentColor.copy(alpha = 0.45f),
+                                    animatedDominantColor.copy(alpha = 0.25f),
                                     Color.Transparent
                                 )
                             )
                         )
                 )
 
-                // High-Res Rounded Squircle Artwork
-                AsyncImage(
-                    model = track.coverUrl,
-                    contentDescription = "Cover Art",
-                    contentScale = ContentScale.Crop,
+                // 3D Flippable Card
+                Box(
                     modifier = Modifier
                         .fillMaxWidth(albumArtScale)
                         .sizeIn(maxWidth = 330.dp, maxHeight = 330.dp)
                         .aspectRatio(1f)
+                        .graphicsLayer {
+                            rotationY = flipRotation
+                            cameraDistance = 14f * density
+                        }
                         .shadow(
                             elevation = 28.dp,
                             shape = RoundedCornerShape(24.dp),
-                            spotColor = XtremeLightBlue.copy(alpha = 0.5f),
+                            spotColor = animatedAccentColor.copy(alpha = 0.5f),
                             ambientColor = Color.Black
                         )
                         .clip(RoundedCornerShape(24.dp))
-                        .background(Color(0xFF14243B))
-                )
+                        .clickable {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            isFlipped = !isFlipped
+                        }
+                        .testTag("flip_album_art_card")
+                ) {
+                    if (flipRotation <= 90f) {
+                        // FRONT SIDE: Album Artwork
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            AsyncImage(
+                                model = track.coverUrl,
+                                contentDescription = "Cover Art - Tap to flip",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(Color(0xFF14243B))
+                            )
+
+                            // Subtle Hint pill at bottom
+                            Surface(
+                                color = Color.Black.copy(alpha = 0.58f),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .align(Alignment.BottomCenter)
+                                    .padding(bottom = 12.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Sync,
+                                        contentDescription = null,
+                                        tint = animatedAccentColor,
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "Tap to view song credits",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = Color.White
+                                    )
+                                }
+                            }
+                        }
+                    } else {
+                        // BACK SIDE: Song credits and information
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .graphicsLayer { rotationY = 180f }
+                                .background(
+                                    Brush.verticalGradient(
+                                        listOf(
+                                            animatedDominantColor.copy(alpha = 0.95f),
+                                            Color(0xFF0D1C2E),
+                                            Color(0xFF071220)
+                                        )
+                                    )
+                                )
+                                .border(
+                                    BorderStroke(1.5.dp, animatedAccentColor.copy(alpha = 0.65f)),
+                                    RoundedCornerShape(24.dp)
+                                )
+                                .padding(20.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                Surface(
+                                    color = animatedAccentColor.copy(alpha = 0.2f),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Info,
+                                            contentDescription = null,
+                                            tint = animatedAccentColor,
+                                            modifier = Modifier.size(13.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = "TRACK CREDITS & DETAILS",
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = animatedAccentColor,
+                                            letterSpacing = 1.sp
+                                        )
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(12.dp))
+
+                                Text(
+                                    text = track.title,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 17.sp,
+                                    color = TextPrimary,
+                                    textAlign = TextAlign.Center,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+
+                                Spacer(modifier = Modifier.height(12.dp))
+
+                                CreditDetailRow(
+                                    label = "Album / Movie",
+                                    value = track.album.ifBlank { "Original Single" }
+                                )
+                                CreditDetailRow(
+                                    label = "Singers / Artists",
+                                    value = if (track.singers.isNotBlank()) track.singers else track.artist
+                                )
+                                CreditDetailRow(
+                                    label = "Composer / Writer",
+                                    value = if (track.writer.isNotBlank()) track.writer else "Original Composer"
+                                )
+                                CreditDetailRow(
+                                    label = "Genre & Language",
+                                    value = "${track.genre} • ${if (track.language.isNotBlank()) track.language else "Hindi"}${if (track.year.isNotBlank()) " (${track.year})" else ""}"
+                                )
+                                CreditDetailRow(
+                                    label = "Audio Fidelity",
+                                    value = "${track.bitrateKbps} kbps Studio Master • 44.1 kHz"
+                                )
+
+                                Spacer(modifier = Modifier.height(12.dp))
+
+                                Text(
+                                    text = "🔄 Tap anywhere to flip back",
+                                    fontSize = 10.sp,
+                                    color = TextMuted,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                        }
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -560,10 +795,213 @@ fun ExpandedPlayerScreen(
         }
     }
 }
+}
 
 private fun formatTime(timeMs: Long): String {
     val totalSeconds = (timeMs / 1000).coerceAtLeast(0L)
     val minutes = totalSeconds / 60
     val seconds = totalSeconds % 60
     return String.format("%d:%02d", minutes, seconds)
+}
+
+@Composable
+private fun CreditDetailRow(label: String, value: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 3.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            fontSize = 11.sp,
+            color = TextMuted,
+            fontWeight = FontWeight.Medium
+        )
+        Text(
+            text = value,
+            fontSize = 12.sp,
+            color = TextPrimary,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .weight(1f, fill = false)
+                .padding(start = 12.dp),
+            textAlign = TextAlign.End
+        )
+    }
+}
+
+@Composable
+private fun PlayerBokehBackground(
+    dominantColor: Color,
+    accentColor: Color,
+    modifier: Modifier = Modifier
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "bokeh_transition")
+
+    val floatAnim1 by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(10000, easing = LinearEasing),
+            repeatMode = AnimationRepeatMode.Reverse
+        ),
+        label = "bokeh_float_1"
+    )
+
+    val floatAnim2 by infiniteTransition.animateFloat(
+        initialValue = 1f,
+        targetValue = 0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(13000, easing = LinearEasing),
+            repeatMode = AnimationRepeatMode.Reverse
+        ),
+        label = "bokeh_float_2"
+    )
+
+    val pulseAnim by infiniteTransition.animateFloat(
+        initialValue = 0.65f,
+        targetValue = 0.95f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(5500, easing = FastOutSlowInEasing),
+            repeatMode = AnimationRepeatMode.Reverse
+        ),
+        label = "bokeh_pulse"
+    )
+
+    Canvas(modifier = modifier.fillMaxSize()) {
+        val w = size.width
+        val h = size.height
+
+        // 1. Solid opaque base fill: guarantees no bleed-through from background screen
+        drawRect(color = Color(0xFF020610))
+
+        // 2. Large deep bokeh orb (Dominant album color) floating upper-left
+        val orb1Center = Offset(
+            x = w * (0.28f + 0.12f * (floatAnim1 - 0.5f)),
+            y = h * (0.26f + 0.10f * (floatAnim2 - 0.5f))
+        )
+        val orb1Radius = w * 0.78f
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    dominantColor.copy(alpha = 0.85f * pulseAnim),
+                    dominantColor.copy(alpha = 0.40f * pulseAnim),
+                    Color.Transparent
+                ),
+                center = orb1Center,
+                radius = orb1Radius
+            ),
+            center = orb1Center,
+            radius = orb1Radius
+        )
+
+        // 3. Medium vibrant bokeh orb (Accent album color) floating mid-right
+        val orb2Center = Offset(
+            x = w * (0.76f - 0.14f * (floatAnim2 - 0.5f)),
+            y = h * (0.44f + 0.12f * (floatAnim1 - 0.5f))
+        )
+        val orb2Radius = w * 0.68f
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    accentColor.copy(alpha = 0.75f * pulseAnim),
+                    accentColor.copy(alpha = 0.30f),
+                    Color.Transparent
+                ),
+                center = orb2Center,
+                radius = orb2Radius
+            ),
+            center = orb2Center,
+            radius = orb2Radius
+        )
+
+        // 4. Secondary bokeh orb (Electric cyan/deep blue) floating bottom-left
+        val orb3Center = Offset(
+            x = w * (0.32f + 0.16f * (floatAnim2 - 0.5f)),
+            y = h * (0.76f - 0.10f * (floatAnim1 - 0.5f))
+        )
+        val orb3Radius = w * 0.72f
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    Color(0xFF0284C7).copy(alpha = 0.60f * pulseAnim),
+                    dominantColor.copy(alpha = 0.25f),
+                    Color.Transparent
+                ),
+                center = orb3Center,
+                radius = orb3Radius
+            ),
+            center = orb3Center,
+            radius = orb3Radius
+        )
+
+        // 5. Distinct soft bokeh discs (camera blur circles of varying sizes)
+        // Disc A: Upper right glowing disc
+        val discARadius = w * 0.26f
+        val discACenter = Offset(w * 0.82f, h * 0.18f + 25f * (floatAnim1 - 0.5f))
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(accentColor.copy(alpha = 0.48f * pulseAnim), Color.Transparent),
+                center = discACenter,
+                radius = discARadius
+            ),
+            center = discACenter,
+            radius = discARadius
+        )
+
+        // Disc B: Mid left soft disc
+        val discBRadius = w * 0.20f
+        val discBCenter = Offset(w * 0.12f, h * 0.50f - 30f * (floatAnim2 - 0.5f))
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(dominantColor.copy(alpha = 0.52f), Color.Transparent),
+                center = discBCenter,
+                radius = discBRadius
+            ),
+            center = discBCenter,
+            radius = discBRadius
+        )
+
+        // Disc C: Bottom right disc
+        val discCRadius = w * 0.24f
+        val discCCenter = Offset(w * 0.84f, h * 0.80f + 20f * (floatAnim1 - 0.5f))
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(Color(0xFF00E5FF).copy(alpha = 0.40f * pulseAnim), Color.Transparent),
+                center = discCCenter,
+                radius = discCRadius
+            ),
+            center = discCCenter,
+            radius = discCRadius
+        )
+
+        // Disc D: Subtle center luminous micro-disc
+        val discDRadius = w * 0.14f
+        val discDCenter = Offset(w * 0.50f, h * 0.36f)
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(Color.White.copy(alpha = 0.22f), Color.Transparent),
+                center = discDCenter,
+                radius = discDRadius
+            ),
+            center = discDCenter,
+            radius = discDRadius
+        )
+
+        // 6. Deep cinematographic vignette overlay: ensures text and controls have pristine contrast
+        drawRect(
+            brush = Brush.verticalGradient(
+                colors = listOf(
+                    Color(0xFF020610).copy(alpha = 0.40f),
+                    Color.Transparent,
+                    Color(0xFF020610).copy(alpha = 0.65f),
+                    Color(0xFF020610).copy(alpha = 0.95f)
+                )
+            )
+        )
+    }
 }

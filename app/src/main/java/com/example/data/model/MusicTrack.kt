@@ -12,7 +12,11 @@ data class MusicTrack(
     val qualityBadge: String = "HD • 320 kbps",
     val genre: String = "Electronic",
     val isLiked: Boolean = false,
-    val isCached: Boolean = false
+    val isCached: Boolean = false,
+    val singers: String = "",
+    val writer: String = "",
+    val language: String = "Hindi",
+    val year: String = ""
 ) {
     fun formatDuration(): String {
         val totalSeconds = durationMs / 1000

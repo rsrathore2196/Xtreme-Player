@@ -55,9 +55,12 @@ import coil.compose.AsyncImage
 import com.example.data.model.MusicTrack
 import com.example.data.remote.MusicDataSource
 import com.example.playback.PlayerUiState
+import com.example.ui.theme.LocalAppColors
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
+import com.example.ui.theme.XtremeBorder
+import com.example.ui.theme.XtremeCard
 import com.example.ui.theme.XtremeCyan
 import com.example.ui.theme.XtremeGradients
 import com.example.ui.theme.XtremeGreen
@@ -78,19 +81,12 @@ fun SearchScreen(
 ) {
     val currentPlayingId = playerUiState.currentTrack?.id
     val hasQuery = searchState.query.isNotBlank()
-
-    val backgroundBrush = Brush.verticalGradient(
-        colors = listOf(
-            Color(0xFF0F253F),
-            Color(0xFF0A1524),
-            Color(0xFF060D17)
-        )
-    )
+    val appColors = LocalAppColors.current
 
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(backgroundBrush),
+            .background(XtremeGradients.ScreenBackground),
         contentAlignment = Alignment.TopCenter
     ) {
         LazyColumn(
@@ -103,7 +99,7 @@ fun SearchScreen(
         ) {
         // SEARCH INPUT BAR
         item {
-            Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp)) {
+            Column(modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 6.dp, bottom = 8.dp)) {
                 Text(
                     text = "Search Online Music",
                     style = MaterialTheme.typography.headlineSmall.copy(
@@ -155,10 +151,10 @@ fun SearchScreen(
                     singleLine = true,
                     shape = RoundedCornerShape(16.dp),
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedContainerColor = Color(0xFF0F2238),
-                        unfocusedContainerColor = Color(0xFF0F2238),
-                        focusedBorderColor = XtremeLightBlue,
-                        unfocusedBorderColor = Color(0xFF1B3C64),
+                        focusedContainerColor = appColors.inputBackground,
+                        unfocusedContainerColor = appColors.inputBackground,
+                        focusedBorderColor = appColors.primaryAccent,
+                        unfocusedBorderColor = appColors.cardBorder,
                         focusedTextColor = TextPrimary,
                         unfocusedTextColor = TextPrimary
                     ),
@@ -180,15 +176,15 @@ fun SearchScreen(
                     val isSelected = searchState.selectedGenre.equals(genre, ignoreCase = true)
                     Surface(
                         shape = RoundedCornerShape(20.dp),
-                        color = if (isSelected) XtremeLightBlue else Color(0xFF0F2238),
-                        border = if (!isSelected) BorderStroke(1.dp, Color(0xFF1B3C64)) else null,
+                        color = if (isSelected) appColors.primaryAccent else appColors.chipBackground,
+                        border = if (!isSelected) BorderStroke(1.dp, appColors.chipBorder) else null,
                         modifier = Modifier
                             .clip(RoundedCornerShape(20.dp))
                             .clickable { onSelectGenre(genre) }
                     ) {
                         Text(
                             text = genre,
-                            color = if (isSelected) Color(0xFF031428) else TextSecondary,
+                            color = if (isSelected) Color.White else TextSecondary,
                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
                             fontSize = 13.sp,
                             modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
@@ -217,8 +213,8 @@ fun SearchScreen(
 
                         Card(
                             shape = RoundedCornerShape(18.dp),
-                            colors = CardDefaults.cardColors(containerColor = Color(0xFF0F2238)),
-                            border = BorderStroke(1.dp, Color(0xFF1B3C64)),
+                            colors = CardDefaults.cardColors(containerColor = XtremeCard),
+                            border = BorderStroke(1.dp, XtremeBorder),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable { onTrackClick(top, results.songs) }

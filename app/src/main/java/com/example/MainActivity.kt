@@ -5,6 +5,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import com.example.ui.components.MainNavigationScaffold
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.viewmodel.PlayerViewModel
@@ -20,7 +22,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            MyApplicationTheme {
+            val isDarkMode by playerViewModel.isDarkMode.collectAsState()
+            MyApplicationTheme(darkTheme = isDarkMode) {
                 MainNavigationScaffold(viewModel = playerViewModel)
             }
         }
