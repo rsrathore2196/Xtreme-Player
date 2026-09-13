@@ -197,307 +197,271 @@ fun SettingsScreen(
                                                 .background(
                                                     if (effectsState.isEnabled) XtremeLightBlue.copy(alpha = 0.2f)
                                                     else Color(0xFF16253B)
-                                                ),
-                                            contentAlignment = Alignment.Center
+                                                )
                                         ) {
                                             Icon(
-                                                imageVector = Icons.Default.Tune,
-                                                contentDescription = "Equalizer",
-                                                tint = if (effectsState.isEnabled) XtremeLightBlue else TextMuted,
-                                                modifier = Modifier.size(20.dp)
+                                                imageVector = Icons.Default.Waves,
+                                                contentDescription = "Equalizer Master",
+                                                tint = if (effectsState.isEnabled) XtremeLightBlue else Color(0xFF4A7BA7),
+                                                modifier = Modifier
+                                                    .size(20.dp)
+                                                    .align(Alignment.Center)
                                             )
                                         }
-
                                         Spacer(modifier = Modifier.width(12.dp))
-
-                                        Column {
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                Text(
-                                                    text = "Audio Equalizer",
-                                                    fontWeight = FontWeight.Bold,
-                                                    fontSize = 15.sp,
-                                                    color = TextPrimary
-                                                )
-                                                Spacer(modifier = Modifier.width(6.dp))
-                                                Surface(
-                                                    color = if (effectsState.isEnabled) XtremeLightBlue.copy(alpha = 0.2f) else Color(0xFF1B2A3E),
-                                                    shape = RoundedCornerShape(6.dp)
-                                                ) {
-                                                    Text(
-                                                        text = if (effectsState.isEnabled) "ACTIVE" else "OFF (DEFAULT)",
-                                                        color = if (effectsState.isEnabled) XtremeLightBlue else TextMuted,
-                                                        fontSize = 9.sp,
-                                                        fontWeight = FontWeight.Bold,
-                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                                    )
-                                                }
-                                            }
-
+                                        Column(modifier = Modifier.weight(1f)) {
                                             Text(
-                                                text = if (effectsState.isEnabled) "Preset: ${effectsState.selectedPreset}"
-                                                else "Turn on to activate custom EQ curve",
-                                                fontSize = 12.sp,
-                                                color = if (effectsState.isEnabled) XtremeLightBlue else TextMuted,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
+                                                text = "Hardware Equalizer Master",
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 13.sp,
+                                                color = TextPrimary
                                             )
-                                        }
-                                    }
-
-                                    Spacer(modifier = Modifier.width(8.dp))
-
-                                    Switch(
-                                        checked = effectsState.isEnabled,
-                                        onCheckedChange = { onToggleEqualizer(it) },
-                                        colors = SwitchDefaults.colors(
-                                            checkedThumbColor = Color(0xFF031428),
-                                            checkedTrackColor = XtremeLightBlue,
-                                            uncheckedThumbColor = TextMuted,
-                                            uncheckedTrackColor = Color(0xFF1A2B42)
-                                        ),
-                                        modifier = Modifier.testTag("settings_equalizer_switch")
-                                    )
-                                }
-
-                                // Expanded Controls when Equalizer is ON
-                                AnimatedVisibility(
-                                    visible = effectsState.isEnabled,
-                                    enter = fadeIn(tween(200)) + expandVertically(),
-                                    exit = fadeOut(tween(150)) + shrinkVertically()
-                                ) {
-                                    Column(
-                                        modifier = Modifier.padding(top = 14.dp)
-                                    ) {
-                                        HorizontalDivider(color = Color(0xFF1B3554), thickness = 1.dp)
-
-                                        Spacer(modifier = Modifier.height(12.dp))
-
-                                        Text(
-                                            text = "QUICK PRESETS",
-                                            fontSize = 10.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            letterSpacing = 1.sp,
-                                            color = TextMuted
-                                        )
-
-                                        Spacer(modifier = Modifier.height(8.dp))
-
-                                        // Presets FlowRow for responsive wrapping without cutoffs
-                                        FlowRow(
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                                            modifier = Modifier.fillMaxWidth()
-                                        ) {
-                                            effectsState.availablePresets.forEach { preset ->
-                                                val isSelected = effectsState.selectedPreset.equals(preset, ignoreCase = true)
-                                                Surface(
-                                                    shape = RoundedCornerShape(10.dp),
-                                                    color = if (isSelected) XtremeLightBlue else Color(0xFF14243B),
-                                                    border = BorderStroke(
-                                                        1.dp,
-                                                        if (isSelected) XtremeLightBlue else Color(0xFF223C5E)
-                                                    ),
-                                                    modifier = Modifier.clickable { onSelectPreset(preset) }
-                                                ) {
-                                                    Text(
-                                                        text = preset,
-                                                        fontSize = 11.sp,
-                                                        fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.Medium,
-                                                        color = if (isSelected) Color(0xFF031428) else TextPrimary,
-                                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                                                    )
-                                                }
-                                            }
-                                        }
-
-                                        Spacer(modifier = Modifier.height(14.dp))
-
-                                        // Sound FX Info Row
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
                                             Text(
-                                                text = "Dynamic Bass: ${effectsState.bassBoostStrength / 10}% • 3D Spatializer: ${effectsState.virtualizerStrength / 10}%",
+                                                text = if (effectsState.isEnabled) "ON: Audio DSP pipeline active" else "OFF: Hardware effects disabled",
                                                 fontSize = 11.sp,
                                                 color = TextMuted
                                             )
                                         }
+                                    }
+                                    Switch(
+                                        checked = effectsState.isEnabled,
+                                        onCheckedChange = onToggleEqualizer,
+                                        colors = SwitchDefaults.colors(
+                                            checkedThumbColor = XtremeLightBlue,
+                                            checkedTrackColor = XtremeLightBlue.copy(alpha = 0.3f)
+                                        ),
+                                        modifier = Modifier.testTag("equalizer_master_switch")
+                                    )
+                                }
 
-                                        Spacer(modifier = Modifier.height(10.dp))
+                                AnimatedVisibility(
+                                    visible = effectsState.isEnabled,
+                                    enter = fadeIn(tween(200)) + expandVertically(tween(200)),
+                                    exit = fadeOut(tween(200)) + shrinkVertically(tween(200))
+                                ) {
+                                    Column(modifier = Modifier.padding(top = 14.dp)) {
+                                        HorizontalDivider(color = Color(0xFF162A42), thickness = 1.dp)
+
+                                        Spacer(modifier = Modifier.height(12.dp))
+
+                                        // Preset Buttons
+                                        Text(
+                                            text = "Equalizer Preset",
+                                            fontWeight = FontWeight.SemiBold,
+                                            fontSize = 12.sp,
+                                            color = TextPrimary,
+                                            modifier = Modifier.padding(bottom = 8.dp)
+                                        )
+
+                                        FlowRow(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(bottom = 10.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            listOf("Flat", "Crystal Clarity", "Bass Boost", "Vocal", "Hip-Hop").forEach { preset ->
+                                                Button(
+                                                    onClick = { onSelectPreset(preset) },
+                                                    colors = ButtonDefaults.buttonColors(
+                                                        containerColor = if (effectsState.selectedPreset == preset) XtremeLightBlue else Color(0xFF16253B),
+                                                        contentColor = if (effectsState.selectedPreset == preset) Color.Black else TextPrimary
+                                                    ),
+                                                    shape = RoundedCornerShape(8.dp),
+                                                    modifier = Modifier
+                                                        .height(32.dp)
+                                                        .testTag("preset_$preset")
+                                                ) {
+                                                    Text(
+                                                        text = preset,
+                                                        fontSize = 11.sp,
+                                                        fontWeight = FontWeight.SemiBold
+                                                    )
+                                                }
+                                            }
+                                        }
 
                                         Button(
                                             onClick = onOpenEqualizer,
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = XtremeLightBlue,
+                                                contentColor = Color.Black
+                                            ),
+                                            shape = RoundedCornerShape(8.dp),
                                             modifier = Modifier
                                                 .fillMaxWidth()
-                                                .testTag("open_equalizer_settings_button"),
-                                            colors = ButtonDefaults.buttonColors(
-                                                containerColor = Color(0xFF153356)
-                                            ),
-                                            shape = RoundedCornerShape(12.dp)
+                                                .height(40.dp)
+                                                .testTag("open_equalizer_button")
                                         ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Equalizer,
-                                                contentDescription = null,
-                                                tint = XtremeLightBlue,
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Text(
-                                                text = "Tune 5-Band Equalizer & FX Sliders",
-                                                color = TextPrimary,
-                                                fontSize = 13.sp,
-                                                fontWeight = FontWeight.SemiBold
-                                            )
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.Center
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Equalizer,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text(
+                                                    text = "Open 5-Band Parametric EQ",
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 12.sp
+                                                )
+                                            }
                                         }
                                     }
-                                }
-
-                                if (!effectsState.isEnabled) {
-                                    Text(
-                                        text = "Equalizer is turned off by default for pure raw playback. Switch on above to enable studio DSP, custom frequency curves, and bass enhancement.",
-                                        fontSize = 11.sp,
-                                        color = TextMuted,
-                                        lineHeight = 15.sp,
-                                        modifier = Modifier.padding(top = 10.dp)
-                                    )
                                 }
                             }
                         }
 
-                        // Crystal Clarity DSP Card
+                        // Audio Effect Options Card
                         Card(
-                            shape = RoundedCornerShape(16.dp),
-                            colors = CardDefaults.cardColors(
-                                containerColor = if (effectsState.crystalClarityEnabled) Color(0xFF0F253C) else Color(0xFF0C1726)
-                            ),
-                            border = BorderStroke(
-                                1.dp,
-                                if (effectsState.crystalClarityEnabled) XtremeCyan.copy(alpha = 0.5f) else Color(0xFF1B3554)
-                            ),
+                            shape = RoundedCornerShape(14.dp),
+                            colors = CardDefaults.cardColors(containerColor = Color(0xFF0C1726)),
+                            border = BorderStroke(1.dp, Color(0xFF1B3554)),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable { onCrystalClarityToggle(!effectsState.crystalClarityEnabled) }
-                                .testTag("crystal_clarity_toggle_card")
+                                .testTag("audio_effects_card")
                         ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(16.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(40.dp)
-                                        .clip(CircleShape)
-                                        .background(
-                                            if (effectsState.crystalClarityEnabled) XtremeCyan.copy(alpha = 0.2f)
-                                            else Color(0xFF16253B)
-                                        ),
-                                    contentAlignment = Alignment.Center
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                // Crystal Clear Engine
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "Crystal Clear Engine",
+                                            fontWeight = FontWeight.SemiBold,
+                                            fontSize = 13.sp,
+                                            color = TextPrimary
+                                        )
+                                        Text(
+                                            text = "8kHz Nyquist sharpening filter",
+                                            fontSize = 11.sp,
+                                            color = TextMuted
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Switch(
+                                        checked = effectsState.crystalClarityEnabled,
+                                        onCheckedChange = onCrystalClarityToggle,
+                                        colors = SwitchDefaults.colors(
+                                            checkedThumbColor = XtremeLightBlue,
+                                            checkedTrackColor = XtremeLightBlue.copy(alpha = 0.3f)
+                                        ),
+                                        modifier = Modifier.testTag("crystal_clarity_switch")
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // SECTION 2: Audio Quality
+            item {
+                SettingsSection(
+                    title = "Audio Quality & Streaming",
+                    icon = Icons.Default.HighQuality
+                ) {
+                    Card(
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF0C1726)),
+                        border = BorderStroke(1.dp, Color(0xFF1B3554)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("audio_quality_card")
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            // Quality Options
+                            AudioQuality.entries.forEach { quality ->
+                                val isSelected = playerUiState.selectedQuality == quality
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { onAudioQualitySelected(quality) }
+                                        .padding(8.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = quality.title,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                            fontSize = 13.sp,
+                                            color = if (isSelected) XtremeLightBlue else TextPrimary
+                                        )
+                                        Text(
+                                            text = quality.description,
+                                            fontSize = 11.sp,
+                                            color = TextMuted,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
                                     Icon(
-                                        imageVector = Icons.Default.Waves,
-                                        contentDescription = "Clarity",
-                                        tint = if (effectsState.crystalClarityEnabled) XtremeCyan else TextMuted,
+                                        imageVector = if (isSelected) Icons.Default.RadioButtonChecked else Icons.Default.RadioButtonUnchecked,
+                                        contentDescription = null,
+                                        tint = if (isSelected) XtremeLightBlue else Color(0xFF4A7BA7),
                                         modifier = Modifier.size(20.dp)
                                     )
                                 }
-
-                                Spacer(modifier = Modifier.width(12.dp))
-
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text(
-                                            text = "Crystal Clarity Engine",
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 14.sp,
-                                            color = TextPrimary
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Surface(
-                                            color = XtremeCyan.copy(alpha = 0.15f),
-                                            shape = RoundedCornerShape(6.dp)
-                                        ) {
-                                            Text(
-                                                text = "DSP",
-                                                color = XtremeCyan,
-                                                fontSize = 9.sp,
-                                                fontWeight = FontWeight.ExtraBold,
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                            )
-                                        }
-                                    }
-
-                                    Text(
-                                        text = "High-frequency harmonic exciter & acoustic soundstage expansion",
-                                        fontSize = 11.sp,
-                                        color = TextMuted,
-                                        lineHeight = 15.sp,
-                                        modifier = Modifier.padding(top = 2.dp)
-                                    )
+                                if (quality != AudioQuality.entries.last()) {
+                                    HorizontalDivider(color = Color(0xFF162A42), thickness = 1.dp)
                                 }
-
-                                Spacer(modifier = Modifier.width(8.dp))
-
-                                Switch(
-                                    checked = effectsState.crystalClarityEnabled,
-                                    onCheckedChange = { onCrystalClarityToggle(it) },
-                                    colors = SwitchDefaults.colors(
-                                        checkedThumbColor = Color(0xFF031428),
-                                        checkedTrackColor = XtremeCyan,
-                                        uncheckedThumbColor = TextMuted,
-                                        uncheckedTrackColor = Color(0xFF1A2B42)
-                                    )
-                                )
                             }
                         }
                     }
                 }
             }
 
-            // SECTION 2: Streaming Bitrate & Fidelity
+            // SECTION 3: Playback & Performance
             item {
                 SettingsSection(
-                    title = "Streaming & Audio Quality",
-                    icon = Icons.Default.HighQuality
-                ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        AudioQuality.entries.forEach { quality ->
-                            val isSelected = playerUiState.selectedQuality == quality
-                            QualityOptionCard(
-                                quality = quality,
-                                isSelected = isSelected,
-                                onSelect = { onAudioQualitySelected(quality) }
-                            )
-                        }
-                    }
-                }
-            }
-
-            // SECTION 3: Playback Engine & Architecture
-            item {
-                SettingsSection(
-                    title = "Playback Engine",
+                    title = "Playback & Performance",
                     icon = Icons.Default.Speed
                 ) {
                     Card(
                         shape = RoundedCornerShape(16.dp),
                         colors = CardDefaults.cardColors(containerColor = Color(0xFF0C1726)),
                         border = BorderStroke(1.dp, Color(0xFF1B3554)),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("playback_card")
                     ) {
-                        Column(
-                            modifier = Modifier.padding(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(14.dp)
-                        ) {
-                            SettingToggleRow(
-                                title = "Gapless & Crossfade Audio",
-                                subtitle = "Zero-latency track transition buffering",
-                                checked = gaplessEnabled,
-                                onCheckedChange = { gaplessEnabled = it }
-                            )
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "Gapless Playback",
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 13.sp,
+                                        color = TextPrimary
+                                    )
+                                    Text(
+                                        text = "Seamless queue transitions for continuous audio",
+                                        fontSize = 11.sp,
+                                        color = TextMuted
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Switch(
+                                    checked = gaplessEnabled,
+                                    onCheckedChange = { gaplessEnabled = it },
+                                    colors = SwitchDefaults.colors(
+                                        checkedThumbColor = XtremeLightBlue,
+                                        checkedTrackColor = XtremeLightBlue.copy(alpha = 0.3f)
+                                    ),
+                                    modifier = Modifier.testTag("gapless_switch")
+                                )
+                            }
 
                             HorizontalDivider(color = Color(0xFF162A42), thickness = 1.dp)
 
@@ -508,7 +472,7 @@ fun SettingsScreen(
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = "Audio Pipeline Precision",
+                                        text = "16-bit PCM Hardware Audio",
                                         fontWeight = FontWeight.SemiBold,
                                         fontSize = 13.sp,
                                         color = TextPrimary
@@ -618,7 +582,7 @@ fun SettingsScreen(
                                             color = XtremeLightBlue.copy(alpha = 0.2f)
                                         ) {
                                             Text(
-                                                text = "v1.2.0",
+                                                text = "v1.3.0",
                                                 fontSize = 10.sp,
                                                 fontWeight = FontWeight.Bold,
                                                 color = XtremeLightBlue,
@@ -645,99 +609,58 @@ fun SettingsScreen(
 
                             HorizontalDivider(color = Color(0xFF162A42), thickness = 1.dp)
 
-                            // Developer Credit Card
-                            Surface(
-                                shape = RoundedCornerShape(12.dp),
-                                color = Color(0xFF07111D),
-                                border = BorderStroke(1.dp, Color(0xFF182D46)),
+                            // Developer Info
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(38.dp)
-                                            .clip(CircleShape)
-                                            .background(Color(0xFF14273E)),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Person,
-                                            contentDescription = "Developer",
-                                            tint = XtremeLightBlue,
-                                            modifier = Modifier.size(20.dp)
-                                        )
-                                    }
-
-                                    Spacer(modifier = Modifier.width(12.dp))
-
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Text(
-                                                text = "Ravinder Singh",
-                                                fontWeight = FontWeight.Bold,
-                                                fontSize = 14.sp,
-                                                color = TextPrimary
-                                            )
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Icon(
-                                                imageVector = Icons.Default.Verified,
-                                                contentDescription = "Verified Developer",
-                                                tint = XtremeLightBlue,
-                                                modifier = Modifier.size(15.dp)
-                                            )
-                                        }
-                                        Text(
-                                            text = "Lead Developer & Audio Architect",
-                                            fontSize = 11.sp,
-                                            color = TextMuted
-                                        )
-                                    }
-                                }
-                            }
-
-                            // Tech Specs in clean responsive vertical rows (avoids collision on any screen width!)
-                            Column(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
+                                Icon(
+                                    imageVector = Icons.Default.Person,
+                                    contentDescription = "Developer",
+                                    tint = XtremeLightBlue,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = "Architecture",
+                                        text = "Developer",
+                                        fontWeight = FontWeight.SemiBold,
                                         fontSize = 11.sp,
                                         color = TextMuted
                                     )
                                     Text(
-                                        text = "Media3 1.5 • Android 14+",
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Medium,
+                                        text = "RS Rathore",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp,
                                         color = TextPrimary
                                     )
                                 }
+                            }
 
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
+                            // Verified Badge
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Verified,
+                                    contentDescription = "Verified",
+                                    tint = Color(0xFF10B981),
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = "Stream Fidelity",
+                                        text = "Build Status",
+                                        fontWeight = FontWeight.SemiBold,
                                         fontSize = 11.sp,
                                         color = TextMuted
                                     )
                                     Text(
-                                        text = "High-Res 320k Studio",
-                                        fontSize = 11.sp,
+                                        text = "✓ Production Ready (v1.3.0)",
                                         fontWeight = FontWeight.Bold,
-                                        color = XtremeLightBlue
+                                        fontSize = 12.sp,
+                                        color = Color(0xFF10B981)
                                     )
                                 }
                             }
@@ -750,145 +673,33 @@ fun SettingsScreen(
 }
 
 @Composable
-private fun SettingsSection(
+fun SettingsSection(
     title: String,
     icon: ImageVector,
+    modifier: Modifier = Modifier,
     content: @Composable () -> Unit
 ) {
-    Column(modifier = Modifier.fillMaxWidth()) {
+    Column(modifier = modifier.fillMaxWidth()) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(bottom = 10.dp)
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 12.dp)
         ) {
             Icon(
                 imageVector = icon,
-                contentDescription = null,
+                contentDescription = title,
                 tint = XtremeLightBlue,
-                modifier = Modifier.size(18.dp)
+                modifier = Modifier.size(22.dp)
             )
-            Spacer(modifier = Modifier.width(8.dp))
+            Spacer(modifier = Modifier.width(10.dp))
             Text(
                 text = title,
-                fontSize = 14.sp,
                 fontWeight = FontWeight.Bold,
+                fontSize = 15.sp,
                 color = TextPrimary
             )
         }
         content()
-    }
-}
-
-@Composable
-private fun QualityOptionCard(
-    quality: AudioQuality,
-    isSelected: Boolean,
-    onSelect: () -> Unit
-) {
-    val animatedBorderColor by animateColorAsState(
-        targetValue = if (isSelected) XtremeLightBlue else Color(0xFF1B3554),
-        label = "quality_border"
-    )
-    val animatedBgColor by animateColorAsState(
-        targetValue = if (isSelected) Color(0xFF0F2238) else Color(0xFF0C1726),
-        label = "quality_bg"
-    )
-
-    Card(
-        shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = animatedBgColor),
-        border = BorderStroke(1.dp, animatedBorderColor),
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onSelect() }
-            .testTag("quality_option_${quality.id}")
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(14.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                imageVector = if (isSelected) Icons.Default.RadioButtonChecked else Icons.Default.RadioButtonUnchecked,
-                contentDescription = null,
-                tint = if (isSelected) XtremeLightBlue else TextMuted,
-                modifier = Modifier.size(20.dp)
-            )
-
-            Spacer(modifier = Modifier.width(12.dp))
-
-            Column(modifier = Modifier.weight(1f)) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        text = quality.title,
-                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
-                        fontSize = 14.sp,
-                        color = TextPrimary,
-                        modifier = Modifier.weight(1f, fill = false)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Surface(
-                        shape = RoundedCornerShape(6.dp),
-                        color = if (isSelected) XtremeLightBlue.copy(alpha = 0.2f) else Color(0xFF16253B)
-                    ) {
-                        Text(
-                            text = quality.badge,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = if (isSelected) XtremeLightBlue else TextMuted,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
-                    }
-                }
-                Text(
-                    text = quality.description,
-                    fontSize = 11.sp,
-                    color = TextMuted,
-                    modifier = Modifier.padding(top = 2.dp)
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun SettingToggleRow(
-    title: String,
-    subtitle: String,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = title,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 13.sp,
-                color = TextPrimary
-            )
-            Text(
-                text = subtitle,
-                fontSize = 11.sp,
-                color = TextMuted
-            )
-        }
-        Spacer(modifier = Modifier.width(10.dp))
-        Switch(
-            checked = checked,
-            onCheckedChange = onCheckedChange,
-            colors = SwitchDefaults.colors(
-                checkedThumbColor = Color(0xFF031428),
-                checkedTrackColor = XtremeLightBlue,
-                uncheckedThumbColor = TextMuted,
-                uncheckedTrackColor = Color(0xFF1A2B42)
-            )
-        )
     }
 }
