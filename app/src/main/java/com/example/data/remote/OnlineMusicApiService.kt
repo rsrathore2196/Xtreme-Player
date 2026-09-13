@@ -1,8 +1,10 @@
 package com.example.data.remote
 
+import android.content.Context
 import android.text.Html
 import android.util.Base64
 import android.util.Log
+import com.example.config.SecurityConfig
 import com.example.data.model.MusicTrack
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -16,7 +18,26 @@ import javax.crypto.spec.SecretKeySpec
 
 object OnlineMusicApiService {
     private const val TAG = "OnlineMusicApiService"
-    private const val DES_KEY = "38346591"
+    private var context: Context? = null
+    private var cachedDESKey: String? = null
+
+    fun initialize(applicationContext: Context) {
+        context = applicationContext
+    }
+
+    /**
+     * Get DES key from secure storage.
+     * This method retrieves the key from Android KeyStore instead of hardcoding it.
+     */
+    private fun getDESKey(): String {
+        if (cachedDESKey != null) {
+            return cachedDESKey!!
+        }
+
+        val ctx = context ?: throw IllegalStateException("OnlineMusicApiService not initialized. Call initialize() in Application.onCreate()")
+        cachedDESKey = SecurityConfig.getDESKey(ctx)
+        return cachedDESKey!!
+    }
 
     private val httpClient by lazy {
         OkHttpClient.Builder()
@@ -31,8 +52,8 @@ object OnlineMusicApiService {
     fun decryptMediaUrl(encryptedUrl: String, targetQuality: String = "320"): String? {
         if (encryptedUrl.isBlank()) return null
         return try {
-            val keyBytes = DES_KEY.toByteArray(Charsets.UTF_8)
-            val keySpec = SecretKeySpec(keyBytes, "DES")
+            val keyBytes = getDESKey().toByteArray(Charsets.UTF_8)
+            val keySpec = SecretKeySpec(keyBytes, 0, 8, "DES")
             val cipher = Cipher.getInstance("DES/ECB/PKCS5Padding")
             cipher.init(Cipher.DECRYPT_MODE, keySpec)
 
@@ -97,10 +118,23 @@ object OnlineMusicApiService {
      */
     suspend fun getTrendingSongs(limit: Int = 25): List<MusicTrack> = withContext(Dispatchers.IO) {
         val candidates = listOf("Top Global Hits", "Trending 2024", "Viral Hits", "Latest Bollywood")
+        var lastException: Exception? = null
+
         for (candidate in candidates) {
-            val results = searchSongs(candidate, limit)
-            if (results.isNotEmpty()) return@withContext results
+            try {
+                val results = searchSongs(candidate, limit)
+                if (results.isNotEmpty()) {
+                    Log.i(TAG, "Fetched trending songs from: $candidate")
+                    return@withContext results
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to fetch trending from $candidate: ${e.message}")
+                lastException = e
+            }
         }
+
+        // Log failure with all attempts
+        Log.e(TAG, "Failed to fetch trending songs after all attempts. Last error: ${lastException?.message}")
         emptyList()
     }
 
