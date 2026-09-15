@@ -669,18 +669,21 @@ fun TrackListItem(
             )
             Spacer(modifier = Modifier.height(2.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
-                // 320k badge
+                // Source and quality badge
+                val isYt = track.source == "YouTube Music"
+                val badgeText = if (isYt) "YT Music" else "JioSaavn • 320k"
+                val badgeColor = if (isYt) Color(0xFFFF0033) else (if (isDark) XtremeLightBlue else Color(0xFF0284C7))
                 Box(
                     modifier = Modifier
                         .clip(RoundedCornerShape(3.dp))
-                        .background((if (isDark) XtremeLightBlue else Color(0xFF0284C7)).copy(alpha = 0.15f))
+                        .background(badgeColor.copy(alpha = 0.15f))
                         .padding(horizontal = 4.dp, vertical = 1.dp)
                 ) {
                     Text(
-                        text = "320k",
+                        text = badgeText,
                         fontSize = 9.sp,
                         fontWeight = FontWeight.Bold,
-                        color = if (isDark) XtremeLightBlue else Color(0xFF0284C7)
+                        color = badgeColor
                     )
                 }
                 Spacer(modifier = Modifier.width(6.dp))

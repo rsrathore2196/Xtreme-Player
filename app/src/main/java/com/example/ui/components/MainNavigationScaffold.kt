@@ -7,7 +7,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -95,6 +97,8 @@ fun MainNavigationScaffold(
     val effectsState by viewModel.effectsState.collectAsState()
     val isDarkMode by viewModel.isDarkMode.collectAsState()
     val homeShelves by viewModel.homeShelves.collectAsState()
+    val currentLyrics by viewModel.currentLyrics.collectAsState()
+    val availableAudioDevices by viewModel.availableAudioDevices.collectAsState()
 
     var selectedTabIndex by remember { mutableIntStateOf(0) }
     var isPlayerExpanded by remember { mutableStateOf(false) }
@@ -133,23 +137,27 @@ fun MainNavigationScaffold(
                         .fillMaxWidth()
                         .navigationBarsPadding()
                 ) {
-                    // Floating MiniPlayer (Animated smoothly in and out)
+                    // Floating MiniPlayer (Animated smoothly in and out with 120Hz high refresh rate response)
                     AnimatedVisibility(
                         visible = playerUiState.currentTrack != null && !isPlayerExpanded,
                         enter = slideInVertically(
                             animationSpec = spring(
-                                dampingRatio = 0.8f,
-                                stiffness = Spring.StiffnessMediumLow
+                                dampingRatio = 0.80f,
+                                stiffness = 420f
                             ),
                             initialOffsetY = { it }
-                        ) + fadeIn(animationSpec = tween(260)) + expandVertically(),
+                        ) + fadeIn(animationSpec = tween(220, easing = LinearOutSlowInEasing)) + expandVertically(
+                            animationSpec = spring(dampingRatio = 0.82f, stiffness = 420f)
+                        ),
                         exit = slideOutVertically(
                             animationSpec = spring(
-                                dampingRatio = 0.85f,
-                                stiffness = Spring.StiffnessMediumLow
+                                dampingRatio = 0.82f,
+                                stiffness = 420f
                             ),
                             targetOffsetY = { it }
-                        ) + fadeOut(animationSpec = tween(200)) + shrinkVertically()
+                        ) + fadeOut(animationSpec = tween(180, easing = FastOutLinearInEasing)) + shrinkVertically(
+                            animationSpec = spring(dampingRatio = 0.82f, stiffness = 420f)
+                        )
                     ) {
                         MiniPlayer(
                             uiState = playerUiState,
@@ -345,7 +353,8 @@ fun MainNavigationScaffold(
                                 playerUiState = playerUiState,
                                 onQueryChange = { q -> viewModel.onSearchQueryChange(q) },
                                 onSelectGenre = { g -> viewModel.selectGenre(g) },
-                                onTrackClick = { track, queue -> viewModel.playTrack(track, queue) },
+                                onSelectSource = { s -> viewModel.selectSource(s) },
+                                onTrackClick = { track, queue -> viewModel.playFromSearch(track, queue) },
                                 onToggleFavorite = { track -> viewModel.toggleLike(track) }
                             )
                             2 -> LibraryScreen(
@@ -374,23 +383,39 @@ fun MainNavigationScaffold(
             }
         }
 
-        // FULL SCREEN EXPANDED PLAYER (Animates vertically with smooth spring)
+        // FULL SCREEN EXPANDED PLAYER (Animates vertically with smooth 120Hz high-frame-rate spring)
         AnimatedVisibility(
             visible = isPlayerExpanded && playerUiState.currentTrack != null,
             enter = slideInVertically(
                 initialOffsetY = { it },
                 animationSpec = spring(
-                    dampingRatio = 0.85f,
-                    stiffness = Spring.StiffnessMediumLow
+                    dampingRatio = 0.82f,
+                    stiffness = 420f
                 )
-            ) + fadeIn(),
+            ) + fadeIn(
+                animationSpec = tween(220, easing = LinearOutSlowInEasing)
+            ) + scaleIn(
+                initialScale = 0.95f,
+                animationSpec = spring(
+                    dampingRatio = 0.82f,
+                    stiffness = 420f
+                )
+            ),
             exit = slideOutVertically(
                 targetOffsetY = { it },
                 animationSpec = spring(
-                    dampingRatio = 0.85f,
-                    stiffness = Spring.StiffnessMediumLow
+                    dampingRatio = 0.82f,
+                    stiffness = 420f
                 )
-            ) + fadeOut(),
+            ) + fadeOut(
+                animationSpec = tween(180, easing = FastOutLinearInEasing)
+            ) + scaleOut(
+                targetScale = 0.96f,
+                animationSpec = spring(
+                    dampingRatio = 0.82f,
+                    stiffness = 420f
+                )
+            ),
             modifier = Modifier.fillMaxSize()
         ) {
             ExpandedPlayerScreen(
@@ -404,7 +429,12 @@ fun MainNavigationScaffold(
                 onToggleRepeat = { viewModel.toggleRepeat() },
                 onToggleFavorite = { track -> viewModel.toggleLike(track) },
                 onOpenQueue = { isQueueOpen = true },
-                onAddToPlaylist = { track -> trackToAddToPlaylist = track }
+                onAddToPlaylist = { track -> trackToAddToPlaylist = track },
+                lyrics = currentLyrics,
+                onRetryLyrics = { viewModel.retryLyrics() },
+                availableAudioDevices = availableAudioDevices,
+                onSelectAudioDevice = { deviceId -> viewModel.selectAudioOutputDevice(deviceId) },
+                isDark = isDarkMode
             )
         }
 
@@ -415,7 +445,10 @@ fun MainNavigationScaffold(
                 currentTrack = playerUiState.currentTrack,
                 onTrackClick = { track -> viewModel.playTrack(track, playerUiState.queue) },
                 onMoveTrack = { from, to -> viewModel.reorderQueue(from, to) },
-                onDismiss = { isQueueOpen = false }
+                onDismiss = { isQueueOpen = false },
+                isAutoplayEnabled = playerUiState.isAutoplayEnabled,
+                nextRecommendedTrack = playerUiState.nextRecommendedTrack,
+                onToggleAutoplay = { viewModel.toggleAutoplay() }
             )
         }
 

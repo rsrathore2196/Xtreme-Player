@@ -60,9 +60,17 @@ object SecurityConfig {
             }
             storedKey
         } catch (e: Exception) {
-            android.util.Log.w("SecurityConfig", "KeyStore fallback engaged: ${e.message}")
+            try {
+                android.util.Log.w("SecurityConfig", "KeyStore fallback engaged: ${e.message}")
+            } catch (_: Throwable) {
+                // Ignore in standard JVM test environment
+            }
             resolveObfuscatedKey()
         }
+    }
+
+    fun getFallbackDESKey(): String {
+        return resolveObfuscatedKey()
     }
 
     /**

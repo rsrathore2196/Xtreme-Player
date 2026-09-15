@@ -8,6 +8,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -276,9 +277,9 @@ fun MiniPlayer(
 fun MiniAnimatedEqualizerBars() {
     val transition = rememberInfiniteTransition(label = "mini_eq_transition")
 
-    val height1 by transition.animateFloat(
-        initialValue = 4f,
-        targetValue = 14f,
+    val fraction1 by transition.animateFloat(
+        initialValue = 0.25f,
+        targetValue = 1.0f,
         animationSpec = infiniteRepeatable(
             animation = tween(400),
             repeatMode = RepeatMode.Reverse
@@ -286,9 +287,9 @@ fun MiniAnimatedEqualizerBars() {
         label = "eq_bar_1"
     )
 
-    val height2 by transition.animateFloat(
-        initialValue = 12f,
-        targetValue = 5f,
+    val fraction2 by transition.animateFloat(
+        initialValue = 0.85f,
+        targetValue = 0.35f,
         animationSpec = infiniteRepeatable(
             animation = tween(350),
             repeatMode = RepeatMode.Reverse
@@ -296,9 +297,9 @@ fun MiniAnimatedEqualizerBars() {
         label = "eq_bar_2"
     )
 
-    val height3 by transition.animateFloat(
-        initialValue = 6f,
-        targetValue = 15f,
+    val fraction3 by transition.animateFloat(
+        initialValue = 0.40f,
+        targetValue = 0.95f,
         animationSpec = infiniteRepeatable(
             animation = tween(450),
             repeatMode = RepeatMode.Reverse
@@ -306,31 +307,37 @@ fun MiniAnimatedEqualizerBars() {
         label = "eq_bar_3"
     )
 
-    Row(
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
-        verticalAlignment = Alignment.Bottom,
-        modifier = Modifier.height(14.dp)
+    Canvas(
+        modifier = Modifier
+            .size(width = 14.dp, height = 14.dp)
     ) {
-        Box(
-            modifier = Modifier
-                .width(2.5.dp)
-                .height(height1.dp)
-                .clip(RoundedCornerShape(1.dp))
-                .background(XtremeGreen)
+        val totalH = size.height
+        val barW = 2.5.dp.toPx()
+        val space = 2.dp.toPx()
+        val corner = androidx.compose.ui.geometry.CornerRadius(1.dp.toPx())
+
+        val h1 = (totalH * fraction1).coerceIn(3f, totalH)
+        drawRoundRect(
+            color = XtremeGreen,
+            topLeft = androidx.compose.ui.geometry.Offset(0f, totalH - h1),
+            size = androidx.compose.ui.geometry.Size(barW, h1),
+            cornerRadius = corner
         )
-        Box(
-            modifier = Modifier
-                .width(2.5.dp)
-                .height(height2.dp)
-                .clip(RoundedCornerShape(1.dp))
-                .background(XtremeGreen)
+
+        val h2 = (totalH * fraction2).coerceIn(3f, totalH)
+        drawRoundRect(
+            color = XtremeGreen,
+            topLeft = androidx.compose.ui.geometry.Offset(barW + space, totalH - h2),
+            size = androidx.compose.ui.geometry.Size(barW, h2),
+            cornerRadius = corner
         )
-        Box(
-            modifier = Modifier
-                .width(2.5.dp)
-                .height(height3.dp)
-                .clip(RoundedCornerShape(1.dp))
-                .background(XtremeGreen)
+
+        val h3 = (totalH * fraction3).coerceIn(3f, totalH)
+        drawRoundRect(
+            color = XtremeGreen,
+            topLeft = androidx.compose.ui.geometry.Offset((barW + space) * 2f, totalH - h3),
+            size = androidx.compose.ui.geometry.Size(barW, h3),
+            cornerRadius = corner
         )
     }
 }

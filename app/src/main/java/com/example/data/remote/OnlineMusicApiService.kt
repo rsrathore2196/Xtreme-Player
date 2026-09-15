@@ -34,8 +34,12 @@ object OnlineMusicApiService {
             return cachedDESKey!!
         }
 
-        val ctx = context ?: throw IllegalStateException("OnlineMusicApiService not initialized. Call initialize() in Application.onCreate()")
-        cachedDESKey = SecurityConfig.getDESKey(ctx)
+        val ctx = context
+        cachedDESKey = if (ctx != null) {
+            SecurityConfig.getDESKey(ctx)
+        } else {
+            SecurityConfig.getFallbackDESKey()
+        }
         return cachedDESKey!!
     }
 
@@ -58,16 +62,24 @@ object OnlineMusicApiService {
             cipher.init(Cipher.DECRYPT_MODE, keySpec)
 
             val decodedBytes = try {
-                android.util.Base64.decode(encryptedUrl, android.util.Base64.DEFAULT)
-            } catch (e: Throwable) {
                 java.util.Base64.getDecoder().decode(encryptedUrl)
+            } catch (_: Throwable) {
+                try {
+                    android.util.Base64.decode(encryptedUrl, android.util.Base64.DEFAULT)
+                } catch (e2: Throwable) {
+                    throw e2
+                }
             }
             val decryptedBytes = cipher.doFinal(decodedBytes)
             val rawUrl = String(decryptedBytes, Charsets.UTF_8)
 
             formatUrlForQuality(rawUrl, targetQuality)
         } catch (e: Exception) {
-            Log.e(TAG, "Error decrypting media URL: ${e.message}")
+            try {
+                Log.e(TAG, "Error decrypting media URL: ${e.message}")
+            } catch (_: Throwable) {
+                System.err.println("Error decrypting media URL: ${e.message}")
+            }
             null
         }
     }
@@ -218,6 +230,11 @@ object OnlineMusicApiService {
                 val is320k = item.optString("320kbps", "true").equals("true", ignoreCase = true)
                 val badge = if (is320k) "HD • 320 kbps" else "HQ • Lossless"
 
+                val moreInfo = item.optJSONObject("more_info")
+                val rawIsrc = item.optString("isrc", "").ifBlank {
+                    moreInfo?.optString("isrc", "") ?: ""
+                }.trim()
+
                 trackList.add(
                     MusicTrack(
                         id = "online_$id",
@@ -234,7 +251,8 @@ object OnlineMusicApiService {
                         singers = cleanSingers,
                         writer = cleanWriter,
                         language = rawLanguage,
-                        year = rawYear
+                        year = rawYear,
+                        isrc = rawIsrc
                     )
                 )
             }
@@ -254,6 +272,33 @@ object OnlineMusicApiService {
                 .replace("&lt;", "<")
                 .replace("&gt;", ">")
                 .trim()
+        }
+    }
+
+    /**
+     * Look up exact ISRC fingerprint for a JioSaavn song ID
+     */
+    suspend fun fetchSongIsrc(songId: String): String? = withContext(Dispatchers.IO) {
+        try {
+            val url = "https://www.jiosaavn.com/api.php?__call=song.getDetails&cc=in&_marker=0%3F_marker%3D0&_format=json&pids=$songId"
+            val request = Request.Builder()
+                .url(url)
+                .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                .build()
+            val response = httpClient.newCall(request).execute()
+            if (!response.isSuccessful) return@withContext null
+            val body = response.body?.string() ?: return@withContext null
+            val root = JSONObject(body)
+            val songObj = root.optJSONObject(songId)
+                ?: root.optJSONArray("songs")?.optJSONObject(0)
+                ?: root
+            val isrc = songObj.optString("isrc", "").ifBlank {
+                songObj.optJSONObject("more_info")?.optString("isrc", "") ?: ""
+            }
+            if (isrc.isNotBlank()) isrc.trim() else null
+        } catch (e: Exception) {
+            Log.d(TAG, "Failed to fetch song ISRC: ${e.message}")
+            null
         }
     }
 }

@@ -6,6 +6,8 @@ import androidx.lifecycle.viewModelScope
 import com.example.data.local.PlaylistEntity
 import com.example.data.local.PlaylistWithTracks
 import com.example.data.model.MusicTrack
+import com.example.data.model.TrackLyrics
+import com.example.data.remote.LyricsProvider
 import com.example.data.remote.MusicDataSource
 import com.example.data.repository.MusicRepository
 import com.example.data.repository.SearchResultCategory
@@ -25,7 +27,8 @@ data class SearchUiState(
     val query: String = "",
     val isSearching: Boolean = false,
     val selectedGenre: String = "All",
-    val result: SearchResultCategory = SearchResultCategory(null, emptyList(), emptyList(), emptyList())
+    val selectedSource: String = "All", // "All", "JioSaavn", "YouTube Music"
+    val result: SearchResultCategory = SearchResultCategory()
 )
 
 class PlayerViewModel(
@@ -34,6 +37,11 @@ class PlayerViewModel(
 ) : ViewModel() {
 
     val playerUiState: StateFlow<PlayerUiState> = playbackManager.uiState
+
+    private val _currentLyrics = MutableStateFlow<TrackLyrics?>(null)
+    val currentLyrics: StateFlow<TrackLyrics?> = _currentLyrics.asStateFlow()
+    private var lyricsJob: Job? = null
+    private var lastObservedTrackId: String? = null
 
     private val _catalogTracks = MutableStateFlow<List<MusicTrack>>(emptyList())
     val catalogTracks: StateFlow<List<MusicTrack>> = _catalogTracks.asStateFlow()
@@ -87,23 +95,86 @@ class PlayerViewModel(
 
     init {
         loadCatalog()
+        observeCurrentTrackForLyrics()
+    }
+
+    private fun observeCurrentTrackForLyrics() {
+        viewModelScope.launch {
+            playbackManager.uiState.collect { state ->
+                val track = state.currentTrack
+                if (track != null) {
+                    if (track.id != lastObservedTrackId) {
+                        lastObservedTrackId = track.id
+                        fetchLyricsForTrack(track, forceRefresh = false)
+                    }
+                } else {
+                    lastObservedTrackId = null
+                    lyricsJob?.cancel()
+                    _currentLyrics.value = null
+                }
+            }
+        }
+    }
+
+    fun retryLyrics() {
+        val track = playbackManager.uiState.value.currentTrack ?: return
+        fetchLyricsForTrack(track, forceRefresh = true)
+    }
+
+    private fun fetchLyricsForTrack(track: MusicTrack, forceRefresh: Boolean) {
+        lyricsJob?.cancel()
+        _currentLyrics.value = null
+        if (forceRefresh) {
+            LyricsProvider.clearCacheForTrack(track.id)
+        }
+        lyricsJob = viewModelScope.launch {
+            try {
+                val lyrics = LyricsProvider.getLyricsForTrack(track)
+                if (playbackManager.uiState.value.currentTrack?.id == track.id) {
+                    _currentLyrics.value = lyrics
+                }
+            } catch (e: Exception) {
+                if (playbackManager.uiState.value.currentTrack?.id == track.id) {
+                    _currentLyrics.value = TrackLyrics(
+                        trackId = track.id,
+                        title = track.title,
+                        artist = track.artist,
+                        isSynced = false,
+                        lines = emptyList()
+                    )
+                }
+            }
+        }
     }
 
     private fun loadCatalog() {
         viewModelScope.launch {
             val initial = repository.getInitialCatalog()
             _catalogTracks.value = initial
-            // If nothing playing yet, pre-populate player with top track ready to play
-            if (playbackManager.uiState.value.currentTrack == null && initial.isNotEmpty()) {
-                // Initialize queue without auto-starting audio
-            }
+            playbackManager.setCandidatePool(initial)
         }
+    }
+
+    fun toggleAutoplay() {
+        playbackManager.toggleAutoplay(_catalogTracks.value)
     }
 
     fun playTrack(track: MusicTrack, queue: List<MusicTrack> = _catalogTracks.value) {
         viewModelScope.launch {
             repository.markTrackPlayed(track)
             playbackManager.playTrack(track, queue)
+        }
+    }
+
+    /**
+     * Plays a track selected from search results.
+     * Prioritizes the same singer/artist's other songs and matching genre/type
+     * rather than blindly following the raw search list.
+     */
+    fun playFromSearch(track: MusicTrack, searchPool: List<MusicTrack>) {
+        viewModelScope.launch {
+            repository.markTrackPlayed(track)
+            playbackManager.playFromSearch(track, searchPool)
         }
     }
 
@@ -166,6 +237,9 @@ class PlayerViewModel(
                 val tracks = repository.getTracksByGenre(genre)
                 val results = SearchResultCategory(
                     topResult = tracks.firstOrNull(),
+                    exactMatches = tracks,
+                    similarTypeSongs = tracks,
+                    matchedGenreOrType = genre,
                     songs = tracks,
                     albums = tracks.map { it.album }.filter { it.isNotBlank() && it != "Single" && it != "Online Stream" }.distinct(),
                     artists = tracks.map { it.artist }.filter { it.isNotBlank() && it != "Unknown Artist" }.distinct()
@@ -173,6 +247,10 @@ class PlayerViewModel(
                 _searchState.update { it.copy(result = results, isSearching = false) }
             }
         }
+    }
+
+    fun selectSource(source: String) {
+        _searchState.update { it.copy(selectedSource = source) }
     }
 
     fun refreshCatalog() {
@@ -243,6 +321,10 @@ class PlayerViewModel(
         com.example.playback.AudioEffectsManager.setVirtualizer(strength)
     }
 
+    fun setLoudnessGain(gainMb: Int) {
+        com.example.playback.AudioEffectsManager.setLoudnessGain(gainMb)
+    }
+
     fun setEqualizerPreset(preset: String) {
         playbackManager.setEqualizerPreset(preset)
         com.example.playback.AudioEffectsManager.applyPreset(preset)
@@ -258,6 +340,16 @@ class PlayerViewModel(
 
     fun resetEqualizer() {
         com.example.playback.AudioEffectsManager.resetAll()
+    }
+
+    val availableAudioDevices: StateFlow<List<com.example.playback.SoundOutputDevice>> =
+        playbackManager.availableAudioDevices
+
+    val selectedAudioDeviceId: StateFlow<Int> =
+        playbackManager.selectedAudioDeviceId
+
+    fun selectAudioOutputDevice(deviceId: Int) {
+        playbackManager.selectAudioOutputDevice(deviceId)
     }
 
     fun reorderQueue(fromIndex: Int, toIndex: Int) {

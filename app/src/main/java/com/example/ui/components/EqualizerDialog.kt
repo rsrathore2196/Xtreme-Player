@@ -184,7 +184,10 @@ fun EqualizerDialog(
                         Surface(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(16.dp))
-                                .clickable(enabled = effectsState.isEnabled) {
+                                .clickable {
+                                    if (!effectsState.isEnabled) {
+                                        onEnableChanged(true)
+                                    }
                                     onPresetSelected(preset)
                                 },
                             color = if (isSelected && effectsState.isEnabled) XtremeLightBlue

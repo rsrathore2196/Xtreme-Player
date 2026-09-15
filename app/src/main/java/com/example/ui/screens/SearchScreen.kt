@@ -75,6 +75,7 @@ fun SearchScreen(
     playerUiState: PlayerUiState,
     onQueryChange: (String) -> Unit,
     onSelectGenre: (String) -> Unit,
+    onSelectSource: (String) -> Unit = {},
     onTrackClick: (MusicTrack, List<MusicTrack>) -> Unit,
     onToggleFavorite: (MusicTrack) -> Unit,
     modifier: Modifier = Modifier
@@ -82,6 +83,8 @@ fun SearchScreen(
     val currentPlayingId = playerUiState.currentTrack?.id
     val hasQuery = searchState.query.isNotBlank()
     val appColors = LocalAppColors.current
+
+    val sources = listOf("All", "JioSaavn", "YouTube Music")
 
     Box(
         modifier = modifier
@@ -162,6 +165,59 @@ fun SearchScreen(
                         .fillMaxWidth()
                         .testTag("search_query_input")
                 )
+            }
+        }
+
+        // SOURCE TOGGLE CHIPS (Combined JioSaavn + YouTube Music)
+        item {
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 20.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.padding(bottom = 6.dp)
+            ) {
+                items(sources) { src ->
+                    val isSelected = searchState.selectedSource.equals(src, ignoreCase = true)
+                    val label = when (src) {
+                        "All" -> "All Sources (Combined)"
+                        "YouTube Music" -> "YouTube Music"
+                        else -> "JioSaavn"
+                    }
+                    val badgeColor = when (src) {
+                        "YouTube Music" -> Color(0xFFFF0033)
+                        "JioSaavn" -> XtremeLightBlue
+                        else -> appColors.primaryAccent
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = if (isSelected) badgeColor.copy(alpha = 0.2f) else appColors.chipBackground,
+                        border = BorderStroke(
+                            1.dp,
+                            if (isSelected) badgeColor else appColors.chipBorder
+                        ),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(16.dp))
+                            .clickable { onSelectSource(src) }
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .clip(CircleShape)
+                                    .background(badgeColor)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = label,
+                                color = if (isSelected) TextPrimary else TextSecondary,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                }
             }
         }
 
@@ -290,11 +346,18 @@ fun SearchScreen(
                 }
             }
 
-            // SONGS LIST
-            if (results.songs.isNotEmpty()) {
+            // EXACT MATCHES / SONGS MATCHING QUERY
+            val rawList = if (results.exactMatches.isNotEmpty()) results.exactMatches else results.songs
+            val directList = when (searchState.selectedSource) {
+                "JioSaavn" -> (results.jioMatches.ifEmpty { rawList.filter { it.source != "YouTube Music" } })
+                "YouTube Music" -> (results.ytMatches.ifEmpty { rawList.filter { it.source == "YouTube Music" } })
+                else -> rawList
+            }
+            if (directList.isNotEmpty()) {
                 item {
+                    val sectionTitle = if (hasQuery) "Songs Matching \"${searchState.query.trim()}\"" else "Songs"
                     Text(
-                        text = "Songs",
+                        text = sectionTitle,
                         style = MaterialTheme.typography.titleMedium.copy(
                             fontWeight = FontWeight.Bold,
                             color = TextPrimary
@@ -303,7 +366,103 @@ fun SearchScreen(
                     )
                 }
 
-                items(results.songs) { song ->
+                items(directList) { song ->
+                    TrackListItem(
+                        track = song,
+                        isPlaying = song.id == currentPlayingId,
+                        onClick = { onTrackClick(song, results.songs) },
+                        onToggleFavorite = { onToggleFavorite(song) },
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
+                    )
+                }
+            }
+
+            // SAME SINGER'S OTHER SONGS
+            if (results.artistSongs.isNotEmpty()) {
+                item {
+                    val singerTitle = if (results.matchedArtistName.isNotBlank()) {
+                        "More by ${results.matchedArtistName}"
+                    } else {
+                        "Songs by Same Singer"
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = singerTitle,
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = TextPrimary
+                            ),
+                            modifier = Modifier.weight(1f)
+                        )
+                        Surface(
+                            color = XtremePurple.copy(alpha = 0.2f),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text(
+                                text = "Same Singer",
+                                color = XtremePurple,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
+                }
+
+                items(results.artistSongs) { song ->
+                    TrackListItem(
+                        track = song,
+                        isPlaying = song.id == currentPlayingId,
+                        onClick = { onTrackClick(song, results.songs) },
+                        onToggleFavorite = { onToggleFavorite(song) },
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
+                    )
+                }
+            }
+
+            // SAME TYPE / SAME GENRE SONGS
+            if (results.similarTypeSongs.isNotEmpty()) {
+                item {
+                    val genreTitle = if (results.matchedGenreOrType.isNotBlank()) {
+                        "Similar Songs • ${results.matchedGenreOrType} Vibe"
+                    } else {
+                        "Similar Songs & Same Type"
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = genreTitle,
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = TextPrimary
+                            ),
+                            modifier = Modifier.weight(1f)
+                        )
+                        Surface(
+                            color = XtremeCyan.copy(alpha = 0.2f),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text(
+                                text = "Same Vibe",
+                                color = XtremeCyan,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
+                }
+
+                items(results.similarTypeSongs) { song ->
                     TrackListItem(
                         track = song,
                         isPlaying = song.id == currentPlayingId,

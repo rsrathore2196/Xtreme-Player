@@ -1,7 +1,7 @@
 package com.example.ui.screens
 
+import android.content.Context
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -44,7 +44,6 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.RadioButtonChecked
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material.icons.filled.Waves
 import androidx.compose.material3.Button
@@ -53,7 +52,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -69,6 +67,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -81,8 +80,6 @@ import com.example.playback.AudioQuality
 import com.example.playback.PlayerUiState
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
-import com.example.ui.theme.TextSecondary
-import com.example.ui.theme.XtremeBorder
 import com.example.ui.theme.XtremeCard
 import com.example.ui.theme.XtremeCyan
 import com.example.ui.theme.XtremeGradients
@@ -103,6 +100,10 @@ fun SettingsScreen(
     modifier: Modifier = Modifier
 ) {
     var gaplessEnabled by remember { mutableStateOf(true) }
+
+    val defaultCardBorder = if (isDarkMode) Color(0xFF1E3554) else Color(0xFFCBD5E1)
+    val defaultDivider = if (isDarkMode) Color(0xFF162A42) else Color(0xFFE2E8F0)
+    val cardElevation = CardDefaults.cardElevation(defaultElevation = if (isDarkMode) 0.dp else 2.5.dp)
 
     Box(
         modifier = modifier
@@ -143,12 +144,13 @@ fun SettingsScreen(
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Surface(
-                                    color = XtremeLightBlue.copy(alpha = 0.15f),
+                                    color = if (isDarkMode) XtremeLightBlue.copy(alpha = 0.15f) else Color(0xFFDBEAFE),
+                                    border = BorderStroke(1.dp, if (isDarkMode) XtremeLightBlue.copy(alpha = 0.3f) else Color(0xFF93C5FD)),
                                     shape = RoundedCornerShape(6.dp)
                                 ) {
                                     Text(
                                         text = "STUDIO ENGINE",
-                                        color = XtremeLightBlue,
+                                        color = if (isDarkMode) XtremeLightBlue else Color(0xFF0284C7),
                                         fontSize = 9.sp,
                                         fontWeight = FontWeight.ExtraBold,
                                         letterSpacing = 0.8.sp,
@@ -171,19 +173,29 @@ fun SettingsScreen(
             item {
                 SettingsSection(
                     title = "Hardware Equalizer & Soundstage",
-                    icon = Icons.Default.GraphicEq
+                    icon = Icons.Default.GraphicEq,
+                    isDarkMode = isDarkMode
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         // Master Equalizer Card
                         Card(
                             shape = RoundedCornerShape(16.dp),
                             colors = CardDefaults.cardColors(
-                                containerColor = if (effectsState.isEnabled) XtremeLightBlue.copy(alpha = 0.12f) else XtremeCard
+                                containerColor = if (effectsState.isEnabled) {
+                                    if (isDarkMode) XtremeLightBlue.copy(alpha = 0.12f) else Color(0xFFEFF6FF)
+                                } else {
+                                    XtremeCard
+                                }
                             ),
                             border = BorderStroke(
-                                1.dp,
-                                if (effectsState.isEnabled) XtremeLightBlue.copy(alpha = 0.6f) else XtremeBorder
+                                1.2.dp,
+                                if (effectsState.isEnabled) {
+                                    if (isDarkMode) XtremeLightBlue.copy(alpha = 0.6f) else Color(0xFF0284C7)
+                                } else {
+                                    defaultCardBorder
+                                }
                             ),
+                            elevation = cardElevation,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .testTag("equalizer_master_card")
@@ -204,14 +216,32 @@ fun SettingsScreen(
                                                 .size(40.dp)
                                                 .clip(CircleShape)
                                                 .background(
-                                                    if (effectsState.isEnabled) XtremeLightBlue.copy(alpha = 0.2f)
-                                                    else Color(0xFF16253B)
+                                                    if (effectsState.isEnabled) {
+                                                        if (isDarkMode) XtremeLightBlue.copy(alpha = 0.2f) else Color(0xFFDBEAFE)
+                                                    } else {
+                                                        if (isDarkMode) Color(0xFF16253B) else Color(0xFFF1F5F9)
+                                                    }
+                                                )
+                                                .border(
+                                                    BorderStroke(
+                                                        1.dp,
+                                                        if (effectsState.isEnabled) {
+                                                            if (isDarkMode) XtremeLightBlue.copy(alpha = 0.4f) else Color(0xFF93C5FD)
+                                                        } else {
+                                                            if (isDarkMode) Color(0xFF1E3554) else Color(0xFFCBD5E1)
+                                                        }
+                                                    ),
+                                                    CircleShape
                                                 )
                                         ) {
                                             Icon(
                                                 imageVector = Icons.Default.Waves,
                                                 contentDescription = "Equalizer Master",
-                                                tint = if (effectsState.isEnabled) XtremeLightBlue else Color(0xFF4A7BA7),
+                                                tint = if (effectsState.isEnabled) {
+                                                    if (isDarkMode) XtremeLightBlue else Color(0xFF0284C7)
+                                                } else {
+                                                    if (isDarkMode) Color(0xFF4A7BA7) else Color(0xFF64748B)
+                                                },
                                                 modifier = Modifier
                                                     .size(20.dp)
                                                     .align(Alignment.Center)
@@ -236,8 +266,10 @@ fun SettingsScreen(
                                         checked = effectsState.isEnabled,
                                         onCheckedChange = onToggleEqualizer,
                                         colors = SwitchDefaults.colors(
-                                            checkedThumbColor = XtremeLightBlue,
-                                            checkedTrackColor = XtremeLightBlue.copy(alpha = 0.3f)
+                                            checkedThumbColor = if (isDarkMode) XtremeLightBlue else Color.White,
+                                            checkedTrackColor = if (isDarkMode) XtremeLightBlue.copy(alpha = 0.35f) else Color(0xFF0284C7),
+                                            uncheckedThumbColor = if (isDarkMode) Color(0xFF94A3B8) else Color(0xFF64748B),
+                                            uncheckedTrackColor = if (isDarkMode) Color(0xFF1E293B) else Color(0xFFE2E8F0)
                                         ),
                                         modifier = Modifier.testTag("equalizer_master_switch")
                                     )
@@ -249,7 +281,7 @@ fun SettingsScreen(
                                     exit = fadeOut(tween(200)) + shrinkVertically(tween(200))
                                 ) {
                                     Column(modifier = Modifier.padding(top = 14.dp)) {
-                                        HorizontalDivider(color = Color(0xFF162A42), thickness = 1.dp)
+                                        HorizontalDivider(color = defaultDivider, thickness = 1.dp)
 
                                         Spacer(modifier = Modifier.height(12.dp))
 
@@ -269,12 +301,29 @@ fun SettingsScreen(
                                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                                             verticalArrangement = Arrangement.spacedBy(8.dp)
                                         ) {
-                                            listOf("Flat", "Crystal Clarity", "Bass Boost", "Vocal", "Hip-Hop").forEach { preset ->
+                                            effectsState.availablePresets.forEach { preset ->
+                                                val isPresetSelected = effectsState.selectedPreset == preset
                                                 Button(
                                                     onClick = { onSelectPreset(preset) },
                                                     colors = ButtonDefaults.buttonColors(
-                                                        containerColor = if (effectsState.selectedPreset == preset) XtremeLightBlue else Color(0xFF16253B),
-                                                        contentColor = if (effectsState.selectedPreset == preset) Color.Black else TextPrimary
+                                                        containerColor = if (isPresetSelected) {
+                                                            if (isDarkMode) XtremeLightBlue else Color(0xFF0284C7)
+                                                        } else {
+                                                            if (isDarkMode) Color(0xFF16253B) else Color(0xFFF8FAFC)
+                                                        },
+                                                        contentColor = if (isPresetSelected) {
+                                                            if (isDarkMode) Color.Black else Color.White
+                                                        } else {
+                                                            if (isDarkMode) TextPrimary else Color(0xFF1E293B)
+                                                        }
+                                                    ),
+                                                    border = BorderStroke(
+                                                        1.dp,
+                                                        if (isPresetSelected) {
+                                                            if (isDarkMode) XtremeLightBlue else Color(0xFF0284C7)
+                                                        } else {
+                                                            if (isDarkMode) Color(0xFF263D5C) else Color(0xFFCBD5E1)
+                                                        }
                                                     ),
                                                     shape = RoundedCornerShape(8.dp),
                                                     modifier = Modifier
@@ -293,8 +342,8 @@ fun SettingsScreen(
                                         Button(
                                             onClick = onOpenEqualizer,
                                             colors = ButtonDefaults.buttonColors(
-                                                containerColor = XtremeLightBlue,
-                                                contentColor = Color.Black
+                                                containerColor = if (isDarkMode) XtremeLightBlue else Color(0xFF0284C7),
+                                                contentColor = if (isDarkMode) Color.Black else Color.White
                                             ),
                                             shape = RoundedCornerShape(8.dp),
                                             modifier = Modifier
@@ -328,7 +377,8 @@ fun SettingsScreen(
                         Card(
                             shape = RoundedCornerShape(14.dp),
                             colors = CardDefaults.cardColors(containerColor = XtremeCard),
-                            border = BorderStroke(1.dp, XtremeBorder),
+                            border = BorderStroke(1.2.dp, defaultCardBorder),
+                            elevation = cardElevation,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .testTag("audio_effects_card")
@@ -358,8 +408,10 @@ fun SettingsScreen(
                                         checked = effectsState.crystalClarityEnabled,
                                         onCheckedChange = onCrystalClarityToggle,
                                         colors = SwitchDefaults.colors(
-                                            checkedThumbColor = XtremeLightBlue,
-                                            checkedTrackColor = XtremeLightBlue.copy(alpha = 0.3f)
+                                            checkedThumbColor = if (isDarkMode) XtremeLightBlue else Color.White,
+                                            checkedTrackColor = if (isDarkMode) XtremeLightBlue.copy(alpha = 0.35f) else Color(0xFF0284C7),
+                                            uncheckedThumbColor = if (isDarkMode) Color(0xFF94A3B8) else Color(0xFF64748B),
+                                            uncheckedTrackColor = if (isDarkMode) Color(0xFF1E293B) else Color(0xFFE2E8F0)
                                         ),
                                         modifier = Modifier.testTag("crystal_clarity_switch")
                                     )
@@ -374,52 +426,80 @@ fun SettingsScreen(
             item {
                 SettingsSection(
                     title = "Audio Quality & Streaming",
-                    icon = Icons.Default.HighQuality
+                    icon = Icons.Default.HighQuality,
+                    isDarkMode = isDarkMode
                 ) {
                     Card(
                         shape = RoundedCornerShape(16.dp),
                         colors = CardDefaults.cardColors(containerColor = XtremeCard),
-                        border = BorderStroke(1.dp, XtremeBorder),
+                        border = BorderStroke(1.2.dp, defaultCardBorder),
+                        elevation = cardElevation,
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("audio_quality_card")
                     ) {
-                        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             // Quality Options
                             AudioQuality.entries.forEach { quality ->
                                 val isSelected = playerUiState.selectedQuality == quality
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable { onAudioQualitySelected(quality) }
-                                        .padding(8.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = if (isSelected) {
+                                        if (isDarkMode) XtremeLightBlue.copy(alpha = 0.12f) else Color(0xFFEFF6FF)
+                                    } else {
+                                        if (isDarkMode) Color.Transparent else Color(0xFFF8FAFC)
+                                    },
+                                    border = BorderStroke(
+                                        1.dp,
+                                        if (isSelected) {
+                                            if (isDarkMode) XtremeLightBlue.copy(alpha = 0.6f) else Color(0xFF0284C7)
+                                        } else {
+                                            if (isDarkMode) Color(0xFF1A2E47) else Color(0xFFE2E8F0)
+                                        }
+                                    ),
+                                    onClick = { onAudioQualitySelected(quality) },
+                                    modifier = Modifier.fillMaxWidth().testTag("quality_option_${quality.name}")
                                 ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            text = quality.title,
-                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                            fontSize = 13.sp,
-                                            color = if (isSelected) XtremeLightBlue else TextPrimary
-                                        )
-                                        Text(
-                                            text = quality.description,
-                                            fontSize = 11.sp,
-                                            color = TextMuted,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = quality.title,
+                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
+                                                fontSize = 13.sp,
+                                                color = if (isSelected) {
+                                                    if (isDarkMode) XtremeLightBlue else Color(0xFF0284C7)
+                                                } else {
+                                                    TextPrimary
+                                                }
+                                            )
+                                            Text(
+                                                text = quality.description,
+                                                fontSize = 11.sp,
+                                                color = TextMuted,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                        Icon(
+                                            imageVector = if (isSelected) Icons.Default.RadioButtonChecked else Icons.Default.RadioButtonUnchecked,
+                                            contentDescription = null,
+                                            tint = if (isSelected) {
+                                                if (isDarkMode) XtremeLightBlue else Color(0xFF0284C7)
+                                            } else {
+                                                if (isDarkMode) Color(0xFF4A7BA7) else Color(0xFF94A3B8)
+                                            },
+                                            modifier = Modifier.size(20.dp)
                                         )
                                     }
-                                    Icon(
-                                        imageVector = if (isSelected) Icons.Default.RadioButtonChecked else Icons.Default.RadioButtonUnchecked,
-                                        contentDescription = null,
-                                        tint = if (isSelected) XtremeLightBlue else Color(0xFF4A7BA7),
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
-                                if (quality != AudioQuality.entries.last()) {
-                                    HorizontalDivider(color = Color(0xFF162A42), thickness = 1.dp)
                                 }
                             }
                         }
@@ -431,12 +511,14 @@ fun SettingsScreen(
             item {
                 SettingsSection(
                     title = "Playback & Performance",
-                    icon = Icons.Default.Speed
+                    icon = Icons.Default.Speed,
+                    isDarkMode = isDarkMode
                 ) {
                     Card(
                         shape = RoundedCornerShape(16.dp),
                         colors = CardDefaults.cardColors(containerColor = XtremeCard),
-                        border = BorderStroke(1.dp, XtremeBorder),
+                        border = BorderStroke(1.2.dp, defaultCardBorder),
+                        elevation = cardElevation,
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("playback_card")
@@ -465,14 +547,16 @@ fun SettingsScreen(
                                     checked = gaplessEnabled,
                                     onCheckedChange = { gaplessEnabled = it },
                                     colors = SwitchDefaults.colors(
-                                        checkedThumbColor = XtremeLightBlue,
-                                        checkedTrackColor = XtremeLightBlue.copy(alpha = 0.3f)
+                                        checkedThumbColor = if (isDarkMode) XtremeLightBlue else Color.White,
+                                        checkedTrackColor = if (isDarkMode) XtremeLightBlue.copy(alpha = 0.35f) else Color(0xFF0284C7),
+                                        uncheckedThumbColor = if (isDarkMode) Color(0xFF94A3B8) else Color(0xFF64748B),
+                                        uncheckedTrackColor = if (isDarkMode) Color(0xFF1E293B) else Color(0xFFE2E8F0)
                                     ),
                                     modifier = Modifier.testTag("gapless_switch")
                                 )
                             }
 
-                            HorizontalDivider(color = Color(0xFF162A42), thickness = 1.dp)
+                            HorizontalDivider(color = defaultDivider, thickness = 1.dp, modifier = Modifier.padding(vertical = 12.dp))
 
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -495,19 +579,20 @@ fun SettingsScreen(
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Surface(
                                     shape = RoundedCornerShape(6.dp),
-                                    color = Color(0xFF112D4E)
+                                    color = if (isDarkMode) Color(0xFF112D4E) else Color(0xFFEFF6FF),
+                                    border = BorderStroke(1.dp, if (isDarkMode) Color(0xFF1E3A5F) else Color(0xFF93C5FD))
                                 ) {
                                     Text(
                                         text = "ACTIVE",
                                         fontSize = 10.sp,
                                         fontWeight = FontWeight.Bold,
-                                        color = XtremeLightBlue,
+                                        color = if (isDarkMode) XtremeLightBlue else Color(0xFF0284C7),
                                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                                     )
                                 }
                             }
 
-                            HorizontalDivider(color = Color(0xFF162A42), thickness = 1.dp)
+                            HorizontalDivider(color = defaultDivider, thickness = 1.dp, modifier = Modifier.padding(vertical = 12.dp))
 
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -530,13 +615,14 @@ fun SettingsScreen(
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Surface(
                                     shape = RoundedCornerShape(6.dp),
-                                    color = Color(0xFF0F3245)
+                                    color = if (isDarkMode) Color(0xFF0F3245) else Color(0xFFF0FDF4),
+                                    border = BorderStroke(1.dp, if (isDarkMode) Color(0xFF144D5A) else Color(0xFF86EFAC))
                                 ) {
                                     Text(
                                         text = "OPTIMIZED",
                                         fontSize = 10.sp,
                                         fontWeight = FontWeight.Bold,
-                                        color = XtremeCyan,
+                                        color = if (isDarkMode) XtremeCyan else Color(0xFF16A34A),
                                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                                     )
                                 }
@@ -550,12 +636,14 @@ fun SettingsScreen(
             item {
                 SettingsSection(
                     title = "App Theme & Appearance",
-                    icon = Icons.Default.Palette
+                    icon = Icons.Default.Palette,
+                    isDarkMode = isDarkMode
                 ) {
                     Card(
                         shape = RoundedCornerShape(16.dp),
                         colors = CardDefaults.cardColors(containerColor = XtremeCard),
-                        border = BorderStroke(1.dp, XtremeBorder),
+                        border = BorderStroke(1.2.dp, defaultCardBorder),
+                        elevation = cardElevation,
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("theme_settings_card")
@@ -584,10 +672,18 @@ fun SettingsScreen(
                                 Surface(
                                     onClick = { if (!isDarkMode) onToggleDarkMode() },
                                     shape = RoundedCornerShape(14.dp),
-                                    color = if (isDarkMode) (if (isDarkMode) XtremeLightBlue.copy(alpha = 0.15f) else Color(0xFF0284C7).copy(alpha = 0.10f)) else Color.Transparent,
+                                    color = if (isDarkMode) {
+                                        XtremeLightBlue.copy(alpha = 0.15f)
+                                    } else {
+                                        Color(0xFFF8FAFC)
+                                    },
                                     border = BorderStroke(
-                                        width = if (isDarkMode) 2.dp else 1.dp,
-                                        color = if (isDarkMode) XtremeLightBlue else XtremeBorder
+                                        width = if (isDarkMode) 2.dp else 1.2.dp,
+                                        color = if (isDarkMode) {
+                                            XtremeLightBlue
+                                        } else {
+                                            Color(0xFFCBD5E1)
+                                        }
                                     ),
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -613,13 +709,13 @@ fun SettingsScreen(
                                                             listOf(Color(0xFF000206), Color(0xFF0A1828))
                                                         )
                                                     )
-                                                    .border(BorderStroke(1.dp, Color(0xFF1E3A5F)), CircleShape),
+                                                    .border(BorderStroke(1.dp, if (isDarkMode) Color(0xFF1E3A5F) else Color(0xFFCBD5E1)), CircleShape),
                                                 contentAlignment = Alignment.Center
                                             ) {
                                                 Icon(
                                                     imageVector = Icons.Default.DarkMode,
                                                     contentDescription = null,
-                                                    tint = if (isDarkMode) XtremeLightBlue else Color(0xFF90A4AE),
+                                                    tint = if (isDarkMode) XtremeLightBlue else Color(0xFF64748B),
                                                     modifier = Modifier.size(22.dp)
                                                 )
                                             }
@@ -644,7 +740,7 @@ fun SettingsScreen(
                                         Icon(
                                             imageVector = if (isDarkMode) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
                                             contentDescription = null,
-                                            tint = if (isDarkMode) XtremeLightBlue else Color(0xFF4A6572),
+                                            tint = if (isDarkMode) XtremeLightBlue else Color(0xFF94A3B8),
                                             modifier = Modifier.size(24.dp)
                                         )
                                     }
@@ -654,10 +750,18 @@ fun SettingsScreen(
                                 Surface(
                                     onClick = { if (isDarkMode) onToggleDarkMode() },
                                     shape = RoundedCornerShape(14.dp),
-                                    color = if (!isDarkMode) (if (isDarkMode) XtremeLightBlue.copy(alpha = 0.15f) else Color(0xFF0284C7).copy(alpha = 0.12f)) else Color.Transparent,
+                                    color = if (!isDarkMode) {
+                                        Color(0xFF0284C7).copy(alpha = 0.12f)
+                                    } else {
+                                        Color.Transparent
+                                    },
                                     border = BorderStroke(
-                                        width = if (!isDarkMode) 2.dp else 1.dp,
-                                        color = if (!isDarkMode) (if (isDarkMode) XtremeLightBlue else Color(0xFF0284C7)) else XtremeBorder
+                                        width = if (!isDarkMode) 2.dp else 1.2.dp,
+                                        color = if (!isDarkMode) {
+                                            Color(0xFF0284C7)
+                                        } else {
+                                            Color(0xFF1E3554)
+                                        }
                                     ),
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -683,13 +787,13 @@ fun SettingsScreen(
                                                             listOf(Color(0xFFFFFFFF), Color(0xFFE2EDFB))
                                                         )
                                                     )
-                                                    .border(BorderStroke(1.dp, Color(0xFFB0BEC5)), CircleShape),
+                                                    .border(BorderStroke(1.dp, if (!isDarkMode) Color(0xFF93C5FD) else Color(0xFF64748B)), CircleShape),
                                                 contentAlignment = Alignment.Center
                                             ) {
                                                 Icon(
                                                     imageVector = Icons.Default.LightMode,
                                                     contentDescription = null,
-                                                    tint = if (!isDarkMode) Color(0xFF0066CC) else Color(0xFF90A4AE),
+                                                    tint = if (!isDarkMode) Color(0xFF0284C7) else Color(0xFF90A4AE),
                                                     modifier = Modifier.size(22.dp)
                                                 )
                                             }
@@ -701,7 +805,7 @@ fun SettingsScreen(
                                                     text = "Light Mode",
                                                     fontWeight = FontWeight.Bold,
                                                     fontSize = 15.sp,
-                                                    color = if (!isDarkMode) Color(0xFF0066CC) else TextPrimary
+                                                    color = if (!isDarkMode) Color(0xFF0284C7) else TextPrimary
                                                 )
                                                 Text(
                                                     text = "Crisp white & royal blue daylight palette",
@@ -714,7 +818,7 @@ fun SettingsScreen(
                                         Icon(
                                             imageVector = if (!isDarkMode) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
                                             contentDescription = null,
-                                            tint = if (!isDarkMode) Color(0xFF0066CC) else Color(0xFF4A6572),
+                                            tint = if (!isDarkMode) Color(0xFF0284C7) else Color(0xFF4A6572),
                                             modifier = Modifier.size(24.dp)
                                         )
                                     }
@@ -729,12 +833,14 @@ fun SettingsScreen(
             item {
                 SettingsSection(
                     title = "About App",
-                    icon = Icons.Default.Info
+                    icon = Icons.Default.Info,
+                    isDarkMode = isDarkMode
                 ) {
                     Card(
                         shape = RoundedCornerShape(16.dp),
                         colors = CardDefaults.cardColors(containerColor = XtremeCard),
-                        border = BorderStroke(1.dp, XtremeBorder),
+                        border = BorderStroke(1.2.dp, defaultCardBorder),
+                        elevation = cardElevation,
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("about_app_card")
@@ -767,13 +873,14 @@ fun SettingsScreen(
                                         Spacer(modifier = Modifier.width(8.dp))
                                         Surface(
                                             shape = RoundedCornerShape(6.dp),
-                                            color = XtremeLightBlue.copy(alpha = 0.2f)
+                                            color = if (isDarkMode) XtremeLightBlue.copy(alpha = 0.2f) else Color(0xFFDBEAFE),
+                                            border = BorderStroke(1.dp, if (isDarkMode) XtremeLightBlue.copy(alpha = 0.4f) else Color(0xFF93C5FD))
                                         ) {
                                             Text(
-                                                text = "v1.3.0",
+                                                text = "v1.4.0",
                                                 fontSize = 10.sp,
                                                 fontWeight = FontWeight.Bold,
-                                                color = XtremeLightBlue,
+                                                color = if (isDarkMode) XtremeLightBlue else Color(0xFF0284C7),
                                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                             )
                                         }
@@ -787,15 +894,15 @@ fun SettingsScreen(
                                 }
                             }
 
-                            // App Description Paragraph
+                            // App Description Paragraph: Dark slate in light mode so it never disappears!
                             Text(
                                 text = "Xtreme Player is a high-performance, studio-grade music player engineered for audiophiles. Delivering 320 kbps ultra-high definition streaming, real-time 5-band parametric equalization, dynamic bass enhancement, and 3D spatial virtualizer audio, all wrapped in a sleek, responsive interface.",
                                 fontSize = 12.sp,
-                                color = Color(0xFFCBD2E1),
+                                color = if (isDarkMode) Color(0xFFCBD2E1) else Color(0xFF334155),
                                 lineHeight = 18.sp
                             )
 
-                            HorizontalDivider(color = Color(0xFF162A42), thickness = 1.dp)
+                            HorizontalDivider(color = defaultDivider, thickness = 1.dp)
 
                             // Developer Info
                             Row(
@@ -805,7 +912,7 @@ fun SettingsScreen(
                                 Icon(
                                     imageVector = Icons.Default.Person,
                                     contentDescription = "Developer",
-                                    tint = XtremeLightBlue,
+                                    tint = if (isDarkMode) XtremeLightBlue else Color(0xFF0284C7),
                                     modifier = Modifier.size(20.dp)
                                 )
                                 Spacer(modifier = Modifier.width(10.dp))
@@ -833,7 +940,7 @@ fun SettingsScreen(
                                 Icon(
                                     imageVector = Icons.Default.Verified,
                                     contentDescription = "Verified",
-                                    tint = Color(0xFF10B981),
+                                    tint = if (isDarkMode) Color(0xFF10B981) else Color(0xFF059669),
                                     modifier = Modifier.size(20.dp)
                                 )
                                 Spacer(modifier = Modifier.width(10.dp))
@@ -845,10 +952,10 @@ fun SettingsScreen(
                                         color = TextMuted
                                     )
                                     Text(
-                                        text = "✓ Production Ready (v1.3.0)",
+                                        text = "✓ Production Ready (v1.4.0)",
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 12.sp,
-                                        color = Color(0xFF10B981)
+                                        color = if (isDarkMode) Color(0xFF10B981) else Color(0xFF059669)
                                     )
                                 }
                             }
@@ -864,6 +971,7 @@ fun SettingsScreen(
 fun SettingsSection(
     title: String,
     icon: ImageVector,
+    isDarkMode: Boolean = true,
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit
 ) {
@@ -877,7 +985,7 @@ fun SettingsSection(
             Icon(
                 imageVector = icon,
                 contentDescription = title,
-                tint = XtremeLightBlue,
+                tint = if (isDarkMode) XtremeLightBlue else Color(0xFF0284C7),
                 modifier = Modifier.size(22.dp)
             )
             Spacer(modifier = Modifier.width(10.dp))

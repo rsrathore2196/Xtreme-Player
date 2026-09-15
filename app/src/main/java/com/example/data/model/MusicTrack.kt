@@ -16,7 +16,9 @@ data class MusicTrack(
     val singers: String = "",
     val writer: String = "",
     val language: String = "Hindi",
-    val year: String = ""
+    val year: String = "",
+    val source: String = "JioSaavn",
+    val isrc: String = ""
 ) {
     fun formatDuration(): String {
         val totalSeconds = durationMs / 1000

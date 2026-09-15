@@ -16,7 +16,7 @@ class XtremeMusicApp : Application() {
         private set
 
     val playbackManager: PlaybackManager by lazy {
-        PlaybackManager(this)
+        PlaybackManager(this, repository)
     }
 
     override fun onCreate() {
@@ -51,6 +51,13 @@ class XtremeMusicApp : Application() {
         } catch (e: Exception) {
             android.util.Log.e("XtremeMusicApp", "Failed to initialize repository: ${e.message}")
             throw RuntimeException("Critical: Cannot initialize repository", e)
+        }
+
+        // Initialize Audio Output Device Manager
+        try {
+            com.example.playback.AudioDeviceManager.init(this)
+        } catch (e: Exception) {
+            android.util.Log.e("XtremeMusicApp", "Failed to initialize AudioDeviceManager: ${e.message}")
         }
     }
 

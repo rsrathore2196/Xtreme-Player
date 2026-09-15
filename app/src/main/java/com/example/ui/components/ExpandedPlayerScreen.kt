@@ -2,8 +2,14 @@ package com.example.ui.components
 
 import android.content.Intent
 import android.graphics.drawable.BitmapDrawable
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode as AnimationRepeatMode
@@ -17,16 +23,20 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -47,6 +57,7 @@ import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Cast
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.FormatQuote
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -61,6 +72,12 @@ import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.BluetoothAudio
+import androidx.compose.material.icons.filled.Headphones
+import androidx.compose.material.icons.filled.Usb
+import androidx.compose.runtime.collectAsState
+import com.example.playback.AudioDeviceManager
+import com.example.playback.SoundOutputDevice
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -129,18 +146,28 @@ fun ExpandedPlayerScreen(
     onOpenQueue: () -> Unit,
     onOpenEqualizer: () -> Unit = {},
     onAddToPlaylist: (MusicTrack) -> Unit,
+    lyrics: com.example.data.model.TrackLyrics? = null,
+    onRetryLyrics: () -> Unit = {},
+    availableAudioDevices: List<SoundOutputDevice> = emptyList(),
+    onSelectAudioDevice: (Int) -> Unit = {},
+    isDark: Boolean = LocalAppColors.current.isDark,
     modifier: Modifier = Modifier
 ) {
     val track = uiState.currentTrack ?: return
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
     val appColors = LocalAppColors.current
-    val isDark = appColors.isDark
 
     var isMenuOpen by remember { mutableStateOf(false) }
     var isUserScrubbing by remember { mutableStateOf(false) }
     var scrubPosition by remember { mutableFloatStateOf(0f) }
     var isFlipped by remember(track.id) { mutableStateOf(false) }
+    var showLyrics by remember(track.id) { mutableStateOf(false) }
+    var showSoundOutputDialog by remember { mutableStateOf(false) }
+
+    val fallbackDevices by AudioDeviceManager.availableDevices.collectAsState()
+    val effectiveDevices = if (availableAudioDevices.isNotEmpty()) availableAudioDevices else fallbackDevices
+    val activeOutputDevice = effectiveDevices.find { it.isSelected }
 
     // Dynamic color extracted from album art
     var dominantColor by remember(track.id) { mutableStateOf(Color(0xFF0F2B48)) }
@@ -208,6 +235,22 @@ fun ExpandedPlayerScreen(
             stiffness = Spring.StiffnessMediumLow
         ),
         label = "flip_card_rotation"
+    )
+
+    val lyricsInteractionSource = remember { MutableInteractionSource() }
+    val isLyricsPressed by lyricsInteractionSource.collectIsPressedAsState()
+
+    val lyricsButtonScale by animateFloatAsState(
+        targetValue = when {
+            isLyricsPressed -> 0.92f
+            showLyrics -> 1.06f
+            else -> 1.0f
+        },
+        animationSpec = spring(
+            dampingRatio = 0.65f,
+            stiffness = Spring.StiffnessMedium
+        ),
+        label = "lyrics_button_scale"
     )
 
     Surface(
@@ -328,13 +371,34 @@ fun ExpandedPlayerScreen(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // CENTER 3D FLIPPABLE ALBUM ART / CREDITS CARD WITH DYNAMIC GLOW
-            Box(
+            // CENTER: SMOOTH ANIMATED REPLACEMENT OF ALBUM ART WITH SYNCED LYRICS
+            AnimatedContent(
+                targetState = showLyrics,
+                transitionSpec = {
+                    (fadeIn(animationSpec = tween(380)) + scaleIn(initialScale = 0.92f, animationSpec = tween(380))) togetherWith
+                    (fadeOut(animationSpec = tween(280)) + scaleOut(targetScale = 0.92f, animationSpec = tween(280)))
+                },
+                label = "lyrics_album_art_transition",
                 modifier = Modifier
                     .weight(1f)
-                    .fillMaxWidth(),
-                contentAlignment = Alignment.Center
-            ) {
+                    .fillMaxWidth()
+            ) { isLyricsActive ->
+                if (isLyricsActive) {
+                    SyncedLyricsView(
+                        lyrics = lyrics,
+                        currentPositionMs = currentPosition,
+                        onSeekTo = onSeekTo,
+                        dominantColor = animatedDominantColor,
+                        accentColor = animatedAccentColor,
+                        isDark = isDark,
+                        onRetry = onRetryLyrics,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
                 // Adaptive Ambient Glow Layer matching album art
                 Box(
                     modifier = Modifier
@@ -482,8 +546,14 @@ fun ExpandedPlayerScreen(
                                     fontSize = 17.sp,
                                     color = TextPrimary,
                                     textAlign = TextAlign.Center,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .basicMarquee(
+                                            iterations = Int.MAX_VALUE,
+                                            initialDelayMillis = 1000
+                                        )
                                 )
 
                                 Spacer(modifier = Modifier.height(12.dp))
@@ -506,8 +576,14 @@ fun ExpandedPlayerScreen(
                                 )
                                 CreditDetailRow(
                                     label = "Audio Fidelity",
-                                    value = "${track.bitrateKbps} kbps Studio Master • 44.1 kHz"
+                                    value = "${track.bitrateKbps} kbps Studio Master • 44.1 kHz • 24-Bit Lossless"
                                 )
+                                if (track.isrc.isNotBlank()) {
+                                    CreditDetailRow(
+                                        label = "ISRC Code",
+                                        value = track.isrc
+                                    )
+                                }
 
                                 Spacer(modifier = Modifier.height(12.dp))
 
@@ -522,6 +598,8 @@ fun ExpandedPlayerScreen(
                     }
                 }
             }
+        }
+    }
 
             Spacer(modifier = Modifier.height(16.dp))
 
@@ -764,7 +842,7 @@ fun ExpandedPlayerScreen(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // BOTTOM BAR (Audio Output Switcher & Up-Next Queue sheet trigger)
+            // BOTTOM BAR (Lyrics Button on Left, Lossless Output Centered in Middle, Up-Next Queue on Right)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -772,47 +850,231 @@ fun ExpandedPlayerScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Audio Device / Speaker Status
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
+                // Action Button: Synced Lyrics Toggle (Left of Lossless Output)
+                IconButton(
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        showLyrics = !showLyrics
+                    },
+                    interactionSource = lyricsInteractionSource,
                     modifier = Modifier
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(if (isDark) Color(0xFF181B22) else Color(0xFFEFF6FF))
-                        .border(BorderStroke(1.dp, if (isDark) Color(0xFF263238) else Color(0xFFDBEAFE)), RoundedCornerShape(12.dp))
-                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                        .testTag("player_lyrics_button")
+                        .graphicsLayer {
+                            scaleX = lyricsButtonScale
+                            scaleY = lyricsButtonScale
+                        }
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Speaker,
-                        contentDescription = null,
-                        tint = if (isDark) XtremeCyan else Color(0xFF0284C7),
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "Lossless Output • 24-bit/48kHz",
-                        style = MaterialTheme.typography.bodySmall.copy(
-                            color = if (isDark) TextSecondary else Color(0xFF1E40AF),
-                            fontSize = 11.sp
+                    val lyricsBackground = if (showLyrics) {
+                        if (isDark) {
+                            Brush.linearGradient(
+                                colors = listOf(Color(0xFF0284C7), XtremeLightBlue)
+                            )
+                        } else {
+                            Brush.linearGradient(
+                                colors = listOf(Color(0xFF0284C7), Color(0xFF38BDF8))
+                            )
+                        }
+                    } else if (isLyricsPressed) {
+                        if (isDark) {
+                            Brush.linearGradient(
+                                colors = listOf(Color(0xFF1B2C44), Color(0xFF1B2C44))
+                            )
+                        } else {
+                            Brush.linearGradient(
+                                colors = listOf(Color(0xFFE0F2FE), Color(0xFFE0F2FE))
+                            )
+                        }
+                    } else {
+                        if (isDark) {
+                            Brush.linearGradient(
+                                colors = listOf(Color(0xFF142033), Color(0xFF142033))
+                            )
+                        } else {
+                            Brush.linearGradient(
+                                colors = listOf(Color(0xFFFFFFFF), Color(0xFFFFFFFF))
+                            )
+                        }
+                    }
+
+                    val lyricsBorder = if (showLyrics) {
+                        BorderStroke(
+                            1.5.dp,
+                            if (isDark) Color(0xFF7DD3FC) else Color(0xFF0284C7)
                         )
+                    } else if (isLyricsPressed) {
+                        BorderStroke(
+                            1.2.dp,
+                            if (isDark) XtremeLightBlue.copy(alpha = 0.7f) else Color(0xFF0284C7).copy(alpha = 0.7f)
+                        )
+                    } else {
+                        BorderStroke(
+                            1.2.dp,
+                            if (isDark) Color(0xFF243B5A) else Color(0xFFBFDBFE)
+                        )
+                    }
+
+                    val lyricsShadowElevation = if (showLyrics) {
+                        if (isDark) 10.dp else 6.dp
+                    } else {
+                        if (isDark) 0.dp else 2.dp
+                    }
+
+                    val lyricsShadowColor = if (showLyrics) {
+                        if (isDark) XtremeLightBlue.copy(alpha = 0.55f) else Color(0xFF0284C7).copy(alpha = 0.40f)
+                    } else {
+                        Color.Black.copy(alpha = 0.12f)
+                    }
+
+                    val targetIconTint = when {
+                        showLyrics -> Color.White
+                        isLyricsPressed -> if (isDark) Color(0xFF7DD3FC) else Color(0xFF0369A1)
+                        else -> if (isDark) XtremeLightBlue else Color(0xFF0284C7)
+                    }
+
+                    val lyricsIconTint by animateColorAsState(
+                        targetValue = targetIconTint,
+                        animationSpec = tween(150),
+                        label = "lyrics_icon_tint"
                     )
+
+                    Box(
+                        modifier = Modifier
+                            .size(42.dp)
+                            .shadow(
+                                elevation = lyricsShadowElevation,
+                                shape = RoundedCornerShape(12.dp),
+                                spotColor = lyricsShadowColor,
+                                ambientColor = if (isDark) Color(0xFF0284C7) else Color.Black
+                            )
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(lyricsBackground)
+                            .border(lyricsBorder, RoundedCornerShape(12.dp)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.FormatQuote,
+                            contentDescription = "Toggle Lyrics",
+                            tint = lyricsIconTint,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
                 }
 
-                // Action Button: Up Next Queue
+                // Sound Output Devices Button (Centered in middle)
+                Surface(
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        showSoundOutputDialog = true
+                    },
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (isDark) Color(0xFF142033) else Color(0xFFFFFFFF),
+                    border = BorderStroke(
+                        1.2.dp,
+                        if (activeOutputDevice?.isBluetooth == true) {
+                            if (isDark) animatedAccentColor.copy(alpha = 0.7f) else Color(0xFF0284C7)
+                        } else {
+                            if (isDark) Color(0xFF243B5A) else Color(0xFFBFDBFE)
+                        }
+                    ),
+                    shadowElevation = if (isDark) 0.dp else 2.dp,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 8.dp)
+                        .testTag("sound_output_device_button")
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+                    ) {
+                        Icon(
+                            imageVector = when {
+                                activeOutputDevice?.isBluetooth == true -> Icons.Default.BluetoothAudio
+                                activeOutputDevice?.isWired == true -> Icons.Default.Headphones
+                                activeOutputDevice?.isUsb == true -> Icons.Default.Usb
+                                else -> Icons.Default.Speaker
+                            },
+                            contentDescription = "Sound Output Devices",
+                            tint = if (activeOutputDevice?.isBluetooth == true) {
+                                if (isDark) animatedAccentColor else Color(0xFF0284C7)
+                            } else {
+                                if (isDark) XtremeCyan else Color(0xFF0284C7)
+                            },
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Lossless Output",
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF0F172A),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold
+                            ),
+                            maxLines = 1
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "• 24-bit/48kHz",
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                color = if (isDark) TextSecondary else Color(0xFF0284C7),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+
+                // Action Button: Up Next Queue (Right of Lossless Output)
                 IconButton(
                     onClick = onOpenQueue,
                     modifier = Modifier.testTag("player_queue_button")
                 ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.QueueMusic,
-                        contentDescription = "Up-Next Queue",
-                        tint = if (isDark) XtremeLightBlue else Color(0xFF0284C7),
-                        modifier = Modifier.size(26.dp)
-                    )
+                    Box(
+                        modifier = Modifier
+                            .size(42.dp)
+                            .shadow(
+                                elevation = if (isDark) 0.dp else 2.dp,
+                                shape = RoundedCornerShape(12.dp),
+                                spotColor = Color.Black.copy(alpha = 0.12f)
+                            )
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (isDark) Color(0xFF142033) else Color(0xFFFFFFFF))
+                            .border(
+                                BorderStroke(
+                                    1.2.dp,
+                                    if (isDark) Color(0xFF243B5A) else Color(0xFFBFDBFE)
+                                ),
+                                RoundedCornerShape(12.dp)
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                            contentDescription = "Up-Next Queue",
+                            tint = if (isDark) XtremeLightBlue else Color(0xFF0284C7),
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
                 }
             }
         }
     }
 }
+
+    // Sound Output Devices Popup Dialog
+    if (showSoundOutputDialog) {
+        SoundOutputDeviceDialog(
+            devices = effectiveDevices,
+            isDark = isDark,
+            onSelectDevice = { deviceId ->
+                onSelectAudioDevice(deviceId)
+                AudioDeviceManager.selectDevice(context, deviceId)
+            },
+            onDismiss = { showSoundOutputDialog = false }
+        )
+    }
 }
 
 private fun formatTime(timeMs: Long): String {
@@ -835,20 +1097,29 @@ private fun CreditDetailRow(label: String, value: String, isDark: Boolean = true
             text = label,
             fontSize = 11.sp,
             color = if (isDark) TextMuted else Color(0xFF64748B),
-            fontWeight = FontWeight.Medium
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.padding(end = 8.dp)
         )
-        Text(
-            text = value,
-            fontSize = 12.sp,
-            color = if (isDark) TextPrimary else Color(0xFF0F172A),
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
+        Box(
             modifier = Modifier
                 .weight(1f, fill = false)
-                .padding(start = 12.dp),
-            textAlign = TextAlign.End
-        )
+                .padding(start = 8.dp),
+            contentAlignment = Alignment.CenterEnd
+        ) {
+            Text(
+                text = value,
+                fontSize = 12.sp,
+                color = if (isDark) TextPrimary else Color(0xFF0F172A),
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                softWrap = false,
+                modifier = Modifier.basicMarquee(
+                    iterations = Int.MAX_VALUE,
+                    initialDelayMillis = 1000
+                ),
+                textAlign = TextAlign.End
+            )
+        }
     }
 }
 

@@ -78,7 +78,7 @@ val LightAppColors = AppThemeColors(
     scaffoldBackground = Color(0xFFF8FAFD),
     cardBackground = Color(0xFFFFFFFF),
     cardBackgroundElevated = Color(0xFFF0F6FF),
-    cardBorder = Color(0xFFDBEAFE), // Soft baby blue border
+    cardBorder = Color(0xFFCBD5E1), // Visible, crisp border for light mode shapes
     textPrimary = Color(0xFF0F172A), // Deep slate / navy high-contrast
     textSecondary = Color(0xFF1E40AF), // Rich royal blue
     textMuted = Color(0xFF64748B), // Slate muted
@@ -87,17 +87,17 @@ val LightAppColors = AppThemeColors(
     bottomBarBackground = Color(0xFFFFFFFF),
     bottomBarIndicator = Color(0xFFDBEAFE),
     bottomBarSelectedIcon = Color(0xFF0284C7),
-    bottomBarUnselectedIcon = Color(0xFF94A3B8),
+    bottomBarUnselectedIcon = Color(0xFF64748B),
     miniPlayerBackground = Brush.horizontalGradient(
         colors = listOf(
             Color(0xFFFFFFFF),
             Color(0xFFEFF6FF)
         )
     ),
-    miniPlayerBorder = Color(0xFFBFDBFE),
+    miniPlayerBorder = Color(0xFF94A3B8),
     inputBackground = Color(0xFFF1F5F9),
     chipBackground = Color(0xFFF0F6FF),
-    chipBorder = Color(0xFFDBEAFE),
+    chipBorder = Color(0xFFCBD5E1),
     dividerColor = Color(0xFFE2E8F0)
 )
 

@@ -27,7 +27,9 @@ data class TrackEntity(
     val singers: String = "",
     val writer: String = "",
     val language: String = "",
-    val year: String = ""
+    val year: String = "",
+    val source: String = "JioSaavn",
+    val isrc: String = ""
 ) {
     fun toMusicTrack(): MusicTrack = MusicTrack(
         id = id,
@@ -45,7 +47,9 @@ data class TrackEntity(
         singers = singers,
         writer = writer,
         language = if (language.isNotBlank()) language else "Hindi",
-        year = year
+        year = year,
+        source = if (source.isNotBlank()) source else "JioSaavn",
+        isrc = isrc
     )
 
     companion object {
@@ -66,7 +70,9 @@ data class TrackEntity(
             singers = track.singers,
             writer = track.writer,
             language = track.language,
-            year = track.year
+            year = track.year,
+            source = track.source,
+            isrc = track.isrc
         )
     }
 }
