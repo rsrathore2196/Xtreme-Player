@@ -20,40 +20,40 @@ abstract class MusicDatabase : RoomDatabase() {
         private var INSTANCE: MusicDatabase? = null
 
         private val MIGRATION_1_2 = object : Migration(1, 2) {
-            override fun migrate(database: SupportSQLiteDatabase) {
+            override fun migrate(db: SupportSQLiteDatabase) {
                 // Version 1 to 2 transition
             }
         }
 
         private val MIGRATION_2_3 = object : Migration(2, 3) {
-            override fun migrate(database: SupportSQLiteDatabase) {
+            override fun migrate(db: SupportSQLiteDatabase) {
                 try {
-                    database.execSQL("ALTER TABLE tracks ADD COLUMN singers TEXT NOT NULL DEFAULT ''")
+                    db.execSQL("ALTER TABLE tracks ADD COLUMN singers TEXT NOT NULL DEFAULT ''")
                 } catch (_: Exception) {}
                 try {
-                    database.execSQL("ALTER TABLE tracks ADD COLUMN writer TEXT NOT NULL DEFAULT ''")
+                    db.execSQL("ALTER TABLE tracks ADD COLUMN writer TEXT NOT NULL DEFAULT ''")
                 } catch (_: Exception) {}
                 try {
-                    database.execSQL("ALTER TABLE tracks ADD COLUMN language TEXT NOT NULL DEFAULT ''")
+                    db.execSQL("ALTER TABLE tracks ADD COLUMN language TEXT NOT NULL DEFAULT ''")
                 } catch (_: Exception) {}
                 try {
-                    database.execSQL("ALTER TABLE tracks ADD COLUMN year TEXT NOT NULL DEFAULT ''")
+                    db.execSQL("ALTER TABLE tracks ADD COLUMN year TEXT NOT NULL DEFAULT ''")
                 } catch (_: Exception) {}
             }
         }
 
         private val MIGRATION_3_4 = object : Migration(3, 4) {
-            override fun migrate(database: SupportSQLiteDatabase) {
+            override fun migrate(db: SupportSQLiteDatabase) {
                 try {
-                    database.execSQL("ALTER TABLE tracks ADD COLUMN source TEXT NOT NULL DEFAULT 'JioSaavn'")
+                    db.execSQL("ALTER TABLE tracks ADD COLUMN source TEXT NOT NULL DEFAULT 'JioSaavn'")
                 } catch (_: Exception) {}
             }
         }
 
         private val MIGRATION_4_5 = object : Migration(4, 5) {
-            override fun migrate(database: SupportSQLiteDatabase) {
+            override fun migrate(db: SupportSQLiteDatabase) {
                 try {
-                    database.execSQL("ALTER TABLE tracks ADD COLUMN isrc TEXT NOT NULL DEFAULT ''")
+                    db.execSQL("ALTER TABLE tracks ADD COLUMN isrc TEXT NOT NULL DEFAULT ''")
                 } catch (_: Exception) {}
             }
         }

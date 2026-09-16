@@ -182,6 +182,8 @@ object OnlineMusicApiService {
 
                 val rawTitle = item.optString("song", "")
                 val cleanTitle = cleanHtml(rawTitle)
+                    .replace(Regex("(?i)\\b(?:youtube\\s*music|youtube|jiosaavn|saavn)\\b"), "")
+                    .trim()
 
                 val rawArtist = item.optString("primary_artists", "").ifBlank {
                     item.optString("singers", "").ifBlank {
@@ -189,9 +191,13 @@ object OnlineMusicApiService {
                     }
                 }
                 val cleanArtist = cleanHtml(rawArtist)
+                    .replace(Regex("(?i)\\b(?:youtube\\s*music|youtube|jiosaavn|saavn)\\b"), "")
+                    .trim().ifBlank { "Various Artists" }
 
                 val rawAlbum = item.optString("album", "Single")
                 val cleanAlbum = cleanHtml(rawAlbum)
+                    .replace(Regex("(?i)\\b(?:youtube\\s*music|youtube|jiosaavn|saavn)\\b"), "")
+                    .trim().ifBlank { "HD Stream" }
 
                 val rawImage = item.optString("image", "")
                 // High-resolution 500x500 album art

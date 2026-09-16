@@ -246,10 +246,10 @@ class MusicRepository(private val musicDao: MusicDao) {
             .distinctBy { "${it.title.lowercase()}_${it.artist.lowercase()}" }
 
         val albums = allSongs.map { it.album }
-            .filter { it.isNotBlank() && it != "Single" && it != "Online Stream" && it != "YouTube Music" }
+            .filter { it.isNotBlank() && it != "Single" && it != "Online Stream" && it != "YouTube Music" && it != "Extended Stream" }
             .distinct()
         val artists = allSongs.map { it.artist }
-            .filter { it.isNotBlank() && it != "Unknown Artist" && it != "YouTube Artist" }
+            .filter { it.isNotBlank() && it != "Unknown Artist" && it != "YouTube Artist" && it != "Online Artist" }
             .distinct()
 
         val categoryResult = SearchResultCategory(

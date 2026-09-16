@@ -21,8 +21,11 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.Clear
@@ -40,14 +43,18 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -83,8 +90,19 @@ fun SearchScreen(
     val currentPlayingId = playerUiState.currentTrack?.id
     val hasQuery = searchState.query.isNotBlank()
     val appColors = LocalAppColors.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
+    val listState = rememberLazyListState()
 
-    val sources = listOf("All", "JioSaavn", "YouTube Music")
+    // Automatically close keyboard when user starts scrolling the results list
+    LaunchedEffect(listState.isScrollInProgress) {
+        if (listState.isScrollInProgress) {
+            keyboardController?.hide()
+            focusManager.clearFocus()
+        }
+    }
+
+    val sources = listOf("All", "HD Stream", "Extended Stream")
 
     Box(
         modifier = modifier
@@ -93,6 +111,7 @@ fun SearchScreen(
         contentAlignment = Alignment.TopCenter
     ) {
         LazyColumn(
+            state = listState,
             modifier = Modifier
                 .fillMaxWidth()
                 .widthIn(max = 640.dp)
@@ -119,7 +138,15 @@ fun SearchScreen(
 
                 OutlinedTextField(
                     value = searchState.query,
-                    onValueChange = onQueryChange,
+                    onValueChange = { newText ->
+                        if (newText.contains('\n')) {
+                            keyboardController?.hide()
+                            focusManager.clearFocus()
+                            onQueryChange(newText.replace("\n", "").trim())
+                        } else {
+                            onQueryChange(newText)
+                        }
+                    },
                     placeholder = {
                         Text(
                             text = "What do you want to play?",
@@ -135,22 +162,102 @@ fun SearchScreen(
                         )
                     },
                     trailingIcon = {
-                        if (searchState.isSearching) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(18.dp),
-                                strokeWidth = 2.dp,
-                                color = XtremeLightBlue
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.End,
+                            modifier = Modifier.padding(end = 8.dp)
+                        ) {
+                            if (searchState.isSearching) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                    color = appColors.primaryAccent
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                            } else if (hasQuery) {
+                                IconButton(
+                                    onClick = { 
+                                        onQueryChange("") 
+                                        keyboardController?.hide()
+                                        focusManager.clearFocus()
+                                    },
+                                    modifier = Modifier.size(26.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Clear,
+                                        contentDescription = "Clear",
+                                        tint = TextMuted,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(6.dp))
+                            }
+
+                            // Sleek, compact and modern aesthetic circular search button
+                            val activeBrush = if (appColors.isDark) {
+                                Brush.linearGradient(listOf(XtremeLightBlue, XtremeCyan))
+                            } else {
+                                Brush.linearGradient(listOf(Color(0xFF0284C7), Color(0xFF38BDF8)))
+                            }
+                            val inactiveBrush = Brush.linearGradient(
+                                if (appColors.isDark) {
+                                    listOf(Color(0xFF16253B), Color(0xFF0F1B2B))
+                                } else {
+                                    listOf(Color(0xFFF1F5F9), Color(0xFFE2E8F0))
+                                }
                             )
-                        } else if (hasQuery) {
-                            IconButton(onClick = { onQueryChange("") }) {
+
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .clip(CircleShape)
+                                    .background(if (hasQuery) activeBrush else inactiveBrush)
+                                    .border(
+                                        width = 1.dp,
+                                        color = if (hasQuery) {
+                                            (if (appColors.isDark) XtremeLightBlue else Color(0xFF0284C7)).copy(alpha = 0.6f)
+                                        } else {
+                                            appColors.chipBorder.copy(alpha = 0.5f)
+                                        },
+                                        shape = CircleShape
+                                    )
+                                    .clickable {
+                                        keyboardController?.hide()
+                                        focusManager.clearFocus()
+                                    }
+                                    .testTag("finish_search_button")
+                            ) {
                                 Icon(
-                                    imageVector = Icons.Default.Clear,
-                                    contentDescription = "Clear",
-                                    tint = TextMuted
+                                    imageVector = Icons.Default.Search,
+                                    contentDescription = "Finish search",
+                                    tint = if (hasQuery) {
+                                        if (appColors.isDark) Color(0xFF031428) else Color.White
+                                    } else {
+                                        TextMuted
+                                    },
+                                    modifier = Modifier.size(15.dp)
                                 )
                             }
                         }
                     },
+                    keyboardOptions = KeyboardOptions(
+                        imeAction = ImeAction.Search
+                    ),
+                    keyboardActions = KeyboardActions(
+                        onSearch = {
+                            keyboardController?.hide()
+                            focusManager.clearFocus()
+                        },
+                        onDone = {
+                            keyboardController?.hide()
+                            focusManager.clearFocus()
+                        },
+                        onGo = {
+                            keyboardController?.hide()
+                            focusManager.clearFocus()
+                        }
+                    ),
                     singleLine = true,
                     shape = RoundedCornerShape(16.dp),
                     colors = OutlinedTextFieldDefaults.colors(
@@ -168,7 +275,7 @@ fun SearchScreen(
             }
         }
 
-        // SOURCE TOGGLE CHIPS (Combined JioSaavn + YouTube Music)
+        // SOURCE TOGGLE CHIPS
         item {
             LazyRow(
                 contentPadding = PaddingValues(horizontal = 20.dp),
@@ -178,13 +285,13 @@ fun SearchScreen(
                 items(sources) { src ->
                     val isSelected = searchState.selectedSource.equals(src, ignoreCase = true)
                     val label = when (src) {
-                        "All" -> "All Sources (Combined)"
-                        "YouTube Music" -> "YouTube Music"
-                        else -> "JioSaavn"
+                        "All" -> "All Streams"
+                        "Extended Stream" -> "Extended Stream"
+                        else -> "HD Audio Stream"
                     }
                     val badgeColor = when (src) {
-                        "YouTube Music" -> Color(0xFFFF0033)
-                        "JioSaavn" -> XtremeLightBlue
+                        "Extended Stream" -> Color(0xFFFF5252)
+                        "HD Stream" -> XtremeLightBlue
                         else -> appColors.primaryAccent
                     }
                     Surface(
@@ -196,7 +303,11 @@ fun SearchScreen(
                         ),
                         modifier = Modifier
                             .clip(RoundedCornerShape(16.dp))
-                            .clickable { onSelectSource(src) }
+                            .clickable {
+                                keyboardController?.hide()
+                                focusManager.clearFocus()
+                                onSelectSource(src)
+                            }
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -236,7 +347,11 @@ fun SearchScreen(
                         border = if (!isSelected) BorderStroke(1.dp, appColors.chipBorder) else null,
                         modifier = Modifier
                             .clip(RoundedCornerShape(20.dp))
-                            .clickable { onSelectGenre(genre) }
+                            .clickable {
+                                keyboardController?.hide()
+                                focusManager.clearFocus()
+                                onSelectGenre(genre)
+                            }
                     ) {
                         Text(
                             text = genre,
@@ -273,7 +388,11 @@ fun SearchScreen(
                             border = BorderStroke(1.dp, XtremeBorder),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable { onTrackClick(top, results.songs) }
+                                .clickable {
+                                    keyboardController?.hide()
+                                    focusManager.clearFocus()
+                                    onTrackClick(top, results.songs)
+                                }
                         ) {
                             Row(
                                 modifier = Modifier
@@ -349,8 +468,8 @@ fun SearchScreen(
             // EXACT MATCHES / SONGS MATCHING QUERY
             val rawList = if (results.exactMatches.isNotEmpty()) results.exactMatches else results.songs
             val directList = when (searchState.selectedSource) {
-                "JioSaavn" -> (results.jioMatches.ifEmpty { rawList.filter { it.source != "YouTube Music" } })
-                "YouTube Music" -> (results.ytMatches.ifEmpty { rawList.filter { it.source == "YouTube Music" } })
+                "HD Stream" -> (results.jioMatches.ifEmpty { rawList.filter { it.source != "Extended Stream" && !it.id.startsWith("yt_") } })
+                "Extended Stream" -> (results.ytMatches.ifEmpty { rawList.filter { it.source == "Extended Stream" || it.id.startsWith("yt_") } })
                 else -> rawList
             }
             if (directList.isNotEmpty()) {
@@ -370,7 +489,11 @@ fun SearchScreen(
                     TrackListItem(
                         track = song,
                         isPlaying = song.id == currentPlayingId,
-                        onClick = { onTrackClick(song, results.songs) },
+                        onClick = {
+                            keyboardController?.hide()
+                            focusManager.clearFocus()
+                            onTrackClick(song, results.songs)
+                        },
                         onToggleFavorite = { onToggleFavorite(song) },
                         modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
                     )
@@ -418,7 +541,11 @@ fun SearchScreen(
                     TrackListItem(
                         track = song,
                         isPlaying = song.id == currentPlayingId,
-                        onClick = { onTrackClick(song, results.songs) },
+                        onClick = {
+                            keyboardController?.hide()
+                            focusManager.clearFocus()
+                            onTrackClick(song, results.songs)
+                        },
                         onToggleFavorite = { onToggleFavorite(song) },
                         modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
                     )
@@ -466,7 +593,11 @@ fun SearchScreen(
                     TrackListItem(
                         track = song,
                         isPlaying = song.id == currentPlayingId,
-                        onClick = { onTrackClick(song, results.songs) },
+                        onClick = {
+                            keyboardController?.hide()
+                            focusManager.clearFocus()
+                            onTrackClick(song, results.songs)
+                        },
                         onToggleFavorite = { onToggleFavorite(song) },
                         modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
                     )
@@ -491,7 +622,11 @@ fun SearchScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(10.dp))
-                                    .clickable { onQueryChange(artist) }
+                                    .clickable {
+                                        keyboardController?.hide()
+                                        focusManager.clearFocus()
+                                        onQueryChange(artist)
+                                    }
                                     .padding(vertical = 8.dp, horizontal = 4.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
@@ -522,7 +657,11 @@ fun SearchScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(10.dp))
-                                    .clickable { onQueryChange(album) }
+                                    .clickable {
+                                        keyboardController?.hide()
+                                        focusManager.clearFocus()
+                                        onQueryChange(album)
+                                    }
                                     .padding(vertical = 8.dp, horizontal = 4.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
@@ -587,14 +726,22 @@ fun SearchScreen(
                                     title = c1.first,
                                     brush = c1.second,
                                     modifier = Modifier.weight(1f),
-                                    onClick = { onSelectGenre(c1.first) }
+                                    onClick = {
+                                        keyboardController?.hide()
+                                        focusManager.clearFocus()
+                                        onSelectGenre(c1.first)
+                                    }
                                 )
                                 if (c2 != null) {
                                     GenreTile(
                                         title = c2.first,
                                         brush = c2.second,
                                         modifier = Modifier.weight(1f),
-                                        onClick = { onSelectGenre(c2.first) }
+                                        onClick = {
+                                            keyboardController?.hide()
+                                            focusManager.clearFocus()
+                                            onSelectGenre(c2.first)
+                                        }
                                     )
                                 } else {
                                     Spacer(modifier = Modifier.weight(1f))

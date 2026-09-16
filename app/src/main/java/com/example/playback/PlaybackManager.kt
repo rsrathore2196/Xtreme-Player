@@ -14,6 +14,7 @@ import androidx.media3.session.SessionToken
 import com.example.data.model.MusicTrack
 import com.example.data.model.toMediaItem
 import com.example.data.remote.MusicDataSource
+import com.example.recommendation.CustomRecommendationQueryWrapper
 import com.example.recommendation.RecommendationEngine
 import com.example.service.MusicService
 import com.google.common.util.concurrent.ListenableFuture
@@ -68,6 +69,7 @@ class PlaybackManager(
 
     val recommendationEngine = RecommendationEngine()
     private val candidateCatalogPool = mutableListOf<MusicTrack>()
+    private var recommendationFetchJob: Job? = null
 
     private val _uiState = MutableStateFlow(PlayerUiState())
     val uiState: StateFlow<PlayerUiState> = _uiState.asStateFlow()
@@ -170,12 +172,16 @@ class PlaybackManager(
                     // Seamless Infinity Queue: If autoplay is enabled and nearing the end of the queue, append next track
                     if (_uiState.value.isAutoplayEnabled && (index >= activeQueue.size - 2) && nextRec != null) {
                         if (activeQueue.none { it.id == nextRec.id }) {
+                            Log.i("InfinityAutoplay", "ExoPlayer Queue: Appending top-scored track '${nextRec.title}' by '${nextRec.artist}' to active playback queue.")
                             activeQueue.add(nextRec)
                             player.addMediaItem(nextRec.toMediaItem())
                             _uiState.update { it.copy(queue = activeQueue.toList()) }
                             Log.i(TAG, "Autoplay appended next track to queue: ${nextRec.title}")
                         }
                     }
+
+                    // Deep recommendation analysis via Custom Query Wrapper & Weightage Scoring
+                    refreshAutoplayRecommendation(matchedTrack)
 
                     Log.i(TAG, "Media item transitioned to: ${matchedTrack.title}")
                 }
@@ -353,6 +359,7 @@ class PlaybackManager(
                     sessionMemoryCount = recommendationEngine.getSessionTracks().size
                 )
             }
+            refreshAutoplayRecommendation(track)
             Log.i(TAG, "Playing track: ${track.title}")
         } catch (e: Exception) {
             Log.e(TAG, "Error playing track: ${e.message}", e)
@@ -361,6 +368,61 @@ class PlaybackManager(
                     isPlaying = false,
                     errorMessage = "Failed to play track: ${e.message}"
                 )
+            }
+        }
+    }
+
+    /**
+     * Deep Infinity Autoplay Recommendation:
+     * 1. Uses CustomRecommendationQueryWrapper to fetch targeted tracks from backend
+     *    with exact Artist, Language, and Release Year.
+     * 2. Runs the Weightage Scoring System to locally rank candidates and verify mood matching.
+     * 3. Updates nextRecommendedTrack and appends seamlessly to ExoPlayer if near end of queue.
+     */
+    fun refreshAutoplayRecommendation(track: MusicTrack) {
+        recommendationFetchJob?.cancel()
+        recommendationFetchJob = scope.launch(Dispatchers.IO) {
+            try {
+                val targetedTracks = CustomRecommendationQueryWrapper.fetchTargetedRecommendations(track, limit = 20)
+                if (targetedTracks.isNotEmpty()) {
+                    synchronized(candidateCatalogPool) {
+                        for (item in targetedTracks) {
+                            if (candidateCatalogPool.none { it.id == item.id }) {
+                                candidateCatalogPool.add(item)
+                            }
+                        }
+                    }
+                }
+
+                val currentPool = (targetedTracks + candidateCatalogPool + activeQueue + MusicDataSource.curatedTracks).distinctBy { it.id }
+                val scoredCandidates = recommendationEngine.evaluateAndScoreCandidates(
+                    currentTrack = track,
+                    candidatePool = currentPool,
+                    excludedIds = activeQueue.map { it.id }.toSet()
+                )
+
+                val bestCandidate = scoredCandidates.firstOrNull { it.totalScore > -50.0 }
+                val bestTrack = bestCandidate?.track
+
+                withContext(Dispatchers.Main) {
+                    _uiState.update { it.copy(nextRecommendedTrack = bestTrack) }
+
+                    // Before adding to ExoPlayer queue, log confirmation and append seamlessly
+                    val currentIndex = _uiState.value.currentIndex
+                    if (_uiState.value.isAutoplayEnabled && (currentIndex >= activeQueue.size - 2) && bestTrack != null) {
+                        if (activeQueue.none { it.id == bestTrack.id }) {
+                            Log.i(
+                                "InfinityAutoplay",
+                                "ExoPlayer Queue: Appending highest-scoring track '${bestTrack.title}' by '${bestTrack.artist}' (Score: ${bestCandidate.totalScore.toInt()} pts)"
+                            )
+                            activeQueue.add(bestTrack)
+                            controller?.addMediaItem(bestTrack.toMediaItem())
+                            _uiState.update { it.copy(queue = activeQueue.toList()) }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Background recommendation fetch error: ${e.message}")
             }
         }
     }
@@ -393,9 +455,7 @@ class PlaybackManager(
 
         if (newAutoplay && _uiState.value.currentTrack != null) {
             val current = _uiState.value.currentTrack!!
-            val fullPool = (candidateCatalogPool + activeQueue + MusicDataSource.curatedTracks).distinctBy { it.id }
-            val nextRec = recommendationEngine.recommendNextTrack(current, fullPool, activeQueue.map { it.id }.toSet())
-            _uiState.update { it.copy(nextRecommendedTrack = nextRec) }
+            refreshAutoplayRecommendation(current)
         }
         Log.i(TAG, "Infinity Autoplay toggled: $newAutoplay")
     }
@@ -455,11 +515,13 @@ class PlaybackManager(
                         ?: recommendationEngine.recommendNextTrack(current, pool, activeQueue.map { it.id }.toSet())
 
                     if (nextTrack != null) {
+                        Log.i("InfinityAutoplay", "ExoPlayer Queue: Appending top-scored track '${nextTrack.title}' by '${nextTrack.artist}'")
                         activeQueue.add(nextTrack)
                         val mediaItem = nextTrack.toMediaItem()
                         player.addMediaItem(mediaItem)
                         _uiState.update { it.copy(queue = activeQueue.toList()) }
                         player.seekToNextMediaItem()
+                        refreshAutoplayRecommendation(nextTrack)
                         Log.i(TAG, "Autoplay triggered next track seamlessly: ${nextTrack.title}")
                     } else if (activeQueue.isNotEmpty()) {
                         player.seekTo(0, 0L)
@@ -671,7 +733,13 @@ class PlaybackManager(
             audioUrl
         }
         val effectiveBitrate = if (audioUrl.contains("saavncdn.com")) targetQuality.kbps else bitrateKbps
-        val effectiveBadge = if (audioUrl.contains("saavncdn.com")) targetQuality.badge else qualityBadge
+        val rawBadge = if (audioUrl.contains("saavncdn.com")) targetQuality.badge else qualityBadge
+        val effectiveBadge = rawBadge
+            .replace("YouTube Music", "HQ Stream", ignoreCase = true)
+            .replace("YouTube", "HQ Stream", ignoreCase = true)
+            .replace("YT Music", "HQ", ignoreCase = true)
+            .replace("JioSaavn", "HD Stream", ignoreCase = true)
+            .replace("Saavn", "HD Stream", ignoreCase = true)
 
         return MediaItem.Builder()
             .setMediaId(id)

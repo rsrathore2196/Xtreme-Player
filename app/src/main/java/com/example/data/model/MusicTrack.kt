@@ -17,7 +17,7 @@ data class MusicTrack(
     val writer: String = "",
     val language: String = "Hindi",
     val year: String = "",
-    val source: String = "JioSaavn",
+    val source: String = "HD Stream",
     val isrc: String = ""
 ) {
     fun formatDuration(): String {

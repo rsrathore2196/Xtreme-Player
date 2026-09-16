@@ -2,6 +2,7 @@ package com.example.data.remote
 
 import android.util.Base64
 import android.util.Log
+import com.example.XtremeMusicApp
 import com.example.data.model.LyricLine
 import com.example.data.model.MusicTrack
 import com.example.data.model.TrackLyrics
@@ -14,7 +15,9 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.net.URLEncoder
+import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import java.util.regex.Pattern
 
@@ -28,36 +31,211 @@ object LyricsProvider {
 
     private val LRC_REGEX = Pattern.compile("\\[(\\d{1,2}):(\\d{1,2}(?:\\.\\d{1,3})?)\\](.*)")
 
-    // In-memory cache for parsed lyrics
+    // In-memory cache for parsed lyrics (0ms instant access)
     private val lyricsCache = mutableMapOf<String, TrackLyrics>()
+
+    private fun getDiskCacheDir(): File? {
+        return try {
+            val app = XtremeMusicApp.instance
+            val dir = File(app.cacheDir, "lyrics_cache")
+            if (!dir.exists()) {
+                dir.mkdirs()
+            }
+            dir
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun safeHash(input: String): String {
+        return try {
+            val md = MessageDigest.getInstance("MD5")
+            val bytes = md.digest(input.toByteArray(Charsets.UTF_8))
+            bytes.joinToString("") { "%02x".format(it) }
+        } catch (_: Exception) {
+            input.replace(Regex("[^a-zA-Z0-9_-]"), "_").take(64)
+        }
+    }
+
+    private fun normalizeForLookup(text: String): String {
+        return normalizeForSimilarity(text).replace(" ", "_")
+    }
+
+    private fun loadFromDisk(file: File): TrackLyrics? {
+        if (!file.exists() || !file.canRead() || file.length() <= 0) return null
+        return try {
+            val content = file.readText(Charsets.UTF_8)
+            val json = JSONObject(content)
+            val trackId = json.optString("trackId", "")
+            val title = json.optString("title", "")
+            val artist = json.optString("artist", "")
+            val isSynced = json.optBoolean("isSynced", false)
+            val linesArray = json.optJSONArray("lines") ?: JSONArray()
+            val lines = mutableListOf<LyricLine>()
+            for (i in 0 until linesArray.length()) {
+                val item = linesArray.getJSONObject(i)
+                lines.add(
+                    LyricLine(
+                        timestampMs = item.optLong("t", 0L),
+                        text = item.optString("x", ""),
+                        durationMs = item.optLong("d", 3000L)
+                    )
+                )
+            }
+            if (lines.isNotEmpty()) {
+                TrackLyrics(
+                    trackId = trackId,
+                    title = title,
+                    artist = artist,
+                    isSynced = isSynced,
+                    lines = lines
+                )
+            } else null
+        } catch (e: Exception) {
+            Log.d(TAG, "Error reading cached lyrics from disk: ${e.message}")
+            null
+        }
+    }
+
+    private fun getCachedLyrics(track: MusicTrack, cleanTitle: String, primaryArtist: String): TrackLyrics? {
+        // 1. In-memory check (0ms)
+        lyricsCache[track.id]?.let {
+            if (it.lines.isNotEmpty()) return it
+        }
+
+        val dir = getDiskCacheDir() ?: return null
+
+        // 2. Persistent file check by track ID
+        val trackFile = File(dir, "trk_${safeHash(track.id)}.json")
+        loadFromDisk(trackFile)?.let {
+            lyricsCache[track.id] = it
+            Log.i(TAG, "Hit disk lyrics cache for '${track.title}' (track ID)")
+            return it
+        }
+
+        // 3. Persistent file check by ISRC if available
+        val isrcKey = track.isrc.trim().uppercase()
+        if (isrcKey.isNotBlank()) {
+            val isrcFile = File(dir, "isrc_${safeHash(isrcKey)}.json")
+            loadFromDisk(isrcFile)?.let {
+                val mapped = it.copy(trackId = track.id)
+                lyricsCache[track.id] = mapped
+                Log.i(TAG, "Hit disk lyrics cache for '${track.title}' (ISRC $isrcKey)")
+                return mapped
+            }
+        }
+
+        // 4. Persistent file check by normalized title + artist
+        val metaKey = "${normalizeForLookup(cleanTitle)}_${normalizeForLookup(primaryArtist)}"
+        if (metaKey.length > 2) {
+            val metaFile = File(dir, "meta_${safeHash(metaKey)}.json")
+            loadFromDisk(metaFile)?.let {
+                val mapped = it.copy(trackId = track.id)
+                lyricsCache[track.id] = mapped
+                Log.i(TAG, "Hit disk lyrics cache for '${track.title}' (metadata)")
+                return mapped
+            }
+        }
+
+        return null
+    }
+
+    private fun persistLyrics(
+        track: MusicTrack,
+        cleanTitle: String,
+        primaryArtist: String,
+        lyrics: TrackLyrics,
+        isrc: String = ""
+    ) {
+        lyricsCache[track.id] = lyrics
+        if (lyrics.lines.isEmpty()) return
+
+        val dir = getDiskCacheDir() ?: return
+        try {
+            val json = JSONObject()
+            json.put("trackId", track.id)
+            json.put("title", lyrics.title)
+            json.put("artist", lyrics.artist)
+            json.put("isSynced", lyrics.isSynced)
+            json.put("cachedAt", System.currentTimeMillis())
+
+            val linesArray = JSONArray()
+            for (line in lyrics.lines) {
+                val lineObj = JSONObject()
+                lineObj.put("t", line.timestampMs)
+                lineObj.put("x", line.text)
+                lineObj.put("d", line.durationMs)
+                linesArray.put(lineObj)
+            }
+            json.put("lines", linesArray)
+
+            val content = json.toString()
+
+            // Save under track ID key
+            val trackFile = File(dir, "trk_${safeHash(track.id)}.json")
+            trackFile.writeText(content, Charsets.UTF_8)
+
+            // Save under ISRC key if present
+            val effectiveIsrc = isrc.ifBlank { track.isrc }.trim().uppercase()
+            if (effectiveIsrc.isNotBlank()) {
+                val isrcFile = File(dir, "isrc_${safeHash(effectiveIsrc)}.json")
+                isrcFile.writeText(content, Charsets.UTF_8)
+            }
+
+            // Save under metadata key
+            val metaKey = "${normalizeForLookup(cleanTitle)}_${normalizeForLookup(primaryArtist)}"
+            if (metaKey.length > 2) {
+                val metaFile = File(dir, "meta_${safeHash(metaKey)}.json")
+                metaFile.writeText(content, Charsets.UTF_8)
+            }
+        } catch (e: Exception) {
+            Log.d(TAG, "Error saving lyrics to disk cache: ${e.message}")
+        }
+    }
 
     @Synchronized
     fun clearCache() {
         lyricsCache.clear()
+        try {
+            val dir = getDiskCacheDir()
+            dir?.listFiles()?.forEach { it.delete() }
+        } catch (_: Exception) {}
         Log.i(TAG, "Lyrics cache cleared successfully")
     }
 
     @Synchronized
     fun clearCacheForTrack(trackId: String) {
         lyricsCache.remove(trackId)
+        try {
+            val dir = getDiskCacheDir()
+            val file = File(dir, "trk_${safeHash(trackId)}.json")
+            if (file.exists()) file.delete()
+        } catch (_: Exception) {}
         Log.d(TAG, "Cleared lyrics cache for track: $trackId")
     }
 
     @Synchronized
     fun getCacheSize(): Long {
         var size = 0L
-        for ((_, lyrics) in lyricsCache) {
-            size += lyrics.title.length * 2L
-            size += lyrics.artist.length * 2L
-            for (line in lyrics.lines) {
-                size += line.text.length * 2L + 24L
+        try {
+            val dir = getDiskCacheDir()
+            dir?.listFiles()?.forEach {
+                size += it.length()
             }
-        }
-        return size.coerceAtLeast(lyricsCache.size * 256L)
+        } catch (_: Exception) {}
+        return size.coerceAtLeast(lyricsCache.size * 512L)
     }
 
     @Synchronized
-    fun getCacheCount(): Int = lyricsCache.size
+    fun getCacheCount(): Int {
+        var count = lyricsCache.size
+        try {
+            val dir = getDiskCacheDir()
+            val fileCount = dir?.list()?.count { it.startsWith("trk_") } ?: 0
+            count = maxOf(count, fileCount)
+        } catch (_: Exception) {}
+        return count
+    }
 
     private fun JSONObject.getCleanString(key: String): String {
         if (isNull(key)) return ""
@@ -77,24 +255,27 @@ object LyricsProvider {
     )
 
     suspend fun getLyricsForTrack(track: MusicTrack): TrackLyrics = withContext(Dispatchers.IO) {
-        lyricsCache[track.id]?.let { return@withContext it }
-
         // Step 1: Clean & sanitize metadata
         val (cleanTitle, coreTitle) = sanitizeTitle(track.title)
         val (primaryArtist, allArtists) = sanitizeArtist(track.artist, track.singers, track.writer)
         val targetDurationSec = (track.durationMs / 1000L).toInt()
 
+        // 1. Check local persistent cache (in-memory + disk, 0ms fast)
+        getCachedLyrics(track, cleanTitle, primaryArtist)?.let {
+            if (it.lines.isNotEmpty()) return@withContext it
+        }
+
         Log.d(TAG, "Fetching lyrics for '${track.title}' (clean='$cleanTitle', core='$coreTitle', artists=$allArtists, dur=${targetDurationSec}s)")
 
-        // 1. Check curated offline catalog with strict title + artist verification (0ms instant)
+        // 2. Check curated offline catalog with title + artist verification (0ms instant)
         findCuratedLyrics(track, cleanTitle, coreTitle, allArtists)?.let { lrcString ->
             val parsed = parseLrc(track.id, track.title, track.artist, lrcString)
-            lyricsCache[track.id] = parsed
+            persistLyrics(track, cleanTitle, primaryArtist, parsed)
             return@withContext parsed
         }
 
-        // 2. High-speed parallel LRCLIB fetcher:
-        // Direct GET + field search + full-text search (same as lrclib.net web) run concurrently
+        // 3. High-speed parallel LRCLIB engine:
+        // Full-text search (same as lrclib.net web) + Direct GET + ISRC run concurrently
         try {
             val lrclibLyrics = fetchLrcLibFast(
                 track = track,
@@ -105,14 +286,14 @@ object LyricsProvider {
                 targetDurationSec = targetDurationSec
             )
             if (lrclibLyrics != null && lrclibLyrics.lines.isNotEmpty()) {
-                lyricsCache[track.id] = lrclibLyrics
+                persistLyrics(track, cleanTitle, primaryArtist, lrclibLyrics, track.isrc)
                 return@withContext lrclibLyrics
             }
         } catch (e: Exception) {
             Log.w(TAG, "LrcLib fast lyrics fetch failed: ${e.message}")
         }
 
-        // 3. Direct ISRC Querying: If track has ISRC and wasn't found above, or online track with ISRC
+        // 4. Direct ISRC Querying: If track has ISRC and wasn't found above
         var isrc = track.isrc.trim()
         if (isrc.isBlank() && track.id.startsWith("online_")) {
             val rawId = track.id.removePrefix("online_")
@@ -122,7 +303,7 @@ object LyricsProvider {
             try {
                 val isrcLyrics = fetchLrcLibByIsrc(track, isrc, cleanTitle, coreTitle, primaryArtist, allArtists, targetDurationSec)
                 if (isrcLyrics != null && isrcLyrics.lines.isNotEmpty()) {
-                    lyricsCache[track.id] = isrcLyrics
+                    persistLyrics(track, cleanTitle, primaryArtist, isrcLyrics, isrc)
                     return@withContext isrcLyrics
                 }
             } catch (e: Exception) {
@@ -130,19 +311,19 @@ object LyricsProvider {
             }
         }
 
-        // 4. JioSaavn Direct Lyrics API: lyrics.getLyrics & song.getDetails (High-fidelity for Indian & global tracks)
+        // 5. Direct HD Stream Lyrics API: High-fidelity for Indian & global tracks (generic, copyright safe)
         try {
-            val jioLyrics = fetchJioSaavnLyrics(track, cleanTitle, coreTitle, primaryArtist, allArtists)
-            if (jioLyrics != null && jioLyrics.lines.isNotEmpty()) {
-                Log.i(TAG, "Using official JioSaavn lyrics for '${track.title}'")
-                lyricsCache[track.id] = jioLyrics
-                return@withContext jioLyrics
+            val hdLyrics = fetchDirectHdLyrics(track, cleanTitle, coreTitle, primaryArtist, allArtists)
+            if (hdLyrics != null && hdLyrics.lines.isNotEmpty()) {
+                Log.i(TAG, "Using direct HD stream lyrics for '${track.title}'")
+                persistLyrics(track, cleanTitle, primaryArtist, hdLyrics, isrc)
+                return@withContext hdLyrics
             }
         } catch (e: Exception) {
-            Log.d(TAG, "JioSaavn direct lyrics fetch failed: ${e.message}")
+            Log.d(TAG, "Direct HD stream lyrics fetch failed: ${e.message}")
         }
 
-        // 5. Secondary Fallback #1: NetEase Cloud Music API (Levenshtein >= 80% & artist match)
+        // 6. Secondary Fallback #1: NetEase Cloud Music API
         try {
             val netEaseLyrics = fetchNetEaseLyrics(
                 track = track,
@@ -154,14 +335,14 @@ object LyricsProvider {
             )
             if (netEaseLyrics != null && netEaseLyrics.lines.isNotEmpty()) {
                 Log.i(TAG, "Using NetEase Cloud Music lyrics for '${track.title}'")
-                lyricsCache[track.id] = netEaseLyrics
+                persistLyrics(track, cleanTitle, primaryArtist, netEaseLyrics)
                 return@withContext netEaseLyrics
             }
         } catch (e: Exception) {
             Log.w(TAG, "NetEase fallback lyrics fetch failed: ${e.message}")
         }
 
-        // 6. Secondary Fallback #2: Kugou Lyrics API (Levenshtein >= 80% & artist match)
+        // 7. Secondary Fallback #2: Kugou Lyrics API
         try {
             val kugouLyrics = fetchKugouLyrics(
                 track = track,
@@ -173,14 +354,14 @@ object LyricsProvider {
             )
             if (kugouLyrics != null && kugouLyrics.lines.isNotEmpty()) {
                 Log.i(TAG, "Using Kugou API lyrics for '${track.title}'")
-                lyricsCache[track.id] = kugouLyrics
+                persistLyrics(track, cleanTitle, primaryArtist, kugouLyrics)
                 return@withContext kugouLyrics
             }
         } catch (e: Exception) {
             Log.w(TAG, "Kugou fallback lyrics fetch failed: ${e.message}")
         }
 
-        // 7. Return clean empty lyrics state ("Lyrics Not Available" - never show random lyrics)
+        // 8. Return clean empty lyrics state ("Lyrics Not Available")
         val notAvailable = TrackLyrics(
             trackId = track.id,
             title = track.title,
@@ -328,12 +509,6 @@ object LyricsProvider {
         return null
     }
 
-    private fun normalizeForLookup(text: String): String {
-        return text.lowercase()
-            .replace(Regex("[^a-z0-9]"), "")
-            .trim()
-    }
-
     private fun parseLrc(trackId: String, title: String, artist: String, lrcText: String): TrackLyrics {
         val lines = mutableListOf<LyricLine>()
         val rawLines = lrcText.lines()
@@ -382,9 +557,9 @@ object LyricsProvider {
     /**
      * High-speed parallel LRCLIB engine:
      * Dispatches concurrent asynchronous network requests across LRCLIB endpoints:
-     * 1. Exact GET (/api/get?track_name=...&artist_name=...)
-     * 2. Dedicated field search (/api/search?track_name=...&artist_name=...)
-     * 3. Full-text search (/api/search?q=...) - mirrors the lrclib.net web interface
+     * 1. Full-text search (q=...) - Exact mechanism used by lrclib.net web interface
+     * 2. Direct exact GET (/api/get?track_name=...&artist_name=...)
+     * 3. Dedicated field search (/api/search?track_name=...&artist_name=...)
      * 4. Core title search (when title contains subtitles or featured artist noise)
      * 5. ISRC query (if available on track)
      * Collects and evaluates all candidates concurrently, prioritizing verified synchronized lyrics.
@@ -411,7 +586,15 @@ object LyricsProvider {
 
         val deferredList = mutableListOf<Deferred<List<LrcCandidate>>>()
 
-        // 1. Direct GET by title and primary artist
+        // 1. Full-text search (q=...) - Exact mechanism used by lrclib.net web interface
+        if (cleanTitle.isNotBlank()) {
+            val q = if (primaryArtist.isNotBlank()) "$cleanTitle $primaryArtist" else cleanTitle
+            deferredList.add(async {
+                executeLrcLibSearch("q=${urlEncode(q)}")
+            })
+        }
+
+        // 2. Direct GET by title and primary artist
         if (cleanTitle.isNotBlank() && primaryArtist.isNotBlank()) {
             deferredList.add(async {
                 val direct = executeLrcLibGet(cleanTitle, primaryArtist, cleanTitle, coreTitle, allArtists)
@@ -431,18 +614,10 @@ object LyricsProvider {
             })
         }
 
-        // 2. Dedicated field search (/api/search?track_name=...&artist_name=...)
+        // 3. Dedicated field search (/api/search?track_name=...&artist_name=...)
         if (cleanTitle.isNotBlank() && primaryArtist.isNotBlank()) {
             deferredList.add(async {
                 executeLrcLibSearch("track_name=${urlEncode(cleanTitle)}&artist_name=${urlEncode(primaryArtist)}")
-            })
-        }
-
-        // 3. Full-text search (/api/search?q=...) - Exact mechanism used by lrclib.net web interface
-        if (cleanTitle.isNotBlank()) {
-            val q = if (primaryArtist.isNotBlank()) "$cleanTitle $primaryArtist" else cleanTitle
-            deferredList.add(async {
-                executeLrcLibSearch("q=${urlEncode(q)}")
             })
         }
 
@@ -582,7 +757,6 @@ object LyricsProvider {
 
     /**
      * Direct query on LRCLIB using track ISRC (International Standard Recording Code).
-     * Strictly verifies returned candidate against title similarity and artist before accepting.
      */
     private suspend fun fetchLrcLibByIsrc(
         track: MusicTrack,
@@ -600,11 +774,11 @@ object LyricsProvider {
         try {
             val cand = executeLrcLibGetByIsrc(cleanIsrc, cleanTitle, coreTitle, primaryArtist, allArtists)
             if (cand != null) {
-                val titleSim = validateTitleSimilarity(cand.trackName, cleanTitle, coreTitle)
+                val titleSim = evaluateTitleMatch(cand.trackName, cand.artistName, cleanTitle, coreTitle, allArtists)
                 val artistMatch = cand.artistName.isBlank() || validateArtistMatch(cand.artistName, primaryArtist, allArtists)
                 val durationValid = targetDurationSec <= 0 || cand.durationSec <= 0 || kotlin.math.abs(targetDurationSec - cand.durationSec) <= 45
 
-                if ((titleSim >= 0.75 || artistMatch) && durationValid) {
+                if ((titleSim >= 0.60 || artistMatch) && durationValid) {
                     if (cand.syncedLyrics.isNotBlank()) {
                         Log.i(TAG, "Matched synchronized lyrics on LRCLIB via direct ISRC '$cleanIsrc' for '${track.title}'")
                         return@withContext parseLrc(track.id, track.title, track.artist, cand.syncedLyrics)
@@ -626,9 +800,9 @@ object LyricsProvider {
                     val diff = kotlin.math.abs(targetDurationSec - cand.durationSec)
                     if (diff > 45) continue
                 }
-                val titleSim = validateTitleSimilarity(cand.trackName, cleanTitle, coreTitle)
+                val titleSim = evaluateTitleMatch(cand.trackName, cand.artistName, cleanTitle, coreTitle, allArtists)
                 val artistMatch = cand.artistName.isBlank() || validateArtistMatch(cand.artistName, primaryArtist, allArtists)
-                if (titleSim >= 0.75 || artistMatch) {
+                if (titleSim >= 0.60 || artistMatch) {
                     if (cand.syncedLyrics.isNotBlank()) {
                         Log.i(TAG, "Matched synchronized lyrics on LRCLIB via search ISRC '$cleanIsrc' for '${track.title}'")
                         return@withContext parseLrc(track.id, track.title, track.artist, cand.syncedLyrics)
@@ -670,18 +844,20 @@ object LyricsProvider {
                 val returnedTrackName = json.getCleanString("trackName").ifBlank { json.getCleanString("name") }
                 val returnedArtistName = json.getCleanString("artistName")
 
-                // Verify candidate similarity is at least 80% (Strict 80% rule)
+                // Robust title matching
                 if (returnedTrackName.isNotBlank()) {
-                    val maxSim = validateTitleSimilarity(returnedTrackName, cleanTitle, coreTitle)
-                    if (maxSim < 0.80) {
-                        Log.d(TAG, "executeLrcLibGet returned '$returnedTrackName' but similarity ${(maxSim * 100).toInt()}% is below 80% threshold")
+                    val maxSim = evaluateTitleMatch(returnedTrackName, returnedArtistName, cleanTitle, coreTitle, allArtists)
+                    if (maxSim < 0.60) {
+                        Log.d(TAG, "executeLrcLibGet returned '$returnedTrackName' but similarity ${(maxSim * 100).toInt()}% is below threshold")
                         return null
                     }
                 }
 
-                // Multi-Artist Validation: verify candidate artist matches at least one singer/featured artist/primary artist
+                // Multi-Artist Validation
                 if (returnedArtistName.isNotBlank()) {
-                    if (!validateArtistMatch(returnedArtistName, artistName, allArtists)) {
+                    if (!validateArtistMatch(returnedArtistName, artistName, allArtists) &&
+                        !returnedTrackName.contains(artistName, ignoreCase = true)
+                    ) {
                         Log.d(TAG, "executeLrcLibGet rejected: returned artist '$returnedArtistName' doesn't match track artists ($allArtists)")
                         return null
                     }
@@ -757,106 +933,240 @@ object LyricsProvider {
         if (candidates.isEmpty()) return null
 
         val scored = candidates.mapNotNull { cand ->
-            // Strict Levenshtein Similarity & 80% Rule
-            val maxSim = validateTitleSimilarity(cand.trackName, cleanTitle, coreTitle)
-            if (maxSim < 0.80) {
-                Log.d(TAG, "LRCLIB candidate '${cand.trackName}' discarded: Levenshtein similarity ${(maxSim * 100).toInt()}% < 80%")
-                return@mapNotNull null
-            }
-
-            // Multi-Artist Validation: candidate artist must match primary artist or any featured artist/singer
-            if (cand.artistName.isNotBlank() && !validateArtistMatch(cand.artistName, primaryArtist, allArtists)) {
-                Log.d(TAG, "LRCLIB candidate '${cand.trackName}' by '${cand.artistName}' discarded: multi-artist mismatch with $allArtists")
-                return@mapNotNull null
-            }
-
-            // Duration sanity check: only discard if duration differs significantly (diff > 50s and diff > 35%)
-            if (targetDurationSec > 30 && cand.durationSec > 30) {
-                val diff = kotlin.math.abs(targetDurationSec - cand.durationSec)
-                if (diff > 50 && (diff.toDouble() / targetDurationSec) > 0.35) {
-                    Log.d(TAG, "LRCLIB candidate '${cand.trackName}' discarded: duration diff ${diff}s too large")
-                    return@mapNotNull null
-                }
-            }
-
-            val score = scoreCandidate(
-                candidateTitle = cand.trackName,
-                candidateArtist = cand.artistName,
-                candidateDuration = cand.durationSec,
-                hasSynced = cand.syncedLyrics.isNotBlank(),
-                hasPlain = cand.plainLyrics.isNotBlank(),
-                similarityScore = maxSim,
+            val score = scoreCandidateWithMatching(
+                candidate = cand,
+                cleanTitle = cleanTitle,
+                coreTitle = coreTitle,
                 primaryArtist = primaryArtist,
                 allArtists = allArtists,
                 targetDurationSec = targetDurationSec
-            )
+            ) ?: return@mapNotNull null
+
             cand.copy(score = score)
         }
 
-        // Prioritize candidates with synced lyrics first, then highest score (threshold >= 35)
-        return scored.filter { it.score >= 35 }
-            .sortedWith(
-                compareByDescending<LrcCandidate> { it.syncedLyrics.isNotBlank() }
-                    .thenByDescending { it.score }
-            )
-            .firstOrNull()
+        // Prioritize candidates with synced lyrics first, then by highest score
+        return scored.sortedWith(
+            compareByDescending<LrcCandidate> { it.syncedLyrics.isNotBlank() }
+                .thenByDescending { it.score }
+        ).firstOrNull()
     }
 
-    private fun scoreCandidate(
-        candidateTitle: String,
-        candidateArtist: String,
-        candidateDuration: Int,
-        hasSynced: Boolean,
-        hasPlain: Boolean,
-        similarityScore: Double,
+    private fun scoreCandidateWithMatching(
+        candidate: LrcCandidate,
+        cleanTitle: String,
+        coreTitle: String,
         primaryArtist: String,
         allArtists: List<String>,
         targetDurationSec: Int
-    ): Int {
-        if (!hasSynced && !hasPlain) return 0
+    ): Int? {
+        if (candidate.syncedLyrics.isBlank() && candidate.plainLyrics.isBlank()) return null
 
-        // 1. Title score (0 to 60 points based directly on similarity)
-        val titleScore = (similarityScore * 60).toInt()
+        // 1. Title Similarity & Candidate Title Extraction
+        val titleMatch = evaluateTitleMatch(
+            candRawTitle = candidate.trackName,
+            candArtist = candidate.artistName,
+            cleanTitle = cleanTitle,
+            coreTitle = coreTitle,
+            allArtists = allArtists
+        )
+        if (titleMatch < 0.55) {
+            Log.d(TAG, "LRCLIB candidate '${candidate.trackName}' discarded: title match ${(titleMatch * 100).toInt()}% < 55%")
+            return null
+        }
 
-        // 2. Artist Match Score (0 to 25 points)
-        val normCandArtist = normalizeForSimilarity(candidateArtist)
-        val normPrimary = normalizeForSimilarity(primaryArtist)
-        var artistScore = 0
-        if (normPrimary.isNotBlank()) {
-            if (normCandArtist.contains(normPrimary) || normPrimary.contains(normCandArtist)) {
-                artistScore = 25
-            } else {
-                for (alt in allArtists) {
-                    val normAlt = normalizeForSimilarity(alt)
-                    if (normAlt.length >= 3 && (normCandArtist.contains(normAlt) || normAlt.contains(normCandArtist))) {
-                        artistScore = 20
+        // 2. Artist Validation
+        val artistScore = evaluateArtistScore(
+            candidateArtist = candidate.artistName,
+            candidateTitle = candidate.trackName,
+            primaryArtist = primaryArtist,
+            allArtists = allArtists,
+            titleMatch = titleMatch
+        )
+        if (artistScore == null) {
+            Log.d(TAG, "LRCLIB candidate '${candidate.trackName}' by '${candidate.artistName}' discarded: artist mismatch")
+            return null
+        }
+
+        // 3. Duration Sanity Check
+        var durationScore = 8
+        if (targetDurationSec > 30 && candidate.durationSec > 30) {
+            val diff = kotlin.math.abs(targetDurationSec - candidate.durationSec)
+            if (diff > 55 && (diff.toDouble() / targetDurationSec) > 0.35) {
+                Log.d(TAG, "LRCLIB candidate '${candidate.trackName}' discarded: duration diff ${diff}s too large")
+                return null
+            }
+            durationScore = when {
+                diff <= 3 -> 15
+                diff <= 8 -> 12
+                diff <= 15 -> 9
+                diff <= 30 -> 6
+                else -> 2
+            }
+        }
+
+        // 4. Bonus for Synchronized Lyrics
+        val syncBonus = if (candidate.syncedLyrics.isNotBlank()) 30 else 0
+        val titlePoints = (titleMatch * 60).toInt()
+
+        return titlePoints + artistScore + durationScore + syncBonus
+    }
+
+    fun evaluateTitleMatch(
+        candRawTitle: String,
+        candArtist: String,
+        cleanTitle: String,
+        coreTitle: String,
+        allArtists: List<String>
+    ): Double {
+        // Strip common tags
+        var stripped = candRawTitle
+            .replace(Regex("(?i)\\[.*?\\]"), " ")
+            .replace(Regex("(?i)\\((?:from\\b|feat\\.?|ft\\.?|official|lyric|music\\s*video|video|audio|remix|remaster|deluxe|bonus|live|acoustic|radio|club|slowed|reverb|ost|soundtrack|theme|original).*?\\)"), " ")
+            .replace(Regex("(?i)\\(\\s*from\\s+[\"'].*?[\"']\\s*\\)"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+
+        // Extract true song title if candidate title is "Artist - Title" or "Title - Artist" or "Artist: Title"
+        val separators = listOf(" - ", " : ", " | ", " — ", " – ")
+        for (sep in separators) {
+            if (stripped.contains(sep)) {
+                val parts = stripped.split(sep).map { it.trim() }.filter { it.isNotBlank() }
+                if (parts.size >= 2) {
+                    val p0 = parts[0]
+                    val p1 = parts[1]
+                    if (validateArtistMatch(p0, candArtist, allArtists)) {
+                        stripped = p1
+                        break
+                    }
+                    if (validateArtistMatch(p1, candArtist, allArtists)) {
+                        stripped = p0
+                        break
+                    }
+                    if (calculateSimilarity(p0, cleanTitle) >= 0.70 || calculateSimilarity(p0, coreTitle) >= 0.70) {
+                        stripped = p0
+                        break
+                    }
+                    if (calculateSimilarity(p1, cleanTitle) >= 0.70 || calculateSimilarity(p1, coreTitle) >= 0.70) {
+                        stripped = p1
                         break
                     }
                 }
             }
-        } else {
-            artistScore = 15
         }
 
-        // 3. Duration Score (0 to 15 points) - Never penalize below 0
-        var durationScore = 0
-        if (targetDurationSec > 0 && candidateDuration > 0) {
-            val diff = kotlin.math.abs(targetDurationSec - candidateDuration)
-            when {
-                diff <= 3 -> durationScore = 15
-                diff <= 8 -> durationScore = 12
-                diff <= 15 -> durationScore = 8
-                diff <= 30 -> durationScore = 4
-                else -> durationScore = 1
+        val (cleanCand, coreCand) = sanitizeTitle(stripped)
+
+        val simRaw = calculateSimilarity(candRawTitle, cleanTitle)
+        val simStripped = calculateSimilarity(stripped, cleanTitle)
+        val simClean = calculateSimilarity(cleanCand, cleanTitle)
+        val simCore = calculateSimilarity(coreCand, coreTitle)
+        val simCleanCore = calculateSimilarity(cleanCand, coreTitle)
+
+        var bestSim = maxOf(simRaw, simStripped, simClean, simCore, simCleanCore)
+
+        val normCore = normalizeForSimilarity(coreTitle)
+        val normClean = normalizeForSimilarity(cleanTitle)
+        val normCand = normalizeForSimilarity(cleanCand)
+        val normStripped = normalizeForSimilarity(stripped)
+        val normRaw = normalizeForSimilarity(candRawTitle)
+
+        // Exact match
+        if (normCand == normClean || normCand == normCore || normStripped == normClean || normStripped == normCore) {
+            return 1.0
+        }
+
+        // Phrase containment
+        if (normCore.length >= 3) {
+            if (normCand.contains(normCore) || normStripped.contains(normCore) || normRaw.contains(normCore)) {
+                bestSim = maxOf(bestSim, 0.92)
             }
-        } else {
-            durationScore = 8
+            if (normCand.length >= 3 && normCore.contains(normCand)) {
+                bestSim = maxOf(bestSim, 0.90)
+            }
         }
 
-        // 4. Synced preference bonus
-        val syncBonus = if (hasSynced) 20 else 0
+        // Token overlap
+        val coreTokens = normCore.split(" ").filter { it.length >= 2 }
+        if (coreTokens.isNotEmpty()) {
+            val candTokens = normRaw.split(" ").toSet()
+            val matchCount = coreTokens.count { candTokens.contains(it) }
+            val ratio = matchCount.toDouble() / coreTokens.size
+            if (ratio >= 0.75) {
+                bestSim = maxOf(bestSim, 0.88)
+            } else if (ratio >= 0.50) {
+                bestSim = maxOf(bestSim, 0.75)
+            }
+        }
 
-        return titleScore + artistScore + durationScore + syncBonus
+        return bestSim
+    }
+
+    private fun evaluateArtistScore(
+        candidateArtist: String,
+        candidateTitle: String,
+        primaryArtist: String,
+        allArtists: List<String>,
+        titleMatch: Double
+    ): Int? {
+        val normCandArtist = normalizeForSimilarity(candidateArtist)
+        val normCandTitle = normalizeForSimilarity(candidateTitle)
+        val normPrimary = normalizeForSimilarity(primaryArtist)
+
+        // 1. Direct candidate artist match against primary artist
+        if (normPrimary.length >= 3 && (normCandArtist.contains(normPrimary) || normPrimary.contains(normCandArtist))) {
+            return 25
+        }
+
+        // 2. Candidate artist matches any in allArtists
+        for (artist in allArtists) {
+            val normA = normalizeForSimilarity(artist)
+            if (normA.length >= 3 && (normCandArtist.contains(normA) || normA.contains(normCandArtist))) {
+                return 22
+            }
+        }
+
+        // 3. Candidate TITLE itself contains the artist name
+        if (normPrimary.length >= 3 && normCandTitle.contains(normPrimary)) {
+            return 25
+        }
+        for (artist in allArtists) {
+            val normA = normalizeForSimilarity(artist)
+            if (normA.length >= 3 && normCandTitle.contains(normA)) {
+                return 22
+            }
+        }
+
+        // 4. Token overlap between artists
+        val candidateTokens = normCandArtist.split(" ").filter { it.length >= 3 }
+        for (artist in allArtists) {
+            val artistTokens = normalizeForSimilarity(artist).split(" ").filter { it.length >= 3 }
+            if (candidateTokens.any { artistTokens.contains(it) }) {
+                return 20
+            }
+        }
+
+        // 5. If title match is very high (>= 0.85) and artist is blank
+        if (candidateArtist.isBlank() && titleMatch >= 0.85) {
+            return 15
+        }
+
+        // 6. Similarity between artists >= 0.65
+        if (calculateSimilarity(candidateArtist, primaryArtist) >= 0.65) {
+            return 18
+        }
+        for (artist in allArtists) {
+            if (calculateSimilarity(candidateArtist, artist) >= 0.65) {
+                return 18
+            }
+        }
+
+        // If title match is near-perfect (>= 0.95), allow weak artist with lower score
+        if (titleMatch >= 0.95) {
+            return 10
+        }
+
+        return null
     }
 
     /**
@@ -900,65 +1210,26 @@ object LyricsProvider {
         return (1.0 - (distance.toDouble() / maxLen)).coerceIn(0.0, 1.0)
     }
 
-    /**
-     * Strict Levenshtein Similarity Rule:
-     * Calculates candidate title similarity against cleanTitle and coreTitle.
-     * Evaluates both raw and cleaned candidate forms so additions like "(Official Video)" don't cause false rejects,
-     * while completely mismatched titles (< 0.80) are immediately rejected.
-     */
     fun validateTitleSimilarity(candidateTitle: String, cleanTitle: String, coreTitle: String): Double {
-        val (cleanCand, coreCand) = sanitizeTitle(candidateTitle)
-        val sim1 = calculateSimilarity(candidateTitle, cleanTitle)
-        val sim2 = calculateSimilarity(candidateTitle, coreTitle)
-        val sim3 = calculateSimilarity(cleanCand, cleanTitle)
-        val sim4 = calculateSimilarity(coreCand, coreTitle)
-        val sim5 = calculateSimilarity(cleanCand, coreTitle)
-        val sim6 = calculateSimilarity(coreCand, cleanTitle)
-        var maxSim = maxOf(sim1, sim2, sim3, sim4, sim5, sim6)
-
-        // Substring / prefix check for titles where one is a clean prefix of the other:
-        // E.g. "Lover" and "Lover (Moonchild Era)", "Blinding Lights" and "Blinding Lights - Single"
-        val normCore = normalizeForSimilarity(coreTitle)
-        val normCleanCand = normalizeForSimilarity(cleanCand)
-        val normCoreCand = normalizeForSimilarity(coreCand)
-        if (normCore.length >= 4 && (normCleanCand.startsWith(normCore) || normCoreCand.startsWith(normCore))) {
-            maxSim = maxOf(maxSim, 0.85)
-        }
-        if (normCoreCand.length >= 4 && normCore.startsWith(normCoreCand)) {
-            maxSim = maxOf(maxSim, 0.85)
-        }
-
-        return maxSim
+        return evaluateTitleMatch(candidateTitle, "", cleanTitle, coreTitle, emptyList())
     }
 
-    /**
-     * Multi-Artist Validation:
-     * Cross-checks candidate artist against all singers, featured artists, and primary artists.
-     * Matches from mismatched artists are strictly rejected.
-     */
     fun validateArtistMatch(candidateArtist: String, primaryArtist: String, allArtists: List<String>): Boolean {
         val normCandidate = normalizeForSimilarity(candidateArtist)
         if (normCandidate.isBlank()) return false
 
-        // Check against primary artist
         val normPrimary = normalizeForSimilarity(primaryArtist)
-        if (normPrimary.length >= 3) {
-            if (normCandidate.contains(normPrimary) || normPrimary.contains(normCandidate)) {
+        if (normPrimary.length >= 3 && (normCandidate.contains(normPrimary) || normPrimary.contains(normCandidate))) {
+            return true
+        }
+
+        for (artist in allArtists) {
+            val normArtist = normalizeForSimilarity(artist)
+            if (normArtist.length >= 3 && (normCandidate.contains(normArtist) || normArtist.contains(normCandidate))) {
                 return true
             }
         }
 
-        // Check against all artists, singers, and featured artists
-        for (artist in allArtists) {
-            val normArtist = normalizeForSimilarity(artist)
-            if (normArtist.length >= 3) {
-                if (normCandidate.contains(normArtist) || normArtist.contains(normCandidate)) {
-                    return true
-                }
-            }
-        }
-
-        // Token overlap: check if any significant artist name token matches
         val candidateTokens = normCandidate.split(" ").filter { it.length >= 3 && !it.matches(Regex("^(the|and|feat|featuring|official|records|music|prod)$")) }
         for (artist in allArtists) {
             val artistTokens = normalizeForSimilarity(artist).split(" ").filter { it.length >= 3 && !it.matches(Regex("^(the|and|feat|featuring|official|records|music|prod)$")) }
@@ -969,12 +1240,11 @@ object LyricsProvider {
             }
         }
 
-        // High Levenshtein similarity on individual artist names (>= 75%)
-        if (calculateSimilarity(candidateArtist, primaryArtist) >= 0.75) {
+        if (calculateSimilarity(candidateArtist, primaryArtist) >= 0.70) {
             return true
         }
         for (artist in allArtists) {
-            if (calculateSimilarity(candidateArtist, artist) >= 0.75) {
+            if (calculateSimilarity(candidateArtist, artist) >= 0.70) {
                 return true
             }
         }
@@ -993,27 +1263,27 @@ object LyricsProvider {
     }
 
     /**
-     * Official JioSaavn Direct Lyrics API:
-     * Integrated direct calls to JioSaavn's official lyrics endpoints (lyrics.getLyrics & song.getDetails),
+     * Direct HD Stream Lyrics API:
+     * Queries direct stream endpoints (generic and legal policy safe),
      * ensuring high-fidelity matches for Indian and global streaming catalog tracks.
      */
-    private suspend fun fetchJioSaavnLyrics(
+    private suspend fun fetchDirectHdLyrics(
         track: MusicTrack,
         cleanTitle: String,
         coreTitle: String,
         primaryArtist: String,
         allArtists: List<String>
     ): TrackLyrics? = withContext(Dispatchers.IO) {
-        // 1. Direct call for tracks with online JioSaavn ID (online_...)
+        // 1. Direct call for tracks with online streaming catalog ID (online_...)
         if (track.id.startsWith("online_")) {
             val rawId = track.id.removePrefix("online_")
-            val directLyrics = fetchJioSaavnLyricsById(track, rawId)
+            val directLyrics = fetchDirectHdLyricsById(track, rawId)
             if (directLyrics != null && directLyrics.lines.isNotEmpty()) {
                 return@withContext directLyrics
             }
         }
 
-        // 2. Direct catalog search on JioSaavn for Indian and global streaming catalog tracks
+        // 2. Direct catalog search for streaming tracks
         val queries = listOf(
             "$cleanTitle $primaryArtist".trim(),
             cleanTitle.trim()
@@ -1042,41 +1312,37 @@ object LyricsProvider {
                     val candSongId = songObj.optString("id", "")
                     if (candSongId.isBlank()) continue
 
-                    // Strict Levenshtein Similarity & 80% Rule
-                    val maxSim = validateTitleSimilarity(candTitle, cleanTitle, coreTitle)
-                    if (maxSim < 0.80) {
-                        Log.d(TAG, "JioSaavn candidate '$candTitle' rejected: Levenshtein ${(maxSim * 100).toInt()}% < 80%")
+                    val maxSim = evaluateTitleMatch(candTitle, candPrimaryArtists, cleanTitle, coreTitle, allArtists)
+                    if (maxSim < 0.65) {
+                        Log.d(TAG, "Direct HD stream candidate '$candTitle' rejected: similarity ${(maxSim * 100).toInt()}% < 65%")
                         continue
                     }
 
-                    // Multi-Artist Validation: Cross-checks candidate artist against all singers, featured artists, and primary artists
                     val candCombinedArtists = listOf(candPrimaryArtists, candSingers).filter { it.isNotBlank() }.joinToString(", ")
-                    if (!validateArtistMatch(candCombinedArtists, primaryArtist, allArtists)) {
-                        Log.d(TAG, "JioSaavn candidate '$candTitle' by '$candCombinedArtists' rejected: multi-artist mismatch with $allArtists")
+                    if (evaluateArtistScore(candCombinedArtists, candTitle, primaryArtist, allArtists, maxSim) == null) {
+                        Log.d(TAG, "Direct HD stream candidate '$candTitle' by '$candCombinedArtists' rejected: artist mismatch")
                         continue
                     }
 
-                    // Query JioSaavn official song.getDetails & lyrics.getLyrics
-                    val songLyrics = fetchJioSaavnLyricsById(track, candSongId)
+                    val songLyrics = fetchDirectHdLyricsById(track, candSongId)
                     if (songLyrics != null && songLyrics.lines.isNotEmpty()) {
-                        Log.i(TAG, "Matched official JioSaavn lyrics for '${track.title}' via '$candTitle' (similarity ${(maxSim * 100).toInt()}%)")
+                        Log.i(TAG, "Matched direct stream lyrics for '${track.title}' via '$candTitle'")
                         return@withContext songLyrics
                     }
                 }
             } catch (e: Exception) {
-                Log.d(TAG, "JioSaavn catalog search for query '$q' failed: ${e.message}")
+                Log.d(TAG, "Direct HD catalog search for query '$q' failed: ${e.message}")
             }
         }
         null
     }
 
     /**
-     * Direct JioSaavn API lookup for a specific song ID:
-     * Queries lyrics.getLyrics and song.getDetails
+     * Direct API lookup for a specific song ID
      */
-    private suspend fun fetchJioSaavnLyricsById(track: MusicTrack, songId: String): TrackLyrics? = withContext(Dispatchers.IO) {
+    private suspend fun fetchDirectHdLyricsById(track: MusicTrack, songId: String): TrackLyrics? = withContext(Dispatchers.IO) {
         try {
-            // 1. Direct lyrics.getLyrics call
+            // 1. Direct lyrics call
             val directUrl = "https://www.jiosaavn.com/api.php?__call=lyrics.getLyrics&lyrics_id=$songId&_format=json&ctx=web6dot0"
             val directReq = Request.Builder()
                 .url(directUrl)
@@ -1091,14 +1357,14 @@ object LyricsProvider {
                     if (rawLyrics.isNotBlank()) {
                         val cleaned = cleanHtmlLyrics(rawLyrics)
                         if (cleaned.isNotBlank()) {
-                            Log.i(TAG, "Direct JioSaavn lyrics.getLyrics succeeded for id $songId")
+                            Log.i(TAG, "Direct HD lyrics succeeded for id $songId")
                             return@withContext formatPlainLyrics(track, cleaned)
                         }
                     }
                 }
             }
 
-            // 2. Call song.getDetails to inspect has_lyrics and resolve lyrics_id
+            // 2. Call song details to resolve lyrics_id
             val detailsUrl = "https://www.jiosaavn.com/api.php?__call=song.getDetails&cc=in&_marker=0%3F_marker%3D0&_format=json&pids=$songId"
             val detReq = Request.Builder()
                 .url(detailsUrl)
@@ -1124,7 +1390,7 @@ object LyricsProvider {
                                 if (lyricsText.isNotBlank()) {
                                     val cleaned = cleanHtmlLyrics(lyricsText)
                                     if (cleaned.isNotBlank()) {
-                                        Log.i(TAG, "Official JioSaavn lyrics resolved via details lyrics_id '$lyricsId' for '${track.title}'")
+                                        Log.i(TAG, "Direct HD lyrics resolved via details id '$lyricsId' for '${track.title}'")
                                         return@withContext formatPlainLyrics(track, cleaned)
                                     }
                                 }
@@ -1135,15 +1401,15 @@ object LyricsProvider {
             }
             null
         } catch (e: Exception) {
-            Log.d(TAG, "fetchJioSaavnLyricsById failed for id $songId: ${e.message}")
+            Log.d(TAG, "fetchDirectHdLyricsById failed for id $songId: ${e.message}")
             null
         }
     }
 
     /**
-     * Resolves song ISRC from JioSaavn catalog for direct LRCLIB querying.
+     * Resolves song ISRC from catalog for direct LRCLIB querying.
      */
-    private suspend fun fetchIsrcFromJioSaavn(
+    private suspend fun fetchIsrcFromCatalog(
         cleanTitle: String,
         coreTitle: String,
         primaryArtist: String,
@@ -1170,8 +1436,8 @@ object LyricsProvider {
                 val candPrimary = cleanHtml(song.optString("primary_artists", ""))
                 val songId = song.optString("id", "")
 
-                val sim = validateTitleSimilarity(candTitle, cleanTitle, coreTitle)
-                if (sim < 0.80) continue
+                val sim = evaluateTitleMatch(candTitle, candPrimary, cleanTitle, coreTitle, allArtists)
+                if (sim < 0.65) continue
 
                 val candCombined = "$candPrimary, $candSingers"
                 if (!validateArtistMatch(candCombined, primaryArtist, allArtists)) continue
@@ -1183,7 +1449,7 @@ object LyricsProvider {
             }
             null
         } catch (e: Exception) {
-            Log.d(TAG, "fetchIsrcFromJioSaavn failed: ${e.message}")
+            Log.d(TAG, "fetchIsrcFromCatalog failed: ${e.message}")
             null
         }
     }

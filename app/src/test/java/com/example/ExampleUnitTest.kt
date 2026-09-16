@@ -209,4 +209,142 @@ class ExampleUnitTest {
         val bollywoodTracks = tracks.filter { it.genre.contains("bollywood", ignoreCase = true) || it.language.contains("hindi", ignoreCase = true) }.ifEmpty { tracks.take(4) }
         assertTrue("Bollywood category must contain songs", bollywoodTracks.isNotEmpty())
     }
+
+    @Test
+    fun testAppVersion() {
+        assertEquals("1.5.0", com.example.BuildConfig.VERSION_NAME)
+        assertEquals(4, com.example.BuildConfig.VERSION_CODE)
+    }
+
+    @Test
+    fun testCustomRecommendationQueryWrapperExtraction() {
+        val testTrack = com.example.data.model.MusicTrack(
+            id = "test_extract_1",
+            title = "Insane (Official Music Video)",
+            artist = "AP Dhillon, Gurinder Gill feat. Shinda Kahlon",
+            album = "Hidden Gems 2021",
+            durationMs = 210000L,
+            coverUrl = "",
+            audioUrl = "",
+            genre = "Punjabi Hip Hop",
+            language = "Punjabi",
+            year = "2021"
+        )
+
+        val primaryArtist = com.example.recommendation.CustomRecommendationQueryWrapper.extractPrimaryArtist(testTrack)
+        assertEquals("AP Dhillon", primaryArtist)
+
+        val language = com.example.recommendation.CustomRecommendationQueryWrapper.extractExactLanguage(testTrack)
+        assertEquals("Punjabi", language)
+
+        val releaseYear = com.example.recommendation.CustomRecommendationQueryWrapper.extractReleaseYear(testTrack)
+        assertEquals("2021", releaseYear)
+    }
+
+    @Test
+    fun testWeightageScoringSystem() {
+        val engine = com.example.recommendation.RecommendationEngine()
+
+        val currentTrack = com.example.data.model.MusicTrack(
+            id = "current_playing",
+            title = "Excuses",
+            artist = "AP Dhillon",
+            album = "Excuses",
+            durationMs = 180000L,
+            coverUrl = "",
+            audioUrl = "",
+            genre = "Punjabi Pop",
+            language = "Punjabi",
+            year = "2021"
+        )
+
+        val sameSingerCandidate = com.example.data.model.MusicTrack(
+            id = "cand_same_singer",
+            title = "Brown Munde",
+            artist = "AP Dhillon",
+            album = "Brown Munde",
+            durationMs = 210000L,
+            coverUrl = "",
+            audioUrl = "",
+            genre = "Punjabi Pop",
+            language = "Punjabi",
+            year = "2020"
+        )
+
+        val mismatchedLanguageCandidate = com.example.data.model.MusicTrack(
+            id = "cand_mismatched",
+            title = "Blinding Lights",
+            artist = "The Weeknd",
+            album = "After Hours",
+            durationMs = 200000L,
+            coverUrl = "",
+            audioUrl = "",
+            genre = "Synthwave",
+            language = "English",
+            year = "2020"
+        )
+
+        val candidates = listOf(sameSingerCandidate, mismatchedLanguageCandidate)
+        val scored = engine.evaluateAndScoreCandidates(currentTrack, candidates)
+
+        assertTrue(scored.isNotEmpty())
+        val topScored = scored.first()
+        assertEquals("cand_same_singer", topScored.track.id)
+        // Verify points allocation: Singer (+50), Language (+30), Era (+20)
+        assertEquals(50.0, topScored.singerScore, 0.01)
+        assertEquals(30.0, topScored.languageScore, 0.01)
+        assertEquals(20.0, topScored.eraScore, 0.01)
+        assertTrue("Total score should be high for matching candidate", topScored.totalScore > 100.0)
+
+        // Verify mismatched candidate gets penalized for language difference
+        val lowScored = scored.last()
+        assertEquals(-20.0, lowScored.languageScore, 0.01)
+    }
+
+    @Test
+    fun testMoodVibeMatching() {
+        val romanticTrack = com.example.data.model.MusicTrack(
+            id = "t_romance",
+            title = "Tum Hi Ho (Love Theme)",
+            artist = "Arijit Singh",
+            album = "Aashiqui 2",
+            durationMs = 260000L,
+            coverUrl = "",
+            audioUrl = "",
+            genre = "Bollywood Romantic",
+            language = "Hindi",
+            year = "2013"
+        )
+
+        val partyTrack = com.example.data.model.MusicTrack(
+            id = "t_party",
+            title = "Kala Chashma (Party Dance Hit)",
+            artist = "Badshah, Neha Kakkar",
+            album = "Baar Baar Dekho",
+            durationMs = 190000L,
+            coverUrl = "",
+            audioUrl = "",
+            genre = "Bollywood Dance Party",
+            language = "Hindi",
+            year = "2016"
+        )
+
+        val romanticProfile = com.example.recommendation.MoodVibeAnalyzer.analyzeMood(romanticTrack)
+        val partyProfile = com.example.recommendation.MoodVibeAnalyzer.analyzeMood(partyTrack)
+
+        assertTrue(romanticProfile.tags.contains("romantic") || romanticProfile.tags.contains("love"))
+        assertTrue(partyProfile.tags.contains("party") || partyProfile.tags.contains("dance"))
+
+        val selfMatch = com.example.recommendation.MoodVibeAnalyzer.computeVibeMatch(romanticProfile, romanticProfile)
+        assertTrue("Self match must be true", selfMatch.isVibeMatch)
+        assertTrue("Self match vibe score should be >= 25", selfMatch.vibeScore >= 25.0)
+    }
+
+    @Test
+    fun testThemePreferencesEnum() {
+        assertEquals(com.example.data.local.AppThemeMode.SYSTEM, com.example.data.local.AppThemeMode.fromKey("system"))
+        assertEquals(com.example.data.local.AppThemeMode.DARK, com.example.data.local.AppThemeMode.fromKey("dark"))
+        assertEquals(com.example.data.local.AppThemeMode.LIGHT, com.example.data.local.AppThemeMode.fromKey("light"))
+        assertEquals(com.example.data.local.AppThemeMode.SYSTEM, com.example.data.local.AppThemeMode.fromKey("unknown_fallback"))
+    }
 }

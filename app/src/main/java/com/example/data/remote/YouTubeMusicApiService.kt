@@ -119,8 +119,8 @@ object YouTubeMusicApiService {
             if (rawTitle.isBlank()) return null
 
             // Subtitle runs: contains type (Song/Video), artist, album, duration
-            var artist = "YouTube Artist"
-            var album = "YouTube Music"
+            var artist = "Online Artist"
+            var album = "Online Stream"
             var durationMs = 210000L
 
             if (flexCols.length() > 1) {
@@ -188,19 +188,27 @@ object YouTubeMusicApiService {
             val cleanTitle = rawTitle.replace(Regex("&amp;"), "&")
                 .replace(Regex("&#39;"), "'")
                 .replace(Regex("&quot;"), "\"")
+                .replace(Regex("(?i)\\b(?:youtube\\s*music|youtube|jiosaavn|saavn)\\b"), "")
+                .trim()
+
+            val cleanArtist = artist.replace(Regex("(?i)\\b(?:youtube\\s*music|youtube|jiosaavn|saavn)\\b"), "")
+                .trim().ifBlank { "Various Artists" }
+
+            val cleanAlbum = album.replace(Regex("(?i)\\b(?:youtube\\s*music|youtube|jiosaavn|saavn)\\b"), "")
+                .trim().ifBlank { "Single" }
 
             return MusicTrack(
                 id = "yt_$videoId",
                 title = cleanTitle,
-                artist = artist,
-                album = album,
+                artist = cleanArtist,
+                album = cleanAlbum,
                 durationMs = durationMs,
                 coverUrl = thumbUrl,
                 audioUrl = "", // Populated via Unified Audio Layer fallback/stream resolver
                 bitrateKbps = 256,
-                qualityBadge = "YouTube Music • 256 kbps",
+                qualityBadge = "HQ • 256 kbps",
                 genre = "Pop",
-                source = "YouTube Music"
+                source = "Extended Stream"
             )
         } catch (e: Exception) {
             return null

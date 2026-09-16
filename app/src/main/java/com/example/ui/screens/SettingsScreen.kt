@@ -32,6 +32,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.BrightnessAuto
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Equalizer
@@ -67,7 +68,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -75,6 +78,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
+import com.example.data.local.AppThemeMode
 import com.example.playback.AudioEffectsState
 import com.example.playback.AudioQuality
 import com.example.playback.PlayerUiState
@@ -91,6 +95,8 @@ fun SettingsScreen(
     playerUiState: PlayerUiState,
     effectsState: AudioEffectsState,
     isDarkMode: Boolean = true,
+    themeMode: AppThemeMode = AppThemeMode.SYSTEM,
+    onSelectThemeMode: (AppThemeMode) -> Unit = {},
     onToggleDarkMode: () -> Unit = {},
     onAudioQualitySelected: (AudioQuality) -> Unit,
     onCrystalClarityToggle: (Boolean) -> Unit,
@@ -652,176 +658,96 @@ fun SettingsScreen(
                             modifier = Modifier.padding(16.dp),
                             verticalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
-                            Text(
-                                text = "Select App Color Scheme",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 14.sp,
-                                color = TextPrimary
-                            )
-                            Text(
-                                text = "Choose between the midnight blue dark theme or daylight blue theme.",
-                                fontSize = 12.sp,
-                                color = TextMuted
-                            )
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(
+                                    text = "Select App Color Scheme",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp,
+                                    color = TextPrimary
+                                )
+                                Text(
+                                    text = "Choose automatic system mode or manually set midnight dark or daylight light.",
+                                    fontSize = 12.sp,
+                                    color = TextMuted
+                                )
+                            }
 
-                            Column(
+                            // 3 Compact, Modern, Aesthetic Theme Selection Buttons
+                            Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                // Night / Dark Mode Row
-                                Surface(
-                                    onClick = { if (!isDarkMode) onToggleDarkMode() },
-                                    shape = RoundedCornerShape(14.dp),
-                                    color = if (isDarkMode) {
-                                        XtremeLightBlue.copy(alpha = 0.15f)
-                                    } else {
-                                        Color(0xFFF8FAFC)
-                                    },
-                                    border = BorderStroke(
-                                        width = if (isDarkMode) 2.dp else 1.2.dp,
-                                        color = if (isDarkMode) {
-                                            XtremeLightBlue
-                                        } else {
-                                            Color(0xFFCBD5E1)
-                                        }
-                                    ),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .testTag("theme_button_dark")
+                                ThemeModeOptionCard(
+                                    mode = AppThemeMode.SYSTEM,
+                                    title = "System",
+                                    subtitle = "Auto sync",
+                                    icon = Icons.Default.BrightnessAuto,
+                                    isSelected = themeMode == AppThemeMode.SYSTEM,
+                                    isDarkMode = isDarkMode,
+                                    onClick = { onSelectThemeMode(AppThemeMode.SYSTEM) },
+                                    modifier = Modifier.weight(1f)
+                                )
+
+                                ThemeModeOptionCard(
+                                    mode = AppThemeMode.DARK,
+                                    title = "Dark",
+                                    subtitle = "Midnight",
+                                    icon = Icons.Default.DarkMode,
+                                    isSelected = themeMode == AppThemeMode.DARK,
+                                    isDarkMode = isDarkMode,
+                                    onClick = { onSelectThemeMode(AppThemeMode.DARK) },
+                                    modifier = Modifier.weight(1f)
+                                )
+
+                                ThemeModeOptionCard(
+                                    mode = AppThemeMode.LIGHT,
+                                    title = "Light",
+                                    subtitle = "Daylight",
+                                    icon = Icons.Default.LightMode,
+                                    isSelected = themeMode == AppThemeMode.LIGHT,
+                                    isDarkMode = isDarkMode,
+                                    onClick = { onSelectThemeMode(AppThemeMode.LIGHT) },
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+
+                            // Compact Status Informational Banner
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (isDarkMode) Color(0xFF091626) else Color(0xFFF1F6FD),
+                                border = BorderStroke(1.dp, if (isDarkMode) Color(0xFF162D4A) else Color(0xFFDBEAFE)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(14.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            modifier = Modifier.weight(1f)
-                                        ) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .size(42.dp)
-                                                    .clip(CircleShape)
-                                                    .background(
-                                                        Brush.linearGradient(
-                                                            listOf(Color(0xFF000206), Color(0xFF0A1828))
-                                                        )
-                                                    )
-                                                    .border(BorderStroke(1.dp, if (isDarkMode) Color(0xFF1E3A5F) else Color(0xFFCBD5E1)), CircleShape),
-                                                contentAlignment = Alignment.Center
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Default.DarkMode,
-                                                    contentDescription = null,
-                                                    tint = if (isDarkMode) XtremeLightBlue else Color(0xFF64748B),
-                                                    modifier = Modifier.size(22.dp)
-                                                )
+                                    Icon(
+                                        imageVector = when (themeMode) {
+                                            AppThemeMode.SYSTEM -> Icons.Default.BrightnessAuto
+                                            AppThemeMode.DARK -> Icons.Default.DarkMode
+                                            AppThemeMode.LIGHT -> Icons.Default.LightMode
+                                        },
+                                        contentDescription = null,
+                                        tint = if (isDarkMode) XtremeLightBlue else Color(0xFF0284C7),
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Text(
+                                        text = when (themeMode) {
+                                            AppThemeMode.SYSTEM -> if (isDarkMode) {
+                                                "System mode: Following device setting (currently Dark)."
+                                            } else {
+                                                "System mode: Following device setting (currently Light)."
                                             }
-
-                                            Spacer(modifier = Modifier.width(14.dp))
-
-                                            Column {
-                                                Text(
-                                                    text = "Night Mode",
-                                                    fontWeight = FontWeight.Bold,
-                                                    fontSize = 15.sp,
-                                                    color = if (isDarkMode) XtremeLightBlue else TextPrimary
-                                                )
-                                                Text(
-                                                    text = "Black & Night Blue gradient canvas",
-                                                    fontSize = 12.sp,
-                                                    color = TextMuted
-                                                )
-                                            }
-                                        }
-
-                                        Icon(
-                                            imageVector = if (isDarkMode) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
-                                            contentDescription = null,
-                                            tint = if (isDarkMode) XtremeLightBlue else Color(0xFF94A3B8),
-                                            modifier = Modifier.size(24.dp)
-                                        )
-                                    }
-                                }
-
-                                // Light Mode Row
-                                Surface(
-                                    onClick = { if (isDarkMode) onToggleDarkMode() },
-                                    shape = RoundedCornerShape(14.dp),
-                                    color = if (!isDarkMode) {
-                                        Color(0xFF0284C7).copy(alpha = 0.12f)
-                                    } else {
-                                        Color.Transparent
-                                    },
-                                    border = BorderStroke(
-                                        width = if (!isDarkMode) 2.dp else 1.2.dp,
-                                        color = if (!isDarkMode) {
-                                            Color(0xFF0284C7)
-                                        } else {
-                                            Color(0xFF1E3554)
-                                        }
-                                    ),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .testTag("theme_button_light")
-                                ) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(14.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            modifier = Modifier.weight(1f)
-                                        ) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .size(42.dp)
-                                                    .clip(CircleShape)
-                                                    .background(
-                                                        Brush.linearGradient(
-                                                            listOf(Color(0xFFFFFFFF), Color(0xFFE2EDFB))
-                                                        )
-                                                    )
-                                                    .border(BorderStroke(1.dp, if (!isDarkMode) Color(0xFF93C5FD) else Color(0xFF64748B)), CircleShape),
-                                                contentAlignment = Alignment.Center
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Default.LightMode,
-                                                    contentDescription = null,
-                                                    tint = if (!isDarkMode) Color(0xFF0284C7) else Color(0xFF90A4AE),
-                                                    modifier = Modifier.size(22.dp)
-                                                )
-                                            }
-
-                                            Spacer(modifier = Modifier.width(14.dp))
-
-                                            Column {
-                                                Text(
-                                                    text = "Light Mode",
-                                                    fontWeight = FontWeight.Bold,
-                                                    fontSize = 15.sp,
-                                                    color = if (!isDarkMode) Color(0xFF0284C7) else TextPrimary
-                                                )
-                                                Text(
-                                                    text = "Crisp white & royal blue daylight palette",
-                                                    fontSize = 12.sp,
-                                                    color = TextMuted
-                                                )
-                                            }
-                                        }
-
-                                        Icon(
-                                            imageVector = if (!isDarkMode) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
-                                            contentDescription = null,
-                                            tint = if (!isDarkMode) Color(0xFF0284C7) else Color(0xFF4A6572),
-                                            modifier = Modifier.size(24.dp)
-                                        )
-                                    }
+                                            AppThemeMode.DARK -> "Midnight dark mode active: Always dark theme."
+                                            AppThemeMode.LIGHT -> "Daylight light mode active: Always light theme."
+                                        },
+                                        fontSize = 11.5.sp,
+                                        color = if (isDarkMode) Color(0xFF94A3B8) else Color(0xFF475569),
+                                        lineHeight = 15.sp,
+                                        modifier = Modifier.weight(1f)
+                                    )
                                 }
                             }
                         }
@@ -877,7 +803,7 @@ fun SettingsScreen(
                                             border = BorderStroke(1.dp, if (isDarkMode) XtremeLightBlue.copy(alpha = 0.4f) else Color(0xFF93C5FD))
                                         ) {
                                             Text(
-                                                text = "v1.4.0",
+                                                text = "v1.5.0",
                                                 fontSize = 10.sp,
                                                 fontWeight = FontWeight.Bold,
                                                 color = if (isDarkMode) XtremeLightBlue else Color(0xFF0284C7),
@@ -952,7 +878,7 @@ fun SettingsScreen(
                                         color = TextMuted
                                     )
                                     Text(
-                                        text = "✓ Production Ready (v1.4.0)",
+                                        text = "✓ Production Ready (v1.5.0)",
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 12.sp,
                                         color = if (isDarkMode) Color(0xFF10B981) else Color(0xFF059669)
@@ -997,5 +923,136 @@ fun SettingsSection(
             )
         }
         content()
+    }
+}
+
+@Composable
+private fun ThemeModeOptionCard(
+    mode: AppThemeMode,
+    title: String,
+    subtitle: String,
+    icon: ImageVector,
+    isSelected: Boolean,
+    isDarkMode: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val haptic = LocalHapticFeedback.current
+    Surface(
+        onClick = {
+            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            onClick()
+        },
+        shape = RoundedCornerShape(14.dp),
+        color = if (isSelected) {
+            if (isDarkMode) XtremeLightBlue.copy(alpha = 0.16f) else Color(0xFFE0F2FE)
+        } else {
+            if (isDarkMode) Color(0xFF0C1929) else Color(0xFFF8FAFC)
+        },
+        border = BorderStroke(
+            width = if (isSelected) 1.6.dp else 1.dp,
+            color = if (isSelected) {
+                if (isDarkMode) XtremeLightBlue else Color(0xFF0284C7)
+            } else {
+                if (isDarkMode) Color(0xFF1E3554) else Color(0xFFCBD5E1)
+            }
+        ),
+        shadowElevation = if (isSelected) {
+            if (isDarkMode) 1.5.dp else 3.dp
+        } else {
+            0.dp
+        },
+        modifier = modifier.testTag("theme_button_${mode.storageKey}")
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 12.dp, horizontal = 6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(
+                        if (isSelected) {
+                            if (isDarkMode) XtremeLightBlue.copy(alpha = 0.25f) else Color(0xFFBAE6FD)
+                        } else {
+                            if (isDarkMode) Color(0xFF162A42) else Color(0xFFEDF2F7)
+                        }
+                    )
+                    .border(
+                        BorderStroke(
+                            1.dp,
+                            if (isSelected) {
+                                if (isDarkMode) XtremeLightBlue.copy(alpha = 0.6f) else Color(0xFF0284C7).copy(alpha = 0.6f)
+                            } else {
+                                if (isDarkMode) Color(0xFF243B5A) else Color(0xFFCBD5E1)
+                            }
+                        ),
+                        CircleShape
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = title,
+                    tint = if (isSelected) {
+                        if (isDarkMode) XtremeLightBlue else Color(0xFF0284C7)
+                    } else {
+                        if (isDarkMode) Color(0xFF94A3B8) else Color(0xFF64748B)
+                    },
+                    modifier = Modifier.size(19.dp)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text(
+                text = title,
+                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
+                fontSize = 13.sp,
+                color = if (isSelected) {
+                    if (isDarkMode) XtremeLightBlue else Color(0xFF0284C7)
+                } else {
+                    TextPrimary
+                },
+                maxLines = 1
+            )
+
+            Text(
+                text = subtitle,
+                fontSize = 10.sp,
+                color = if (isSelected) {
+                    if (isDarkMode) XtremeCyan else Color(0xFF0284C7)
+                } else {
+                    TextMuted
+                },
+                maxLines = 1
+            )
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            if (isSelected) {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(
+                            if (isDarkMode) XtremeLightBlue.copy(alpha = 0.22f) else Color(0xFFBAE6FD)
+                        )
+                        .padding(horizontal = 6.dp, vertical = 1.5.dp)
+                ) {
+                    Text(
+                        text = "ACTIVE",
+                        fontSize = 8.5.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = if (isDarkMode) XtremeLightBlue else Color(0xFF0284C7)
+                    )
+                }
+            } else {
+                Spacer(modifier = Modifier.height(16.dp))
+            }
+        }
     }
 }

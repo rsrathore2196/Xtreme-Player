@@ -670,9 +670,9 @@ fun TrackListItem(
             Spacer(modifier = Modifier.height(2.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 // Source and quality badge
-                val isYt = track.source == "YouTube Music"
-                val badgeText = if (isYt) "YT Music" else "JioSaavn • 320k"
-                val badgeColor = if (isYt) Color(0xFFFF0033) else (if (isDark) XtremeLightBlue else Color(0xFF0284C7))
+                val isExtended = track.source == "Extended Stream" || track.id.startsWith("yt_")
+                val badgeText = if (isExtended) "HQ • 256k" else "HD • 320k"
+                val badgeColor = if (isExtended) Color(0xFFFF5252) else (if (isDark) XtremeLightBlue else Color(0xFF0284C7))
                 Box(
                     modifier = Modifier
                         .clip(RoundedCornerShape(3.dp))

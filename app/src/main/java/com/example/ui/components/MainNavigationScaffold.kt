@@ -11,6 +11,7 @@ import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
@@ -58,6 +59,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -96,6 +98,7 @@ fun MainNavigationScaffold(
     val selectedPlaylistWithTracks by viewModel.selectedPlaylistTracks.collectAsState()
     val effectsState by viewModel.effectsState.collectAsState()
     val isDarkMode by viewModel.isDarkMode.collectAsState()
+    val themeMode by viewModel.themeMode.collectAsState()
     val homeShelves by viewModel.homeShelves.collectAsState()
     val currentLyrics by viewModel.currentLyrics.collectAsState()
     val availableAudioDevices by viewModel.availableAudioDevices.collectAsState()
@@ -142,22 +145,23 @@ fun MainNavigationScaffold(
                         visible = playerUiState.currentTrack != null && !isPlayerExpanded,
                         enter = slideInVertically(
                             animationSpec = spring(
-                                dampingRatio = 0.80f,
-                                stiffness = 420f
+                                dampingRatio = 0.82f,
+                                stiffness = 650f
                             ),
                             initialOffsetY = { it }
-                        ) + fadeIn(animationSpec = tween(220, easing = LinearOutSlowInEasing)) + expandVertically(
-                            animationSpec = spring(dampingRatio = 0.82f, stiffness = 420f)
+                        ) + fadeIn(animationSpec = tween(150, easing = LinearOutSlowInEasing)) + expandVertically(
+                            animationSpec = spring(dampingRatio = 0.84f, stiffness = 650f)
                         ),
                         exit = slideOutVertically(
                             animationSpec = spring(
-                                dampingRatio = 0.82f,
-                                stiffness = 420f
+                                dampingRatio = 0.84f,
+                                stiffness = 650f
                             ),
                             targetOffsetY = { it }
-                        ) + fadeOut(animationSpec = tween(180, easing = FastOutLinearInEasing)) + shrinkVertically(
-                            animationSpec = spring(dampingRatio = 0.82f, stiffness = 420f)
-                        )
+                        ) + fadeOut(animationSpec = tween(110, easing = FastOutLinearInEasing)) + shrinkVertically(
+                            animationSpec = spring(dampingRatio = 0.84f, stiffness = 650f)
+                        ),
+                        modifier = Modifier.graphicsLayer { clip = false }
                     ) {
                         MiniPlayer(
                             uiState = playerUiState,
@@ -177,10 +181,33 @@ fun MainNavigationScaffold(
                         indicatorColor = appColors.bottomBarIndicator
                     )
 
+                    val homeScale by animateFloatAsState(
+                        targetValue = if (selectedTabIndex == 0) 1.12f else 1.0f,
+                        animationSpec = spring(dampingRatio = 0.55f, stiffness = 850f),
+                        label = "tab_home_scale"
+                    )
+                    val searchScale by animateFloatAsState(
+                        targetValue = if (selectedTabIndex == 1) 1.12f else 1.0f,
+                        animationSpec = spring(dampingRatio = 0.55f, stiffness = 850f),
+                        label = "tab_search_scale"
+                    )
+                    val libraryScale by animateFloatAsState(
+                        targetValue = if (selectedTabIndex == 2) 1.12f else 1.0f,
+                        animationSpec = spring(dampingRatio = 0.55f, stiffness = 850f),
+                        label = "tab_library_scale"
+                    )
+                    val settingsScale by animateFloatAsState(
+                        targetValue = if (selectedTabIndex == 3) 1.12f else 1.0f,
+                        animationSpec = spring(dampingRatio = 0.55f, stiffness = 850f),
+                        label = "tab_settings_scale"
+                    )
+
                     NavigationBar(
                         containerColor = appColors.bottomBarBackground,
                         tonalElevation = 8.dp,
-                        modifier = Modifier.testTag("bottom_navigation_bar")
+                        modifier = Modifier
+                            .testTag("bottom_navigation_bar")
+                            .graphicsLayer { clip = false }
                     ) {
                         NavigationBarItem(
                             selected = selectedTabIndex == 0,
@@ -191,7 +218,11 @@ fun MainNavigationScaffold(
                             icon = {
                                 Icon(
                                     imageVector = if (selectedTabIndex == 0) Icons.Default.Home else Icons.Outlined.Home,
-                                    contentDescription = "Home"
+                                    contentDescription = "Home",
+                                    modifier = Modifier.graphicsLayer {
+                                        scaleX = homeScale
+                                        scaleY = homeScale
+                                    }
                                 )
                             },
                             label = {
@@ -213,7 +244,11 @@ fun MainNavigationScaffold(
                             icon = {
                                 Icon(
                                     imageVector = if (selectedTabIndex == 1) Icons.Default.Search else Icons.Outlined.Search,
-                                    contentDescription = "Search"
+                                    contentDescription = "Search",
+                                    modifier = Modifier.graphicsLayer {
+                                        scaleX = searchScale
+                                        scaleY = searchScale
+                                    }
                                 )
                             },
                             label = {
@@ -234,7 +269,11 @@ fun MainNavigationScaffold(
                             icon = {
                                 Icon(
                                     imageVector = if (selectedTabIndex == 2) Icons.Default.LibraryMusic else Icons.Outlined.LibraryMusic,
-                                    contentDescription = "Library"
+                                    contentDescription = "Library",
+                                    modifier = Modifier.graphicsLayer {
+                                        scaleX = libraryScale
+                                        scaleY = libraryScale
+                                    }
                                 )
                             },
                             label = {
@@ -256,7 +295,11 @@ fun MainNavigationScaffold(
                             icon = {
                                 Icon(
                                     imageVector = if (selectedTabIndex == 3) Icons.Default.Settings else Icons.Outlined.Settings,
-                                    contentDescription = "Settings"
+                                    contentDescription = "Settings",
+                                    modifier = Modifier.graphicsLayer {
+                                        scaleX = settingsScale
+                                        scaleY = settingsScale
+                                    }
                                 )
                             },
                             label = {
@@ -285,12 +328,13 @@ fun MainNavigationScaffold(
                     visible = currentPlaylist != null,
                     enter = slideInHorizontally(
                         initialOffsetX = { it },
-                        animationSpec = spring(dampingRatio = 0.85f, stiffness = Spring.StiffnessMediumLow)
-                    ) + fadeIn(animationSpec = tween(260)),
+                        animationSpec = spring(dampingRatio = 0.84f, stiffness = 650f)
+                    ) + fadeIn(animationSpec = tween(170, easing = LinearOutSlowInEasing)),
                     exit = slideOutHorizontally(
                         targetOffsetX = { it },
-                        animationSpec = spring(dampingRatio = 0.88f, stiffness = Spring.StiffnessMediumLow)
-                    ) + fadeOut(animationSpec = tween(200))
+                        animationSpec = spring(dampingRatio = 0.86f, stiffness = 650f)
+                    ) + fadeOut(animationSpec = tween(130, easing = FastOutLinearInEasing)),
+                    modifier = Modifier.graphicsLayer { clip = false }
                 ) {
                     currentPlaylist?.let { playlist ->
                         PlaylistDetailScreen(
@@ -312,32 +356,44 @@ fun MainNavigationScaffold(
                         targetState = selectedTabIndex,
                         transitionSpec = {
                             val isForward = targetState > initialState
-                            val slideDistanceFraction = 0.15f
 
-                            val enterTransition = slideInHorizontally(
-                                animationSpec = tween(360, easing = FastOutSlowInEasing),
-                                initialOffsetX = { width -> if (isForward) (width * slideDistanceFraction).toInt() else -(width * slideDistanceFraction).toInt() }
+                            // Ultra-fast, aesthetic, smooth Tab Transition (Material 3 Shared Axis Fade-Through)
+                            // 120Hz refresh responsiveness: rapid 140ms entry, crisp 90ms exit, micro-depth
+                            val enterTransition = fadeIn(
+                                animationSpec = tween(140, easing = LinearOutSlowInEasing)
+                            ) + slideInHorizontally(
+                                animationSpec = spring(
+                                    dampingRatio = 0.88f,
+                                    stiffness = 850f
+                                ),
+                                initialOffsetX = { width -> if (isForward) (width * 0.06f).toInt() else -(width * 0.06f).toInt() }
                             ) + scaleIn(
-                                initialScale = 0.94f,
-                                animationSpec = tween(360, easing = FastOutSlowInEasing)
-                            ) + fadeIn(
-                                animationSpec = tween(280)
+                                initialScale = 0.985f,
+                                animationSpec = spring(
+                                    dampingRatio = 0.88f,
+                                    stiffness = 850f
+                                )
                             )
 
-                            val exitTransition = slideOutHorizontally(
-                                animationSpec = tween(300, easing = FastOutSlowInEasing),
-                                targetOffsetX = { width -> if (isForward) -(width * slideDistanceFraction).toInt() else (width * slideDistanceFraction).toInt() }
-                            ) + scaleOut(
-                                targetScale = 0.97f,
-                                animationSpec = tween(300, easing = FastOutSlowInEasing)
-                            ) + fadeOut(
-                                animationSpec = tween(220)
+                            val exitTransition = fadeOut(
+                                animationSpec = tween(90, easing = FastOutLinearInEasing)
+                            ) + slideOutHorizontally(
+                                animationSpec = spring(
+                                    dampingRatio = 0.88f,
+                                    stiffness = 850f
+                                ),
+                                targetOffsetX = { width -> if (isForward) -(width * 0.03f).toInt() else (width * 0.03f).toInt() }
                             )
 
                             enterTransition.togetherWith(exitTransition)
                         },
                         label = "tab_navigation_transition",
-                        modifier = Modifier.fillMaxSize()
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer {
+                                // Hardware acceleration compositing layer for 120Hz rendering
+                                clip = false
+                            }
                     ) { tabIndex ->
                         when (tabIndex) {
                             0 -> HomeScreen(
@@ -370,6 +426,8 @@ fun MainNavigationScaffold(
                                 playerUiState = playerUiState,
                                 effectsState = effectsState,
                                 isDarkMode = isDarkMode,
+                                themeMode = themeMode,
+                                onSelectThemeMode = { mode -> viewModel.setThemeMode(mode) },
                                 onToggleDarkMode = { viewModel.toggleDarkMode() },
                                 onAudioQualitySelected = { quality -> viewModel.setAudioQuality(quality) },
                                 onCrystalClarityToggle = { enabled -> viewModel.setCrystalClarityEnabled(enabled) },
@@ -389,34 +447,36 @@ fun MainNavigationScaffold(
             enter = slideInVertically(
                 initialOffsetY = { it },
                 animationSpec = spring(
-                    dampingRatio = 0.82f,
-                    stiffness = 420f
+                    dampingRatio = 0.84f,
+                    stiffness = 620f
                 )
             ) + fadeIn(
-                animationSpec = tween(220, easing = LinearOutSlowInEasing)
+                animationSpec = tween(170, easing = LinearOutSlowInEasing)
             ) + scaleIn(
-                initialScale = 0.95f,
+                initialScale = 0.96f,
                 animationSpec = spring(
-                    dampingRatio = 0.82f,
-                    stiffness = 420f
+                    dampingRatio = 0.84f,
+                    stiffness = 620f
                 )
             ),
             exit = slideOutVertically(
                 targetOffsetY = { it },
                 animationSpec = spring(
-                    dampingRatio = 0.82f,
-                    stiffness = 420f
+                    dampingRatio = 0.84f,
+                    stiffness = 620f
                 )
             ) + fadeOut(
-                animationSpec = tween(180, easing = FastOutLinearInEasing)
+                animationSpec = tween(130, easing = FastOutLinearInEasing)
             ) + scaleOut(
-                targetScale = 0.96f,
+                targetScale = 0.97f,
                 animationSpec = spring(
-                    dampingRatio = 0.82f,
-                    stiffness = 420f
+                    dampingRatio = 0.84f,
+                    stiffness = 620f
                 )
             ),
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer { clip = true }
         ) {
             ExpandedPlayerScreen(
                 uiState = playerUiState,

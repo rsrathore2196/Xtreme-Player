@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -38,7 +39,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Hearing
-import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.material.icons.filled.SpeakerGroup
 import androidx.compose.material.icons.filled.Usb
@@ -194,19 +195,20 @@ fun SoundOutputDeviceDialog(
                 contentAlignment = Alignment.Center
             ) {
                 Card(
-                    shape = RoundedCornerShape(26.dp),
+                    shape = RoundedCornerShape(22.dp),
                     colors = CardDefaults.cardColors(
                         containerColor = if (isDark) Color(0xFF0D1B2E) else Color(0xFFFFFFFF)
                     ),
                     border = BorderStroke(
-                        1.2.dp,
+                        1.dp,
                         if (isDark) Color(0xFF1E3A5F) else Color(0xFFBFDBFE)
                     ),
                     elevation = CardDefaults.cardElevation(
-                        defaultElevation = if (isDark) 16.dp else 10.dp
+                        defaultElevation = if (isDark) 12.dp else 8.dp
                     ),
                     modifier = Modifier
-                        .fillMaxWidth(0.92f)
+                        .fillMaxWidth(0.86f)
+                        .widthIn(max = 350.dp)
                         .graphicsLayer {
                             scaleX = scale
                             scaleY = scale
@@ -223,9 +225,9 @@ fun SoundOutputDeviceDialog(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(20.dp)
+                            .padding(16.dp)
                     ) {
-                        // HEADER
+                        // COMPACT MODERN HEADER
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
@@ -237,10 +239,10 @@ fun SoundOutputDeviceDialog(
                             ) {
                                 Box(
                                     modifier = Modifier
-                                        .size(42.dp)
-                                        .clip(RoundedCornerShape(12.dp))
+                                        .size(34.dp)
+                                        .clip(RoundedCornerShape(10.dp))
                                         .background(
-                                            if (isDark) XtremeLightBlue.copy(alpha = 0.18f)
+                                            if (isDark) XtremeLightBlue.copy(alpha = 0.16f)
                                             else Color(0xFFE0F2FE)
                                         ),
                                     contentAlignment = Alignment.Center
@@ -249,22 +251,22 @@ fun SoundOutputDeviceDialog(
                                         imageVector = Icons.Default.SpeakerGroup,
                                         contentDescription = null,
                                         tint = if (isDark) XtremeLightBlue else Color(0xFF0284C7),
-                                        modifier = Modifier.size(22.dp)
+                                        modifier = Modifier.size(18.dp)
                                     )
                                 }
 
-                                Spacer(modifier = Modifier.width(12.dp))
+                                Spacer(modifier = Modifier.width(10.dp))
 
                                 Column {
                                     Text(
-                                        text = "Sound Output Devices",
+                                        text = "Output Devices",
                                         fontWeight = FontWeight.Bold,
-                                        fontSize = 17.sp,
+                                        fontSize = 15.sp,
                                         color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF0F172A)
                                     )
                                     Text(
-                                        text = "Select active speaker or headphones",
-                                        fontSize = 12.sp,
+                                        text = "Choose audio playback target",
+                                        fontSize = 11.sp,
                                         color = if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B)
                                     )
                                 }
@@ -273,40 +275,40 @@ fun SoundOutputDeviceDialog(
                             IconButton(
                                 onClick = { closeWithAnimation() },
                                 modifier = Modifier
-                                    .size(36.dp)
+                                    .size(30.dp)
                                     .testTag("close_output_devices_dialog")
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Close,
                                     contentDescription = "Close",
                                     tint = if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B),
-                                    modifier = Modifier.size(20.dp)
+                                    modifier = Modifier.size(18.dp)
                                 )
                             }
                         }
 
-                        Spacer(modifier = Modifier.height(16.dp))
+                        Spacer(modifier = Modifier.height(10.dp))
                         HorizontalDivider(
                             color = if (isDark) Color(0xFF182D47) else Color(0xFFE2E8F0),
                             thickness = 1.dp
                         )
-                        Spacer(modifier = Modifier.height(14.dp))
+                        Spacer(modifier = Modifier.height(10.dp))
 
-                        // DEVICE LIST
+                        // COMPACT DEVICE LIST
                         Text(
                             text = "AVAILABLE OUTPUTS (${devices.size})",
-                            fontSize = 11.sp,
+                            fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
-                            letterSpacing = 1.sp,
+                            letterSpacing = 0.8.sp,
                             color = if (isDark) XtremeLightBlue else Color(0xFF0284C7),
-                            modifier = Modifier.padding(bottom = 8.dp)
+                            modifier = Modifier.padding(bottom = 6.dp)
                         )
 
                         LazyColumn(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .heightIn(max = 280.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                                .heightIn(max = 210.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             items(devices, key = { it.id }) { device ->
                                 DeviceItemRow(
@@ -320,47 +322,47 @@ fun SoundOutputDeviceDialog(
                             }
                         }
 
-                        // BLUETOOTH HINT BANNER
+                        // BLUETOOTH HINT BANNER (COMPACT PILL)
                         if (devices.none { it.isBluetooth }) {
-                            Spacer(modifier = Modifier.height(10.dp))
+                            Spacer(modifier = Modifier.height(8.dp))
                             Surface(
-                                shape = RoundedCornerShape(12.dp),
+                                shape = RoundedCornerShape(9.dp),
                                 color = if (isDark) Color(0xFF132238) else Color(0xFFEFF6FF),
                                 border = BorderStroke(1.dp, if (isDark) Color(0xFF1C3454) else Color(0xFFBFDBFE)),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Row(
-                                    modifier = Modifier.padding(10.dp),
+                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.BluetoothAudio,
                                         contentDescription = null,
                                         tint = if (isDark) XtremeCyan else Color(0xFF0284C7),
-                                        modifier = Modifier.size(16.dp)
+                                        modifier = Modifier.size(14.dp)
                                     )
-                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
                                     Text(
-                                        text = "Connect Bluetooth earbuds or headphones to see them here.",
-                                        fontSize = 11.sp,
+                                        text = "Connect Bluetooth headphones to route audio.",
+                                        fontSize = 10.5.sp,
                                         color = if (isDark) TextSecondary else Color(0xFF1E40AF),
-                                        lineHeight = 15.sp
+                                        lineHeight = 13.sp
                                     )
                                 }
                             }
                         }
 
-                        Spacer(modifier = Modifier.height(16.dp))
+                        Spacer(modifier = Modifier.height(10.dp))
                         HorizontalDivider(
                             color = if (isDark) Color(0xFF182D47) else Color(0xFFE2E8F0),
                             thickness = 1.dp
                         )
-                        Spacer(modifier = Modifier.height(14.dp))
+                        Spacer(modifier = Modifier.height(10.dp))
 
-                        // ACTIONS FOOTER
+                        // COMPACT ACTIONS FOOTER
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             // System Output Switcher button
@@ -368,7 +370,7 @@ fun SoundOutputDeviceDialog(
                                 onClick = {
                                     openSystemAudioSwitcher(context)
                                 },
-                                shape = RoundedCornerShape(12.dp),
+                                shape = RoundedCornerShape(10.dp),
                                 border = BorderStroke(1.dp, if (isDark) Color(0xFF23446D) else Color(0xFFCBD5E1)),
                                 colors = ButtonDefaults.outlinedButtonColors(
                                     containerColor = if (isDark) Color(0xFF132238) else Color(0xFFF8FAFC),
@@ -376,18 +378,18 @@ fun SoundOutputDeviceDialog(
                                 ),
                                 modifier = Modifier
                                     .weight(1f)
-                                    .height(44.dp)
+                                    .height(36.dp)
                                     .testTag("open_system_switcher_button")
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.OpenInNew,
+                                    imageVector = Icons.AutoMirrored.Filled.OpenInNew,
                                     contentDescription = null,
-                                    modifier = Modifier.size(15.dp)
+                                    modifier = Modifier.size(13.dp)
                                 )
-                                Spacer(modifier = Modifier.width(6.dp))
+                                Spacer(modifier = Modifier.width(5.dp))
                                 Text(
                                     text = "System Switcher",
-                                    fontSize = 12.sp,
+                                    fontSize = 11.5.sp,
                                     fontWeight = FontWeight.SemiBold,
                                     maxLines = 1
                                 )
@@ -396,19 +398,19 @@ fun SoundOutputDeviceDialog(
                             // Done Button
                             Button(
                                 onClick = { closeWithAnimation() },
-                                shape = RoundedCornerShape(12.dp),
+                                shape = RoundedCornerShape(10.dp),
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = if (isDark) XtremeLightBlue else Color(0xFF0284C7),
                                     contentColor = if (isDark) Color(0xFF021024) else Color.White
                                 ),
                                 modifier = Modifier
-                                    .weight(0.8f)
-                                    .height(44.dp)
+                                    .weight(0.75f)
+                                    .height(36.dp)
                                     .testTag("done_output_devices_button")
                             ) {
                                 Text(
                                     text = "Done",
-                                    fontSize = 13.sp,
+                                    fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold
                                 )
                             }
@@ -431,14 +433,14 @@ private fun DeviceItemRow(
 
     Surface(
         onClick = onClick,
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(12.dp),
         color = if (isSelected) {
             if (isDark) Color(0xFF142C48) else Color(0xFFEFF6FF)
         } else {
             if (isDark) Color(0xFF0F1C2D) else Color(0xFFF8FAFC)
         },
         border = BorderStroke(
-            if (isSelected) 1.5.dp else 1.dp,
+            if (isSelected) 1.2.dp else 1.dp,
             if (isSelected) {
                 if (isDark) XtremeLightBlue else Color(0xFF0284C7)
             } else {
@@ -452,7 +454,7 @@ private fun DeviceItemRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 12.dp),
+                .padding(horizontal = 11.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
@@ -463,11 +465,11 @@ private fun DeviceItemRow(
             ) {
                 Box(
                     modifier = Modifier
-                        .size(38.dp)
-                        .clip(RoundedCornerShape(10.dp))
+                        .size(32.dp)
+                        .clip(RoundedCornerShape(8.dp))
                         .background(
                             if (isSelected) {
-                                if (isDark) XtremeLightBlue.copy(alpha = 0.25f) else Color(0xFFDBEAFE)
+                                if (isDark) XtremeLightBlue.copy(alpha = 0.22f) else Color(0xFFDBEAFE)
                             } else {
                                 if (isDark) Color(0xFF1A2A40) else Color(0xFFEDF2F7)
                             }
@@ -482,24 +484,24 @@ private fun DeviceItemRow(
                         } else {
                             if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B)
                         },
-                        modifier = Modifier.size(20.dp)
+                        modifier = Modifier.size(17.dp)
                     )
                 }
 
-                Spacer(modifier = Modifier.width(12.dp))
+                Spacer(modifier = Modifier.width(10.dp))
 
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = device.name,
                         fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
-                        fontSize = 13.sp,
+                        fontSize = 12.5.sp,
                         color = if (isDark) Color(0xFFF8FAFC) else Color(0xFF0F172A),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
                         text = device.typeName,
-                        fontSize = 11.sp,
+                        fontSize = 10.sp,
                         color = if (isSelected) {
                             if (isDark) XtremeCyan else Color(0xFF0284C7)
                         } else {
@@ -509,30 +511,30 @@ private fun DeviceItemRow(
                 }
             }
 
-            Spacer(modifier = Modifier.width(8.dp))
+            Spacer(modifier = Modifier.width(6.dp))
 
             // Right: Status badge or Radio
             if (isSelected) {
                 Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = if (isDark) XtremeLightBlue.copy(alpha = 0.2f) else Color(0xFFDBEAFE),
-                    border = BorderStroke(1.dp, if (isDark) XtremeLightBlue else Color(0xFF0284C7))
+                    shape = RoundedCornerShape(6.dp),
+                    color = if (isDark) XtremeLightBlue.copy(alpha = 0.18f) else Color(0xFFDBEAFE),
+                    border = BorderStroke(1.dp, if (isDark) XtremeLightBlue.copy(alpha = 0.8f) else Color(0xFF0284C7))
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.5.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(
                             imageVector = Icons.Default.Check,
                             contentDescription = "Active",
                             tint = if (isDark) XtremeLightBlue else Color(0xFF0284C7),
-                            modifier = Modifier.size(13.dp)
+                            modifier = Modifier.size(11.dp)
                         )
-                        Spacer(modifier = Modifier.width(4.dp))
+                        Spacer(modifier = Modifier.width(3.dp))
                         Text(
                             text = "ACTIVE",
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
                             color = if (isDark) XtremeLightBlue else Color(0xFF0284C7)
                         )
                     }
@@ -540,10 +542,10 @@ private fun DeviceItemRow(
             } else {
                 Box(
                     modifier = Modifier
-                        .size(20.dp)
+                        .size(16.dp)
                         .clip(CircleShape)
                         .border(
-                            1.5.dp,
+                            1.2.dp,
                             if (isDark) Color(0xFF334E6F) else Color(0xFFCBD5E1),
                             CircleShape
                         )

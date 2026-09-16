@@ -1,6 +1,7 @@
 package com.example
 
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -21,6 +22,12 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        // Explicitly enforce hardware acceleration at the window surface level
+        window.setFlags(
+            WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
+            WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
+        )
 
         // Configure 120Hz High Refresh Rate Mode for supported screens and devices
         try {
@@ -71,8 +78,19 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            val isDarkMode by playerViewModel.isDarkMode.collectAsState()
-            MyApplicationTheme(darkTheme = isDarkMode) {
+            val themeMode by playerViewModel.themeMode.collectAsState()
+            val isSystemDark = androidx.compose.foundation.isSystemInDarkTheme()
+            val effectiveDark = when (themeMode) {
+                com.example.data.local.AppThemeMode.SYSTEM -> isSystemDark
+                com.example.data.local.AppThemeMode.DARK -> true
+                com.example.data.local.AppThemeMode.LIGHT -> false
+            }
+
+            androidx.compose.runtime.LaunchedEffect(effectiveDark) {
+                playerViewModel.setResolvedDarkMode(effectiveDark)
+            }
+
+            MyApplicationTheme(darkTheme = effectiveDark) {
                 MainNavigationScaffold(viewModel = playerViewModel)
             }
         }

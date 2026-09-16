@@ -28,7 +28,7 @@ data class TrackEntity(
     val writer: String = "",
     val language: String = "",
     val year: String = "",
-    val source: String = "JioSaavn",
+    val source: String = "HD Stream",
     val isrc: String = ""
 ) {
     fun toMusicTrack(): MusicTrack = MusicTrack(
@@ -48,7 +48,11 @@ data class TrackEntity(
         writer = writer,
         language = if (language.isNotBlank()) language else "Hindi",
         year = year,
-        source = if (source.isNotBlank()) source else "JioSaavn",
+        source = when {
+            source.equals("YouTube Music", ignoreCase = true) || id.startsWith("yt_") -> "Extended Stream"
+            source.equals("JioSaavn", ignoreCase = true) || source.isBlank() -> "HD Stream"
+            else -> source
+        },
         isrc = isrc
     )
 
@@ -71,7 +75,11 @@ data class TrackEntity(
             writer = track.writer,
             language = track.language,
             year = track.year,
-            source = track.source,
+            source = when {
+                track.source.equals("YouTube Music", ignoreCase = true) || track.id.startsWith("yt_") -> "Extended Stream"
+                track.source.equals("JioSaavn", ignoreCase = true) || track.source.isBlank() -> "HD Stream"
+                else -> track.source
+            },
             isrc = track.isrc
         )
     }

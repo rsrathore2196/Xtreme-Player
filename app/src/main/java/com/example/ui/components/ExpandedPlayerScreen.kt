@@ -10,8 +10,10 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode as AnimationRepeatMode
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
@@ -202,12 +204,12 @@ fun ExpandedPlayerScreen(
 
     val animatedDominantColor by animateColorAsState(
         targetValue = dominantColor,
-        animationSpec = tween(600),
+        animationSpec = tween(320, easing = FastOutSlowInEasing),
         label = "dominant_color"
     )
     val animatedAccentColor by animateColorAsState(
         targetValue = accentColor,
-        animationSpec = tween(600),
+        animationSpec = tween(320, easing = FastOutSlowInEasing),
         label = "accent_color"
     )
 
@@ -224,7 +226,7 @@ fun ExpandedPlayerScreen(
 
     val albumArtScale by animateFloatAsState(
         targetValue = if (uiState.isPlaying) 1.0f else 0.88f,
-        animationSpec = spring(dampingRatio = 0.7f, stiffness = 300f),
+        animationSpec = spring(dampingRatio = 0.72f, stiffness = 550f),
         label = "album_art_scale"
     )
 
@@ -232,7 +234,7 @@ fun ExpandedPlayerScreen(
         targetValue = if (isFlipped) 180f else 0f,
         animationSpec = spring(
             dampingRatio = 0.75f,
-            stiffness = Spring.StiffnessMediumLow
+            stiffness = Spring.StiffnessMedium
         ),
         label = "flip_card_rotation"
     )
@@ -251,6 +253,28 @@ fun ExpandedPlayerScreen(
             stiffness = Spring.StiffnessMedium
         ),
         label = "lyrics_button_scale"
+    )
+
+    val outputInteractionSource = remember { MutableInteractionSource() }
+    val isOutputPressed by outputInteractionSource.collectIsPressedAsState()
+    val outputButtonScale by animateFloatAsState(
+        targetValue = if (isOutputPressed) 0.94f else 1.0f,
+        animationSpec = spring(
+            dampingRatio = 0.65f,
+            stiffness = Spring.StiffnessMedium
+        ),
+        label = "output_button_scale"
+    )
+
+    val queueInteractionSource = remember { MutableInteractionSource() }
+    val isQueuePressed by queueInteractionSource.collectIsPressedAsState()
+    val queueButtonScale by animateFloatAsState(
+        targetValue = if (isQueuePressed) 0.90f else 1.0f,
+        animationSpec = spring(
+            dampingRatio = 0.65f,
+            stiffness = Spring.StiffnessMedium
+        ),
+        label = "queue_button_scale"
     )
 
     Surface(
@@ -375,13 +399,14 @@ fun ExpandedPlayerScreen(
             AnimatedContent(
                 targetState = showLyrics,
                 transitionSpec = {
-                    (fadeIn(animationSpec = tween(380)) + scaleIn(initialScale = 0.92f, animationSpec = tween(380))) togetherWith
-                    (fadeOut(animationSpec = tween(280)) + scaleOut(targetScale = 0.92f, animationSpec = tween(280)))
+                    (fadeIn(animationSpec = tween(170, easing = LinearOutSlowInEasing)) + scaleIn(initialScale = 0.96f, animationSpec = tween(170, easing = FastOutSlowInEasing))) togetherWith
+                    (fadeOut(animationSpec = tween(130, easing = FastOutLinearInEasing)) + scaleOut(targetScale = 0.98f, animationSpec = tween(130, easing = FastOutLinearInEasing)))
                 },
                 label = "lyrics_album_art_transition",
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
+                    .graphicsLayer { clip = false }
             ) { isLyricsActive ->
                 if (isLyricsActive) {
                     SyncedLyricsView(
@@ -707,8 +732,14 @@ fun ExpandedPlayerScreen(
                                     .background(if (isDark) XtremeLightBlue else Color(0xFF0284C7))
                             )
                             Spacer(modifier = Modifier.width(6.dp))
+                            val cleanBadge = uiState.qualityBadge
+                                .replace("YouTube Music", "HQ Stream", ignoreCase = true)
+                                .replace("YouTube", "HQ Stream", ignoreCase = true)
+                                .replace("YT Music", "HQ", ignoreCase = true)
+                                .replace("JioSaavn", "HD Stream", ignoreCase = true)
+                                .replace("Saavn", "HD Stream", ignoreCase = true)
                             Text(
-                                text = uiState.qualityBadge.uppercase(),
+                                text = cleanBadge.uppercase(),
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     color = if (isDark) XtremeLightBlue else Color(0xFF0284C7),
                                     fontWeight = FontWeight.ExtraBold,
@@ -842,7 +873,7 @@ fun ExpandedPlayerScreen(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // BOTTOM BAR (Lyrics Button on Left, Lossless Output Centered in Middle, Up-Next Queue on Right)
+            // BOTTOM BAR (Lyrics Button, Output Devices Button, Queue / Library Button)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -850,123 +881,81 @@ fun ExpandedPlayerScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Action Button: Synced Lyrics Toggle (Left of Lossless Output)
-                IconButton(
+                // 1. Synced Lyrics Toggle Button (Left - Matching 3D style)
+                Surface(
                     onClick = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         showLyrics = !showLyrics
                     },
                     interactionSource = lyricsInteractionSource,
+                    shape = RoundedCornerShape(14.dp),
+                    color = if (showLyrics) {
+                        if (isDark) Color(0xFF0C243B) else Color(0xFFE0F2FE)
+                    } else {
+                        if (isDark) Color(0xFF142033) else Color(0xFFFFFFFF)
+                    },
+                    border = BorderStroke(
+                        1.2.dp,
+                        if (showLyrics) {
+                            if (isDark) XtremeLightBlue else Color(0xFF0284C7)
+                        } else if (isLyricsPressed) {
+                            if (isDark) XtremeLightBlue.copy(alpha = 0.7f) else Color(0xFF0284C7).copy(alpha = 0.7f)
+                        } else {
+                            if (isDark) Color(0xFF243B5A) else Color(0xFFBFDBFE)
+                        }
+                    ),
+                    shadowElevation = if (showLyrics) {
+                        if (isDark) 2.dp else 3.dp
+                    } else {
+                        if (isDark) 0.dp else 2.dp
+                    },
                     modifier = Modifier
-                        .testTag("player_lyrics_button")
+                        .size(44.dp)
                         .graphicsLayer {
                             scaleX = lyricsButtonScale
                             scaleY = lyricsButtonScale
                         }
+                        .testTag("player_lyrics_button")
                 ) {
-                    val lyricsBackground = if (showLyrics) {
-                        if (isDark) {
-                            Brush.linearGradient(
-                                colors = listOf(Color(0xFF0284C7), XtremeLightBlue)
-                            )
-                        } else {
-                            Brush.linearGradient(
-                                colors = listOf(Color(0xFF0284C7), Color(0xFF38BDF8))
-                            )
-                        }
-                    } else if (isLyricsPressed) {
-                        if (isDark) {
-                            Brush.linearGradient(
-                                colors = listOf(Color(0xFF1B2C44), Color(0xFF1B2C44))
-                            )
-                        } else {
-                            Brush.linearGradient(
-                                colors = listOf(Color(0xFFE0F2FE), Color(0xFFE0F2FE))
-                            )
-                        }
-                    } else {
-                        if (isDark) {
-                            Brush.linearGradient(
-                                colors = listOf(Color(0xFF142033), Color(0xFF142033))
-                            )
-                        } else {
-                            Brush.linearGradient(
-                                colors = listOf(Color(0xFFFFFFFF), Color(0xFFFFFFFF))
-                            )
-                        }
-                    }
-
-                    val lyricsBorder = if (showLyrics) {
-                        BorderStroke(
-                            1.5.dp,
-                            if (isDark) Color(0xFF7DD3FC) else Color(0xFF0284C7)
-                        )
-                    } else if (isLyricsPressed) {
-                        BorderStroke(
-                            1.2.dp,
-                            if (isDark) XtremeLightBlue.copy(alpha = 0.7f) else Color(0xFF0284C7).copy(alpha = 0.7f)
-                        )
-                    } else {
-                        BorderStroke(
-                            1.2.dp,
-                            if (isDark) Color(0xFF243B5A) else Color(0xFFBFDBFE)
-                        )
-                    }
-
-                    val lyricsShadowElevation = if (showLyrics) {
-                        if (isDark) 10.dp else 6.dp
-                    } else {
-                        if (isDark) 0.dp else 2.dp
-                    }
-
-                    val lyricsShadowColor = if (showLyrics) {
-                        if (isDark) XtremeLightBlue.copy(alpha = 0.55f) else Color(0xFF0284C7).copy(alpha = 0.40f)
-                    } else {
-                        Color.Black.copy(alpha = 0.12f)
-                    }
-
-                    val targetIconTint = when {
-                        showLyrics -> Color.White
-                        isLyricsPressed -> if (isDark) Color(0xFF7DD3FC) else Color(0xFF0369A1)
-                        else -> if (isDark) XtremeLightBlue else Color(0xFF0284C7)
-                    }
-
-                    val lyricsIconTint by animateColorAsState(
-                        targetValue = targetIconTint,
-                        animationSpec = tween(150),
-                        label = "lyrics_icon_tint"
-                    )
-
                     Box(
-                        modifier = Modifier
-                            .size(42.dp)
-                            .shadow(
-                                elevation = lyricsShadowElevation,
-                                shape = RoundedCornerShape(12.dp),
-                                spotColor = lyricsShadowColor,
-                                ambientColor = if (isDark) Color(0xFF0284C7) else Color.Black
-                            )
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(lyricsBackground)
-                            .border(lyricsBorder, RoundedCornerShape(12.dp)),
+                        modifier = Modifier.fillMaxSize(),
                         contentAlignment = Alignment.Center
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.FormatQuote,
-                            contentDescription = "Toggle Lyrics",
-                            tint = lyricsIconTint,
-                            modifier = Modifier.size(22.dp)
-                        )
+                        Box(
+                            modifier = Modifier
+                                .size(26.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(
+                                    if (showLyrics) {
+                                        if (isDark) XtremeLightBlue.copy(alpha = 0.28f) else Color(0xFFBAE6FD)
+                                    } else {
+                                        if (isDark) XtremeLightBlue.copy(alpha = 0.14f) else Color(0xFFE0F2FE)
+                                    }
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.FormatQuote,
+                                contentDescription = "Toggle Lyrics",
+                                tint = if (showLyrics) {
+                                    if (isDark) XtremeLightBlue else Color(0xFF0284C7)
+                                } else {
+                                    if (isDark) XtremeLightBlue else Color(0xFF0284C7)
+                                },
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
                     }
                 }
 
-                // Sound Output Devices Button (Centered in middle)
+                // 2. Output Devices Button (Centered in middle)
                 Surface(
                     onClick = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         showSoundOutputDialog = true
                     },
-                    shape = RoundedCornerShape(12.dp),
+                    interactionSource = outputInteractionSource,
+                    shape = RoundedCornerShape(14.dp),
                     color = if (isDark) Color(0xFF142033) else Color(0xFFFFFFFF),
                     border = BorderStroke(
                         1.2.dp,
@@ -979,83 +968,134 @@ fun ExpandedPlayerScreen(
                     shadowElevation = if (isDark) 0.dp else 2.dp,
                     modifier = Modifier
                         .weight(1f)
-                        .padding(horizontal = 8.dp)
+                        .height(44.dp)
+                        .padding(horizontal = 10.dp)
+                        .graphicsLayer {
+                            scaleX = outputButtonScale
+                            scaleY = outputButtonScale
+                        }
                         .testTag("sound_output_device_button")
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.Center,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 10.dp)
                     ) {
-                        Icon(
-                            imageVector = when {
-                                activeOutputDevice?.isBluetooth == true -> Icons.Default.BluetoothAudio
-                                activeOutputDevice?.isWired == true -> Icons.Default.Headphones
-                                activeOutputDevice?.isUsb == true -> Icons.Default.Usb
-                                else -> Icons.Default.Speaker
-                            },
-                            contentDescription = "Sound Output Devices",
-                            tint = if (activeOutputDevice?.isBluetooth == true) {
-                                if (isDark) animatedAccentColor else Color(0xFF0284C7)
-                            } else {
-                                if (isDark) XtremeCyan else Color(0xFF0284C7)
-                            },
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "Lossless Output",
-                            style = MaterialTheme.typography.bodySmall.copy(
-                                color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF0F172A),
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold
-                            ),
-                            maxLines = 1
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = "• 24-bit/48kHz",
-                            style = MaterialTheme.typography.bodySmall.copy(
-                                color = if (isDark) TextSecondary else Color(0xFF0284C7),
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Medium
-                            ),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        Box(
+                            modifier = Modifier
+                                .size(26.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(
+                                    if (isDark) XtremeLightBlue.copy(alpha = 0.14f)
+                                    else Color(0xFFE0F2FE)
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = when {
+                                    activeOutputDevice?.isBluetooth == true -> Icons.Default.BluetoothAudio
+                                    activeOutputDevice?.isWired == true -> Icons.Default.Headphones
+                                    activeOutputDevice?.isUsb == true -> Icons.Default.Usb
+                                    else -> Icons.Default.Speaker
+                                },
+                                contentDescription = "Output Devices",
+                                tint = if (activeOutputDevice?.isBluetooth == true) {
+                                    if (isDark) animatedAccentColor else Color(0xFF0284C7)
+                                } else {
+                                    if (isDark) XtremeCyan else Color(0xFF0284C7)
+                                },
+                                modifier = Modifier.size(15.dp)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(8.dp))
+
+                        Column(
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                text = "Output Devices",
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF0F172A),
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                ),
+                                maxLines = 1
+                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = activeOutputDevice?.name?.ifBlank { "Speaker" } ?: "Speaker",
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        color = if (isDark) XtremeCyan else Color(0xFF0284C7),
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Medium
+                                    ),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = " • 24-bit",
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        color = if (isDark) TextSecondary else Color(0xFF64748B),
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Normal
+                                    ),
+                                    maxLines = 1
+                                )
+                            }
+                        }
                     }
                 }
 
-                // Action Button: Up Next Queue (Right of Lossless Output)
-                IconButton(
-                    onClick = onOpenQueue,
-                    modifier = Modifier.testTag("player_queue_button")
+                // 3. Queue / Library Button (Right - Matching 3D style)
+                Surface(
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onOpenQueue()
+                    },
+                    interactionSource = queueInteractionSource,
+                    shape = RoundedCornerShape(14.dp),
+                    color = if (isDark) Color(0xFF142033) else Color(0xFFFFFFFF),
+                    border = BorderStroke(
+                        1.2.dp,
+                        if (isQueuePressed) {
+                            if (isDark) XtremeLightBlue.copy(alpha = 0.7f) else Color(0xFF0284C7).copy(alpha = 0.7f)
+                        } else {
+                            if (isDark) Color(0xFF243B5A) else Color(0xFFBFDBFE)
+                        }
+                    ),
+                    shadowElevation = if (isDark) 0.dp else 2.dp,
+                    modifier = Modifier
+                        .size(44.dp)
+                        .graphicsLayer {
+                            scaleX = queueButtonScale
+                            scaleY = queueButtonScale
+                        }
+                        .testTag("player_queue_button")
                 ) {
                     Box(
-                        modifier = Modifier
-                            .size(42.dp)
-                            .shadow(
-                                elevation = if (isDark) 0.dp else 2.dp,
-                                shape = RoundedCornerShape(12.dp),
-                                spotColor = Color.Black.copy(alpha = 0.12f)
-                            )
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(if (isDark) Color(0xFF142033) else Color(0xFFFFFFFF))
-                            .border(
-                                BorderStroke(
-                                    1.2.dp,
-                                    if (isDark) Color(0xFF243B5A) else Color(0xFFBFDBFE)
-                                ),
-                                RoundedCornerShape(12.dp)
-                            ),
+                        modifier = Modifier.fillMaxSize(),
                         contentAlignment = Alignment.Center
                     ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.QueueMusic,
-                            contentDescription = "Up-Next Queue",
-                            tint = if (isDark) XtremeLightBlue else Color(0xFF0284C7),
-                            modifier = Modifier.size(22.dp)
-                        )
+                        Box(
+                            modifier = Modifier
+                                .size(26.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(
+                                    if (isDark) XtremeLightBlue.copy(alpha = 0.14f)
+                                    else Color(0xFFE0F2FE)
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                                contentDescription = "Up-Next Queue",
+                                tint = if (isDark) XtremeLightBlue else Color(0xFF0284C7),
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
                     }
                 }
             }

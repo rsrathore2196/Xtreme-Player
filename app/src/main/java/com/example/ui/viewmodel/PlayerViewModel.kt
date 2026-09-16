@@ -27,13 +27,14 @@ data class SearchUiState(
     val query: String = "",
     val isSearching: Boolean = false,
     val selectedGenre: String = "All",
-    val selectedSource: String = "All", // "All", "JioSaavn", "YouTube Music"
+    val selectedSource: String = "All", // "All", "HD Stream", "Extended Stream"
     val result: SearchResultCategory = SearchResultCategory()
 )
 
 class PlayerViewModel(
     private val repository: MusicRepository,
-    private val playbackManager: PlaybackManager
+    private val playbackManager: PlaybackManager,
+    private val application: android.app.Application = com.example.XtremeMusicApp.getInstance()
 ) : ViewModel() {
 
     val playerUiState: StateFlow<PlayerUiState> = playbackManager.uiState
@@ -64,15 +65,51 @@ class PlayerViewModel(
     val playlists: StateFlow<List<PlaylistEntity>> = repository.getAllPlaylists()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
 
-    private val _isDarkMode = MutableStateFlow(true)
+    private val initialThemeMode = com.example.data.local.ThemePreferences.getThemeMode(application)
+    private val _themeMode = MutableStateFlow(initialThemeMode)
+    val themeMode: StateFlow<com.example.data.local.AppThemeMode> = _themeMode.asStateFlow()
+
+    private val _isDarkMode = MutableStateFlow(
+        when (initialThemeMode) {
+            com.example.data.local.AppThemeMode.SYSTEM -> {
+                val nightModeFlags = application.resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK
+                nightModeFlags == android.content.res.Configuration.UI_MODE_NIGHT_YES
+            }
+            com.example.data.local.AppThemeMode.DARK -> true
+            com.example.data.local.AppThemeMode.LIGHT -> false
+        }
+    )
     val isDarkMode: StateFlow<Boolean> = _isDarkMode.asStateFlow()
 
+    fun setThemeMode(mode: com.example.data.local.AppThemeMode) {
+        _themeMode.value = mode
+        com.example.data.local.ThemePreferences.setThemeMode(application, mode)
+        when (mode) {
+            com.example.data.local.AppThemeMode.DARK -> _isDarkMode.value = true
+            com.example.data.local.AppThemeMode.LIGHT -> _isDarkMode.value = false
+            com.example.data.local.AppThemeMode.SYSTEM -> {
+                val nightModeFlags = application.resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK
+                _isDarkMode.value = nightModeFlags == android.content.res.Configuration.UI_MODE_NIGHT_YES
+            }
+        }
+    }
+
+    fun setResolvedDarkMode(isDark: Boolean) {
+        _isDarkMode.value = isDark
+    }
+
     fun setDarkMode(enabled: Boolean) {
-        _isDarkMode.value = enabled
+        setThemeMode(if (enabled) com.example.data.local.AppThemeMode.DARK else com.example.data.local.AppThemeMode.LIGHT)
     }
 
     fun toggleDarkMode() {
-        _isDarkMode.value = !_isDarkMode.value
+        when (_themeMode.value) {
+            com.example.data.local.AppThemeMode.SYSTEM -> {
+                setThemeMode(if (_isDarkMode.value) com.example.data.local.AppThemeMode.LIGHT else com.example.data.local.AppThemeMode.DARK)
+            }
+            com.example.data.local.AppThemeMode.DARK -> setThemeMode(com.example.data.local.AppThemeMode.LIGHT)
+            com.example.data.local.AppThemeMode.LIGHT -> setThemeMode(com.example.data.local.AppThemeMode.DARK)
+        }
     }
 
     val homeShelves: StateFlow<List<com.example.ui.ai.HomeShelf>> = kotlinx.coroutines.flow.combine(
@@ -359,11 +396,12 @@ class PlayerViewModel(
     companion object {
         fun provideFactory(
             repository: MusicRepository,
-            playbackManager: PlaybackManager
+            playbackManager: PlaybackManager,
+            application: android.app.Application = com.example.XtremeMusicApp.getInstance()
         ): ViewModelProvider.Factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                return PlayerViewModel(repository, playbackManager) as T
+                return PlayerViewModel(repository, playbackManager, application) as T
             }
         }
     }
