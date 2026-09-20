@@ -1,5 +1,6 @@
 package com.example.ui.ai
 
+import com.example.data.local.UserProfile
 import com.example.data.model.MusicTrack
 import java.util.Calendar
 
@@ -14,16 +15,16 @@ object AiMoodEngine {
 
     /**
      * Smart background recommendation engine:
-     * Analyzes previous played songs, favorites, and last played track to determine
-     * the listener's favorite singer, dominant language, and musical genres.
-     * Generates clean, categorized shelves (like Apple Music or Spotify) without
-     * any user-facing mood toggles or manual switches.
+     * Analyzes previous played songs, favorites, and user profile preferences
+     * (Country priority and selected languages) to determine recommendations.
+     * Generates clean, categorized shelves (like Apple Music or Spotify).
      */
     fun generatePersonalizedShelves(
         lastPlayedTrack: MusicTrack?,
         recentlyPlayed: List<MusicTrack>,
         favoriteTracks: List<MusicTrack>,
-        catalogTracks: List<MusicTrack>
+        catalogTracks: List<MusicTrack>,
+        userProfile: UserProfile? = null
     ): List<HomeShelf> {
         if (catalogTracks.isEmpty()) return emptyList()
 
@@ -71,6 +72,7 @@ object AiMoodEngine {
         val topSinger = singerFrequency.maxByOrNull { it.value }?.key
             ?: lastPlayedTrack?.artist?.ifBlank { null }
         val topLanguage = languageFrequency.maxByOrNull { it.value }?.key
+            ?: userProfile?.languages?.firstOrNull()
             ?: lastPlayedTrack?.language?.ifBlank { "Hindi" } ?: "Hindi"
         val topGenre = genreFrequency.maxByOrNull { it.value }?.key
             ?: lastPlayedTrack?.genre?.ifBlank { "Electronic" } ?: "Electronic"
@@ -92,7 +94,65 @@ object AiMoodEngine {
 
         val shelves = mutableListOf<HomeShelf>()
 
-        // SHELF 1: "Because you listened to [Last Song]" (if played)
+        // 1. TOP PRIORITY: Country Specific Famous Hits Shelf
+        if (userProfile != null && userProfile.country.isNotBlank()) {
+            val userCountryLangs = userProfile.languages.map { it.lowercase() }
+            val countryPriorityTracks = catalogTracks
+                .filter { track ->
+                    !com.example.data.model.CountryData.hasCountryNameInTitle(track.title, userProfile.country)
+                }
+                .sortedWith(
+                    compareByDescending<MusicTrack> { track ->
+                        userCountryLangs.any { track.language.equals(it, ignoreCase = true) }
+                    }.thenByDescending { it.bitrateKbps }
+                ).take(12)
+
+            if (countryPriorityTracks.isNotEmpty()) {
+                shelves.add(
+                    HomeShelf(
+                        id = "country_priority",
+                        title = "Famous Hits in ${userProfile.country} ${userProfile.flag}",
+                        subtitle = "Iconic regional chartbusters and top songs",
+                        tracks = countryPriorityTracks
+                    )
+                )
+            }
+        }
+
+        // 2. USER PROFILE PERSONALIZED SHELF: "Made For [Name]"
+        if (userProfile != null && userProfile.languages.isNotEmpty()) {
+            val userLangs = userProfile.languages.map { it.lowercase() }
+            val userTracks = catalogTracks.filter { track ->
+                userLangs.any { track.language.equals(it, ignoreCase = true) }
+            }.ifEmpty { catalogTracks.shuffled() }.take(12)
+
+            val displayName = if (userProfile.name.isNotBlank()) userProfile.name.trim() else "You"
+            shelves.add(
+                HomeShelf(
+                    id = "made_for_user",
+                    title = "Made For $displayName",
+                    subtitle = "Curated in your selected languages (${userProfile.languages.take(3).joinToString(", ")})",
+                    tracks = userTracks
+                )
+            )
+
+            // 3. Language Spotlight Shelves for user's chosen languages
+            for (lang in userProfile.languages.take(3)) {
+                val langTracks = catalogTracks.filter { it.language.equals(lang, ignoreCase = true) }.take(10)
+                if (langTracks.isNotEmpty()) {
+                    shelves.add(
+                        HomeShelf(
+                            id = "lang_shelf_${lang.lowercase()}",
+                            title = "Best of $lang",
+                            subtitle = "Top streaming hits in $lang",
+                            tracks = langTracks
+                        )
+                    )
+                }
+            }
+        }
+
+        // 4. "Because you listened to [Last Song]" (if played)
         if (lastPlayedTrack != null) {
             val matchingVibe = catalogTracks.filter { track ->
                 track.id != lastPlayedTrack.id && (
@@ -116,7 +176,7 @@ object AiMoodEngine {
             }
         }
 
-        // SHELF 2: "For Fans of [Top Singer]"
+        // 5. "For Fans of [Top Singer]"
         if (topSinger != null) {
             val singerTracks = catalogTracks.filter { track ->
                 track.artist.contains(topSinger, ignoreCase = true) ||
@@ -137,7 +197,7 @@ object AiMoodEngine {
             }
         }
 
-        // SHELF 3: "Jump Back In" (User's Recently Played & Favorites)
+        // 6. "Jump Back In" (User's Recently Played & Favorites)
         val jumpBackTracks = (recentlyPlayed + favoriteTracks).distinctBy { it.id }.take(10)
         if (jumpBackTracks.isNotEmpty()) {
             shelves.add(
@@ -150,29 +210,7 @@ object AiMoodEngine {
             )
         }
 
-        // SHELF 4: "Recommended For You" (Smart blend of dominant language & genre)
-        val recommendedTracks = catalogTracks.filter { track ->
-            track.language.equals(topLanguage, ignoreCase = true) ||
-            track.genre.equals(topGenre, ignoreCase = true) ||
-            track.bitrateKbps >= 320
-        }.sortedWith(
-            compareByDescending<MusicTrack> { it.language.equals(topLanguage, ignoreCase = true) }
-                .thenByDescending { it.genre.equals(topGenre, ignoreCase = true) }
-                .thenByDescending { it.isLiked }
-        ).take(12)
-
-        if (recommendedTracks.isNotEmpty()) {
-            shelves.add(
-                HomeShelf(
-                    id = "recommended_for_you",
-                    title = "Recommended For You",
-                    subtitle = "Curated automatically from your $topLanguage & $topGenre taste",
-                    tracks = recommendedTracks
-                )
-            )
-        }
-
-        // SHELF 5: Time of Day contextual vibe
+        // 7. Time of Day contextual vibe
         val timeTracks = catalogTracks.filter { track ->
             when (hour) {
                 in 5..11 -> track.genre.contains("Acoustic", ignoreCase = true) || track.genre.contains("Pop", ignoreCase = true) || track.genre.contains("Chill", ignoreCase = true)
@@ -191,7 +229,7 @@ object AiMoodEngine {
             )
         )
 
-        // SHELF 6: High Fidelity Master Streams
+        // 8. High Fidelity Master Streams
         val highDefTracks = catalogTracks.filter { it.bitrateKbps >= 320 }.take(10)
         if (highDefTracks.isNotEmpty()) {
             shelves.add(

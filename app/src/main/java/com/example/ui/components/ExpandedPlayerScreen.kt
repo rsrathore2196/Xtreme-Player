@@ -171,11 +171,11 @@ fun ExpandedPlayerScreen(
     val effectiveDevices = if (availableAudioDevices.isNotEmpty()) availableAudioDevices else fallbackDevices
     val activeOutputDevice = effectiveDevices.find { it.isSelected }
 
-    // Dynamic color extracted from album art
-    var dominantColor by remember(track.id) { mutableStateOf(Color(0xFF0F2B48)) }
-    var accentColor by remember(track.id) { mutableStateOf(XtremeLightBlue) }
+    // Dynamic color extracted from album art with active theme fallback
+    var dominantColor by remember(track.id) { mutableStateOf(appColors.cardBackgroundElevated) }
+    var accentColor by remember(track.id, appColors.primaryAccent) { mutableStateOf(appColors.primaryAccent) }
 
-    LaunchedEffect(track.coverUrl) {
+    LaunchedEffect(track.coverUrl, appColors.primaryAccent) {
         if (track.coverUrl.isNotBlank()) {
             withContext(Dispatchers.IO) {
                 try {
@@ -188,11 +188,16 @@ fun ExpandedPlayerScreen(
                     val bitmap = (result as? BitmapDrawable)?.bitmap
                     if (bitmap != null) {
                         val palette = Palette.from(bitmap).generate()
+                        val defaultAccentInt = android.graphics.Color.rgb(
+                            (appColors.primaryAccent.red * 255).toInt(),
+                            (appColors.primaryAccent.green * 255).toInt(),
+                            (appColors.primaryAccent.blue * 255).toInt()
+                        )
                         val dom = palette.getDarkVibrantColor(
                             palette.getDominantColor(android.graphics.Color.parseColor("#0F2B48"))
                         )
                         val acc = palette.getLightVibrantColor(
-                            palette.getVibrantColor(android.graphics.Color.parseColor("#38BDF8"))
+                            palette.getVibrantColor(defaultAccentInt)
                         )
                         dominantColor = Color(dom)
                         accentColor = Color(acc)
@@ -290,7 +295,7 @@ fun ExpandedPlayerScreen(
                 onClick = { /* consume background clicks to prevent touch pass-through */ }
             )
             .testTag("expanded_player_screen"),
-        color = if (isDark) Color(0xFF020610) else Color(0xFFFFFFFF) // 100% OPAQUE base - ZERO reflection, ZERO transparency
+        color = if (appColors.isAmoled) Color(0xFF000000) else if (isDark) appColors.scaffoldBackground else Color(0xFFFFFFFF) // 100% OPAQUE base - ZERO reflection, ZERO transparency
     ) {
         Box(
             modifier = Modifier.fillMaxSize(),
@@ -328,7 +333,7 @@ fun ExpandedPlayerScreen(
                     Icon(
                         imageVector = Icons.Default.KeyboardArrowDown,
                         contentDescription = "Minimize Player",
-                        tint = TextPrimary,
+                        tint = appColors.textPrimary,
                         modifier = Modifier.size(32.dp)
                     )
                 }
@@ -337,7 +342,7 @@ fun ExpandedPlayerScreen(
                     Text(
                         text = "PLAYING FROM XTREME • ${uiState.selectedQuality.kbps}K",
                         style = MaterialTheme.typography.labelSmall.copy(
-                            color = TextMuted,
+                            color = appColors.textMuted,
                             letterSpacing = 1.2.sp,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold
@@ -357,7 +362,7 @@ fun ExpandedPlayerScreen(
                         Icon(
                             imageVector = Icons.Default.MoreVert,
                             contentDescription = "Options",
-                            tint = TextPrimary
+                            tint = appColors.textPrimary
                         )
                     }
 
@@ -365,20 +370,20 @@ fun ExpandedPlayerScreen(
                         expanded = isMenuOpen,
                         onDismissRequest = { isMenuOpen = false },
                         modifier = Modifier
-                            .background(if (isDark) Color(0xFF0F2238) else Color.White)
-                            .border(BorderStroke(1.dp, if (isDark) Color(0xFF1E3A5F) else Color(0xFFDBEAFE)), RoundedCornerShape(8.dp))
+                            .background(appColors.cardBackgroundElevated)
+                            .border(BorderStroke(1.dp, appColors.cardBorder), RoundedCornerShape(8.dp))
                     ) {
                         DropdownMenuItem(
-                            text = { Text("Add to Playlist", color = TextPrimary) },
-                            leadingIcon = { Icon(Icons.AutoMirrored.Filled.PlaylistAdd, contentDescription = null, tint = XtremeCyan) },
+                            text = { Text("Add to Playlist", color = appColors.textPrimary) },
+                            leadingIcon = { Icon(Icons.AutoMirrored.Filled.PlaylistAdd, contentDescription = null, tint = appColors.primaryAccent) },
                             onClick = {
                                 isMenuOpen = false
                                 onAddToPlaylist(track)
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("Share Track", color = TextPrimary) },
-                            leadingIcon = { Icon(Icons.Default.Share, contentDescription = null, tint = TextSecondary) },
+                            text = { Text("Share Track", color = appColors.textPrimary) },
+                            leadingIcon = { Icon(Icons.Default.Share, contentDescription = null, tint = appColors.secondaryAccent) },
                             onClick = {
                                 isMenuOpen = false
                                 val sendIntent = Intent().apply {
@@ -504,7 +509,7 @@ fun ExpandedPlayerScreen(
                             }
                         }
                     } else {
-                        // BACK SIDE: Song credits and information
+                        // BACK SIDE: Song credits and information (Fully theme adaptive)
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
@@ -513,21 +518,24 @@ fun ExpandedPlayerScreen(
                                     Brush.verticalGradient(
                                         if (isDark) {
                                             listOf(
-                                                animatedDominantColor.copy(alpha = 0.95f),
-                                                Color(0xFF0D1C2E),
-                                                Color(0xFF071220)
+                                                appColors.cardBackgroundElevated.copy(alpha = 0.95f),
+                                                appColors.cardBackground.copy(alpha = 0.98f),
+                                                appColors.scaffoldBackground
                                             )
                                         } else {
                                             listOf(
-                                                Color.White,
-                                                Color(0xFFF0F6FF),
-                                                Color(0xFFE2EDFB)
+                                                appColors.cardBackgroundElevated,
+                                                appColors.cardBackground,
+                                                appColors.scaffoldBackground
                                             )
                                         }
                                     )
                                 )
                                 .border(
-                                    BorderStroke(1.5.dp, if (isDark) animatedAccentColor.copy(alpha = 0.65f) else Color(0xFF93C5FD)),
+                                    BorderStroke(
+                                        1.5.dp,
+                                        if (isDark) animatedAccentColor.copy(alpha = 0.65f) else appColors.cardBorder
+                                    ),
                                     RoundedCornerShape(24.dp)
                                 )
                                 .padding(20.dp),
@@ -539,7 +547,7 @@ fun ExpandedPlayerScreen(
                                 verticalArrangement = Arrangement.Center
                             ) {
                                 Surface(
-                                    color = animatedAccentColor.copy(alpha = 0.2f),
+                                    color = animatedAccentColor.copy(alpha = 0.16f),
                                     shape = RoundedCornerShape(8.dp)
                                 ) {
                                     Row(
@@ -569,7 +577,7 @@ fun ExpandedPlayerScreen(
                                     text = track.title,
                                     fontWeight = FontWeight.ExtraBold,
                                     fontSize = 17.sp,
-                                    color = TextPrimary,
+                                    color = appColors.textPrimary,
                                     textAlign = TextAlign.Center,
                                     maxLines = 1,
                                     softWrap = false,
@@ -585,28 +593,34 @@ fun ExpandedPlayerScreen(
 
                                 CreditDetailRow(
                                     label = "Album / Movie",
-                                    value = track.album.ifBlank { "Original Single" }
+                                    value = track.album.ifBlank { "Original Single" },
+                                    isDark = isDark
                                 )
                                 CreditDetailRow(
                                     label = "Singers / Artists",
-                                    value = if (track.singers.isNotBlank()) track.singers else track.artist
+                                    value = if (track.singers.isNotBlank()) track.singers else track.artist,
+                                    isDark = isDark
                                 )
                                 CreditDetailRow(
                                     label = "Composer / Writer",
-                                    value = if (track.writer.isNotBlank()) track.writer else "Original Composer"
+                                    value = if (track.writer.isNotBlank()) track.writer else "Original Composer",
+                                    isDark = isDark
                                 )
                                 CreditDetailRow(
                                     label = "Genre & Language",
-                                    value = "${track.genre} • ${if (track.language.isNotBlank()) track.language else "Hindi"}${if (track.year.isNotBlank()) " (${track.year})" else ""}"
+                                    value = "${track.genre} • ${if (track.language.isNotBlank()) track.language else "Hindi"}${if (track.year.isNotBlank()) " (${track.year})" else ""}",
+                                    isDark = isDark
                                 )
                                 CreditDetailRow(
                                     label = "Audio Fidelity",
-                                    value = "${track.bitrateKbps} kbps Studio Master • 44.1 kHz • 24-Bit Lossless"
+                                    value = "${track.bitrateKbps} kbps Studio Master • 44.1 kHz • 24-Bit Lossless",
+                                    isDark = isDark
                                 )
                                 if (track.isrc.isNotBlank()) {
                                     CreditDetailRow(
                                         label = "ISRC Code",
-                                        value = track.isrc
+                                        value = track.isrc,
+                                        isDark = isDark
                                     )
                                 }
 
@@ -615,7 +629,7 @@ fun ExpandedPlayerScreen(
                                 Text(
                                     text = "🔄 Tap anywhere to flip back",
                                     fontSize = 10.sp,
-                                    color = TextMuted,
+                                    color = appColors.textMuted,
                                     fontWeight = FontWeight.Medium
                                 )
                             }
@@ -639,7 +653,7 @@ fun ExpandedPlayerScreen(
                         text = track.title,
                         style = MaterialTheme.typography.headlineSmall.copy(
                             fontWeight = FontWeight.Bold,
-                            color = TextPrimary
+                            color = appColors.textPrimary
                         ),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -648,7 +662,7 @@ fun ExpandedPlayerScreen(
                     Text(
                         text = "${track.artist} • ${track.album}",
                         style = MaterialTheme.typography.titleSmall.copy(
-                            color = TextSecondary,
+                            color = appColors.textSecondary,
                             fontWeight = FontWeight.Medium
                         ),
                         maxLines = 1,
@@ -667,7 +681,7 @@ fun ExpandedPlayerScreen(
                     Icon(
                         imageVector = if (uiState.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                         contentDescription = "Favorite",
-                        tint = if (uiState.isFavorite) XtremeRose else TextMuted,
+                        tint = if (uiState.isFavorite) Color(0xFFF43F5E) else appColors.textMuted,
                         modifier = Modifier.size(28.dp)
                     )
                 }
@@ -689,9 +703,9 @@ fun ExpandedPlayerScreen(
                         isUserScrubbing = false
                     },
                     colors = SliderDefaults.colors(
-                        thumbColor = if (isDark) XtremeLightBlue else Color(0xFF0284C7),
-                        activeTrackColor = if (isDark) XtremeLightBlue else Color(0xFF0284C7),
-                        inactiveTrackColor = if (isDark) Color(0xFF1C3454) else Color(0xFFDBEAFE)
+                        thumbColor = appColors.primaryAccent,
+                        activeTrackColor = appColors.primaryAccent,
+                        inactiveTrackColor = if (isDark) appColors.cardBorder else Color(0xFFDBEAFE)
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
@@ -709,15 +723,15 @@ fun ExpandedPlayerScreen(
                     Text(
                         text = formatTime(currentPosition),
                         style = MaterialTheme.typography.bodySmall.copy(
-                            color = TextMuted,
+                            color = appColors.textMuted,
                             fontSize = 12.sp
                         )
                     )
 
                     // High Quality Audio Badge
                     Surface(
-                        color = if (isDark) Color(0xFF10233B) else Color(0xFFEFF6FF),
-                        border = BorderStroke(1.dp, if (isDark) Color(0xFF1F416A) else Color(0xFFBFDBFE)),
+                        color = if (isDark) appColors.cardBackgroundElevated else Color(0xFFEFF6FF),
+                        border = BorderStroke(1.dp, if (isDark) appColors.cardBorder else Color(0xFFBFDBFE)),
                         shape = RoundedCornerShape(6.dp),
                         modifier = Modifier.padding(horizontal = 4.dp)
                     ) {
@@ -729,7 +743,7 @@ fun ExpandedPlayerScreen(
                                 modifier = Modifier
                                     .size(6.dp)
                                     .clip(CircleShape)
-                                    .background(if (isDark) XtremeLightBlue else Color(0xFF0284C7))
+                                    .background(appColors.primaryAccent)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             val cleanBadge = uiState.qualityBadge
@@ -741,7 +755,7 @@ fun ExpandedPlayerScreen(
                             Text(
                                 text = cleanBadge.uppercase(),
                                 style = MaterialTheme.typography.labelSmall.copy(
-                                    color = if (isDark) XtremeLightBlue else Color(0xFF0284C7),
+                                    color = appColors.primaryAccent,
                                     fontWeight = FontWeight.ExtraBold,
                                     fontSize = 10.sp,
                                     letterSpacing = 0.5.sp
@@ -753,7 +767,7 @@ fun ExpandedPlayerScreen(
                     Text(
                         text = formatTime(trackDuration),
                         style = MaterialTheme.typography.bodySmall.copy(
-                            color = TextMuted,
+                            color = appColors.textMuted,
                             fontSize = 12.sp
                         )
                     )
@@ -773,7 +787,7 @@ fun ExpandedPlayerScreen(
                     Icon(
                         imageVector = Icons.Default.Shuffle,
                         contentDescription = "Shuffle",
-                        tint = if (uiState.isShuffle) (if (isDark) XtremeLightBlue else Color(0xFF0284C7)) else TextMuted,
+                        tint = if (uiState.isShuffle) appColors.primaryAccent else appColors.textMuted,
                         modifier = Modifier.size(24.dp)
                     )
                 }
@@ -789,7 +803,7 @@ fun ExpandedPlayerScreen(
                     Icon(
                         imageVector = Icons.Default.SkipPrevious,
                         contentDescription = "Previous Track",
-                        tint = TextPrimary,
+                        tint = appColors.textPrimary,
                         modifier = Modifier.size(36.dp)
                     )
                 }
@@ -803,7 +817,7 @@ fun ExpandedPlayerScreen(
                         CircularProgressIndicator(
                             modifier = Modifier.size(56.dp),
                             strokeWidth = 3.5.dp,
-                            color = XtremeLightBlue
+                            color = appColors.primaryAccent
                         )
                     } else {
                         IconButton(
@@ -816,20 +830,17 @@ fun ExpandedPlayerScreen(
                                 .shadow(
                                     elevation = 16.dp,
                                     shape = CircleShape,
-                                    spotColor = XtremeLightBlue.copy(alpha = 0.8f),
+                                    spotColor = appColors.primaryAccent.copy(alpha = 0.8f),
                                     ambientColor = Color.Black
                                 )
                                 .clip(CircleShape)
-                                .background(
-                                    if (isDark) XtremeGradients.ButtonGradient
-                                    else Brush.linearGradient(listOf(Color(0xFF0284C7), Color(0xFF2563EB)))
-                                )
+                                .background(Brush.linearGradient(listOf(appColors.primaryAccent, appColors.secondaryAccent)))
                                 .testTag("expanded_player_play_pause")
                         ) {
                             Icon(
                                 imageVector = if (uiState.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                                 contentDescription = if (uiState.isPlaying) "Pause" else "Play",
-                                tint = if (isDark) Color(0xFF031428) else Color.White,
+                                tint = appColors.onPrimaryAccent,
                                 modifier = Modifier.size(36.dp)
                             )
                         }
@@ -847,7 +858,7 @@ fun ExpandedPlayerScreen(
                     Icon(
                         imageVector = Icons.Default.SkipNext,
                         contentDescription = "Next Track",
-                        tint = TextPrimary,
+                        tint = appColors.textPrimary,
                         modifier = Modifier.size(36.dp)
                     )
                 }
@@ -859,8 +870,8 @@ fun ExpandedPlayerScreen(
                         else -> Icons.Default.Repeat
                     }
                     val tint = when (uiState.repeatMode) {
-                        RepeatMode.OFF -> TextMuted
-                        else -> if (isDark) XtremeLightBlue else Color(0xFF0284C7)
+                        RepeatMode.OFF -> appColors.textMuted
+                        else -> appColors.primaryAccent
                     }
                     Icon(
                         imageVector = icon,
@@ -890,18 +901,18 @@ fun ExpandedPlayerScreen(
                     interactionSource = lyricsInteractionSource,
                     shape = RoundedCornerShape(14.dp),
                     color = if (showLyrics) {
-                        if (isDark) Color(0xFF0C243B) else Color(0xFFE0F2FE)
+                        if (isDark) appColors.primaryAccent.copy(alpha = 0.20f) else Color(0xFFE0F2FE)
                     } else {
-                        if (isDark) Color(0xFF142033) else Color(0xFFFFFFFF)
+                        if (isDark) appColors.cardBackgroundElevated else Color(0xFFFFFFFF)
                     },
                     border = BorderStroke(
                         1.2.dp,
                         if (showLyrics) {
-                            if (isDark) XtremeLightBlue else Color(0xFF0284C7)
+                            appColors.primaryAccent
                         } else if (isLyricsPressed) {
-                            if (isDark) XtremeLightBlue.copy(alpha = 0.7f) else Color(0xFF0284C7).copy(alpha = 0.7f)
+                            appColors.primaryAccent.copy(alpha = 0.7f)
                         } else {
-                            if (isDark) Color(0xFF243B5A) else Color(0xFFBFDBFE)
+                            if (isDark) appColors.cardBorder else Color(0xFFBFDBFE)
                         }
                     ),
                     shadowElevation = if (showLyrics) {
@@ -927,9 +938,9 @@ fun ExpandedPlayerScreen(
                                 .clip(RoundedCornerShape(8.dp))
                                 .background(
                                     if (showLyrics) {
-                                        if (isDark) XtremeLightBlue.copy(alpha = 0.28f) else Color(0xFFBAE6FD)
+                                        appColors.primaryAccent.copy(alpha = 0.28f)
                                     } else {
-                                        if (isDark) XtremeLightBlue.copy(alpha = 0.14f) else Color(0xFFE0F2FE)
+                                        appColors.primaryAccent.copy(alpha = 0.14f)
                                     }
                                 ),
                             contentAlignment = Alignment.Center
@@ -937,11 +948,7 @@ fun ExpandedPlayerScreen(
                             Icon(
                                 imageVector = Icons.Default.FormatQuote,
                                 contentDescription = "Toggle Lyrics",
-                                tint = if (showLyrics) {
-                                    if (isDark) XtremeLightBlue else Color(0xFF0284C7)
-                                } else {
-                                    if (isDark) XtremeLightBlue else Color(0xFF0284C7)
-                                },
+                                tint = appColors.primaryAccent,
                                 modifier = Modifier.size(16.dp)
                             )
                         }
@@ -956,13 +963,13 @@ fun ExpandedPlayerScreen(
                     },
                     interactionSource = outputInteractionSource,
                     shape = RoundedCornerShape(14.dp),
-                    color = if (isDark) Color(0xFF142033) else Color(0xFFFFFFFF),
+                    color = if (isDark) appColors.cardBackgroundElevated else Color(0xFFFFFFFF),
                     border = BorderStroke(
                         1.2.dp,
                         if (activeOutputDevice?.isBluetooth == true) {
-                            if (isDark) animatedAccentColor.copy(alpha = 0.7f) else Color(0xFF0284C7)
+                            appColors.primaryAccent.copy(alpha = 0.7f)
                         } else {
-                            if (isDark) Color(0xFF243B5A) else Color(0xFFBFDBFE)
+                            if (isDark) appColors.cardBorder else Color(0xFFBFDBFE)
                         }
                     ),
                     shadowElevation = if (isDark) 0.dp else 2.dp,
@@ -988,7 +995,7 @@ fun ExpandedPlayerScreen(
                                 .size(26.dp)
                                 .clip(RoundedCornerShape(8.dp))
                                 .background(
-                                    if (isDark) XtremeLightBlue.copy(alpha = 0.14f)
+                                    if (isDark) appColors.primaryAccent.copy(alpha = 0.14f)
                                     else Color(0xFFE0F2FE)
                                 ),
                             contentAlignment = Alignment.Center
@@ -1002,9 +1009,9 @@ fun ExpandedPlayerScreen(
                                 },
                                 contentDescription = "Output Devices",
                                 tint = if (activeOutputDevice?.isBluetooth == true) {
-                                    if (isDark) animatedAccentColor else Color(0xFF0284C7)
+                                    appColors.primaryAccent
                                 } else {
-                                    if (isDark) XtremeCyan else Color(0xFF0284C7)
+                                    appColors.secondaryAccent
                                 },
                                 modifier = Modifier.size(15.dp)
                             )
@@ -1028,7 +1035,7 @@ fun ExpandedPlayerScreen(
                                 Text(
                                     text = activeOutputDevice?.name?.ifBlank { "Speaker" } ?: "Speaker",
                                     style = MaterialTheme.typography.bodySmall.copy(
-                                        color = if (isDark) XtremeCyan else Color(0xFF0284C7),
+                                        color = appColors.secondaryAccent,
                                         fontSize = 10.sp,
                                         fontWeight = FontWeight.Medium
                                     ),
@@ -1057,13 +1064,13 @@ fun ExpandedPlayerScreen(
                     },
                     interactionSource = queueInteractionSource,
                     shape = RoundedCornerShape(14.dp),
-                    color = if (isDark) Color(0xFF142033) else Color(0xFFFFFFFF),
+                    color = if (isDark) appColors.cardBackgroundElevated else Color(0xFFFFFFFF),
                     border = BorderStroke(
                         1.2.dp,
                         if (isQueuePressed) {
-                            if (isDark) XtremeLightBlue.copy(alpha = 0.7f) else Color(0xFF0284C7).copy(alpha = 0.7f)
+                            appColors.primaryAccent.copy(alpha = 0.7f)
                         } else {
-                            if (isDark) Color(0xFF243B5A) else Color(0xFFBFDBFE)
+                            if (isDark) appColors.cardBorder else Color(0xFFBFDBFE)
                         }
                     ),
                     shadowElevation = if (isDark) 0.dp else 2.dp,
@@ -1084,7 +1091,7 @@ fun ExpandedPlayerScreen(
                                 .size(26.dp)
                                 .clip(RoundedCornerShape(8.dp))
                                 .background(
-                                    if (isDark) XtremeLightBlue.copy(alpha = 0.14f)
+                                    if (isDark) appColors.primaryAccent.copy(alpha = 0.14f)
                                     else Color(0xFFE0F2FE)
                                 ),
                             contentAlignment = Alignment.Center
@@ -1092,7 +1099,7 @@ fun ExpandedPlayerScreen(
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.QueueMusic,
                                 contentDescription = "Up-Next Queue",
-                                tint = if (isDark) XtremeLightBlue else Color(0xFF0284C7),
+                                tint = appColors.primaryAccent,
                                 modifier = Modifier.size(16.dp)
                             )
                         }
@@ -1126,6 +1133,7 @@ private fun formatTime(timeMs: Long): String {
 
 @Composable
 private fun CreditDetailRow(label: String, value: String, isDark: Boolean = true) {
+    val appColors = LocalAppColors.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1136,7 +1144,7 @@ private fun CreditDetailRow(label: String, value: String, isDark: Boolean = true
         Text(
             text = label,
             fontSize = 11.sp,
-            color = if (isDark) TextMuted else Color(0xFF64748B),
+            color = appColors.textMuted,
             fontWeight = FontWeight.Medium,
             modifier = Modifier.padding(end = 8.dp)
         )
@@ -1149,7 +1157,7 @@ private fun CreditDetailRow(label: String, value: String, isDark: Boolean = true
             Text(
                 text = value,
                 fontSize = 12.sp,
-                color = if (isDark) TextPrimary else Color(0xFF0F172A),
+                color = appColors.textPrimary,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 softWrap = false,
@@ -1170,6 +1178,7 @@ private fun PlayerBokehBackground(
     isDark: Boolean = true,
     modifier: Modifier = Modifier
 ) {
+    val appColors = LocalAppColors.current
     val infiniteTransition = rememberInfiniteTransition(label = "bokeh_transition")
 
     val floatAnim1 by infiniteTransition.animateFloat(
@@ -1202,12 +1211,34 @@ private fun PlayerBokehBackground(
         label = "bokeh_pulse"
     )
 
+    val isAmoled = appColors.isAmoled
+
     Canvas(modifier = modifier.fillMaxSize()) {
         val w = size.width
         val h = size.height
 
-        // 1. Solid opaque base fill: guarantees no bleed-through from background screen
-        drawRect(color = if (isDark) Color(0xFF020610) else Color(0xFFF8FAFC))
+        // 1. Solid opaque base fill: AMOLED pure black or theme scaffoldBackground
+        val baseColor = if (isAmoled) Color(0xFF000000) else if (isDark) appColors.scaffoldBackground else Color(0xFFF8FAFC)
+        drawRect(color = baseColor)
+
+        if (isAmoled) {
+            // In AMOLED Pure Black mode, maintain pitch black base with a subtle, elegant ambient accent glow
+            val orb1Center = Offset(w * 0.5f, h * 0.35f)
+            val orb1Radius = w * 0.70f
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        accentColor.copy(alpha = 0.14f * pulseAnim),
+                        Color.Transparent
+                    ),
+                    center = orb1Center,
+                    radius = orb1Radius
+                ),
+                center = orb1Center,
+                radius = orb1Radius
+            )
+            return@Canvas
+        }
 
         val dominantAlpha = if (isDark) 0.85f else 0.28f
         val accentAlpha = if (isDark) 0.75f else 0.24f
@@ -1262,14 +1293,14 @@ private fun PlayerBokehBackground(
             brush = Brush.radialGradient(
                 colors = if (isDark) {
                     listOf(
-                        Color(0xFF0284C7).copy(alpha = 0.60f * pulseAnim),
+                        appColors.primaryAccent.copy(alpha = 0.60f * pulseAnim),
                         dominantColor.copy(alpha = 0.25f),
                         Color.Transparent
                     )
                 } else {
                     listOf(
-                        Color(0xFF38BDF8).copy(alpha = 0.25f * pulseAnim),
-                        Color(0xFF60A5FA).copy(alpha = 0.10f),
+                        appColors.primaryAccent.copy(alpha = 0.25f * pulseAnim),
+                        appColors.secondaryAccent.copy(alpha = 0.10f),
                         Color.Transparent
                     )
                 },
@@ -1319,7 +1350,7 @@ private fun PlayerBokehBackground(
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(
-                    (if (isDark) Color(0xFF00E5FF) else Color(0xFF0284C7)).copy(alpha = (if (isDark) 0.40f else 0.15f) * pulseAnim),
+                    (if (isDark) appColors.secondaryAccent else appColors.primaryAccent).copy(alpha = (if (isDark) 0.40f else 0.15f) * pulseAnim),
                     Color.Transparent
                 ),
                 center = discCCenter,
@@ -1335,7 +1366,7 @@ private fun PlayerBokehBackground(
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(
-                    (if (isDark) Color.White else Color(0xFF0284C7)).copy(alpha = if (isDark) 0.22f else 0.08f),
+                    (if (isDark) Color.White else appColors.primaryAccent).copy(alpha = if (isDark) 0.22f else 0.08f),
                     Color.Transparent
                 ),
                 center = discDCenter,
@@ -1347,11 +1378,12 @@ private fun PlayerBokehBackground(
 
         // 6. Deep cinematographic vignette overlay: ensures text and controls have pristine contrast
         val vignetteColors = if (isDark) {
+            val darkBase = if (isAmoled) Color(0xFF000000) else appColors.scaffoldBackground
             listOf(
-                Color(0xFF020610).copy(alpha = 0.40f),
+                darkBase.copy(alpha = 0.40f),
                 Color.Transparent,
-                Color(0xFF020610).copy(alpha = 0.65f),
-                Color(0xFF020610).copy(alpha = 0.95f)
+                darkBase.copy(alpha = 0.65f),
+                darkBase.copy(alpha = 0.95f)
             )
         } else {
             listOf(

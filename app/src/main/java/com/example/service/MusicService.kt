@@ -254,7 +254,7 @@ class MusicService : MediaLibraryService() {
                     MediaMetadata.Builder()
                         .setIsBrowsable(true)
                         .setIsPlayable(false)
-                        .setTitle("Xtreme Music Library")
+                        .setTitle("Xtreme Player Library")
                         .setMediaType(MediaMetadata.MEDIA_TYPE_FOLDER_MIXED)
                         .setExtras(rootExtras)
                         .build()

@@ -58,12 +58,17 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import com.example.util.AppHaptics
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.app.Application
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.XtremeMusicApp
 import com.example.data.model.MusicTrack
 import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.LibraryScreen
@@ -75,6 +80,7 @@ import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.XtremeGreen
 import com.example.ui.theme.XtremeLightBlue
+import com.example.ui.viewmodel.HomeViewModel
 import com.example.ui.viewmodel.PlayerViewModel
 
 enum class NavigationTab(val title: String) {
@@ -99,9 +105,22 @@ fun MainNavigationScaffold(
     val effectsState by viewModel.effectsState.collectAsState()
     val isDarkMode by viewModel.isDarkMode.collectAsState()
     val themeMode by viewModel.themeMode.collectAsState()
+    val customThemeState by viewModel.customThemeState.collectAsState()
     val homeShelves by viewModel.homeShelves.collectAsState()
     val currentLyrics by viewModel.currentLyrics.collectAsState()
     val availableAudioDevices by viewModel.availableAudioDevices.collectAsState()
+    val importState by viewModel.importState.collectAsState()
+    val userProfile by viewModel.userProfile.collectAsState()
+
+    val context = LocalContext.current
+    val app = context.applicationContext as XtremeMusicApp
+    val homeViewModel: HomeViewModel = viewModel(
+        factory = HomeViewModel.provideFactory(
+            repository = app.repository,
+            playbackManager = app.playbackManager,
+            application = app
+        )
+    )
 
     var selectedTabIndex by remember { mutableIntStateOf(0) }
     var isPlayerExpanded by remember { mutableStateOf(false) }
@@ -109,6 +128,7 @@ fun MainNavigationScaffold(
     var isEqualizerOpen by remember { mutableStateOf(false) }
     var isCreatePlaylistOpen by remember { mutableStateOf(false) }
     var trackToAddToPlaylist by remember { mutableStateOf<MusicTrack?>(null) }
+    var isSettingsSubpageOpen by remember { mutableStateOf(false) }
 
     // Request notification permission for Android 13+ (API 33)
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
@@ -121,12 +141,20 @@ fun MainNavigationScaffold(
         }
     }
 
-    // Handle Back Press gracefully
-    BackHandler(enabled = isPlayerExpanded || selectedPlaylistWithTracks != null) {
+    // Handle Back Press gracefully across the app
+    val isSearchSubPage = selectedTabIndex == 1 && (searchState.selectedGenre != "All" || searchState.query.isNotBlank())
+    BackHandler(enabled = isPlayerExpanded || selectedPlaylistWithTracks != null || isSearchSubPage || selectedTabIndex != 0) {
         if (isPlayerExpanded) {
             isPlayerExpanded = false
         } else if (selectedPlaylistWithTracks != null) {
             viewModel.closePlaylist()
+        } else if (isSearchSubPage) {
+            viewModel.selectGenre("All")
+            if (searchState.query.isNotBlank()) {
+                viewModel.onSearchQueryChange("")
+            }
+        } else if (selectedTabIndex != 0) {
+            selectedTabIndex = 0
         }
     }
 
@@ -141,8 +169,13 @@ fun MainNavigationScaffold(
                         .navigationBarsPadding()
                 ) {
                     // Floating MiniPlayer (Animated smoothly in and out with 120Hz high refresh rate response)
+                    // Automatically hides when a specific settings option/subpage is open in the settings tab
+                    val isMiniPlayerVisible = playerUiState.currentTrack != null &&
+                        !isPlayerExpanded &&
+                        !(selectedTabIndex == 3 && isSettingsSubpageOpen)
+
                     AnimatedVisibility(
-                        visible = playerUiState.currentTrack != null && !isPlayerExpanded,
+                        visible = isMiniPlayerVisible,
                         enter = slideInVertically(
                             animationSpec = spring(
                                 dampingRatio = 0.82f,
@@ -212,6 +245,7 @@ fun MainNavigationScaffold(
                         NavigationBarItem(
                             selected = selectedTabIndex == 0,
                             onClick = {
+                                AppHaptics.performTap(context)
                                 selectedTabIndex = 0
                                 viewModel.closePlaylist()
                             },
@@ -238,6 +272,7 @@ fun MainNavigationScaffold(
                         NavigationBarItem(
                             selected = selectedTabIndex == 1,
                             onClick = {
+                                AppHaptics.performTap(context)
                                 selectedTabIndex = 1
                                 viewModel.closePlaylist()
                             },
@@ -264,6 +299,7 @@ fun MainNavigationScaffold(
                         NavigationBarItem(
                             selected = selectedTabIndex == 2,
                             onClick = {
+                                AppHaptics.performTap(context)
                                 selectedTabIndex = 2
                             },
                             icon = {
@@ -289,6 +325,7 @@ fun MainNavigationScaffold(
                         NavigationBarItem(
                             selected = selectedTabIndex == 3,
                             onClick = {
+                                AppHaptics.performTap(context)
                                 selectedTabIndex = 3
                                 viewModel.closePlaylist()
                             },
@@ -346,6 +383,9 @@ fun MainNavigationScaffold(
                             onDeletePlaylist = { viewModel.deletePlaylist(playlist.playlist.playlistId) },
                             onRemoveTrack = { trackId ->
                                 viewModel.removeTrackFromPlaylist(playlist.playlist.playlistId, trackId)
+                            },
+                            onRenamePlaylist = { newTitle ->
+                                viewModel.renamePlaylist(playlist.playlist.playlistId, newTitle)
                             }
                         )
                     }
@@ -397,10 +437,8 @@ fun MainNavigationScaffold(
                     ) { tabIndex ->
                         when (tabIndex) {
                             0 -> HomeScreen(
-                                catalogTracks = catalogTracks,
-                                recentlyPlayed = recentlyPlayed,
+                                homeViewModel = homeViewModel,
                                 playerUiState = playerUiState,
-                                shelves = homeShelves,
                                 onTrackClick = { track, queue -> viewModel.playTrack(track, queue) },
                                 onToggleFavorite = { track -> viewModel.toggleLike(track) }
                             )
@@ -417,23 +455,33 @@ fun MainNavigationScaffold(
                                 favoriteTracks = favoriteTracks,
                                 playlists = playlists,
                                 playerUiState = playerUiState,
+                                isDarkMode = isDarkMode,
                                 onTrackClick = { track, queue -> viewModel.playTrack(track, queue) },
                                 onToggleFavorite = { track -> viewModel.toggleLike(track) },
                                 onOpenPlaylist = { id -> viewModel.openPlaylist(id) },
-                                onCreatePlaylistClick = { isCreatePlaylistOpen = true }
+                                onCreatePlaylistClick = { isCreatePlaylistOpen = true },
+                                onImportPlaylistClick = { viewModel.openImportDialog() }
                             )
                             3 -> SettingsScreen(
                                 playerUiState = playerUiState,
                                 effectsState = effectsState,
                                 isDarkMode = isDarkMode,
                                 themeMode = themeMode,
+                                userProfile = userProfile,
+                                onSubpageStateChanged = { isOpen -> isSettingsSubpageOpen = isOpen },
+                                onUpdateProfile = { updated -> viewModel.updateUserProfile(updated) },
                                 onSelectThemeMode = { mode -> viewModel.setThemeMode(mode) },
                                 onToggleDarkMode = { viewModel.toggleDarkMode() },
                                 onAudioQualitySelected = { quality -> viewModel.setAudioQuality(quality) },
                                 onCrystalClarityToggle = { enabled -> viewModel.setCrystalClarityEnabled(enabled) },
                                 onToggleEqualizer = { enabled -> viewModel.setEqualizerEnabled(enabled) },
                                 onOpenEqualizer = { isEqualizerOpen = true },
-                                onSelectPreset = { preset -> viewModel.setEqualizerPreset(preset) }
+                                onSelectPreset = { preset -> viewModel.setEqualizerPreset(preset) },
+                                customThemeState = customThemeState,
+                                onUpdateCustomThemeState = { updatedState -> viewModel.updateCustomThemeState(updatedState) },
+                                onApplyPreset = { preset -> viewModel.applyThemePreset(preset) },
+                                onTextScaleChanged = { index -> viewModel.setTextScaleIndex(index) },
+                                onUiScaleChanged = { index -> viewModel.setUiScaleIndex(index) }
                             )
                         }
                     }
@@ -529,6 +577,7 @@ fun MainNavigationScaffold(
         // CREATE PLAYLIST DIALOG
         if (isCreatePlaylistOpen) {
             CreatePlaylistDialog(
+                isDarkMode = isDarkMode,
                 onDismiss = { isCreatePlaylistOpen = false },
                 onConfirm = { title, desc ->
                     viewModel.createPlaylist(title, desc)
@@ -542,6 +591,7 @@ fun MainNavigationScaffold(
             AddToPlaylistDialog(
                 track = track,
                 playlists = playlists,
+                isDarkMode = isDarkMode,
                 onPlaylistSelected = { playlistId ->
                     viewModel.addTrackToPlaylist(playlistId, track)
                     trackToAddToPlaylist = null
@@ -551,6 +601,25 @@ fun MainNavigationScaffold(
                     isCreatePlaylistOpen = true
                 },
                 onDismiss = { trackToAddToPlaylist = null }
+            )
+        }
+
+        // PLAYLIST IMPORT DIALOG (Spotify, YouTube Music, Apple Music, CSV)
+        if (importState.isDialogOpen) {
+            PlaylistImportDialog(
+                state = importState,
+                isDarkMode = isDarkMode,
+                onDismiss = { viewModel.closeImportDialog() },
+                onInputChanged = { viewModel.onImportInputChanged(it) },
+                onPlatformChanged = { viewModel.onImportPlatformChanged(it) },
+                onTokenChanged = { viewModel.onImportTokenChanged(it) },
+                onCustomTitleChanged = { viewModel.onCustomTitleChanged(it) },
+                onCustomDescriptionChanged = { viewModel.onCustomDescriptionChanged(it) },
+                onLoadSample = { viewModel.loadSamplePlaylist(it) },
+                onStartImport = { viewModel.startPlaylistImport() },
+                onSavePlaylist = { onSaved -> viewModel.saveImportedPlaylist(onSaved) },
+                onResetStep = { viewModel.resetImportStep() },
+                onOpenPlaylist = { playlistId -> viewModel.openPlaylist(playlistId) }
             )
         }
     }

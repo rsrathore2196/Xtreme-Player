@@ -7,11 +7,15 @@ import android.util.Log
 import com.example.config.SecurityConfig
 import com.example.data.model.MusicTrack
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
 import java.net.URLEncoder
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import javax.crypto.Cipher
 import javax.crypto.spec.SecretKeySpec
@@ -43,11 +47,24 @@ object OnlineMusicApiService {
         return cachedDESKey!!
     }
 
+    private val memoryQueryCache = object : android.util.LruCache<String, List<MusicTrack>>(60) {}
+
     private val httpClient by lazy {
-        OkHttpClient.Builder()
-            .connectTimeout(12, TimeUnit.SECONDS)
-            .readTimeout(15, TimeUnit.SECONDS)
-            .build()
+        val cache = context?.let { ctx ->
+            try {
+                val httpCacheDirectory = java.io.File(ctx.cacheDir, "http_music_cache")
+                okhttp3.Cache(httpCacheDirectory, 40L * 1024 * 1024) // 40MB smart disk cache
+            } catch (_: Exception) {
+                null
+            }
+        }
+        val builder = OkHttpClient.Builder()
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(12, TimeUnit.SECONDS)
+        if (cache != null) {
+            builder.cache(cache)
+        }
+        builder.build()
     }
 
     /**
@@ -98,12 +115,18 @@ object OnlineMusicApiService {
     /**
      * Search songs online across JioSaavn's comprehensive global and Indian library.
      */
-    suspend fun searchSongs(query: String, limit: Int = 30): List<MusicTrack> = withContext(Dispatchers.IO) {
-        if (query.isBlank()) return@withContext emptyList()
+    suspend fun searchSongs(query: String, limit: Int = 30, page: Int = 1): List<MusicTrack> = withContext(Dispatchers.IO) {
+        val trimmed = query.trim()
+        if (trimmed.isBlank()) return@withContext emptyList()
+
+        val cacheKey = "${trimmed.lowercase()}_${page}_$limit"
+        synchronized(memoryQueryCache) {
+            memoryQueryCache.get(cacheKey)?.let { return@withContext it }
+        }
 
         try {
-            val encodedQuery = URLEncoder.encode(query.trim(), "UTF-8")
-            val url = "https://www.jiosaavn.com/api.php?__call=search.getResults&_format=json&_marker=0&cc=in&includeMetaTags=1&p=1&n=$limit&q=$encodedQuery"
+            val encodedQuery = URLEncoder.encode(trimmed, "UTF-8")
+            val url = "https://www.jiosaavn.com/api.php?__call=search.getResults&_format=json&_marker=0&cc=in&includeMetaTags=1&p=$page&n=$limit&q=$encodedQuery"
 
             val request = Request.Builder()
                 .url(url)
@@ -118,54 +141,149 @@ object OnlineMusicApiService {
             }
 
             val bodyString = response.body?.string() ?: return@withContext emptyList()
-            parseSongsJson(bodyString, fallbackGenre = query.trim().replaceFirstChar { it.uppercase() })
+            val parsed = parseSongsJson(bodyString, fallbackGenre = trimmed.replaceFirstChar { it.uppercase() })
+            if (parsed.isNotEmpty()) {
+                synchronized(memoryQueryCache) {
+                    memoryQueryCache.put(cacheKey, parsed)
+                }
+            }
+            parsed
         } catch (e: Exception) {
             Log.e(TAG, "Online search failed: ${e.message}")
             emptyList()
         }
     }
 
+    private val trendingCache = ConcurrentHashMap<Int, List<MusicTrack>>()
+
     /**
      * Fetch trending online hits for Home screen carousel and Explore feed.
+     * Parallelized with coroutines for non-blocking high-speed response.
      */
     suspend fun getTrendingSongs(limit: Int = 25): List<MusicTrack> = withContext(Dispatchers.IO) {
-        val candidates = listOf("Top Global Hits", "Trending 2024", "Viral Hits", "Latest Bollywood")
-        var lastException: Exception? = null
+        trendingCache[limit]?.let { cached ->
+            if (cached.isNotEmpty()) return@withContext cached
+        }
 
-        for (candidate in candidates) {
-            try {
-                val results = searchSongs(candidate, limit)
-                if (results.isNotEmpty()) {
-                    Log.i(TAG, "Fetched trending songs from: $candidate")
-                    return@withContext results
+        val candidates = listOf("Top Global Hits", "Trending 2024", "Viral Hits", "Latest Bollywood")
+        val results = coroutineScope {
+            val deferreds = candidates.map { candidate ->
+                async {
+                    try {
+                        searchSongs(candidate, limit)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to fetch trending from $candidate: ${e.message}")
+                        emptyList()
+                    }
                 }
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to fetch trending from $candidate: ${e.message}")
-                lastException = e
+            }
+            deferreds.awaitAll().firstOrNull { it.isNotEmpty() } ?: emptyList()
+        }
+
+        if (results.isNotEmpty()) {
+            trendingCache[limit] = results
+        }
+        results
+    }
+
+    private val profileTrendingCache = ConcurrentHashMap<String, List<MusicTrack>>()
+
+    /**
+     * Fetch country-specific and language-specific trending songs tailored to user profile.
+     * Uses iconic regional genres and famous chart hits, ensuring songs don't just have the country name in their title.
+     * Fetches concurrently for high-speed app startup.
+     */
+    suspend fun getTrendingSongsForProfile(
+        country: String,
+        languages: List<String>,
+        limit: Int = 25
+    ): List<MusicTrack> = withContext(Dispatchers.IO) {
+        val cacheKey = "${country}_${languages.sorted().joinToString(",")}_$limit"
+        profileTrendingCache[cacheKey]?.let { cached ->
+            if (cached.isNotEmpty()) return@withContext cached
+        }
+
+        val candidates = mutableListOf<String>()
+        if (country.isNotBlank()) {
+            val famousQueries = com.example.data.model.CountryData.getFamousMusicQueriesForCountry(country)
+            candidates.addAll(famousQueries.shuffled().take(2))
+        }
+        for (lang in languages.take(2)) {
+            candidates.add("Top $lang Hits")
+        }
+        candidates.add("Top Global Hits")
+
+        val distinctQueries = candidates.distinct().take(3)
+        val deferredList = distinctQueries.map { candidate ->
+            async {
+                try {
+                    val results = searchSongs(candidate, limit = 12)
+                    results.filter { !com.example.data.model.CountryData.hasCountryNameInTitle(it.title, country) }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed query for profile candidate $candidate: ${e.message}")
+                    emptyList()
+                }
             }
         }
 
-        // Log failure with all attempts
-        Log.e(TAG, "Failed to fetch trending songs after all attempts. Last error: ${lastException?.message}")
-        emptyList()
+        val allResults = deferredList.awaitAll().flatten()
+        val filtered = allResults.distinctBy { it.id }
+
+        val finalResult = if (filtered.isNotEmpty()) {
+            filtered.take(limit)
+        } else {
+            getTrendingSongs(limit).filter { !com.example.data.model.CountryData.hasCountryNameInTitle(it.title, country) }
+        }
+
+        if (finalResult.isNotEmpty()) {
+            profileTrendingCache[cacheKey] = finalResult
+        }
+        finalResult
     }
 
     /**
-     * Fetch songs by specific genre or mood (Electronic, Rock, Pop, Hip-Hop, Lo-Fi, etc.)
+     * Fetch songs by specific genre or mood with diverse queries and shuffling every time opened.
      */
     suspend fun getSongsByGenre(genre: String, limit: Int = 25): List<MusicTrack> = withContext(Dispatchers.IO) {
-        val query = when (genre.lowercase()) {
-            "all" -> "Top Hits"
-            "electronic" -> "Electronic Dance EDM"
-            "synthwave" -> "Synthwave Retrowave"
-            "rock" -> "Rock Hits"
-            "hip-hop", "hiphop" -> "Hip Hop Rap"
-            "lo-fi", "lofi" -> "Lo-Fi Beats Chill"
-            "pop" -> "Top Pop Hits"
-            "ambient" -> "Ambient Chillout"
-            else -> "$genre Songs"
+        val queryCandidates = when (genre.lowercase()) {
+            "all" -> listOf("Top Hits", "Trending Global", "Viral Hits", "Hot Tracks", "Billboard 100")
+            "pop" -> listOf("Top Pop Hits", "Viral Pop", "Pop Hits 2024", "English Pop Hits", "Dance Pop", "Modern Pop", "Pop Anthems")
+            "hip-hop", "hiphop" -> listOf("Hip Hop Rap", "Top Rap Hits", "Trap Music", "Global Hip Hop", "Rap Classics", "Urban Beats")
+            "rock" -> listOf("Rock Hits", "Classic Rock", "Alternative Rock", "Modern Rock", "Hard Rock", "Indie Rock")
+            "electronic" -> listOf("Electronic Dance EDM", "Festival EDM", "Club Dance Hits", "House Music", "Electro Pop", "Bass Boosted EDM")
+            "bollywood" -> listOf("Latest Bollywood Hits", "Bollywood Romantic Songs", "Bollywood Party", "Best Hindi Hits", "Retro Bollywood", "Arijit Singh Hits")
+            "punjabi" -> listOf("Top Punjabi Hits", "Latest Punjabi Songs", "Punjabi Pop", "Bhangra Hits", "Sidhu Moose Wala", "Diljit Dosanjh", "Karan Aujla")
+            "synthwave" -> listOf("Synthwave Retrowave", "80s Retro Electro", "Outrun Synth", "Cyberpunk Synthwave", "Darksynth")
+            "chillhop" -> listOf("Chillhop Essentials", "Lofi Chillhop", "Coffee Chill Beats", "Chillhop Beats")
+            "lo-fi", "lofi" -> listOf("Lo-Fi Beats Chill", "Lofi Study Beats", "Chillhop Music", "Lofi Sleep Beats", "Late Night Lofi")
+            "jazz" -> listOf("Smooth Jazz", "Coffee Jazz", "Classic Jazz Standards", "Late Night Jazz", "Bebop Jazz")
+            "ambient" -> listOf("Ambient Chillout", "Deep Ambient Meditation", "Atmospheric Soundscapes", "Calm Ambient Space")
+            else -> listOf("$genre Songs", "$genre Hits", "$genre Top Tracks", "Best of $genre", "$genre Mix")
         }
-        searchSongs(query, limit)
+
+        val selectedQueries = queryCandidates.shuffled().take(2)
+        val randomPage = (1..3).random()
+        val collected = mutableListOf<MusicTrack>()
+
+        for (candidateQuery in selectedQueries) {
+            try {
+                val songs = searchSongs(candidateQuery, limit = limit, page = randomPage)
+                if (songs.isNotEmpty()) {
+                    collected.addAll(songs)
+                } else if (randomPage > 1) {
+                    collected.addAll(searchSongs(candidateQuery, limit = limit, page = 1))
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Error fetching genre songs for $candidateQuery: ${e.message}")
+            }
+        }
+
+        if (collected.isEmpty()) {
+            val fallbackQuery = queryCandidates.first()
+            collected.addAll(searchSongs(fallbackQuery, limit = limit, page = 1))
+        }
+
+        collected.distinctBy { "${it.title.lowercase()}_${it.artist.lowercase()}" }.shuffled()
     }
 
     private fun parseSongsJson(jsonString: String, fallbackGenre: String): List<MusicTrack> {

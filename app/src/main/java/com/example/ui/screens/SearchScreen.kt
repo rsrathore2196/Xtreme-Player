@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -27,11 +28,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -89,10 +92,23 @@ fun SearchScreen(
 ) {
     val currentPlayingId = playerUiState.currentTrack?.id
     val hasQuery = searchState.query.isNotBlank()
+    val isGenreActive = !searchState.selectedGenre.equals("All", ignoreCase = true)
     val appColors = LocalAppColors.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
     val listState = rememberLazyListState()
+
+    // Gracefully handle back press: Return to default "All" genres page rather than closing the app
+    BackHandler(enabled = isGenreActive || hasQuery) {
+        keyboardController?.hide()
+        focusManager.clearFocus()
+        if (isGenreActive) {
+            onSelectGenre("All")
+        }
+        if (hasQuery) {
+            onQueryChange("")
+        }
+    }
 
     // Automatically close keyboard when user starts scrolling the results list
     LaunchedEffect(listState.isScrollInProgress) {
@@ -194,11 +210,7 @@ fun SearchScreen(
                             }
 
                             // Sleek, compact and modern aesthetic circular search button
-                            val activeBrush = if (appColors.isDark) {
-                                Brush.linearGradient(listOf(XtremeLightBlue, XtremeCyan))
-                            } else {
-                                Brush.linearGradient(listOf(Color(0xFF0284C7), Color(0xFF38BDF8)))
-                            }
+                            val activeBrush = appColors.heroGradient
                             val inactiveBrush = Brush.linearGradient(
                                 if (appColors.isDark) {
                                     listOf(Color(0xFF16253B), Color(0xFF0F1B2B))
@@ -216,7 +228,7 @@ fun SearchScreen(
                                     .border(
                                         width = 1.dp,
                                         color = if (hasQuery) {
-                                            (if (appColors.isDark) XtremeLightBlue else Color(0xFF0284C7)).copy(alpha = 0.6f)
+                                            appColors.primaryAccent.copy(alpha = 0.6f)
                                         } else {
                                             appColors.chipBorder.copy(alpha = 0.5f)
                                         },
@@ -369,6 +381,85 @@ fun SearchScreen(
         if (hasQuery || searchState.selectedGenre != "All") {
             val results = searchState.result
 
+            // GENRE BREADCRUMB & RESHUFFLE BAR
+            if (isGenreActive) {
+                item {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp, vertical = 4.dp)
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(20.dp),
+                            color = appColors.chipBackground,
+                            border = BorderStroke(1.dp, appColors.chipBorder),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(20.dp))
+                                .clickable {
+                                    keyboardController?.hide()
+                                    focusManager.clearFocus()
+                                    onSelectGenre("All")
+                                }
+                                .testTag("back_to_all_genres_button")
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                    contentDescription = "Back to all genres",
+                                    tint = appColors.primaryAccent,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "All Genres",
+                                    color = TextPrimary,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(20.dp),
+                            color = appColors.primaryAccent.copy(alpha = 0.15f),
+                            border = BorderStroke(1.dp, appColors.primaryAccent.copy(alpha = 0.4f)),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(20.dp))
+                                .clickable {
+                                    keyboardController?.hide()
+                                    focusManager.clearFocus()
+                                    onSelectGenre(searchState.selectedGenre)
+                                }
+                                .testTag("reshuffle_genre_button")
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Shuffle,
+                                    contentDescription = "Shuffle songs",
+                                    tint = appColors.primaryAccent,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(5.dp))
+                                Text(
+                                    text = "Shuffle Songs",
+                                    color = appColors.primaryAccent,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
             // TOP RESULT CARD
             results.topResult?.let { top ->
                 item {
@@ -474,7 +565,11 @@ fun SearchScreen(
             }
             if (directList.isNotEmpty()) {
                 item {
-                    val sectionTitle = if (hasQuery) "Songs Matching \"${searchState.query.trim()}\"" else "Songs"
+                    val sectionTitle = if (hasQuery) {
+                        "Songs Matching \"${searchState.query.trim()}\""
+                    } else {
+                        "${searchState.selectedGenre} Hits (Shuffled)"
+                    }
                     Text(
                         text = sectionTitle,
                         style = MaterialTheme.typography.titleMedium.copy(
@@ -553,7 +648,7 @@ fun SearchScreen(
             }
 
             // SAME TYPE / SAME GENRE SONGS
-            if (results.similarTypeSongs.isNotEmpty()) {
+            if (results.similarTypeSongs.isNotEmpty() && !isGenreActive) {
                 item {
                     val genreTitle = if (results.matchedGenreOrType.isNotBlank()) {
                         "Similar Songs • ${results.matchedGenreOrType} Vibe"

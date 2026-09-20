@@ -79,6 +79,10 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val themeMode by playerViewModel.themeMode.collectAsState()
+            val customThemeState by playerViewModel.customThemeState.collectAsState()
+            val textScale by playerViewModel.textScale.collectAsState()
+            val uiScale by playerViewModel.uiScale.collectAsState()
+            val isOnboardingCompleted by playerViewModel.isOnboardingCompleted.collectAsState()
             val isSystemDark = androidx.compose.foundation.isSystemInDarkTheme()
             val effectiveDark = when (themeMode) {
                 com.example.data.local.AppThemeMode.SYSTEM -> isSystemDark
@@ -90,8 +94,32 @@ class MainActivity : ComponentActivity() {
                 playerViewModel.setResolvedDarkMode(effectiveDark)
             }
 
-            MyApplicationTheme(darkTheme = effectiveDark) {
-                MainNavigationScaffold(viewModel = playerViewModel)
+            MyApplicationTheme(
+                darkTheme = effectiveDark,
+                customThemeState = customThemeState,
+                textScale = textScale,
+                uiScale = uiScale
+            ) {
+                androidx.compose.animation.Crossfade(
+                    targetState = isOnboardingCompleted,
+                    label = "onboarding_crossfade"
+                ) { completed ->
+                    if (completed) {
+                        MainNavigationScaffold(viewModel = playerViewModel)
+                    } else {
+                        com.example.ui.screens.OnboardingScreen(
+                            onComplete = { name, languages, country, countryCode, flag ->
+                                playerViewModel.completeOnboarding(
+                                    name = name,
+                                    languages = languages,
+                                    country = country,
+                                    countryCode = countryCode,
+                                    flag = flag
+                                )
+                            }
+                        )
+                    }
+                }
             }
         }
     }

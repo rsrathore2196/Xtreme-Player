@@ -49,7 +49,9 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import com.example.util.AppHaptics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -90,6 +92,9 @@ fun MiniPlayer(
         label = "play_pause_scale"
     )
 
+    val appColors = LocalAppColors.current
+    val context = LocalContext.current
+
     Surface(
         modifier = modifier
             .fillMaxWidth()
@@ -97,11 +102,14 @@ fun MiniPlayer(
             .shadow(
                 elevation = 16.dp,
                 shape = RoundedCornerShape(16.dp),
-                spotColor = XtremeLightBlue.copy(alpha = 0.45f),
+                spotColor = appColors.primaryAccent.copy(alpha = 0.45f),
                 ambientColor = Color.Black
             )
             .clip(RoundedCornerShape(16.dp))
-            .clickable { onClick() }
+            .clickable {
+                AppHaptics.performTap(context)
+                onClick()
+            }
             .pointerInput(track.id) {
                 detectHorizontalDragGestures(
                     onDragStart = { totalDrag = 0f },
@@ -110,8 +118,10 @@ fun MiniPlayer(
                     },
                     onDragEnd = {
                         if (totalDrag < -60f) {
+                            AppHaptics.performTap(context)
                             onSkipNext()
                         } else if (totalDrag > 60f) {
+                            AppHaptics.performTap(context)
                             onSkipPrevious()
                         }
                         totalDrag = 0f
@@ -119,14 +129,14 @@ fun MiniPlayer(
                 )
             }
             .testTag("mini_player_container"),
-        color = LocalAppColors.current.cardBackground,
-        border = BorderStroke(1.dp, LocalAppColors.current.miniPlayerBorder),
+        color = appColors.cardBackground,
+        border = BorderStroke(1.dp, appColors.miniPlayerBorder),
         tonalElevation = 6.dp
     ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(LocalAppColors.current.miniPlayerBackground)
+                .background(appColors.miniPlayerBackground)
         ) {
             Column(modifier = Modifier.fillMaxWidth()) {
                 Row(
@@ -178,14 +188,14 @@ fun MiniPlayer(
                             Box(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(4.dp))
-                                    .background(XtremeLightBlue.copy(alpha = 0.18f))
+                                    .background(appColors.primaryAccent.copy(alpha = 0.18f))
                                     .padding(horizontal = 5.dp, vertical = 1.dp)
                             ) {
                                 Text(
                                     text = "${uiState.selectedQuality.kbps}k",
                                     fontSize = 9.sp,
                                     fontWeight = FontWeight.ExtraBold,
-                                    color = XtremeLightBlue
+                                    color = appColors.primaryAccent
                                 )
                             }
                             Spacer(modifier = Modifier.width(6.dp))
@@ -211,11 +221,14 @@ fun MiniPlayer(
                             CircularProgressIndicator(
                                 modifier = Modifier.size(28.dp),
                                 strokeWidth = 2.5.dp,
-                                color = XtremeLightBlue
+                                color = appColors.primaryAccent
                             )
                         } else {
                             IconButton(
-                                onClick = onPlayPauseClick,
+                                onClick = {
+                                    AppHaptics.performTap(context)
+                                    onPlayPauseClick()
+                                },
                                 modifier = Modifier
                                     .size(42.dp)
                                     .scale(playPauseScale)
@@ -224,9 +237,15 @@ fun MiniPlayer(
                                         if (uiState.isPlaying) {
                                             XtremeGradients.ButtonGradient
                                         } else {
-                                            Brush.linearGradient(
-                                                listOf(Color(0xFF1B3252), Color(0xFF15263E))
-                                            )
+                                            if (appColors.isDark) {
+                                                Brush.linearGradient(
+                                                    listOf(appColors.cardBackgroundElevated, appColors.cardBackground)
+                                                )
+                                            } else {
+                                                Brush.linearGradient(
+                                                    listOf(Color(0xFFE2E8F0), Color(0xFFCBD5E1))
+                                                )
+                                            }
                                         }
                                     )
                                     .testTag("mini_player_play_pause")
@@ -234,7 +253,7 @@ fun MiniPlayer(
                                 Icon(
                                     imageVector = if (uiState.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                                     contentDescription = if (uiState.isPlaying) "Pause" else "Play",
-                                    tint = if (uiState.isPlaying) Color(0xFF031428) else Color.White,
+                                    tint = if (uiState.isPlaying) (if (appColors.isDark) Color(0xFF031428) else Color.White) else appColors.textPrimary,
                                     modifier = Modifier.size(24.dp)
                                 )
                             }
@@ -245,7 +264,10 @@ fun MiniPlayer(
 
                     // Skip Next Button
                     IconButton(
-                        onClick = onSkipNext,
+                        onClick = {
+                            AppHaptics.performTap(context)
+                            onSkipNext()
+                        },
                         modifier = Modifier
                             .size(36.dp)
                             .testTag("mini_player_next")
@@ -265,8 +287,8 @@ fun MiniPlayer(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(2.5.dp),
-                    color = XtremeLightBlue,
-                    trackColor = Color(0xFF142740),
+                    color = appColors.primaryAccent,
+                    trackColor = if (appColors.isDark) appColors.cardBorder else Color(0xFFE2E8F0),
                 )
             }
         }
@@ -307,6 +329,8 @@ fun MiniAnimatedEqualizerBars() {
         label = "eq_bar_3"
     )
 
+    val eqColor = LocalAppColors.current.primaryAccent
+
     Canvas(
         modifier = Modifier
             .size(width = 14.dp, height = 14.dp)
@@ -318,7 +342,7 @@ fun MiniAnimatedEqualizerBars() {
 
         val h1 = (totalH * fraction1).coerceIn(3f, totalH)
         drawRoundRect(
-            color = XtremeGreen,
+            color = eqColor,
             topLeft = androidx.compose.ui.geometry.Offset(0f, totalH - h1),
             size = androidx.compose.ui.geometry.Size(barW, h1),
             cornerRadius = corner
@@ -326,7 +350,7 @@ fun MiniAnimatedEqualizerBars() {
 
         val h2 = (totalH * fraction2).coerceIn(3f, totalH)
         drawRoundRect(
-            color = XtremeGreen,
+            color = eqColor,
             topLeft = androidx.compose.ui.geometry.Offset(barW + space, totalH - h2),
             size = androidx.compose.ui.geometry.Size(barW, h2),
             cornerRadius = corner
@@ -334,7 +358,7 @@ fun MiniAnimatedEqualizerBars() {
 
         val h3 = (totalH * fraction3).coerceIn(3f, totalH)
         drawRoundRect(
-            color = XtremeGreen,
+            color = eqColor,
             topLeft = androidx.compose.ui.geometry.Offset((barW + space) * 2f, totalH - h3),
             size = androidx.compose.ui.geometry.Size(barW, h3),
             cornerRadius = corner

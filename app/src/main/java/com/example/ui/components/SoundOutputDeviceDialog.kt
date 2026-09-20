@@ -84,8 +84,6 @@ import com.example.ui.theme.LocalAppColors
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
-import com.example.ui.theme.XtremeCyan
-import com.example.ui.theme.XtremeLightBlue
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -170,6 +168,8 @@ fun SoundOutputDeviceDialog(
         label = "scrim_alpha"
     )
 
+    val appColors = LocalAppColors.current
+
     Dialog(
         onDismissRequest = { closeWithAnimation() },
         properties = DialogProperties(
@@ -178,7 +178,7 @@ fun SoundOutputDeviceDialog(
         )
     ) {
         CompositionLocalProvider(
-            LocalAppColors provides if (isDark) DarkAppColors else LightAppColors
+            LocalAppColors provides appColors
         ) {
             Box(
                 modifier = Modifier
@@ -197,11 +197,11 @@ fun SoundOutputDeviceDialog(
                 Card(
                     shape = RoundedCornerShape(22.dp),
                     colors = CardDefaults.cardColors(
-                        containerColor = if (isDark) Color(0xFF0D1B2E) else Color(0xFFFFFFFF)
+                        containerColor = if (appColors.isAmoled) Color.Black else appColors.cardBackground
                     ),
                     border = BorderStroke(
                         1.dp,
-                        if (isDark) Color(0xFF1E3A5F) else Color(0xFFBFDBFE)
+                        if (appColors.isAmoled) Color(0xFF262626) else appColors.cardBorder
                     ),
                     elevation = CardDefaults.cardElevation(
                         defaultElevation = if (isDark) 12.dp else 8.dp
@@ -242,15 +242,14 @@ fun SoundOutputDeviceDialog(
                                         .size(34.dp)
                                         .clip(RoundedCornerShape(10.dp))
                                         .background(
-                                            if (isDark) XtremeLightBlue.copy(alpha = 0.16f)
-                                            else Color(0xFFE0F2FE)
+                                            appColors.primaryAccent.copy(alpha = if (isDark) 0.16f else 0.12f)
                                         ),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.SpeakerGroup,
                                         contentDescription = null,
-                                        tint = if (isDark) XtremeLightBlue else Color(0xFF0284C7),
+                                        tint = appColors.primaryAccent,
                                         modifier = Modifier.size(18.dp)
                                     )
                                 }
@@ -262,12 +261,12 @@ fun SoundOutputDeviceDialog(
                                         text = "Output Devices",
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 15.sp,
-                                        color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF0F172A)
+                                        color = appColors.textPrimary
                                     )
                                     Text(
                                         text = "Choose audio playback target",
                                         fontSize = 11.sp,
-                                        color = if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B)
+                                        color = appColors.textMuted
                                     )
                                 }
                             }
@@ -281,7 +280,7 @@ fun SoundOutputDeviceDialog(
                                 Icon(
                                     imageVector = Icons.Default.Close,
                                     contentDescription = "Close",
-                                    tint = if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B),
+                                    tint = appColors.textMuted,
                                     modifier = Modifier.size(18.dp)
                                 )
                             }
@@ -289,7 +288,7 @@ fun SoundOutputDeviceDialog(
 
                         Spacer(modifier = Modifier.height(10.dp))
                         HorizontalDivider(
-                            color = if (isDark) Color(0xFF182D47) else Color(0xFFE2E8F0),
+                            color = if (appColors.isAmoled) Color(0xFF222222) else appColors.dividerColor,
                             thickness = 1.dp
                         )
                         Spacer(modifier = Modifier.height(10.dp))
@@ -300,7 +299,7 @@ fun SoundOutputDeviceDialog(
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
                             letterSpacing = 0.8.sp,
-                            color = if (isDark) XtremeLightBlue else Color(0xFF0284C7),
+                            color = appColors.primaryAccent,
                             modifier = Modifier.padding(bottom = 6.dp)
                         )
 
@@ -327,8 +326,8 @@ fun SoundOutputDeviceDialog(
                             Spacer(modifier = Modifier.height(8.dp))
                             Surface(
                                 shape = RoundedCornerShape(9.dp),
-                                color = if (isDark) Color(0xFF132238) else Color(0xFFEFF6FF),
-                                border = BorderStroke(1.dp, if (isDark) Color(0xFF1C3454) else Color(0xFFBFDBFE)),
+                                color = if (appColors.isAmoled) Color(0xFF101010) else appColors.cardBackgroundElevated,
+                                border = BorderStroke(1.dp, if (appColors.isAmoled) Color(0xFF242424) else appColors.cardBorder),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Row(
@@ -338,14 +337,14 @@ fun SoundOutputDeviceDialog(
                                     Icon(
                                         imageVector = Icons.Default.BluetoothAudio,
                                         contentDescription = null,
-                                        tint = if (isDark) XtremeCyan else Color(0xFF0284C7),
+                                        tint = appColors.primaryAccent,
                                         modifier = Modifier.size(14.dp)
                                     )
                                     Spacer(modifier = Modifier.width(6.dp))
                                     Text(
                                         text = "Connect Bluetooth headphones to route audio.",
                                         fontSize = 10.5.sp,
-                                        color = if (isDark) TextSecondary else Color(0xFF1E40AF),
+                                        color = appColors.textSecondary,
                                         lineHeight = 13.sp
                                     )
                                 }
@@ -354,7 +353,7 @@ fun SoundOutputDeviceDialog(
 
                         Spacer(modifier = Modifier.height(10.dp))
                         HorizontalDivider(
-                            color = if (isDark) Color(0xFF182D47) else Color(0xFFE2E8F0),
+                            color = if (appColors.isAmoled) Color(0xFF222222) else appColors.dividerColor,
                             thickness = 1.dp
                         )
                         Spacer(modifier = Modifier.height(10.dp))
@@ -371,10 +370,10 @@ fun SoundOutputDeviceDialog(
                                     openSystemAudioSwitcher(context)
                                 },
                                 shape = RoundedCornerShape(10.dp),
-                                border = BorderStroke(1.dp, if (isDark) Color(0xFF23446D) else Color(0xFFCBD5E1)),
+                                border = BorderStroke(1.dp, if (appColors.isAmoled) Color(0xFF282828) else appColors.cardBorder),
                                 colors = ButtonDefaults.outlinedButtonColors(
-                                    containerColor = if (isDark) Color(0xFF132238) else Color(0xFFF8FAFC),
-                                    contentColor = if (isDark) Color(0xFFF1F5F9) else Color(0xFF0F172A)
+                                    containerColor = if (appColors.isAmoled) Color(0xFF0E0E0E) else appColors.cardBackgroundElevated,
+                                    contentColor = appColors.textPrimary
                                 ),
                                 modifier = Modifier
                                     .weight(1f)
@@ -400,8 +399,8 @@ fun SoundOutputDeviceDialog(
                                 onClick = { closeWithAnimation() },
                                 shape = RoundedCornerShape(10.dp),
                                 colors = ButtonDefaults.buttonColors(
-                                    containerColor = if (isDark) XtremeLightBlue else Color(0xFF0284C7),
-                                    contentColor = if (isDark) Color(0xFF021024) else Color.White
+                                    containerColor = appColors.primaryAccent,
+                                    contentColor = appColors.onPrimaryAccent
                                 ),
                                 modifier = Modifier
                                     .weight(0.75f)
@@ -428,6 +427,7 @@ private fun DeviceItemRow(
     isDark: Boolean,
     onClick: () -> Unit
 ) {
+    val appColors = LocalAppColors.current
     val isSelected = device.isSelected
     val icon = getDeviceIcon(device)
 
@@ -435,16 +435,18 @@ private fun DeviceItemRow(
         onClick = onClick,
         shape = RoundedCornerShape(12.dp),
         color = if (isSelected) {
-            if (isDark) Color(0xFF142C48) else Color(0xFFEFF6FF)
+            if (appColors.isAmoled) Color(0xFF141414)
+            else appColors.primaryAccent.copy(alpha = if (isDark) 0.18f else 0.12f)
         } else {
-            if (isDark) Color(0xFF0F1C2D) else Color(0xFFF8FAFC)
+            if (appColors.isAmoled) Color(0xFF080808)
+            else appColors.cardBackgroundElevated
         },
         border = BorderStroke(
             if (isSelected) 1.2.dp else 1.dp,
             if (isSelected) {
-                if (isDark) XtremeLightBlue else Color(0xFF0284C7)
+                appColors.primaryAccent
             } else {
-                if (isDark) Color(0xFF1A304C) else Color(0xFFE2E8F0)
+                if (appColors.isAmoled) Color(0xFF222222) else appColors.cardBorder
             }
         ),
         modifier = Modifier
@@ -469,9 +471,9 @@ private fun DeviceItemRow(
                         .clip(RoundedCornerShape(8.dp))
                         .background(
                             if (isSelected) {
-                                if (isDark) XtremeLightBlue.copy(alpha = 0.22f) else Color(0xFFDBEAFE)
+                                appColors.primaryAccent.copy(alpha = if (isDark) 0.22f else 0.15f)
                             } else {
-                                if (isDark) Color(0xFF1A2A40) else Color(0xFFEDF2F7)
+                                if (appColors.isAmoled) Color(0xFF161616) else appColors.chipBackground
                             }
                         ),
                     contentAlignment = Alignment.Center
@@ -480,9 +482,9 @@ private fun DeviceItemRow(
                         imageVector = icon,
                         contentDescription = null,
                         tint = if (isSelected) {
-                            if (isDark) XtremeLightBlue else Color(0xFF0284C7)
+                            appColors.primaryAccent
                         } else {
-                            if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B)
+                            appColors.textMuted
                         },
                         modifier = Modifier.size(17.dp)
                     )
@@ -495,7 +497,7 @@ private fun DeviceItemRow(
                         text = device.name,
                         fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
                         fontSize = 12.5.sp,
-                        color = if (isDark) Color(0xFFF8FAFC) else Color(0xFF0F172A),
+                        color = appColors.textPrimary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -503,9 +505,9 @@ private fun DeviceItemRow(
                         text = device.typeName,
                         fontSize = 10.sp,
                         color = if (isSelected) {
-                            if (isDark) XtremeCyan else Color(0xFF0284C7)
+                            appColors.primaryAccent
                         } else {
-                            if (isDark) Color(0xFF64748B) else Color(0xFF94A3B8)
+                            appColors.textMuted
                         }
                     )
                 }
@@ -517,8 +519,8 @@ private fun DeviceItemRow(
             if (isSelected) {
                 Surface(
                     shape = RoundedCornerShape(6.dp),
-                    color = if (isDark) XtremeLightBlue.copy(alpha = 0.18f) else Color(0xFFDBEAFE),
-                    border = BorderStroke(1.dp, if (isDark) XtremeLightBlue.copy(alpha = 0.8f) else Color(0xFF0284C7))
+                    color = appColors.primaryAccent.copy(alpha = if (isDark) 0.18f else 0.12f),
+                    border = BorderStroke(1.dp, appColors.primaryAccent.copy(alpha = 0.8f))
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.5.dp),
@@ -527,7 +529,7 @@ private fun DeviceItemRow(
                         Icon(
                             imageVector = Icons.Default.Check,
                             contentDescription = "Active",
-                            tint = if (isDark) XtremeLightBlue else Color(0xFF0284C7),
+                            tint = appColors.primaryAccent,
                             modifier = Modifier.size(11.dp)
                         )
                         Spacer(modifier = Modifier.width(3.dp))
@@ -535,7 +537,7 @@ private fun DeviceItemRow(
                             text = "ACTIVE",
                             fontSize = 9.sp,
                             fontWeight = FontWeight.Bold,
-                            color = if (isDark) XtremeLightBlue else Color(0xFF0284C7)
+                            color = appColors.primaryAccent
                         )
                     }
                 }

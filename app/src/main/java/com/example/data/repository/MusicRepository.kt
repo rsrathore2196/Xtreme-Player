@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
+import com.example.data.local.UserProfile
 
 data class SearchResultCategory(
     val topResult: MusicTrack? = null,
@@ -38,30 +39,168 @@ class MusicRepository(private val musicDao: MusicDao) {
     private val searchCache = ConcurrentHashMap<String, SearchResultCategory>()
     private val playableTrackCache = ConcurrentHashMap<String, MusicTrack>()
 
-    suspend fun getInitialCatalog(): List<MusicTrack> {
-        val likedEntities = try {
-            musicDao.getFavoriteTracks().first()
-        } catch (e: Exception) {
+    // Static memory cache for enriched catalog to persist across fast navigations
+    companion object {
+        private var memoryCachedCatalog: List<MusicTrack>? = null
+    }
+
+    private var cachedPunjabiTracks: List<MusicTrack>? = null
+    private var cachedEraTracks: List<MusicTrack>? = null
+
+    private suspend fun getLikedTrackIds(): Set<String> {
+        return try {
+            musicDao.getFavoriteTracks().first().map { it.id }.toSet()
+        } catch (_: Exception) {
+            emptySet()
+        }
+    }
+
+    suspend fun getInitialCatalog(profile: UserProfile? = null): List<MusicTrack> {
+        val likedIds = getLikedTrackIds()
+
+        // 1. If memory cache is available, return it immediately
+        memoryCachedCatalog?.let { cached ->
+            return cached.map { it.copy(isLiked = likedIds.contains(it.id)) }
+        }
+
+        // 2. Read from Room cached tracks (instant local disk read < 5ms)
+        val roomCached = try {
+            musicDao.getCachedTracksSync(60)
+        } catch (_: Exception) {
             emptyList()
         }
-        val likedIds = likedEntities.map { it.id }.toSet()
 
-        // Fetch online trending tracks to enrich the catalog with real streaming music
-        val onlineTrending = try {
-            OnlineMusicApiService.getTrendingSongs(limit = 25)
-        } catch (e: Exception) {
-            emptyList()
+        if (roomCached.isNotEmpty()) {
+            val mapped = roomCached.map { entity ->
+                entity.toMusicTrack().copy(isLiked = likedIds.contains(entity.id))
+            }
+            memoryCachedCatalog = mapped
+            return mapped
         }
 
-        val combined = if (onlineTrending.isNotEmpty()) {
-            onlineTrending + MusicDataSource.curatedTracks
+        // 3. Instant local fallback catalog (0 ms)
+        val local = MusicDataSource.curatedTracks.map { track ->
+            track.copy(isLiked = likedIds.contains(track.id))
+        }
+        return local
+    }
+
+    suspend fun syncOnlineCatalog(profile: UserProfile? = null): List<MusicTrack> = withContext(Dispatchers.IO) {
+        val likedIds = getLikedTrackIds()
+
+        // Parallelize network requests using coroutineScope and async
+        val (trendingSongs, profileHits) = coroutineScope {
+            val trendingDeferred = async {
+                try {
+                    OnlineMusicApiService.getTrendingSongs(limit = 25)
+                } catch (_: Exception) {
+                    emptyList()
+                }
+            }
+            val profileDeferred = async {
+                try {
+                    if (profile != null && (profile.country.isNotBlank() || profile.languages.isNotEmpty())) {
+                        OnlineMusicApiService.getTrendingSongsForProfile(
+                            country = profile.country,
+                            languages = profile.languages,
+                            limit = 25
+                        )
+                    } else {
+                        emptyList()
+                    }
+                } catch (_: Exception) {
+                    emptyList()
+                }
+            }
+            Pair(trendingDeferred.await(), profileDeferred.await())
+        }
+
+        val onlineSongs = (profileHits + trendingSongs).distinctBy { it.id }
+        val combined = if (onlineSongs.isNotEmpty()) {
+            onlineSongs + MusicDataSource.curatedTracks
         } else {
             MusicDataSource.curatedTracks
         }
 
-        return combined.distinctBy { it.id }.map { track ->
+        val result = combined.distinctBy { it.id }.map { track ->
             track.copy(isLiked = likedIds.contains(track.id))
         }
+
+        // Cache into Room database for Stale-While-Revalidate
+        if (onlineSongs.isNotEmpty()) {
+            try {
+                val entities = onlineSongs.map { track ->
+                    TrackEntity.fromMusicTrack(track).copy(
+                        isCached = true,
+                        isLiked = likedIds.contains(track.id)
+                    )
+                }
+                musicDao.insertOrUpdateTracks(entities)
+            } catch (_: Exception) {}
+        }
+
+        memoryCachedCatalog = result
+        result
+    }
+
+    suspend fun getPunjabiHits(limit: Int = 15): List<MusicTrack> = withContext(Dispatchers.IO) {
+        cachedPunjabiTracks?.let { return@withContext it }
+        val likedIds = getLikedTrackIds()
+
+        // 1. Check Room first
+        val roomPunjabi = try {
+            musicDao.getTracksByLanguageSync("Punjabi", limit)
+        } catch (_: Exception) {
+            emptyList()
+        }
+        if (roomPunjabi.isNotEmpty()) {
+            val mapped = roomPunjabi.map { it.toMusicTrack().copy(isLiked = likedIds.contains(it.id)) }
+            cachedPunjabiTracks = mapped
+            return@withContext mapped
+        }
+
+        // 2. Fetch online
+        val online = try {
+            OnlineMusicApiService.getSongsByGenre("punjabi", limit = limit)
+        } catch (_: Exception) {
+            emptyList()
+        }
+
+        val finalTracks = if (online.isNotEmpty()) {
+            val entities = online.map { TrackEntity.fromMusicTrack(it).copy(isCached = true, language = "Punjabi") }
+            try { musicDao.insertOrUpdateTracks(entities) } catch (_: Exception) {}
+            online.map { it.copy(isLiked = likedIds.contains(it.id)) }
+        } else {
+            MusicDataSource.curatedTracks.filter {
+                it.language.equals("Punjabi", ignoreCase = true) ||
+                it.genre.contains("Punjabi", ignoreCase = true) ||
+                it.artist.contains("Diljit", ignoreCase = true) ||
+                it.artist.contains("Sidhu", ignoreCase = true)
+            }.ifEmpty { MusicDataSource.curatedTracks.take(limit) }
+        }
+        cachedPunjabiTracks = finalTracks
+        finalTracks
+    }
+
+    suspend fun getEraHits(limit: Int = 15): List<MusicTrack> = withContext(Dispatchers.IO) {
+        cachedEraTracks?.let { return@withContext it }
+        val likedIds = getLikedTrackIds()
+
+        val online = try {
+            OnlineMusicApiService.searchSongs("90s 2000s Bollywood Retro Hits", limit = limit)
+        } catch (_: Exception) {
+            emptyList()
+        }
+
+        val finalTracks = if (online.isNotEmpty()) {
+            val entities = online.map { TrackEntity.fromMusicTrack(it).copy(isCached = true, genre = "Retro") }
+            try { musicDao.insertOrUpdateTracks(entities) } catch (_: Exception) {}
+            online.map { it.copy(isLiked = likedIds.contains(it.id)) }
+        } else {
+            MusicDataSource.curatedTracks.shuffled().take(limit)
+        }
+        cachedEraTracks = finalTracks
+        finalTracks
     }
 
     fun getFavoriteTracks(): Flow<List<MusicTrack>> {
@@ -114,8 +253,29 @@ class MusicRepository(private val musicDao: MusicDao) {
         return musicDao.insertPlaylist(entity)
     }
 
+    suspend fun createPlaylistWithTracks(title: String, description: String, coverUrl: String = "", tracks: List<MusicTrack>): Long {
+        val playlistId = createPlaylist(title, description, coverUrl)
+        if (tracks.isNotEmpty()) {
+            val entities = tracks.map { TrackEntity.fromMusicTrack(it) }
+            val refs = tracks.mapIndexed { index, track ->
+                PlaylistTrackCrossRef(
+                    playlistId = playlistId,
+                    trackId = track.id,
+                    orderIndex = index
+                )
+            }
+            musicDao.insertOrUpdateTracks(entities)
+            musicDao.insertPlaylistTrackRefs(refs)
+        }
+        return playlistId
+    }
+
     suspend fun deletePlaylist(playlistId: Long) {
         musicDao.deletePlaylist(playlistId)
+    }
+
+    suspend fun renamePlaylist(playlistId: Long, newTitle: String) {
+        musicDao.updatePlaylistTitle(playlistId, newTitle.trim())
     }
 
     suspend fun addTrackToPlaylist(playlistId: Long, track: MusicTrack) {
@@ -343,9 +503,10 @@ class MusicRepository(private val musicDao: MusicDao) {
             MusicDataSource.curatedTracks.filter { it.genre.equals(genre, ignoreCase = true) }
         }
 
-        return (onlineGenreTracks + localGenreTracks)
+        return (onlineGenreTracks + localGenreTracks.shuffled())
             .distinctBy { "${it.title.lowercase()}_${it.artist.lowercase()}" }
             .map { it.copy(isLiked = likedIds.contains(it.id)) }
+            .shuffled()
     }
 
     fun clearSearchCache() {

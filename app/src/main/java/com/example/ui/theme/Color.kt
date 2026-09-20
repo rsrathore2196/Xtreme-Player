@@ -7,6 +7,7 @@ import androidx.compose.ui.graphics.Color
 
 data class AppThemeColors(
     val isDark: Boolean,
+    val isAmoled: Boolean = false,
     val screenBackground: Brush,
     val scaffoldBackground: Color,
     val cardBackground: Color,
@@ -27,7 +28,19 @@ data class AppThemeColors(
     val chipBackground: Color,
     val chipBorder: Color,
     val dividerColor: Color
-)
+) {
+    val heroGradient: Brush
+        get() = Brush.linearGradient(listOf(primaryAccent, secondaryAccent))
+
+    val onPrimaryAccent: Color
+        get() {
+            val lum = (0.299 * primaryAccent.red + 0.587 * primaryAccent.green + 0.114 * primaryAccent.blue)
+            return if (lum > 0.55) Color.Black else Color.White
+        }
+
+    val bottomSheetBackground: Color
+        get() = if (isAmoled) Color.Black else if (isDark) cardBackground else scaffoldBackground
+}
 
 // Night / Dark Theme: Black and Night Blue Combination
 val DarkAppColors = AppThemeColors(
@@ -145,37 +158,69 @@ val XtremeBorder: Color
 
 val XtremeBorderGlow: Color
     @Composable
-    get() = if (LocalAppColors.current.isDark) Color(0x6638BDF8) else Color(0x440284C7)
+    get() = LocalAppColors.current.primaryAccent.copy(alpha = if (LocalAppColors.current.isDark) 0.40f else 0.25f)
 
-// Signature Accent Tones
-val XtremeLightBlue = Color(0xFF38BDF8)        // Primary vibrant light blue (Sky 400)
-val XtremeCyan = Color(0xFF00E5FF)             // Electric luminous cyan
-val XtremeDeepBlue = Color(0xFF0284C7)         // Deep electric blue (Sky 600)
-val XtremeIce = Color(0xFFBAE6FD)              // Ice light blue highlight (Sky 200)
-val XtremeGreen = Color(0xFF38BDF8)            // Mapped to signature light blue
-val XtremePurple = Color(0xFF818CF8)           // Indigo/sky harmony
-val XtremeRose = Color(0xFFF43F5E)             // Favorite heart accent
+// Signature Accent Tones - Dynamically adapt to active theme preset & custom colors
+val XtremeLightBlue: Color
+    @Composable
+    get() = LocalAppColors.current.primaryAccent
 
-val SliderTrackColor = Color(0xFF1E3554)
-val SliderThumbColor = Color(0xFF38BDF8)
-val SliderBufferedColor = Color(0xFF2E4E75)
+val XtremeCyan: Color
+    @Composable
+    get() = LocalAppColors.current.secondaryAccent
+
+val XtremeDeepBlue: Color
+    @Composable
+    get() = LocalAppColors.current.primaryAccent
+
+val XtremeIce: Color
+    @Composable
+    get() = LocalAppColors.current.primaryAccent.copy(alpha = 0.25f)
+
+val XtremeGreen: Color
+    @Composable
+    get() = LocalAppColors.current.primaryAccent
+
+val XtremePurple: Color
+    @Composable
+    get() = LocalAppColors.current.secondaryAccent
+
+val XtremeRose: Color
+    @Composable
+    get() = Color(0xFFF43F5E)
+
+val SliderTrackColor: Color
+    @Composable
+    get() = if (LocalAppColors.current.isDark) Color(0xFF1C3454) else Color(0xFFCBD5E1)
+
+val SliderThumbColor: Color
+    @Composable
+    get() = LocalAppColors.current.primaryAccent
+
+val SliderBufferedColor: Color
+    @Composable
+    get() = LocalAppColors.current.primaryAccent.copy(alpha = 0.4f)
 
 // Eye-catching Signature Gradients matching the theme
 object XtremeGradients {
-    val LogoGradient = Brush.linearGradient(
-        colors = listOf(
-            Color(0xFF00E5FF),
-            Color(0xFF38BDF8),
-            Color(0xFF0284C7)
+    val LogoGradient: Brush
+        @Composable
+        get() = Brush.linearGradient(
+            colors = listOf(
+                LocalAppColors.current.secondaryAccent,
+                LocalAppColors.current.primaryAccent,
+                LocalAppColors.current.primaryAccent
+            )
         )
-    )
 
-    val LightBlueGradient = Brush.horizontalGradient(
-        colors = listOf(
-            Color(0xFF38BDF8),
-            Color(0xFF00E5FF)
+    val LightBlueGradient: Brush
+        @Composable
+        get() = Brush.horizontalGradient(
+            colors = listOf(
+                LocalAppColors.current.primaryAccent,
+                LocalAppColors.current.secondaryAccent
+            )
         )
-    )
 
     val ScreenBackground: Brush
         @Composable
@@ -186,17 +231,17 @@ object XtremeGradients {
         get() = if (LocalAppColors.current.isDark) {
             Brush.verticalGradient(
                 colors = listOf(
-                    Color(0xFF0E2545),
-                    Color(0xFF091424),
-                    Color(0xFF050B14)
+                    LocalAppColors.current.cardBackgroundElevated,
+                    LocalAppColors.current.cardBackground,
+                    LocalAppColors.current.scaffoldBackground
                 )
             )
         } else {
             Brush.verticalGradient(
                 colors = listOf(
-                    Color(0xFFE0F2FE),
-                    Color(0xFFF0F9FF),
-                    Color(0xFFFFFFFF)
+                    LocalAppColors.current.primaryAccent.copy(alpha = 0.12f),
+                    LocalAppColors.current.scaffoldBackground,
+                    Color.White
                 )
             )
         }
@@ -206,41 +251,42 @@ object XtremeGradients {
         get() = if (LocalAppColors.current.isDark) {
             Brush.linearGradient(
                 colors = listOf(
-                    Color(0xFF14243B),
-                    Color(0xFF0F1B2D)
+                    LocalAppColors.current.cardBackgroundElevated,
+                    LocalAppColors.current.cardBackground
                 )
             )
         } else {
             Brush.linearGradient(
                 colors = listOf(
                     Color(0xFFFFFFFF),
-                    Color(0xFFF8FAFC)
+                    LocalAppColors.current.scaffoldBackground
                 )
             )
         }
 
-    val ButtonGradient = Brush.horizontalGradient(
-        colors = listOf(
-            Color(0xFF0284C7),
-            Color(0xFF38BDF8),
-            Color(0xFF00E5FF)
+    val ButtonGradient: Brush
+        @Composable
+        get() = Brush.horizontalGradient(
+            colors = listOf(
+                LocalAppColors.current.primaryAccent,
+                LocalAppColors.current.secondaryAccent
+            )
         )
-    )
 
     val ChipGradient: Brush
         @Composable
         get() = if (LocalAppColors.current.isDark) {
             Brush.linearGradient(
                 colors = listOf(
-                    Color(0xFF172B46),
-                    Color(0xFF101E31)
+                    LocalAppColors.current.cardBackgroundElevated,
+                    LocalAppColors.current.cardBackground
                 )
             )
         } else {
             Brush.linearGradient(
                 colors = listOf(
-                    Color(0xFFF0F6FF),
-                    Color(0xFFE2E8F0)
+                    LocalAppColors.current.chipBackground,
+                    LocalAppColors.current.scaffoldBackground
                 )
             )
         }

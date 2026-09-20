@@ -55,6 +55,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.TrackLyrics
+import com.example.ui.theme.LocalAppColors
 
 @Composable
 fun SyncedLyricsView(
@@ -67,11 +68,20 @@ fun SyncedLyricsView(
     onRetry: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    val appColors = LocalAppColors.current
+    val effectiveAccent = appColors.primaryAccent
     val haptic = LocalHapticFeedback.current
     val listState = rememberLazyListState()
 
     val lines = lyrics?.lines ?: emptyList()
     val isSynced = lyrics?.isSynced == true
+
+    // Fully theme-adaptive background and border colors
+    val containerBg = if (isDark) {
+        appColors.cardBackground.copy(alpha = 0.94f)
+    } else {
+        appColors.cardBackground.copy(alpha = 0.96f)
+    }
 
     // Determine current active lyric line based on current playback timestamp (only if synced)
     val activeLineIndex by remember(lines, currentPositionMs, isSynced) {
@@ -105,17 +115,11 @@ fun SyncedLyricsView(
         modifier = modifier
             .fillMaxSize()
             .clip(RoundedCornerShape(24.dp))
-            .background(
-                if (isDark) {
-                    Color(0xFF060E1A).copy(alpha = 0.88f)
-                } else {
-                    Color(0xFFF1F6FD).copy(alpha = 0.95f)
-                }
-            )
+            .background(containerBg)
             .border(
                 BorderStroke(
                     1.2.dp,
-                    if (isDark) Color(0xFF1E3554).copy(alpha = 0.85f) else Color(0xFFCBD5E1)
+                    if (isDark) appColors.cardBorder else appColors.cardBorder.copy(alpha = 0.7f)
                 ),
                 RoundedCornerShape(24.dp)
             )
@@ -129,13 +133,13 @@ fun SyncedLyricsView(
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(36.dp),
-                        color = if (isDark) Color(0xFF00E5FF) else Color(0xFF0284C7),
+                        color = effectiveAccent,
                         strokeWidth = 2.5.dp
                     )
                     Spacer(modifier = Modifier.height(14.dp))
                     Text(
                         text = "Searching live lyrics...",
-                        color = if (isDark) Color(0xFF94A3B8) else Color(0xFF475569),
+                        color = appColors.textMuted,
                         style = MaterialTheme.typography.bodyMedium
                     )
                 }
@@ -152,13 +156,13 @@ fun SyncedLyricsView(
                     Icon(
                         imageVector = Icons.Default.MusicNote,
                         contentDescription = null,
-                        tint = if (isDark) Color(0xFF64748B) else Color(0xFF94A3B8),
+                        tint = appColors.textMuted,
                         modifier = Modifier.size(44.dp)
                     )
                     Spacer(modifier = Modifier.height(12.dp))
                     Text(
                         text = "Lyrics not available",
-                        color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF0F172A),
+                        color = appColors.textPrimary,
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
                         textAlign = TextAlign.Center
@@ -166,7 +170,7 @@ fun SyncedLyricsView(
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
                         text = "No verified lyrics match for this song",
-                        color = if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B),
+                        color = appColors.textMuted,
                         style = MaterialTheme.typography.bodySmall,
                         textAlign = TextAlign.Center
                     )
@@ -174,11 +178,11 @@ fun SyncedLyricsView(
                     OutlinedButton(
                         onClick = onRetry,
                         colors = ButtonDefaults.outlinedButtonColors(
-                            contentColor = if (isDark) Color(0xFF00E5FF) else Color(0xFF0284C7)
+                            contentColor = effectiveAccent
                         ),
                         border = BorderStroke(
                             1.dp,
-                            if (isDark) Color(0xFF00E5FF).copy(alpha = 0.4f) else Color(0xFF0284C7).copy(alpha = 0.4f)
+                            effectiveAccent.copy(alpha = 0.45f)
                         ),
                         shape = RoundedCornerShape(16.dp)
                     ) {
@@ -217,8 +221,8 @@ fun SyncedLyricsView(
                     }
                     val targetScale = if (isActive) 1.04f else 1.0f
 
-                    val activeTextColor = if (isDark) Color.White else Color(0xFF0F172A)
-                    val inactiveTextColor = if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B)
+                    val activeTextColor = if (isDark) Color.White else appColors.textPrimary
+                    val inactiveTextColor = appColors.textMuted
 
                     Row(
                         modifier = Modifier
@@ -245,7 +249,7 @@ fun SyncedLyricsView(
                                 modifier = Modifier
                                     .size(7.dp)
                                     .clip(CircleShape)
-                                    .background(if (isDark) Color(0xFF00E5FF) else Color(0xFF0284C7))
+                                    .background(effectiveAccent)
                             )
                             Spacer(modifier = Modifier.width(10.dp))
                         }
@@ -271,17 +275,14 @@ fun SyncedLyricsView(
                     .align(Alignment.TopEnd)
                     .padding(top = 16.dp, end = 18.dp)
                     .clip(RoundedCornerShape(12.dp))
-                    .background(
-                        if (isDark) Color(0xFF1E293B).copy(alpha = 0.90f)
-                        else Color(0xFFE2E8F0).copy(alpha = 0.95f)
-                    )
+                    .background(appColors.cardBackgroundElevated.copy(alpha = 0.92f))
                     .border(
                         BorderStroke(
                             1.dp,
                             if (isSynced) {
-                                Color(0xFF10B981).copy(alpha = 0.4f)
+                                Color(0xFF10B981).copy(alpha = 0.5f)
                             } else {
-                                (if (isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)).copy(alpha = 0.35f)
+                                effectiveAccent.copy(alpha = 0.4f)
                             }
                         ),
                         RoundedCornerShape(12.dp)
@@ -298,7 +299,7 @@ fun SyncedLyricsView(
                             .clip(CircleShape)
                             .background(
                                 if (isSynced) Color(0xFF10B981)
-                                else if (isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
+                                else effectiveAccent
                             )
                     )
                     Text(
@@ -306,7 +307,7 @@ fun SyncedLyricsView(
                         style = MaterialTheme.typography.labelSmall.copy(
                             fontSize = 11.sp,
                             fontWeight = FontWeight.SemiBold,
-                            color = if (isDark) Color(0xFFE2E8F0) else Color(0xFF1E293B)
+                            color = appColors.textPrimary
                         )
                     )
                 }
@@ -321,7 +322,7 @@ fun SyncedLyricsView(
                     .background(
                         Brush.verticalGradient(
                             colors = listOf(
-                                if (isDark) Color(0xFF060E1A) else Color(0xFFF1F6FD),
+                                containerBg,
                                 Color.Transparent
                             )
                         )
@@ -338,7 +339,7 @@ fun SyncedLyricsView(
                         Brush.verticalGradient(
                             colors = listOf(
                                 Color.Transparent,
-                                if (isDark) Color(0xFF060E1A) else Color(0xFFF1F6FD)
+                                containerBg
                             )
                         )
                     )

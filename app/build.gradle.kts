@@ -17,8 +17,8 @@ android {
     applicationId = "com.aistudio.xtremeplayer.vkmz"
     minSdk = 24
     targetSdk = 36
-    versionCode = 4
-    versionName = "1.5.0"
+    versionCode = 5
+    versionName = "1.6.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }

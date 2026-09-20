@@ -1,6 +1,6 @@
 {
   "name": "Xtreme Player",
-  "description": "Modern online music streaming player with 320kbps HD playback, Crystal Clarity audio engine, custom equalizer, quality selector, and customizable settings.",
+  "description": "Modern online music streaming player with 320kbps HD playback, playlist import (Spotify, YouTube Music, Apple Music), Crystal Clarity audio engine, custom equalizer, and customizable settings.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

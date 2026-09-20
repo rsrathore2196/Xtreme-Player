@@ -72,5 +72,11 @@ abstract class MusicDatabase : RoomDatabase() {
                 instance
             }
         }
+
+        fun createInMemoryDatabase(context: Context): MusicDatabase {
+            return Room.inMemoryDatabaseBuilder(context.applicationContext, MusicDatabase::class.java)
+                .allowMainThreadQueries()
+                .build()
+        }
     }
 }

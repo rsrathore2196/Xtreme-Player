@@ -25,6 +25,12 @@ interface MusicDao {
     @Query("SELECT * FROM tracks WHERE isCached = 1 ORDER BY addedAt DESC")
     fun getCachedTracks(): Flow<List<TrackEntity>>
 
+    @Query("SELECT * FROM tracks WHERE isCached = 1 ORDER BY addedAt DESC LIMIT :limit")
+    suspend fun getCachedTracksSync(limit: Int = 100): List<TrackEntity>
+
+    @Query("SELECT * FROM tracks WHERE language = :language OR genre LIKE '%' || :language || '%' ORDER BY addedAt DESC LIMIT :limit")
+    suspend fun getTracksByLanguageSync(language: String, limit: Int = 30): List<TrackEntity>
+
     @Query("SELECT * FROM tracks WHERE id = :trackId LIMIT 1")
     suspend fun getTrackById(trackId: String): TrackEntity?
 
@@ -43,6 +49,9 @@ interface MusicDao {
     @Query("DELETE FROM playlists WHERE playlistId = :playlistId")
     suspend fun deletePlaylist(playlistId: Long)
 
+    @Query("UPDATE playlists SET title = :newTitle WHERE playlistId = :playlistId")
+    suspend fun updatePlaylistTitle(playlistId: Long, newTitle: String)
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertPlaylistTrackRef(crossRef: PlaylistTrackCrossRef)
 
@@ -52,4 +61,22 @@ interface MusicDao {
     @Transaction
     @Query("SELECT * FROM playlists WHERE playlistId = :playlistId")
     fun getPlaylistWithTracks(playlistId: Long): Flow<PlaylistWithTracks?>
+
+    @Query("SELECT * FROM playlists ORDER BY createdAt DESC")
+    suspend fun getAllPlaylistsSync(): List<PlaylistEntity>
+
+    @Query("SELECT * FROM tracks WHERE isLiked = 1 ORDER BY addedAt DESC")
+    suspend fun getAllFavoriteTracksSync(): List<TrackEntity>
+
+    @Query("SELECT * FROM tracks")
+    suspend fun getAllTracksSync(): List<TrackEntity>
+
+    @Query("SELECT * FROM playlist_track_cross_ref")
+    suspend fun getAllPlaylistCrossRefsSync(): List<PlaylistTrackCrossRef>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertPlaylists(playlists: List<PlaylistEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertPlaylistTrackRefs(refs: List<PlaylistTrackCrossRef>)
 }

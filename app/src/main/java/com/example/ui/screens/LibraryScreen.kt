@@ -25,11 +25,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -63,6 +66,7 @@ import coil.compose.AsyncImage
 import com.example.data.local.PlaylistEntity
 import com.example.data.model.MusicTrack
 import com.example.playback.PlayerUiState
+import com.example.ui.theme.LocalAppColors
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
@@ -80,21 +84,25 @@ fun LibraryScreen(
     favoriteTracks: List<MusicTrack>,
     playlists: List<PlaylistEntity>,
     playerUiState: PlayerUiState,
+    isDarkMode: Boolean = false,
     onTrackClick: (MusicTrack, List<MusicTrack>) -> Unit,
     onToggleFavorite: (MusicTrack) -> Unit,
     onOpenPlaylist: (Long) -> Unit,
     onCreatePlaylistClick: () -> Unit,
+    onImportPlaylistClick: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var selectedTab by remember { mutableIntStateOf(0) }
     val tabs = listOf("Playlists", "Liked Songs")
+    val isDark = isDarkMode
+    val appColors = LocalAppColors.current
 
     val currentPlayingId = playerUiState.currentTrack?.id
 
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(XtremeGradients.ScreenBackground),
+            .background(appColors.screenBackground),
         contentAlignment = Alignment.TopCenter
     ) {
         LazyColumn(
@@ -118,12 +126,12 @@ fun LibraryScreen(
                             text = "Your Library",
                             style = MaterialTheme.typography.headlineSmall.copy(
                                 fontWeight = FontWeight.Bold,
-                                color = TextPrimary
+                                color = appColors.textPrimary
                             )
                         )
                         Text(
                             text = "Saved music, custom playlists & liked songs",
-                            style = MaterialTheme.typography.bodySmall.copy(color = TextMuted)
+                            style = MaterialTheme.typography.bodySmall.copy(color = appColors.textMuted)
                         )
                     }
 
@@ -134,16 +142,19 @@ fun LibraryScreen(
                             .size(42.dp)
                             .clip(CircleShape)
                             .background(
-                                Brush.linearGradient(
-                                    listOf(Color(0xFF163255), Color(0xFF1B3D66))
-                                )
+                                appColors.primaryAccent.copy(alpha = if (isDark) 0.18f else 0.12f)
+                            )
+                            .border(
+                                1.dp,
+                                appColors.primaryAccent.copy(alpha = if (isDark) 0.45f else 0.35f),
+                                CircleShape
                             )
                             .testTag("create_playlist_button")
                     ) {
                         Icon(
                             imageVector = Icons.Default.Add,
                             contentDescription = "Create Playlist",
-                            tint = XtremeLightBlue,
+                            tint = appColors.primaryAccent,
                             modifier = Modifier.size(24.dp)
                         )
                     }
@@ -152,14 +163,15 @@ fun LibraryScreen(
                 Spacer(modifier = Modifier.height(12.dp))
 
                 // TAB ROW
+                val activeTabColor = appColors.primaryAccent
                 TabRow(
                     selectedTabIndex = selectedTab,
                     containerColor = Color.Transparent,
-                    contentColor = XtremeLightBlue,
+                    contentColor = activeTabColor,
                     indicator = { tabPositions ->
                         TabRowDefaults.SecondaryIndicator(
                             modifier = Modifier.tabIndicatorOffset(tabPositions[selectedTab]),
-                            color = XtremeLightBlue
+                            color = activeTabColor
                         )
                     },
                     divider = {}
@@ -172,7 +184,7 @@ fun LibraryScreen(
                                 Text(
                                     text = title,
                                     fontWeight = if (selectedTab == index) FontWeight.Bold else FontWeight.Normal,
-                                    color = if (selectedTab == index) XtremeLightBlue else TextSecondary,
+                                    color = if (selectedTab == index) activeTabColor else appColors.textSecondary,
                                     fontSize = 14.sp
                                 )
                             }
@@ -189,8 +201,8 @@ fun LibraryScreen(
                 item {
                     Card(
                         shape = RoundedCornerShape(18.dp),
-                        colors = CardDefaults.cardColors(containerColor = XtremeCard),
-                        border = BorderStroke(1.dp, XtremeBorder),
+                        colors = CardDefaults.cardColors(containerColor = appColors.cardBackground),
+                        border = BorderStroke(1.dp, appColors.cardBorder),
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 20.dp, vertical = 6.dp)
@@ -206,21 +218,32 @@ fun LibraryScreen(
                                 .padding(12.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
+                            val likedSongsBoxBg = if (appColors.isAmoled) {
+                                Brush.linearGradient(listOf(Color(0xFF242424), Color(0xFF141414)))
+                            } else {
+                                Brush.linearGradient(listOf(appColors.primaryAccent, appColors.secondaryAccent))
+                            }
+                            val likedSongsHeartTint = if (appColors.isAmoled) {
+                                Color(0xFFFF3B69)
+                            } else {
+                                appColors.onPrimaryAccent
+                            }
+
                             Box(
                                 modifier = Modifier
                                     .size(62.dp)
                                     .clip(RoundedCornerShape(12.dp))
-                                    .background(
-                                        Brush.linearGradient(
-                                            listOf(Color(0xFF0F4C81), Color(0xFF00B4D8))
-                                        )
+                                    .background(likedSongsBoxBg)
+                                    .then(
+                                        if (appColors.isAmoled) Modifier.border(1.dp, Color(0xFF383838), RoundedCornerShape(12.dp))
+                                        else Modifier
                                     ),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Favorite,
                                     contentDescription = null,
-                                    tint = Color.White,
+                                    tint = likedSongsHeartTint,
                                     modifier = Modifier.size(30.dp)
                                 )
                             }
@@ -232,13 +255,13 @@ fun LibraryScreen(
                                     text = "Liked Songs",
                                     style = MaterialTheme.typography.titleMedium.copy(
                                         fontWeight = FontWeight.Bold,
-                                        color = TextPrimary
+                                        color = appColors.textPrimary
                                     )
                                 )
                                 Text(
                                     text = "${favoriteTracks.size} tracks saved in 320kbps",
                                     style = MaterialTheme.typography.bodySmall.copy(
-                                        color = TextSecondary
+                                        color = appColors.textSecondary
                                     )
                                 )
                             }
@@ -248,16 +271,101 @@ fun LibraryScreen(
                                     modifier = Modifier
                                         .size(38.dp)
                                         .clip(CircleShape)
-                                        .background(XtremeGradients.ButtonGradient),
+                                        .background(appColors.primaryAccent),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.PlayArrow,
                                         contentDescription = "Play Liked",
-                                        tint = Color(0xFF031428),
+                                        tint = appColors.onPrimaryAccent,
                                         modifier = Modifier.size(22.dp)
                                     )
                                 }
+                            }
+                        }
+                    }
+                }
+
+                // 2. Import Third-Party Playlist Card
+                item {
+                    Card(
+                        shape = RoundedCornerShape(18.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = appColors.cardBackground
+                        ),
+                        border = BorderStroke(
+                            1.dp,
+                            appColors.cardBorder
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp, vertical = 6.dp)
+                            .clickable { onImportPlaylistClick() }
+                            .testTag("import_playlist_banner_card")
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(
+                                        appColors.primaryAccent.copy(alpha = if (isDark) 0.20f else 0.14f)
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.CloudDownload,
+                                    contentDescription = null,
+                                    tint = appColors.primaryAccent,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.width(12.dp))
+
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(
+                                        text = "Import Playlists",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp,
+                                        color = appColors.textPrimary
+                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(4.dp))
+                                            .background(
+                                                appColors.primaryAccent.copy(alpha = if (isDark) 0.2f else 0.12f)
+                                            )
+                                            .padding(horizontal = 5.dp, vertical = 2.dp)
+                                    ) {
+                                        Text(
+                                            text = "NEW",
+                                            color = appColors.primaryAccent,
+                                            fontSize = 8.5.sp,
+                                            fontWeight = FontWeight.ExtraBold
+                                        )
+                                    }
+                                }
+                                Text(
+                                    text = "Spotify, Apple Music, YouTube",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = appColors.primaryAccent
+                                )
+                                Text(
+                                    text = "Auto-matches tracks to 320kbps HD audio",
+                                    fontSize = 11.sp,
+                                    color = appColors.textMuted
+                                )
                             }
                         }
                     }
@@ -275,30 +383,66 @@ fun LibraryScreen(
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.QueueMusic,
                                 contentDescription = null,
-                                tint = TextMuted,
+                                tint = appColors.textMuted,
                                 modifier = Modifier.size(48.dp)
                             )
                             Spacer(modifier = Modifier.height(10.dp))
                             Text(
                                 text = "No custom playlists yet",
-                                color = TextPrimary,
+                                color = appColors.textPrimary,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 16.sp
                             )
                             Text(
-                                text = "Create custom collections with your favorite 320kbps tracks.",
-                                color = TextMuted,
+                                text = "Create custom collections or import from Spotify, YouTube & Apple Music.",
+                                color = appColors.textMuted,
                                 fontSize = 13.sp,
                                 modifier = Modifier.padding(top = 4.dp, bottom = 14.dp)
                             )
-                            Button(
-                                onClick = onCreatePlaylistClick,
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = XtremeLightBlue,
-                                    contentColor = Color(0xFF031428)
-                                )
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text("Create Playlist", fontWeight = FontWeight.Bold)
+                                Button(
+                                    onClick = onCreatePlaylistClick,
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = appColors.primaryAccent,
+                                        contentColor = if (isDark) Color(0xFF101014) else Color.White
+                                    ),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                                ) {
+                                    Text(
+                                        text = "Create Playlist",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.5.sp,
+                                        maxLines = 1
+                                    )
+                                }
+
+                                androidx.compose.material3.OutlinedButton(
+                                    onClick = onImportPlaylistClick,
+                                    border = BorderStroke(
+                                        1.dp,
+                                        appColors.primaryAccent.copy(alpha = 0.6f)
+                                    ),
+                                    colors = ButtonDefaults.outlinedButtonColors(
+                                        contentColor = appColors.primaryAccent
+                                    ),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.CloudDownload,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = "Import External",
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 12.sp,
+                                        maxLines = 1
+                                    )
+                                }
                             }
                         }
                     }
@@ -308,7 +452,7 @@ fun LibraryScreen(
                             text = "Custom Playlists (${playlists.size})",
                             style = MaterialTheme.typography.titleMedium.copy(
                                 fontWeight = FontWeight.Bold,
-                                color = TextPrimary
+                                color = appColors.textPrimary
                             ),
                             modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 6.dp)
                         )
@@ -337,19 +481,19 @@ fun LibraryScreen(
                             Icon(
                                 imageVector = Icons.Default.FavoriteBorder,
                                 contentDescription = null,
-                                tint = TextMuted,
+                                tint = appColors.textMuted,
                                 modifier = Modifier.size(48.dp)
                             )
                             Spacer(modifier = Modifier.height(10.dp))
                             Text(
                                 text = "Songs you like will appear here",
-                                color = TextPrimary,
+                                color = appColors.textPrimary,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 16.sp
                             )
                             Text(
                                 text = "Tap the heart icon on any song to save it to your library.",
-                                color = TextMuted,
+                                color = appColors.textMuted,
                                 fontSize = 13.sp,
                                 modifier = Modifier.padding(top = 4.dp)
                             )
@@ -378,12 +522,13 @@ fun PlaylistRowItem(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val appColors = LocalAppColors.current
     Row(
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
-            .background(XtremeCard)
-            .border(BorderStroke(1.dp, XtremeBorder), RoundedCornerShape(14.dp))
+            .background(appColors.cardBackground)
+            .border(BorderStroke(1.dp, appColors.cardBorder), RoundedCornerShape(14.dp))
             .clickable { onClick() }
             .padding(10.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -395,7 +540,7 @@ fun PlaylistRowItem(
             modifier = Modifier
                 .size(54.dp)
                 .clip(RoundedCornerShape(10.dp))
-                .background(Color(0xFF162B46))
+                .background(if (appColors.isDark) appColors.cardBackgroundElevated else Color(0xFFE2E8F0))
         )
 
         Spacer(modifier = Modifier.width(14.dp))
@@ -403,7 +548,7 @@ fun PlaylistRowItem(
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = playlist.title,
-                color = TextPrimary,
+                color = appColors.textPrimary,
                 fontWeight = FontWeight.Bold,
                 fontSize = 15.sp,
                 maxLines = 1,
@@ -412,7 +557,7 @@ fun PlaylistRowItem(
             Spacer(modifier = Modifier.height(2.dp))
             Text(
                 text = if (playlist.description.isNotBlank()) playlist.description else "Custom Playlist • Xtreme 320k",
-                color = TextSecondary,
+                color = appColors.textSecondary,
                 fontSize = 12.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis

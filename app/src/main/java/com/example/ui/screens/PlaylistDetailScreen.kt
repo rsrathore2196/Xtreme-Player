@@ -23,16 +23,25 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -49,6 +58,7 @@ import coil.compose.AsyncImage
 import com.example.data.local.PlaylistWithTracks
 import com.example.data.model.MusicTrack
 import com.example.playback.PlayerUiState
+import com.example.ui.theme.LocalAppColors
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
@@ -66,11 +76,76 @@ fun PlaylistDetailScreen(
     onToggleFavorite: (MusicTrack) -> Unit,
     onDeletePlaylist: () -> Unit,
     onRemoveTrack: (String) -> Unit,
+    onRenamePlaylist: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val playlist = playlistWithTracks.playlist
     val tracks = playlistWithTracks.tracks.map { it.toMusicTrack() }
     val currentPlayingId = playerUiState.currentTrack?.id
+    val appColors = LocalAppColors.current
+
+    var showRenameDialog by remember { mutableStateOf(false) }
+    var newTitleInput by remember(playlist.title) { mutableStateOf(playlist.title) }
+
+    if (showRenameDialog) {
+        AlertDialog(
+            onDismissRequest = { showRenameDialog = false },
+            title = {
+                Text(
+                    text = "Edit Playlist Name",
+                    fontWeight = FontWeight.Bold,
+                    color = appColors.textPrimary
+                )
+            },
+            text = {
+                Column {
+                    Text(
+                        text = "Enter a new name for your playlist:",
+                        fontSize = 13.sp,
+                        color = appColors.textMuted
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = newTitleInput,
+                        onValueChange = { newTitleInput = it },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = appColors.primaryAccent,
+                            unfocusedBorderColor = appColors.cardBorder,
+                            focusedTextColor = appColors.textPrimary,
+                            unfocusedTextColor = appColors.textPrimary,
+                            cursorColor = appColors.primaryAccent
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("edit_playlist_name_input")
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val trimmed = newTitleInput.trim()
+                        if (trimmed.isNotBlank()) {
+                            onRenamePlaylist(trimmed)
+                        }
+                        showRenameDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = appColors.primaryAccent),
+                    modifier = Modifier.testTag("save_playlist_name_button")
+                ) {
+                    Text("Save", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRenameDialog = false }) {
+                    Text("Cancel", color = appColors.textMuted)
+                }
+            },
+            containerColor = appColors.cardBackground,
+            shape = RoundedCornerShape(18.dp)
+        )
+    }
 
     Box(
         modifier = modifier
@@ -101,12 +176,27 @@ fun PlaylistDetailScreen(
                 )
             }
 
-            IconButton(onClick = onDeletePlaylist) {
-                Icon(
-                    imageVector = Icons.Default.DeleteOutline,
-                    contentDescription = "Delete Playlist",
-                    tint = TextMuted
-                )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(
+                    onClick = {
+                        newTitleInput = playlist.title
+                        showRenameDialog = true
+                    },
+                    modifier = Modifier.testTag("edit_playlist_name_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Edit,
+                        contentDescription = "Edit Playlist Name",
+                        tint = appColors.primaryAccent
+                    )
+                }
+                IconButton(onClick = onDeletePlaylist) {
+                    Icon(
+                        imageVector = Icons.Default.DeleteOutline,
+                        contentDescription = "Delete Playlist",
+                        tint = TextMuted
+                    )
+                }
             }
         }
 

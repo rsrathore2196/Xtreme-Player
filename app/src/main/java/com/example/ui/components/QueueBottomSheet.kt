@@ -74,7 +74,7 @@ fun QueueBottomSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        containerColor = if (isDark) Color(0xFF0B1726) else Color.White,
+        containerColor = if (appColors.isAmoled) Color(0xFF000000) else appColors.cardBackground,
         dragHandle = {
             Box(
                 modifier = Modifier
@@ -82,7 +82,7 @@ fun QueueBottomSheet(
                     .width(40.dp)
                     .height(4.dp)
                     .clip(RoundedCornerShape(2.dp))
-                    .background(if (isDark) Color(0xFF1B3C64) else Color(0xFFCBD5E1))
+                    .background(appColors.cardBorder)
             )
         }
     ) {
@@ -100,7 +100,7 @@ fun QueueBottomSheet(
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.QueueMusic,
                         contentDescription = null,
-                        tint = if (isDark) XtremeLightBlue else Color(0xFF0284C7),
+                        tint = appColors.primaryAccent,
                         modifier = Modifier.size(24.dp)
                     )
                     Spacer(modifier = Modifier.width(10.dp))
@@ -109,13 +109,13 @@ fun QueueBottomSheet(
                             text = "Now Playing & Queue",
                             style = MaterialTheme.typography.titleMedium.copy(
                                 fontWeight = FontWeight.Bold,
-                                color = if (isDark) TextPrimary else Color(0xFF0F172A)
+                                color = appColors.textPrimary
                             )
                         )
                         Text(
                             text = "${queue.size} high-fidelity tracks in session",
                             style = MaterialTheme.typography.bodySmall.copy(
-                                color = if (isDark) TextMuted else Color(0xFF64748B)
+                                color = appColors.textMuted
                             )
                         )
                     }
@@ -131,14 +131,14 @@ fun QueueBottomSheet(
                     .clip(RoundedCornerShape(14.dp))
                     .clickable { onToggleAutoplay() },
                 color = if (isAutoplayEnabled) {
-                    if (isDark) Color(0xFF0F2644) else Color(0xFFEFF6FF)
+                    appColors.primaryAccent.copy(alpha = if (isDark) 0.16f else 0.10f)
                 } else {
-                    if (isDark) Color(0xFF121820) else Color(0xFFF1F5F9)
+                    appColors.cardBackgroundElevated
                 },
                 border = BorderStroke(
                     1.dp,
-                    if (isAutoplayEnabled) (if (isDark) Color(0xFF1D4ED8) else Color(0xFF93C5FD))
-                    else (if (isDark) Color(0xFF1E293B) else Color(0xFFE2E8F0))
+                    if (isAutoplayEnabled) appColors.primaryAccent.copy(alpha = 0.5f)
+                    else appColors.cardBorder
                 ),
                 shape = RoundedCornerShape(14.dp)
             ) {
@@ -155,13 +155,16 @@ fun QueueBottomSheet(
                             modifier = Modifier
                                 .size(34.dp)
                                 .clip(CircleShape)
-                                .background(if (isAutoplayEnabled) (if (isDark) XtremeCyan.copy(alpha = 0.2f) else Color(0xFFDBEAFE)) else Color(0xFF334155)),
+                                .background(
+                                    if (isAutoplayEnabled) appColors.primaryAccent.copy(alpha = 0.22f)
+                                    else appColors.chipBackground
+                                ),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
                                 imageVector = Icons.Default.AllInclusive,
                                 contentDescription = null,
-                                tint = if (isAutoplayEnabled) (if (isDark) XtremeCyan else Color(0xFF0284C7)) else Color(0xFF94A3B8),
+                                tint = if (isAutoplayEnabled) appColors.primaryAccent else appColors.textMuted,
                                 modifier = Modifier.size(18.dp)
                             )
                         }
@@ -171,7 +174,7 @@ fun QueueBottomSheet(
                                 text = "Infinity Autoplay",
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 13.sp,
-                                color = if (isDark) TextPrimary else Color(0xFF0F172A)
+                                color = appColors.textPrimary
                             )
                             Text(
                                 text = if (isAutoplayEnabled && nextRecommendedTrack != null) {
@@ -182,7 +185,7 @@ fun QueueBottomSheet(
                                     "Queue stops when tracks finish"
                                 },
                                 fontSize = 11.sp,
-                                color = if (isDark) TextSecondary else Color(0xFF64748B),
+                                color = appColors.textSecondary,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
@@ -193,10 +196,10 @@ fun QueueBottomSheet(
                         checked = isAutoplayEnabled,
                         onCheckedChange = { onToggleAutoplay() },
                         colors = SwitchDefaults.colors(
-                            checkedThumbColor = Color.White,
-                            checkedTrackColor = if (isDark) XtremeCyan else Color(0xFF0284C7),
-                            uncheckedThumbColor = Color.LightGray,
-                            uncheckedTrackColor = if (isDark) Color(0xFF1E293B) else Color(0xFFCBD5E1)
+                            checkedThumbColor = appColors.onPrimaryAccent,
+                            checkedTrackColor = appColors.primaryAccent,
+                            uncheckedThumbColor = appColors.textMuted,
+                            uncheckedTrackColor = appColors.cardBorder
                         )
                     )
                 }
@@ -219,10 +222,15 @@ fun QueueBottomSheet(
                             .clip(RoundedCornerShape(12.dp))
                             .background(
                                 if (isCurrentlyPlaying) {
-                                    if (isDark) Color(0xFF163456) else Color(0xFFE0F2FE)
+                                    appColors.primaryAccent.copy(alpha = if (isDark) 0.18f else 0.12f)
                                 } else {
-                                    if (isDark) Color(0xFF0F2238) else Color(0xFFF8FAFC)
+                                    appColors.cardBackgroundElevated
                                 }
+                            )
+                            .border(
+                                1.dp,
+                                if (isCurrentlyPlaying) appColors.primaryAccent.copy(alpha = 0.55f) else appColors.cardBorder,
+                                RoundedCornerShape(12.dp)
                             )
                             .clickable { onTrackClick(track) }
                             .padding(horizontal = 10.dp, vertical = 8.dp),
@@ -244,9 +252,9 @@ fun QueueBottomSheet(
                             Text(
                                 text = track.title,
                                 color = if (isCurrentlyPlaying) {
-                                    if (isDark) XtremeLightBlue else Color(0xFF0284C7)
+                                    appColors.primaryAccent
                                 } else {
-                                    if (isDark) TextPrimary else Color(0xFF0F172A)
+                                    appColors.textPrimary
                                 },
                                 fontWeight = if (isCurrentlyPlaying) FontWeight.Bold else FontWeight.Medium,
                                 fontSize = 14.sp,
@@ -258,14 +266,14 @@ fun QueueBottomSheet(
                                     Icon(
                                         imageVector = Icons.Default.Equalizer,
                                         contentDescription = null,
-                                        tint = if (isDark) XtremeLightBlue else Color(0xFF0284C7),
+                                        tint = appColors.primaryAccent,
                                         modifier = Modifier.size(14.dp)
                                     )
                                     Spacer(modifier = Modifier.width(4.dp))
                                 }
                                 Text(
                                     text = track.artist,
-                                    color = if (isDark) TextSecondary else Color(0xFF64748B),
+                                    color = appColors.textSecondary,
                                     fontSize = 12.sp,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
@@ -283,7 +291,7 @@ fun QueueBottomSheet(
                                     Icon(
                                         imageVector = Icons.Default.ArrowUpward,
                                         contentDescription = "Move Up",
-                                        tint = if (isDark) TextMuted else Color(0xFF94A3B8),
+                                        tint = appColors.textMuted,
                                         modifier = Modifier.size(16.dp)
                                     )
                                 }
@@ -296,7 +304,7 @@ fun QueueBottomSheet(
                                     Icon(
                                         imageVector = Icons.Default.ArrowDownward,
                                         contentDescription = "Move Down",
-                                        tint = if (isDark) TextMuted else Color(0xFF94A3B8),
+                                        tint = appColors.textMuted,
                                         modifier = Modifier.size(16.dp)
                                     )
                                 }

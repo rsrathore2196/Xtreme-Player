@@ -48,13 +48,10 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import com.example.playback.AudioEffectsState
 import com.example.playback.BandState
+import com.example.ui.theme.LocalAppColors
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
-import com.example.ui.theme.XtremeCard
-import com.example.ui.theme.XtremeCyan
-import com.example.ui.theme.XtremeGreen
-import com.example.ui.theme.XtremeLightBlue
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -69,12 +66,15 @@ fun EqualizerDialog(
     onDismiss: () -> Unit
 ) {
     val scrollState = rememberScrollState()
+    val appColors = LocalAppColors.current
+    val isDark = appColors.isDark
 
     Dialog(onDismissRequest = onDismiss) {
+        androidx.compose.runtime.CompositionLocalProvider(LocalAppColors provides appColors) {
         Card(
             shape = RoundedCornerShape(24.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF0F1E33)),
-            border = BorderStroke(1.dp, Color(0xFF1B3A62)),
+            colors = CardDefaults.cardColors(containerColor = appColors.cardBackground),
+            border = BorderStroke(1.dp, appColors.cardBorder),
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(vertical = 12.dp)
@@ -98,15 +98,15 @@ fun EqualizerDialog(
                                 .size(40.dp)
                                 .clip(CircleShape)
                                 .background(
-                                    if (effectsState.isEnabled) XtremeLightBlue.copy(alpha = 0.2f)
-                                    else Color(0xFF1A2B42)
+                                    if (effectsState.isEnabled) appColors.primaryAccent.copy(alpha = 0.2f)
+                                    else appColors.cardBackgroundElevated
                                 ),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
                                 imageVector = Icons.Default.GraphicEq,
                                 contentDescription = null,
-                                tint = if (effectsState.isEnabled) XtremeLightBlue else TextMuted,
+                                tint = if (effectsState.isEnabled) appColors.primaryAccent else appColors.textMuted,
                                 modifier = Modifier.size(22.dp)
                             )
                         }
@@ -116,13 +116,13 @@ fun EqualizerDialog(
                                 text = "Audio Equalizer & FX",
                                 style = MaterialTheme.typography.titleMedium.copy(
                                     fontWeight = FontWeight.Bold,
-                                    color = TextPrimary
+                                    color = appColors.textPrimary
                                 )
                             )
                             Text(
                                 text = if (effectsState.isEnabled) "Real-time DSP Active (320k)" else "Effects Bypassed",
                                 style = MaterialTheme.typography.bodySmall.copy(
-                                    color = if (effectsState.isEnabled) XtremeLightBlue else TextMuted,
+                                    color = if (effectsState.isEnabled) appColors.primaryAccent else appColors.textMuted,
                                     fontSize = 11.sp
                                 )
                             )
@@ -133,10 +133,10 @@ fun EqualizerDialog(
                         checked = effectsState.isEnabled,
                         onCheckedChange = onEnableChanged,
                         colors = SwitchDefaults.colors(
-                            checkedThumbColor = Color(0xFF031428),
-                            checkedTrackColor = XtremeLightBlue,
-                            uncheckedThumbColor = TextMuted,
-                            uncheckedTrackColor = Color(0xFF1D3554)
+                            checkedThumbColor = appColors.onPrimaryAccent,
+                            checkedTrackColor = appColors.primaryAccent,
+                            uncheckedThumbColor = appColors.textMuted,
+                            uncheckedTrackColor = if (isDark) appColors.cardBackgroundElevated else Color(0xFFCBD5E1)
                         ),
                         modifier = Modifier.testTag("equalizer_master_switch")
                     )
@@ -153,7 +153,7 @@ fun EqualizerDialog(
                     Text(
                         text = "PRESETS",
                         style = MaterialTheme.typography.labelSmall.copy(
-                            color = TextMuted,
+                            color = appColors.textMuted,
                             letterSpacing = 1.2.sp,
                             fontWeight = FontWeight.Bold
                         )
@@ -167,7 +167,7 @@ fun EqualizerDialog(
                         Icon(
                             imageVector = Icons.Default.RestartAlt,
                             contentDescription = "Reset to Flat",
-                            tint = if (effectsState.isEnabled) TextSecondary else Color(0xFF333845),
+                            tint = if (effectsState.isEnabled) appColors.textSecondary else appColors.textMuted.copy(alpha = 0.4f),
                             modifier = Modifier.size(18.dp)
                         )
                     }
@@ -190,19 +190,19 @@ fun EqualizerDialog(
                                     }
                                     onPresetSelected(preset)
                                 },
-                            color = if (isSelected && effectsState.isEnabled) XtremeLightBlue
-                                    else if (isSelected) Color(0xFF1B3252)
-                                    else Color(0xFF14243C),
+                            color = if (isSelected && effectsState.isEnabled) appColors.primaryAccent
+                                    else if (isSelected) appColors.primaryAccent.copy(alpha = 0.2f)
+                                    else appColors.cardBackgroundElevated,
                             border = BorderStroke(
                                 1.dp,
-                                if (isSelected && effectsState.isEnabled) XtremeLightBlue
-                                else Color(0xFF1F3D64)
+                                if (isSelected && effectsState.isEnabled) appColors.primaryAccent
+                                else appColors.cardBorder
                             ),
                             shape = RoundedCornerShape(16.dp)
                         ) {
                             Text(
                                 text = preset,
-                                color = if (isSelected && effectsState.isEnabled) Color(0xFF031428) else TextSecondary,
+                                color = if (isSelected && effectsState.isEnabled) appColors.onPrimaryAccent else appColors.textSecondary,
                                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
                                 fontSize = 12.sp,
                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
@@ -221,8 +221,8 @@ fun EqualizerDialog(
                     // Bass Boost Card
                     Card(
                         shape = RoundedCornerShape(14.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFF13253F)),
-                        border = BorderStroke(1.dp, Color(0xFF1D3B62)),
+                        colors = CardDefaults.cardColors(containerColor = appColors.cardBackgroundElevated),
+                        border = BorderStroke(1.dp, appColors.cardBorder),
                         modifier = Modifier.weight(1f)
                     ) {
                         Column(modifier = Modifier.padding(12.dp)) {
@@ -233,13 +233,13 @@ fun EqualizerDialog(
                             ) {
                                 Text(
                                     text = "Bass Boost",
-                                    color = TextPrimary,
+                                    color = appColors.textPrimary,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.SemiBold
                                 )
                                 Text(
                                     text = "${(effectsState.bassBoostStrength / 10)}%",
-                                    color = XtremeLightBlue,
+                                    color = appColors.primaryAccent,
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold
                                 )
@@ -249,9 +249,9 @@ fun EqualizerDialog(
                                 onValueChange = { onBassBoostChanged((it * 1000).toInt()) },
                                 enabled = effectsState.isEnabled,
                                 colors = SliderDefaults.colors(
-                                    thumbColor = XtremeLightBlue,
-                                    activeTrackColor = XtremeLightBlue,
-                                    inactiveTrackColor = Color(0xFF1C3454)
+                                    thumbColor = appColors.primaryAccent,
+                                    activeTrackColor = appColors.primaryAccent,
+                                    inactiveTrackColor = if (isDark) appColors.cardBorder else Color(0xFFCBD5E1)
                                 ),
                                 modifier = Modifier.fillMaxWidth()
                             )
@@ -261,8 +261,8 @@ fun EqualizerDialog(
                     // Virtualizer Card
                     Card(
                         shape = RoundedCornerShape(14.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFF13253F)),
-                        border = BorderStroke(1.dp, Color(0xFF1D3B62)),
+                        colors = CardDefaults.cardColors(containerColor = appColors.cardBackgroundElevated),
+                        border = BorderStroke(1.dp, appColors.cardBorder),
                         modifier = Modifier.weight(1f)
                     ) {
                         Column(modifier = Modifier.padding(12.dp)) {
@@ -273,13 +273,13 @@ fun EqualizerDialog(
                             ) {
                                 Text(
                                     text = "3D Virtualizer",
-                                    color = TextPrimary,
+                                    color = appColors.textPrimary,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.SemiBold
                                 )
                                 Text(
                                     text = "${(effectsState.virtualizerStrength / 10)}%",
-                                    color = XtremeCyan,
+                                    color = appColors.secondaryAccent,
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold
                                 )
@@ -289,9 +289,9 @@ fun EqualizerDialog(
                                 onValueChange = { onVirtualizerChanged((it * 1000).toInt()) },
                                 enabled = effectsState.isEnabled,
                                 colors = SliderDefaults.colors(
-                                    thumbColor = XtremeCyan,
-                                    activeTrackColor = XtremeCyan,
-                                    inactiveTrackColor = Color(0xFF1C3454)
+                                    thumbColor = appColors.secondaryAccent,
+                                    activeTrackColor = appColors.secondaryAccent,
+                                    inactiveTrackColor = if (isDark) appColors.cardBorder else Color(0xFFCBD5E1)
                                 ),
                                 modifier = Modifier.fillMaxWidth()
                             )
@@ -305,7 +305,7 @@ fun EqualizerDialog(
                 Text(
                     text = "FREQUENCY BANDS (REAL-TIME)",
                     style = MaterialTheme.typography.labelSmall.copy(
-                        color = TextMuted,
+                        color = appColors.textMuted,
                         letterSpacing = 1.2.sp,
                         fontWeight = FontWeight.Bold
                     )
@@ -337,12 +337,13 @@ fun EqualizerDialog(
                     TextButton(onClick = onDismiss) {
                         Text(
                             text = "APPLY & CLOSE",
-                            color = XtremeLightBlue,
+                            color = appColors.primaryAccent,
                             fontWeight = FontWeight.Bold
                         )
                     }
                 }
             }
+        }
         }
     }
 }
@@ -353,6 +354,8 @@ private fun BandSliderRow(
     isEnabled: Boolean,
     onLevelChange: (Short) -> Unit
 ) {
+    val appColors = LocalAppColors.current
+    val isDark = appColors.isDark
     val rangeSpan = (band.maxLevelMb - band.minLevelMb).toFloat().coerceAtLeast(1f)
     val sliderValue = ((band.levelMb - band.minLevelMb) / rangeSpan).coerceIn(0f, 1f)
 
@@ -360,7 +363,7 @@ private fun BandSliderRow(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
-            .background(Color(0xFF112239))
+            .background(appColors.inputBackground)
             .padding(horizontal = 12.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -369,7 +372,7 @@ private fun BandSliderRow(
             text = band.displayFrequency,
             fontSize = 12.sp,
             fontWeight = FontWeight.Bold,
-            color = if (isEnabled) TextPrimary else TextMuted,
+            color = if (isEnabled) appColors.textPrimary else appColors.textMuted,
             modifier = Modifier.width(48.dp)
         )
 
@@ -382,9 +385,9 @@ private fun BandSliderRow(
             },
             enabled = isEnabled,
             colors = SliderDefaults.colors(
-                thumbColor = XtremeLightBlue,
-                activeTrackColor = XtremeLightBlue,
-                inactiveTrackColor = Color(0xFF1C3454)
+                thumbColor = appColors.primaryAccent,
+                activeTrackColor = appColors.primaryAccent,
+                inactiveTrackColor = if (isDark) appColors.cardBorder else Color(0xFFCBD5E1)
             ),
             modifier = Modifier.weight(1f)
         )
@@ -394,7 +397,7 @@ private fun BandSliderRow(
             text = band.displayLevelDb,
             fontSize = 11.sp,
             fontWeight = FontWeight.SemiBold,
-            color = if (isEnabled) XtremeLightBlue else TextMuted,
+            color = if (isEnabled) appColors.primaryAccent else appColors.textMuted,
             textAlign = TextAlign.End,
             modifier = Modifier.width(54.dp)
         )
