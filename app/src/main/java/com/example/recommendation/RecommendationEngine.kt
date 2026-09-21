@@ -228,14 +228,20 @@ class RecommendationEngine {
                 sessionBoost += 5.0
             }
 
-            // 7. Exclusion / Repetition Penalty
+            // 7. Exclusion / Repetition Penalty (Strictly penalize same song name, album duplicates & remixes)
             var exclusionPenalty = 0.0
-            if (candidate.id == currentTrack.id) {
-                exclusionPenalty -= 200.0
+            val isSameSongName = isSameSongOrVariant(candidate.title, currentTrack.title)
+            val isPlayedInSession = sessionList.any { isSameSongOrVariant(candidate.title, it.title) }
+
+            if (candidate.id == currentTrack.id || isSameSongName) {
+                // Immediate disqualification: user specifically requested never repeat same song name or from different album
+                exclusionPenalty -= 600.0
             } else if (excludedIds.contains(candidate.id)) {
-                exclusionPenalty -= 100.0
+                exclusionPenalty -= 150.0
+            } else if (isPlayedInSession) {
+                exclusionPenalty -= 200.0
             } else if (sessionList.takeLast(4).any { it.id == candidate.id }) {
-                exclusionPenalty -= 50.0
+                exclusionPenalty -= 100.0
             }
 
             val totalScore = singerScore + languageScore + eraScore + moodScore + bpmScore + acousticScore + sessionBoost + exclusionPenalty
@@ -394,6 +400,112 @@ class RecommendationEngine {
             }
         }
         return result
+    }
+
+    /**
+     * High-precision Infinite Autoplay Recommendation List builder:
+     * Generates the upcoming infinite play list scored by artist continuity, language,
+     * era, mood/vibe, tempo, and acoustic affinity.
+     * Strictly eliminates duplicate song titles, alternate versions, and songs already in session.
+     */
+    @Synchronized
+    fun buildInfiniteAutoplayRecommendations(
+        currentTrack: MusicTrack,
+        candidatePool: List<MusicTrack>,
+        limit: Int = 15,
+        alreadyQueuedIds: Set<String> = emptySet()
+    ): List<MusicTrack> {
+        val excluded = alreadyQueuedIds.toMutableSet()
+        excluded.add(currentTrack.id)
+
+        val scored = evaluateAndScoreCandidates(
+            currentTrack = currentTrack,
+            candidatePool = candidatePool,
+            excludedIds = excluded
+        )
+
+        val result = mutableListOf<MusicTrack>()
+        val seenNormalizedTitles = mutableSetOf<String>()
+        val currentNorm = normalizeTitle(currentTrack.title)
+        if (currentNorm.isNotBlank()) seenNormalizedTitles.add(currentNorm)
+
+        for (item in scored) {
+            if (item.totalScore <= -50.0) continue
+            val track = item.track
+            if (excluded.contains(track.id)) continue
+
+            val norm = normalizeTitle(track.title)
+            val isDuplicateTitle = norm.isNotBlank() && seenNormalizedTitles.contains(norm)
+            val isVariant = isSameSongOrVariant(currentTrack.title, track.title) ||
+                    result.any { isSameSongOrVariant(it.title, track.title) }
+
+            if (!isDuplicateTitle && !isVariant) {
+                if (norm.isNotBlank()) seenNormalizedTitles.add(norm)
+                result.add(track)
+                excluded.add(track.id)
+                if (result.size >= limit) break
+            }
+        }
+
+        // Fallback: fill remaining slots with unplayed matching candidates from candidatePool
+        if (result.size < limit) {
+            val fallbackCandidates = candidatePool.filter { cand ->
+                !excluded.contains(cand.id) &&
+                        !isSameSongOrVariant(currentTrack.title, cand.title) &&
+                        result.none { isSameSongOrVariant(it.title, cand.title) }
+            }.sortedByDescending { cand ->
+                var s = 0
+                if (cand.language.equals(currentTrack.language, ignoreCase = true)) s += 25
+                if (cand.artist.equals(currentTrack.artist, ignoreCase = true)) s += 35
+                if (cand.genre.equals(currentTrack.genre, ignoreCase = true)) s += 15
+                s
+            }
+
+            for (cand in fallbackCandidates) {
+                val norm = normalizeTitle(cand.title)
+                if (norm.isNotBlank() && !seenNormalizedTitles.contains(norm)) {
+                    seenNormalizedTitles.add(norm)
+                    result.add(cand)
+                    excluded.add(cand.id)
+                    if (result.size >= limit) break
+                }
+            }
+        }
+
+        return result
+    }
+
+    companion object {
+        fun normalizeTitle(rawTitle: String): String {
+            return rawTitle.lowercase()
+                .replace(Regex("\\(.*?\\)|\\[.*?\\]"), "") // remove (Official Audio), (Remix), [From "XYZ"], etc.
+                .replace(Regex("(?i)\\b(remix|lofi|slowed|reverb|version|acoustic|live|cover|edit|instrumental|album|single|hd|4k|hq|original|soundtrack|ost|audio|video|official)\\b"), "")
+                .replace(Regex("[-–—:|/]"), " ")
+                .replace(Regex("[^a-z0-9\\s]"), "")
+                .trim()
+                .replace(Regex("\\s+"), " ")
+        }
+
+        fun isSameSongOrVariant(track1Title: String, track2Title: String): Boolean {
+            val norm1 = normalizeTitle(track1Title)
+            val norm2 = normalizeTitle(track2Title)
+            if (norm1.isBlank() || norm2.isBlank()) return false
+            if (norm1 == norm2) return true
+
+            // Check significant word match
+            val words1 = norm1.split(" ").filter { it.length > 2 }
+            val words2 = norm2.split(" ").filter { it.length > 2 }
+            if (words1.isNotEmpty() && words2.isNotEmpty()) {
+                val sharedWords = words1.intersect(words2.toSet())
+                if (sharedWords.size == words1.size || sharedWords.size == words2.size) {
+                    return true
+                }
+            }
+            if ((norm1.contains(norm2) && norm2.length >= 4) || (norm2.contains(norm1) && norm1.length >= 4)) {
+                return true
+            }
+            return false
+        }
     }
 
     private fun isCompatibleGenre(genre1: String, genre2: String): Boolean {

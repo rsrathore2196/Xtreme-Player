@@ -48,14 +48,10 @@ object CustomRecommendationQueryWrapper {
                     "Exact Year: '$cleanYear' | Vibe: '${moodProfile.primaryMood}'"
         )
 
-        // Formulate strict targeted queries rather than using generic default endpoints
-        val query1 = if (cleanArtist.isNotBlank()) "$cleanArtist $cleanLanguage" else "$cleanLanguage Hits"
-        val query2 = if (cleanYear.isNotBlank()) {
-            "$cleanLanguage $cleanYear hits"
-        } else {
-            "$cleanLanguage ${moodProfile.primaryMood}"
-        }
-        val query3 = "$cleanLanguage ${currentTrack.genre.trim()} songs"
+        // Formulate strict targeted queries prioritizing mood, genre, and language
+        val query1 = "$cleanLanguage ${moodProfile.primaryMood} songs"
+        val query2 = "$cleanLanguage ${currentTrack.genre.trim()} hits"
+        val query3 = if (cleanArtist.isNotBlank()) "$cleanArtist hits" else "$cleanLanguage trending songs"
 
         val rawCandidates = coroutineScope {
             val call1 = async {
@@ -87,11 +83,15 @@ object CustomRecommendationQueryWrapper {
 
         Log.d(TAG, "CustomQueryWrapper: Received ${rawCandidates.size} raw candidates from backend queries.")
 
-        // Strict Language Verification:
+        // Strict Language and Variant Verification:
         // Ensure candidates strictly match the exact specified language of the current song
+        // and NEVER repeat the same song name or remix/album variant
         val verifiedCandidates = rawCandidates.filter { candidate ->
-            // Reject the current song itself
-            if (candidate.id == currentTrack.id || candidate.title.equals(currentTrack.title, ignoreCase = true)) {
+            // Reject the current song itself and any variation of the same song title from any album
+            if (candidate.id == currentTrack.id || 
+                candidate.title.equals(currentTrack.title, ignoreCase = true) ||
+                RecommendationEngine.isSameSongOrVariant(candidate.title, currentTrack.title)
+            ) {
                 return@filter false
             }
 

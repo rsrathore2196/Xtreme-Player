@@ -378,7 +378,7 @@ fun MainNavigationScaffold(
                             playlistWithTracks = playlist,
                             playerUiState = playerUiState,
                             onBackClick = { viewModel.closePlaylist() },
-                            onPlayTrack = { track, queue -> viewModel.playTrack(track, queue) },
+                            onPlayTrack = { track, queue -> viewModel.playPlaylistTrack(track, queue) },
                             onToggleFavorite = { track -> viewModel.toggleLike(track) },
                             onDeletePlaylist = { viewModel.deletePlaylist(playlist.playlist.playlistId) },
                             onRemoveTrack = { trackId ->
@@ -395,34 +395,13 @@ fun MainNavigationScaffold(
                     AnimatedContent(
                         targetState = selectedTabIndex,
                         transitionSpec = {
-                            val isForward = targetState > initialState
-
-                            // Ultra-fast, aesthetic, smooth Tab Transition (Material 3 Shared Axis Fade-Through)
-                            // 120Hz refresh responsiveness: rapid 140ms entry, crisp 90ms exit, micro-depth
+                            // High-performance 120Hz zero-jank crossfade transition
+                            // Eliminates layout re-measurement and frame drops across screens
                             val enterTransition = fadeIn(
-                                animationSpec = tween(140, easing = LinearOutSlowInEasing)
-                            ) + slideInHorizontally(
-                                animationSpec = spring(
-                                    dampingRatio = 0.88f,
-                                    stiffness = 850f
-                                ),
-                                initialOffsetX = { width -> if (isForward) (width * 0.06f).toInt() else -(width * 0.06f).toInt() }
-                            ) + scaleIn(
-                                initialScale = 0.985f,
-                                animationSpec = spring(
-                                    dampingRatio = 0.88f,
-                                    stiffness = 850f
-                                )
+                                animationSpec = tween(120, easing = LinearOutSlowInEasing)
                             )
-
                             val exitTransition = fadeOut(
-                                animationSpec = tween(90, easing = FastOutLinearInEasing)
-                            ) + slideOutHorizontally(
-                                animationSpec = spring(
-                                    dampingRatio = 0.88f,
-                                    stiffness = 850f
-                                ),
-                                targetOffsetX = { width -> if (isForward) -(width * 0.03f).toInt() else (width * 0.03f).toInt() }
+                                animationSpec = tween(80, easing = FastOutLinearInEasing)
                             )
 
                             enterTransition.togetherWith(exitTransition)

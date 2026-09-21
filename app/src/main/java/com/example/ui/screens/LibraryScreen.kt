@@ -458,7 +458,7 @@ fun LibraryScreen(
                         )
                     }
 
-                    items(playlists) { playlist ->
+                    items(playlists, key = { "pl_${it.playlistId}" }) { playlist ->
                         PlaylistRowItem(
                             playlist = playlist,
                             onClick = { onOpenPlaylist(playlist.playlistId) },
@@ -471,7 +471,7 @@ fun LibraryScreen(
             1 -> {
                 // LIKED SONGS TAB
                 if (favoriteTracks.isEmpty()) {
-                    item {
+                    item(key = "empty_liked_songs") {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -500,7 +500,7 @@ fun LibraryScreen(
                         }
                     }
                 } else {
-                    items(favoriteTracks) { track ->
+                    items(favoriteTracks, key = { "fav_${it.id}" }) { track ->
                         TrackListItem(
                             track = track,
                             isPlaying = track.id == currentPlayingId,

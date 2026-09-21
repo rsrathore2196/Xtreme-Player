@@ -213,8 +213,15 @@ fun QueueBottomSheet(
                     .height(360.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                itemsIndexed(queue) { index, track ->
+                val currentIdx = queue.indexOfFirst { it.id == currentTrack?.id }
+
+                itemsIndexed(
+                    items = queue,
+                    key = { index, track -> "${track.id}_$index" }
+                ) { index, track ->
                     val isCurrentlyPlaying = track.id == currentTrack?.id
+                    val isUpNext = !isCurrentlyPlaying && (index == currentIdx + 1 || (currentIdx == -1 && index == 0))
+                    val isUpcomingAutoplay = !isCurrentlyPlaying && !isUpNext && index > currentIdx
 
                     Row(
                         modifier = Modifier
@@ -223,13 +230,17 @@ fun QueueBottomSheet(
                             .background(
                                 if (isCurrentlyPlaying) {
                                     appColors.primaryAccent.copy(alpha = if (isDark) 0.18f else 0.12f)
+                                } else if (isUpNext) {
+                                    appColors.primaryAccent.copy(alpha = if (isDark) 0.08f else 0.05f)
                                 } else {
                                     appColors.cardBackgroundElevated
                                 }
                             )
                             .border(
                                 1.dp,
-                                if (isCurrentlyPlaying) appColors.primaryAccent.copy(alpha = 0.55f) else appColors.cardBorder,
+                                if (isCurrentlyPlaying) appColors.primaryAccent.copy(alpha = 0.55f)
+                                else if (isUpNext) appColors.primaryAccent.copy(alpha = 0.30f)
+                                else appColors.cardBorder,
                                 RoundedCornerShape(12.dp)
                             )
                             .clickable { onTrackClick(track) }
@@ -249,18 +260,77 @@ fun QueueBottomSheet(
                         Spacer(modifier = Modifier.width(12.dp))
 
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = track.title,
-                                color = if (isCurrentlyPlaying) {
-                                    appColors.primaryAccent
-                                } else {
-                                    appColors.textPrimary
-                                },
-                                fontWeight = if (isCurrentlyPlaying) FontWeight.Bold else FontWeight.Medium,
-                                fontSize = 14.sp,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = track.title,
+                                    color = if (isCurrentlyPlaying) {
+                                        appColors.primaryAccent
+                                    } else {
+                                        appColors.textPrimary
+                                    },
+                                    fontWeight = if (isCurrentlyPlaying) FontWeight.Bold else FontWeight.Medium,
+                                    fontSize = 14.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false)
+                                )
+
+                                if (isCurrentlyPlaying) {
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Surface(
+                                        color = appColors.primaryAccent.copy(alpha = 0.2f),
+                                        shape = RoundedCornerShape(4.dp)
+                                    ) {
+                                        Text(
+                                            text = "PLAYING",
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = appColors.primaryAccent,
+                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                        )
+                                    }
+                                } else if (isUpNext && isAutoplayEnabled) {
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Surface(
+                                        color = appColors.primaryAccent.copy(alpha = 0.15f),
+                                        shape = RoundedCornerShape(4.dp)
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.AutoAwesome,
+                                                contentDescription = null,
+                                                tint = appColors.primaryAccent,
+                                                modifier = Modifier.size(9.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(2.dp))
+                                            Text(
+                                                text = "RECOMMENDED NEXT",
+                                                fontSize = 8.5.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = appColors.primaryAccent
+                                            )
+                                        }
+                                    }
+                                } else if (isUpcomingAutoplay && isAutoplayEnabled) {
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Surface(
+                                        color = appColors.cardBorder.copy(alpha = 0.5f),
+                                        shape = RoundedCornerShape(4.dp)
+                                    ) {
+                                        Text(
+                                            text = "AUTOPLAY",
+                                            fontSize = 8.5.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = appColors.textMuted,
+                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                        )
+                                    }
+                                }
+                            }
+
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 if (isCurrentlyPlaying) {
                                     Icon(

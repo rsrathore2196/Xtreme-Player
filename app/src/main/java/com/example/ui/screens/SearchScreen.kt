@@ -556,14 +556,16 @@ fun SearchScreen(
                 }
             }
 
-            // EXACT MATCHES / SONGS MATCHING QUERY
+            // EXACT MATCHES / SONGS MATCHING QUERY (Strictly 4 to 5 options when searching)
             val rawList = if (results.exactMatches.isNotEmpty()) results.exactMatches else results.songs
             val directList = when (searchState.selectedSource) {
                 "HD Stream" -> (results.jioMatches.ifEmpty { rawList.filter { it.source != "Extended Stream" && !it.id.startsWith("yt_") } })
                 "Extended Stream" -> (results.ytMatches.ifEmpty { rawList.filter { it.source == "Extended Stream" || it.id.startsWith("yt_") } })
                 else -> rawList
             }
-            if (directList.isNotEmpty()) {
+            val displayDirectList = if (hasQuery) directList.take(5) else directList
+
+            if (displayDirectList.isNotEmpty()) {
                 item {
                     val sectionTitle = if (hasQuery) {
                         "Songs Matching \"${searchState.query.trim()}\""
@@ -580,7 +582,54 @@ fun SearchScreen(
                     )
                 }
 
-                items(directList) { song ->
+                items(displayDirectList, key = { "direct_${it.id}" }) { song ->
+                    TrackListItem(
+                        track = song,
+                        isPlaying = song.id == currentPlayingId,
+                        onClick = {
+                            keyboardController?.hide()
+                            focusManager.clearFocus()
+                            onTrackClick(song, results.songs)
+                        },
+                        onToggleFavorite = { onToggleFavorite(song) },
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
+                    )
+                }
+            }
+
+            // RECOMMENDED TRACKS VIA RECOMMENDATION ENGINE (Strictly 5 to 6 songs matching mood, language, genre, vibe and artist)
+            if (hasQuery && results.recommendedTracks.isNotEmpty()) {
+                item(key = "rec_section_header") {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Recommended For You",
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = TextPrimary
+                            ),
+                            modifier = Modifier.weight(1f)
+                        )
+                        Surface(
+                            color = appColors.primaryAccent.copy(alpha = 0.15f),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text(
+                                text = "Recommendation Engine",
+                                color = appColors.primaryAccent,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
+                }
+
+                items(results.recommendedTracks.take(6), key = { "rec_${it.id}" }) { song ->
                     TrackListItem(
                         track = song,
                         isPlaying = song.id == currentPlayingId,
@@ -597,7 +646,7 @@ fun SearchScreen(
 
             // SAME SINGER'S OTHER SONGS
             if (results.artistSongs.isNotEmpty()) {
-                item {
+                item(key = "artist_songs_header") {
                     val singerTitle = if (results.matchedArtistName.isNotBlank()) {
                         "More by ${results.matchedArtistName}"
                     } else {
@@ -632,7 +681,7 @@ fun SearchScreen(
                     }
                 }
 
-                items(results.artistSongs) { song ->
+                items(results.artistSongs, key = { "artist_${it.id}" }) { song ->
                     TrackListItem(
                         track = song,
                         isPlaying = song.id == currentPlayingId,
@@ -649,7 +698,7 @@ fun SearchScreen(
 
             // SAME TYPE / SAME GENRE SONGS
             if (results.similarTypeSongs.isNotEmpty() && !isGenreActive) {
-                item {
+                item(key = "similar_type_header") {
                     val genreTitle = if (results.matchedGenreOrType.isNotBlank()) {
                         "Similar Songs • ${results.matchedGenreOrType} Vibe"
                     } else {
@@ -684,7 +733,7 @@ fun SearchScreen(
                     }
                 }
 
-                items(results.similarTypeSongs) { song ->
+                items(results.similarTypeSongs, key = { "sim_${it.id}" }) { song ->
                     TrackListItem(
                         track = song,
                         isPlaying = song.id == currentPlayingId,

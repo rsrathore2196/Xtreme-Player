@@ -359,10 +359,17 @@ class PlayerViewModel(
         playbackManager.toggleAutoplay(_catalogTracks.value)
     }
 
-    fun playTrack(track: MusicTrack, queue: List<MusicTrack> = _catalogTracks.value) {
+    fun playTrack(track: MusicTrack, queue: List<MusicTrack> = _catalogTracks.value, isExplicitPlaylist: Boolean = false) {
         viewModelScope.launch {
             repository.markTrackPlayed(track)
-            playbackManager.playTrack(track, queue)
+            playbackManager.playTrack(track, queue, isExplicitPlaylist)
+        }
+    }
+
+    fun playPlaylistTrack(track: MusicTrack, tracks: List<MusicTrack>) {
+        viewModelScope.launch {
+            repository.markTrackPlayed(track)
+            playbackManager.playTrack(track, tracks, isExplicitPlaylist = true)
         }
     }
 

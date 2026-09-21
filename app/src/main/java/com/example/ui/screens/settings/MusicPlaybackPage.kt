@@ -177,7 +177,12 @@ fun MusicPlaybackPage(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 12.dp)
+                    ) {
                         Box(
                             modifier = Modifier
                                 .size(30.dp)
@@ -193,7 +198,7 @@ fun MusicPlaybackPage(
                             )
                         }
                         Spacer(modifier = Modifier.width(10.dp))
-                        Column {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = "Hardware Equalizer & DSP",
                                 fontSize = 15.sp,
@@ -315,7 +320,9 @@ fun MusicPlaybackPage(
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 12.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Waves,
@@ -324,7 +331,7 @@ fun MusicPlaybackPage(
                             modifier = Modifier.size(18.dp)
                         )
                         Spacer(modifier = Modifier.width(10.dp))
-                        Column {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = "Crystal Clear Audio Engine",
                                 fontSize = 13.5.sp,
@@ -399,7 +406,11 @@ fun MusicPlaybackPage(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 12.dp)
+                    ) {
                         Text(
                             text = "Gapless Playback Engine",
                             fontSize = 13.5.sp,
@@ -430,7 +441,11 @@ fun MusicPlaybackPage(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 12.dp)
+                    ) {
                         Text(
                             text = "16-bit PCM Hardware Output",
                             fontSize = 13.5.sp,
@@ -464,7 +479,11 @@ fun MusicPlaybackPage(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 12.dp)
+                    ) {
                         Text(
                             text = "Local Stutter-Free LRU Cache",
                             fontSize = 13.5.sp,

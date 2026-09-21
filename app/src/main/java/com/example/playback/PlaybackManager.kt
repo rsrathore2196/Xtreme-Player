@@ -49,6 +49,7 @@ data class PlayerUiState(
     val equalizerPreset: String = "Crystal Clarity",
     val isAutoplayEnabled: Boolean = true,
     val nextRecommendedTrack: MusicTrack? = null,
+    val infiniteAutoplayTracks: List<MusicTrack> = emptyList(),
     val sessionMemoryCount: Int = 0
 )
 
@@ -71,10 +72,15 @@ class PlaybackManager(
     private val candidateCatalogPool = mutableListOf<MusicTrack>()
     private var recommendationFetchJob: Job? = null
 
+    // Playback history stack for accurate previous song navigation
+    private val playbackHistory = mutableListOf<MusicTrack>()
+    private var lastPreviousPressTimeMs: Long = 0L
+
     private val _uiState = MutableStateFlow(PlayerUiState())
     val uiState: StateFlow<PlayerUiState> = _uiState.asStateFlow()
 
     private var activeQueue = mutableListOf<MusicTrack>()
+    private var isCurrentSessionExplicitPlaylist: Boolean = false
 
     init {
         initMediaController()
@@ -129,6 +135,23 @@ class PlaybackManager(
                     )
                 }
                 Log.d(TAG, "Playback state changed: $playbackState, duration: $duration")
+
+                // Handle natural song completion
+                if (playbackState == Player.STATE_ENDED) {
+                    Log.i(TAG, "Song completed playback. Autoplay enabled: ${_uiState.value.isAutoplayEnabled}")
+                    if (_uiState.value.repeatMode == RepeatMode.ONE) {
+                        player.seekTo(0)
+                        player.play()
+                    } else if (player.hasNextMediaItem()) {
+                        player.seekToNextMediaItem()
+                        player.play()
+                    } else if (_uiState.value.isAutoplayEnabled) {
+                        skipNext()
+                    } else if (_uiState.value.repeatMode == RepeatMode.ALL && activeQueue.isNotEmpty()) {
+                        player.seekTo(0, 0L)
+                        player.play()
+                    }
+                }
             }
 
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
@@ -146,16 +169,18 @@ class PlaybackManager(
                         )
                     val index = activeQueue.indexOfFirst { it.id == trackId }.coerceAtLeast(0)
 
+                    // Track previous song into playback history before updating current
+                    val oldTrack = _uiState.value.currentTrack
+                    if (oldTrack != null && oldTrack.id != matchedTrack.id) {
+                        playbackHistory.add(oldTrack)
+                        if (playbackHistory.size > 50) playbackHistory.removeAt(0)
+                    }
+
                     // Record track into session memory & co-listening matrix
                     recommendationEngine.recordTrackPlayed(matchedTrack)
 
-                    // Calculate next recommended track based on acoustic vectors, co-listening & session trajectory
-                    val pool = (candidateCatalogPool + activeQueue + MusicDataSource.curatedTracks).distinctBy { it.id }
-                    val nextRec = recommendationEngine.recommendNextTrack(
-                        currentTrack = matchedTrack,
-                        candidatePool = pool,
-                        excludedIds = activeQueue.map { it.id }.toSet()
-                    )
+                    // The upcoming song in queue is the next recommended track
+                    val nextTrackInQueue = activeQueue.getOrNull(index + 1)
 
                     _uiState.update {
                         it.copy(
@@ -164,24 +189,15 @@ class PlaybackManager(
                             durationMs = if (player.duration > 0) player.duration else matchedTrack.durationMs,
                             qualityBadge = matchedTrack.qualityBadge,
                             isFavorite = matchedTrack.isLiked,
-                            nextRecommendedTrack = nextRec,
+                            nextRecommendedTrack = nextTrackInQueue,
                             sessionMemoryCount = recommendationEngine.getSessionTracks().size
                         )
                     }
 
-                    // Seamless Infinity Queue: If autoplay is enabled and nearing the end of the queue, append next track
-                    if (_uiState.value.isAutoplayEnabled && (index >= activeQueue.size - 2) && nextRec != null) {
-                        if (activeQueue.none { it.id == nextRec.id }) {
-                            Log.i("InfinityAutoplay", "ExoPlayer Queue: Appending top-scored track '${nextRec.title}' by '${nextRec.artist}' to active playback queue.")
-                            activeQueue.add(nextRec)
-                            player.addMediaItem(nextRec.toMediaItem())
-                            _uiState.update { it.copy(queue = activeQueue.toList()) }
-                            Log.i(TAG, "Autoplay appended next track to queue: ${nextRec.title}")
-                        }
+                    // Seamless Infinity Queue: Keep upcoming recommendations stocked
+                    if (_uiState.value.isAutoplayEnabled) {
+                        refreshAutoplayRecommendation(matchedTrack, isCurrentSessionExplicitPlaylist)
                     }
-
-                    // Deep recommendation analysis via Custom Query Wrapper & Weightage Scoring
-                    refreshAutoplayRecommendation(matchedTrack)
 
                     Log.i(TAG, "Media item transitioned to: ${matchedTrack.title}")
                 }
@@ -223,7 +239,7 @@ class PlaybackManager(
                             if (fallbackTrack.audioUrl.isNotBlank() && fallbackTrack.audioUrl != current.audioUrl) {
                                 Log.i(TAG, "Fallback stream resolved: ${fallbackTrack.audioUrl}. Retrying playback...")
                                 withContext(Dispatchers.Main) {
-                                    playTrackInternal(fallbackTrack, activeQueue)
+                                    playTrackInternal(fallbackTrack, activeQueue, isCurrentSessionExplicitPlaylist)
                                 }
                                 return@launch
                             }
@@ -293,7 +309,8 @@ class PlaybackManager(
         }
     }
 
-    fun playTrack(track: MusicTrack, queue: List<MusicTrack> = listOf(track)) {
+    fun playTrack(track: MusicTrack, queue: List<MusicTrack> = listOf(track), isExplicitPlaylist: Boolean = false) {
+        isCurrentSessionExplicitPlaylist = isExplicitPlaylist
         val repo = repository
         if (track.audioUrl.isBlank() && repo != null) {
             _uiState.update { it.copy(isLoading = true, errorMessage = null) }
@@ -302,21 +319,21 @@ class PlaybackManager(
                     val resolved = repo.resolvePlayableTrack(track)
                     val updatedQueue = queue.map { if (it.id == track.id) resolved else it }
                     withContext(Dispatchers.Main) {
-                        playTrackInternal(resolved, updatedQueue)
+                        playTrackInternal(resolved, updatedQueue, isExplicitPlaylist)
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed resolving track stream: ${e.message}", e)
                     withContext(Dispatchers.Main) {
-                        playTrackInternal(track, queue)
+                        playTrackInternal(track, queue, isExplicitPlaylist)
                     }
                 }
             }
             return
         }
-        playTrackInternal(track, queue)
+        playTrackInternal(track, queue, isExplicitPlaylist)
     }
 
-    private fun playTrackInternal(track: MusicTrack, queue: List<MusicTrack>) {
+    private fun playTrackInternal(track: MusicTrack, queue: List<MusicTrack>, isExplicitPlaylist: Boolean = false) {
         val player = controller
         if (player == null) {
             Log.e(TAG, "Cannot play track: player is null")
@@ -330,36 +347,84 @@ class PlaybackManager(
         }
 
         try {
-            activeQueue = queue.toMutableList()
-
-            val mediaItems = queue.map { it.toMediaItem() }
-            val startIndex = queue.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
-
-            player.setMediaItems(mediaItems, startIndex, 0L)
-            player.prepare()
-            player.play()
+            val oldTrack = _uiState.value.currentTrack
+            if (oldTrack != null && oldTrack.id != track.id) {
+                playbackHistory.add(oldTrack)
+                if (playbackHistory.size > 50) playbackHistory.removeAt(0)
+            }
 
             recommendationEngine.recordTrackPlayed(track)
-            val pool = (candidateCatalogPool + queue + MusicDataSource.curatedTracks).distinctBy { it.id }
-            val nextRec = recommendationEngine.recommendNextTrack(track, pool, queue.map { it.id }.toSet())
+            val autoplayEnabled = _uiState.value.isAutoplayEnabled
 
-            _uiState.update {
-                it.copy(
+            if (autoplayEnabled && !isExplicitPlaylist) {
+                // Autoplay Session:
+                // The queue songs for next play MUST BE the infinite autoplay recommendation songs!
+                val localPool = (candidateCatalogPool + queue + MusicDataSource.curatedTracks).distinctBy { it.id }
+                val initialRecommendations = recommendationEngine.buildInfiniteAutoplayRecommendations(
                     currentTrack = track,
-                    queue = activeQueue,
-                    currentIndex = startIndex,
-                    isPlaying = true,
-                    isLoading = true,
-                    durationMs = track.durationMs,
-                    currentPositionMs = 0L,
-                    qualityBadge = track.qualityBadge,
-                    isFavorite = track.isLiked,
-                    errorMessage = null,
-                    nextRecommendedTrack = nextRec,
-                    sessionMemoryCount = recommendationEngine.getSessionTracks().size
+                    candidatePool = localPool,
+                    limit = 15,
+                    alreadyQueuedIds = setOf(track.id)
                 )
+
+                val unifiedQueue = (listOf(track) + initialRecommendations).toMutableList()
+                activeQueue = unifiedQueue
+
+                val mediaItems = unifiedQueue.map { it.toMediaItem() }
+                player.setMediaItems(mediaItems, 0, 0L)
+                player.prepare()
+                player.play()
+
+                val nextRec = initialRecommendations.firstOrNull()
+
+                _uiState.update {
+                    it.copy(
+                        currentTrack = track,
+                        queue = activeQueue.toList(),
+                        currentIndex = 0,
+                        isPlaying = true,
+                        isLoading = true,
+                        durationMs = track.durationMs,
+                        currentPositionMs = 0L,
+                        qualityBadge = track.qualityBadge,
+                        isFavorite = track.isLiked,
+                        errorMessage = null,
+                        nextRecommendedTrack = nextRec,
+                        infiniteAutoplayTracks = initialRecommendations,
+                        sessionMemoryCount = recommendationEngine.getSessionTracks().size
+                    )
+                }
+            } else {
+                activeQueue = queue.toMutableList()
+                val startIndex = queue.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
+
+                val mediaItems = queue.map { it.toMediaItem() }
+                player.setMediaItems(mediaItems, startIndex, 0L)
+                player.prepare()
+                player.play()
+
+                val nextInQueue = activeQueue.getOrNull(startIndex + 1)
+
+                _uiState.update {
+                    it.copy(
+                        currentTrack = track,
+                        queue = activeQueue.toList(),
+                        currentIndex = startIndex,
+                        isPlaying = true,
+                        isLoading = true,
+                        durationMs = track.durationMs,
+                        currentPositionMs = 0L,
+                        qualityBadge = track.qualityBadge,
+                        isFavorite = track.isLiked,
+                        errorMessage = null,
+                        nextRecommendedTrack = nextInQueue,
+                        sessionMemoryCount = recommendationEngine.getSessionTracks().size
+                    )
+                }
             }
-            refreshAutoplayRecommendation(track)
+
+            // Always trigger background targeted analysis to refresh and refine infinite recommendations
+            refreshAutoplayRecommendation(track, isExplicitPlaylist)
             Log.i(TAG, "Playing track: ${track.title}")
         } catch (e: Exception) {
             Log.e(TAG, "Error playing track: ${e.message}", e)
@@ -377,9 +442,9 @@ class PlaybackManager(
      * 1. Uses CustomRecommendationQueryWrapper to fetch targeted tracks from backend
      *    with exact Artist, Language, and Release Year.
      * 2. Runs the Weightage Scoring System to locally rank candidates and verify mood matching.
-     * 3. Updates nextRecommendedTrack and appends seamlessly to ExoPlayer if near end of queue.
+     * 3. Unifies upcoming queue so the songs queued for next play and the infinite autoplay songs are identical.
      */
-    fun refreshAutoplayRecommendation(track: MusicTrack) {
+    fun refreshAutoplayRecommendation(track: MusicTrack, isExplicitPlaylist: Boolean = false) {
         recommendationFetchJob?.cancel()
         recommendationFetchJob = scope.launch(Dispatchers.IO) {
             try {
@@ -395,29 +460,78 @@ class PlaybackManager(
                 }
 
                 val currentPool = (targetedTracks + candidateCatalogPool + activeQueue + MusicDataSource.curatedTracks).distinctBy { it.id }
-                val scoredCandidates = recommendationEngine.evaluateAndScoreCandidates(
+
+                // Build complete infinite autoplay list matching mood, artist, language, and era
+                val recommendedTracks = recommendationEngine.buildInfiniteAutoplayRecommendations(
                     currentTrack = track,
                     candidatePool = currentPool,
-                    excludedIds = activeQueue.map { it.id }.toSet()
+                    limit = 15,
+                    alreadyQueuedIds = setOf(track.id)
                 )
 
-                val bestCandidate = scoredCandidates.firstOrNull { it.totalScore > -50.0 }
-                val bestTrack = bestCandidate?.track
+                // Resolve playable streams for top recommendations
+                val resolvedRecs = recommendedTracks.map { rec ->
+                    if (rec.audioUrl.isBlank() && repository != null) {
+                        repository?.resolvePlayableTrack(rec) ?: rec
+                    } else rec
+                }
+
+                val bestTrack = resolvedRecs.firstOrNull()
 
                 withContext(Dispatchers.Main) {
-                    _uiState.update { it.copy(nextRecommendedTrack = bestTrack) }
+                    val player = controller
+                    val autoplayEnabled = _uiState.value.isAutoplayEnabled
 
-                    // Before adding to ExoPlayer queue, log confirmation and append seamlessly
-                    val currentIndex = _uiState.value.currentIndex
-                    if (_uiState.value.isAutoplayEnabled && (currentIndex >= activeQueue.size - 2) && bestTrack != null) {
-                        if (activeQueue.none { it.id == bestTrack.id }) {
-                            Log.i(
-                                "InfinityAutoplay",
-                                "ExoPlayer Queue: Appending highest-scoring track '${bestTrack.title}' by '${bestTrack.artist}' (Score: ${bestCandidate.totalScore.toInt()} pts)"
+                    if (autoplayEnabled && player != null) {
+                        if (!isExplicitPlaylist) {
+                            // Perfect synchronization: Upcoming queue IS the infinite autoplay songs list!
+                            val playerCurrentIndex = player.currentMediaItemIndex.coerceAtLeast(0)
+
+                            // Keep current playing item and remove subsequent stale items
+                            while (player.mediaItemCount > playerCurrentIndex + 1) {
+                                player.removeMediaItem(playerCurrentIndex + 1)
+                            }
+
+                            // Add fresh infinite play recommendations to ExoPlayer
+                            for (rec in resolvedRecs) {
+                                player.addMediaItem(rec.toMediaItem())
+                            }
+
+                            activeQueue = (activeQueue.take(playerCurrentIndex + 1) + resolvedRecs).toMutableList()
+
+                            _uiState.update {
+                                it.copy(
+                                    queue = activeQueue.toList(),
+                                    nextRecommendedTrack = bestTrack,
+                                    infiniteAutoplayTracks = resolvedRecs
+                                )
+                            }
+                            Log.i("InfinityAutoplay", "Synchronized upcoming queue with infinite autoplay recommendations: ${resolvedRecs.size} tracks queued.")
+                        } else {
+                            // Explicit Playlist: Append infinite autoplay recommendations to the end of playlist
+                            val existingIds = activeQueue.map { it.id }.toSet()
+                            val toAppend = resolvedRecs.filter { !existingIds.contains(it.id) }
+                            for (rec in toAppend) {
+                                activeQueue.add(rec)
+                                player.addMediaItem(rec.toMediaItem())
+                            }
+                            val currentIndex = player.currentMediaItemIndex.coerceAtLeast(0)
+                            val nextTrackInQueue = activeQueue.getOrNull(currentIndex + 1)
+                            _uiState.update {
+                                it.copy(
+                                    queue = activeQueue.toList(),
+                                    nextRecommendedTrack = nextTrackInQueue ?: bestTrack,
+                                    infiniteAutoplayTracks = resolvedRecs
+                                )
+                            }
+                        }
+                    } else {
+                        val currentIndex = _uiState.value.currentIndex
+                        _uiState.update {
+                            it.copy(
+                                nextRecommendedTrack = activeQueue.getOrNull(currentIndex + 1) ?: bestTrack,
+                                infiniteAutoplayTracks = resolvedRecs
                             )
-                            activeQueue.add(bestTrack)
-                            controller?.addMediaItem(bestTrack.toMediaItem())
-                            _uiState.update { it.copy(queue = activeQueue.toList()) }
                         }
                     }
                 }
@@ -455,7 +569,7 @@ class PlaybackManager(
 
         if (newAutoplay && _uiState.value.currentTrack != null) {
             val current = _uiState.value.currentTrack!!
-            refreshAutoplayRecommendation(current)
+            refreshAutoplayRecommendation(current, isCurrentSessionExplicitPlaylist)
         }
         Log.i(TAG, "Infinity Autoplay toggled: $newAutoplay")
     }
@@ -506,32 +620,42 @@ class PlaybackManager(
         try {
             if (player.hasNextMediaItem()) {
                 player.seekToNextMediaItem()
+                player.play()
             } else if (_uiState.value.isAutoplayEnabled) {
                 // Trigger intelligent Autoplay / Infinity Queue
                 val current = _uiState.value.currentTrack
                 if (current != null) {
-                    val pool = (candidateCatalogPool + activeQueue + MusicDataSource.curatedTracks).distinctBy { it.id }
-                    val nextTrack = _uiState.value.nextRecommendedTrack
-                        ?: recommendationEngine.recommendNextTrack(current, pool, activeQueue.map { it.id }.toSet())
+                    scope.launch(Dispatchers.Main) {
+                        val pool = (candidateCatalogPool + activeQueue + MusicDataSource.curatedTracks).distinctBy { it.id }
+                        val nextTrack = _uiState.value.nextRecommendedTrack
+                            ?: recommendationEngine.recommendNextTrack(current, pool, activeQueue.map { it.id }.toSet())
 
-                    if (nextTrack != null) {
-                        Log.i("InfinityAutoplay", "ExoPlayer Queue: Appending top-scored track '${nextTrack.title}' by '${nextTrack.artist}'")
-                        activeQueue.add(nextTrack)
-                        val mediaItem = nextTrack.toMediaItem()
-                        player.addMediaItem(mediaItem)
-                        _uiState.update { it.copy(queue = activeQueue.toList()) }
-                        player.seekToNextMediaItem()
-                        refreshAutoplayRecommendation(nextTrack)
-                        Log.i(TAG, "Autoplay triggered next track seamlessly: ${nextTrack.title}")
-                    } else if (activeQueue.isNotEmpty()) {
-                        player.seekTo(0, 0L)
+                        if (nextTrack != null) {
+                            val resolvedTrack = withContext(Dispatchers.IO) {
+                                repository?.resolvePlayableTrack(nextTrack) ?: nextTrack
+                            }
+                            Log.i("InfinityAutoplay", "Autoplay playing resolved track '${resolvedTrack.title}' by '${resolvedTrack.artist}'")
+                            activeQueue.add(resolvedTrack)
+                            val mediaItem = resolvedTrack.toMediaItem()
+                            player.addMediaItem(mediaItem)
+                            _uiState.update { it.copy(queue = activeQueue.toList()) }
+                            player.seekTo(activeQueue.lastIndex, 0L)
+                            player.prepare()
+                            player.play()
+                            refreshAutoplayRecommendation(resolvedTrack)
+                        } else if (activeQueue.isNotEmpty()) {
+                            player.seekTo(0, 0L)
+                            player.play()
+                        }
                     }
                 } else if (activeQueue.isNotEmpty()) {
                     player.seekTo(0, 0L)
+                    player.play()
                 }
             } else if (activeQueue.isNotEmpty()) {
                 // Loop back to first if list has tracks
                 player.seekTo(0, 0L)
+                player.play()
             }
             Log.d(TAG, "Skipped to next track")
         } catch (e: Exception) {
@@ -547,14 +671,35 @@ class PlaybackManager(
         }
 
         try {
-            if (player.currentPosition > 3000) {
+            val now = System.currentTimeMillis()
+            val currentPos = player.currentPosition
+            val isQuickSecondPress = (now - lastPreviousPressTimeMs) < 3000L
+            val isNearStart = currentPos <= 2500L
+
+            if (!isQuickSecondPress && !isNearStart) {
+                // First press while playing: restart current track from beginning
                 player.seekTo(0)
-            } else if (player.hasPreviousMediaItem()) {
-                player.seekToPreviousMediaItem()
+                lastPreviousPressTimeMs = now
+                Log.d(TAG, "First press: restarted current song from start")
             } else {
-                player.seekTo(0)
+                // Second press (or pressed from start): play the previous song!
+                lastPreviousPressTimeMs = 0L
+                if (player.hasPreviousMediaItem()) {
+                    player.seekToPreviousMediaItem()
+                    player.play()
+                    Log.d(TAG, "Second press: skipped to previous media item in queue")
+                } else if (playbackHistory.isNotEmpty()) {
+                    val prevTrack = playbackHistory.removeAt(playbackHistory.lastIndex)
+                    Log.d(TAG, "Second press: playing previous song from history: ${prevTrack.title}")
+                    playTrack(prevTrack, activeQueue.ifEmpty { listOf(prevTrack) })
+                } else if (activeQueue.size > 1 && player.currentMediaItemIndex > 0) {
+                    player.seekTo(player.currentMediaItemIndex - 1, 0L)
+                    player.play()
+                } else {
+                    player.seekTo(0)
+                }
             }
-            Log.d(TAG, "Skipped to previous track")
+            Log.d(TAG, "Handled skip previous action")
         } catch (e: Exception) {
             Log.e(TAG, "Error skipping previous: ${e.message}", e)
         }
@@ -632,7 +777,14 @@ class PlaybackManager(
                 val item = activeQueue.removeAt(fromIndex)
                 activeQueue.add(toIndex, item)
                 controller?.moveMediaItem(fromIndex, toIndex)
-                _uiState.update { it.copy(queue = activeQueue.toList()) }
+                val currentIndex = _uiState.value.currentIndex
+                val nextRec = activeQueue.getOrNull(currentIndex + 1)
+                _uiState.update {
+                    it.copy(
+                        queue = activeQueue.toList(),
+                        nextRecommendedTrack = nextRec ?: it.nextRecommendedTrack
+                    )
+                }
                 Log.d(TAG, "Reordered queue: moved item from $fromIndex to $toIndex")
             }
         } catch (e: Exception) {

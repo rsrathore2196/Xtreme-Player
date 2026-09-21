@@ -220,7 +220,9 @@ fun ThemesAppUiPage(
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 12.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Favorite,
@@ -229,7 +231,7 @@ fun ThemesAppUiPage(
                             modifier = Modifier.size(18.dp)
                         )
                         Spacer(modifier = Modifier.width(10.dp))
-                        Column {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = "Favorite Heart in Mini Player",
                                 fontSize = 13.5.sp,
@@ -263,7 +265,9 @@ fun ThemesAppUiPage(
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 12.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.SkipNext,
@@ -272,7 +276,7 @@ fun ThemesAppUiPage(
                             modifier = Modifier.size(18.dp)
                         )
                         Spacer(modifier = Modifier.width(10.dp))
-                        Column {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = "Next Track Control",
                                 fontSize = 13.5.sp,
@@ -347,7 +351,11 @@ fun ThemesAppUiPage(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 12.dp)
+                    ) {
                         Text(
                             text = "Dynamic Ambient Album Glow",
                             fontSize = 13.5.sp,
@@ -378,7 +386,11 @@ fun ThemesAppUiPage(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 12.dp)
+                    ) {
                         Text(
                             text = "High Contrast Typography",
                             fontSize = 13.5.sp,

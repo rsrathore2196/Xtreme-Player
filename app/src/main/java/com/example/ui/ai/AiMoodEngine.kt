@@ -105,7 +105,8 @@ object AiMoodEngine {
                     compareByDescending<MusicTrack> { track ->
                         userCountryLangs.any { track.language.equals(it, ignoreCase = true) }
                     }.thenByDescending { it.bitrateKbps }
-                ).take(12)
+                )
+                .distinctAlbumAndCover(12)
 
             if (countryPriorityTracks.isNotEmpty()) {
                 shelves.add(
@@ -124,7 +125,7 @@ object AiMoodEngine {
             val userLangs = userProfile.languages.map { it.lowercase() }
             val userTracks = catalogTracks.filter { track ->
                 userLangs.any { track.language.equals(it, ignoreCase = true) }
-            }.ifEmpty { catalogTracks.shuffled() }.take(12)
+            }.ifEmpty { catalogTracks.shuffled() }.distinctAlbumAndCover(12)
 
             val displayName = if (userProfile.name.isNotBlank()) userProfile.name.trim() else "You"
             shelves.add(
@@ -138,7 +139,7 @@ object AiMoodEngine {
 
             // 3. Language Spotlight Shelves for user's chosen languages
             for (lang in userProfile.languages.take(3)) {
-                val langTracks = catalogTracks.filter { it.language.equals(lang, ignoreCase = true) }.take(10)
+                val langTracks = catalogTracks.filter { it.language.equals(lang, ignoreCase = true) }.distinctAlbumAndCover(10)
                 if (langTracks.isNotEmpty()) {
                     shelves.add(
                         HomeShelf(
@@ -162,7 +163,7 @@ object AiMoodEngine {
                 )
             }.ifEmpty {
                 catalogTracks.filter { it.id != lastPlayedTrack.id }
-            }.take(10)
+            }.distinctAlbumAndCover(10)
 
             if (matchingVibe.isNotEmpty()) {
                 shelves.add(
@@ -183,7 +184,7 @@ object AiMoodEngine {
                 track.singers.contains(topSinger, ignoreCase = true) ||
                 track.album.contains(topSinger, ignoreCase = true) ||
                 track.language.equals(topLanguage, ignoreCase = true) && track.genre.equals(topGenre, ignoreCase = true)
-            }.take(10)
+            }.distinctAlbumAndCover(10)
 
             if (singerTracks.isNotEmpty()) {
                 shelves.add(
@@ -198,7 +199,7 @@ object AiMoodEngine {
         }
 
         // 6. "Jump Back In" (User's Recently Played & Favorites)
-        val jumpBackTracks = (recentlyPlayed + favoriteTracks).distinctBy { it.id }.take(10)
+        val jumpBackTracks = (recentlyPlayed + favoriteTracks).distinctAlbumAndCover(10)
         if (jumpBackTracks.isNotEmpty()) {
             shelves.add(
                 HomeShelf(
@@ -218,7 +219,7 @@ object AiMoodEngine {
                 in 17..21 -> track.genre.contains("Jazz", ignoreCase = true) || track.genre.contains("Soul", ignoreCase = true) || track.genre.contains("Pop", ignoreCase = true)
                 else -> track.genre.contains("Ambient", ignoreCase = true) || track.genre.contains("Synthwave", ignoreCase = true) || track.genre.contains("Lo-Fi", ignoreCase = true) || track.genre.contains("Chillhop", ignoreCase = true)
             }
-        }.ifEmpty { catalogTracks.shuffled() }.take(10)
+        }.ifEmpty { catalogTracks.shuffled() }.distinctAlbumAndCover(10)
 
         shelves.add(
             HomeShelf(
@@ -230,7 +231,7 @@ object AiMoodEngine {
         )
 
         // 8. High Fidelity Master Streams
-        val highDefTracks = catalogTracks.filter { it.bitrateKbps >= 320 }.take(10)
+        val highDefTracks = catalogTracks.filter { it.bitrateKbps >= 320 }.distinctAlbumAndCover(10)
         if (highDefTracks.isNotEmpty()) {
             shelves.add(
                 HomeShelf(
@@ -243,5 +244,34 @@ object AiMoodEngine {
         }
 
         return shelves
+    }
+
+    /**
+     * Filters tracks to guarantee distinct album art, distinct albums, and distinct songs
+     */
+    private fun List<MusicTrack>.distinctAlbumAndCover(limit: Int = 12): List<MusicTrack> {
+        val seenAlbums = mutableSetOf<String>()
+        val seenTitles = mutableSetOf<String>()
+        val seenCovers = mutableSetOf<String>()
+        val result = mutableListOf<MusicTrack>()
+
+        for (track in this) {
+            val normTitle = com.example.recommendation.RecommendationEngine.normalizeTitle(track.title)
+            val albumKey = if (track.album.isNotBlank() && track.album != "Single" && track.album != "HD Stream") track.album.lowercase() else null
+            val coverKey = track.coverUrl.ifBlank { null }
+
+            // Reject if duplicate variant of same title, or same album, or same cover art
+            if (normTitle.isNotBlank() && seenTitles.any { com.example.recommendation.RecommendationEngine.isSameSongOrVariant(it, normTitle) }) continue
+            if (albumKey != null && seenAlbums.contains(albumKey)) continue
+            if (coverKey != null && seenCovers.contains(coverKey)) continue
+
+            if (normTitle.isNotBlank()) seenTitles.add(normTitle)
+            if (albumKey != null) seenAlbums.add(albumKey)
+            if (coverKey != null) seenCovers.add(coverKey)
+            result.add(track)
+
+            if (result.size >= limit) break
+        }
+        return result
     }
 }

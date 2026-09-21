@@ -342,7 +342,7 @@ fun PlaylistDetailScreen(
                     }
                 }
             } else {
-                items(tracks) { track ->
+                items(tracks, key = { "pl_track_${it.id}" }) { track ->
                     TrackListItem(
                         track = track,
                         isPlaying = track.id == currentPlayingId,

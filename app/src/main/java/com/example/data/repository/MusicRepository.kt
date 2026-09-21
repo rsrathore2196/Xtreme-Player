@@ -22,6 +22,7 @@ import com.example.data.local.UserProfile
 data class SearchResultCategory(
     val topResult: MusicTrack? = null,
     val exactMatches: List<MusicTrack> = emptyList(),
+    val recommendedTracks: List<MusicTrack> = emptyList(),
     val jioMatches: List<MusicTrack> = emptyList(),
     val ytMatches: List<MusicTrack> = emptyList(),
     val artistSongs: List<MusicTrack> = emptyList(),
@@ -412,9 +413,36 @@ class MusicRepository(private val musicDao: MusicDao) {
             .filter { it.isNotBlank() && it != "Unknown Artist" && it != "YouTube Artist" && it != "Online Artist" }
             .distinct()
 
+        // 5. Intelligent Recommendations based on search query/top track:
+        // Recommends 5 to 6 songs according to mood, language, genre, vibe and artist,
+        // strictly avoiding same song names or duplicates as requested by user.
+        val targetTrack = top ?: exactMatches.firstOrNull() ?: allSongs.firstOrNull()
+        val recommendedTracks = if (targetTrack != null) {
+            val engine = com.example.recommendation.RecommendationEngine()
+            val candidatePool = (similarTypeSongs + artistSongs + allSongs + MusicDataSource.curatedTracks).distinctBy { it.id }
+            val excluded = (exactMatches.map { it.id } + targetTrack.id).toSet()
+
+            val scored = engine.evaluateAndScoreCandidates(
+                currentTrack = targetTrack,
+                candidatePool = candidatePool,
+                excludedIds = excluded
+            )
+
+            scored.map { it.track }
+                .filter { cand ->
+                    cand.id != targetTrack.id &&
+                    !com.example.recommendation.RecommendationEngine.isSameSongOrVariant(cand.title, targetTrack.title) &&
+                    exactMatches.none { com.example.recommendation.RecommendationEngine.isSameSongOrVariant(cand.title, it.title) }
+                }
+                .take(6)
+        } else {
+            emptyList()
+        }
+
         val categoryResult = SearchResultCategory(
             topResult = top,
             exactMatches = exactMatches,
+            recommendedTracks = recommendedTracks,
             jioMatches = taggedJioMatches,
             ytMatches = taggedYtMatches,
             artistSongs = artistSongs,
