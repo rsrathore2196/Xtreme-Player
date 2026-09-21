@@ -585,9 +585,9 @@ class PlayerViewModel(
             it.copy(
                 inputUrlOrText = input,
                 selectedPlatform = detected,
-                // Clear any previous sample title when pasting a new link
-                customTitle = if (it.customTitle.startsWith("Spotify:") || it.customTitle.startsWith("Apple Music:") || it.customTitle.startsWith("YouTube Music:") || it.customTitle.startsWith("CSV:")) "" else it.customTitle,
-                customDescription = if (it.customDescription.contains("Official Global Chart") || it.customDescription.contains("Top trending releases") || it.customDescription.contains("Most replayed music videos")) "" else it.customDescription
+                // Always clear custom title and description when pasting or changing input so new fetch gets its real title
+                customTitle = "",
+                customDescription = ""
             )
         }
     }
@@ -655,16 +655,9 @@ class PlayerViewModel(
                     return@launch
                 }
 
-                val finalTitle = if (currentState.customTitle.isNotBlank() && !currentState.customTitle.startsWith("Spotify:") && !currentState.customTitle.startsWith("Apple Music:") && !currentState.customTitle.startsWith("YouTube Music:") && !currentState.customTitle.startsWith("CSV:")) {
-                    currentState.customTitle
-                } else {
-                    header.title
-                }
-                val finalDesc = if (currentState.customDescription.isNotBlank() && !currentState.customDescription.contains("Official Global Chart") && !currentState.customDescription.contains("Top trending releases") && !currentState.customDescription.contains("Most replayed music videos")) {
-                    currentState.customDescription
-                } else {
-                    header.description
-                }
+                // Always prioritize the real fetched playlist title from the source link
+                val finalTitle = header.title.ifBlank { "Imported Playlist" }
+                val finalDesc = header.description.ifBlank { "Imported from ${header.platform}" }
                 val updatedHeader = header.copy(title = finalTitle, description = finalDesc)
 
                 _importState.update {
@@ -755,7 +748,7 @@ class PlayerViewModel(
     }
 
     fun resetImportStep() {
-        _importState.update { it.copy(step = PlaylistImportStep.Idle) }
+        _importState.update { it.copy(step = PlaylistImportStep.Idle, customTitle = "", customDescription = "") }
     }
 
     companion object {

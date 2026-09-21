@@ -339,7 +339,16 @@ object PlaylistImportEngine {
                 }
 
                 if (tracks.isNotEmpty()) {
-                    return Pair(PlaylistHeader(if (isAlbum) "Spotify Album" else "Spotify Playlist", "Imported from Spotify", "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=800&q=80", "Spotify"), tracks)
+                    var spotTitle = ""
+                    val ogMatcher = Pattern.compile("<meta\\s+property=[\"']og:title[\"']\\s+content=[\"'](.*?)[\"']", Pattern.CASE_INSENSITIVE).matcher(html)
+                    if (ogMatcher.find()) spotTitle = ogMatcher.group(1)?.replace("&amp;", "&")?.trim().orEmpty()
+                    if (spotTitle.isBlank()) {
+                        val tMatcher = Pattern.compile("<title>(.*?)(?:\\s*\\|\\s*Spotify)?</title>", Pattern.CASE_INSENSITIVE).matcher(html)
+                        if (tMatcher.find()) spotTitle = tMatcher.group(1)?.replace("&amp;", "&")?.trim().orEmpty()
+                    }
+                    spotTitle = spotTitle.replace(Regex("(?i)\\s*\\|\\s*Spotify.*"), "").trim()
+                    val finalTitle = spotTitle.ifBlank { if (isAlbum) "Spotify Album" else "Spotify Playlist" }
+                    return Pair(PlaylistHeader(finalTitle, "Imported from Spotify", "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=800&q=80", "Spotify"), tracks)
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Attempt failed for $targetUrl: ${e.message}")
@@ -520,6 +529,27 @@ object PlaylistImportEngine {
                         }
 
                         if (tracks.isNotEmpty()) {
+                            if (plTitle.isBlank()) {
+                                val header = root.optJSONObject("header")
+                                plTitle = header?.optJSONObject("playlistHeaderRenderer")?.optJSONObject("title")?.optJSONArray("runs")?.optJSONObject(0)?.optString("text", "")
+                                    ?: header?.optJSONObject("playlistHeaderRenderer")?.optJSONObject("title")?.optString("simpleText", "")
+                                    ?: header?.optJSONObject("musicResponsiveHeaderRenderer")?.optJSONObject("title")?.optJSONArray("runs")?.optJSONObject(0)?.optString("text", "")
+                                    ?: root.optJSONObject("microformat")?.optJSONObject("microformatDataRenderer")?.optString("title", "")
+                                    ?: ""
+                            }
+                            if (plTitle.isBlank()) {
+                                val ogTitleMatcher = Pattern.compile("<meta\\s+property=[\"']og:title[\"']\\s+content=[\"'](.*?)[\"']", Pattern.CASE_INSENSITIVE).matcher(html)
+                                if (ogTitleMatcher.find()) {
+                                    plTitle = ogTitleMatcher.group(1)?.replace("&amp;", "&")?.trim().orEmpty()
+                                }
+                            }
+                            if (plTitle.isBlank()) {
+                                val titleMatcher = Pattern.compile("<title>(.*?)(?:\\s*-\\s*YouTube)?</title>", Pattern.CASE_INSENSITIVE).matcher(html)
+                                if (titleMatcher.find()) {
+                                    plTitle = titleMatcher.group(1)?.replace("&amp;", "&")?.trim().orEmpty()
+                                }
+                            }
+                            plTitle = plTitle.replace(Regex("(?i)\\s*-\\s*YouTube(?:\\s*Music)?.*"), "").trim()
                             if (plTitle.isBlank()) plTitle = "YouTube Playlist"
                             if (plCover.isBlank()) {
                                 plCover = "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=800&q=80"
@@ -971,9 +1001,85 @@ object PlaylistImportEngine {
     }
 
     private suspend fun parseGenericWebPlaylist(url: String): Pair<PlaylistHeader, List<ImportedTrackMeta>> {
-        // If JioSaavn link, extract track info
+        // If JioSaavn link, extract playlist/album/song tracks and accurate title
         if (url.contains("jiosaavn.com")) {
             try {
+                val tokenMatcher = Pattern.compile("jiosaavn\\.com/(featured|playlist|album|song)/([^/?#]+)/?([^/?#]*)", Pattern.CASE_INSENSITIVE).matcher(url)
+                var rawType = ""
+                var token = ""
+                if (tokenMatcher.find()) {
+                    rawType = tokenMatcher.group(1)?.lowercase() ?: ""
+                    token = tokenMatcher.group(2) ?: ""
+                }
+
+                val slugTitle = token.replace("-", " ").split(" ")
+                    .filter { it.isNotBlank() }
+                    .joinToString(" ") { word -> word.replaceFirstChar { it.uppercase() } }.trim()
+
+                // Method 1: Try JioSaavn WebAPI
+                if (token.isNotBlank()) {
+                    try {
+                        val apiType = if (rawType == "featured" || rawType == "playlist") "playlist" else if (rawType == "album") "album" else "song"
+                        val apiUrl = "https://www.jiosaavn.com/api.php?__call=webapi.get&token=$token&type=$apiType&_format=json&cc=in"
+                        val apiReq = Request.Builder()
+                            .url(apiUrl)
+                            .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                            .build()
+                        val apiResp = httpClient.newCall(apiReq).execute()
+                        if (apiResp.isSuccessful) {
+                            val apiBody = apiResp.body?.string().orEmpty()
+                            if (apiBody.startsWith("{")) {
+                                val json = JSONObject(apiBody)
+                                var plTitle = json.optString("list_name", json.optString("title", json.optString("album", ""))).trim()
+                                val plCover = json.optString("image", "").replace("150x150", "500x500")
+                                val songsArr = json.optJSONArray("songs") ?: json.optJSONArray("list")
+                                val tracks = mutableListOf<ImportedTrackMeta>()
+
+                                if (songsArr != null) {
+                                    for (i in 0 until songsArr.length()) {
+                                        val sObj = songsArr.getJSONObject(i)
+                                        val sTitle = sObj.optString("song", sObj.optString("title", "")).trim()
+                                        val sArtist = sObj.optString("primary_artists", sObj.optString("singers", "JioSaavn Artist")).trim()
+                                        val sAlbum = sObj.optString("album", "").trim()
+                                        val sDur = sObj.optLong("duration", 0L) * 1000L
+                                        if (sTitle.isNotBlank()) {
+                                            tracks.add(
+                                                ImportedTrackMeta(
+                                                    originalTitle = sTitle,
+                                                    originalArtist = sArtist.ifBlank { "JioSaavn Artist" },
+                                                    originalAlbum = sAlbum,
+                                                    durationMs = sDur,
+                                                    externalPlatform = "JioSaavn"
+                                                )
+                                            )
+                                        }
+                                    }
+                                }
+
+                                if (plTitle.equals("Hindi Songs", ignoreCase = true) || plTitle.contains("Download Hindi MP3", ignoreCase = true)) {
+                                    plTitle = slugTitle.ifBlank { "JioSaavn Playlist" }
+                                }
+                                val finalTitle = plTitle.ifBlank { slugTitle }.ifBlank { "JioSaavn Playlist" }
+
+                                if (tracks.isNotEmpty()) {
+                                    return Pair(
+                                        PlaylistHeader(
+                                            title = finalTitle,
+                                            description = "Imported from JioSaavn",
+                                            coverUrl = plCover.ifBlank { "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=800&q=80" },
+                                            platform = "JioSaavn"
+                                        ),
+                                        tracks
+                                    )
+                                }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "JioSaavn WebAPI attempt failed: ${e.message}")
+                    }
+                }
+
+                // Method 2: Web scraping fallback
                 val req = Request.Builder()
                     .url(url)
                     .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
@@ -986,15 +1092,23 @@ object PlaylistImportEngine {
                     val imgMatcher = Pattern.compile("<meta\\s+property=[\"']og:image[\"']\\s+content=[\"'](.*?)[\"']", Pattern.CASE_INSENSITIVE).matcher(html)
                     val cover = if (imgMatcher.find()) imgMatcher.group(1).orEmpty() else ""
 
-                    if (rawTitle.isNotBlank()) {
-                        val cleanTitle = rawTitle.replace(Regex("(?i)\\s*-\\s*Song\\s+Download.*"), "")
-                            .replace(Regex("(?i)\\s*\\|\\s*JioSaavn.*"), "").trim()
-                        val (song, artist) = splitTitleAndArtist(cleanTitle, "JioSaavn Artist")
-                        return Pair(
-                            PlaylistHeader(cleanTitle, "Imported from JioSaavn", cover.ifBlank { "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=800&q=80" }, "JioSaavn"),
-                            listOf(ImportedTrackMeta(song, artist, externalPlatform = "JioSaavn"))
-                        )
+                    val h1Matcher = Pattern.compile("<h1[^>]*>(.*?)</h1>", Pattern.CASE_INSENSITIVE).matcher(html)
+                    val h1Title = if (h1Matcher.find()) h1Matcher.group(1)?.replace(Regex("<.*?>"), "")?.trim().orEmpty() else ""
+
+                    var cleanTitle = rawTitle.replace(Regex("(?i)\\s*-\\s*(?:Song|Album|Playlist)\\s+Download.*"), "")
+                        .replace(Regex("(?i)\\s*\\|\\s*JioSaavn.*"), "")
+                        .replace(Regex("(?i)\\s*-\\s*JioSaavn.*"), "").trim()
+
+                    // Ensure generic SEO title "Hindi Songs" never overrides the actual album/playlist title
+                    if (cleanTitle.isBlank() || cleanTitle.equals("Hindi Songs", ignoreCase = true) || cleanTitle.contains("Download Hindi MP3", ignoreCase = true)) {
+                        cleanTitle = if (h1Title.isNotBlank() && !h1Title.equals("Hindi Songs", ignoreCase = true)) h1Title else slugTitle.ifBlank { "JioSaavn Playlist" }
                     }
+
+                    val (song, artist) = splitTitleAndArtist(cleanTitle, "JioSaavn Artist")
+                    return Pair(
+                        PlaylistHeader(cleanTitle, "Imported from JioSaavn", cover.ifBlank { "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=800&q=80" }, "JioSaavn"),
+                        listOf(ImportedTrackMeta(song, artist, externalPlatform = "JioSaavn"))
+                    )
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "JioSaavn web parse failed: ${e.message}")

@@ -298,8 +298,14 @@ object YouTubeMusicApiService {
                     ?: header?.optJSONObject("musicDetailHeaderRenderer")
                     ?: header?.optJSONObject("musicEditablePlaylistDetailHeaderRenderer")?.optJSONObject("header")?.optJSONObject("musicResponsiveHeaderRenderer")
                     ?: header?.optJSONObject("musicEditablePlaylistDetailHeaderRenderer")?.optJSONObject("header")?.optJSONObject("musicDetailHeaderRenderer")
+                    ?: header?.optJSONObject("musicHeaderRenderer")
                 title = rHeader?.optJSONObject("title")?.optJSONArray("runs")?.optJSONObject(0)?.optString("text", "")
                     ?: rHeader?.optJSONObject("title")?.optString("simpleText", "").orEmpty()
+                if (title.isBlank()) {
+                    title = header?.optJSONObject("musicVisualHeaderRenderer")?.optJSONObject("title")?.optJSONArray("runs")?.optJSONObject(0)?.optString("text", "")
+                        ?: header?.optJSONObject("musicVisualHeaderRenderer")?.optJSONObject("title")?.optString("simpleText", "")
+                        ?: root.optJSONObject("metadata")?.optJSONObject("playlistMetadataRenderer")?.optString("title", "").orEmpty()
+                }
                 if (coverUrl.isBlank()) {
                     val hThumbs = rHeader?.optJSONObject("thumbnail")?.optJSONObject("musicThumbnailRenderer")?.optJSONObject("thumbnail")?.optJSONArray("thumbnails")
                     if (hThumbs != null && hThumbs.length() > 0) {

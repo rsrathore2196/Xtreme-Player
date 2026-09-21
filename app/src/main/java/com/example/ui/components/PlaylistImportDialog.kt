@@ -33,13 +33,16 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.DownloadDone
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
@@ -633,6 +636,7 @@ private fun ImportSummaryContent(
     val appColors = LocalAppColors.current
     val isDark = appColors.isDark
     var selectedSummaryTab by remember { mutableIntStateOf(0) } // 0 = Matched, 1 = Unmatched
+    var isEditingTitle by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -666,15 +670,76 @@ private fun ImportSummaryContent(
                 Spacer(modifier = Modifier.width(12.dp))
 
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = customTitle.ifBlank { summary.playlistTitle },
-                        style = MaterialTheme.typography.titleMedium.copy(
-                            fontWeight = FontWeight.Bold,
-                            color = appColors.textPrimary
-                        ),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    if (isEditingTitle) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            BasicTextField(
+                                value = customTitle.ifBlank { summary.playlistTitle },
+                                onValueChange = onCustomTitleChanged,
+                                textStyle = MaterialTheme.typography.titleMedium.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = appColors.textPrimary
+                                ),
+                                singleLine = true,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(if (isDark) appColors.inputBackground else Color.White)
+                                    .border(1.dp, appColors.primaryAccent, RoundedCornerShape(6.dp))
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Box(
+                                modifier = Modifier
+                                    .size(28.dp)
+                                    .clip(CircleShape)
+                                    .background(appColors.primaryAccent)
+                                    .clickable { isEditingTitle = false },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Check,
+                                    contentDescription = "Save title",
+                                    tint = if (isDark) Color.Black else Color.White,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
+                    } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = customTitle.ifBlank { summary.playlistTitle },
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = appColors.textPrimary
+                                ),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Box(
+                                modifier = Modifier
+                                    .size(24.dp)
+                                    .clip(CircleShape)
+                                    .background(if (isDark) Color(0xFF27272A) else Color(0xFFE2E8F0))
+                                    .clickable { isEditingTitle = true },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Edit,
+                                    contentDescription = "Edit playlist title",
+                                    tint = appColors.textSecondary,
+                                    modifier = Modifier.size(13.dp)
+                                )
+                            }
+                        }
+                    }
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
                         text = "Source: ${summary.platform} • ${summary.totalItems} tracks extracted",
@@ -800,7 +865,8 @@ private fun ImportSummaryContent(
         // ACTION BUTTONS
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
             OutlinedButton(
                 onClick = onCancel,
@@ -809,12 +875,13 @@ private fun ImportSummaryContent(
                 ),
                 border = BorderStroke(1.dp, appColors.cardBorder),
                 shape = RoundedCornerShape(12.dp),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
                 modifier = Modifier
-                    .weight(1f)
+                    .weight(0.9f)
                     .height(48.dp)
                     .testTag("summary_back_button")
             ) {
-                Text("Back")
+                Text("Back", fontSize = 14.sp)
             }
 
             Button(
@@ -827,14 +894,21 @@ private fun ImportSummaryContent(
                     disabledContainerColor = if (isDark) appColors.cardBorder.copy(alpha = 0.5f) else Color(0xFFE2E8F0),
                     disabledContentColor = appColors.textMuted
                 ),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
                 modifier = Modifier
-                    .weight(2f)
+                    .weight(2.1f)
                     .height(48.dp)
                     .testTag("save_imported_playlist_button")
             ) {
                 Icon(Icons.Default.DownloadDone, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("Save to Library (${summary.matchedItems.size})", fontWeight = FontWeight.Bold)
+                Text(
+                    text = "Save to Library",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
         }
     }
