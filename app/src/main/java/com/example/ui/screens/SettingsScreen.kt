@@ -2,7 +2,9 @@ package com.example.ui.screens
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -78,7 +80,7 @@ import com.example.util.AppHaptics
 
 @Composable
 fun SettingsScreen(
-    playerUiState: PlayerUiState,
+    selectedQuality: AudioQuality = AudioQuality.EXTREME_320,
     effectsState: AudioEffectsState,
     isDarkMode: Boolean,
     themeMode: AppThemeMode,
@@ -167,25 +169,25 @@ fun SettingsScreen(
             transitionSpec = {
                 if (targetState != null) {
                     (slideInHorizontally(
-                        initialOffsetX = { fullWidth -> (fullWidth * 0.20f).toInt() },
-                        animationSpec = tween(280, easing = FastOutSlowInEasing)
-                    ) + fadeIn(animationSpec = tween(240)))
+                        initialOffsetX = { fullWidth -> (fullWidth * 0.12f).toInt() },
+                        animationSpec = tween(220, easing = FastOutSlowInEasing)
+                    ) + fadeIn(animationSpec = tween(200, easing = LinearOutSlowInEasing)))
                         .togetherWith(
                             slideOutHorizontally(
-                                targetOffsetX = { fullWidth -> (-fullWidth * 0.15f).toInt() },
-                                animationSpec = tween(240, easing = FastOutSlowInEasing)
-                            ) + fadeOut(animationSpec = tween(180))
+                                targetOffsetX = { fullWidth -> (-fullWidth * 0.08f).toInt() },
+                                animationSpec = tween(180, easing = FastOutLinearInEasing)
+                            ) + fadeOut(animationSpec = tween(160))
                         )
                 } else {
                     (slideInHorizontally(
-                        initialOffsetX = { fullWidth -> (-fullWidth * 0.15f).toInt() },
-                        animationSpec = tween(280, easing = FastOutSlowInEasing)
-                    ) + fadeIn(animationSpec = tween(240)))
+                        initialOffsetX = { fullWidth -> (-fullWidth * 0.08f).toInt() },
+                        animationSpec = tween(220, easing = FastOutSlowInEasing)
+                    ) + fadeIn(animationSpec = tween(200, easing = LinearOutSlowInEasing)))
                         .togetherWith(
                             slideOutHorizontally(
-                                targetOffsetX = { fullWidth -> (fullWidth * 0.20f).toInt() },
-                                animationSpec = tween(240, easing = FastOutSlowInEasing)
-                            ) + fadeOut(animationSpec = tween(180))
+                                targetOffsetX = { fullWidth -> (fullWidth * 0.12f).toInt() },
+                                animationSpec = tween(180, easing = FastOutLinearInEasing)
+                            ) + fadeOut(animationSpec = tween(160))
                         )
                 }
             },
@@ -215,7 +217,7 @@ fun SettingsScreen(
                     }
                     SettingsCategory.MUSIC_PLAYBACK -> {
                         MusicPlaybackPage(
-                            playerUiState = playerUiState,
+                            selectedQuality = selectedQuality,
                             effectsState = effectsState,
                             isDarkMode = isDarkMode,
                             onAudioQualitySelected = onAudioQualitySelected,

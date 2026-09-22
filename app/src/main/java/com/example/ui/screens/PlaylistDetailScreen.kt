@@ -70,7 +70,8 @@ import com.example.ui.theme.XtremeLightBlue
 @Composable
 fun PlaylistDetailScreen(
     playlistWithTracks: PlaylistWithTracks,
-    playerUiState: PlayerUiState,
+    playerUiState: PlayerUiState? = null,
+    currentPlayingTrackId: String? = null,
     onBackClick: () -> Unit,
     onPlayTrack: (MusicTrack, List<MusicTrack>) -> Unit,
     onToggleFavorite: (MusicTrack) -> Unit,
@@ -81,11 +82,102 @@ fun PlaylistDetailScreen(
 ) {
     val playlist = playlistWithTracks.playlist
     val tracks = playlistWithTracks.tracks.map { it.toMusicTrack() }
-    val currentPlayingId = playerUiState.currentTrack?.id
+    val currentPlayingId = currentPlayingTrackId ?: playerUiState?.currentTrack?.id
     val appColors = LocalAppColors.current
 
     var showRenameDialog by remember { mutableStateOf(false) }
+    var showDeletePlaylistDialog by remember { mutableStateOf(false) }
     var newTitleInput by remember(playlist.title) { mutableStateOf(playlist.title) }
+    var trackPendingRemoval by remember { mutableStateOf<MusicTrack?>(null) }
+
+    if (trackPendingRemoval != null) {
+        val pendingTrack = trackPendingRemoval!!
+        AlertDialog(
+            onDismissRequest = { trackPendingRemoval = null },
+            title = {
+                Text(
+                    text = "Remove from Playlist",
+                    fontWeight = FontWeight.Bold,
+                    color = appColors.textPrimary
+                )
+            },
+            text = {
+                Text(
+                    text = "Are you sure you want to remove \"${pendingTrack.title}\" from this playlist?",
+                    color = appColors.textSecondary,
+                    fontSize = 14.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onRemoveTrack(pendingTrack.id)
+                        trackPendingRemoval = null
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = appColors.primaryAccent,
+                        contentColor = appColors.onPrimaryAccent
+                    ),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("Remove", color = appColors.onPrimaryAccent, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { trackPendingRemoval = null }
+                ) {
+                    Text("Cancel", color = appColors.textMuted)
+                }
+            },
+            containerColor = appColors.cardBackground,
+            shape = RoundedCornerShape(16.dp)
+        )
+    }
+
+    if (showDeletePlaylistDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeletePlaylistDialog = false },
+            title = {
+                Text(
+                    text = "Delete Playlist",
+                    fontWeight = FontWeight.Bold,
+                    color = appColors.textPrimary
+                )
+            },
+            text = {
+                Text(
+                    text = "Are you sure you want to delete \"${playlist.title}\"? This action cannot be undone.",
+                    color = appColors.textSecondary,
+                    fontSize = 14.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showDeletePlaylistDialog = false
+                        onDeletePlaylist()
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFFEF4444),
+                        contentColor = Color.White
+                    ),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("Delete", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showDeletePlaylistDialog = false }
+                ) {
+                    Text("Cancel", color = appColors.textMuted)
+                }
+            },
+            containerColor = appColors.cardBackground,
+            shape = RoundedCornerShape(16.dp)
+        )
+    }
 
     if (showRenameDialog) {
         AlertDialog(
@@ -131,10 +223,13 @@ fun PlaylistDetailScreen(
                         }
                         showRenameDialog = false
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = appColors.primaryAccent),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = appColors.primaryAccent,
+                        contentColor = appColors.onPrimaryAccent
+                    ),
                     modifier = Modifier.testTag("save_playlist_name_button")
                 ) {
-                    Text("Save", color = Color.White, fontWeight = FontWeight.Bold)
+                    Text("Save", color = appColors.onPrimaryAccent, fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
@@ -150,7 +245,7 @@ fun PlaylistDetailScreen(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(XtremeGradients.ScreenBackground),
+            .background(appColors.screenBackground),
         contentAlignment = Alignment.TopCenter
     ) {
         Column(
@@ -172,7 +267,7 @@ fun PlaylistDetailScreen(
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                     contentDescription = "Back",
-                    tint = TextPrimary
+                    tint = appColors.textPrimary
                 )
             }
 
@@ -190,11 +285,11 @@ fun PlaylistDetailScreen(
                         tint = appColors.primaryAccent
                     )
                 }
-                IconButton(onClick = onDeletePlaylist) {
+                IconButton(onClick = { showDeletePlaylistDialog = true }) {
                     Icon(
                         imageVector = Icons.Default.DeleteOutline,
                         contentDescription = "Delete Playlist",
-                        tint = TextMuted
+                        tint = appColors.textMuted
                     )
                 }
             }
@@ -221,10 +316,10 @@ fun PlaylistDetailScreen(
                             .shadow(
                                 elevation = 20.dp,
                                 shape = RoundedCornerShape(16.dp),
-                                spotColor = XtremeLightBlue.copy(alpha = 0.4f)
+                                spotColor = appColors.primaryAccent.copy(alpha = 0.4f)
                             )
                             .clip(RoundedCornerShape(16.dp))
-                            .background(Color(0xFF162B46))
+                            .background(appColors.cardBackgroundElevated)
                     )
 
                     Spacer(modifier = Modifier.height(16.dp))
@@ -233,7 +328,7 @@ fun PlaylistDetailScreen(
                         text = playlist.title,
                         style = MaterialTheme.typography.headlineMedium.copy(
                             fontWeight = FontWeight.Bold,
-                            color = TextPrimary
+                            color = appColors.textPrimary
                         ),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -243,7 +338,7 @@ fun PlaylistDetailScreen(
                         Text(
                             text = playlist.description,
                             style = MaterialTheme.typography.bodyMedium.copy(
-                                color = TextSecondary
+                                color = appColors.textSecondary
                             ),
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
@@ -254,7 +349,7 @@ fun PlaylistDetailScreen(
                     Text(
                         text = "${tracks.size} tracks • 320kbps High Fidelity",
                         style = MaterialTheme.typography.bodySmall.copy(
-                            color = XtremeLightBlue,
+                            color = appColors.primaryAccent,
                             fontWeight = FontWeight.SemiBold
                         ),
                         modifier = Modifier.padding(top = 6.dp)
@@ -275,8 +370,8 @@ fun PlaylistDetailScreen(
                             },
                             enabled = tracks.isNotEmpty(),
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = XtremeLightBlue,
-                                contentColor = Color(0xFF031428)
+                                containerColor = appColors.primaryAccent,
+                                contentColor = appColors.onPrimaryAccent
                             ),
                             shape = CircleShape,
                             modifier = Modifier.height(46.dp)
@@ -284,10 +379,11 @@ fun PlaylistDetailScreen(
                             Icon(
                                 imageVector = Icons.Default.PlayArrow,
                                 contentDescription = null,
+                                tint = appColors.onPrimaryAccent,
                                 modifier = Modifier.size(22.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("PLAY ALL", fontWeight = FontWeight.Bold)
+                            Text("PLAY ALL", color = appColors.onPrimaryAccent, fontWeight = FontWeight.Bold)
                         }
 
                         Spacer(modifier = Modifier.width(14.dp))
@@ -300,18 +396,18 @@ fun PlaylistDetailScreen(
                                 }
                             },
                             enabled = tracks.isNotEmpty(),
-                            border = BorderStroke(1.dp, Color(0xFF1B3C64)),
+                            border = BorderStroke(1.dp, appColors.cardBorder),
                             shape = CircleShape,
                             modifier = Modifier.height(46.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Shuffle,
                                 contentDescription = null,
-                                tint = TextPrimary,
+                                tint = appColors.textPrimary,
                                 modifier = Modifier.size(20.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("SHUFFLE", color = TextPrimary, fontWeight = FontWeight.Bold)
+                            Text("SHUFFLE", color = appColors.textPrimary, fontWeight = FontWeight.Bold)
                         }
                     }
 
@@ -329,13 +425,13 @@ fun PlaylistDetailScreen(
                     ) {
                         Text(
                             text = "Playlist is empty",
-                            color = TextPrimary,
+                            color = appColors.textPrimary,
                             fontWeight = FontWeight.Bold,
                             fontSize = 16.sp
                         )
                         Text(
                             text = "Add tracks from the Home or Search screen using the 3-dot menu.",
-                            color = TextMuted,
+                            color = appColors.textMuted,
                             fontSize = 13.sp,
                             modifier = Modifier.padding(top = 4.dp)
                         )
@@ -348,6 +444,7 @@ fun PlaylistDetailScreen(
                         isPlaying = track.id == currentPlayingId,
                         onClick = { onPlayTrack(track, tracks) },
                         onToggleFavorite = { onToggleFavorite(track) },
+                        onRemoveClick = { trackPendingRemoval = track },
                         modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
                     )
                 }

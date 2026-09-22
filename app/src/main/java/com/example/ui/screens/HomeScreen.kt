@@ -31,6 +31,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
@@ -131,7 +132,8 @@ fun rememberShimmerBrush(): Brush {
 @Composable
 fun HomeScreen(
     homeViewModel: HomeViewModel,
-    playerUiState: PlayerUiState,
+    playerUiState: PlayerUiState? = null,
+    currentPlayingTrackId: String? = null,
     onTrackClick: (MusicTrack, List<MusicTrack>) -> Unit,
     onToggleFavorite: (MusicTrack) -> Unit,
     modifier: Modifier = Modifier
@@ -147,6 +149,7 @@ fun HomeScreen(
         catalogTracks = catalogTracks,
         recentlyPlayed = recentlyPlayed,
         playerUiState = playerUiState,
+        currentPlayingTrackId = currentPlayingTrackId ?: playerUiState?.currentTrack?.id,
         shelves = shelves,
         userProfile = userProfile,
         punjabiSection = punjabiSection,
@@ -166,7 +169,8 @@ fun HomeScreen(
 fun HomeScreen(
     catalogTracks: List<MusicTrack>,
     recentlyPlayed: List<MusicTrack>,
-    playerUiState: PlayerUiState,
+    playerUiState: PlayerUiState? = null,
+    currentPlayingTrackId: String? = null,
     shelves: List<HomeShelf> = emptyList(),
     userProfile: UserProfile? = null,
     onTrackClick: (MusicTrack, List<MusicTrack>) -> Unit,
@@ -177,6 +181,7 @@ fun HomeScreen(
         catalogTracks = catalogTracks,
         recentlyPlayed = recentlyPlayed,
         playerUiState = playerUiState,
+        currentPlayingTrackId = currentPlayingTrackId ?: playerUiState?.currentTrack?.id,
         shelves = shelves,
         userProfile = userProfile,
         punjabiSection = SectionState(),
@@ -193,7 +198,8 @@ fun HomeScreen(
 fun HomeScreenContent(
     catalogTracks: List<MusicTrack>,
     recentlyPlayed: List<MusicTrack>,
-    playerUiState: PlayerUiState,
+    playerUiState: PlayerUiState? = null,
+    currentPlayingTrackId: String? = null,
     shelves: List<HomeShelf>,
     userProfile: UserProfile?,
     punjabiSection: SectionState,
@@ -205,10 +211,9 @@ fun HomeScreenContent(
     modifier: Modifier = Modifier
 ) {
     val greeting = rememberGreeting()
-    val currentPlayingId = playerUiState.currentTrack?.id
+    val currentPlayingId = currentPlayingTrackId ?: playerUiState?.currentTrack?.id
     val appColors = LocalAppColors.current
     val isDark = appColors.isDark
-    val shimmerBrush = rememberShimmerBrush()
 
     Box(
         modifier = modifier
@@ -569,7 +574,7 @@ fun HomeScreenContent(
                     Spacer(modifier = Modifier.height(12.dp))
 
                     if (punjabiSection.isLoading && punjabiSection.tracks.isEmpty()) {
-                        SectionShimmerRow(shimmerBrush = shimmerBrush)
+                        SectionShimmerRow()
                     } else if (punjabiSection.tracks.isNotEmpty()) {
                         LazyRow(
                             contentPadding = PaddingValues(horizontal = 20.dp),
@@ -616,7 +621,7 @@ fun HomeScreenContent(
                     Spacer(modifier = Modifier.height(12.dp))
 
                     if (eraSection.isLoading && eraSection.tracks.isEmpty()) {
-                        SectionShimmerRow(shimmerBrush = shimmerBrush)
+                        SectionShimmerRow()
                     } else if (eraSection.tracks.isNotEmpty()) {
                         LazyRow(
                             contentPadding = PaddingValues(horizontal = 20.dp),
@@ -674,7 +679,8 @@ fun HomeScreenContent(
 }
 
 @Composable
-fun SectionShimmerRow(shimmerBrush: Brush) {
+fun SectionShimmerRow(shimmerBrush: Brush? = null) {
+    val brush = shimmerBrush ?: rememberShimmerBrush()
     LazyRow(
         contentPadding = PaddingValues(horizontal = 20.dp),
         horizontalArrangement = Arrangement.spacedBy(14.dp),
@@ -686,7 +692,7 @@ fun SectionShimmerRow(shimmerBrush: Brush) {
                     modifier = Modifier
                         .size(136.dp)
                         .clip(RoundedCornerShape(14.dp))
-                        .background(shimmerBrush)
+                        .background(brush)
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 Box(
@@ -694,7 +700,7 @@ fun SectionShimmerRow(shimmerBrush: Brush) {
                         .width(100.dp)
                         .height(14.dp)
                         .clip(RoundedCornerShape(4.dp))
-                        .background(shimmerBrush)
+                        .background(brush)
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Box(
@@ -702,7 +708,7 @@ fun SectionShimmerRow(shimmerBrush: Brush) {
                         .width(70.dp)
                         .height(10.dp)
                         .clip(RoundedCornerShape(4.dp))
-                        .background(shimmerBrush)
+                        .background(brush)
                 )
             }
         }
@@ -913,6 +919,7 @@ fun TrackListItem(
     isPlaying: Boolean,
     onClick: () -> Unit,
     onToggleFavorite: () -> Unit,
+    onRemoveClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val appColors = LocalAppColors.current
@@ -952,7 +959,7 @@ fun TrackListItem(
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = track.title,
-                color = if (isPlaying) appColors.primaryAccent else TextPrimary,
+                color = if (isPlaying) appColors.primaryAccent else appColors.textPrimary,
                 fontWeight = if (isPlaying) FontWeight.Bold else FontWeight.Medium,
                 fontSize = 14.sp,
                 maxLines = 1,
@@ -980,7 +987,7 @@ fun TrackListItem(
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
                     text = "${track.artist} • ${track.formatDuration()}",
-                    color = TextSecondary,
+                    color = appColors.textSecondary,
                     fontSize = 12.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -1006,9 +1013,25 @@ fun TrackListItem(
             Icon(
                 imageVector = if (track.isLiked) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                 contentDescription = "Favorite",
-                tint = if (track.isLiked) XtremeRose else TextMuted,
+                tint = if (track.isLiked) XtremeRose else appColors.textMuted,
                 modifier = Modifier.size(20.dp)
             )
+        }
+
+        if (onRemoveClick != null) {
+            IconButton(
+                onClick = onRemoveClick,
+                modifier = Modifier
+                    .size(36.dp)
+                    .testTag("track_remove_button_${track.id}")
+            ) {
+                Icon(
+                    imageVector = Icons.Default.DeleteOutline,
+                    contentDescription = "Remove song from playlist",
+                    tint = appColors.primaryAccent.copy(alpha = 0.85f),
+                    modifier = Modifier.size(20.dp)
+                )
+            }
         }
     }
 }

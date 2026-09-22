@@ -96,6 +96,8 @@ fun MainNavigationScaffold(
     modifier: Modifier = Modifier
 ) {
     val playerUiState by viewModel.playerUiState.collectAsState()
+    val selectedQuality by viewModel.selectedQuality.collectAsState()
+    val currentPlayingTrackId by viewModel.currentPlayingTrackId.collectAsState()
     val catalogTracks by viewModel.catalogTracks.collectAsState()
     val favoriteTracks by viewModel.favoriteTracks.collectAsState()
     val recentlyPlayed by viewModel.recentlyPlayed.collectAsState()
@@ -168,32 +170,20 @@ fun MainNavigationScaffold(
                         .fillMaxWidth()
                         .navigationBarsPadding()
                 ) {
-                    // Floating MiniPlayer (Animated smoothly in and out with 120Hz high refresh rate response)
-                    // Automatically hides when a specific settings option/subpage is open in the settings tab
-                    val isMiniPlayerVisible = playerUiState.currentTrack != null &&
-                        !isPlayerExpanded &&
-                        !(selectedTabIndex == 3 && isSettingsSubpageOpen)
+                    // Floating MiniPlayer: Sleek, attractive, non-bouncy transition
+                    // Stays stably anchored at the bottom even while navigating sub-settings
+                    val isMiniPlayerVisible = playerUiState.currentTrack != null && !isPlayerExpanded
 
                     AnimatedVisibility(
                         visible = isMiniPlayerVisible,
                         enter = slideInVertically(
-                            animationSpec = spring(
-                                dampingRatio = 0.82f,
-                                stiffness = 650f
-                            ),
+                            animationSpec = tween(220, easing = FastOutSlowInEasing),
                             initialOffsetY = { it }
-                        ) + fadeIn(animationSpec = tween(150, easing = LinearOutSlowInEasing)) + expandVertically(
-                            animationSpec = spring(dampingRatio = 0.84f, stiffness = 650f)
-                        ),
+                        ) + fadeIn(animationSpec = tween(180, easing = LinearOutSlowInEasing)),
                         exit = slideOutVertically(
-                            animationSpec = spring(
-                                dampingRatio = 0.84f,
-                                stiffness = 650f
-                            ),
+                            animationSpec = tween(180, easing = FastOutSlowInEasing),
                             targetOffsetY = { it }
-                        ) + fadeOut(animationSpec = tween(110, easing = FastOutLinearInEasing)) + shrinkVertically(
-                            animationSpec = spring(dampingRatio = 0.84f, stiffness = 650f)
-                        ),
+                        ) + fadeOut(animationSpec = tween(140, easing = FastOutLinearInEasing)),
                         modifier = Modifier.graphicsLayer { clip = false }
                     ) {
                         MiniPlayer(
@@ -215,23 +205,23 @@ fun MainNavigationScaffold(
                     )
 
                     val homeScale by animateFloatAsState(
-                        targetValue = if (selectedTabIndex == 0) 1.12f else 1.0f,
-                        animationSpec = spring(dampingRatio = 0.55f, stiffness = 850f),
+                        targetValue = if (selectedTabIndex == 0) 1.08f else 1.0f,
+                        animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
                         label = "tab_home_scale"
                     )
                     val searchScale by animateFloatAsState(
-                        targetValue = if (selectedTabIndex == 1) 1.12f else 1.0f,
-                        animationSpec = spring(dampingRatio = 0.55f, stiffness = 850f),
+                        targetValue = if (selectedTabIndex == 1) 1.08f else 1.0f,
+                        animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
                         label = "tab_search_scale"
                     )
                     val libraryScale by animateFloatAsState(
-                        targetValue = if (selectedTabIndex == 2) 1.12f else 1.0f,
-                        animationSpec = spring(dampingRatio = 0.55f, stiffness = 850f),
+                        targetValue = if (selectedTabIndex == 2) 1.08f else 1.0f,
+                        animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
                         label = "tab_library_scale"
                     )
                     val settingsScale by animateFloatAsState(
-                        targetValue = if (selectedTabIndex == 3) 1.12f else 1.0f,
-                        animationSpec = spring(dampingRatio = 0.55f, stiffness = 850f),
+                        targetValue = if (selectedTabIndex == 3) 1.08f else 1.0f,
+                        animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
                         label = "tab_settings_scale"
                     )
 
@@ -365,18 +355,19 @@ fun MainNavigationScaffold(
                     visible = currentPlaylist != null,
                     enter = slideInHorizontally(
                         initialOffsetX = { it },
-                        animationSpec = spring(dampingRatio = 0.84f, stiffness = 650f)
-                    ) + fadeIn(animationSpec = tween(170, easing = LinearOutSlowInEasing)),
+                        animationSpec = tween(260, easing = FastOutSlowInEasing)
+                    ) + fadeIn(animationSpec = tween(220, easing = LinearOutSlowInEasing)),
                     exit = slideOutHorizontally(
                         targetOffsetX = { it },
-                        animationSpec = spring(dampingRatio = 0.86f, stiffness = 650f)
-                    ) + fadeOut(animationSpec = tween(130, easing = FastOutLinearInEasing)),
+                        animationSpec = tween(220, easing = FastOutSlowInEasing)
+                    ) + fadeOut(animationSpec = tween(160, easing = FastOutLinearInEasing)),
                     modifier = Modifier.graphicsLayer { clip = false }
                 ) {
                     currentPlaylist?.let { playlist ->
                         PlaylistDetailScreen(
                             playlistWithTracks = playlist,
                             playerUiState = playerUiState,
+                            currentPlayingTrackId = currentPlayingTrackId,
                             onBackClick = { viewModel.closePlaylist() },
                             onPlayTrack = { track, queue -> viewModel.playPlaylistTrack(track, queue) },
                             onToggleFavorite = { track -> viewModel.toggleLike(track) },
@@ -417,13 +408,13 @@ fun MainNavigationScaffold(
                         when (tabIndex) {
                             0 -> HomeScreen(
                                 homeViewModel = homeViewModel,
-                                playerUiState = playerUiState,
+                                currentPlayingTrackId = currentPlayingTrackId,
                                 onTrackClick = { track, queue -> viewModel.playTrack(track, queue) },
                                 onToggleFavorite = { track -> viewModel.toggleLike(track) }
                             )
                             1 -> SearchScreen(
                                 searchState = searchState,
-                                playerUiState = playerUiState,
+                                currentPlayingTrackId = currentPlayingTrackId,
                                 onQueryChange = { q -> viewModel.onSearchQueryChange(q) },
                                 onSelectGenre = { g -> viewModel.selectGenre(g) },
                                 onSelectSource = { s -> viewModel.selectSource(s) },
@@ -433,7 +424,7 @@ fun MainNavigationScaffold(
                             2 -> LibraryScreen(
                                 favoriteTracks = favoriteTracks,
                                 playlists = playlists,
-                                playerUiState = playerUiState,
+                                currentPlayingTrackId = currentPlayingTrackId,
                                 isDarkMode = isDarkMode,
                                 onTrackClick = { track, queue -> viewModel.playTrack(track, queue) },
                                 onToggleFavorite = { track -> viewModel.toggleLike(track) },
@@ -442,7 +433,7 @@ fun MainNavigationScaffold(
                                 onImportPlaylistClick = { viewModel.openImportDialog() }
                             )
                             3 -> SettingsScreen(
-                                playerUiState = playerUiState,
+                                selectedQuality = selectedQuality,
                                 effectsState = effectsState,
                                 isDarkMode = isDarkMode,
                                 themeMode = themeMode,

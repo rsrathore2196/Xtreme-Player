@@ -17,6 +17,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -67,21 +70,29 @@ class HomeViewModel(
     val favoriteTracks: StateFlow<List<MusicTrack>> = repository.getFavoriteTracks()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
 
-    // 4. Reactive Smart Shelves combined instantly
+    // 4. Reactive Smart Shelves combined on Dispatchers.Default, isolating currentTrack
+    // This prevents ExoPlayer's 300ms progress ticker from re-calculating shelves or recomposing HomeScreen
+    private val currentPlayingTrackFlow = playbackManager.uiState
+        .map { it.currentTrack?.id to it.currentTrack }
+        .distinctUntilChanged { old, new -> old.first == new.first }
+        .map { it.second }
+
     val homeShelves: StateFlow<List<HomeShelf>> = combine(
-        playbackManager.uiState,
+        currentPlayingTrackFlow,
         recentlyPlayed,
         favoriteTracks,
         _catalogTracks,
         _userProfile
-    ) { uiState, recent, favs, catalog, profile ->
-        AiMoodEngine.generatePersonalizedShelves(
-            lastPlayedTrack = uiState.currentTrack,
-            recentlyPlayed = recent,
-            favoriteTracks = favs,
-            catalogTracks = catalog,
-            userProfile = profile
-        )
+    ) { currentTrack, recent, favs, catalog, profile ->
+        withContext(Dispatchers.Default) {
+            AiMoodEngine.generatePersonalizedShelves(
+                lastPlayedTrack = currentTrack,
+                recentlyPlayed = recent,
+                favoriteTracks = favs,
+                catalogTracks = catalog,
+                userProfile = profile
+            )
+        }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
 
     // 5. Deferred Lazy-Loaded Sections (Loaded only when scrolled into view)

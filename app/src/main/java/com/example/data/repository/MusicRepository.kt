@@ -11,6 +11,7 @@ import com.example.data.remote.OnlineMusicApiService
 import com.example.data.remote.YouTubeMusicApiService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -18,6 +19,8 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
 import com.example.data.local.UserProfile
+import com.example.recommendation.AlbumArtDeduplicator
+import com.example.recommendation.AlbumArtDeduplicator.distinctAlbumAndCover
 
 data class SearchResultCategory(
     val topResult: MusicTrack? = null,
@@ -150,34 +153,48 @@ class MusicRepository(private val musicDao: MusicDao) {
 
         // 1. Check Room first
         val roomPunjabi = try {
-            musicDao.getTracksByLanguageSync("Punjabi", limit)
+            musicDao.getTracksByLanguageSync("Punjabi", limit * 2)
         } catch (_: Exception) {
             emptyList()
         }
-        if (roomPunjabi.isNotEmpty()) {
-            val mapped = roomPunjabi.map { it.toMusicTrack().copy(isLiked = likedIds.contains(it.id)) }
-            cachedPunjabiTracks = mapped
-            return@withContext mapped
+        val roomDiversified = roomPunjabi
+            .map { it.toMusicTrack().copy(isLiked = likedIds.contains(it.id)) }
+            .distinctAlbumAndCover(limit)
+
+        if (roomDiversified.size >= 8) {
+            cachedPunjabiTracks = roomDiversified
+            return@withContext roomDiversified
         }
 
-        // 2. Fetch online
-        val online = try {
-            OnlineMusicApiService.getSongsByGenre("punjabi", limit = limit)
-        } catch (_: Exception) {
-            emptyList()
+        // 2. Fetch online across diverse Punjabi artists to ensure different albums and album arts
+        val queries = listOf("Diljit Dosanjh hits", "Sidhu Moose Wala hits", "Karan Aujla hits", "AP Dhillon hits", "Amrinder Gill hits", "Top Punjabi Hits")
+        val onlineResults = coroutineScope {
+            queries.map { q ->
+                async {
+                    try {
+                        OnlineMusicApiService.searchSongs(q, limit = 8)
+                    } catch (_: Exception) {
+                        emptyList()
+                    }
+                }
+            }.awaitAll()
         }
 
-        val finalTracks = if (online.isNotEmpty()) {
-            val entities = online.map { TrackEntity.fromMusicTrack(it).copy(isCached = true, language = "Punjabi") }
+        val diversifiedOnline = AlbumArtDeduplicator.interleaveAndDiversify(onlineResults, limit)
+
+        val finalTracks = if (diversifiedOnline.isNotEmpty()) {
+            val entities = diversifiedOnline.map { TrackEntity.fromMusicTrack(it).copy(isCached = true, language = "Punjabi") }
             try { musicDao.insertOrUpdateTracks(entities) } catch (_: Exception) {}
-            online.map { it.copy(isLiked = likedIds.contains(it.id)) }
+            diversifiedOnline.map { it.copy(isLiked = likedIds.contains(it.id)) }
+        } else if (roomDiversified.isNotEmpty()) {
+            roomDiversified
         } else {
             MusicDataSource.curatedTracks.filter {
                 it.language.equals("Punjabi", ignoreCase = true) ||
                 it.genre.contains("Punjabi", ignoreCase = true) ||
                 it.artist.contains("Diljit", ignoreCase = true) ||
                 it.artist.contains("Sidhu", ignoreCase = true)
-            }.ifEmpty { MusicDataSource.curatedTracks.take(limit) }
+            }.ifEmpty { MusicDataSource.curatedTracks }.distinctAlbumAndCover(limit)
         }
         cachedPunjabiTracks = finalTracks
         finalTracks
@@ -187,18 +204,27 @@ class MusicRepository(private val musicDao: MusicDao) {
         cachedEraTracks?.let { return@withContext it }
         val likedIds = getLikedTrackIds()
 
-        val online = try {
-            OnlineMusicApiService.searchSongs("90s 2000s Bollywood Retro Hits", limit = limit)
-        } catch (_: Exception) {
-            emptyList()
+        val queries = listOf("90s Bollywood Classics", "2000s Bollywood Hits", "Retro Golden Hits", "Kumar Sanu hits", "Udit Narayan hits", "Sonu Nigam hits")
+        val onlineResults = coroutineScope {
+            queries.map { q ->
+                async {
+                    try {
+                        OnlineMusicApiService.searchSongs(q, limit = 8)
+                    } catch (_: Exception) {
+                        emptyList()
+                    }
+                }
+            }.awaitAll()
         }
 
-        val finalTracks = if (online.isNotEmpty()) {
-            val entities = online.map { TrackEntity.fromMusicTrack(it).copy(isCached = true, genre = "Retro") }
+        val diversified = AlbumArtDeduplicator.interleaveAndDiversify(onlineResults, limit)
+
+        val finalTracks = if (diversified.isNotEmpty()) {
+            val entities = diversified.map { TrackEntity.fromMusicTrack(it).copy(isCached = true, genre = "Retro") }
             try { musicDao.insertOrUpdateTracks(entities) } catch (_: Exception) {}
-            online.map { it.copy(isLiked = likedIds.contains(it.id)) }
+            diversified.map { it.copy(isLiked = likedIds.contains(it.id)) }
         } else {
-            MusicDataSource.curatedTracks.shuffled().take(limit)
+            MusicDataSource.curatedTracks.shuffled().distinctAlbumAndCover(limit)
         }
         cachedEraTracks = finalTracks
         finalTracks

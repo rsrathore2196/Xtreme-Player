@@ -83,7 +83,8 @@ import com.example.ui.theme.XtremeRose
 fun LibraryScreen(
     favoriteTracks: List<MusicTrack>,
     playlists: List<PlaylistEntity>,
-    playerUiState: PlayerUiState,
+    playerUiState: PlayerUiState? = null,
+    currentPlayingTrackId: String? = null,
     isDarkMode: Boolean = false,
     onTrackClick: (MusicTrack, List<MusicTrack>) -> Unit,
     onToggleFavorite: (MusicTrack) -> Unit,
@@ -97,7 +98,7 @@ fun LibraryScreen(
     val isDark = isDarkMode
     val appColors = LocalAppColors.current
 
-    val currentPlayingId = playerUiState.currentTrack?.id
+    val currentPlayingId = currentPlayingTrackId ?: playerUiState?.currentTrack?.id
 
     Box(
         modifier = modifier

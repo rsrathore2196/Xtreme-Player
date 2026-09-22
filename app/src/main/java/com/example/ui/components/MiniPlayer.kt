@@ -84,8 +84,6 @@ fun MiniPlayer(
         (uiState.currentPositionMs.toFloat() / uiState.durationMs.toFloat()).coerceIn(0f, 1f)
     } else 0f
 
-    val animatedProgress by animateFloatAsState(targetValue = progress, label = "mini_progress")
-
     val playPauseScale by animateFloatAsState(
         targetValue = if (uiState.isPlaying) 1.05f else 1.0f,
         animationSpec = spring(dampingRatio = 0.6f),
@@ -283,7 +281,7 @@ fun MiniPlayer(
 
                 // Mini Progress Bar along the bottom edge
                 LinearProgressIndicator(
-                    progress = { animatedProgress },
+                    progress = { progress },
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(2.5.dp),

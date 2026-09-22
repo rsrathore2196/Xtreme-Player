@@ -82,7 +82,8 @@ import com.example.ui.viewmodel.SearchUiState
 @Composable
 fun SearchScreen(
     searchState: SearchUiState,
-    playerUiState: PlayerUiState,
+    playerUiState: PlayerUiState? = null,
+    currentPlayingTrackId: String? = null,
     onQueryChange: (String) -> Unit,
     onSelectGenre: (String) -> Unit,
     onSelectSource: (String) -> Unit = {},
@@ -90,7 +91,7 @@ fun SearchScreen(
     onToggleFavorite: (MusicTrack) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val currentPlayingId = playerUiState.currentTrack?.id
+    val currentPlayingId = currentPlayingTrackId ?: playerUiState?.currentTrack?.id
     val hasQuery = searchState.query.isNotBlank()
     val isGenreActive = !searchState.selectedGenre.equals("All", ignoreCase = true)
     val appColors = LocalAppColors.current

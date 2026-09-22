@@ -87,6 +87,7 @@ import com.example.data.model.CountryData
 import com.example.data.model.CountryItem
 import com.example.data.model.LanguageData
 import com.example.data.model.LanguageOption
+import com.example.ui.components.AppDynamicLogo
 import com.example.ui.theme.LocalAppColors
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.XtremeGradients
@@ -169,29 +170,13 @@ fun OnboardingScreen(
                     .fillMaxWidth()
                     .padding(top = 4.dp, bottom = 12.dp)
             ) {
-                // Sleek Glow Badge
-                Box(
-                    contentAlignment = Alignment.Center,
-                    modifier = Modifier
-                        .size(56.dp)
-                        .shadow(
-                            elevation = 12.dp,
-                            shape = CircleShape,
-                            spotColor = primaryAccent.copy(alpha = 0.5f)
-                        )
-                        .clip(CircleShape)
-                        .background(
-                            Brush.linearGradient(
-                                listOf(appColors.primaryAccent, appColors.secondaryAccent)
-                            )
-                        )
-                ) {
-                    Image(
-                        painter = painterResource(id = R.drawable.ic_xtreme_logo),
-                        contentDescription = "Xtreme Logo",
-                        modifier = Modifier.size(36.dp)
-                    )
-                }
+                // Original High-Fidelity App Logo
+                AppDynamicLogo(
+                    modifier = Modifier.size(54.dp),
+                    primaryAccent = appColors.primaryAccent,
+                    secondaryAccent = appColors.secondaryAccent,
+                    cutoutColor = appColors.scaffoldBackground
+                )
 
                 Spacer(modifier = Modifier.height(10.dp))
 

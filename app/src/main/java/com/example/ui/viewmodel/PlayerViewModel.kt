@@ -14,11 +14,14 @@ import com.example.data.remote.LyricsProvider
 import com.example.data.remote.MusicDataSource
 import com.example.data.repository.MusicRepository
 import com.example.data.repository.SearchResultCategory
+import com.example.playback.AudioQuality
 import com.example.playback.PlaybackManager
 import com.example.playback.PlayerUiState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -26,6 +29,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 sealed interface PlaylistImportStep {
     object Idle : PlaylistImportStep
@@ -70,6 +74,16 @@ class PlayerViewModel(
 ) : ViewModel() {
 
     val playerUiState: StateFlow<PlayerUiState> = playbackManager.uiState
+
+    val selectedQuality: StateFlow<AudioQuality> = playbackManager.uiState
+        .map { it.selectedQuality }
+        .distinctUntilChanged()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), AudioQuality.EXTREME_320)
+
+    val currentPlayingTrackId: StateFlow<String?> = playbackManager.uiState
+        .map { it.currentTrack?.id }
+        .distinctUntilChanged()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), null)
 
     private val _currentLyrics = MutableStateFlow<TrackLyrics?>(null)
     val currentLyrics: StateFlow<TrackLyrics?> = _currentLyrics.asStateFlow()
@@ -236,20 +250,27 @@ class PlayerViewModel(
         com.example.data.local.ThemePreferences.saveCustomThemeState(application, state)
     }
 
+    private val currentPlayingTrackFlow = playbackManager.uiState
+        .map { it.currentTrack?.id to it.currentTrack }
+        .distinctUntilChanged { old, new -> old.first == new.first }
+        .map { it.second }
+
     val homeShelves: StateFlow<List<com.example.ui.ai.HomeShelf>> = kotlinx.coroutines.flow.combine(
-        playbackManager.uiState,
+        currentPlayingTrackFlow,
         recentlyPlayed,
         favoriteTracks,
         _catalogTracks,
         _userProfile
-    ) { uiState, recent, favs, catalog, profile ->
-        com.example.ui.ai.AiMoodEngine.generatePersonalizedShelves(
-            lastPlayedTrack = uiState.currentTrack,
-            recentlyPlayed = recent,
-            favoriteTracks = favs,
-            catalogTracks = catalog,
-            userProfile = profile
-        )
+    ) { currentTrack, recent, favs, catalog, profile ->
+        withContext(Dispatchers.Default) {
+            com.example.ui.ai.AiMoodEngine.generatePersonalizedShelves(
+                lastPlayedTrack = currentTrack,
+                recentlyPlayed = recent,
+                favoriteTracks = favs,
+                catalogTracks = catalog,
+                userProfile = profile
+            )
+        }
     }.stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5000L),

@@ -24,7 +24,8 @@ data class CacheStats(
     val lyricsBytes: Long = 0L,
     val metadataBytes: Long = 0L,
     val audioTrackCount: Int = 0,
-    val maxQuotaBytes: Long = 500L * 1024L * 1024L, // 500 MB default
+    val maxQuotaBytes: Long = SmartCacheManager.QUOTA_BALANCED,
+    val autoTrimEnabled: Boolean = true,
     val autoPreCacheEnabled: Boolean = true,
     val cacheOnWifiOnly: Boolean = false,
     val freeDiskSpaceBytes: Long = 0L
@@ -47,8 +48,13 @@ object SmartCacheManager {
     private const val TAG = "SmartCacheManager"
     private const val PREFS_NAME = "xtreme_smart_cache_preferences"
     private const val KEY_MAX_QUOTA = "key_max_quota_bytes"
+    private const val KEY_SMART_AUTO_TRIM = "key_smart_auto_trim"
     private const val KEY_AUTO_PRECACHE = "key_auto_precache"
     private const val KEY_WIFI_ONLY = "key_wifi_only"
+
+    const val QUOTA_LEAN = 40L * 1024L * 1024L // 40 MB Lean
+    const val QUOTA_BALANCED = 60L * 1024L * 1024L // 60 MB Balanced (Default)
+    const val QUOTA_GENEROUS = 120L * 1024L * 1024L // 120 MB Generous
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var appContext: Context? = null
@@ -61,6 +67,7 @@ object SmartCacheManager {
         appContext = context.applicationContext
         repositoryRef = repository
         refreshStats()
+        smartAutoTrim()
     }
 
     private fun getPrefs(): SharedPreferences? {
@@ -71,7 +78,8 @@ object SmartCacheManager {
         val ctx = appContext ?: return
         scope.launch {
             val prefs = getPrefs()
-            val savedQuota = prefs?.getLong(KEY_MAX_QUOTA, 500L * 1024L * 1024L) ?: (500L * 1024L * 1024L)
+            val savedQuota = prefs?.getLong(KEY_MAX_QUOTA, QUOTA_BALANCED) ?: QUOTA_BALANCED
+            val autoTrim = prefs?.getBoolean(KEY_SMART_AUTO_TRIM, true) ?: true
             val autoPreCache = prefs?.getBoolean(KEY_AUTO_PRECACHE, true) ?: true
             val wifiOnly = prefs?.getBoolean(KEY_WIFI_ONLY, false) ?: false
 
@@ -91,10 +99,59 @@ object SmartCacheManager {
                 metadataBytes = metadataBytes,
                 audioTrackCount = audioCount,
                 maxQuotaBytes = savedQuota,
+                autoTrimEnabled = autoTrim,
                 autoPreCacheEnabled = autoPreCache,
                 cacheOnWifiOnly = wifiOnly,
                 freeDiskSpaceBytes = freeSpace
             )
+        }
+    }
+
+    /**
+     * Smart Auto-Trim: Automatically detects if cache has grown beyond limits
+     * and smartly clears oldest audio blocks, orphaned cover art, and temp files.
+     */
+    fun smartAutoTrim(context: Context? = appContext) {
+        val ctx = context ?: appContext ?: return
+        scope.launch {
+            try {
+                val prefs = getPrefs()
+                val autoTrim = prefs?.getBoolean(KEY_SMART_AUTO_TRIM, true) ?: true
+                if (!autoTrim) return@launch
+
+                val quota = prefs?.getLong(KEY_MAX_QUOTA, QUOTA_BALANCED) ?: QUOTA_BALANCED
+                val audioBytes = MusicCache.getCacheSize(ctx)
+                val imageBytes = calculateImageCacheBytes(ctx)
+                val total = audioBytes + imageBytes
+
+                // If cache exceeds 80% of quota or exceeds quota limit
+                if (total > (quota * 0.80f)) {
+                    Log.i(TAG, "Smart auto-trim activated: cache ($total bytes) exceeded 80% of quota ($quota bytes)")
+                    // 1. Delete temporary files
+                    ctx.cacheDir.listFiles()?.forEach { file ->
+                        if (file.isFile && (file.name.endsWith(".tmp") || file.name.startsWith("temp_"))) {
+                            file.delete()
+                        }
+                    }
+                    // 2. Trim oldest image cache if larger than 15MB
+                    if (imageBytes > 15L * 1024L * 1024L) {
+                        val imageDir = File(ctx.cacheDir, "image_cache")
+                        if (imageDir.exists()) {
+                            val files = imageDir.listFiles()?.sortedBy { it.lastModified() } ?: emptyList()
+                            for (i in 0 until (files.size / 2)) {
+                                files[i].delete()
+                            }
+                        }
+                    }
+                    // 3. Compact audio cache
+                    if (audioBytes > (quota * 0.70f)) {
+                        MusicCache.clearAudioCache(ctx)
+                    }
+                    refreshStats()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Smart auto-trim error: ${e.message}")
+            }
         }
     }
 
@@ -190,6 +247,13 @@ object SmartCacheManager {
     fun setQuota(quotaBytes: Long) {
         getPrefs()?.edit()?.putLong(KEY_MAX_QUOTA, quotaBytes)?.apply()
         _stats.value = _stats.value.copy(maxQuotaBytes = quotaBytes)
+        smartAutoTrim()
+    }
+
+    fun setSmartAutoTrim(enabled: Boolean) {
+        getPrefs()?.edit()?.putBoolean(KEY_SMART_AUTO_TRIM, enabled)?.apply()
+        _stats.value = _stats.value.copy(autoTrimEnabled = enabled)
+        if (enabled) smartAutoTrim()
     }
 
     fun setAutoPreCache(enabled: Boolean) {

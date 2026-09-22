@@ -66,93 +66,95 @@ fun CreatePlaylistDialog(
     val isDark = appColors.isDark
 
     Dialog(onDismissRequest = onDismiss) {
-        Card(
-            shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = appColors.cardBackground
-            ),
-            border = BorderStroke(1.dp, appColors.cardBorder),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(22.dp)
+        androidx.compose.runtime.CompositionLocalProvider(LocalAppColors provides appColors) {
+            Card(
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = appColors.cardBackground
+                ),
+                border = BorderStroke(1.dp, appColors.cardBorder),
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Text(
-                    text = "New Playlist",
-                    style = MaterialTheme.typography.titleLarge.copy(
-                        fontWeight = FontWeight.Bold,
-                        color = appColors.textPrimary
-                    )
-                )
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                OutlinedTextField(
-                    value = title,
-                    onValueChange = { title = it },
-                    label = { Text("Playlist Name") },
-                    placeholder = { Text("e.g. Chill Beats 320k") },
-                    singleLine = true,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = appColors.primaryAccent,
-                        unfocusedBorderColor = appColors.cardBorder,
-                        focusedLabelColor = appColors.primaryAccent,
-                        unfocusedLabelColor = appColors.textMuted,
-                        focusedTextColor = appColors.textPrimary,
-                        unfocusedTextColor = appColors.textPrimary,
-                        cursorColor = appColors.primaryAccent,
-                        focusedContainerColor = appColors.inputBackground,
-                        unfocusedContainerColor = appColors.inputBackground
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                OutlinedTextField(
-                    value = description,
-                    onValueChange = { description = it },
-                    label = { Text("Description (Optional)") },
-                    placeholder = { Text("High bitrate music collection") },
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = appColors.primaryAccent,
-                        unfocusedBorderColor = appColors.cardBorder,
-                        focusedLabelColor = appColors.primaryAccent,
-                        unfocusedLabelColor = appColors.textMuted,
-                        focusedTextColor = appColors.textPrimary,
-                        unfocusedTextColor = appColors.textPrimary,
-                        cursorColor = appColors.primaryAccent,
-                        focusedContainerColor = appColors.inputBackground,
-                        unfocusedContainerColor = appColors.inputBackground
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                Spacer(modifier = Modifier.height(20.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(22.dp)
                 ) {
-                    TextButton(onClick = onDismiss) {
-                        Text("CANCEL", color = appColors.textMuted)
-                    }
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Button(
-                        onClick = {
-                            if (title.isNotBlank()) {
-                                onConfirm(title.trim(), description.trim())
-                            }
-                        },
-                        enabled = title.isNotBlank(),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = appColors.primaryAccent,
-                            contentColor = if (isDark) Color(0xFF031428) else Color.White
+                    Text(
+                        text = "New Playlist",
+                        style = MaterialTheme.typography.titleLarge.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = appColors.textPrimary
                         )
+                    )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    OutlinedTextField(
+                        value = title,
+                        onValueChange = { title = it },
+                        label = { Text("Playlist Name") },
+                        placeholder = { Text("e.g. Chill Beats 320k") },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = appColors.primaryAccent,
+                            unfocusedBorderColor = appColors.cardBorder,
+                            focusedLabelColor = appColors.primaryAccent,
+                            unfocusedLabelColor = appColors.textMuted,
+                            focusedTextColor = appColors.textPrimary,
+                            unfocusedTextColor = appColors.textPrimary,
+                            cursorColor = appColors.primaryAccent,
+                            focusedContainerColor = appColors.inputBackground,
+                            unfocusedContainerColor = appColors.inputBackground
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    OutlinedTextField(
+                        value = description,
+                        onValueChange = { description = it },
+                        label = { Text("Description (Optional)") },
+                        placeholder = { Text("High bitrate music collection") },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = appColors.primaryAccent,
+                            unfocusedBorderColor = appColors.cardBorder,
+                            focusedLabelColor = appColors.primaryAccent,
+                            unfocusedLabelColor = appColors.textMuted,
+                            focusedTextColor = appColors.textPrimary,
+                            unfocusedTextColor = appColors.textPrimary,
+                            cursorColor = appColors.primaryAccent,
+                            focusedContainerColor = appColors.inputBackground,
+                            unfocusedContainerColor = appColors.inputBackground
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Spacer(modifier = Modifier.height(20.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
                     ) {
-                        Text("CREATE", fontWeight = FontWeight.Bold)
+                        TextButton(onClick = onDismiss) {
+                            Text("CANCEL", color = appColors.textMuted)
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Button(
+                            onClick = {
+                                if (title.isNotBlank()) {
+                                    onConfirm(title.trim(), description.trim())
+                                }
+                            },
+                            enabled = title.isNotBlank(),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = appColors.primaryAccent,
+                                contentColor = appColors.onPrimaryAccent
+                            )
+                        ) {
+                            Text("CREATE", fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
             }
@@ -172,127 +174,129 @@ fun AddToPlaylistDialog(
     val appColors = LocalAppColors.current
 
     Dialog(onDismissRequest = onDismiss) {
-        Card(
-            shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = appColors.cardBackground
-            ),
-            border = BorderStroke(1.dp, appColors.cardBorder),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(20.dp)
+        androidx.compose.runtime.CompositionLocalProvider(LocalAppColors provides appColors) {
+            Card(
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = appColors.cardBackground
+                ),
+                border = BorderStroke(1.dp, appColors.cardBorder),
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Text(
-                    text = "Add to Playlist",
-                    style = MaterialTheme.typography.titleMedium.copy(
-                        fontWeight = FontWeight.Bold,
-                        color = appColors.textPrimary
-                    )
-                )
-                Text(
-                    text = "\"${track.title}\" by ${track.artist}",
-                    style = MaterialTheme.typography.bodySmall.copy(
-                        color = appColors.primaryAccent
-                    ),
-                    maxLines = 1
-                )
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Create new playlist button
-                Row(
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(appColors.chipBackground)
-                        .border(1.dp, appColors.cardBorder, RoundedCornerShape(12.dp))
-                        .clickable {
-                            onDismiss()
-                            onCreateNewPlaylist()
-                        }
-                        .padding(horizontal = 14.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                        .padding(20.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Add,
-                        contentDescription = null,
-                        tint = appColors.primaryAccent,
-                        modifier = Modifier.size(22.dp)
-                    )
-                    Spacer(modifier = Modifier.width(12.dp))
                     Text(
-                        text = "Create New Playlist",
-                        color = appColors.primaryAccent,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 14.sp
+                        text = "Add to Playlist",
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = appColors.textPrimary
+                        )
                     )
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                if (playlists.isEmpty()) {
                     Text(
-                        text = "No custom playlists yet. Create your first one above!",
-                        color = appColors.textMuted,
-                        fontSize = 13.sp,
-                        modifier = Modifier.padding(vertical = 12.dp)
+                        text = "\"${track.title}\" by ${track.artist}",
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            color = appColors.primaryAccent
+                        ),
+                        maxLines = 1
                     )
-                } else {
-                    LazyColumn(
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // Create new playlist button
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(200.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(appColors.chipBackground)
+                            .border(1.dp, appColors.cardBorder, RoundedCornerShape(12.dp))
+                            .clickable {
+                                onDismiss()
+                                onCreateNewPlaylist()
+                            }
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        items(playlists) { playlist ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(appColors.chipBackground)
-                                    .border(1.dp, appColors.cardBorder, RoundedCornerShape(10.dp))
-                                    .clickable {
-                                        onPlaylistSelected(playlist.playlistId)
-                                        onDismiss()
-                                    }
-                                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.QueueMusic,
-                                    contentDescription = null,
-                                    tint = appColors.primaryAccent,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                Spacer(modifier = Modifier.width(10.dp))
-                                Column {
-                                    Text(
-                                        text = playlist.title,
-                                        color = appColors.textPrimary,
-                                        fontWeight = FontWeight.Medium,
-                                        fontSize = 14.sp
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = null,
+                            tint = appColors.primaryAccent,
+                            modifier = Modifier.size(22.dp)
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            text = "Create New Playlist",
+                            color = appColors.primaryAccent,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    if (playlists.isEmpty()) {
+                        Text(
+                            text = "No custom playlists yet. Create your first one above!",
+                            color = appColors.textMuted,
+                            fontSize = 13.sp,
+                            modifier = Modifier.padding(vertical = 12.dp)
+                        )
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(200.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(playlists) { playlist ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(appColors.chipBackground)
+                                        .border(1.dp, appColors.cardBorder, RoundedCornerShape(10.dp))
+                                        .clickable {
+                                            onPlaylistSelected(playlist.playlistId)
+                                            onDismiss()
+                                        }
+                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                                        contentDescription = null,
+                                        tint = appColors.primaryAccent,
+                                        modifier = Modifier.size(20.dp)
                                     )
-                                    if (playlist.description.isNotBlank()) {
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column {
                                         Text(
-                                            text = playlist.description,
-                                            color = appColors.textMuted,
-                                            fontSize = 11.sp
+                                            text = playlist.title,
+                                            color = appColors.textPrimary,
+                                            fontWeight = FontWeight.Medium,
+                                            fontSize = 14.sp
                                         )
+                                        if (playlist.description.isNotBlank()) {
+                                            Text(
+                                                text = playlist.description,
+                                                color = appColors.textMuted,
+                                                fontSize = 11.sp
+                                            )
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                }
 
-                Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(16.dp))
 
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    TextButton(onClick = onDismiss) {
-                        Text("CLOSE", color = appColors.textMuted)
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        TextButton(onClick = onDismiss) {
+                            Text("CLOSE", color = appColors.textMuted)
+                        }
                     }
                 }
             }

@@ -24,6 +24,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AspectRatio
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CleaningServices
@@ -72,7 +73,11 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.collectAsState
+import com.example.data.cache.SmartCacheManager
 import com.example.data.local.OtherSettingsPreferences
+import kotlinx.coroutines.launch
 import com.example.ui.theme.LocalAppColors
 
 @Composable
@@ -99,10 +104,13 @@ fun OtherSettingsPage(
     var proxyType by remember { mutableStateOf(OtherSettingsPreferences.getProxyType(context)) }
     var proxySavedMessage by remember { mutableStateOf(false) }
 
-    // Cache state
-    var cacheSizeBytes by remember { mutableStateOf(OtherSettingsPreferences.calculateCacheSizeBytes(context)) }
+    // Cache state backed by SmartCacheManager
+    val coroutineScope = rememberCoroutineScope()
+    val cacheStats by SmartCacheManager.stats.collectAsState()
     var showClearCacheDialog by remember { mutableStateOf(false) }
     var cacheClearedMessage by remember { mutableStateOf(false) }
+    var cacheFeedbackText by remember { mutableStateOf("") }
+    var isOptimizingCache by remember { mutableStateOf(false) }
 
     // Text Size & App UI Size states
     var selectedTextSizeIndex by remember {
@@ -121,7 +129,7 @@ fun OtherSettingsPage(
             .verticalScroll(rememberScrollState())
             .padding(16.dp)
     ) {
-        // 1. Clear Cache & Storage Card
+        // 1. Smart Storage & Cache Management Card
         Card(
             shape = RoundedCornerShape(18.dp),
             colors = CardDefaults.cardColors(containerColor = cardBg),
@@ -129,39 +137,117 @@ fun OtherSettingsPage(
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier
-                            .size(30.dp)
-                            .clip(CircleShape)
-                            .background(accentColor.copy(alpha = 0.12f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Storage,
-                            contentDescription = null,
-                            tint = accentColor,
-                            modifier = Modifier.size(16.dp)
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Column {
-                        Text(
-                            text = "Storage & Cache",
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = appColors.textPrimary
-                        )
-                        Text(
-                            text = "Manage temporary audio chunks and image cache",
-                            fontSize = 11.5.sp,
-                            color = appColors.textMuted
-                        )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(32.dp)
+                                .clip(CircleShape)
+                                .background(accentColor.copy(alpha = 0.12f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Storage,
+                                contentDescription = null,
+                                tint = accentColor,
+                                modifier = Modifier.size(17.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = "Smart Storage & Cache",
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = appColors.textPrimary
+                            )
+                            Text(
+                                text = "Smart auto-trim, quotas & background cleanup",
+                                fontSize = 11.5.sp,
+                                color = appColors.textMuted
+                            )
+                        }
                     }
                 }
 
                 Spacer(modifier = Modifier.height(14.dp))
 
+                // Cache Usage Stat Box
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = inputBg,
+                    border = BorderStroke(1.dp, cardBorder),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column {
+                                Text(
+                                    text = "Total Cache Usage",
+                                    fontSize = 13.5.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = appColors.textPrimary
+                                )
+                                Text(
+                                    text = "Audio (${cacheStats.formattedAudio}) • Images (${cacheStats.formattedImage})",
+                                    fontSize = 11.sp,
+                                    color = appColors.textMuted
+                                )
+                            }
+
+                            Text(
+                                text = cacheStats.formattedTotal,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = accentColor
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        // Usage quota bar
+                        val usagePercent = cacheStats.usagePercentage
+                        androidx.compose.material3.LinearProgressIndicator(
+                            progress = { usagePercent },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(3.dp)),
+                            color = if (usagePercent > 0.85f) Color(0xFFEF4444) else accentColor,
+                            trackColor = appColors.cardBorder
+                        )
+
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "${(usagePercent * 100).toInt()}% of ${cacheStats.formattedQuota} limit",
+                                fontSize = 10.5.sp,
+                                color = appColors.textMuted
+                            )
+                            Text(
+                                text = "Free space: ${cacheStats.formattedFreeDisk}",
+                                fontSize = 10.5.sp,
+                                color = appColors.textMuted
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Smart Auto-Trim Toggle
                 Surface(
                     shape = RoundedCornerShape(12.dp),
                     color = inputBg,
@@ -171,59 +257,150 @@ fun OtherSettingsPage(
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween,
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
                     ) {
-                        Column {
+                        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
                             Text(
-                                text = "Temporary Cache Usage",
-                                fontSize = 13.5.sp,
+                                text = "Smart Auto-Trim",
+                                fontSize = 13.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = appColors.textPrimary
                             )
                             Text(
-                                text = "Cover art bitmaps & audio buffers",
-                                fontSize = 11.sp,
+                                text = "Auto-purges old audio chunks when exceeding 80% quota",
+                                fontSize = 10.5.sp,
                                 color = appColors.textMuted
                             )
                         }
 
-                        Text(
-                            text = OtherSettingsPreferences.formatBytes(cacheSizeBytes),
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = accentColor
+                        Switch(
+                            checked = cacheStats.autoTrimEnabled,
+                            onCheckedChange = { isEnabled ->
+                                SmartCacheManager.setSmartAutoTrim(isEnabled)
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = accentColor,
+                                uncheckedThumbColor = appColors.textMuted,
+                                uncheckedTrackColor = inputBg
+                            )
                         )
                     }
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(8.dp))
 
-                OutlinedButton(
-                    onClick = { showClearCacheDialog = true },
-                    shape = RoundedCornerShape(10.dp),
-                    border = BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.6f)),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = Color(0xFFEF4444)
-                    ),
-                    modifier = Modifier.fillMaxWidth().height(44.dp).testTag("button_clear_cache")
+                // Max Quota selector chips
+                Text(
+                    text = "Max Cache Limit",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = appColors.textPrimary,
+                    modifier = Modifier.padding(top = 4.dp, bottom = 6.dp)
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.DeleteSweep,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Clear Cache Now",
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Bold
-                    )
+                    listOf(
+                        "40 MB (Lean)" to SmartCacheManager.QUOTA_LEAN,
+                        "60 MB (Standard)" to SmartCacheManager.QUOTA_BALANCED,
+                        "120 MB (Generous)" to SmartCacheManager.QUOTA_GENEROUS
+                    ).forEach { (label, quota) ->
+                        val isSelected = cacheStats.maxQuotaBytes == quota
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (isSelected) accentColor.copy(alpha = 0.15f) else inputBg,
+                            border = BorderStroke(
+                                1.dp,
+                                if (isSelected) accentColor else cardBorder
+                            ),
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable {
+                                    SmartCacheManager.setQuota(quota)
+                                }
+                        ) {
+                            Text(
+                                text = label,
+                                fontSize = 10.5.sp,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                color = if (isSelected) accentColor else appColors.textSecondary,
+                                modifier = Modifier.padding(vertical = 8.dp, horizontal = 4.dp),
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Action Buttons: Smart Optimize & Clear Cache
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // Smart Optimize Button
+                    OutlinedButton(
+                        onClick = {
+                            isOptimizingCache = true
+                            coroutineScope.launch {
+                                val result = SmartCacheManager.smartOptimize()
+                                isOptimizingCache = false
+                                cacheFeedbackText = result.second
+                                cacheClearedMessage = true
+                            }
+                        },
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, accentColor.copy(alpha = 0.6f)),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = accentColor
+                        ),
+                        enabled = !isOptimizingCache,
+                        modifier = Modifier.weight(1f).height(44.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.AutoAwesome,
+                            contentDescription = null,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (isOptimizingCache) "Optimizing..." else "Smart Optimize",
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    // Clear All Cache Button
+                    OutlinedButton(
+                        onClick = { showClearCacheDialog = true },
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.6f)),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = Color(0xFFEF4444)
+                        ),
+                        modifier = Modifier.weight(1f).height(44.dp).testTag("button_clear_cache")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.DeleteSweep,
+                            contentDescription = null,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Clear Cache",
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
 
                 if (cacheClearedMessage) {
                     Spacer(modifier = Modifier.height(10.dp))
                     Text(
-                        text = "✓ Cache successfully cleared!",
+                        text = if (cacheFeedbackText.isNotEmpty()) "✓ $cacheFeedbackText" else "✓ Cache successfully cleared!",
                         fontSize = 11.5.sp,
                         fontWeight = FontWeight.Bold,
                         color = accentColor
@@ -876,7 +1053,7 @@ fun OtherSettingsPage(
             },
             text = {
                 Text(
-                    text = "This will clear temporary album art images and stream buffers (${OtherSettingsPreferences.formatBytes(cacheSizeBytes)}). Your playlists and favorite tracks will not be affected.",
+                    text = "This will clear temporary album art images and stream buffers (${cacheStats.formattedTotal}). Your playlists and favorite tracks will not be affected.",
                     fontSize = 13.sp,
                     color = appColors.textMuted
                 )
@@ -884,10 +1061,12 @@ fun OtherSettingsPage(
             confirmButton = {
                 Button(
                     onClick = {
-                        OtherSettingsPreferences.clearCache(context)
-                        cacheSizeBytes = 0L
-                        cacheClearedMessage = true
-                        showClearCacheDialog = false
+                        coroutineScope.launch {
+                            val freed = SmartCacheManager.clearAllCache()
+                            cacheFeedbackText = "Cleared ${SmartCacheManager.formatBytes(freed)}"
+                            cacheClearedMessage = true
+                            showClearCacheDialog = false
+                        }
                     },
                     colors = ButtonDefaults.buttonColors(
                         containerColor = Color(0xFFEF4444),

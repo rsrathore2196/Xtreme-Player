@@ -161,8 +161,7 @@ object OtherSettingsPreferences {
                 size += getFolderSize(it)
             }
         } catch (_: Exception) {}
-        // Base minimum cache display for audio buffer representation
-        return if (size > 0L) size else 14_680_064L // ~14 MB representation if completely fresh
+        return size
     }
 
     private fun getFolderSize(file: File?): Long {
@@ -190,8 +189,8 @@ object OtherSettingsPreferences {
     fun clearCache(context: Context): Boolean {
         var success = true
         try {
-            deleteDir(context.cacheDir)
-            context.externalCacheDir?.let { deleteDir(it) }
+            clearCacheDir(context.cacheDir)
+            context.externalCacheDir?.let { clearCacheDir(it) }
             getPrefs(context).edit()
                 .putLong(KEY_CACHE_CLEARED_TIMESTAMP, System.currentTimeMillis())
                 .apply()
@@ -199,6 +198,19 @@ object OtherSettingsPreferences {
             success = false
         }
         return success
+    }
+
+    private fun clearCacheDir(dir: File?) {
+        if (dir == null || !dir.exists()) return
+        dir.listFiles()?.forEach { file ->
+            try {
+                if (file.isDirectory) {
+                    deleteDir(file)
+                } else {
+                    file.delete()
+                }
+            } catch (_: Exception) {}
+        }
     }
 
     private fun deleteDir(dir: File?): Boolean {

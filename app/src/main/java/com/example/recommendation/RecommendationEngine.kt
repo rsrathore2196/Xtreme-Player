@@ -133,9 +133,18 @@ class RecommendationEngine {
             return bestCandidate.track
         }
 
-        // Fallback: choose first unplayed track in candidate pool
-        return candidatePool.firstOrNull { it.id != currentTrack.id && !excludedIds.contains(it.id) }
-            ?: candidatePool.firstOrNull { it.id != currentTrack.id }
+        // Fallback: choose first unplayed track in candidate pool that is strictly NOT the same song name or variant, and not in session history
+        val sessionList = sessionBuffer.toList()
+        return candidatePool.firstOrNull { cand ->
+            cand.id != currentTrack.id &&
+            !excludedIds.contains(cand.id) &&
+            !isSameSongOrVariant(cand.title, currentTrack.title) &&
+            sessionList.none { isSameSongOrVariant(cand.title, it.title) || it.id == cand.id }
+        } ?: candidatePool.firstOrNull { cand ->
+            cand.id != currentTrack.id &&
+            !isSameSongOrVariant(cand.title, currentTrack.title) &&
+            sessionList.none { isSameSongOrVariant(cand.title, it.title) || it.id == cand.id }
+        }
     }
 
     /**
@@ -228,20 +237,19 @@ class RecommendationEngine {
                 sessionBoost += 5.0
             }
 
-            // 7. Exclusion / Repetition Penalty (Strictly penalize same song name, album duplicates & remixes)
+            // 7. Exclusion / Repetition Penalty (Strictly disqualify same song name, variants, and session history)
             var exclusionPenalty = 0.0
             val isSameSongName = isSameSongOrVariant(candidate.title, currentTrack.title)
-            val isPlayedInSession = sessionList.any { isSameSongOrVariant(candidate.title, it.title) }
+            val isPlayedInSession = sessionList.any { isSameSongOrVariant(candidate.title, it.title) || it.id == candidate.id }
 
-            if (candidate.id == currentTrack.id || isSameSongName) {
-                // Immediate disqualification: user specifically requested never repeat same song name or from different album
-                exclusionPenalty -= 600.0
+            if (candidate.id == currentTrack.id || isSameSongName || isPlayedInSession) {
+                // Absolute disqualification: never repeat same song name, variants, or tracks from different albums
+                exclusionPenalty = -10000.0
             } else if (excludedIds.contains(candidate.id)) {
-                exclusionPenalty -= 150.0
-            } else if (isPlayedInSession) {
-                exclusionPenalty -= 200.0
-            } else if (sessionList.takeLast(4).any { it.id == candidate.id }) {
-                exclusionPenalty -= 100.0
+                exclusionPenalty = -10000.0
+            } else if (currentTrack.album.isNotBlank() && candidate.album.equals(currentTrack.album, ignoreCase = true) && currentTrack.album != "Single") {
+                // Discourage multiple tracks from the exact same album
+                exclusionPenalty -= 60.0
             }
 
             val totalScore = singerScore + languageScore + eraScore + moodScore + bpmScore + acousticScore + sessionBoost + exclusionPenalty
@@ -312,18 +320,38 @@ class RecommendationEngine {
         val resultQueue = mutableListOf<MusicTrack>()
         resultQueue.add(selectedTrack)
 
-        val poolWithoutSelected = candidatePool.filter { it.id != selectedTrack.id }
+        val seenRoots = mutableSetOf<String>()
+        val selectedRoot = extractRootTitle(selectedTrack.title)
+        if (selectedRoot.isNotBlank()) seenRoots.add(selectedRoot)
 
-        // 1. First priority: Songs by the exact same singer / artist
+        // Filter pool: strictly exclude selected track and ANY track with the same song name or variant
+        val poolWithoutSelected = candidatePool.filter { cand ->
+            cand.id != selectedTrack.id &&
+            !isSameSongOrVariant(selectedTrack.title, cand.title)
+        }
+
+        // 1. First priority: Songs by the exact same singer / artist (DIFFERENT songs only)
         val sameSingerSongs = poolWithoutSelected.filter { candidate ->
             sharesSingerOrArtist(selectedTrack, candidate)
-        }.distinctBy { it.id }
+        }
 
-        resultQueue.addAll(sameSingerSongs)
+        for (cand in sameSingerSongs) {
+            val root = extractRootTitle(cand.title)
+            val isDuplicate = root.isNotBlank() && (seenRoots.contains(root) || seenRoots.any { isSameSongOrVariant(it, root) })
+            if (!isDuplicate) {
+                if (root.isNotBlank()) seenRoots.add(root)
+                resultQueue.add(cand)
+                if (resultQueue.size >= 8) break // Limit artist saturation so queue stays fresh
+            }
+        }
 
         // 2. Next priority: Same genre / type songs matching taste profile
         val remainingCandidates = poolWithoutSelected.filter { cand ->
-            resultQueue.none { it.id == cand.id }
+            val root = extractRootTitle(cand.title)
+            resultQueue.none { it.id == cand.id } &&
+            !isSameSongOrVariant(selectedTrack.title, cand.title) &&
+            resultQueue.none { isSameSongOrVariant(it.title, cand.title) } &&
+            !seenRoots.contains(root)
         }
 
         var currentPivot = resultQueue.lastOrNull() ?: selectedTrack
@@ -337,9 +365,15 @@ class RecommendationEngine {
                 prioritizeArtistAndGenre = true
             )
             if (nextTrack != null) {
-                resultQueue.add(nextTrack)
-                excludedIds.add(nextTrack.id)
-                currentPivot = nextTrack
+                val root = extractRootTitle(nextTrack.title)
+                if (root.isNotBlank() && !seenRoots.contains(root) && !seenRoots.any { isSameSongOrVariant(it, root) }) {
+                    seenRoots.add(root)
+                    resultQueue.add(nextTrack)
+                    excludedIds.add(nextTrack.id)
+                    currentPivot = nextTrack
+                } else {
+                    excludedIds.add(nextTrack.id)
+                }
             } else {
                 break
             }
@@ -425,22 +459,24 @@ class RecommendationEngine {
         )
 
         val result = mutableListOf<MusicTrack>()
-        val seenNormalizedTitles = mutableSetOf<String>()
-        val currentNorm = normalizeTitle(currentTrack.title)
-        if (currentNorm.isNotBlank()) seenNormalizedTitles.add(currentNorm)
+        val seenRoots = mutableSetOf<String>()
+        val currentRoot = extractRootTitle(currentTrack.title)
+        if (currentRoot.isNotBlank()) seenRoots.add(currentRoot)
+        val sessionList = sessionBuffer.toList()
 
         for (item in scored) {
             if (item.totalScore <= -50.0) continue
             val track = item.track
             if (excluded.contains(track.id)) continue
 
-            val norm = normalizeTitle(track.title)
-            val isDuplicateTitle = norm.isNotBlank() && seenNormalizedTitles.contains(norm)
+            val root = extractRootTitle(track.title)
+            val isDuplicateTitle = root.isNotBlank() && (seenRoots.contains(root) || seenRoots.any { isSameSongOrVariant(it, root) })
             val isVariant = isSameSongOrVariant(currentTrack.title, track.title) ||
-                    result.any { isSameSongOrVariant(it.title, track.title) }
+                    result.any { isSameSongOrVariant(it.title, track.title) } ||
+                    sessionList.any { isSameSongOrVariant(it.title, track.title) || it.id == track.id }
 
             if (!isDuplicateTitle && !isVariant) {
-                if (norm.isNotBlank()) seenNormalizedTitles.add(norm)
+                if (root.isNotBlank()) seenRoots.add(root)
                 result.add(track)
                 excluded.add(track.id)
                 if (result.size >= limit) break
@@ -450,9 +486,12 @@ class RecommendationEngine {
         // Fallback: fill remaining slots with unplayed matching candidates from candidatePool
         if (result.size < limit) {
             val fallbackCandidates = candidatePool.filter { cand ->
+                val candRoot = extractRootTitle(cand.title)
                 !excluded.contains(cand.id) &&
                         !isSameSongOrVariant(currentTrack.title, cand.title) &&
-                        result.none { isSameSongOrVariant(it.title, cand.title) }
+                        result.none { isSameSongOrVariant(it.title, cand.title) } &&
+                        sessionList.none { isSameSongOrVariant(it.title, cand.title) || it.id == cand.id } &&
+                        !seenRoots.contains(candRoot)
             }.sortedByDescending { cand ->
                 var s = 0
                 if (cand.language.equals(currentTrack.language, ignoreCase = true)) s += 25
@@ -462,9 +501,9 @@ class RecommendationEngine {
             }
 
             for (cand in fallbackCandidates) {
-                val norm = normalizeTitle(cand.title)
-                if (norm.isNotBlank() && !seenNormalizedTitles.contains(norm)) {
-                    seenNormalizedTitles.add(norm)
+                val root = extractRootTitle(cand.title)
+                if (root.isNotBlank() && !seenRoots.contains(root) && !seenRoots.any { isSameSongOrVariant(it, root) }) {
+                    seenRoots.add(root)
                     result.add(cand)
                     excluded.add(cand.id)
                     if (result.size >= limit) break
@@ -476,33 +515,71 @@ class RecommendationEngine {
     }
 
     companion object {
-        fun normalizeTitle(rawTitle: String): String {
-            return rawTitle.lowercase()
-                .replace(Regex("\\(.*?\\)|\\[.*?\\]"), "") // remove (Official Audio), (Remix), [From "XYZ"], etc.
-                .replace(Regex("(?i)\\b(remix|lofi|slowed|reverb|version|acoustic|live|cover|edit|instrumental|album|single|hd|4k|hq|original|soundtrack|ost|audio|video|official)\\b"), "")
-                .replace(Regex("[-–—:|/]"), " ")
-                .replace(Regex("[^a-z0-9\\s]"), "")
-                .trim()
-                .replace(Regex("\\s+"), " ")
-        }
+        /**
+         * Extracts the canonical root title of a song by removing:
+         * 1. Bracketed/Parenthetical strings: (From "Movie"), (Remix), [Official Video], etc.
+         * 2. Separators: - , – , — , | , : , /
+         * 3. Audio/release buzzwords: lyrical, ost, soundtrack, lofi, acoustic, slowed, reverb, etc.
+         */
+        fun extractRootTitle(rawTitle: String): String {
+            var title = rawTitle.lowercase()
+            // Strip bracketed/parenthesized content
+            title = title.replace(Regex("\\(.*?\\)|\\[.*?\\]|\\{.*?\\}"), " ")
 
-        fun isSameSongOrVariant(track1Title: String, track2Title: String): Boolean {
-            val norm1 = normalizeTitle(track1Title)
-            val norm2 = normalizeTitle(track2Title)
-            if (norm1.isBlank() || norm2.isBlank()) return false
-            if (norm1 == norm2) return true
-
-            // Check significant word match
-            val words1 = norm1.split(" ").filter { it.length > 2 }
-            val words2 = norm2.split(" ").filter { it.length > 2 }
-            if (words1.isNotEmpty() && words2.isNotEmpty()) {
-                val sharedWords = words1.intersect(words2.toSet())
-                if (sharedWords.size == words1.size || sharedWords.size == words2.size) {
-                    return true
+            // Split on common metadata separators
+            val parts = title.split(Regex("[-–—|:/•]"))
+            if (parts.isNotEmpty()) {
+                val firstPart = parts[0].trim()
+                if (firstPart.length >= 2) {
+                    title = firstPart
                 }
             }
-            if ((norm1.contains(norm2) && norm2.length >= 4) || (norm2.contains(norm1) && norm1.length >= 4)) {
-                return true
+
+            // Remove common release tokens and noise
+            title = title.replace(
+                Regex("(?i)\\b(from|soundtrack|ost|movie|film|album|original|official|audio|video|lyrics|lyrical|remix|lofi|slowed|reverb|version|reprise|acoustic|live|cover|unplugged|edit|instrumental|single|hd|4k|hq|full song|feat|ft|featuring)\\b"),
+                " "
+            )
+
+            // Remove punctuation and non-alphanumerics (retaining letters & numbers across languages)
+            title = title.replace(Regex("[^\\p{L}\\p{Nd}\\s]"), " ")
+
+            return title.trim().replace(Regex("\\s+"), " ")
+        }
+
+        fun normalizeTitle(rawTitle: String): String {
+            return extractRootTitle(rawTitle)
+        }
+
+        /**
+         * Checks whether two tracks are the same song or variants/remixes of each other,
+         * even if released in different albums, soundtracks, or formats.
+         */
+        fun isSameSongOrVariant(track1Title: String, track2Title: String): Boolean {
+            val root1 = extractRootTitle(track1Title)
+            val root2 = extractRootTitle(track2Title)
+            if (root1.isBlank() || root2.isBlank()) return false
+            if (root1 == root2) return true
+
+            // Substring or prefix equality for roots of meaningful length
+            if (root1.length >= 3 && root2.length >= 3) {
+                if (root1.startsWith(root2) || root2.startsWith(root1)) return true
+                if (root1.contains(root2) || root2.contains(root1)) return true
+            }
+
+            // Significant words match (length >= 3)
+            val words1 = root1.split(" ").filter { it.length >= 3 }
+            val words2 = root2.split(" ").filter { it.length >= 3 }
+            if (words1.isNotEmpty() && words2.isNotEmpty()) {
+                val set1 = words1.toSet()
+                val set2 = words2.toSet()
+                val sharedWords = set1.intersect(set2)
+                if (sharedWords.size >= set1.size || sharedWords.size >= set2.size) {
+                    return true
+                }
+                if (sharedWords.size >= 2 && (sharedWords.size.toDouble() / set1.size >= 0.6 || sharedWords.size.toDouble() / set2.size >= 0.6)) {
+                    return true
+                }
             }
             return false
         }

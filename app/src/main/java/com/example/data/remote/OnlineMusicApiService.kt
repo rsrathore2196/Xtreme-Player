@@ -165,25 +165,26 @@ object OnlineMusicApiService {
             if (cached.isNotEmpty()) return@withContext cached
         }
 
-        val candidates = listOf("Top Global Hits", "Trending 2024", "Viral Hits", "Latest Bollywood")
+        val candidates = listOf("Top Global Hits", "Viral Pop Hits", "Trending Bollywood Hits", "Top Punjabi Hits", "Indie Music Hits")
         val results = coroutineScope {
             val deferreds = candidates.map { candidate ->
                 async {
                     try {
-                        searchSongs(candidate, limit)
+                        searchSongs(candidate, limit = 10)
                     } catch (e: Exception) {
                         Log.w(TAG, "Failed to fetch trending from $candidate: ${e.message}")
                         emptyList()
                     }
                 }
             }
-            deferreds.awaitAll().firstOrNull { it.isNotEmpty() } ?: emptyList()
+            deferreds.awaitAll()
         }
 
-        if (results.isNotEmpty()) {
-            trendingCache[limit] = results
+        val diversified = com.example.recommendation.AlbumArtDeduplicator.interleaveAndDiversify(results, limit)
+        if (diversified.isNotEmpty()) {
+            trendingCache[limit] = diversified
         }
-        results
+        diversified
     }
 
     private val profileTrendingCache = ConcurrentHashMap<String, List<MusicTrack>>()
@@ -210,14 +211,15 @@ object OnlineMusicApiService {
         }
         for (lang in languages.take(2)) {
             candidates.add("Top $lang Hits")
+            candidates.add("Best of $lang Songs")
         }
         candidates.add("Top Global Hits")
 
-        val distinctQueries = candidates.distinct().take(3)
+        val distinctQueries = candidates.distinct().take(4)
         val deferredList = distinctQueries.map { candidate ->
             async {
                 try {
-                    val results = searchSongs(candidate, limit = 12)
+                    val results = searchSongs(candidate, limit = 10)
                     results.filter { !com.example.data.model.CountryData.hasCountryNameInTitle(it.title, country) }
                 } catch (e: Exception) {
                     Log.w(TAG, "Failed query for profile candidate $candidate: ${e.message}")
@@ -226,11 +228,11 @@ object OnlineMusicApiService {
             }
         }
 
-        val allResults = deferredList.awaitAll().flatten()
-        val filtered = allResults.distinctBy { it.id }
+        val allResults = deferredList.awaitAll()
+        val diversified = com.example.recommendation.AlbumArtDeduplicator.interleaveAndDiversify(allResults, limit)
 
-        val finalResult = if (filtered.isNotEmpty()) {
-            filtered.take(limit)
+        val finalResult = if (diversified.isNotEmpty()) {
+            diversified
         } else {
             getTrendingSongs(limit).filter { !com.example.data.model.CountryData.hasCountryNameInTitle(it.title, country) }
         }
@@ -261,29 +263,31 @@ object OnlineMusicApiService {
             else -> listOf("$genre Songs", "$genre Hits", "$genre Top Tracks", "Best of $genre", "$genre Mix")
         }
 
-        val selectedQueries = queryCandidates.shuffled().take(2)
+        val selectedQueries = queryCandidates.shuffled().take(3)
         val randomPage = (1..3).random()
-        val collected = mutableListOf<MusicTrack>()
+        val queryResults = mutableListOf<List<MusicTrack>>()
 
         for (candidateQuery in selectedQueries) {
             try {
-                val songs = searchSongs(candidateQuery, limit = limit, page = randomPage)
+                val songs = searchSongs(candidateQuery, limit = 12, page = randomPage)
                 if (songs.isNotEmpty()) {
-                    collected.addAll(songs)
+                    queryResults.add(songs)
                 } else if (randomPage > 1) {
-                    collected.addAll(searchSongs(candidateQuery, limit = limit, page = 1))
+                    val fallbackSongs = searchSongs(candidateQuery, limit = 12, page = 1)
+                    if (fallbackSongs.isNotEmpty()) queryResults.add(fallbackSongs)
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Error fetching genre songs for $candidateQuery: ${e.message}")
             }
         }
 
-        if (collected.isEmpty()) {
+        if (queryResults.isEmpty()) {
             val fallbackQuery = queryCandidates.first()
-            collected.addAll(searchSongs(fallbackQuery, limit = limit, page = 1))
+            val fallbackSongs = searchSongs(fallbackQuery, limit = limit, page = 1)
+            if (fallbackSongs.isNotEmpty()) queryResults.add(fallbackSongs)
         }
 
-        collected.distinctBy { "${it.title.lowercase()}_${it.artist.lowercase()}" }.shuffled()
+        com.example.recommendation.AlbumArtDeduplicator.interleaveAndDiversify(queryResults, limit)
     }
 
     private fun parseSongsJson(jsonString: String, fallbackGenre: String): List<MusicTrack> {

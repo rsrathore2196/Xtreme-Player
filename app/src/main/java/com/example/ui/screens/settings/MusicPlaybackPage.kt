@@ -61,7 +61,7 @@ import com.example.ui.theme.LocalAppColors
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun MusicPlaybackPage(
-    playerUiState: PlayerUiState,
+    selectedQuality: AudioQuality = AudioQuality.EXTREME_320,
     effectsState: AudioEffectsState,
     isDarkMode: Boolean,
     onAudioQualitySelected: (AudioQuality) -> Unit,
@@ -132,7 +132,7 @@ fun MusicPlaybackPage(
                 AudioQualityOption(
                     title = "Ultra HD • 320 kbps (Studio Master)",
                     subtitle = "Audiophile grade CD-quality sound reproduction",
-                    isSelected = playerUiState.selectedQuality == AudioQuality.EXTREME_320,
+                    isSelected = selectedQuality == AudioQuality.EXTREME_320,
                     isDarkMode = isDarkMode,
                     accentColor = accentColor,
                     onClick = { onAudioQualitySelected(AudioQuality.EXTREME_320) }
@@ -143,7 +143,7 @@ fun MusicPlaybackPage(
                 AudioQualityOption(
                     title = "High • 160 kbps (Balanced)",
                     subtitle = "Optimized clear sound with fast data streaming",
-                    isSelected = playerUiState.selectedQuality == AudioQuality.HIGH_160,
+                    isSelected = selectedQuality == AudioQuality.HIGH_160,
                     isDarkMode = isDarkMode,
                     accentColor = accentColor,
                     onClick = { onAudioQualitySelected(AudioQuality.HIGH_160) }
@@ -154,7 +154,7 @@ fun MusicPlaybackPage(
                 AudioQualityOption(
                     title = "Medium • 96 kbps (Data Saver)",
                     subtitle = "Lowest network bandwidth usage",
-                    isSelected = playerUiState.selectedQuality == AudioQuality.DATA_SAVER_96,
+                    isSelected = selectedQuality == AudioQuality.DATA_SAVER_96,
                     isDarkMode = isDarkMode,
                     accentColor = accentColor,
                     onClick = { onAudioQualitySelected(AudioQuality.DATA_SAVER_96) }
@@ -174,43 +174,41 @@ fun MusicPlaybackPage(
             Column(modifier = Modifier.padding(16.dp)) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(accentColor.copy(alpha = 0.12f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Equalizer,
+                            contentDescription = null,
+                            tint = accentColor,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column(
                         modifier = Modifier
                             .weight(1f)
                             .padding(end = 12.dp)
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(30.dp)
-                                .clip(CircleShape)
-                                .background(accentColor.copy(alpha = 0.12f)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Equalizer,
-                                contentDescription = null,
-                                tint = accentColor,
-                                modifier = Modifier.size(16.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Hardware Equalizer & DSP",
-                                fontSize = 15.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = textPrimary
-                            )
-                            Text(
-                                text = "5-Band parametric filter & soundstage",
-                                fontSize = 11.5.sp,
-                                color = textMuted
-                            )
-                        }
+                        Text(
+                            text = "Hardware Equalizer & DSP",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = textPrimary
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "5-Band parametric filter & soundstage",
+                            fontSize = 11.5.sp,
+                            color = textMuted,
+                            lineHeight = 15.sp
+                        )
                     }
 
                     Switch(
@@ -315,35 +313,33 @@ fun MusicPlaybackPage(
                 // Crystal Clear Engine Toggle
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
+                    Icon(
+                        imageVector = Icons.Default.Waves,
+                        contentDescription = null,
+                        tint = if (effectsState.crystalClarityEnabled) accentColor else textMuted,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column(
                         modifier = Modifier
                             .weight(1f)
                             .padding(end = 12.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Waves,
-                            contentDescription = null,
-                            tint = if (effectsState.crystalClarityEnabled) accentColor else textMuted,
-                            modifier = Modifier.size(18.dp)
+                        Text(
+                            text = "Crystal Clear Audio Engine",
+                            fontSize = 13.5.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = textPrimary
                         )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Crystal Clear Audio Engine",
-                                fontSize = 13.5.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = textPrimary
-                            )
-                            Text(
-                                text = "Nyquist sharpening for crisp vocals & percussion",
-                                fontSize = 11.sp,
-                                color = textMuted
-                            )
-                        }
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "Nyquist sharpening for crisp vocals & percussion",
+                            fontSize = 11.sp,
+                            color = textMuted,
+                            lineHeight = 15.sp
+                        )
                     }
                     Switch(
                         checked = effectsState.crystalClarityEnabled,

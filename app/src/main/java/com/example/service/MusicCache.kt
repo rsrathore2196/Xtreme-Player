@@ -10,7 +10,8 @@ import androidx.media3.datasource.cache.SimpleCache
 import java.io.File
 
 object MusicCache {
-    private const val CACHE_SIZE = 150L * 1024L * 1024L // 150 MB LRU cache for 320kbps streams
+    const val DEFAULT_CACHE_SIZE = 50L * 1024L * 1024L // 50 MB lean LRU cache for 320kbps streams
+    private const val CACHE_SIZE = DEFAULT_CACHE_SIZE
 
     @Volatile
     private var simpleCacheInstance: SimpleCache? = null

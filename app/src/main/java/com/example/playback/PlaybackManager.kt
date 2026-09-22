@@ -276,7 +276,7 @@ class PlaybackManager(
         progressTickerJob = scope.launch {
             while (isActive) {
                 updateProgressValues()
-                delay(100) // 100ms ultra-smooth 90Hz fluid update & responsive synchronized lyrics alignment
+                delay(300) // 300ms smooth updates with minimal CPU and zero UI thrashing
             }
         }
     }
@@ -297,12 +297,15 @@ class PlaybackManager(
             val pos = player.currentPosition.coerceAtLeast(0L)
             val dur = if (player.duration > 0) player.duration else _uiState.value.durationMs
             val buf = player.bufferedPosition.coerceAtLeast(0L)
-            _uiState.update {
-                it.copy(
-                    currentPositionMs = pos,
-                    durationMs = dur,
-                    bufferedPositionMs = buf
-                )
+            val current = _uiState.value
+            if (current.currentPositionMs != pos || current.durationMs != dur || current.bufferedPositionMs != buf) {
+                _uiState.update {
+                    it.copy(
+                        currentPositionMs = pos,
+                        durationMs = dur,
+                        bufferedPositionMs = buf
+                    )
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error updating progress values: ${e.message}", e)
