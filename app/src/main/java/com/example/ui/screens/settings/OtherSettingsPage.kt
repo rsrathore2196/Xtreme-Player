@@ -304,10 +304,11 @@ fun OtherSettingsPage(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     listOf(
-                        "40 MB (Lean)" to SmartCacheManager.QUOTA_LEAN,
-                        "60 MB (Standard)" to SmartCacheManager.QUOTA_BALANCED,
-                        "120 MB (Generous)" to SmartCacheManager.QUOTA_GENEROUS
-                    ).forEach { (label, quota) ->
+                        ("40 MB" to "(Lean)") to SmartCacheManager.QUOTA_LEAN,
+                        ("60 MB" to "(Standard)") to SmartCacheManager.QUOTA_BALANCED,
+                        ("120 MB" to "(Generous)") to SmartCacheManager.QUOTA_GENEROUS
+                    ).forEach { (labels, quota) ->
+                        val (sizeText, descText) = labels
                         val isSelected = cacheStats.maxQuotaBytes == quota
                         Surface(
                             shape = RoundedCornerShape(8.dp),
@@ -322,14 +323,29 @@ fun OtherSettingsPage(
                                     SmartCacheManager.setQuota(quota)
                                 }
                         ) {
-                            Text(
-                                text = label,
-                                fontSize = 10.5.sp,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                color = if (isSelected) accentColor else appColors.textSecondary,
-                                modifier = Modifier.padding(vertical = 8.dp, horizontal = 4.dp),
-                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                            )
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 8.dp, horizontal = 4.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                Text(
+                                    text = sizeText,
+                                    fontSize = 11.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
+                                    color = if (isSelected) accentColor else appColors.textPrimary,
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = descText,
+                                    fontSize = 10.sp,
+                                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                                    color = if (isSelected) accentColor else appColors.textMuted,
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                )
+                            }
                         }
                     }
                 }
