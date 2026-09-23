@@ -17,6 +17,11 @@ Stream millions of online tracks in studio-grade **320 kbps high-res audio**, ma
 - **Material 3 Design:** Sleek, minimalistic aesthetic with dynamic AMOLED dark mode or Material light mode and fluid animations.
 - **Modern Full-Screen Player:** Ambient artwork glow, dynamic color palette matching, real-time waveform scrubbing, and tactile haptic controls.
 - **Persistent Mini-Player:** Floating mini-player with swipe-to-skip gestures and seamless bottom-sheet expansion.
+- **Visuals & Customization:**
+10 Curated Themes: Added 5 Dark and 5 Light presets with full color palette controls.
+Granular Color Picker: Customize Accent, Canvas, and Card colors with live swatches and weight options.
+Custom Gradients: Fine-tune Background, Card, and Bottom Sheet gradients with new visual presets.
+Text & UI Scaling: Flexible 7-level scaling options for both typography and full interface density.
 
 ### 🔍 Discovery & Music Management
 - **Instant Online Search:** Fast, debounced search engine for tracks, artists, top hits, and albums.
