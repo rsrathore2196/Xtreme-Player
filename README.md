@@ -12,6 +12,10 @@ Stream millions of online tracks in studio-grade **320 kbps high-res audio**, ma
 - **True 320 kbps HQ Audio:** Stream crystal-clear, high-bitrate music (MP3, AAC, FLAC) with minimal compression.
 - **Smart Caching & Zero Buffering:** Intelligent pre-caching ensures uninterrupted playback even on unstable connections.
 - **Background Playback & Media Controls:** Persistent Android 13+ lock screen and notification controls powered by AndroidX Media3.
+- **Music & Playlists:**
+Playlist Import: Import playlists from Spotify, Apple Music, Amazon Music, or custom local files.
+Better Recommendations: Cleaner regional song recommendations without repetitive country tags.
+Fresh Genre Playlists: Fixed shuffle logic to load new, randomized songs every time you open a genre.
 
 ### 🎨 Clean & Modern Material UI
 - **Material 3 Design:** Sleek, minimalistic aesthetic with dynamic AMOLED dark mode or Material light mode and fluid animations.
