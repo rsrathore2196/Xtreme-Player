@@ -38,14 +38,22 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -56,16 +64,18 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.TrackLyrics
 import com.example.ui.theme.LocalAppColors
+import com.example.ui.theme.liquidGlass
 
 @Composable
 fun SyncedLyricsView(
     lyrics: TrackLyrics?,
-    currentPositionMs: Long,
+    currentPositionMs: Long = 0L,
     onSeekTo: (Long) -> Unit,
     dominantColor: Color,
     accentColor: Color,
     isDark: Boolean,
     onRetry: () -> Unit = {},
+    currentPositionProvider: () -> Long = { currentPositionMs },
     modifier: Modifier = Modifier
 ) {
     val appColors = LocalAppColors.current
@@ -76,21 +86,30 @@ fun SyncedLyricsView(
     val lines = lyrics?.lines ?: emptyList()
     val isSynced = lyrics?.isSynced == true
 
-    // Fully theme-adaptive background and border colors
-    val containerBg = if (isDark) {
-        appColors.cardBackground.copy(alpha = 0.94f)
-    } else {
-        appColors.cardBackground.copy(alpha = 0.96f)
+    // Local reactive position state driving Compose recomposition of lyrics smoothly
+    var currentPos by remember { mutableStateOf(currentPositionProvider()) }
+
+    // Continuously sync playback position to local Compose state so active lyric line tracks dynamically during playback
+    LaunchedEffect(isSynced, lyrics) {
+        if (!isSynced) return@LaunchedEffect
+        while (isActive) {
+            val pos = currentPositionProvider()
+            if (currentPos != pos) {
+                currentPos = pos
+            }
+            delay(100L)
+        }
     }
 
-    // Determine current active lyric line based on current playback timestamp (only if synced)
-    val activeLineIndex by remember(lines, currentPositionMs, isSynced) {
+    // Determine current active lyric line based on reactive current playback timestamp
+    val activeLineIndex by remember(lines, isSynced) {
         derivedStateOf {
             if (!isSynced || lines.isEmpty()) -1
             else {
+                val pos = currentPos
                 var found = -1
                 for (i in lines.indices) {
-                    if (currentPositionMs >= lines[i].timestampMs) {
+                    if (pos >= lines[i].timestampMs) {
                         found = i
                     } else {
                         break
@@ -114,14 +133,13 @@ fun SyncedLyricsView(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .clip(RoundedCornerShape(24.dp))
-            .background(containerBg)
-            .border(
-                BorderStroke(
-                    1.2.dp,
-                    if (isDark) appColors.cardBorder else appColors.cardBorder.copy(alpha = 0.7f)
-                ),
-                RoundedCornerShape(24.dp)
+            .liquidGlass(
+                colors = appColors,
+                shape = RoundedCornerShape(24.dp),
+                elevation = 0.dp,
+                translucency = 0.90f,
+                sheenAlpha = 0.10f,
+                highlightAlpha = 0.25f
             )
             .testTag("synced_lyrics_view")
     ) {
@@ -200,71 +218,101 @@ fun SyncedLyricsView(
                 }
             }
         } else {
-            LazyColumn(
-                state = listState,
+            Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(horizontal = 20.dp),
-                contentPadding = if (isSynced) PaddingValues(top = 110.dp, bottom = 140.dp) else PaddingValues(top = 64.dp, bottom = 90.dp),
-                verticalArrangement = if (isSynced) Arrangement.spacedBy(22.dp) else Arrangement.spacedBy(16.dp)
-            ) {
-                itemsIndexed(lines, key = { index, item -> "${item.timestampMs}_$index" }) { index, item ->
-                    val isActive = isSynced && (index == activeLineIndex)
-                    val isPast = isSynced && (index < activeLineIndex)
-
-                    val targetAlpha = if (!isSynced) {
-                        1.0f
-                    } else when {
-                        isActive -> 1.0f
-                        isPast -> 0.45f
-                        else -> 0.35f
+                    .graphicsLayer {
+                        compositingStrategy = CompositingStrategy.Offscreen
                     }
-                    val targetScale = if (isActive) 1.04f else 1.0f
+                    .drawWithContent {
+                        drawContent()
+                        val maskBrush = Brush.verticalGradient(
+                            colors = listOf(
+                                Color.Transparent,
+                                Color.Black,
+                                Color.Black,
+                                Color.Transparent
+                            ),
+                            startY = 0f,
+                            endY = size.height
+                        )
+                        drawRect(brush = maskBrush, blendMode = BlendMode.DstIn)
+                    }
+            ) {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 20.dp),
+                    contentPadding = if (isSynced) PaddingValues(top = 70.dp, bottom = 80.dp) else PaddingValues(top = 32.dp, bottom = 48.dp),
+                    verticalArrangement = if (isSynced) Arrangement.spacedBy(22.dp) else Arrangement.spacedBy(16.dp)
+                ) {
+                    itemsIndexed(lines, key = { index, item -> "${item.timestampMs}_$index" }) { index, item ->
+                        val distance = if (activeLineIndex >= 0 && isSynced) kotlin.math.abs(index - activeLineIndex) else 0
+                        val isActive = isSynced && (distance == 0)
 
-                    val activeTextColor = if (isDark) Color.White else appColors.textPrimary
-                    val inactiveTextColor = appColors.textMuted
-
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .graphicsLayer {
-                                alpha = targetAlpha
-                                scaleX = targetScale
-                                scaleY = targetScale
-                            }
-                            .clickable(
-                                enabled = isSynced,
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null,
-                                onClick = {
-                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                    onSeekTo(item.timestampMs)
-                                }
-                            )
-                            .padding(vertical = if (isSynced) 4.dp else 2.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        if (isActive) {
-                            Box(
-                                modifier = Modifier
-                                    .size(7.dp)
-                                    .clip(CircleShape)
-                                    .background(effectiveAccent)
-                            )
-                            Spacer(modifier = Modifier.width(10.dp))
+                        val targetAlpha = if (!isSynced) {
+                            1.0f
+                        } else when (distance) {
+                            0 -> 1.0f
+                            1 -> 0.40f
+                            2 -> 0.18f
+                            else -> 0.06f
+                        }
+                        val targetScale = if (isActive) 1.05f else 0.98f
+                        val blurRadius = if (!isSynced || isActive) 0.dp else when (distance) {
+                            1 -> 1.5.dp
+                            2 -> 3.dp
+                            else -> 5.dp
                         }
 
-                        Text(
-                            text = item.text,
-                            style = MaterialTheme.typography.headlineSmall.copy(
-                                fontSize = if (isActive) 23.sp else 18.sp,
-                                fontWeight = if (isActive) FontWeight.ExtraBold else if (!isSynced) FontWeight.Medium else FontWeight.Medium,
-                                lineHeight = if (isActive) 30.sp else if (!isSynced) 28.sp else 26.sp,
-                                color = if (isActive || !isSynced) activeTextColor else inactiveTextColor
-                            ),
-                            textAlign = TextAlign.Start,
-                            modifier = Modifier.fillMaxWidth()
-                        )
+                        val activeTextColor = if (isDark) Color.White else appColors.textPrimary
+                        val inactiveTextColor = if (isDark) Color.White.copy(alpha = 0.85f) else appColors.textPrimary.copy(alpha = 0.75f)
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .graphicsLayer {
+                                    alpha = targetAlpha
+                                    scaleX = targetScale
+                                    scaleY = targetScale
+                                }
+                                .then(if (blurRadius > 0.dp) Modifier.blur(blurRadius) else Modifier)
+                                .clickable(
+                                    enabled = isSynced,
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                    onClick = {
+                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        currentPos = item.timestampMs
+                                        onSeekTo(item.timestampMs)
+                                    }
+                                )
+                                .padding(vertical = if (isSynced) 4.dp else 2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (isActive) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(7.dp)
+                                        .clip(CircleShape)
+                                        .background(effectiveAccent)
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                            }
+
+                            Text(
+                                text = item.text,
+                                style = MaterialTheme.typography.headlineSmall.copy(
+                                    fontSize = if (isActive) 23.sp else 18.sp,
+                                    fontWeight = if (isActive) FontWeight.ExtraBold else FontWeight.SemiBold,
+                                    lineHeight = if (isActive) 30.sp else if (!isSynced) 28.sp else 26.sp,
+                                    color = if (isActive) effectiveAccent else if (!isSynced) activeTextColor else inactiveTextColor
+                                ),
+                                textAlign = TextAlign.Start,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
                     }
                 }
             }
@@ -312,38 +360,6 @@ fun SyncedLyricsView(
                     )
                 }
             }
-
-            // Top gradient mask for smooth fading flow (Apple Music aesthetic)
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(80.dp)
-                    .align(Alignment.TopCenter)
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(
-                                containerBg,
-                                Color.Transparent
-                            )
-                        )
-                    )
-            )
-
-            // Bottom gradient mask
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(90.dp)
-                    .align(Alignment.BottomCenter)
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(
-                                Color.Transparent,
-                                containerBg
-                            )
-                        )
-                    )
-            )
         }
     }
 }

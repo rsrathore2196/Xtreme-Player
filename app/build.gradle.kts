@@ -17,8 +17,8 @@ android {
     applicationId = "com.aistudio.xtremeplayer.vkmz"
     minSdk = 24
     targetSdk = 36
-    versionCode = 5
-    versionName = "1.6.0"
+    versionCode = 7
+    versionName = "1.7.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -60,6 +60,9 @@ android {
     unitTests {
       isIncludeAndroidResources = true
       isReturnDefaultValues = true
+      all {
+        it.maxHeapSize = "2048m"
+      }
     }
   }
   dependenciesInfo {

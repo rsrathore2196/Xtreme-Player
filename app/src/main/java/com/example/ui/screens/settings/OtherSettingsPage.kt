@@ -44,6 +44,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -65,6 +66,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import com.example.ui.theme.contrastingContentColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
@@ -79,6 +81,11 @@ import com.example.data.cache.SmartCacheManager
 import com.example.data.local.OtherSettingsPreferences
 import kotlinx.coroutines.launch
 import com.example.ui.theme.LocalAppColors
+import com.example.ui.theme.LiquidGlass
+import com.example.ui.theme.liquidGlassCard
+import com.example.ui.theme.liquidGlassPill
+import com.example.ui.theme.liquidGlassSwitchColors
+import com.example.ui.theme.bouncyClickable
 
 @Composable
 fun OtherSettingsPage(
@@ -96,6 +103,8 @@ fun OtherSettingsPage(
     val inputBg = appColors.cardBackgroundElevated
     val accentColor = appColors.primaryAccent
     val dividerColor = appColors.dividerColor
+    val isAccentWhite = accentColor == Color.White || (appColors.isAmoled && accentColor == Color.White) || ((0.299 * accentColor.red + 0.587 * accentColor.green + 0.114 * accentColor.blue) > 0.70f)
+    val pillActiveTextColor = contrastingContentColor(if (isAccentWhite) Color.White else accentColor)
 
     // Proxy state
     var isProxyEnabled by remember { mutableStateOf(OtherSettingsPreferences.isProxyEnabled(context)) }
@@ -111,6 +120,10 @@ fun OtherSettingsPage(
     var cacheClearedMessage by remember { mutableStateOf(false) }
     var cacheFeedbackText by remember { mutableStateOf("") }
     var isOptimizingCache by remember { mutableStateOf(false) }
+
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        SmartCacheManager.refreshStats()
+    }
 
     // Text Size & App UI Size states
     var selectedTextSizeIndex by remember {
@@ -130,11 +143,10 @@ fun OtherSettingsPage(
             .padding(16.dp)
     ) {
         // 1. Smart Storage & Cache Management Card
-        Card(
-            shape = RoundedCornerShape(18.dp),
-            colors = CardDefaults.cardColors(containerColor = cardBg),
-            border = BorderStroke(1.dp, cardBorder),
-            modifier = Modifier.fillMaxWidth()
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = true)
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Row(
@@ -278,12 +290,8 @@ fun OtherSettingsPage(
                             onCheckedChange = { isEnabled ->
                                 SmartCacheManager.setSmartAutoTrim(isEnabled)
                             },
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = Color.White,
-                                checkedTrackColor = accentColor,
-                                uncheckedThumbColor = appColors.textMuted,
-                                uncheckedTrackColor = inputBg
-                            )
+                            colors = liquidGlassSwitchColors(appColors),
+                            modifier = Modifier.testTag("switch_auto_trim")
                         )
                     }
                 }
@@ -360,12 +368,18 @@ fun OtherSettingsPage(
                     // Smart Optimize Button
                     OutlinedButton(
                         onClick = {
+                            com.example.util.AppHaptics.performTap(context)
                             isOptimizingCache = true
+                            cacheClearedMessage = false
                             coroutineScope.launch {
-                                val result = SmartCacheManager.smartOptimize()
+                                kotlinx.coroutines.delay(500)
+                                val result = SmartCacheManager.smartOptimize(context)
+                                SmartCacheManager.refreshStats()
                                 isOptimizingCache = false
                                 cacheFeedbackText = result.second
                                 cacheClearedMessage = true
+                                com.example.util.AppHaptics.performTap(context)
+                                android.widget.Toast.makeText(context, result.second, android.widget.Toast.LENGTH_SHORT).show()
                             }
                         },
                         shape = RoundedCornerShape(10.dp),
@@ -374,13 +388,21 @@ fun OtherSettingsPage(
                             contentColor = accentColor
                         ),
                         enabled = !isOptimizingCache,
-                        modifier = Modifier.weight(1f).height(44.dp)
+                        modifier = Modifier.weight(1f).height(44.dp).testTag("button_smart_optimize")
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.AutoAwesome,
-                            contentDescription = null,
-                            modifier = Modifier.size(15.dp)
-                        )
+                        if (isOptimizingCache) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(15.dp),
+                                strokeWidth = 2.dp,
+                                color = accentColor
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Default.AutoAwesome,
+                                contentDescription = null,
+                                modifier = Modifier.size(15.dp)
+                            )
+                        }
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = if (isOptimizingCache) "Optimizing..." else "Smart Optimize",
@@ -431,11 +453,11 @@ fun OtherSettingsPage(
         val textOptions = OtherSettingsPreferences.TEXT_SIZE_OPTIONS
         val currentTextOption = textOptions.getOrElse(selectedTextSizeIndex) { textOptions[OtherSettingsPreferences.DEFAULT_TEXT_SIZE_INDEX] }
 
-        Card(
-            shape = RoundedCornerShape(18.dp),
-            colors = CardDefaults.cardColors(containerColor = cardBg),
-            border = BorderStroke(1.dp, cardBorder),
-            modifier = Modifier.fillMaxWidth().testTag("card_text_size_setting")
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = true)
+                .testTag("card_text_size_setting")
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Row(
@@ -475,16 +497,19 @@ fun OtherSettingsPage(
                     }
 
                     // Badge showing current selection
-                    Surface(
-                        shape = RoundedCornerShape(20.dp),
-                        color = accentColor.copy(alpha = 0.14f),
-                        border = BorderStroke(1.dp, accentColor.copy(alpha = 0.35f))
+                    Box(
+                        modifier = Modifier.liquidGlassPill(
+                            colors = appColors,
+                            shape = RoundedCornerShape(20.dp),
+                            isActive = true,
+                            elevation = 2.dp
+                        )
                     ) {
                         Text(
                             text = "${currentTextOption.label} (${currentTextOption.badge})",
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
-                            color = accentColor,
+                            color = if (appColors.isAmoled) Color.White else (if (appColors.isDark) Color.White else appColors.primaryAccent),
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
                         )
                     }
@@ -613,7 +638,7 @@ fun OtherSettingsPage(
                                     },
                                     fontSize = 10.sp,
                                     fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                    color = if (isSelected) appColors.onPrimaryAccent else appColors.textPrimary
+                                    color = if (isSelected) pillActiveTextColor else appColors.textPrimary
                                 )
                             }
                         }
@@ -672,11 +697,11 @@ fun OtherSettingsPage(
         val uiOptions = OtherSettingsPreferences.UI_SIZE_OPTIONS
         val currentUiOption = uiOptions.getOrElse(selectedUiSizeIndex) { uiOptions[OtherSettingsPreferences.DEFAULT_UI_SIZE_INDEX] }
 
-        Card(
-            shape = RoundedCornerShape(18.dp),
-            colors = CardDefaults.cardColors(containerColor = cardBg),
-            border = BorderStroke(1.dp, cardBorder),
-            modifier = Modifier.fillMaxWidth().testTag("card_ui_size_setting")
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = true)
+                .testTag("card_ui_size_setting")
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Row(
@@ -854,7 +879,7 @@ fun OtherSettingsPage(
                                     },
                                     fontSize = 10.sp,
                                     fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                    color = if (isSelected) appColors.onPrimaryAccent else appColors.textPrimary
+                                    color = if (isSelected) pillActiveTextColor else appColors.textPrimary
                                 )
                             }
                         }
@@ -950,11 +975,11 @@ fun OtherSettingsPage(
         Spacer(modifier = Modifier.height(16.dp))
 
         // 3.5. Haptic Feedback Setting Card
-        Card(
-            shape = RoundedCornerShape(18.dp),
-            colors = CardDefaults.cardColors(containerColor = cardBg),
-            border = BorderStroke(1.dp, cardBorder),
-            modifier = Modifier.fillMaxWidth().testTag("card_haptic_feedback")
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = true)
+                .testTag("card_haptic_feedback")
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Row(
@@ -1005,10 +1030,7 @@ fun OtherSettingsPage(
                                 com.example.util.AppHaptics.performTap(context)
                             }
                         },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = appColors.onPrimaryAccent,
-                            checkedTrackColor = accentColor
-                        ),
+                        colors = liquidGlassSwitchColors(appColors),
                         modifier = Modifier.testTag("switch_haptics_enabled")
                     )
                 }
@@ -1125,11 +1147,10 @@ private fun ProxySettingsCard(
     modifier: Modifier = Modifier
 ) {
     val appColors = LocalAppColors.current
-    Card(
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = cardBg),
-        border = BorderStroke(1.dp, cardBorder),
-        modifier = modifier.fillMaxWidth()
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = true)
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(
@@ -1174,10 +1195,7 @@ private fun ProxySettingsCard(
                 Switch(
                     checked = isProxyEnabled,
                     onCheckedChange = onProxyEnabledChange,
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor = appColors.onPrimaryAccent,
-                        checkedTrackColor = accentColor
-                    ),
+                    colors = liquidGlassSwitchColors(appColors),
                     modifier = Modifier.testTag("switch_proxy_enabled")
                 )
             }
@@ -1293,11 +1311,14 @@ private fun ProxySettingsCard(
                 Spacer(modifier = Modifier.height(14.dp))
 
                 // Save Proxy Button
+                val isProxyBtnLight = accentColor == Color.White || (appColors.isAmoled && accentColor == Color.White) || ((0.299 * accentColor.red + 0.587 * accentColor.green + 0.114 * accentColor.blue) > 0.65f)
+                val proxyBtnBg = if (isProxyBtnLight) Color.White else accentColor
+                val proxyBtnTextColor = contrastingContentColor(proxyBtnBg)
                 Button(
                     onClick = onSaveProxy,
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = accentColor,
-                        contentColor = appColors.onPrimaryAccent
+                        containerColor = proxyBtnBg,
+                        contentColor = proxyBtnTextColor
                     ),
                     shape = RoundedCornerShape(10.dp),
                     modifier = Modifier
@@ -1308,7 +1329,7 @@ private fun ProxySettingsCard(
                     Icon(
                         imageVector = Icons.Default.Save,
                         contentDescription = null,
-                        tint = appColors.onPrimaryAccent,
+                        tint = proxyBtnTextColor,
                         modifier = Modifier.size(16.dp)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
@@ -1316,7 +1337,7 @@ private fun ProxySettingsCard(
                         text = "Save Proxy Configuration",
                         fontWeight = FontWeight.Bold,
                         fontSize = 13.sp,
-                        color = appColors.onPrimaryAccent
+                        color = proxyBtnTextColor
                     )
                 }
 

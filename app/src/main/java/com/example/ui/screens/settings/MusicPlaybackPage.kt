@@ -57,6 +57,12 @@ import com.example.playback.AudioEffectsState
 import com.example.playback.AudioQuality
 import com.example.playback.PlayerUiState
 import com.example.ui.theme.LocalAppColors
+import com.example.ui.theme.LiquidGlass
+import com.example.ui.theme.liquidGlassCard
+import com.example.ui.theme.liquidGlassPill
+import com.example.ui.theme.liquidGlassButton
+import com.example.ui.theme.liquidGlassSwitchColors
+import com.example.ui.theme.bouncyClickable
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -89,11 +95,10 @@ fun MusicPlaybackPage(
             .padding(16.dp)
     ) {
         // 1. Audio Quality & Streaming Card
-        Card(
-            shape = RoundedCornerShape(18.dp),
-            colors = CardDefaults.cardColors(containerColor = cardBg),
-            border = BorderStroke(1.dp, cardBorder),
-            modifier = Modifier.fillMaxWidth()
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = true)
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -165,11 +170,10 @@ fun MusicPlaybackPage(
         Spacer(modifier = Modifier.height(16.dp))
 
         // 2. Hardware Equalizer & Soundstage Card
-        Card(
-            shape = RoundedCornerShape(18.dp),
-            colors = CardDefaults.cardColors(containerColor = cardBg),
-            border = BorderStroke(1.dp, cardBorder),
-            modifier = Modifier.fillMaxWidth()
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = true)
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Row(
@@ -214,10 +218,7 @@ fun MusicPlaybackPage(
                     Switch(
                         checked = effectsState.isEnabled,
                         onCheckedChange = { onToggleEqualizer(it) },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = appColors.onPrimaryAccent,
-                            checkedTrackColor = accentColor
-                        ),
+                        colors = liquidGlassSwitchColors(appColors),
                         modifier = Modifier.testTag("switch_equalizer_master")
                     )
                 }
@@ -234,36 +235,31 @@ fun MusicPlaybackPage(
                 Spacer(modifier = Modifier.height(8.dp))
 
                 FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     presets.forEach { preset ->
                         val isSelected = effectsState.selectedPreset.equals(preset, ignoreCase = true)
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = if (isSelected) {
-                                accentColor.copy(alpha = 0.18f)
-                            } else {
-                                cardBg
-                            },
-                            border = BorderStroke(
-                                1.dp,
-                                if (isSelected) accentColor else cardBorder
-                            ),
+                        Box(
                             modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable { onSelectPreset(preset) }
+                                .liquidGlassPill(
+                                    colors = appColors,
+                                    shape = RoundedCornerShape(10.dp),
+                                    isActive = isSelected,
+                                    elevation = if (isSelected) 4.dp else 2.dp
+                                )
+                                .bouncyClickable { onSelectPreset(preset) }
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
                             ) {
                                 if (isSelected) {
                                     Icon(
                                         imageVector = Icons.Default.Check,
                                         contentDescription = null,
-                                        tint = accentColor,
+                                        tint = appColors.onPrimaryAccent,
                                         modifier = Modifier.size(12.dp)
                                     )
                                     Spacer(modifier = Modifier.width(4.dp))
@@ -271,8 +267,8 @@ fun MusicPlaybackPage(
                                 Text(
                                     text = preset,
                                     fontSize = 11.5.sp,
-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                    color = if (isSelected) textPrimary else textMuted
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (isSelected) appColors.onPrimaryAccent else textPrimary
                                 )
                             }
                         }
@@ -281,31 +277,31 @@ fun MusicPlaybackPage(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Launch Full Equalizer Button
-                Button(
-                    onClick = onOpenEqualizer,
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = accentColor.copy(alpha = 0.12f),
-                        contentColor = accentColor
-                    ),
-                    border = BorderStroke(1.dp, accentColor.copy(alpha = 0.4f)),
+                // Launch Full Equalizer Button with Liquid Glass styling
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(44.dp)
-                        .testTag("button_open_full_equalizer")
+                        .height(46.dp)
+                        .liquidGlassButton(appColors, shape = RoundedCornerShape(14.dp), elevation = 4.dp, isActive = true)
+                        .bouncyClickable { onOpenEqualizer() }
+                        .testTag("button_open_full_equalizer"),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Tune,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Open 5-Band Hardware Equalizer",
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Tune,
+                            contentDescription = null,
+                            tint = accentColor,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Open 5-Band Hardware Equalizer",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = accentColor
+                        )
+                    }
                 }
 
                 HorizontalDivider(color = dividerColor, thickness = 1.dp, modifier = Modifier.padding(vertical = 14.dp))
@@ -344,10 +340,7 @@ fun MusicPlaybackPage(
                     Switch(
                         checked = effectsState.crystalClarityEnabled,
                         onCheckedChange = { onCrystalClarityToggle(it) },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = appColors.onPrimaryAccent,
-                            checkedTrackColor = accentColor
-                        ),
+                        colors = liquidGlassSwitchColors(appColors),
                         modifier = Modifier.testTag("switch_crystal_clarity")
                     )
                 }
@@ -357,11 +350,10 @@ fun MusicPlaybackPage(
         Spacer(modifier = Modifier.height(16.dp))
 
         // 3. Playback & Performance Card
-        Card(
-            shape = RoundedCornerShape(18.dp),
-            colors = CardDefaults.cardColors(containerColor = cardBg),
-            border = BorderStroke(1.dp, cardBorder),
-            modifier = Modifier.fillMaxWidth()
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = true)
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -422,10 +414,7 @@ fun MusicPlaybackPage(
                     Switch(
                         checked = gaplessEnabled,
                         onCheckedChange = { gaplessEnabled = it },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = appColors.onPrimaryAccent,
-                            checkedTrackColor = accentColor
-                        ),
+                        colors = liquidGlassSwitchColors(appColors),
                         modifier = Modifier.testTag("switch_gapless_playback")
                     )
                 }
@@ -527,8 +516,17 @@ private fun AudioQualityOption(
         horizontalArrangement = Arrangement.SpaceBetween,
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onClick() }
-            .padding(vertical = 4.dp)
+            .bouncyClickable { onClick() }
+            .then(
+                if (isSelected) {
+                    Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(accentColor.copy(alpha = if (appColors.isDark) 0.14f else 0.09f))
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                } else {
+                    Modifier.padding(horizontal = 6.dp, vertical = 6.dp)
+                }
+            )
     ) {
         Column(modifier = Modifier.weight(1f)) {
             Text(

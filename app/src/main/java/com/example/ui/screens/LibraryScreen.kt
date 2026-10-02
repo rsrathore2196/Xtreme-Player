@@ -54,10 +54,19 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
+import com.example.ui.theme.LiquidGlass
+import com.example.ui.theme.bouncyClickable
+import com.example.ui.theme.liquidGlassButton
+import com.example.ui.theme.liquidGlassCard
+import com.example.ui.theme.liquidGlassPill
+import com.example.ui.util.ImageConfig
+import com.example.ui.util.rememberOptimizedImageRequest
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -112,7 +121,7 @@ fun LibraryScreen(
                 .widthIn(max = 640.dp)
                 .statusBarsPadding()
                 .testTag("library_screen"),
-            contentPadding = PaddingValues(bottom = 120.dp)
+            contentPadding = PaddingValues(bottom = 150.dp)
         ) {
         // TOP BAR
         item {
@@ -125,8 +134,10 @@ fun LibraryScreen(
                     Column {
                         Text(
                             text = "Your Library",
-                            style = MaterialTheme.typography.headlineSmall.copy(
-                                fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.headlineMedium.copy(
+                                fontWeight = FontWeight.Black,
+                                fontSize = 28.sp,
+                                letterSpacing = (-0.6).sp,
                                 color = appColors.textPrimary
                             )
                         )
@@ -136,18 +147,31 @@ fun LibraryScreen(
                         )
                     }
 
-                    // Add playlist button
+                    // Add playlist button (liquid glass styled with theme-specific color)
                     IconButton(
-                        onClick = onCreatePlaylistClick,
+                        onClick = {
+                            onCreatePlaylistClick()
+                        },
                         modifier = Modifier
-                            .size(42.dp)
+                            .size(46.dp)
+                            .shadow(
+                                elevation = 6.dp,
+                                shape = CircleShape,
+                                spotColor = appColors.primaryAccent.copy(alpha = 0.40f)
+                            )
                             .clip(CircleShape)
                             .background(
-                                appColors.primaryAccent.copy(alpha = if (isDark) 0.18f else 0.12f)
+                                LiquidGlass.glassBrush(
+                                    colors = appColors,
+                                    translucency = 0.85f,
+                                    tintAccent = true
+                                )
                             )
                             .border(
-                                1.dp,
-                                appColors.primaryAccent.copy(alpha = if (isDark) 0.45f else 0.35f),
+                                BorderStroke(
+                                    1.2.dp,
+                                    LiquidGlass.specularBorderBrush(appColors, highlightAlpha = 0.65f)
+                                ),
                                 CircleShape
                             )
                             .testTag("create_playlist_button")
@@ -156,40 +180,87 @@ fun LibraryScreen(
                             imageVector = Icons.Default.Add,
                             contentDescription = "Create Playlist",
                             tint = appColors.primaryAccent,
-                            modifier = Modifier.size(24.dp)
+                            modifier = Modifier.size(26.dp)
                         )
                     }
                 }
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                // TAB ROW
-                val activeTabColor = appColors.primaryAccent
-                TabRow(
-                    selectedTabIndex = selectedTab,
-                    containerColor = Color.Transparent,
-                    contentColor = activeTabColor,
-                    indicator = { tabPositions ->
-                        TabRowDefaults.SecondaryIndicator(
-                            modifier = Modifier.tabIndicatorOffset(tabPositions[selectedTab]),
-                            color = activeTabColor
-                        )
-                    },
-                    divider = {}
+                // 3D Liquid Glass Segmented Tabs Row
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .liquidGlassCard(appColors, shape = RoundedCornerShape(16.dp), elevation = 4.dp, translucency = 0.95f)
+                        .padding(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     tabs.forEachIndexed { index, title ->
-                        Tab(
-                            selected = selectedTab == index,
-                            onClick = { selectedTab = index },
-                            text = {
-                                Text(
-                                    text = title,
-                                    fontWeight = if (selectedTab == index) FontWeight.Bold else FontWeight.Normal,
-                                    color = if (selectedTab == index) activeTabColor else appColors.textSecondary,
-                                    fontSize = 14.sp
+                        val isSelected = selectedTab == index
+                        val selectedTabBg = if (appColors.isDark) {
+                            if (appColors.isAmoled) {
+                                Brush.verticalGradient(
+                                    listOf(
+                                        Color(0xFF282828),
+                                        Color(0xFF181818),
+                                        Color(0xFF0E0E0E)
+                                    )
+                                )
+                            } else {
+                                Brush.verticalGradient(
+                                    listOf(
+                                        appColors.primaryAccent.copy(alpha = 0.40f),
+                                        Color(0xFF1E2838).copy(alpha = 0.85f),
+                                        appColors.primaryAccent.copy(alpha = 0.22f)
+                                    )
+                                )
+                            }
+                        } else {
+                            Brush.verticalGradient(
+                                listOf(
+                                    appColors.primaryAccent.copy(alpha = 0.92f),
+                                    appColors.secondaryAccent.copy(alpha = 0.85f)
+                                )
+                            )
+                        }
+                        val selectedTabBorder = BorderStroke(
+                            1.3.dp,
+                            if (appColors.isDark) {
+                                LiquidGlass.specularBorderBrush(appColors, highlightAlpha = 0.75f)
+                            } else {
+                                Brush.verticalGradient(
+                                    listOf(
+                                        Color.White.copy(alpha = 0.85f),
+                                        appColors.primaryAccent.copy(alpha = 0.50f)
+                                    )
                                 )
                             }
                         )
+
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(12.dp))
+                                .then(
+                                    if (isSelected) {
+                                        Modifier
+                                            .background(selectedTabBg)
+                                            .border(selectedTabBorder, RoundedCornerShape(12.dp))
+                                    } else {
+                                        Modifier
+                                    }
+                                )
+                                .bouncyClickable { selectedTab = index }
+                                .padding(vertical = 10.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = title,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                color = if (appColors.isAmoled) Color.White else if (isSelected) Color.White else (if (appColors.isDark) Color.White.copy(alpha = 0.70f) else appColors.textMuted),
+                                fontSize = 14.sp
+                            )
+                        }
                     }
                 }
             }
@@ -200,13 +271,11 @@ fun LibraryScreen(
                 // PLAYLISTS TAB
                 // 1. Liked Songs Pin Card
                 item {
-                    Card(
-                        shape = RoundedCornerShape(18.dp),
-                        colors = CardDefaults.cardColors(containerColor = appColors.cardBackground),
-                        border = BorderStroke(1.dp, appColors.cardBorder),
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 20.dp, vertical = 6.dp)
+                            .liquidGlassCard(appColors, shape = RoundedCornerShape(18.dp), elevation = 2.dp, translucency = 0.90f, tintAccent = true)
                             .clickable {
                                 if (favoriteTracks.isNotEmpty()) {
                                     onTrackClick(favoriteTracks.first(), favoriteTracks)
@@ -256,13 +325,15 @@ fun LibraryScreen(
                                     text = "Liked Songs",
                                     style = MaterialTheme.typography.titleMedium.copy(
                                         fontWeight = FontWeight.Bold,
-                                        color = appColors.textPrimary
+                                        fontSize = 18.sp,
+                                        color = if (appColors.isDark) Color.White else appColors.textPrimary
                                     )
                                 )
                                 Text(
                                     text = "${favoriteTracks.size} tracks saved in 320kbps",
                                     style = MaterialTheme.typography.bodySmall.copy(
-                                        color = appColors.textSecondary
+                                        color = if (appColors.isDark) Color(0xFFCBD5E1) else appColors.textSecondary,
+                                        fontWeight = FontWeight.Medium
                                     )
                                 )
                             }
@@ -289,18 +360,11 @@ fun LibraryScreen(
 
                 // 2. Import Third-Party Playlist Card
                 item {
-                    Card(
-                        shape = RoundedCornerShape(18.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = appColors.cardBackground
-                        ),
-                        border = BorderStroke(
-                            1.dp,
-                            appColors.cardBorder
-                        ),
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 20.dp, vertical = 6.dp)
+                            .liquidGlassCard(appColors, shape = RoundedCornerShape(18.dp), elevation = 4.dp, translucency = 0.78f, tintAccent = true)
                             .clickable { onImportPlaylistClick() }
                             .testTag("import_playlist_banner_card")
                     ) {
@@ -330,42 +394,23 @@ fun LibraryScreen(
                             Spacer(modifier = Modifier.width(12.dp))
 
                             Column(modifier = Modifier.weight(1f)) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    Text(
-                                        text = "Import Playlists",
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 14.sp,
-                                        color = appColors.textPrimary
-                                    )
-                                    Box(
-                                        modifier = Modifier
-                                            .clip(RoundedCornerShape(4.dp))
-                                            .background(
-                                                appColors.primaryAccent.copy(alpha = if (isDark) 0.2f else 0.12f)
-                                            )
-                                            .padding(horizontal = 5.dp, vertical = 2.dp)
-                                    ) {
-                                        Text(
-                                            text = "NEW",
-                                            color = appColors.primaryAccent,
-                                            fontSize = 8.5.sp,
-                                            fontWeight = FontWeight.ExtraBold
-                                        )
-                                    }
-                                }
+                                Text(
+                                    text = "Import Playlists",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 15.sp,
+                                    color = if (appColors.isDark) Color.White else appColors.textPrimary
+                                )
+
                                 Text(
                                     text = "Spotify, Apple Music, YouTube",
                                     fontSize = 12.sp,
-                                    fontWeight = FontWeight.Medium,
+                                    fontWeight = FontWeight.SemiBold,
                                     color = appColors.primaryAccent
                                 )
                                 Text(
                                     text = "Auto-matches tracks to 320kbps HD audio",
                                     fontSize = 11.sp,
-                                    color = appColors.textMuted
+                                    color = if (appColors.isDark) Color(0xFFCBD5E1) else appColors.textMuted
                                 )
                             }
                         }
@@ -453,6 +498,7 @@ fun LibraryScreen(
                             text = "Custom Playlists (${playlists.size})",
                             style = MaterialTheme.typography.titleMedium.copy(
                                 fontWeight = FontWeight.Bold,
+                                fontSize = 18.sp,
                                 color = appColors.textPrimary
                             ),
                             modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 6.dp)
@@ -490,13 +536,18 @@ fun LibraryScreen(
                                 text = "Songs you like will appear here",
                                 color = appColors.textPrimary,
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 16.sp
+                                fontSize = 16.sp,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth()
                             )
                             Text(
                                 text = "Tap the heart icon on any song to save it to your library.",
                                 color = appColors.textMuted,
                                 fontSize = 13.sp,
-                                modifier = Modifier.padding(top = 4.dp)
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 4.dp, start = 16.dp, end = 16.dp)
                             )
                         }
                     }
@@ -527,15 +578,13 @@ fun PlaylistRowItem(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(appColors.cardBackground)
-            .border(BorderStroke(1.dp, appColors.cardBorder), RoundedCornerShape(14.dp))
+            .liquidGlassCard(appColors, shape = RoundedCornerShape(14.dp), elevation = 1.dp, translucency = 0.90f)
             .clickable { onClick() }
             .padding(10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         AsyncImage(
-            model = playlist.coverUrl,
+            model = rememberOptimizedImageRequest(playlist.coverUrl, ImageConfig.LIST_ITEM_SIZE),
             contentDescription = null,
             contentScale = ContentScale.Crop,
             modifier = Modifier

@@ -2,6 +2,7 @@ package com.example.data.local
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.compose.runtime.Immutable
 
 enum class AppThemeMode(
     val storageKey: String,
@@ -22,6 +23,7 @@ enum class AppThemeMode(
 /**
  * Model representing a curated, eye-catching theme preset.
  */
+@Immutable
 data class AppThemePreset(
     val id: String,
     val name: String,
@@ -88,26 +90,26 @@ object ThemePresets {
     val StudioNight = AppThemePreset(
         id = "dark_studio_night",
         name = "Studio Night",
-        subtitle = "Signature studio midnight navy with electric sky accents",
+        subtitle = "Signature studio obsidian night with luminous electric azure accents",
         isDark = true,
-        accentName = "Sky Blue",
+        accentName = "Electric Azure",
         accentShade = "400",
-        accentColorHex = "#38BDF8",
-        secondaryAccentHex = "#00E5FF",
-        canvasColorName = "Midnight",
-        canvasColorHex = "#071424",
-        cardColorName = "Dark Slate",
-        cardColorHex = "#0B1728",
-        cardBorderHex = "#162F4D",
-        textPrimaryHex = "#F0F9FF",
-        textSecondaryHex = "#93C5FD",
+        accentColorHex = "#00D2FF",
+        secondaryAccentHex = "#1D4ED8",
+        canvasColorName = "Studio Void",
+        canvasColorHex = "#020610",
+        cardColorName = "Deep Studio Glass",
+        cardColorHex = "#050C1B",
+        cardBorderHex = "#0F2A4F",
+        textPrimaryHex = "#F8FAFC",
+        textSecondaryHex = "#7DD3FC",
         textMutedHex = "#64748B",
-        bgGradientColorsHex = listOf("#081426", "#040A14", "#000206"),
-        cardGradientColorsHex = listOf("#14243B", "#0F1B2D"),
-        bottomSheetGradientColorsHex = listOf("#0E1F36", "#040A14"),
-        bgGradientName = "Studio Night",
-        cardGradientName = "Subtle Sheen",
-        bottomSheetGradientName = "Studio Midnight"
+        bgGradientColorsHex = listOf("#020610", "#010308", "#000103"),
+        cardGradientColorsHex = listOf("#0B1E3B", "#040A17"),
+        bottomSheetGradientColorsHex = listOf("#07152B", "#020610"),
+        bgGradientName = "Studio Void",
+        cardGradientName = "Studio Glass",
+        bottomSheetGradientName = "Deep Obsidian"
     )
 
     val AmoledPureBlack = AppThemePreset(
@@ -372,29 +374,30 @@ object ThemePresets {
 /**
  * Full state representing user-customized colors, gradients, and theme settings.
  */
+@Immutable
 data class CustomThemeState(
     val presetId: String = "dark_studio_night",
     val currentThemeName: String = "Studio Night",
     val isPresetDark: Boolean = true,
     val isAmoled: Boolean = false,
-    val accentName: String = "Sky Blue",
+    val accentName: String = "Electric Azure",
     val accentShade: String = "400",
-    val accentColorHex: String = "#38BDF8",
-    val secondaryAccentHex: String = "#00E5FF",
-    val canvasColorName: String = "Midnight",
-    val canvasColorHex: String = "#071424",
-    val cardColorName: String = "Dark Slate",
-    val cardColorHex: String = "#0B1728",
-    val cardBorderHex: String = "#162F4D",
-    val textPrimaryHex: String = "#F0F9FF",
-    val textSecondaryHex: String = "#93C5FD",
+    val accentColorHex: String = "#00D2FF",
+    val secondaryAccentHex: String = "#1D4ED8",
+    val canvasColorName: String = "Studio Void",
+    val canvasColorHex: String = "#020610",
+    val cardColorName: String = "Deep Studio Glass",
+    val cardColorHex: String = "#050C1B",
+    val cardBorderHex: String = "#0F2A4F",
+    val textPrimaryHex: String = "#F8FAFC",
+    val textSecondaryHex: String = "#7DD3FC",
     val textMutedHex: String = "#64748B",
-    val bgGradientColorsHex: List<String> = listOf("#081426", "#040A14", "#000206"),
-    val cardGradientColorsHex: List<String> = listOf("#14243B", "#0F1B2D"),
-    val bottomSheetGradientColorsHex: List<String> = listOf("#0E1F36", "#040A14"),
-    val bgGradientName: String = "Studio Night",
-    val cardGradientName: String = "Subtle Sheen",
-    val bottomSheetGradientName: String = "Studio Midnight"
+    val bgGradientColorsHex: List<String> = listOf("#020610", "#010308", "#000103"),
+    val cardGradientColorsHex: List<String> = listOf("#0B1E3B", "#040A17"),
+    val bottomSheetGradientColorsHex: List<String> = listOf("#07152B", "#020610"),
+    val bgGradientName: String = "Studio Void",
+    val cardGradientName: String = "Studio Glass",
+    val bottomSheetGradientName: String = "Deep Obsidian"
 )
 
 object ThemePreferences {

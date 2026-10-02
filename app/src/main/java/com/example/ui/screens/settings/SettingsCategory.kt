@@ -21,7 +21,7 @@ enum class SettingsCategory(
     val tag: String
 ) {
     THEMES_APP_UI(
-        title = "Themes and App UI",
+        title = "Themes & App UI",
         rawSubtitle = "Dark Mode · Light Mode · System Theme · Player Layout",
         icon = Icons.Default.Palette,
         tag = "settings_cat_themes"

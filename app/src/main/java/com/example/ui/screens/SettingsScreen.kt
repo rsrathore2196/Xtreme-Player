@@ -38,6 +38,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -58,6 +59,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.ui.theme.LiquidGlass
+import com.example.ui.theme.bouncyClickable
+import com.example.ui.theme.liquidGlassCard
+import com.example.ui.theme.liquidGlassButton
 import com.example.data.local.AppThemeMode
 import com.example.data.local.UserProfile
 import com.example.data.model.CountryData
@@ -68,13 +73,12 @@ import com.example.ui.screens.settings.AboutPage
 import com.example.ui.screens.settings.BackupRestorePage
 import com.example.ui.screens.settings.MusicPlaybackPage
 import com.example.ui.screens.settings.OtherSettingsPage
+import com.example.ui.screens.settings.ProfileDetailPage
 import com.example.ui.screens.settings.ProfileRecommendationsPage
 import com.example.ui.screens.settings.SettingsCategory
 import com.example.ui.screens.settings.SettingsCategoryCardGroup
 import com.example.ui.screens.settings.ThemesAppUiPage
 import com.example.ui.theme.LocalAppColors
-import com.example.ui.theme.TextMuted
-import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.XtremeLightBlue
 import com.example.util.AppHaptics
 
@@ -99,9 +103,11 @@ fun SettingsScreen(
     onTextScaleChanged: (Int) -> Unit = {},
     onUiScaleChanged: (Int) -> Unit = {},
     onSubpageStateChanged: (Boolean) -> Unit = {},
+    onNavigateBackToHome: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var selectedCategory by remember { mutableStateOf<SettingsCategory?>(null) }
+    var isViewingProfileDetail by remember { mutableStateOf(false) }
     var subPageTitle by remember { mutableStateOf<String?>(null) }
     var subPageSubtitle by remember { mutableStateOf<String?>(null) }
     var subPageBackAction by remember { mutableStateOf<(() -> Boolean)?>(null) }
@@ -110,12 +116,14 @@ fun SettingsScreen(
 
     var showEditProfileSheet by remember { mutableStateOf(false) }
 
-    // Reset subpage state and notify parent when category changes
-    LaunchedEffect(selectedCategory) {
-        subPageTitle = null
-        subPageSubtitle = null
-        subPageBackAction = null
-        onSubpageStateChanged(selectedCategory != null)
+    // Reset subpage state and notify parent when category or profile detail changes
+    LaunchedEffect(selectedCategory, isViewingProfileDetail) {
+        if (!isViewingProfileDetail) {
+            subPageTitle = null
+            subPageSubtitle = null
+            subPageBackAction = null
+        }
+        onSubpageStateChanged(selectedCategory != null || isViewingProfileDetail)
     }
 
     if (showEditProfileSheet) {
@@ -136,10 +144,16 @@ fun SettingsScreen(
         }
     }
 
-    // Handle back button when in a category subpage or nested subpage
-    BackHandler(enabled = selectedCategory != null) {
-        if (subPageBackAction?.invoke() != true) {
-            selectedCategory = null
+    // Handle back button when in a category subpage or nested subpage, or return to Home
+    BackHandler(enabled = true) {
+        if (isViewingProfileDetail) {
+            isViewingProfileDetail = false
+        } else if (selectedCategory != null) {
+            if (subPageBackAction?.invoke() != true) {
+                selectedCategory = null
+            }
+        } else {
+            onNavigateBackToHome()
         }
     }
 
@@ -152,59 +166,72 @@ fun SettingsScreen(
     ) {
         // Top Navigation Bar
         SettingsTopBar(
-            selectedCategory = selectedCategory,
-            subPageTitle = subPageTitle,
-            subPageSubtitle = subPageSubtitle,
+            selectedCategory = if (isViewingProfileDetail) null else selectedCategory,
+            subPageTitle = if (isViewingProfileDetail) "Profile" else subPageTitle,
+            subPageSubtitle = if (isViewingProfileDetail) "Account attributes & languages" else subPageSubtitle,
             isDarkMode = isDarkMode,
             onBackClick = {
-                if (subPageBackAction?.invoke() != true) {
-                    selectedCategory = null
+                if (isViewingProfileDetail) {
+                    isViewingProfileDetail = false
+                } else if (selectedCategory != null) {
+                    if (subPageBackAction?.invoke() != true) {
+                        selectedCategory = null
+                    }
+                } else {
+                    onNavigateBackToHome()
                 }
             }
         )
 
-        // Content Area: Category List or Category Detail Subpage
-        AnimatedContent(
-            targetState = selectedCategory,
-            transitionSpec = {
-                if (targetState != null) {
-                    (slideInHorizontally(
-                        initialOffsetX = { fullWidth -> (fullWidth * 0.12f).toInt() },
-                        animationSpec = tween(220, easing = FastOutSlowInEasing)
-                    ) + fadeIn(animationSpec = tween(200, easing = LinearOutSlowInEasing)))
-                        .togetherWith(
-                            slideOutHorizontally(
-                                targetOffsetX = { fullWidth -> (-fullWidth * 0.08f).toInt() },
-                                animationSpec = tween(180, easing = FastOutLinearInEasing)
-                            ) + fadeOut(animationSpec = tween(160))
-                        )
+        if (isViewingProfileDetail) {
+            ProfileDetailPage(
+                userProfile = userProfile,
+                isDarkMode = isDarkMode,
+                onEditDetailsClick = { showEditProfileSheet = true }
+            )
+        } else {
+            // Content Area: Category List or Category Detail Subpage
+            AnimatedContent(
+                targetState = selectedCategory,
+                transitionSpec = {
+                    if (targetState != null) {
+                        (slideInHorizontally(
+                            initialOffsetX = { fullWidth -> (fullWidth * 0.12f).toInt() },
+                            animationSpec = tween(220, easing = FastOutSlowInEasing)
+                        ) + fadeIn(animationSpec = tween(200, easing = LinearOutSlowInEasing)))
+                            .togetherWith(
+                                slideOutHorizontally(
+                                    targetOffsetX = { fullWidth -> (-fullWidth * 0.08f).toInt() },
+                                    animationSpec = tween(180, easing = FastOutLinearInEasing)
+                                ) + fadeOut(animationSpec = tween(160))
+                            )
+                    } else {
+                        (slideInHorizontally(
+                            initialOffsetX = { fullWidth -> (-fullWidth * 0.08f).toInt() },
+                            animationSpec = tween(220, easing = FastOutSlowInEasing)
+                        ) + fadeIn(animationSpec = tween(200, easing = LinearOutSlowInEasing)))
+                            .togetherWith(
+                                slideOutHorizontally(
+                                    targetOffsetX = { fullWidth -> (fullWidth * 0.12f).toInt() },
+                                    animationSpec = tween(180, easing = FastOutLinearInEasing)
+                                ) + fadeOut(animationSpec = tween(160))
+                            )
+                    }
+                },
+                modifier = Modifier.fillMaxSize(),
+                label = "SettingsCategoryTransition"
+            ) { category ->
+                if (category == null) {
+                    // Categorized Overview (Matching screenshot structure)
+                    SettingsOverviewList(
+                        userProfile = userProfile,
+                        isDarkMode = isDarkMode,
+                        onProfileClick = { isViewingProfileDetail = true },
+                        onCategoryClick = { selectedCategory = it }
+                    )
                 } else {
-                    (slideInHorizontally(
-                        initialOffsetX = { fullWidth -> (-fullWidth * 0.08f).toInt() },
-                        animationSpec = tween(220, easing = FastOutSlowInEasing)
-                    ) + fadeIn(animationSpec = tween(200, easing = LinearOutSlowInEasing)))
-                        .togetherWith(
-                            slideOutHorizontally(
-                                targetOffsetX = { fullWidth -> (fullWidth * 0.12f).toInt() },
-                                animationSpec = tween(180, easing = FastOutLinearInEasing)
-                            ) + fadeOut(animationSpec = tween(160))
-                        )
-                }
-            },
-            modifier = Modifier.fillMaxSize(),
-            label = "SettingsCategoryTransition"
-        ) { category ->
-            if (category == null) {
-                // Categorized Overview (Matching screenshot structure)
-                SettingsOverviewList(
-                    userProfile = userProfile,
-                    isDarkMode = isDarkMode,
-                    onProfileClick = { showEditProfileSheet = true },
-                    onCategoryClick = { selectedCategory = it }
-                )
-            } else {
-                // Sub-Page for the selected category
-                when (category) {
+                    // Sub-Page for the selected category
+                    when (category) {
                     SettingsCategory.THEMES_APP_UI -> {
                         ThemesAppUiPage(
                             isDarkMode = isDarkMode,
@@ -249,6 +276,7 @@ fun SettingsScreen(
         }
     }
 }
+}
 
 @Composable
 private fun SettingsTopBar(
@@ -260,6 +288,7 @@ private fun SettingsTopBar(
     modifier: Modifier = Modifier
 ) {
     val isMainSettings = selectedCategory == null && subPageTitle == null
+    val appColors = com.example.ui.theme.LocalAppColors.current
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = modifier
@@ -273,20 +302,23 @@ private fun SettingsTopBar(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.weight(1f)
         ) {
-            if (!isMainSettings) {
-                IconButton(
-                    onClick = onBackClick,
-                    modifier = Modifier.size(38.dp).testTag("settings_back_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Back",
-                        tint = TextPrimary,
-                        modifier = Modifier.size(22.dp)
-                    )
-                }
-                Spacer(modifier = Modifier.width(8.dp))
+            // Liquid Glass round arrow back button
+            Box(
+                modifier = Modifier
+                    .size(38.dp)
+                    .liquidGlassButton(appColors, shape = CircleShape, elevation = 4.dp)
+                    .bouncyClickable { onBackClick() }
+                    .testTag("settings_back_button"),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = if (isMainSettings) "Back to Home" else "Back",
+                    tint = appColors.textPrimary,
+                    modifier = Modifier.size(19.dp)
+                )
             }
+            Spacer(modifier = Modifier.width(14.dp))
 
             Column {
                 Text(
@@ -294,7 +326,7 @@ private fun SettingsTopBar(
                     fontWeight = if (isMainSettings) FontWeight.Black else FontWeight.Bold,
                     fontSize = if (isMainSettings) 34.sp else 22.sp,
                     letterSpacing = if (isMainSettings) (-0.8).sp else (-0.2).sp,
-                    color = TextPrimary,
+                    color = appColors.textPrimary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -302,7 +334,7 @@ private fun SettingsTopBar(
                     Text(
                         text = subPageSubtitle ?: "Tap to customize options",
                         fontSize = 11.5.sp,
-                        color = TextMuted
+                        color = appColors.textMuted
                     )
                 }
             }
@@ -389,13 +421,11 @@ private fun MainProfilePreviewBar(
             ?: CountryData.allCountries.first()
     }
 
-    Card(
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = cardBg),
-        border = BorderStroke(1.dp, cardBorder),
+    Box(
         modifier = modifier
             .fillMaxWidth()
-            .clickable {
+            .liquidGlassCard(appColors, shape = RoundedCornerShape(20.dp), elevation = 4.dp, translucency = 0.86f, tintAccent = true)
+            .bouncyClickable {
                 AppHaptics.performTap(context)
                 onClick()
             }
@@ -443,7 +473,7 @@ private fun MainProfilePreviewBar(
                     fontFamily = FontFamily.SansSerif,
                     fontSize = 17.sp,
                     letterSpacing = 0.5.sp,
-                    color = TextPrimary,
+                    color = appColors.textPrimary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -465,7 +495,7 @@ private fun MainProfilePreviewBar(
             Icon(
                 imageVector = Icons.AutoMirrored.Filled.ArrowForwardIos,
                 contentDescription = "Edit Profile",
-                tint = TextMuted,
+                tint = if (appColors.isDark) appColors.textPrimary.copy(alpha = 0.70f) else appColors.textMuted,
                 modifier = Modifier.size(16.dp)
             )
         }

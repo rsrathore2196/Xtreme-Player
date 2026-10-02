@@ -27,10 +27,12 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
+import androidx.compose.runtime.Immutable
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+@Immutable
 sealed interface PlaylistImportStep {
     object Idle : PlaylistImportStep
     data class Fetching(val platform: String, val message: String) : PlaylistImportStep
@@ -48,6 +50,7 @@ sealed interface PlaylistImportStep {
     data class Error(val message: String) : PlaylistImportStep
 }
 
+@Immutable
 data class PlaylistImportUiState(
     val isDialogOpen: Boolean = false,
     val selectedPlatform: String = "Link", // "Link", "Spotify", "YouTube Music", "Apple Music", "CSV/Text"
@@ -59,6 +62,7 @@ data class PlaylistImportUiState(
     val lastSummary: PlaylistImportSummary? = null
 )
 
+@Immutable
 data class SearchUiState(
     val query: String = "",
     val isSearching: Boolean = false,
@@ -74,6 +78,10 @@ class PlayerViewModel(
 ) : ViewModel() {
 
     val playerUiState: StateFlow<PlayerUiState> = playbackManager.uiState
+    val playbackPosition: StateFlow<Long> = playbackManager.playbackPosition
+    val bufferedPosition: StateFlow<Long> = playbackManager.bufferedPosition
+    val trackDuration: StateFlow<Long> = playbackManager.trackDuration
+    val currentPosition: Long get() = playbackManager.currentPlaybackPositionMs
 
     val selectedQuality: StateFlow<AudioQuality> = playbackManager.uiState
         .map { it.selectedQuality }
@@ -189,29 +197,23 @@ class PlayerViewModel(
     fun setThemeMode(mode: com.example.data.local.AppThemeMode) {
         _themeMode.value = mode
         com.example.data.local.ThemePreferences.setThemeMode(application, mode)
-        when (mode) {
-            com.example.data.local.AppThemeMode.DARK -> {
-                _isDarkMode.value = true
-                val studioNight = com.example.data.local.ThemePresets.StudioNight.toCustomThemeState()
-                _customThemeState.value = studioNight
-                com.example.data.local.ThemePreferences.saveCustomThemeState(application, studioNight)
-            }
-            com.example.data.local.AppThemeMode.LIGHT -> {
-                _isDarkMode.value = false
-                val cleanDay = com.example.data.local.ThemePresets.CleanDay.toCustomThemeState()
-                _customThemeState.value = cleanDay
-                com.example.data.local.ThemePreferences.saveCustomThemeState(application, cleanDay)
-            }
+        val isDark = when (mode) {
+            com.example.data.local.AppThemeMode.DARK -> true
+            com.example.data.local.AppThemeMode.LIGHT -> false
             com.example.data.local.AppThemeMode.SYSTEM -> {
                 val nightModeFlags = application.resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK
-                val isSystemDark = nightModeFlags == android.content.res.Configuration.UI_MODE_NIGHT_YES
-                _isDarkMode.value = isSystemDark
-                val defaultPreset = if (isSystemDark) com.example.data.local.ThemePresets.StudioNight else com.example.data.local.ThemePresets.CleanDay
-                val defaultState = defaultPreset.toCustomThemeState()
-                _customThemeState.value = defaultState
-                com.example.data.local.ThemePreferences.saveCustomThemeState(application, defaultState)
+                nightModeFlags == android.content.res.Configuration.UI_MODE_NIGHT_YES
             }
         }
+        _isDarkMode.value = isDark
+        val defaultPreset = if (isDark) {
+            com.example.data.local.ThemePresets.StudioNight
+        } else {
+            com.example.data.local.ThemePresets.CleanDay
+        }
+        val updatedState = defaultPreset.toCustomThemeState()
+        _customThemeState.value = updatedState
+        com.example.data.local.ThemePreferences.saveCustomThemeState(application, updatedState)
     }
 
     fun setResolvedDarkMode(isDark: Boolean) {
@@ -311,7 +313,7 @@ class PlayerViewModel(
         if (forceRefresh) {
             LyricsProvider.clearCacheForTrack(track.id)
         }
-        lyricsJob = viewModelScope.launch {
+        lyricsJob = viewModelScope.launch(Dispatchers.IO) {
             try {
                 val lyrics = LyricsProvider.getLyricsForTrack(track)
                 if (playbackManager.uiState.value.currentTrack?.id == track.id) {
@@ -380,16 +382,32 @@ class PlayerViewModel(
         playbackManager.toggleAutoplay(_catalogTracks.value)
     }
 
+    fun addToQueue(track: MusicTrack) {
+        playbackManager.addToQueue(track)
+    }
+
+    private var activePlaybackLaunchJob: Job? = null
+
     fun playTrack(track: MusicTrack, queue: List<MusicTrack> = _catalogTracks.value, isExplicitPlaylist: Boolean = false) {
-        viewModelScope.launch {
-            repository.markTrackPlayed(track)
+        activePlaybackLaunchJob?.cancel()
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                repository.markTrackPlayed(track)
+            } catch (_: Exception) {}
+        }
+        activePlaybackLaunchJob = viewModelScope.launch(Dispatchers.IO) {
             playbackManager.playTrack(track, queue, isExplicitPlaylist)
         }
     }
 
     fun playPlaylistTrack(track: MusicTrack, tracks: List<MusicTrack>) {
-        viewModelScope.launch {
-            repository.markTrackPlayed(track)
+        activePlaybackLaunchJob?.cancel()
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                repository.markTrackPlayed(track)
+            } catch (_: Exception) {}
+        }
+        activePlaybackLaunchJob = viewModelScope.launch(Dispatchers.IO) {
             playbackManager.playTrack(track, tracks, isExplicitPlaylist = true)
         }
     }
@@ -400,9 +418,41 @@ class PlayerViewModel(
      * rather than blindly following the raw search list.
      */
     fun playFromSearch(track: MusicTrack, searchPool: List<MusicTrack>) {
-        viewModelScope.launch {
-            repository.markTrackPlayed(track)
+        activePlaybackLaunchJob?.cancel()
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                repository.markTrackPlayed(track)
+            } catch (_: Exception) {}
+        }
+        activePlaybackLaunchJob = viewModelScope.launch(Dispatchers.IO) {
             playbackManager.playFromSearch(track, searchPool)
+        }
+    }
+
+    /**
+     * Plays a random recommended track and activates infinite autoplay mode
+     * so that recommendations continue playing infinitely.
+     */
+    fun playInfiniteRadio() {
+        viewModelScope.launch {
+            if (!playbackManager.uiState.value.isAutoplayEnabled) {
+                playbackManager.toggleAutoplay(_catalogTracks.value)
+            }
+            val tracks = _catalogTracks.value
+            if (tracks.isNotEmpty()) {
+                val current = playbackManager.uiState.value.currentTrack
+                val scored = if (current != null) {
+                    playbackManager.recommendationEngine.evaluateAndScoreCandidates(current, tracks)
+                        .filter { it.totalScore > -50.0 }
+                        .map { it.track }
+                } else {
+                    emptyList()
+                }
+                val candidatePool = if (scored.isNotEmpty()) scored.take(10) else tracks.take(10)
+                val chosenTrack = candidatePool.shuffled().firstOrNull() ?: tracks.random()
+                val fullQueue = listOf(chosenTrack) + tracks.filter { it.id != chosenTrack.id }.shuffled()
+                playTrack(chosenTrack, fullQueue, isExplicitPlaylist = false)
+            }
         }
     }
 
@@ -770,6 +820,14 @@ class PlayerViewModel(
 
     fun resetImportStep() {
         _importState.update { it.copy(step = PlaylistImportStep.Idle, customTitle = "", customDescription = "") }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        lyricsJob?.cancel()
+        searchJob?.cancel()
+        playlistTracksJob?.cancel()
+        importJob?.cancel()
     }
 
     companion object {

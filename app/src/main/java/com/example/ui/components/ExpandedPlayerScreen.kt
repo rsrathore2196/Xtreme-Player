@@ -1,6 +1,7 @@
 package com.example.ui.components
 
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.drawable.BitmapDrawable
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
@@ -80,9 +81,14 @@ import androidx.compose.material.icons.filled.Usb
 import androidx.compose.runtime.collectAsState
 import com.example.playback.AudioDeviceManager
 import com.example.playback.SoundOutputDevice
+import com.example.ui.util.ImageConfig
+import com.example.ui.util.TrackPaletteCache
+import com.example.ui.util.ExtractedTrackColors
+import com.example.util.AppHaptics
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -94,18 +100,25 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
@@ -116,6 +129,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.palette.graphics.Palette
 import coil.ImageLoader
+import coil.imageLoader
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import coil.request.SuccessResult
@@ -123,6 +137,10 @@ import com.example.data.model.MusicTrack
 import com.example.playback.PlayerUiState
 import com.example.playback.RepeatMode
 import com.example.ui.theme.LocalAppColors
+import com.example.ui.theme.LiquidGlass
+import com.example.ui.theme.bouncyClickable
+import com.example.ui.theme.liquidGlassButton
+import com.example.ui.theme.primaryLiquidGlassButton
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
@@ -148,11 +166,15 @@ fun ExpandedPlayerScreen(
     onOpenQueue: () -> Unit,
     onOpenEqualizer: () -> Unit = {},
     onAddToPlaylist: (MusicTrack) -> Unit,
+    onAddToQueue: (MusicTrack) -> Unit = {},
     lyrics: com.example.data.model.TrackLyrics? = null,
     onRetryLyrics: () -> Unit = {},
     availableAudioDevices: List<SoundOutputDevice> = emptyList(),
     onSelectAudioDevice: (Int) -> Unit = {},
     isDark: Boolean = LocalAppColors.current.isDark,
+    currentPositionProvider: () -> Long = { uiState.currentPositionMs },
+    trackDurationProvider: () -> Long = { if (uiState.durationMs > 0) uiState.durationMs else (uiState.currentTrack?.durationMs ?: 0L) },
+    bufferedPositionProvider: () -> Long = { uiState.bufferedPositionMs },
     modifier: Modifier = Modifier
 ) {
     val track = uiState.currentTrack ?: return
@@ -160,9 +182,33 @@ fun ExpandedPlayerScreen(
     val haptic = LocalHapticFeedback.current
     val appColors = LocalAppColors.current
 
+    // Upgrade image URL to high-definition quality (1200x1200 or 500x500) if standard low-res jio/saavn or yt thumbnail
+    val highResCoverUrl = remember(track.coverUrl) {
+        val raw = track.coverUrl
+        when {
+            raw.contains("150x150.jpg") -> raw.replace("150x150.jpg", "500x500.jpg")
+            raw.contains("50x50.jpg") -> raw.replace("50x50.jpg", "500x500.jpg")
+            raw.contains("hqdefault.jpg") -> raw.replace("hqdefault.jpg", "maxresdefault.jpg")
+            raw.contains("mqdefault.jpg") -> raw.replace("mqdefault.jpg", "maxresdefault.jpg")
+            raw.contains("default.jpg") && !raw.contains("maxresdefault.jpg") -> raw.replace("default.jpg", "maxresdefault.jpg")
+            else -> raw
+        }
+    }
+
+    val highResImageRequest = remember(highResCoverUrl) {
+        ImageRequest.Builder(context)
+            .data(highResCoverUrl)
+            .size(coil.size.Size.ORIGINAL) // Full High Quality album art without downscaling
+            .scale(coil.size.Scale.FILL)
+            .crossfade(180)
+            .allowHardware(true)
+            .memoryCachePolicy(coil.request.CachePolicy.ENABLED)
+            .diskCachePolicy(coil.request.CachePolicy.ENABLED)
+            .networkCachePolicy(coil.request.CachePolicy.ENABLED)
+            .build()
+    }
+
     var isMenuOpen by remember { mutableStateOf(false) }
-    var isUserScrubbing by remember { mutableStateOf(false) }
-    var scrubPosition by remember { mutableFloatStateOf(0f) }
     var isFlipped by remember(track.id) { mutableStateOf(false) }
     var showLyrics by remember(track.id) { mutableStateOf(false) }
     var showSoundOutputDialog by remember { mutableStateOf(false) }
@@ -171,23 +217,39 @@ fun ExpandedPlayerScreen(
     val effectiveDevices = if (availableAudioDevices.isNotEmpty()) availableAudioDevices else fallbackDevices
     val activeOutputDevice = effectiveDevices.find { it.isSelected }
 
-    // Dynamic color extracted from album art with active theme fallback
-    var dominantColor by remember(track.id) { mutableStateOf(appColors.cardBackgroundElevated) }
-    var accentColor by remember(track.id, appColors.primaryAccent) { mutableStateOf(appColors.primaryAccent) }
+    // Dynamic color extracted from album art with active theme fallback and in-memory song ID cache
+    val cachedColors = remember(track.id) { TrackPaletteCache.get(track.id) }
+    var dominantColor by remember(track.id) { mutableStateOf(cachedColors?.dominantColor ?: appColors.cardBackgroundElevated) }
+    var accentColor by remember(track.id, appColors.primaryAccent) { mutableStateOf(cachedColors?.accentColor ?: appColors.primaryAccent) }
+    var vibrantColor by remember(track.id, appColors.primaryAccent) { mutableStateOf(cachedColors?.vibrantColor ?: appColors.primaryAccent) }
 
-    LaunchedEffect(track.coverUrl, appColors.primaryAccent) {
+    LaunchedEffect(track.id, track.coverUrl, appColors.primaryAccent) {
+        // Fast-path: If already in memory cache, avoid all processing
+        val inMem = TrackPaletteCache.get(track.id)
+        if (inMem != null) {
+            dominantColor = inMem.dominantColor
+            accentColor = inMem.accentColor
+            vibrantColor = inMem.vibrantColor
+            return@LaunchedEffect
+        }
+
         if (track.coverUrl.isNotBlank()) {
             withContext(Dispatchers.IO) {
                 try {
-                    val loader = ImageLoader(context)
+                    val loader = context.imageLoader
                     val request = ImageRequest.Builder(context)
                         .data(track.coverUrl)
+                        .size(ImageConfig.PALETTE_THUMBNAIL_SIZE, ImageConfig.PALETTE_THUMBNAIL_SIZE) // Explicit 100x100 for fast, lightweight palette extraction
                         .allowHardware(false)
+                        .memoryCachePolicy(coil.request.CachePolicy.ENABLED)
+                        .diskCachePolicy(coil.request.CachePolicy.ENABLED)
                         .build()
                     val result = (loader.execute(request) as? SuccessResult)?.drawable
                     val bitmap = (result as? BitmapDrawable)?.bitmap
                     if (bitmap != null) {
-                        val palette = Palette.from(bitmap).generate()
+                        val palette = withContext(Dispatchers.Default) {
+                            Palette.from(bitmap).generate()
+                        }
                         val defaultAccentInt = android.graphics.Color.rgb(
                             (appColors.primaryAccent.red * 255).toInt(),
                             (appColors.primaryAccent.green * 255).toInt(),
@@ -199,8 +261,20 @@ fun ExpandedPlayerScreen(
                         val acc = palette.getLightVibrantColor(
                             palette.getVibrantColor(defaultAccentInt)
                         )
-                        dominantColor = Color(dom)
-                        accentColor = Color(acc)
+                        val vib = palette.getVibrantColor(
+                            palette.getLightVibrantColor(defaultAccentInt)
+                        )
+                        val extracted = ExtractedTrackColors(
+                            dominantColor = Color(dom),
+                            accentColor = Color(acc),
+                            vibrantColor = Color(vib)
+                        )
+                        TrackPaletteCache.put(track.id, extracted)
+                        withContext(Dispatchers.Main) {
+                            dominantColor = extracted.dominantColor
+                            accentColor = extracted.accentColor
+                            vibrantColor = extracted.vibrantColor
+                        }
                     }
                 } catch (_: Exception) {}
             }
@@ -209,25 +283,19 @@ fun ExpandedPlayerScreen(
 
     val animatedDominantColor by animateColorAsState(
         targetValue = dominantColor,
-        animationSpec = tween(320, easing = FastOutSlowInEasing),
+        animationSpec = tween(650, easing = LinearOutSlowInEasing),
         label = "dominant_color"
     )
     val animatedAccentColor by animateColorAsState(
         targetValue = accentColor,
-        animationSpec = tween(320, easing = FastOutSlowInEasing),
+        animationSpec = tween(650, easing = LinearOutSlowInEasing),
         label = "accent_color"
     )
-
-    val trackDuration = if (uiState.durationMs > 0) uiState.durationMs else track.durationMs
-    val currentPosition = if (isUserScrubbing) {
-        (scrubPosition * trackDuration).toLong()
-    } else {
-        uiState.currentPositionMs
-    }
-
-    val sliderValue = if (trackDuration > 0) {
-        if (isUserScrubbing) scrubPosition else (currentPosition.toFloat() / trackDuration.toFloat()).coerceIn(0f, 1f)
-    } else 0f
+    val animatedVibrantColor by animateColorAsState(
+        targetValue = vibrantColor,
+        animationSpec = tween(650, easing = LinearOutSlowInEasing),
+        label = "vibrant_color"
+    )
 
     val albumArtScale by animateFloatAsState(
         targetValue = if (uiState.isPlaying) 1.0f else 0.88f,
@@ -301,100 +369,876 @@ fun ExpandedPlayerScreen(
             modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.TopCenter
         ) {
-            // Animated Bokeh Mode Background Layer
+            // Animated Bokeh Mode Background Layer with High-Depth Frosted Glass
             PlayerBokehBackground(
                 dominantColor = animatedDominantColor,
                 accentColor = animatedAccentColor,
+                vibrantColor = animatedVibrantColor,
                 isDark = isDark
             )
 
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .statusBarsPadding()
-                    .navigationBarsPadding()
-                    .padding(horizontal = 24.dp)
-                    .widthIn(max = 500.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.SpaceBetween
-            ) {
+            val configuration = LocalConfiguration.current
+            val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+
+            if (isLandscape) {
+                // LANDSCAPE DEDICATED TWO-PANE LAYOUT
+                Row(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .statusBarsPadding()
+                        .navigationBarsPadding()
+                        .padding(horizontal = 24.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(24.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // LEFT PANE: Album Art / Lyrics (Proper Square Shape Guarantee)
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        AnimatedContent(
+                            targetState = showLyrics,
+                            transitionSpec = {
+                                (fadeIn(animationSpec = tween(170, easing = LinearOutSlowInEasing)) + scaleIn(initialScale = 0.96f, animationSpec = tween(170, easing = FastOutSlowInEasing))) togetherWith
+                                (fadeOut(animationSpec = tween(130, easing = FastOutLinearInEasing)) + scaleOut(targetScale = 0.98f, animationSpec = tween(130, easing = FastOutLinearInEasing)))
+                            },
+                            label = "lyrics_album_art_transition_landscape",
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .graphicsLayer { clip = false }
+                        ) { isLyricsActive ->
+                            if (isLyricsActive) {
+                                SyncedLyricsView(
+                                    lyrics = lyrics,
+                                    currentPositionProvider = currentPositionProvider,
+                                    onSeekTo = onSeekTo,
+                                    dominantColor = animatedDominantColor,
+                                    accentColor = animatedAccentColor,
+                                    isDark = isDark,
+                                    onRetry = onRetryLyrics,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            } else {
+                                Box(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    // Adaptive Ambient Glow
+                                    Box(
+                                        modifier = Modifier
+                                            .size(240.dp)
+                                            .graphicsLayer()
+                                            .clip(RoundedCornerShape(32.dp))
+                                            .background(
+                                                Brush.radialGradient(
+                                                    colors = listOf(
+                                                        animatedAccentColor.copy(alpha = 0.45f),
+                                                        animatedDominantColor.copy(alpha = 0.25f),
+                                                        Color.Transparent
+                                                    )
+                                                )
+                                            )
+                                    )
+
+                                    // 3D Flippable Album Art Card - Strictly Guaranteed Square
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxHeight(0.92f)
+                                            .aspectRatio(1f)
+                                            .graphicsLayer {
+                                                rotationY = flipRotation
+                                                cameraDistance = 14f * density
+                                            }
+                                            .shadow(
+                                                elevation = 28.dp,
+                                                shape = RoundedCornerShape(22.dp),
+                                                spotColor = animatedAccentColor.copy(alpha = 0.5f),
+                                                ambientColor = Color.Black
+                                            )
+                                            .clip(RoundedCornerShape(22.dp))
+                                            .clickable {
+                                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                isFlipped = !isFlipped
+                                            }
+                                            .testTag("flip_album_art_card")
+                                    ) {
+                                        if (flipRotation <= 90f) {
+                                            // FRONT SIDE: Album Artwork
+                                            Box(modifier = Modifier.fillMaxSize()) {
+                                                AsyncImage(
+                                                    model = highResImageRequest,
+                                                    contentDescription = "Cover Art - Tap to flip",
+                                                    contentScale = ContentScale.Crop,
+                                                    modifier = Modifier
+                                                        .fillMaxSize()
+                                                        .background(Color(0xFF14243B))
+                                                )
+                                            }
+                                        } else {
+                                            // BACK SIDE: Song credits
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxSize()
+                                                    .graphicsLayer { rotationY = 180f }
+                                                    .background(
+                                                        Brush.verticalGradient(
+                                                            if (isDark) {
+                                                                listOf(
+                                                                    appColors.cardBackgroundElevated.copy(alpha = 0.95f),
+                                                                    appColors.cardBackground.copy(alpha = 0.98f),
+                                                                    appColors.scaffoldBackground
+                                                                )
+                                                            } else {
+                                                                listOf(
+                                                                    appColors.cardBackgroundElevated,
+                                                                    appColors.cardBackground,
+                                                                    appColors.scaffoldBackground
+                                                                )
+                                                            }
+                                                        )
+                                                    )
+                                                    .border(
+                                                        BorderStroke(
+                                                            1.5.dp,
+                                                            if (isDark) animatedAccentColor.copy(alpha = 0.65f) else appColors.cardBorder
+                                                        ),
+                                                        RoundedCornerShape(22.dp)
+                                                    )
+                                                    .padding(14.dp),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Column(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                                    verticalArrangement = Arrangement.Center
+                                                ) {
+                                                    Text(
+                                                        text = track.cleanTitle,
+                                                        fontWeight = FontWeight.ExtraBold,
+                                                        fontSize = 14.sp,
+                                                        color = appColors.textPrimary,
+                                                        textAlign = TextAlign.Center,
+                                                        maxLines = 1,
+                                                        softWrap = false,
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .basicMarquee(iterations = Int.MAX_VALUE, initialDelayMillis = 1000)
+                                                    )
+                                                    Spacer(modifier = Modifier.height(4.dp))
+                                                    CreditDetailRow(
+                                                        label = "Album",
+                                                        value = track.album.ifBlank { "Original Single" },
+                                                        isDark = isDark
+                                                    )
+                                                    CreditDetailRow(
+                                                        label = "Artist",
+                                                        value = if (track.singers.isNotBlank()) track.singers else track.artist,
+                                                        isDark = isDark
+                                                    )
+                                                    CreditDetailRow(
+                                                        label = "Quality",
+                                                        value = "${track.bitrateKbps} kbps Studio Master",
+                                                        isDark = isDark
+                                                    )
+                                                    Spacer(modifier = Modifier.height(4.dp))
+                                                    Text(
+                                                        text = "🔄 Tap to flip",
+                                                        fontSize = 9.sp,
+                                                        color = appColors.textMuted
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // RIGHT PANE: Controls & Track Info
+                    Column(
+                        modifier = Modifier
+                            .weight(1.15f)
+                            .fillMaxHeight(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        // Top Bar
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        LiquidGlass.glassBrush(appColors, translucency = 0.82f, tintAccent = false)
+                                    )
+                                    .border(
+                                        BorderStroke(1.dp, LiquidGlass.specularBorderBrush(appColors, highlightAlpha = 0.22f)),
+                                        CircleShape
+                                    )
+                                    .bouncyClickable { onMinimize() }
+                                    .testTag("player_minimize_button"),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.KeyboardArrowDown,
+                                    contentDescription = "Minimize Player",
+                                    tint = appColors.textPrimary,
+                                    modifier = Modifier.size(26.dp)
+                                )
+                            }
+
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(horizontal = 8.dp)
+                            ) {
+                                Text(
+                                    text = "NOW PLAYING",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 11.sp,
+                                        letterSpacing = 2.0.sp,
+                                        color = appColors.primaryAccent
+                                    )
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = track.cleanTitle,
+                                    style = MaterialTheme.typography.titleSmall.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp,
+                                        color = appColors.textPrimary
+                                    ),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+
+                            Box {
+                                Box(
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .clip(CircleShape)
+                                        .background(
+                                            LiquidGlass.glassBrush(appColors, translucency = 0.82f, tintAccent = false)
+                                        )
+                                        .border(
+                                            BorderStroke(1.dp, LiquidGlass.specularBorderBrush(appColors, highlightAlpha = 0.22f)),
+                                            CircleShape
+                                        )
+                                        .bouncyClickable { isMenuOpen = true }
+                                        .testTag("player_options_button"),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.MoreVert,
+                                        contentDescription = "Options",
+                                        tint = appColors.textPrimary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+
+                                PlayerOptionsMenu(
+                                    expanded = isMenuOpen,
+                                    onDismissRequest = { isMenuOpen = false },
+                                    track = track,
+                                    onAddToQueue = onAddToQueue,
+                                    onAddToPlaylist = onAddToPlaylist,
+                                    isDark = isDark
+                                )
+                            }
+                        }
+
+                        // Track Info & Favorite
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = track.cleanTitle,
+                                    style = MaterialTheme.typography.titleMedium.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        color = appColors.textPrimary
+                                    ),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = "${track.artist} • ${track.album}",
+                                    style = MaterialTheme.typography.titleSmall.copy(
+                                        color = appColors.textSecondary,
+                                        fontWeight = FontWeight.Medium
+                                    ),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+
+                            // Favorite Heart Toggle - Liquid Glass Button
+                            Box(
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .liquidGlassButton(
+                                        colors = appColors,
+                                        shape = CircleShape,
+                                        elevation = if (uiState.isFavorite) 6.dp else 3.dp,
+                                        isActive = uiState.isFavorite,
+                                        translucency = 0.84f
+                                    )
+                                    .bouncyClickable {
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        onToggleFavorite(track)
+                                    }
+                                    .testTag("player_favorite_toggle"),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = if (uiState.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                    contentDescription = "Favorite",
+                                    tint = if (uiState.isFavorite) Color(0xFFF43F5E) else appColors.textMuted,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+
+                        // Scrubber Timeline
+                        PlayerTimelineSection(
+                            currentPositionProvider = currentPositionProvider,
+                            trackDurationProvider = trackDurationProvider,
+                            qualityBadge = uiState.qualityBadge,
+                            onSeekTo = onSeekTo,
+                            isDark = isDark,
+                            isPlaying = uiState.isPlaying
+                        )
+
+                        // Main Controls (Shuffle, Previous, Play/Pause, Next, Repeat/Replay) in Full Liquid Glass UI
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // Shuffle Button
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .liquidGlassButton(
+                                        colors = appColors,
+                                        shape = CircleShape,
+                                        elevation = if (uiState.isShuffle) 8.dp else 4.dp,
+                                        isActive = uiState.isShuffle,
+                                        translucency = if (uiState.isShuffle) 0.88f else 0.80f
+                                    )
+                                    .bouncyClickable {
+                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        onToggleShuffle()
+                                    }
+                                    .testTag("expanded_player_shuffle"),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Shuffle,
+                                    contentDescription = "Shuffle",
+                                    tint = if (uiState.isShuffle) appColors.primaryAccent else appColors.textMuted,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+
+                            // Previous Button
+                            Box(
+                                modifier = Modifier
+                                    .size(46.dp)
+                                    .liquidGlassButton(
+                                        colors = appColors,
+                                        shape = CircleShape,
+                                        elevation = 6.dp,
+                                        isActive = false,
+                                        translucency = 0.82f
+                                    )
+                                    .bouncyClickable {
+                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        onSkipPrevious()
+                                    }
+                                    .testTag("expanded_player_previous"),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.SkipPrevious,
+                                    contentDescription = "Previous Track",
+                                    tint = appColors.textPrimary,
+                                    modifier = Modifier.size(26.dp)
+                                )
+                            }
+
+                            // Centerpiece Play / Pause Button with Primary Liquid Glass
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier.size(62.dp)
+                            ) {
+                                if (uiState.isLoading) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(46.dp),
+                                        strokeWidth = 3.5.dp,
+                                        color = appColors.primaryAccent
+                                    )
+                                } else {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(56.dp)
+                                            .primaryLiquidGlassButton(
+                                                colors = appColors,
+                                                shape = CircleShape,
+                                                elevation = 14.dp,
+                                                translucency = 0.82f
+                                            )
+                                            .bouncyClickable(targetScaleOnPress = 0.90f) {
+                                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                onPlayPause()
+                                            }
+                                            .testTag("expanded_player_play_pause"),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = if (uiState.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                            contentDescription = if (uiState.isPlaying) "Pause" else "Play",
+                                            tint = if (appColors.isDark) Color.White else appColors.primaryAccent,
+                                            modifier = Modifier.size(30.dp)
+                                        )
+                                    }
+                                }
+                            }
+
+                            // Next Button
+                            Box(
+                                modifier = Modifier
+                                    .size(46.dp)
+                                    .liquidGlassButton(
+                                        colors = appColors,
+                                        shape = CircleShape,
+                                        elevation = 6.dp,
+                                        isActive = false,
+                                        translucency = 0.82f
+                                    )
+                                    .bouncyClickable {
+                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        onSkipNext()
+                                    }
+                                    .testTag("expanded_player_next"),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.SkipNext,
+                                    contentDescription = "Next Track",
+                                    tint = appColors.textPrimary,
+                                    modifier = Modifier.size(26.dp)
+                                )
+                            }
+
+                            // Repeat / Replay Mode Button (Off -> All -> One)
+                            val isRepeatActiveLandscape = uiState.repeatMode != RepeatMode.OFF
+                            val repeatIconLandscape = when (uiState.repeatMode) {
+                                RepeatMode.ONE -> Icons.Default.RepeatOne
+                                else -> Icons.Default.Repeat
+                            }
+                            val repeatTintLandscape = when (uiState.repeatMode) {
+                                RepeatMode.OFF -> appColors.textMuted
+                                else -> appColors.primaryAccent
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .liquidGlassButton(
+                                        colors = appColors,
+                                        shape = CircleShape,
+                                        elevation = if (isRepeatActiveLandscape) 8.dp else 4.dp,
+                                        isActive = isRepeatActiveLandscape,
+                                        translucency = if (isRepeatActiveLandscape) 0.88f else 0.80f
+                                    )
+                                    .bouncyClickable {
+                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        onToggleRepeat()
+                                    }
+                                    .testTag("expanded_player_repeat"),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = repeatIconLandscape,
+                                    contentDescription = "Repeat Mode",
+                                    tint = repeatTintLandscape,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+
+                        // Bottom Actions Row (Lyrics on bottom-left, Output in bottom-center, Queue on bottom-right)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            val landscapeBottomPillInnerBlur = if (appColors.isDark) {
+                                Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.12f), Color.White.copy(alpha = 0.03f)))
+                            } else {
+                                Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.45f), Color.White.copy(alpha = 0.15f)))
+                            }
+
+                            // 1. Synced Lyrics Toggle Button (Pill shape on bottom-left, Frosted Liquid Glass UI)
+                            val landscapeLyricsBorder = BorderStroke(
+                                1.2.dp,
+                                if (showLyrics) Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.50f), appColors.primaryAccent.copy(alpha = 0.45f)))
+                                else LiquidGlass.specularBorderBrush(appColors, highlightAlpha = if (appColors.isDark) 0.38f else 0.45f)
+                            )
+                            val landscapeLyricsBg = if (showLyrics) {
+                                Brush.verticalGradient(
+                                    listOf(
+                                        appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.88f else 0.92f),
+                                        appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.70f else 0.78f)
+                                    )
+                                )
+                            } else {
+                                LiquidGlass.miniPlayerAndBottomBarBrush(appColors)
+                            }
+                            val landscapeLyricsContentColor = if (showLyrics) Color.White else if (appColors.isDark) Color.White else appColors.textPrimary
+
+                            Surface(
+                                onClick = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    showLyrics = !showLyrics
+                                },
+                                interactionSource = lyricsInteractionSource,
+                                shape = RoundedCornerShape(22.dp),
+                                color = Color.Transparent,
+                                border = landscapeLyricsBorder,
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .shadow(
+                                        elevation = if (showLyrics) 8.dp else 4.dp,
+                                        shape = RoundedCornerShape(22.dp),
+                                        spotColor = if (showLyrics) appColors.primaryAccent.copy(alpha = 0.45f) else Color.Black.copy(alpha = if (appColors.isDark) 0.45f else 0.10f),
+                                        ambientColor = Color.Transparent
+                                    )
+                                    .clip(RoundedCornerShape(22.dp))
+                                    .background(landscapeLyricsBg)
+                                    .graphicsLayer {
+                                        scaleX = lyricsButtonScale
+                                        scaleY = lyricsButtonScale
+                                    }
+                                    .testTag("player_lyrics_button")
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Box(
+                                        modifier = Modifier
+                                            .matchParentSize()
+                                            .clip(RoundedCornerShape(22.dp))
+                                            .background(landscapeBottomPillInnerBlur)
+                                            .blur(16.dp)
+                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .matchParentSize()
+                                            .clip(RoundedCornerShape(22.dp))
+                                            .background(
+                                                Brush.verticalGradient(
+                                                    listOf(
+                                                        Color.White.copy(alpha = if (showLyrics) 0.28f else if (appColors.isDark) 0.18f else 0.30f),
+                                                        Color.Transparent
+                                                    ),
+                                                    startY = 0f,
+                                                    endY = 20f
+                                                )
+                                            )
+                                    )
+                                    Icon(
+                                        imageVector = Icons.Default.FormatQuote,
+                                        contentDescription = "Toggle Lyrics",
+                                        tint = landscapeLyricsContentColor,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+
+                            // 2. Output Devices Button (Pill shape in bottom-centre, Frosted Liquid Glass UI)
+                            val isLandscapeOutputActive = activeOutputDevice?.isBluetooth == true
+                            val landscapeOutputBorder = BorderStroke(
+                                1.2.dp,
+                                if (isLandscapeOutputActive) Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.50f), appColors.primaryAccent.copy(alpha = 0.45f)))
+                                else LiquidGlass.specularBorderBrush(appColors, highlightAlpha = if (appColors.isDark) 0.38f else 0.45f)
+                            )
+                            val landscapeOutputBg = if (isLandscapeOutputActive) {
+                                Brush.verticalGradient(
+                                    listOf(
+                                        appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.88f else 0.92f),
+                                        appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.70f else 0.78f)
+                                    )
+                                )
+                            } else {
+                                LiquidGlass.miniPlayerAndBottomBarBrush(appColors)
+                            }
+                            val landscapeOutputContentColor = if (isLandscapeOutputActive) Color.White else if (appColors.isDark) Color.White else appColors.textPrimary
+
+                            Surface(
+                                onClick = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    showSoundOutputDialog = true
+                                },
+                                interactionSource = outputInteractionSource,
+                                shape = RoundedCornerShape(22.dp),
+                                color = Color.Transparent,
+                                border = landscapeOutputBorder,
+                                modifier = Modifier
+                                    .height(44.dp)
+                                    .padding(horizontal = 8.dp)
+                                    .shadow(
+                                        elevation = if (isLandscapeOutputActive) 8.dp else 4.dp,
+                                        shape = RoundedCornerShape(22.dp),
+                                        spotColor = if (isLandscapeOutputActive) appColors.primaryAccent.copy(alpha = 0.45f) else Color.Black.copy(alpha = if (appColors.isDark) 0.45f else 0.10f),
+                                        ambientColor = Color.Transparent
+                                    )
+                                    .clip(RoundedCornerShape(22.dp))
+                                    .background(landscapeOutputBg)
+                                    .graphicsLayer {
+                                        scaleX = outputButtonScale
+                                        scaleY = outputButtonScale
+                                    }
+                                    .testTag("sound_output_device_button")
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Box(
+                                        modifier = Modifier
+                                            .matchParentSize()
+                                            .clip(RoundedCornerShape(22.dp))
+                                            .background(landscapeBottomPillInnerBlur)
+                                            .blur(16.dp)
+                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .matchParentSize()
+                                            .clip(RoundedCornerShape(22.dp))
+                                            .background(
+                                                Brush.verticalGradient(
+                                                    listOf(
+                                                        Color.White.copy(alpha = if (isLandscapeOutputActive) 0.28f else if (appColors.isDark) 0.18f else 0.30f),
+                                                        Color.Transparent
+                                                    ),
+                                                    startY = 0f,
+                                                    endY = 20f
+                                                )
+                                            )
+                                    )
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.Center,
+                                        modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = when {
+                                                activeOutputDevice?.isBluetooth == true -> Icons.Default.BluetoothAudio
+                                                activeOutputDevice?.isWired == true -> Icons.Default.Headphones
+                                                activeOutputDevice?.isUsb == true -> Icons.Default.Usb
+                                                else -> Icons.Default.Speaker
+                                            },
+                                            contentDescription = "Output Devices",
+                                            tint = landscapeOutputContentColor,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(7.dp))
+                                        Text(
+                                            text = "Output Devices",
+                                            style = MaterialTheme.typography.bodySmall.copy(
+                                                color = landscapeOutputContentColor,
+                                                fontSize = 12.5.sp,
+                                                fontWeight = FontWeight.Bold
+                                            ),
+                                            maxLines = 1,
+                                            softWrap = false
+                                        )
+                                    }
+                                }
+                            }
+
+                            // 3. Queue / Library Button (Pill shape on bottom-right, Frosted Liquid Glass UI)
+                            val landscapeQueueBorder = BorderStroke(
+                                1.3.dp,
+                                LiquidGlass.specularBorderBrush(appColors, highlightAlpha = if (appColors.isDark) 0.38f else 0.55f)
+                            )
+                            val landscapeQueueBg = LiquidGlass.miniPlayerAndBottomBarBrush(appColors)
+                            val landscapeQueueContentColor = if (appColors.isDark) Color.White else appColors.textPrimary
+
+                            Surface(
+                                onClick = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    onOpenQueue()
+                                },
+                                interactionSource = queueInteractionSource,
+                                shape = RoundedCornerShape(22.dp),
+                                color = Color.Transparent,
+                                border = landscapeQueueBorder,
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .shadow(
+                                        elevation = 4.dp,
+                                        shape = RoundedCornerShape(22.dp),
+                                        spotColor = if (appColors.isDark) Color.Black.copy(alpha = 0.45f) else appColors.primaryAccent.copy(alpha = 0.12f),
+                                        ambientColor = if (appColors.isDark) Color.Transparent else Color.Black.copy(alpha = 0.05f)
+                                    )
+                                    .clip(RoundedCornerShape(22.dp))
+                                    .background(landscapeQueueBg)
+                                    .graphicsLayer {
+                                        scaleX = queueButtonScale
+                                        scaleY = queueButtonScale
+                                    }
+                                    .testTag("player_queue_button")
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Box(
+                                        modifier = Modifier
+                                            .matchParentSize()
+                                            .clip(RoundedCornerShape(22.dp))
+                                            .background(landscapeBottomPillInnerBlur)
+                                            .blur(16.dp)
+                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .matchParentSize()
+                                            .clip(RoundedCornerShape(22.dp))
+                                            .background(
+                                                Brush.verticalGradient(
+                                                    listOf(
+                                                        Color.White.copy(alpha = if (appColors.isDark) 0.18f else 0.30f),
+                                                        Color.Transparent
+                                                    ),
+                                                    startY = 0f,
+                                                    endY = 20f
+                                                )
+                                            )
+                                    )
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                                        contentDescription = "Up-Next Queue",
+                                        tint = landscapeQueueContentColor,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .statusBarsPadding()
+                        .navigationBarsPadding()
+                        .padding(horizontal = 24.dp)
+                        .widthIn(max = 500.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.SpaceBetween
+                ) {
             // TOP BAR
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 12.dp),
+                    .padding(vertical = if (isLandscape) 6.dp else 12.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(
-                    onClick = onMinimize,
-                    modifier = Modifier.testTag("player_minimize_button")
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .liquidGlassButton(
+                            colors = appColors,
+                            shape = CircleShape,
+                            elevation = 4.dp,
+                            isActive = false,
+                            translucency = 0.82f
+                        )
+                        .bouncyClickable { onMinimize() }
+                        .testTag("player_minimize_button"),
+                    contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = Icons.Default.KeyboardArrowDown,
                         contentDescription = "Minimize Player",
                         tint = appColors.textPrimary,
-                        modifier = Modifier.size(32.dp)
+                        modifier = Modifier.size(28.dp)
                     )
                 }
 
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 8.dp)
+                ) {
                     Text(
-                        text = "PLAYING FROM XTREME • ${uiState.selectedQuality.kbps}K",
+                        text = "NOW PLAYING",
                         style = MaterialTheme.typography.labelSmall.copy(
-                            color = appColors.textMuted,
-                            letterSpacing = 1.2.sp,
+                            fontWeight = FontWeight.Bold,
                             fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold
+                            letterSpacing = 2.0.sp,
+                            color = appColors.primaryAccent
                         )
                     )
+                    Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = track.genre,
-                        style = MaterialTheme.typography.bodySmall.copy(
-                            color = animatedAccentColor,
-                            fontWeight = FontWeight.SemiBold
-                        )
+                        text = track.cleanTitle,
+                        style = MaterialTheme.typography.titleSmall.copy(
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp,
+                            color = appColors.textPrimary
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
 
                 Box {
-                    IconButton(onClick = { isMenuOpen = true }) {
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .liquidGlassButton(
+                                colors = appColors,
+                                shape = CircleShape,
+                                elevation = 4.dp,
+                                isActive = isMenuOpen,
+                                translucency = 0.82f
+                            )
+                            .bouncyClickable { isMenuOpen = true }
+                            .testTag("player_options_button"),
+                        contentAlignment = Alignment.Center
+                    ) {
                         Icon(
                             imageVector = Icons.Default.MoreVert,
                             contentDescription = "Options",
-                            tint = appColors.textPrimary
+                            tint = appColors.textPrimary,
+                            modifier = Modifier.size(22.dp)
                         )
                     }
 
-                    DropdownMenu(
+                    PlayerOptionsMenu(
                         expanded = isMenuOpen,
                         onDismissRequest = { isMenuOpen = false },
-                        modifier = Modifier
-                            .background(appColors.cardBackgroundElevated)
-                            .border(BorderStroke(1.dp, appColors.cardBorder), RoundedCornerShape(8.dp))
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("Add to Playlist", color = appColors.textPrimary) },
-                            leadingIcon = { Icon(Icons.AutoMirrored.Filled.PlaylistAdd, contentDescription = null, tint = appColors.primaryAccent) },
-                            onClick = {
-                                isMenuOpen = false
-                                onAddToPlaylist(track)
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Share Track", color = appColors.textPrimary) },
-                            leadingIcon = { Icon(Icons.Default.Share, contentDescription = null, tint = appColors.secondaryAccent) },
-                            onClick = {
-                                isMenuOpen = false
-                                val sendIntent = Intent().apply {
-                                    action = Intent.ACTION_SEND
-                                    putExtra(Intent.EXTRA_TEXT, "Listening to \"${track.title}\" by ${track.artist} in 320kbps on Xtreme Player!")
-                                    type = "text/plain"
-                                }
-                                context.startActivity(Intent.createChooser(sendIntent, "Share Track"))
-                            }
-                        )
-                    }
+                        track = track,
+                        onAddToQueue = onAddToQueue,
+                        onAddToPlaylist = onAddToPlaylist,
+                        isDark = isDark
+                    )
                 }
             }
 
@@ -416,7 +1260,7 @@ fun ExpandedPlayerScreen(
                 if (isLyricsActive) {
                     SyncedLyricsView(
                         lyrics = lyrics,
-                        currentPositionMs = currentPosition,
+                        currentPositionProvider = currentPositionProvider,
                         onSeekTo = onSeekTo,
                         dominantColor = animatedDominantColor,
                         accentColor = animatedAccentColor,
@@ -429,10 +1273,11 @@ fun ExpandedPlayerScreen(
                         modifier = Modifier.fillMaxSize(),
                         contentAlignment = Alignment.Center
                     ) {
-                // Adaptive Ambient Glow Layer matching album art
+                // Adaptive Ambient Glow Layer matching album art with hardware acceleration
                 Box(
                     modifier = Modifier
-                        .size(280.dp)
+                        .size(if (isLandscape) 190.dp else 280.dp)
+                        .graphicsLayer()
                         .clip(RoundedCornerShape(36.dp))
                         .background(
                             Brush.radialGradient(
@@ -448,8 +1293,12 @@ fun ExpandedPlayerScreen(
                 // 3D Flippable Card
                 Box(
                     modifier = Modifier
+                        .fillMaxHeight(if (isLandscape) 0.88f else 1f)
                         .fillMaxWidth(albumArtScale)
-                        .sizeIn(maxWidth = 330.dp, maxHeight = 330.dp)
+                        .sizeIn(
+                            maxWidth = if (isLandscape) 210.dp else 330.dp,
+                            maxHeight = if (isLandscape) 210.dp else 330.dp
+                        )
                         .aspectRatio(1f)
                         .graphicsLayer {
                             rotationY = flipRotation
@@ -472,41 +1321,13 @@ fun ExpandedPlayerScreen(
                         // FRONT SIDE: Album Artwork
                         Box(modifier = Modifier.fillMaxSize()) {
                             AsyncImage(
-                                model = track.coverUrl,
+                                model = highResImageRequest,
                                 contentDescription = "Cover Art - Tap to flip",
                                 contentScale = ContentScale.Crop,
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .background(Color(0xFF14243B))
                             )
-
-                            // Subtle Hint pill at bottom
-                            Surface(
-                                color = Color.Black.copy(alpha = 0.58f),
-                                shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier
-                                    .align(Alignment.BottomCenter)
-                                    .padding(bottom = 12.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Sync,
-                                        contentDescription = null,
-                                        tint = animatedAccentColor,
-                                        modifier = Modifier.size(13.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        text = "Tap to view song credits",
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.Medium,
-                                        color = Color.White
-                                    )
-                                }
-                            }
                         }
                     } else {
                         // BACK SIDE: Song credits and information (Fully theme adaptive)
@@ -574,7 +1395,7 @@ fun ExpandedPlayerScreen(
                                 Spacer(modifier = Modifier.height(12.dp))
 
                                 Text(
-                                    text = track.title,
+                                    text = track.cleanTitle,
                                     fontWeight = FontWeight.ExtraBold,
                                     fontSize = 17.sp,
                                     color = appColors.textPrimary,
@@ -640,7 +1461,7 @@ fun ExpandedPlayerScreen(
         }
     }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(if (isLandscape) 4.dp else 16.dp))
 
             // TRACK INFO & FAVORITE TOGGLE
             Row(
@@ -650,8 +1471,8 @@ fun ExpandedPlayerScreen(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = track.title,
-                        style = MaterialTheme.typography.headlineSmall.copy(
+                        text = track.cleanTitle,
+                        style = (if (isLandscape) MaterialTheme.typography.titleMedium else MaterialTheme.typography.headlineSmall).copy(
                             fontWeight = FontWeight.Bold,
                             color = appColors.textPrimary
                         ),
@@ -670,148 +1491,109 @@ fun ExpandedPlayerScreen(
                     )
                 }
 
-                // Favorite Heart Toggle
-                IconButton(
-                    onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        onToggleFavorite(track)
-                    },
-                    modifier = Modifier.testTag("player_favorite_toggle")
+                // Favorite Heart Toggle - Liquid Glass Button
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .liquidGlassButton(
+                            colors = appColors,
+                            shape = CircleShape,
+                            elevation = if (uiState.isFavorite) 8.dp else 4.dp,
+                            isActive = uiState.isFavorite,
+                            translucency = 0.84f
+                        )
+                        .bouncyClickable {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onToggleFavorite(track)
+                        }
+                        .testTag("player_favorite_toggle"),
+                    contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = if (uiState.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                         contentDescription = "Favorite",
                         tint = if (uiState.isFavorite) Color(0xFFF43F5E) else appColors.textMuted,
-                        modifier = Modifier.size(28.dp)
+                        modifier = Modifier.size(24.dp)
                     )
                 }
             }
 
-            Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(if (isLandscape) 4.dp else 14.dp))
 
-            // TIMELINE SCRUB BAR WITH 320 KBPS BADGE
-            Column(modifier = Modifier.fillMaxWidth()) {
-                Slider(
-                    value = sliderValue,
-                    onValueChange = {
-                        isUserScrubbing = true
-                        scrubPosition = it
-                    },
-                    onValueChangeFinished = {
-                        val seekPos = (scrubPosition * trackDuration).toLong()
-                        onSeekTo(seekPos)
-                        isUserScrubbing = false
-                    },
-                    colors = SliderDefaults.colors(
-                        thumbColor = appColors.primaryAccent,
-                        activeTrackColor = appColors.primaryAccent,
-                        inactiveTrackColor = if (isDark) appColors.cardBorder else Color(0xFFDBEAFE)
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(20.dp)
-                        .testTag("player_scrub_slider")
-                )
+            // TIMELINE SCRUB BAR WITH 320 KBPS BADGE (Isolated recomposition)
+            PlayerTimelineSection(
+                currentPositionProvider = currentPositionProvider,
+                trackDurationProvider = trackDurationProvider,
+                qualityBadge = uiState.qualityBadge,
+                onSeekTo = onSeekTo,
+                isDark = isDark,
+                isPlaying = uiState.isPlaying
+            )
 
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 4.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = formatTime(currentPosition),
-                        style = MaterialTheme.typography.bodySmall.copy(
-                            color = appColors.textMuted,
-                            fontSize = 12.sp
-                        )
-                    )
+            Spacer(modifier = Modifier.height(if (isLandscape) 4.dp else 14.dp))
 
-                    // High Quality Audio Badge
-                    Surface(
-                        color = if (isDark) appColors.cardBackgroundElevated else Color(0xFFEFF6FF),
-                        border = BorderStroke(1.dp, if (isDark) appColors.cardBorder else Color(0xFFBFDBFE)),
-                        shape = RoundedCornerShape(6.dp),
-                        modifier = Modifier.padding(horizontal = 4.dp)
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(6.dp)
-                                    .clip(CircleShape)
-                                    .background(appColors.primaryAccent)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            val cleanBadge = uiState.qualityBadge
-                                .replace("YouTube Music", "HQ Stream", ignoreCase = true)
-                                .replace("YouTube", "HQ Stream", ignoreCase = true)
-                                .replace("YT Music", "HQ", ignoreCase = true)
-                                .replace("JioSaavn", "HD Stream", ignoreCase = true)
-                                .replace("Saavn", "HD Stream", ignoreCase = true)
-                            Text(
-                                text = cleanBadge.uppercase(),
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    color = appColors.primaryAccent,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    fontSize = 10.sp,
-                                    letterSpacing = 0.5.sp
-                                )
-                            )
-                        }
-                    }
-
-                    Text(
-                        text = formatTime(trackDuration),
-                        style = MaterialTheme.typography.bodySmall.copy(
-                            color = appColors.textMuted,
-                            fontSize = 12.sp
-                        )
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            // MAIN CONTROL CLUSTER (Shuffle, Prev, Play/Pause, Next, Repeat)
+            // MAIN CONTROL CLUSTER (Shuffle, Prev, Play/Pause, Next, Repeat/Replay) in Full Liquid Glass UI
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 // Shuffle Button
-                IconButton(onClick = onToggleShuffle) {
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .liquidGlassButton(
+                            colors = appColors,
+                            shape = CircleShape,
+                            elevation = if (uiState.isShuffle) 8.dp else 4.dp,
+                            isActive = uiState.isShuffle,
+                            translucency = if (uiState.isShuffle) 0.88f else 0.80f
+                        )
+                        .bouncyClickable {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onToggleShuffle()
+                        }
+                        .testTag("expanded_player_shuffle"),
+                    contentAlignment = Alignment.Center
+                ) {
                     Icon(
                         imageVector = Icons.Default.Shuffle,
                         contentDescription = "Shuffle",
                         tint = if (uiState.isShuffle) appColors.primaryAccent else appColors.textMuted,
-                        modifier = Modifier.size(24.dp)
+                        modifier = Modifier.size(22.dp)
                     )
                 }
 
                 // Previous Button
-                IconButton(
-                    onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        onSkipPrevious()
-                    },
-                    modifier = Modifier.size(48.dp)
+                Box(
+                    modifier = Modifier
+                        .size(54.dp)
+                        .liquidGlassButton(
+                            colors = appColors,
+                            shape = CircleShape,
+                            elevation = 6.dp,
+                            isActive = false,
+                            translucency = 0.82f
+                        )
+                        .bouncyClickable {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onSkipPrevious()
+                        }
+                        .testTag("expanded_player_previous"),
+                    contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = Icons.Default.SkipPrevious,
                         contentDescription = "Previous Track",
                         tint = appColors.textPrimary,
-                        modifier = Modifier.size(36.dp)
+                        modifier = Modifier.size(30.dp)
                     )
                 }
 
-                // Play / Pause Raised Button with Gradient
+                // Centerpiece Play / Pause Raised Button with Primary Liquid Glass UI
                 Box(
                     contentAlignment = Alignment.Center,
-                    modifier = Modifier.size(72.dp)
+                    modifier = Modifier.size(76.dp)
                 ) {
                     if (uiState.isLoading) {
                         CircularProgressIndicator(
@@ -820,27 +1602,26 @@ fun ExpandedPlayerScreen(
                             color = appColors.primaryAccent
                         )
                     } else {
-                        IconButton(
-                            onClick = {
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                onPlayPause()
-                            },
+                        Box(
                             modifier = Modifier
-                                .size(68.dp)
-                                .shadow(
-                                    elevation = 16.dp,
+                                .size(70.dp)
+                                .primaryLiquidGlassButton(
+                                    colors = appColors,
                                     shape = CircleShape,
-                                    spotColor = appColors.primaryAccent.copy(alpha = 0.8f),
-                                    ambientColor = Color.Black
+                                    elevation = 16.dp,
+                                    translucency = 0.82f
                                 )
-                                .clip(CircleShape)
-                                .background(Brush.linearGradient(listOf(appColors.primaryAccent, appColors.secondaryAccent)))
-                                .testTag("expanded_player_play_pause")
+                                .bouncyClickable(targetScaleOnPress = 0.90f) {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    onPlayPause()
+                                }
+                                .testTag("expanded_player_play_pause"),
+                            contentAlignment = Alignment.Center
                         ) {
                             Icon(
                                 imageVector = if (uiState.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                                 contentDescription = if (uiState.isPlaying) "Pause" else "Play",
-                                tint = appColors.onPrimaryAccent,
+                                tint = if (appColors.isDark) Color.White else appColors.primaryAccent,
                                 modifier = Modifier.size(36.dp)
                             )
                         }
@@ -848,157 +1629,235 @@ fun ExpandedPlayerScreen(
                 }
 
                 // Next Button
-                IconButton(
-                    onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        onSkipNext()
-                    },
-                    modifier = Modifier.size(48.dp)
+                Box(
+                    modifier = Modifier
+                        .size(54.dp)
+                        .liquidGlassButton(
+                            colors = appColors,
+                            shape = CircleShape,
+                            elevation = 6.dp,
+                            isActive = false,
+                            translucency = 0.82f
+                        )
+                        .bouncyClickable {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onSkipNext()
+                        }
+                        .testTag("expanded_player_next"),
+                    contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = Icons.Default.SkipNext,
                         contentDescription = "Next Track",
                         tint = appColors.textPrimary,
-                        modifier = Modifier.size(36.dp)
+                        modifier = Modifier.size(30.dp)
                     )
                 }
 
-                // Repeat Mode Button (Off -> All -> One)
-                IconButton(onClick = onToggleRepeat) {
-                    val icon = when (uiState.repeatMode) {
-                        RepeatMode.ONE -> Icons.Default.RepeatOne
-                        else -> Icons.Default.Repeat
-                    }
-                    val tint = when (uiState.repeatMode) {
-                        RepeatMode.OFF -> appColors.textMuted
-                        else -> appColors.primaryAccent
-                    }
+                // Repeat / Replay Mode Button (Off -> All -> One)
+                val isRepeatActive = uiState.repeatMode != RepeatMode.OFF
+                val repeatIcon = when (uiState.repeatMode) {
+                    RepeatMode.ONE -> Icons.Default.RepeatOne
+                    else -> Icons.Default.Repeat
+                }
+                val repeatTint = when (uiState.repeatMode) {
+                    RepeatMode.OFF -> appColors.textMuted
+                    else -> appColors.primaryAccent
+                }
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .liquidGlassButton(
+                            colors = appColors,
+                            shape = CircleShape,
+                            elevation = if (isRepeatActive) 8.dp else 4.dp,
+                            isActive = isRepeatActive,
+                            translucency = if (isRepeatActive) 0.88f else 0.80f
+                        )
+                        .bouncyClickable {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onToggleRepeat()
+                        }
+                        .testTag("expanded_player_repeat"),
+                    contentAlignment = Alignment.Center
+                ) {
                     Icon(
-                        imageVector = icon,
+                        imageVector = repeatIcon,
                         contentDescription = "Repeat Mode",
-                        tint = tint,
-                        modifier = Modifier.size(24.dp)
+                        tint = repeatTint,
+                        modifier = Modifier.size(22.dp)
                     )
                 }
             }
 
-            Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(if (isLandscape) 4.dp else 14.dp))
 
-            // BOTTOM BAR (Lyrics Button, Output Devices Button, Queue / Library Button)
+            // BOTTOM BAR (Lyrics Button on bottom-left, Output Devices in bottom-centre, Queue on bottom-right)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 24.dp),
+                    .padding(horizontal = 12.dp, vertical = if (isLandscape) 4.dp else 16.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // 1. Synced Lyrics Toggle Button (Left - Matching 3D style)
+                val bottomPillInnerBlur = if (appColors.isDark) {
+                    Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.12f), Color.White.copy(alpha = 0.03f)))
+                } else {
+                    Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.45f), Color.White.copy(alpha = 0.15f)))
+                }
+
+                // 1. Synced Lyrics Toggle Button (Pill shape on bottom-left, Frosted Liquid Glass UI)
+                val lyricsBorder = BorderStroke(
+                    1.2.dp,
+                    if (showLyrics) Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.50f), appColors.primaryAccent.copy(alpha = 0.45f)))
+                    else LiquidGlass.specularBorderBrush(appColors, highlightAlpha = if (appColors.isDark) 0.38f else 0.45f)
+                )
+                val lyricsBg = if (showLyrics) {
+                    Brush.verticalGradient(
+                        listOf(
+                            appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.88f else 0.92f),
+                            appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.70f else 0.78f)
+                        )
+                    )
+                } else {
+                    LiquidGlass.miniPlayerAndBottomBarBrush(appColors)
+                }
+                val lyricsContentColor = if (showLyrics) Color.White else if (appColors.isDark) Color.White else appColors.textPrimary
+
                 Surface(
                     onClick = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         showLyrics = !showLyrics
                     },
                     interactionSource = lyricsInteractionSource,
-                    shape = RoundedCornerShape(14.dp),
-                    color = if (showLyrics) {
-                        if (isDark) appColors.primaryAccent.copy(alpha = 0.20f) else Color(0xFFE0F2FE)
-                    } else {
-                        if (isDark) appColors.cardBackgroundElevated else Color(0xFFFFFFFF)
-                    },
-                    border = BorderStroke(
-                        1.2.dp,
-                        if (showLyrics) {
-                            appColors.primaryAccent
-                        } else if (isLyricsPressed) {
-                            appColors.primaryAccent.copy(alpha = 0.7f)
-                        } else {
-                            if (isDark) appColors.cardBorder else Color(0xFFBFDBFE)
-                        }
-                    ),
-                    shadowElevation = if (showLyrics) {
-                        if (isDark) 2.dp else 3.dp
-                    } else {
-                        if (isDark) 0.dp else 2.dp
-                    },
+                    shape = RoundedCornerShape(22.dp),
+                    color = Color.Transparent,
+                    border = lyricsBorder,
                     modifier = Modifier
                         .size(44.dp)
+                        .shadow(
+                            elevation = if (showLyrics) 8.dp else 4.dp,
+                            shape = RoundedCornerShape(22.dp),
+                            spotColor = if (showLyrics) appColors.primaryAccent.copy(alpha = 0.45f) else (if (appColors.isDark) Color.Black.copy(alpha = 0.45f) else appColors.primaryAccent.copy(alpha = 0.12f)),
+                            ambientColor = if (appColors.isDark) Color.Transparent else Color.Black.copy(alpha = 0.05f)
+                        )
+                        .clip(RoundedCornerShape(22.dp))
+                        .background(lyricsBg)
                         .graphicsLayer {
                             scaleX = lyricsButtonScale
                             scaleY = lyricsButtonScale
                         }
                         .testTag("player_lyrics_button")
                 ) {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        // Inner Gaussian blur layer inside the button pill
                         Box(
                             modifier = Modifier
-                                .size(26.dp)
-                                .clip(RoundedCornerShape(8.dp))
+                                .matchParentSize()
+                                .clip(RoundedCornerShape(22.dp))
+                                .background(bottomPillInnerBlur)
+                                .blur(16.dp)
+                        )
+                        // Top specular sheen
+                        Box(
+                            modifier = Modifier
+                                .matchParentSize()
+                                .clip(RoundedCornerShape(22.dp))
                                 .background(
-                                    if (showLyrics) {
-                                        appColors.primaryAccent.copy(alpha = 0.28f)
-                                    } else {
-                                        appColors.primaryAccent.copy(alpha = 0.14f)
-                                    }
-                                ),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.FormatQuote,
-                                contentDescription = "Toggle Lyrics",
-                                tint = appColors.primaryAccent,
-                                modifier = Modifier.size(16.dp)
-                            )
-                        }
+                                    Brush.verticalGradient(
+                                        listOf(
+                                            Color.White.copy(alpha = if (showLyrics) 0.28f else if (appColors.isDark) 0.18f else 0.30f),
+                                            Color.Transparent
+                                        ),
+                                        startY = 0f,
+                                        endY = 20f
+                                    )
+                                )
+                        )
+                        Icon(
+                            imageVector = Icons.Default.FormatQuote,
+                            contentDescription = "Toggle Lyrics",
+                            tint = lyricsContentColor,
+                            modifier = Modifier.size(20.dp)
+                        )
                     }
                 }
 
-                // 2. Output Devices Button (Centered in middle)
+                // 2. Output Devices Button (Pill shape in bottom-centre, Frosted Liquid Glass UI)
+                val isOutputActive = activeOutputDevice?.isBluetooth == true
+                val outputBorder = BorderStroke(
+                    1.3.dp,
+                    if (isOutputActive) Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.50f), appColors.primaryAccent.copy(alpha = 0.45f)))
+                    else LiquidGlass.specularBorderBrush(appColors, highlightAlpha = if (appColors.isDark) 0.38f else 0.55f)
+                )
+                val outputBg = if (isOutputActive) {
+                    Brush.verticalGradient(
+                        listOf(
+                            appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.88f else 0.92f),
+                            appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.70f else 0.78f)
+                        )
+                    )
+                } else {
+                    LiquidGlass.miniPlayerAndBottomBarBrush(appColors)
+                }
+                val outputContentColor = if (isOutputActive) Color.White else if (appColors.isDark) Color.White else appColors.textPrimary
+
                 Surface(
                     onClick = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         showSoundOutputDialog = true
                     },
                     interactionSource = outputInteractionSource,
-                    shape = RoundedCornerShape(14.dp),
-                    color = if (isDark) appColors.cardBackgroundElevated else Color(0xFFFFFFFF),
-                    border = BorderStroke(
-                        1.2.dp,
-                        if (activeOutputDevice?.isBluetooth == true) {
-                            appColors.primaryAccent.copy(alpha = 0.7f)
-                        } else {
-                            if (isDark) appColors.cardBorder else Color(0xFFBFDBFE)
-                        }
-                    ),
-                    shadowElevation = if (isDark) 0.dp else 2.dp,
+                    shape = RoundedCornerShape(22.dp),
+                    color = Color.Transparent,
+                    border = outputBorder,
                     modifier = Modifier
-                        .weight(1f)
                         .height(44.dp)
-                        .padding(horizontal = 10.dp)
+                        .weight(1f)
+                        .padding(horizontal = 8.dp)
+                        .shadow(
+                            elevation = if (isOutputActive) 8.dp else 4.dp,
+                            shape = RoundedCornerShape(22.dp),
+                            spotColor = if (isOutputActive) appColors.primaryAccent.copy(alpha = 0.45f) else (if (appColors.isDark) Color.Black.copy(alpha = 0.45f) else appColors.primaryAccent.copy(alpha = 0.12f)),
+                            ambientColor = if (appColors.isDark) Color.Transparent else Color.Black.copy(alpha = 0.05f)
+                        )
+                        .clip(RoundedCornerShape(22.dp))
+                        .background(outputBg)
                         .graphicsLayer {
                             scaleX = outputButtonScale
                             scaleY = outputButtonScale
                         }
                         .testTag("sound_output_device_button")
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(horizontal = 10.dp)
-                    ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        // Inner Gaussian blur layer inside the button pill
                         Box(
                             modifier = Modifier
-                                .size(26.dp)
-                                .clip(RoundedCornerShape(8.dp))
+                                .matchParentSize()
+                                .clip(RoundedCornerShape(22.dp))
+                                .background(bottomPillInnerBlur)
+                                .blur(16.dp)
+                        )
+                        // Top specular sheen
+                        Box(
+                            modifier = Modifier
+                                .matchParentSize()
+                                .clip(RoundedCornerShape(22.dp))
                                 .background(
-                                    if (isDark) appColors.primaryAccent.copy(alpha = 0.14f)
-                                    else Color(0xFFE0F2FE)
-                                ),
-                            contentAlignment = Alignment.Center
+                                    Brush.verticalGradient(
+                                        listOf(
+                                            Color.White.copy(alpha = if (isOutputActive) 0.28f else if (appColors.isDark) 0.18f else 0.30f),
+                                            Color.Transparent
+                                        ),
+                                        startY = 0f,
+                                        endY = 20f
+                                    )
+                                )
+                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
                         ) {
                             Icon(
                                 imageVector = when {
@@ -1008,106 +1867,94 @@ fun ExpandedPlayerScreen(
                                     else -> Icons.Default.Speaker
                                 },
                                 contentDescription = "Output Devices",
-                                tint = if (activeOutputDevice?.isBluetooth == true) {
-                                    appColors.primaryAccent
-                                } else {
-                                    appColors.secondaryAccent
-                                },
-                                modifier = Modifier.size(15.dp)
+                                tint = outputContentColor,
+                                modifier = Modifier.size(16.dp)
                             )
-                        }
-
-                        Spacer(modifier = Modifier.width(8.dp))
-
-                        Column(
-                            verticalArrangement = Arrangement.Center
-                        ) {
+                            Spacer(modifier = Modifier.width(7.dp))
                             Text(
                                 text = "Output Devices",
                                 style = MaterialTheme.typography.bodySmall.copy(
-                                    color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF0F172A),
-                                    fontSize = 11.5.sp,
-                                    fontWeight = FontWeight.SemiBold
+                                    color = outputContentColor,
+                                    fontSize = 12.5.sp,
+                                    fontWeight = FontWeight.Bold
                                 ),
-                                maxLines = 1
+                                maxLines = 1,
+                                softWrap = false
                             )
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    text = activeOutputDevice?.name?.ifBlank { "Speaker" } ?: "Speaker",
-                                    style = MaterialTheme.typography.bodySmall.copy(
-                                        color = appColors.secondaryAccent,
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.Medium
-                                    ),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Text(
-                                    text = " • 24-bit",
-                                    style = MaterialTheme.typography.bodySmall.copy(
-                                        color = if (isDark) TextSecondary else Color(0xFF64748B),
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.Normal
-                                    ),
-                                    maxLines = 1
-                                )
-                            }
                         }
                     }
                 }
 
-                // 3. Queue / Library Button (Right - Matching 3D style)
+                // 3. Queue / Library Button (Pill shape on bottom-right, Frosted Liquid Glass UI)
+                val queueBorder = BorderStroke(
+                    1.3.dp,
+                    LiquidGlass.specularBorderBrush(appColors, highlightAlpha = if (appColors.isDark) 0.38f else 0.55f)
+                )
+                val queueBg = LiquidGlass.miniPlayerAndBottomBarBrush(appColors)
+                val queueContentColor = if (appColors.isDark) Color.White else appColors.textPrimary
+
                 Surface(
                     onClick = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         onOpenQueue()
                     },
                     interactionSource = queueInteractionSource,
-                    shape = RoundedCornerShape(14.dp),
-                    color = if (isDark) appColors.cardBackgroundElevated else Color(0xFFFFFFFF),
-                    border = BorderStroke(
-                        1.2.dp,
-                        if (isQueuePressed) {
-                            appColors.primaryAccent.copy(alpha = 0.7f)
-                        } else {
-                            if (isDark) appColors.cardBorder else Color(0xFFBFDBFE)
-                        }
-                    ),
-                    shadowElevation = if (isDark) 0.dp else 2.dp,
+                    shape = RoundedCornerShape(22.dp),
+                    color = Color.Transparent,
+                    border = queueBorder,
                     modifier = Modifier
                         .size(44.dp)
+                        .shadow(
+                            elevation = 4.dp,
+                            shape = RoundedCornerShape(22.dp),
+                            spotColor = if (appColors.isDark) Color.Black.copy(alpha = 0.45f) else appColors.primaryAccent.copy(alpha = 0.12f),
+                            ambientColor = if (appColors.isDark) Color.Transparent else Color.Black.copy(alpha = 0.05f)
+                        )
+                        .clip(RoundedCornerShape(22.dp))
+                        .background(queueBg)
                         .graphicsLayer {
                             scaleX = queueButtonScale
                             scaleY = queueButtonScale
                         }
                         .testTag("player_queue_button")
                 ) {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        // Inner Gaussian blur layer inside the button pill
                         Box(
                             modifier = Modifier
-                                .size(26.dp)
-                                .clip(RoundedCornerShape(8.dp))
+                                .matchParentSize()
+                                .clip(RoundedCornerShape(22.dp))
+                                .background(bottomPillInnerBlur)
+                                .blur(16.dp)
+                        )
+                        // Top specular sheen
+                        Box(
+                            modifier = Modifier
+                                .matchParentSize()
+                                .clip(RoundedCornerShape(22.dp))
                                 .background(
-                                    if (isDark) appColors.primaryAccent.copy(alpha = 0.14f)
-                                    else Color(0xFFE0F2FE)
-                                ),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.QueueMusic,
-                                contentDescription = "Up-Next Queue",
-                                tint = appColors.primaryAccent,
-                                modifier = Modifier.size(16.dp)
-                            )
-                        }
+                                    Brush.verticalGradient(
+                                        listOf(
+                                            Color.White.copy(alpha = if (appColors.isDark) 0.18f else 0.30f),
+                                            Color.Transparent
+                                        ),
+                                        startY = 0f,
+                                        endY = 20f
+                                    )
+                                )
+                        )
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                            contentDescription = "Up-Next Queue",
+                            tint = queueContentColor,
+                            modifier = Modifier.size(20.dp)
+                        )
                     }
                 }
             }
         }
     }
+}
 }
 
     // Sound Output Devices Popup Dialog
@@ -1175,6 +2022,7 @@ private fun CreditDetailRow(label: String, value: String, isDark: Boolean = true
 private fun PlayerBokehBackground(
     dominantColor: Color,
     accentColor: Color,
+    vibrantColor: Color = accentColor,
     isDark: Boolean = true,
     modifier: Modifier = Modifier
 ) {
@@ -1202,8 +2050,8 @@ private fun PlayerBokehBackground(
     )
 
     val pulseAnim by infiniteTransition.animateFloat(
-        initialValue = 0.65f,
-        targetValue = 0.95f,
+        initialValue = 0.70f,
+        targetValue = 1.0f,
         animationSpec = infiniteRepeatable(
             animation = tween(5500, easing = FastOutSlowInEasing),
             repeatMode = AnimationRepeatMode.Reverse
@@ -1213,186 +2061,566 @@ private fun PlayerBokehBackground(
 
     val isAmoled = appColors.isAmoled
 
-    Canvas(modifier = modifier.fillMaxSize()) {
-        val w = size.width
-        val h = size.height
-
-        // 1. Solid opaque base fill: AMOLED pure black or theme scaffoldBackground
+    Box(modifier = modifier.fillMaxSize()) {
+        // 1. Root theme canvas base fill: AMOLED pure black or theme scaffoldBackground
         val baseColor = if (isAmoled) Color(0xFF000000) else if (isDark) appColors.scaffoldBackground else Color(0xFFF8FAFC)
-        drawRect(color = baseColor)
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(baseColor)
+        )
 
-        if (isAmoled) {
-            // In AMOLED Pure Black mode, maintain pitch black base with a subtle, elegant ambient accent glow
-            val orb1Center = Offset(w * 0.5f, h * 0.35f)
-            val orb1Radius = w * 0.70f
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(
-                        accentColor.copy(alpha = 0.14f * pulseAnim),
-                        Color.Transparent
+        // 2. Multi-layered Gaussian blur diffusion (32dp - 48dp) blending dynamic album art palette colors
+        // Layer A: Deeper Ambient Diffusion (blur 48.dp)
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .blur(48.dp)
+                .graphicsLayer { alpha = 0.85f }
+        ) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val w = size.width
+                val h = size.height
+
+                val themeAccent = appColors.primaryAccent
+                val effectiveAccent = if (isDark) {
+                    Color(
+                        red = (accentColor.red * 0.45f + themeAccent.red * 0.55f),
+                        green = (accentColor.green * 0.45f + themeAccent.green * 0.55f),
+                        blue = (accentColor.blue * 0.45f + themeAccent.blue * 0.55f)
+                    )
+                } else {
+                    accentColor
+                }
+
+                if (!isAmoled) {
+                    // Deep foundation backdrop bloom
+                    val bgCenter = Offset(w * 0.50f, h * 0.40f)
+                    val bgRadius = w * 0.95f
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                dominantColor.copy(alpha = if (isDark) 0.70f * pulseAnim else 0.30f * pulseAnim),
+                                vibrantColor.copy(alpha = if (isDark) 0.50f * pulseAnim else 0.20f * pulseAnim),
+                                Color.Transparent
+                            ),
+                            center = bgCenter,
+                            radius = bgRadius
+                        ),
+                        center = bgCenter,
+                        radius = bgRadius
+                    )
+                }
+            }
+        }
+
+        // Layer B: Vibrant Liquid Foreground Orbs (blur 32.dp)
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .blur(32.dp)
+                .graphicsLayer { alpha = 0.95f }
+        ) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val w = size.width
+                val h = size.height
+
+                val themeAccent = appColors.primaryAccent
+                val themeSecondary = appColors.secondaryAccent
+                val effectiveAccent = if (isDark) {
+                    Color(
+                        red = (accentColor.red * 0.45f + themeAccent.red * 0.55f),
+                        green = (accentColor.green * 0.45f + themeAccent.green * 0.55f),
+                        blue = (accentColor.blue * 0.45f + themeAccent.blue * 0.55f)
+                    )
+                } else {
+                    accentColor
+                }
+
+                if (isAmoled) {
+                    // AMOLED mode: elegant ambient theme + artwork glow
+                    val orb1Center = Offset(w * 0.5f, h * 0.35f)
+                    val orb1Radius = w * 0.75f
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                effectiveAccent.copy(alpha = 0.25f * pulseAnim),
+                                vibrantColor.copy(alpha = 0.15f * pulseAnim),
+                                Color.Transparent
+                            ),
+                            center = orb1Center,
+                            radius = orb1Radius
+                        ),
+                        center = orb1Center,
+                        radius = orb1Radius
+                    )
+                    return@Canvas
+                }
+
+                val dominantAlpha = if (isDark) 0.85f else 0.35f
+                val accentAlpha = if (isDark) 0.90f else 0.40f
+                val vibrantAlpha = if (isDark) 0.75f else 0.30f
+
+                // Dynamic primary ambient radial glass aura centered behind artwork
+                val auraCenter = Offset(
+                    x = w * (0.50f + 0.08f * (floatAnim1 - 0.5f)),
+                    y = h * (0.36f + 0.06f * (floatAnim2 - 0.5f))
+                )
+                val auraRadius = w * 0.88f
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            effectiveAccent.copy(alpha = accentAlpha * pulseAnim),
+                            vibrantColor.copy(alpha = (vibrantAlpha * 0.75f) * pulseAnim),
+                            dominantColor.copy(alpha = (dominantAlpha * 0.50f) * pulseAnim),
+                            Color.Transparent
+                        ),
+                        center = auraCenter,
+                        radius = auraRadius
+                    ),
+                    center = auraCenter,
+                    radius = auraRadius
+                )
+
+                // Secondary ambient glow floating upper-left
+                val orb1Center = Offset(
+                    x = w * (0.24f + 0.10f * (floatAnim1 - 0.5f)),
+                    y = h * (0.22f + 0.08f * (floatAnim2 - 0.5f))
+                )
+                val orb1Radius = w * 0.72f
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            dominantColor.copy(alpha = dominantAlpha * pulseAnim),
+                            themeSecondary.copy(alpha = (dominantAlpha * 0.40f) * pulseAnim),
+                            Color.Transparent
+                        ),
+                        center = orb1Center,
+                        radius = orb1Radius
                     ),
                     center = orb1Center,
                     radius = orb1Radius
-                ),
-                center = orb1Center,
-                radius = orb1Radius
-            )
-            return@Canvas
+                )
+
+                // Vibrant bokeh orb floating mid-right
+                val orb2Center = Offset(
+                    x = w * (0.78f - 0.12f * (floatAnim2 - 0.5f)),
+                    y = h * (0.48f + 0.10f * (floatAnim1 - 0.5f))
+                )
+                val orb2Radius = w * 0.70f
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            vibrantColor.copy(alpha = vibrantAlpha * pulseAnim),
+                            effectiveAccent.copy(alpha = (accentAlpha * 0.50f) * pulseAnim),
+                            Color.Transparent
+                        ),
+                        center = orb2Center,
+                        radius = orb2Radius
+                    ),
+                    center = orb2Center,
+                    radius = orb2Radius
+                )
+
+                // Lower aura floating bottom-left
+                val orb3Center = Offset(
+                    x = w * (0.30f + 0.14f * (floatAnim2 - 0.5f)),
+                    y = h * (0.78f - 0.08f * (floatAnim1 - 0.5f))
+                )
+                val orb3Radius = w * 0.74f
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            (if (isDark) themeSecondary else effectiveAccent).copy(alpha = (if (isDark) 0.60f else 0.25f) * pulseAnim),
+                            dominantColor.copy(alpha = (if (isDark) 0.30f else 0.10f)),
+                            Color.Transparent
+                        ),
+                        center = orb3Center,
+                        radius = orb3Radius
+                    ),
+                    center = orb3Center,
+                    radius = orb3Radius
+                )
+            }
         }
 
-        val dominantAlpha = if (isDark) 0.85f else 0.28f
-        val accentAlpha = if (isDark) 0.75f else 0.24f
-
-        // 2. Large deep bokeh orb (Dominant album color) floating upper-left
-        val orb1Center = Offset(
-            x = w * (0.28f + 0.12f * (floatAnim1 - 0.5f)),
-            y = h * (0.26f + 0.10f * (floatAnim2 - 0.5f))
-        )
-        val orb1Radius = w * 0.78f
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    dominantColor.copy(alpha = dominantAlpha * pulseAnim),
-                    dominantColor.copy(alpha = (dominantAlpha * 0.45f) * pulseAnim),
-                    Color.Transparent
-                ),
-                center = orb1Center,
-                radius = orb1Radius
-            ),
-            center = orb1Center,
-            radius = orb1Radius
-        )
-
-        // 3. Medium vibrant bokeh orb (Accent album color) floating mid-right
-        val orb2Center = Offset(
-            x = w * (0.76f - 0.14f * (floatAnim2 - 0.5f)),
-            y = h * (0.44f + 0.12f * (floatAnim1 - 0.5f))
-        )
-        val orb2Radius = w * 0.68f
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    accentColor.copy(alpha = accentAlpha * pulseAnim),
-                    accentColor.copy(alpha = accentAlpha * 0.40f),
-                    Color.Transparent
-                ),
-                center = orb2Center,
-                radius = orb2Radius
-            ),
-            center = orb2Center,
-            radius = orb2Radius
-        )
-
-        // 4. Secondary bokeh orb (Electric cyan/deep blue) floating bottom-left
-        val orb3Center = Offset(
-            x = w * (0.32f + 0.16f * (floatAnim2 - 0.5f)),
-            y = h * (0.76f - 0.10f * (floatAnim1 - 0.5f))
-        )
-        val orb3Radius = w * 0.72f
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = if (isDark) {
-                    listOf(
-                        appColors.primaryAccent.copy(alpha = 0.60f * pulseAnim),
-                        dominantColor.copy(alpha = 0.25f),
-                        Color.Transparent
+        // 3. Subtle Frosted Glass Micro-Texture Noise Overlay
+        Canvas(modifier = Modifier.fillMaxSize().graphicsLayer { alpha = 0.045f }) {
+            val step = 4f
+            var y = 0f
+            while (y < size.height) {
+                var x = (y.toInt() % 3) * 1.5f
+                while (x < size.width) {
+                    drawRect(
+                        color = if (isDark) Color.White else Color(0xFF1E293B),
+                        topLeft = Offset(x, y),
+                        size = androidx.compose.ui.geometry.Size(1.5f, 1.5f)
                     )
-                } else {
-                    listOf(
-                        appColors.primaryAccent.copy(alpha = 0.25f * pulseAnim),
-                        appColors.secondaryAccent.copy(alpha = 0.10f),
-                        Color.Transparent
-                    )
-                },
-                center = orb3Center,
-                radius = orb3Radius
-            ),
-            center = orb3Center,
-            radius = orb3Radius
-        )
+                    x += step * 3f
+                }
+                y += step * 2f
+            }
+        }
 
-        // 5. Distinct soft bokeh discs (camera blur circles of varying sizes)
-        // Disc A: Upper right glowing disc
-        val discARadius = w * 0.26f
-        val discACenter = Offset(w * 0.82f, h * 0.18f + 25f * (floatAnim1 - 0.5f))
-        drawCircle(
-            brush = Brush.radialGradient(
+        // 4. Crystal-clear 3D liquid glass specular overlays & caustic curvature sheen
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val w = size.width
+            val h = size.height
+
+            // Top specular caustic sheen across upper glass curvature
+            val glassCausticBrush = Brush.verticalGradient(
                 colors = listOf(
-                    accentColor.copy(alpha = (if (isDark) 0.48f else 0.18f) * pulseAnim),
+                    Color.White.copy(alpha = if (isDark) 0.16f else 0.30f),
+                    Color.White.copy(alpha = if (isDark) 0.04f else 0.08f),
                     Color.Transparent
                 ),
-                center = discACenter,
-                radius = discARadius
-            ),
-            center = discACenter,
-            radius = discARadius
-        )
-
-        // Disc B: Mid left soft disc
-        val discBRadius = w * 0.20f
-        val discBCenter = Offset(w * 0.12f, h * 0.50f - 30f * (floatAnim2 - 0.5f))
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    dominantColor.copy(alpha = if (isDark) 0.52f else 0.20f),
-                    Color.Transparent
-                ),
-                center = discBCenter,
-                radius = discBRadius
-            ),
-            center = discBCenter,
-            radius = discBRadius
-        )
-
-        // Disc C: Bottom right disc
-        val discCRadius = w * 0.24f
-        val discCCenter = Offset(w * 0.84f, h * 0.80f + 20f * (floatAnim1 - 0.5f))
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    (if (isDark) appColors.secondaryAccent else appColors.primaryAccent).copy(alpha = (if (isDark) 0.40f else 0.15f) * pulseAnim),
-                    Color.Transparent
-                ),
-                center = discCCenter,
-                radius = discCRadius
-            ),
-            center = discCCenter,
-            radius = discCRadius
-        )
-
-        // Disc D: Subtle center luminous micro-disc
-        val discDRadius = w * 0.14f
-        val discDCenter = Offset(w * 0.50f, h * 0.36f)
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    (if (isDark) Color.White else appColors.primaryAccent).copy(alpha = if (isDark) 0.22f else 0.08f),
-                    Color.Transparent
-                ),
-                center = discDCenter,
-                radius = discDRadius
-            ),
-            center = discDCenter,
-            radius = discDRadius
-        )
-
-        // 6. Deep cinematographic vignette overlay: ensures text and controls have pristine contrast
-        val vignetteColors = if (isDark) {
-            val darkBase = if (isAmoled) Color(0xFF000000) else appColors.scaffoldBackground
-            listOf(
-                darkBase.copy(alpha = 0.40f),
-                Color.Transparent,
-                darkBase.copy(alpha = 0.65f),
-                darkBase.copy(alpha = 0.95f)
+                startY = 0f,
+                endY = h * 0.45f
             )
-        } else {
+            drawRect(glassCausticBrush)
+
+            // Cinematic contrast vignette overlay to protect text readability
+            val vignetteColors = if (isDark) {
+                val darkBase = if (isAmoled) Color(0xFF000000) else appColors.scaffoldBackground
+                listOf(
+                    darkBase.copy(alpha = 0.30f),
+                    Color.Transparent,
+                    darkBase.copy(alpha = 0.55f),
+                    darkBase.copy(alpha = 0.90f)
+                )
+            } else {
+                listOf(
+                    Color.White.copy(alpha = 0.25f),
+                    Color.Transparent,
+                    Color.White.copy(alpha = 0.35f),
+                    Color.White.copy(alpha = 0.85f)
+                )
+            }
+            drawRect(brush = Brush.verticalGradient(colors = vignetteColors))
+        }
+    }
+}
+
+@Composable
+private fun PlayerOptionsMenu(
+    expanded: Boolean,
+    onDismissRequest: () -> Unit,
+    track: MusicTrack,
+    onAddToQueue: (MusicTrack) -> Unit,
+    onAddToPlaylist: (MusicTrack) -> Unit,
+    isDark: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val appColors = LocalAppColors.current
+    val context = LocalContext.current
+
+    val opaqueMenuBaseColor = if (isDark) Color(0xFF161E2C) else Color(0xFFFFFFFF)
+    val opaqueMenuBrush = if (isDark) {
+        Brush.verticalGradient(
             listOf(
-                Color.White.copy(alpha = 0.35f),
-                Color.Transparent,
-                Color.White.copy(alpha = 0.45f),
-                Color.White.copy(alpha = 0.90f)
+                Color(0xFF222B3D),
+                Color(0xFF161E2C),
+                Color(0xFF0F141E)
+            )
+        )
+    } else {
+        Brush.verticalGradient(
+            listOf(
+                Color(0xFFFFFFFF),
+                Color(0xFFF8FAFC),
+                Color(0xFFF1F5F9)
+            )
+        )
+    }
+
+    DropdownMenu(
+        expanded = expanded,
+        onDismissRequest = onDismissRequest,
+        shape = RoundedCornerShape(22.dp),
+        containerColor = opaqueMenuBaseColor,
+        tonalElevation = 0.dp,
+        shadowElevation = 18.dp,
+        border = BorderStroke(
+            1.2.dp,
+            LiquidGlass.specularBorderBrush(appColors, highlightAlpha = if (isDark) 0.45f else 0.55f)
+        ),
+        modifier = modifier
+            .widthIn(min = 220.dp)
+            .clip(RoundedCornerShape(22.dp))
+            .background(opaqueMenuBrush)
+            .drawWithContent {
+                // Optical frosted diffusion layer beneath content
+                val frostedDiffusion = Brush.verticalGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = if (isDark) 0.10f else 0.35f),
+                        Color.White.copy(alpha = if (isDark) 0.02f else 0.10f)
+                    )
+                )
+                drawRect(frostedDiffusion)
+                drawContent()
+                // Top specular reflection sheen
+                val sheenBrush = Brush.verticalGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = if (isDark) 0.16f else 0.25f),
+                        Color.Transparent
+                    ),
+                    startY = 0f,
+                    endY = 40f
+                )
+                drawRect(sheenBrush)
+            }
+            .padding(vertical = 4.dp, horizontal = 4.dp)
+    ) {
+        // Action 1: Add to Queue
+        DropdownMenuItem(
+            text = {
+                Text(
+                    text = "Add to Queue",
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (isDark) Color.White else appColors.textPrimary
+                    )
+                )
+            },
+            leadingIcon = {
+                Box(
+                    modifier = Modifier
+                        .size(34.dp)
+                        .clip(CircleShape)
+                        .background(if (isDark) Color.White.copy(alpha = 0.12f) else Color.Black.copy(alpha = 0.05f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                        contentDescription = null,
+                        tint = appColors.primaryAccent,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            },
+            onClick = {
+                AppHaptics.performTap(context)
+                onAddToQueue(track)
+                onDismissRequest()
+                android.widget.Toast.makeText(
+                    context,
+                    "Added \"${track.title}\" to Queue",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
+            },
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+        )
+
+        // Action 2: Add to Playlist
+        DropdownMenuItem(
+            text = {
+                Text(
+                    text = "Add to Playlist",
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (isDark) Color.White else appColors.textPrimary
+                    )
+                )
+            },
+            leadingIcon = {
+                Box(
+                    modifier = Modifier
+                        .size(34.dp)
+                        .clip(CircleShape)
+                        .background(if (isDark) Color.White.copy(alpha = 0.12f) else Color.Black.copy(alpha = 0.05f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.PlaylistAdd,
+                        contentDescription = null,
+                        tint = appColors.primaryAccent,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            },
+            onClick = {
+                AppHaptics.performTap(context)
+                onDismissRequest()
+                onAddToPlaylist(track)
+            },
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+        )
+
+        // Action 3: Share Track
+        DropdownMenuItem(
+            text = {
+                Text(
+                    text = "Share Track",
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (isDark) Color.White else appColors.textPrimary
+                    )
+                )
+            },
+            leadingIcon = {
+                Box(
+                    modifier = Modifier
+                        .size(34.dp)
+                        .clip(CircleShape)
+                        .background(if (isDark) Color.White.copy(alpha = 0.12f) else Color.Black.copy(alpha = 0.05f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Share,
+                        contentDescription = null,
+                        tint = appColors.primaryAccent,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            },
+            onClick = {
+                AppHaptics.performTap(context)
+                onDismissRequest()
+                val sendIntent = android.content.Intent().apply {
+                    action = android.content.Intent.ACTION_SEND
+                    putExtra(android.content.Intent.EXTRA_TEXT, "Listening to \"${track.title}\" by ${track.artist} on Xtreme Player!")
+                    type = "text/plain"
+                }
+                context.startActivity(android.content.Intent.createChooser(sendIntent, "Share Track"))
+            },
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+        )
+    }
+}
+
+@Composable
+private fun PlayerTimelineSection(
+    currentPositionProvider: () -> Long,
+    trackDurationProvider: () -> Long,
+    qualityBadge: String,
+    onSeekTo: (Long) -> Unit,
+    isDark: Boolean,
+    isPlaying: Boolean = false,
+    modifier: Modifier = Modifier
+) {
+    val appColors = LocalAppColors.current
+    var isUserScrubbing by remember { mutableStateOf(false) }
+    var scrubPosition by remember { mutableFloatStateOf(0f) }
+
+    // Dynamic real-time playback position state
+    var livePosition by remember { mutableLongStateOf(currentPositionProvider()) }
+
+    // Synchronize smoothly in real-time while playing (every 150ms)
+    LaunchedEffect(isPlaying) {
+        if (!isPlaying) {
+            livePosition = currentPositionProvider()
+            return@LaunchedEffect
+        }
+        while (isActive) {
+            if (!isUserScrubbing) {
+                livePosition = currentPositionProvider()
+            }
+            delay(150)
+        }
+    }
+
+    // Keep updated on external position shifts (seeks, track changes, etc.)
+    val externalPos = currentPositionProvider()
+    LaunchedEffect(externalPos) {
+        if (!isUserScrubbing) {
+            livePosition = externalPos
+        }
+    }
+
+    val trackDuration = trackDurationProvider().coerceAtLeast(1L)
+    val currentPosition = if (isUserScrubbing) {
+        (scrubPosition * trackDuration).toLong()
+    } else {
+        livePosition
+    }
+    val sliderValue = if (isUserScrubbing) scrubPosition else (currentPosition.toFloat() / trackDuration.toFloat()).coerceIn(0f, 1f)
+
+    val cleanBadge = remember(qualityBadge) {
+        qualityBadge
+            .replace("YouTube Music", "HQ Stream", ignoreCase = true)
+            .replace("YouTube", "HQ Stream", ignoreCase = true)
+            .replace("YT Music", "HQ", ignoreCase = true)
+            .replace("JioSaavn", "HD Stream", ignoreCase = true)
+            .replace("Saavn", "HD Stream", ignoreCase = true)
+    }
+
+    Column(modifier = modifier.fillMaxWidth().graphicsLayer()) {
+        WavyScrubberBar(
+            progress = sliderValue,
+            isPlaying = isPlaying,
+            onSeekStarted = {
+                isUserScrubbing = true
+            },
+            onSeekProgress = { fraction ->
+                scrubPosition = fraction
+            },
+            onSeekFinished = { fraction ->
+                val seekPos = (fraction * trackDuration).toLong()
+                livePosition = seekPos
+                onSeekTo(seekPos)
+                isUserScrubbing = false
+            },
+            isDark = isDark,
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("player_scrub_slider")
+        )
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 4.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = formatTime(currentPosition),
+                style = MaterialTheme.typography.bodySmall.copy(
+                    color = appColors.textMuted,
+                    fontSize = 12.sp
+                )
+            )
+
+            // High Quality Audio Badge with Frosted Liquid Glass UI
+            Surface(
+                color = Color.Transparent,
+                border = BorderStroke(1.dp, LiquidGlass.specularBorderBrush(appColors, highlightAlpha = 0.22f)),
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(LiquidGlass.glassBrush(appColors, translucency = 0.85f, tintAccent = false))
+                    .padding(horizontal = 2.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(6.dp)
+                            .clip(CircleShape)
+                            .background(appColors.primaryAccent)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = cleanBadge.uppercase(),
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            color = appColors.primaryAccent,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 10.sp,
+                            letterSpacing = 0.5.sp
+                        )
+                    )
+                }
+            }
+
+            Text(
+                text = formatTime(trackDuration),
+                style = MaterialTheme.typography.bodySmall.copy(
+                    color = appColors.textMuted,
+                    fontSize = 12.sp
+                )
             )
         }
-        drawRect(brush = Brush.verticalGradient(colors = vignetteColors))
     }
 }

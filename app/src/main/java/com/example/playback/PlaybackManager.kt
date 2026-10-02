@@ -30,7 +30,9 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import androidx.compose.runtime.Immutable
 
+@Immutable
 data class PlayerUiState(
     val currentTrack: MusicTrack? = null,
     val isPlaying: Boolean = false,
@@ -76,8 +78,26 @@ class PlaybackManager(
     private val playbackHistory = mutableListOf<MusicTrack>()
     private var lastPreviousPressTimeMs: Long = 0L
 
+    private var playResolutionJob: Job? = null
+    private var activeSearchPlayJob: Job? = null
+    private var lastPlayRequestTimeMs: Long = 0L
+    private var lastRequestedTrackId: String? = null
+
     private val _uiState = MutableStateFlow(PlayerUiState())
     val uiState: StateFlow<PlayerUiState> = _uiState.asStateFlow()
+
+    // Isolated high-frequency position state flows so high-frequency updates do NOT trigger full-screen recompositions
+    private val _playbackPosition = MutableStateFlow(0L)
+    val playbackPosition: StateFlow<Long> = _playbackPosition.asStateFlow()
+
+    private val _bufferedPosition = MutableStateFlow(0L)
+    val bufferedPosition: StateFlow<Long> = _bufferedPosition.asStateFlow()
+
+    private val _trackDuration = MutableStateFlow(0L)
+    val trackDuration: StateFlow<Long> = _trackDuration.asStateFlow()
+
+    val currentPlaybackPositionMs: Long
+        get() = controller?.currentPosition?.coerceAtLeast(0L) ?: _playbackPosition.value
 
     private var activeQueue = mutableListOf<MusicTrack>()
     private var isCurrentSessionExplicitPlaylist: Boolean = false
@@ -136,20 +156,28 @@ class PlaybackManager(
                 }
                 Log.d(TAG, "Playback state changed: $playbackState, duration: $duration")
 
+                if (player.isPlaying || (player.playWhenReady && playbackState == Player.STATE_READY)) {
+                    if (progressTickerJob == null || progressTickerJob?.isActive != true) {
+                        startProgressTicker()
+                    }
+                }
+
                 // Handle natural song completion
                 if (playbackState == Player.STATE_ENDED) {
                     Log.i(TAG, "Song completed playback. Autoplay enabled: ${_uiState.value.isAutoplayEnabled}")
-                    if (_uiState.value.repeatMode == RepeatMode.ONE) {
-                        player.seekTo(0)
-                        player.play()
-                    } else if (player.hasNextMediaItem()) {
-                        player.seekToNextMediaItem()
-                        player.play()
-                    } else if (_uiState.value.isAutoplayEnabled) {
-                        skipNext()
-                    } else if (_uiState.value.repeatMode == RepeatMode.ALL && activeQueue.isNotEmpty()) {
-                        player.seekTo(0, 0L)
-                        player.play()
+                    scope.launch(Dispatchers.Main) {
+                        if (_uiState.value.repeatMode == RepeatMode.ONE) {
+                            player.seekTo(0)
+                            player.play()
+                        } else if (player.hasNextMediaItem()) {
+                            player.seekToNextMediaItem()
+                            player.play()
+                        } else if (_uiState.value.isAutoplayEnabled) {
+                            skipNext()
+                        } else if (_uiState.value.repeatMode == RepeatMode.ALL && activeQueue.isNotEmpty()) {
+                            player.seekTo(0, 0L)
+                            player.play()
+                        }
                     }
                 }
             }
@@ -169,16 +197,6 @@ class PlaybackManager(
                         )
                     val index = activeQueue.indexOfFirst { it.id == trackId }.coerceAtLeast(0)
 
-                    // Track previous song into playback history before updating current
-                    val oldTrack = _uiState.value.currentTrack
-                    if (oldTrack != null && oldTrack.id != matchedTrack.id) {
-                        playbackHistory.add(oldTrack)
-                        if (playbackHistory.size > 50) playbackHistory.removeAt(0)
-                    }
-
-                    // Record track into session memory & co-listening matrix
-                    recommendationEngine.recordTrackPlayed(matchedTrack)
-
                     // The upcoming song in queue is the next recommended track
                     val nextTrackInQueue = activeQueue.getOrNull(index + 1)
 
@@ -189,14 +207,29 @@ class PlaybackManager(
                             durationMs = if (player.duration > 0) player.duration else matchedTrack.durationMs,
                             qualityBadge = matchedTrack.qualityBadge,
                             isFavorite = matchedTrack.isLiked,
-                            nextRecommendedTrack = nextTrackInQueue,
-                            sessionMemoryCount = recommendationEngine.getSessionTracks().size
+                            nextRecommendedTrack = nextTrackInQueue
                         )
                     }
 
-                    // Seamless Infinity Queue: Keep upcoming recommendations stocked
-                    if (_uiState.value.isAutoplayEnabled) {
-                        refreshAutoplayRecommendation(matchedTrack, isCurrentSessionExplicitPlaylist)
+                    // Strictly offload background computations, history recording, and recommendation queries off the main thread
+                    scope.launch(Dispatchers.IO) {
+                        val oldTrack = _uiState.value.currentTrack
+                        if (oldTrack != null && oldTrack.id != matchedTrack.id) {
+                            playbackHistory.add(oldTrack)
+                            if (playbackHistory.size > 50) playbackHistory.removeAt(0)
+                        }
+
+                        // Record track into session memory & co-listening matrix
+                        recommendationEngine.recordTrackPlayed(matchedTrack)
+
+                        _uiState.update {
+                            it.copy(sessionMemoryCount = recommendationEngine.getSessionTracks().size)
+                        }
+
+                        // Seamless Infinity Queue: Keep upcoming recommendations stocked
+                        if (_uiState.value.isAutoplayEnabled) {
+                            refreshAutoplayRecommendation(matchedTrack, isCurrentSessionExplicitPlaylist)
+                        }
                     }
 
                     Log.i(TAG, "Media item transitioned to: ${matchedTrack.title}")
@@ -297,8 +330,14 @@ class PlaybackManager(
             val pos = player.currentPosition.coerceAtLeast(0L)
             val dur = if (player.duration > 0) player.duration else _uiState.value.durationMs
             val buf = player.bufferedPosition.coerceAtLeast(0L)
+
+            // Update isolated position StateFlows for high-performance lambda reads
+            if (_playbackPosition.value != pos) _playbackPosition.value = pos
+            if (_bufferedPosition.value != buf) _bufferedPosition.value = buf
+            if (_trackDuration.value != dur) _trackDuration.value = dur
+
             val current = _uiState.value
-            if (current.currentPositionMs != pos || current.durationMs != dur || current.bufferedPositionMs != buf) {
+            if (current.durationMs != dur || Math.abs(current.currentPositionMs - pos) >= 1000L || !current.isPlaying) {
                 _uiState.update {
                     it.copy(
                         currentPositionMs = pos,
@@ -313,11 +352,50 @@ class PlaybackManager(
     }
 
     fun playTrack(track: MusicTrack, queue: List<MusicTrack> = listOf(track), isExplicitPlaylist: Boolean = false) {
+        val now = System.currentTimeMillis()
+        val currentTrack = _uiState.value.currentTrack
+        val isSameTrack = currentTrack?.id == track.id
+
+        // 1. Double-tap on currently playing track:
+        // If already playing smoothly, do nothing; if paused, resume playback.
+        // If in loading state, reset loading state safely.
+        if (isSameTrack && now - lastPlayRequestTimeMs < 450L) {
+            val player = controller
+            if (player != null) {
+                if (!player.isPlaying) {
+                    try {
+                        if (player.playbackState == Player.STATE_IDLE || player.playbackState == Player.STATE_ENDED) {
+                            player.prepare()
+                        }
+                        player.play()
+                    } catch (_: Exception) {}
+                }
+            }
+            // Ensure loading flag is kept accurate and not stuck
+            if (_uiState.value.isLoading && controller?.isPlaying == true) {
+                _uiState.update { it.copy(isLoading = false) }
+            }
+            return
+        }
+
+        // 2. Debounce rapid spam clicks on the same track if already loading or processing (<250ms)
+        if (lastRequestedTrackId == track.id && now - lastPlayRequestTimeMs < 250L) {
+            return
+        }
+
+        lastPlayRequestTimeMs = now
+        lastRequestedTrackId = track.id
         isCurrentSessionExplicitPlaylist = isExplicitPlaylist
+
+        // Cancel previous unresolved network/stream resolution job and search queue jobs
+        activeSearchPlayJob?.cancel()
+        playResolutionJob?.cancel()
+        recommendationFetchJob?.cancel()
+
         val repo = repository
         if (track.audioUrl.isBlank() && repo != null) {
-            _uiState.update { it.copy(isLoading = true, errorMessage = null) }
-            scope.launch {
+            _uiState.update { it.copy(currentTrack = track, isLoading = true, errorMessage = null) }
+            playResolutionJob = scope.launch(Dispatchers.IO) {
                 try {
                     val resolved = repo.resolvePlayableTrack(track)
                     val updatedQueue = queue.map { if (it.id == track.id) resolved else it }
@@ -325,6 +403,11 @@ class PlaybackManager(
                         playTrackInternal(resolved, updatedQueue, isExplicitPlaylist)
                     }
                 } catch (e: Exception) {
+                    if (e is kotlinx.coroutines.CancellationException) {
+                        // Job was cancelled by a newer play request - do not leave UI stuck in loading state
+                        _uiState.update { it.copy(isLoading = false) }
+                        return@launch
+                    }
                     Log.e(TAG, "Failed resolving track stream: ${e.message}", e)
                     withContext(Dispatchers.Main) {
                         playTrackInternal(track, queue, isExplicitPlaylist)
@@ -361,25 +444,16 @@ class PlaybackManager(
 
             if (autoplayEnabled && !isExplicitPlaylist) {
                 // Autoplay Session:
-                // The queue songs for next play MUST BE the infinite autoplay recommendation songs!
-                val localPool = (candidateCatalogPool + queue + MusicDataSource.curatedTracks).distinctBy { it.id }
-                val initialRecommendations = recommendationEngine.buildInfiniteAutoplayRecommendations(
-                    currentTrack = track,
-                    candidatePool = localPool,
-                    limit = 15,
-                    alreadyQueuedIds = setOf(track.id)
-                )
+                // Start playing immediately for zero latency and zero frame drops
+                val initialQueue = (listOf(track) + (queue.filter { it.id != track.id }.take(5))).toMutableList()
+                activeQueue = initialQueue
 
-                val unifiedQueue = (listOf(track) + initialRecommendations).toMutableList()
-                activeQueue = unifiedQueue
-
-                val mediaItems = unifiedQueue.map { it.toMediaItem() }
+                val mediaItems = initialQueue.map { it.toMediaItem() }
                 player.setMediaItems(mediaItems, 0, 0L)
                 player.prepare()
                 player.play()
 
-                val nextRec = initialRecommendations.firstOrNull()
-
+                _playbackPosition.value = 0L
                 _uiState.update {
                     it.copy(
                         currentTrack = track,
@@ -392,11 +466,12 @@ class PlaybackManager(
                         qualityBadge = track.qualityBadge,
                         isFavorite = track.isLiked,
                         errorMessage = null,
-                        nextRecommendedTrack = nextRec,
-                        infiniteAutoplayTracks = initialRecommendations,
                         sessionMemoryCount = recommendationEngine.getSessionTracks().size
                     )
                 }
+
+                // Asynchronously compute heavy recommendations in background (Dispatchers.IO / Dispatchers.Default)
+                refreshAutoplayRecommendation(track, isExplicitPlaylist = false)
             } else {
                 activeQueue = queue.toMutableList()
                 val startIndex = queue.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
@@ -408,6 +483,7 @@ class PlaybackManager(
 
                 val nextInQueue = activeQueue.getOrNull(startIndex + 1)
 
+                _playbackPosition.value = 0L
                 _uiState.update {
                     it.copy(
                         currentTrack = track,
@@ -465,12 +541,14 @@ class PlaybackManager(
                 val currentPool = (targetedTracks + candidateCatalogPool + activeQueue + MusicDataSource.curatedTracks).distinctBy { it.id }
 
                 // Build complete infinite autoplay list matching mood, artist, language, and era
-                val recommendedTracks = recommendationEngine.buildInfiniteAutoplayRecommendations(
-                    currentTrack = track,
-                    candidatePool = currentPool,
-                    limit = 15,
-                    alreadyQueuedIds = setOf(track.id)
-                )
+                val recommendedTracks = withContext(Dispatchers.Default) {
+                    recommendationEngine.buildInfiniteAutoplayRecommendations(
+                        currentTrack = track,
+                        candidatePool = currentPool,
+                        limit = 15,
+                        alreadyQueuedIds = setOf(track.id)
+                    )
+                }
 
                 // Resolve playable streams for top recommendations
                 val resolvedRecs = recommendedTracks.map { rec ->
@@ -550,19 +628,97 @@ class PlaybackManager(
      * the user's taste across the last 10 songs, rather than just playing the next arbitrary item in search.
      */
     fun playFromSearch(track: MusicTrack, searchContextPool: List<MusicTrack>) {
-        val fullCandidatePool = (searchContextPool + candidateCatalogPool + MusicDataSource.curatedTracks).distinctBy { it.id }
-        val prioritizedQueue = recommendationEngine.buildSearchPlaybackQueue(
-            selectedTrack = track,
-            candidatePool = fullCandidatePool,
-            limit = 25
-        )
-        Log.i(TAG, "playFromSearch: constructed ${prioritizedQueue.size} track prioritized queue for '${track.title}'")
-        playTrack(track, prioritizedQueue)
+        // 1. Cancel previous in-flight search play jobs, resolution jobs, and recommendation fetches
+        activeSearchPlayJob?.cancel()
+        playResolutionJob?.cancel()
+        recommendationFetchJob?.cancel()
+
+        // 2. Immediately update UI state so user receives instant visual feedback without freezing
+        _uiState.update {
+            it.copy(
+                currentTrack = track,
+                isLoading = true,
+                isPlaying = false,
+                errorMessage = null
+            )
+        }
+
+        // 3. Immediately stop/prepare previous audio playback cleanly on Main thread without blocking
+        scope.launch(Dispatchers.Main) {
+            try {
+                controller?.stop()
+            } catch (e: Exception) {
+                Log.w(TAG, "Error stopping controller on search tap: ${e.message}")
+            }
+        }
+
+        // 4. Asynchronously resolve stream URL and prepare playback on Dispatchers.IO
+        activeSearchPlayJob = scope.launch(Dispatchers.IO) {
+            // Fast-path: Resolve audioUrl in parallel if blank
+            val resolvedTrack = if (track.audioUrl.isBlank()) {
+                val repo = repository
+                if (repo != null) {
+                    try {
+                        repo.resolvePlayableTrack(track)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed resolving search track stream: ${e.message}")
+                        track
+                    }
+                } else track
+            } else track
+
+            if (!isActive) return@launch
+
+            // Fast-start queue with immediate candidates (no waiting for heavy recommendation scoring)
+            val fastQueue = listOf(resolvedTrack) + searchContextPool.filter { it.id != track.id }.take(5)
+
+            withContext(Dispatchers.Main) {
+                if (isActive) {
+                    playTrackInternal(resolvedTrack, fastQueue, isExplicitPlaylist = false)
+                }
+            }
+
+            // 5. In background on Dispatchers.Default, compute the full personalized recommendation queue
+            val fullCandidatePool = (searchContextPool + candidateCatalogPool + MusicDataSource.curatedTracks).distinctBy { it.id }
+            val prioritizedQueue = recommendationEngine.buildSearchPlaybackQueue(
+                selectedTrack = resolvedTrack,
+                candidatePool = fullCandidatePool,
+                limit = 25
+            )
+
+            if (!isActive) return@launch
+
+            withContext(Dispatchers.Main) {
+                if (isActive && _uiState.value.currentTrack?.id == resolvedTrack.id) {
+                    activeQueue = prioritizedQueue.toMutableList()
+                    controller?.let { player ->
+                        if (player.mediaItemCount > 1) {
+                            player.removeMediaItems(1, player.mediaItemCount)
+                        }
+                        if (prioritizedQueue.size > 1) {
+                            player.addMediaItems(prioritizedQueue.drop(1).map { it.toMediaItem() })
+                        }
+                    }
+                    _uiState.update {
+                        it.copy(
+                            queue = prioritizedQueue,
+                            nextRecommendedTrack = prioritizedQueue.getOrNull(1)
+                        )
+                    }
+                    Log.i(TAG, "playFromSearch: background queue updated with ${prioritizedQueue.size} tracks")
+                }
+            }
+        }
     }
 
     fun setCandidatePool(pool: List<MusicTrack>) {
         candidateCatalogPool.clear()
         candidateCatalogPool.addAll(pool)
+    }
+
+    fun setAutoplayEnabled(enabled: Boolean) {
+        _uiState.update { it.copy(isAutoplayEnabled = enabled) }
+        Log.i(TAG, "setAutoplayEnabled: $enabled")
     }
 
     fun toggleAutoplay(pool: List<MusicTrack> = emptyList()) {
@@ -607,6 +763,7 @@ class PlaybackManager(
 
         try {
             player.seekTo(positionMs)
+            _playbackPosition.value = positionMs
             _uiState.update { it.copy(currentPositionMs = positionMs) }
         } catch (e: Exception) {
             Log.e(TAG, "Error seeking to $positionMs: ${e.message}", e)
@@ -631,7 +788,9 @@ class PlaybackManager(
                     scope.launch(Dispatchers.Main) {
                         val pool = (candidateCatalogPool + activeQueue + MusicDataSource.curatedTracks).distinctBy { it.id }
                         val nextTrack = _uiState.value.nextRecommendedTrack
-                            ?: recommendationEngine.recommendNextTrack(current, pool, activeQueue.map { it.id }.toSet())
+                            ?: withContext(Dispatchers.Default) {
+                                recommendationEngine.recommendNextTrack(current, pool, activeQueue.map { it.id }.toSet())
+                            }
 
                         if (nextTrack != null) {
                             val resolvedTrack = withContext(Dispatchers.IO) {
@@ -795,6 +954,39 @@ class PlaybackManager(
         }
     }
 
+    /**
+     * Appends a selected track into the next-up playback queue and the Infinite Autoplay pool.
+     */
+    fun addToQueue(track: MusicTrack) {
+        try {
+            val player = controller
+            val currentIdx = _uiState.value.currentIndex
+            val insertIndex = if (currentIdx >= 0 && currentIdx + 1 <= activeQueue.size) {
+                currentIdx + 1
+            } else {
+                activeQueue.size
+            }
+            activeQueue.add(insertIndex, track)
+            player?.addMediaItem(insertIndex, track.toMediaItem())
+
+            // Append to candidate catalog pool so Infinite Autoplay considers it as well
+            if (candidateCatalogPool.none { it.id == track.id }) {
+                candidateCatalogPool.add(track)
+            }
+
+            val nextRec = activeQueue.getOrNull(currentIdx + 1)
+            _uiState.update {
+                it.copy(
+                    queue = activeQueue.toList(),
+                    nextRecommendedTrack = nextRec ?: it.nextRecommendedTrack
+                )
+            }
+            Log.i(TAG, "Added track to queue at index $insertIndex & Infinite Autoplay candidate pool: ${track.title}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error adding to queue: ${e.message}", e)
+        }
+    }
+
     fun setEqualizerPreset(preset: String) {
         try {
             _uiState.update { it.copy(equalizerPreset = preset) }
@@ -871,9 +1063,14 @@ class PlaybackManager(
     fun release() {
         try {
             progressTickerJob?.cancel()
+            recommendationFetchJob?.cancel()
+            playResolutionJob?.cancel()
             controller?.release()
             controllerFuture?.let { MediaController.releaseFuture(it) }
             controller = null
+            synchronized(candidateCatalogPool) {
+                candidateCatalogPool.clear()
+            }
             Log.i(TAG, "PlaybackManager released successfully")
         } catch (e: Exception) {
             Log.e(TAG, "Error releasing resources: ${e.message}", e)

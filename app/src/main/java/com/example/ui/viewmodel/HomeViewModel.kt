@@ -28,7 +28,9 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.util.Calendar
+import androidx.compose.runtime.Immutable
 
+@Immutable
 data class SectionState(
     val title: String = "",
     val subtitle: String = "",
@@ -37,6 +39,7 @@ data class SectionState(
     val isLoaded: Boolean = false
 )
 
+@Immutable
 data class HomeUiState(
     val greeting: String = "",
     val userProfile: UserProfile? = null,
@@ -95,6 +98,22 @@ class HomeViewModel(
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
 
+    // 4b. Precomputed New Releases on background thread (Zero main thread stall during scroll)
+    val newReleases: StateFlow<List<MusicTrack>> = combine(
+        _catalogTracks,
+        _userProfile,
+        homeShelves
+    ) { catalog, profile, shelves ->
+        withContext(Dispatchers.Default) {
+            AiMoodEngine.generateNewReleases(
+                catalogTracks = catalog,
+                userProfile = profile,
+                existingShelves = shelves,
+                limit = 12
+            )
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
+
     // 5. Deferred Lazy-Loaded Sections (Loaded only when scrolled into view)
     private val _punjabiSection = MutableStateFlow(
         SectionState(title = "Top Punjabi Artists & Hits", subtitle = "Trending charts, bhangra beats & viral tracks")
@@ -123,7 +142,7 @@ class HomeViewModel(
      * Prevents any blank screen or global loading blocking on startup.
      */
     private fun loadInitialCachedData() {
-        viewModelScope.launch(Dispatchers.Main.immediate) {
+        viewModelScope.launch(Dispatchers.IO) {
             val initial = repository.getInitialCatalog(_userProfile.value)
             _catalogTracks.value = initial
             playbackManager.setCandidatePool(initial)

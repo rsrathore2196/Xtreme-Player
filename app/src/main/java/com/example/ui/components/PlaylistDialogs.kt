@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -22,12 +23,11 @@ import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -37,7 +37,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -45,6 +48,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import com.example.data.local.PlaylistEntity
 import com.example.data.model.MusicTrack
+import com.example.ui.theme.LiquidGlass
 import com.example.ui.theme.LocalAppColors
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
@@ -64,103 +68,178 @@ fun CreatePlaylistDialog(
 
     val appColors = LocalAppColors.current
     val isDark = appColors.isDark
+    val dialogShape = RoundedCornerShape(22.dp)
 
     Dialog(onDismissRequest = onDismiss) {
-        androidx.compose.runtime.CompositionLocalProvider(LocalAppColors provides appColors) {
-            Card(
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = appColors.cardBackground
+            val opaqueDialogBaseColor = if (isDark) Color(0xFF161E2C) else Color(0xFFFFFFFF)
+            val opaqueDialogBrush = if (isDark) {
+                Brush.verticalGradient(
+                    listOf(
+                        Color(0xFF222B3D),
+                        Color(0xFF161E2C),
+                        Color(0xFF0F141E)
+                    )
+                )
+            } else {
+                Brush.verticalGradient(
+                    listOf(
+                        Color(0xFFFFFFFF),
+                        Color(0xFFF8FAFC),
+                        Color(0xFFF1F5F9)
+                    )
+                )
+            }
+
+            Surface(
+                shape = dialogShape,
+                color = opaqueDialogBaseColor,
+                border = BorderStroke(
+                    1.2.dp,
+                    LiquidGlass.specularBorderBrush(appColors, highlightAlpha = if (isDark) 0.45f else 0.55f)
                 ),
-                border = BorderStroke(1.dp, appColors.cardBorder),
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .shadow(
+                        elevation = 18.dp,
+                        shape = dialogShape,
+                        spotColor = Color.Black.copy(alpha = if (isDark) 0.55f else 0.12f),
+                        ambientColor = Color.Transparent
+                    )
+                    .clip(dialogShape)
             ) {
-                Column(
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(22.dp)
+                        .background(opaqueDialogBrush)
                 ) {
-                    Text(
-                        text = "New Playlist",
-                        style = MaterialTheme.typography.titleLarge.copy(
-                            fontWeight = FontWeight.Bold,
-                            color = appColors.textPrimary
-                        )
-                    )
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    OutlinedTextField(
-                        value = title,
-                        onValueChange = { title = it },
-                        label = { Text("Playlist Name") },
-                        placeholder = { Text("e.g. Chill Beats 320k") },
-                        singleLine = true,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = appColors.primaryAccent,
-                            unfocusedBorderColor = appColors.cardBorder,
-                            focusedLabelColor = appColors.primaryAccent,
-                            unfocusedLabelColor = appColors.textMuted,
-                            focusedTextColor = appColors.textPrimary,
-                            unfocusedTextColor = appColors.textPrimary,
-                            cursorColor = appColors.primaryAccent,
-                            focusedContainerColor = appColors.inputBackground,
-                            unfocusedContainerColor = appColors.inputBackground
-                        ),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    OutlinedTextField(
-                        value = description,
-                        onValueChange = { description = it },
-                        label = { Text("Description (Optional)") },
-                        placeholder = { Text("High bitrate music collection") },
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = appColors.primaryAccent,
-                            unfocusedBorderColor = appColors.cardBorder,
-                            focusedLabelColor = appColors.primaryAccent,
-                            unfocusedLabelColor = appColors.textMuted,
-                            focusedTextColor = appColors.textPrimary,
-                            unfocusedTextColor = appColors.textPrimary,
-                            cursorColor = appColors.primaryAccent,
-                            focusedContainerColor = appColors.inputBackground,
-                            unfocusedContainerColor = appColors.inputBackground
-                        ),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    Spacer(modifier = Modifier.height(20.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End
-                    ) {
-                        TextButton(onClick = onDismiss) {
-                            Text("CANCEL", color = appColors.textMuted)
-                        }
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Button(
-                            onClick = {
-                                if (title.isNotBlank()) {
-                                    onConfirm(title.trim(), description.trim())
+                    // Frosted diffusion blur layer
+                    Box(
+                        modifier = Modifier
+                            .matchParentSize()
+                            .background(
+                                if (isDark) {
+                                    Brush.verticalGradient(
+                                        listOf(Color.White.copy(alpha = 0.10f), Color.White.copy(alpha = 0.02f))
+                                    )
+                                } else {
+                                    Brush.verticalGradient(
+                                        listOf(Color.White.copy(alpha = 0.40f), Color.White.copy(alpha = 0.12f))
+                                    )
                                 }
-                            },
-                            enabled = title.isNotBlank(),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = appColors.primaryAccent,
-                                contentColor = appColors.onPrimaryAccent
                             )
+                            .blur(20.dp)
+                    )
+
+                    // Top specular highlight sheen
+                    Box(
+                        modifier = Modifier
+                            .matchParentSize()
+                            .background(
+                                Brush.verticalGradient(
+                                    listOf(
+                                        Color.White.copy(alpha = if (isDark) 0.16f else 0.28f),
+                                        Color.Transparent
+                                    ),
+                                    startY = 0f,
+                                    endY = 40f
+                                )
+                            )
+                    )
+
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(22.dp)
+                    ) {
+                        Text(
+                            text = "New Playlist",
+                            style = MaterialTheme.typography.titleLarge.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = if (isDark) Color.White else appColors.textPrimary
+                            )
+                        )
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        OutlinedTextField(
+                            value = title,
+                            onValueChange = { title = it },
+                            label = { Text("Playlist Name") },
+                            placeholder = { Text("e.g. Chill Beats 320k") },
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = appColors.primaryAccent,
+                                unfocusedBorderColor = appColors.cardBorder,
+                                focusedLabelColor = appColors.primaryAccent,
+                                unfocusedLabelColor = appColors.textMuted,
+                                focusedTextColor = if (isDark) Color.White else appColors.textPrimary,
+                                unfocusedTextColor = if (isDark) Color.White else appColors.textPrimary,
+                                cursorColor = appColors.primaryAccent,
+                                focusedContainerColor = if (isDark) Color.White.copy(alpha = 0.06f) else Color.White.copy(alpha = 0.60f),
+                                unfocusedContainerColor = if (isDark) Color.White.copy(alpha = 0.04f) else Color.White.copy(alpha = 0.40f)
+                            ),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        OutlinedTextField(
+                            value = description,
+                            onValueChange = { description = it },
+                            label = { Text("Description (Optional)") },
+                            placeholder = { Text("High bitrate music collection") },
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = appColors.primaryAccent,
+                                unfocusedBorderColor = appColors.cardBorder,
+                                focusedLabelColor = appColors.primaryAccent,
+                                unfocusedLabelColor = appColors.textMuted,
+                                focusedTextColor = if (isDark) Color.White else appColors.textPrimary,
+                                unfocusedTextColor = if (isDark) Color.White else appColors.textPrimary,
+                                cursorColor = appColors.primaryAccent,
+                                focusedContainerColor = if (isDark) Color.White.copy(alpha = 0.06f) else Color.White.copy(alpha = 0.60f),
+                                unfocusedContainerColor = if (isDark) Color.White.copy(alpha = 0.04f) else Color.White.copy(alpha = 0.40f)
+                            ),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        Spacer(modifier = Modifier.height(20.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("CREATE", fontWeight = FontWeight.Bold)
+                            TextButton(onClick = onDismiss) {
+                                Text(
+                                    "CANCEL",
+                                    color = if (isDark) Color(0xFFCBD5E1) else appColors.textMuted,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Button(
+                                onClick = {
+                                    if (title.isNotBlank()) {
+                                        onConfirm(title.trim(), description.trim())
+                                    }
+                                },
+                                enabled = title.isNotBlank(),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = appColors.primaryAccent,
+                                    contentColor = appColors.onPrimaryAccent
+                                )
+                            ) {
+                                Text("CREATE", fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
                 }
             }
         }
     }
-}
 
 @Composable
 fun AddToPlaylistDialog(
@@ -172,102 +251,183 @@ fun AddToPlaylistDialog(
     onDismiss: () -> Unit
 ) {
     val appColors = LocalAppColors.current
+    val isDark = appColors.isDark
+    val dialogShape = RoundedCornerShape(22.dp)
 
     Dialog(onDismissRequest = onDismiss) {
-        androidx.compose.runtime.CompositionLocalProvider(LocalAppColors provides appColors) {
-            Card(
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = appColors.cardBackground
+        val opaqueDialogBaseColor = if (isDark) Color(0xFF161E2C) else Color(0xFFFFFFFF)
+            val opaqueDialogBrush = if (isDark) {
+                Brush.verticalGradient(
+                    listOf(
+                        Color(0xFF222B3D),
+                        Color(0xFF161E2C),
+                        Color(0xFF0F141E)
+                    )
+                )
+            } else {
+                Brush.verticalGradient(
+                    listOf(
+                        Color(0xFFFFFFFF),
+                        Color(0xFFF8FAFC),
+                        Color(0xFFF1F5F9)
+                    )
+                )
+            }
+
+            Surface(
+                shape = dialogShape,
+                color = opaqueDialogBaseColor,
+                border = BorderStroke(
+                    1.2.dp,
+                    LiquidGlass.specularBorderBrush(appColors, highlightAlpha = if (isDark) 0.45f else 0.55f)
                 ),
-                border = BorderStroke(1.dp, appColors.cardBorder),
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .shadow(
+                        elevation = 18.dp,
+                        shape = dialogShape,
+                        spotColor = Color.Black.copy(alpha = if (isDark) 0.55f else 0.12f),
+                        ambientColor = Color.Transparent
+                    )
+                    .clip(dialogShape)
             ) {
-                Column(
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(20.dp)
+                        .background(opaqueDialogBrush)
                 ) {
-                    Text(
-                        text = "Add to Playlist",
-                        style = MaterialTheme.typography.titleMedium.copy(
-                            fontWeight = FontWeight.Bold,
-                            color = appColors.textPrimary
-                        )
-                    )
-                    Text(
-                        text = "\"${track.title}\" by ${track.artist}",
-                        style = MaterialTheme.typography.bodySmall.copy(
-                            color = appColors.primaryAccent
-                        ),
-                        maxLines = 1
+                    // Frosted diffusion blur layer
+                    Box(
+                        modifier = Modifier
+                            .matchParentSize()
+                            .background(
+                                if (isDark) {
+                                    Brush.verticalGradient(
+                                        listOf(Color.White.copy(alpha = 0.10f), Color.White.copy(alpha = 0.02f))
+                                    )
+                                } else {
+                                    Brush.verticalGradient(
+                                        listOf(Color.White.copy(alpha = 0.40f), Color.White.copy(alpha = 0.12f))
+                                    )
+                                }
+                            )
+                            .blur(20.dp)
                     )
 
-                    Spacer(modifier = Modifier.height(16.dp))
+                    // Top specular highlight sheen
+                    Box(
+                        modifier = Modifier
+                            .matchParentSize()
+                            .background(
+                                Brush.verticalGradient(
+                                    listOf(
+                                        Color.White.copy(alpha = if (isDark) 0.16f else 0.28f),
+                                        Color.Transparent
+                                    ),
+                                    startY = 0f,
+                                    endY = 40f
+                                )
+                            )
+                    )
 
-                    // Create new playlist button
-                    Row(
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(appColors.chipBackground)
-                            .border(1.dp, appColors.cardBorder, RoundedCornerShape(12.dp))
-                            .clickable {
-                                onDismiss()
-                                onCreateNewPlaylist()
-                            }
-                            .padding(horizontal = 14.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                            .padding(20.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Add,
-                            contentDescription = null,
-                            tint = appColors.primaryAccent,
-                            modifier = Modifier.size(22.dp)
-                        )
-                        Spacer(modifier = Modifier.width(12.dp))
                         Text(
-                            text = "Create New Playlist",
-                            color = appColors.primaryAccent,
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 14.sp
+                            text = "Add to Playlist",
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = if (isDark) Color.White else appColors.textPrimary
+                            )
                         )
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    if (playlists.isEmpty()) {
                         Text(
-                            text = "No custom playlists yet. Create your first one above!",
-                            color = appColors.textMuted,
-                            fontSize = 13.sp,
-                            modifier = Modifier.padding(vertical = 12.dp)
+                            text = "\"${track.cleanTitle}\" by ${track.artist}",
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                color = appColors.primaryAccent,
+                                fontWeight = FontWeight.Medium
+                            ),
+                            maxLines = 1
                         )
-                    } else {
-                        LazyColumn(
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        // Create new playlist button
+                        Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(200.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(
+                                    if (isDark) Color.White.copy(alpha = 0.07f) else Color.White.copy(alpha = 0.60f)
+                                )
+                                .border(
+                                    1.dp,
+                                    LiquidGlass.specularBorderBrush(appColors, highlightAlpha = 0.35f),
+                                    RoundedCornerShape(12.dp)
+                                )
+                                .clickable {
+                                    onDismiss()
+                                    onCreateNewPlaylist()
+                                }
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            items(playlists) { playlist ->
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(10.dp))
-                                        .background(appColors.chipBackground)
-                                        .border(1.dp, appColors.cardBorder, RoundedCornerShape(10.dp))
-                                        .clickable {
-                                            onPlaylistSelected(playlist.playlistId)
-                                            onDismiss()
-                                        }
-                                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.AutoMirrored.Filled.QueueMusic,
-                                        contentDescription = null,
-                                        tint = appColors.primaryAccent,
+                            Icon(
+                                imageVector = Icons.Default.Add,
+                                contentDescription = null,
+                                tint = appColors.primaryAccent,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Text(
+                                text = "Create New Playlist",
+                                color = appColors.primaryAccent,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        if (playlists.isEmpty()) {
+                            Text(
+                                text = "No custom playlists yet. Create your first one above!",
+                                color = if (isDark) Color(0xFFCBD5E1) else appColors.textMuted,
+                                fontSize = 13.sp,
+                                modifier = Modifier.padding(vertical = 12.dp)
+                            )
+                        } else {
+                            LazyColumn(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(200.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                items(playlists) { playlist ->
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(
+                                                if (isDark) Color.White.copy(alpha = 0.05f) else Color.White.copy(alpha = 0.50f)
+                                            )
+                                            .border(
+                                                1.dp,
+                                                LiquidGlass.specularBorderBrush(appColors, highlightAlpha = 0.28f),
+                                                RoundedCornerShape(10.dp)
+                                            )
+                                            .clickable {
+                                                onPlaylistSelected(playlist.playlistId)
+                                                onDismiss()
+                                            }
+                                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                                            contentDescription = null,
+                                            tint = appColors.primaryAccent,
                                         modifier = Modifier.size(20.dp)
                                     )
                                     Spacer(modifier = Modifier.width(10.dp))

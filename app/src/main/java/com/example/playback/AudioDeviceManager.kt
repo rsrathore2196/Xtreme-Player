@@ -11,7 +11,9 @@ import androidx.media3.exoplayer.ExoPlayer
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import androidx.compose.runtime.Immutable
 
+@Immutable
 data class SoundOutputDevice(
     val id: Int,
     val name: String,

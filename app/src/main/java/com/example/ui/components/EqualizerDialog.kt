@@ -49,6 +49,10 @@ import androidx.compose.ui.window.Dialog
 import com.example.playback.AudioEffectsState
 import com.example.playback.BandState
 import com.example.ui.theme.LocalAppColors
+import com.example.ui.theme.LiquidGlass
+import com.example.ui.theme.bouncyClickable
+import com.example.ui.theme.liquidGlass
+import com.example.ui.theme.liquidGlassSwitchColors
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
@@ -71,13 +75,18 @@ fun EqualizerDialog(
 
     Dialog(onDismissRequest = onDismiss) {
         androidx.compose.runtime.CompositionLocalProvider(LocalAppColors provides appColors) {
-        Card(
-            shape = RoundedCornerShape(24.dp),
-            colors = CardDefaults.cardColors(containerColor = appColors.cardBackground),
-            border = BorderStroke(1.dp, appColors.cardBorder),
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(vertical = 12.dp)
+                .liquidGlass(
+                    colors = appColors,
+                    shape = RoundedCornerShape(24.dp),
+                    elevation = 22.dp,
+                    translucency = 0.88f,
+                    sheenAlpha = 0.20f,
+                    highlightAlpha = 0.55f
+                )
                 .testTag("equalizer_dialog")
         ) {
             Column(
@@ -132,12 +141,7 @@ fun EqualizerDialog(
                     Switch(
                         checked = effectsState.isEnabled,
                         onCheckedChange = onEnableChanged,
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = appColors.onPrimaryAccent,
-                            checkedTrackColor = appColors.primaryAccent,
-                            uncheckedThumbColor = appColors.textMuted,
-                            uncheckedTrackColor = if (isDark) appColors.cardBackgroundElevated else Color(0xFFCBD5E1)
-                        ),
+                        colors = liquidGlassSwitchColors(appColors),
                         modifier = Modifier.testTag("equalizer_master_switch")
                     )
                 }
@@ -184,7 +188,7 @@ fun EqualizerDialog(
                         Surface(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(16.dp))
-                                .clickable {
+                                .bouncyClickable {
                                     if (!effectsState.isEnabled) {
                                         onEnableChanged(true)
                                     }
@@ -192,12 +196,9 @@ fun EqualizerDialog(
                                 },
                             color = if (isSelected && effectsState.isEnabled) appColors.primaryAccent
                                     else if (isSelected) appColors.primaryAccent.copy(alpha = 0.2f)
-                                    else appColors.cardBackgroundElevated,
-                            border = BorderStroke(
-                                1.dp,
-                                if (isSelected && effectsState.isEnabled) appColors.primaryAccent
-                                else appColors.cardBorder
-                            ),
+                                    else appColors.cardBackgroundElevated.copy(alpha = 0.85f),
+                            border = if (isSelected && effectsState.isEnabled) BorderStroke(1.dp, appColors.primaryAccent)
+                                     else LiquidGlass.border(appColors, 1.dp, 0.35f),
                             shape = RoundedCornerShape(16.dp)
                         ) {
                             Text(

@@ -26,23 +26,28 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -50,8 +55,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import com.example.ui.theme.contrastingContentColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
@@ -62,6 +70,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.ui.theme.LocalAppColors
+import com.example.ui.theme.LiquidGlass
+import com.example.ui.theme.liquidGlassCard
+import com.example.ui.theme.liquidGlassPill
+import com.example.ui.theme.bouncyClickable
 
 @Composable
 fun AboutPage(
@@ -81,11 +93,10 @@ fun AboutPage(
             .padding(16.dp)
     ) {
         // App Hero Branding Card
-        Card(
-            shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(containerColor = cardBg),
-            border = BorderStroke(1.dp, cardBorder),
-            modifier = Modifier.fillMaxWidth()
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = true)
         ) {
             Column(
                 modifier = Modifier
@@ -130,17 +141,20 @@ fun AboutPage(
 
                 Spacer(modifier = Modifier.height(4.dp))
 
-                Surface(
-                    shape = RoundedCornerShape(20.dp),
-                    color = accentColor.copy(alpha = 0.15f),
-                    border = BorderStroke(1.dp, accentColor.copy(alpha = 0.4f))
+                Box(
+                    modifier = Modifier.liquidGlassPill(
+                        colors = appColors,
+                        shape = RoundedCornerShape(20.dp),
+                        isActive = true,
+                        elevation = 2.dp
+                    )
                 ) {
                     Text(
                         text = "VERSION $APP_VERSION • AUDIO ENGINE",
                         fontSize = 10.sp,
                         fontWeight = FontWeight.ExtraBold,
                         letterSpacing = 1.sp,
-                        color = accentColor,
+                        color = appColors.onPrimaryAccent,
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
                     )
                 }
@@ -160,13 +174,331 @@ fun AboutPage(
         Spacer(modifier = Modifier.height(16.dp))
 
         // App Information & Developer Card
-        Card(
-            shape = RoundedCornerShape(18.dp),
-            colors = CardDefaults.cardColors(containerColor = cardBg),
-            border = BorderStroke(1.dp, cardBorder),
-            modifier = Modifier.fillMaxWidth()
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = true)
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
+                // App Version
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 12.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(28.dp)
+                                .clip(CircleShape)
+                                .background(accentColor.copy(alpha = 0.12f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Info,
+                                contentDescription = null,
+                                tint = accentColor,
+                                modifier = Modifier.size(15.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = "Version",
+                            fontSize = 13.5.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = appColors.textPrimary
+                        )
+                    }
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = APP_VERSION,
+                            fontSize = 13.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = accentColor,
+                            textAlign = TextAlign.End
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Check for Update Action Row / Button
+                val context = LocalContext.current
+                val updateStatus by com.example.updater.AppUpdateManager.updateStatus.collectAsState()
+                val downloadProgress by com.example.updater.AppUpdateManager.downloadProgress.collectAsState()
+                var showReleaseNotesDialog by remember { mutableStateOf(false) }
+
+                val isChecking = updateStatus is com.example.updater.UpdateStatus.Checking
+                val isDownloading = updateStatus is com.example.updater.UpdateStatus.Downloading
+                val isAvailable = updateStatus is com.example.updater.UpdateStatus.UpdateAvailable
+                val isReadyToInstall = updateStatus is com.example.updater.UpdateStatus.ReadyToInstall
+                val availableInfo = (updateStatus as? com.example.updater.UpdateStatus.UpdateAvailable)?.updateInfo
+
+                Surface(
+                    onClick = {
+                        when (val status = updateStatus) {
+                            is com.example.updater.UpdateStatus.UpdateAvailable -> {
+                                showReleaseNotesDialog = true
+                            }
+                            is com.example.updater.UpdateStatus.ReadyToInstall -> {
+                                com.example.updater.AppUpdateManager.installDownloadedApk(context, status.apkFile)
+                            }
+                            is com.example.updater.UpdateStatus.Checking,
+                            is com.example.updater.UpdateStatus.Downloading -> {
+                                // Already in progress
+                            }
+                            else -> {
+                                com.example.updater.AppUpdateManager.checkForUpdate(
+                                    context = context,
+                                    isManual = true
+                                ) { result ->
+                                    if (result is com.example.updater.UpdateStatus.UpToDate) {
+                                        Toast.makeText(
+                                            context,
+                                            "Xtreme Player is up to date (v$APP_VERSION)",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    } else if (result is com.example.updater.UpdateStatus.Error) {
+                                        Toast.makeText(
+                                            context,
+                                            result.message,
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    shape = RoundedCornerShape(14.dp),
+                    color = if (isAvailable || isReadyToInstall) accentColor else (if (appColors.isDark) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.05f)),
+                    border = BorderStroke(
+                        1.dp,
+                        if (isAvailable || isReadyToInstall) accentColor
+                        else if (appColors.isDark) Color.White.copy(alpha = 0.16f) else Color.Black.copy(alpha = 0.12f)
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("check_for_update_button")
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 11.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (isChecking) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                    color = accentColor
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(
+                                    text = "Checking for update...",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = appColors.textPrimary
+                                )
+                            }
+                        } else if (isDownloading) {
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Downloading Update...",
+                                        fontSize = 12.5.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = appColors.textPrimary
+                                    )
+                                    Text(
+                                        text = "$downloadProgress%",
+                                        fontSize = 12.5.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = accentColor
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(6.dp))
+                                LinearProgressIndicator(
+                                    progress = { downloadProgress / 100f },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(4.dp)
+                                        .clip(RoundedCornerShape(2.dp)),
+                                    color = accentColor,
+                                    trackColor = accentColor.copy(alpha = 0.20f)
+                                )
+                            }
+                        } else if (isReadyToInstall) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Check,
+                                    contentDescription = null,
+                                    tint = Color.White,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "Install Update",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                            }
+                        } else if (isAvailable && availableInfo != null) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Download,
+                                    contentDescription = null,
+                                    tint = Color.White,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "Download Update v${availableInfo.versionName}",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                            }
+                        } else {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Refresh,
+                                    contentDescription = null,
+                                    tint = accentColor,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "Check for Update",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = appColors.textPrimary
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Modal Dialog for Update Available with Release Notes
+                if (showReleaseNotesDialog && availableInfo != null) {
+                    androidx.compose.material3.AlertDialog(
+                        onDismissRequest = { showReleaseNotesDialog = false },
+                        containerColor = appColors.cardBackgroundElevated,
+                        title = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Download,
+                                    contentDescription = null,
+                                    tint = accentColor,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(
+                                    text = "Update Available",
+                                    fontSize = 18.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = appColors.textPrimary
+                                )
+                            }
+                        },
+                        text = {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 4.dp)
+                            ) {
+                                Text(
+                                    text = "Version v${availableInfo.versionName} is ready to install.",
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = appColors.textPrimary
+                                )
+                                if (availableInfo.releaseTitle.isNotBlank() && availableInfo.releaseTitle != availableInfo.versionName) {
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        text = availableInfo.releaseTitle,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = accentColor
+                                    )
+                                }
+                                if (availableInfo.releaseNotes.isNotBlank()) {
+                                    Spacer(modifier = Modifier.height(10.dp))
+                                    Text(
+                                        text = "Release Notes:",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = appColors.textMuted
+                                    )
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(140.dp)
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(if (appColors.isDark) Color.Black.copy(alpha = 0.25f) else Color.Black.copy(alpha = 0.05f))
+                                            .padding(10.dp)
+                                            .verticalScroll(rememberScrollState())
+                                    ) {
+                                        Text(
+                                            text = availableInfo.releaseNotes,
+                                            fontSize = 12.sp,
+                                            lineHeight = 16.sp,
+                                            color = appColors.textSecondary
+                                        )
+                                    }
+                                }
+                            }
+                        },
+                        confirmButton = {
+                            Button(
+                                onClick = {
+                                    showReleaseNotesDialog = false
+                                    com.example.updater.AppUpdateManager.downloadAndInstallUpdate(context, availableInfo)
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = accentColor,
+                                    contentColor = Color.White
+                                ),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Text(
+                                    text = "Download Now",
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        },
+                        dismissButton = {
+                            androidx.compose.material3.TextButton(
+                                onClick = { showReleaseNotesDialog = false }
+                            ) {
+                                Text(
+                                    text = "Later",
+                                    color = appColors.textMuted
+                                )
+                            }
+                        }
+                    )
+                }
+
+                HorizontalDivider(color = dividerColor, thickness = 1.dp, modifier = Modifier.padding(vertical = 12.dp))
+
                 // Developer
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -348,11 +680,10 @@ fun SupportDonationCard(
     val innerBg = appColors.cardBackgroundElevated
     val innerBorder = appColors.cardBorder
 
-    Card(
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = cardBg),
-        border = BorderStroke(1.dp, cardBorder),
-        modifier = modifier.fillMaxWidth()
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = true)
     ) {
         Column(modifier = Modifier.padding(18.dp)) {
             // Header: Title & Tagline
@@ -461,26 +792,13 @@ fun SupportDonationCard(
                             modifier = Modifier
                                 .weight(1f)
                                 .height(38.dp)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(
-                                    if (isSelected) {
-                                        accentColor
-                                    } else {
-                                        appColors.cardBackground
-                                    }
+                                .liquidGlassPill(
+                                    colors = appColors,
+                                    shape = RoundedCornerShape(12.dp),
+                                    isActive = isSelected,
+                                    elevation = if (isSelected) 4.dp else 1.dp
                                 )
-                                .border(
-                                    BorderStroke(
-                                        1.dp,
-                                        if (isSelected) {
-                                            accentColor
-                                        } else {
-                                            appColors.cardBorder
-                                        }
-                                    ),
-                                    RoundedCornerShape(10.dp)
-                                )
-                                .clickable { selectedPreset = preset }
+                                .bouncyClickable { selectedPreset = preset }
                                 .testTag("donation_chip_$preset"),
                             contentAlignment = Alignment.Center
                         ) {
@@ -488,11 +806,7 @@ fun SupportDonationCard(
                                 text = label,
                                 fontSize = 12.5.sp,
                                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
-                                color = if (isSelected) {
-                                    appColors.onPrimaryAccent
-                                } else {
-                                    appColors.textSecondary
-                                }
+                                color = if (isSelected) contrastingContentColor(appColors.primaryAccent) else appColors.textPrimary
                             )
                         }
                     }
@@ -532,47 +846,97 @@ fun SupportDonationCard(
 
                 Spacer(modifier = Modifier.height(14.dp))
 
-                // Primary CTA Button: Donate via UPI 🚀
-                Button(
-                    onClick = {
-                        val amountDigits = if (selectedPreset == "Custom") {
-                            customAmount.trim().filter { it.isDigit() }
-                        } else {
-                            selectedPreset
-                        }
-                        val amountInt = amountDigits.toIntOrNull()
+                // Primary CTA Button: Donate via UPI with 3D Liquid Glass styling
+                val donateShape = RoundedCornerShape(14.dp)
+                val accentLum = (0.299 * accentColor.red + 0.587 * accentColor.green + 0.114 * accentColor.blue)
+                val isAccentWhite = accentColor == Color.White || (appColors.isAmoled && accentColor == Color.White) || accentLum > 0.70f
+                val donateBrush = if (isAccentWhite) {
+                    Brush.verticalGradient(
+                        listOf(
+                            Color(0xFFFFFFFF),
+                            Color(0xFFE4E4E7)
+                        )
+                    )
+                } else {
+                    Brush.verticalGradient(
+                        listOf(
+                            accentColor.copy(alpha = 0.94f),
+                            accentColor.copy(alpha = 0.78f)
+                        )
+                    )
+                }
+                val donateTextColor = if (isAccentWhite) Color(0xFF0A0A0A) else contrastingContentColor(accentColor)
+                val donateBorder = BorderStroke(
+                    1.2.dp,
+                    Brush.verticalGradient(
+                        listOf(
+                            if (isAccentWhite) Color(0xFFCCCCCC) else Color.White.copy(alpha = 0.50f),
+                            accentColor.copy(alpha = 0.40f)
+                        )
+                    )
+                )
 
-                        val baseUpiUrl = "upi://pay?pa=$upiId&pn=Xtreme%20Player&tn=Support%20Xtreme%20Player%20Development&cu=INR"
-                        val finalUpiUrl = if (amountInt != null && amountInt > 0) {
-                            "$baseUpiUrl&am=$amountInt"
-                        } else {
-                            baseUpiUrl
-                        }
-
-                        val upiUri = Uri.parse(finalUpiUrl)
-                        val upiIntent = Intent(Intent.ACTION_VIEW, upiUri)
-                        val chooser = Intent.createChooser(upiIntent, "Donate via UPI App")
-
-                        try {
-                            context.startActivity(chooser)
-                        } catch (e: Exception) {
-                            Toast.makeText(context, "No UPI app found on your device.", Toast.LENGTH_LONG).show()
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = accentColor,
-                        contentColor = appColors.onPrimaryAccent
-                    ),
-                    shape = RoundedCornerShape(12.dp),
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(46.dp)
-                        .testTag("donate_via_upi_button")
+                        .height(48.dp)
+                        .shadow(
+                            elevation = 8.dp,
+                            shape = donateShape,
+                            spotColor = if (isAccentWhite) Color.White.copy(alpha = 0.25f) else accentColor.copy(alpha = 0.45f),
+                            ambientColor = Color.Transparent
+                        )
+                        .clip(donateShape)
+                        .background(donateBrush)
+                        .border(donateBorder, donateShape)
+                        .drawWithContent {
+                            if (!isAccentWhite) {
+                                // Top specular highlight sheen drawn behind text
+                                val sheen = Brush.verticalGradient(
+                                    listOf(
+                                        Color.White.copy(alpha = 0.25f),
+                                        Color.Transparent
+                                    ),
+                                    startY = 0f,
+                                    endY = size.height * 0.48f
+                                )
+                                drawRect(sheen)
+                            }
+                            drawContent()
+                        }
+                        .bouncyClickable {
+                            val amountDigits = if (selectedPreset == "Custom") {
+                                customAmount.trim().filter { it.isDigit() }
+                            } else {
+                                selectedPreset
+                            }
+                            val amountInt = amountDigits.toIntOrNull()
+
+                            val baseUpiUrl = "upi://pay?pa=$upiId&pn=Xtreme%20Player&tn=Support%20Xtreme%20Player%20Development&cu=INR"
+                            val finalUpiUrl = if (amountInt != null && amountInt > 0) {
+                                "$baseUpiUrl&am=$amountInt"
+                            } else {
+                                baseUpiUrl
+                            }
+
+                            val upiUri = Uri.parse(finalUpiUrl)
+                            val upiIntent = Intent(Intent.ACTION_VIEW, upiUri)
+                            val chooser = Intent.createChooser(upiIntent, "Donate via UPI App")
+
+                            try {
+                                context.startActivity(chooser)
+                            } catch (e: Exception) {
+                                Toast.makeText(context, "No UPI app found on your device.", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                        .testTag("donate_via_upi_button"),
+                    contentAlignment = Alignment.Center
                 ) {
                     Text(
                         text = "Donate via UPI 🚀",
                         fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp
+                        fontSize = 15.sp,
+                        color = donateTextColor
                     )
                 }
             }

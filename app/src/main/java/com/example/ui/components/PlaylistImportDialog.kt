@@ -73,9 +73,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import com.example.ui.theme.liquidGlassPill
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -89,6 +92,7 @@ import coil.compose.AsyncImage
 import com.example.data.importer.MatchResult
 import com.example.data.importer.MatchStatus
 import com.example.data.importer.PlaylistImportSummary
+import com.example.ui.theme.LiquidGlass
 import com.example.ui.theme.LocalAppColors
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
@@ -127,57 +131,116 @@ fun PlaylistImportDialog(
     val appColors = LocalAppColors.current
 
     Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+        onDismissRequest = onDismiss
     ) {
         androidx.compose.runtime.CompositionLocalProvider(LocalAppColors provides appColors) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = if (isDark) 0.75f else 0.45f))
-                    .statusBarsPadding()
-                    .navigationBarsPadding()
-                    .padding(horizontal = 20.dp, vertical = 28.dp),
-                contentAlignment = Alignment.Center
-            ) {
-            Card(
-                shape = RoundedCornerShape(22.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = appColors.cardBackground
-                ),
-                border = BorderStroke(1.dp, appColors.cardBorder),
+            val dialogShape = RoundedCornerShape(22.dp)
+            val opaqueDialogBaseColor = if (isDark) Color(0xFF161E2C) else Color(0xFFFFFFFF)
+            val opaqueDialogBrush = if (isDark) {
+                Brush.verticalGradient(
+                    listOf(
+                        Color(0xFF222B3D),
+                        Color(0xFF161E2C),
+                        Color(0xFF0F141E)
+                    )
+                )
+            } else {
+                Brush.verticalGradient(
+                    listOf(
+                        Color(0xFFFFFFFF),
+                        Color(0xFFF8FAFC),
+                        Color(0xFFF1F5F9)
+                    )
+                )
+            }
+
+            Surface(
+                shape = dialogShape,
+                color = opaqueDialogBaseColor,
+                border = BorderStroke(1.2.dp, LiquidGlass.specularBorderBrush(appColors, highlightAlpha = if (isDark) 0.45f else 0.55f)),
                 modifier = Modifier
                     .fillMaxWidth()
                     .widthIn(max = 480.dp)
-                    .heightIn(max = 580.dp)
+                    .heightIn(max = 600.dp)
+                    .shadow(
+                        elevation = 18.dp,
+                        shape = dialogShape,
+                        spotColor = Color.Black.copy(alpha = if (isDark) 0.55f else 0.12f),
+                        ambientColor = Color.Transparent
+                    )
+                    .clip(dialogShape)
+                    .clickable(
+                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                        indication = null,
+                        onClick = { /* prevent click through */ }
+                    )
                     .testTag("playlist_import_dialog")
             ) {
-                Column(
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .wrapContentHeight()
-                        .padding(18.dp)
+                        .background(opaqueDialogBrush)
                 ) {
-                    // TOP BAR
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Import Playlist",
-                                style = MaterialTheme.typography.titleLarge.copy(
-                                    fontWeight = FontWeight.Bold,
-                                    color = appColors.textPrimary
+                    // Frosted diffusion blur layer
+                    Box(
+                        modifier = Modifier
+                            .matchParentSize()
+                            .background(
+                                if (isDark) {
+                                    Brush.verticalGradient(
+                                        listOf(Color.White.copy(alpha = 0.10f), Color.White.copy(alpha = 0.02f))
+                                    )
+                                } else {
+                                    Brush.verticalGradient(
+                                        listOf(Color.White.copy(alpha = 0.40f), Color.White.copy(alpha = 0.12f))
+                                    )
+                                }
+                            )
+                            .blur(20.dp)
+                    )
+
+                    // Top specular highlight sheen
+                    Box(
+                        modifier = Modifier
+                            .matchParentSize()
+                            .background(
+                                Brush.verticalGradient(
+                                    listOf(
+                                        Color.White.copy(alpha = if (isDark) 0.16f else 0.28f),
+                                        Color.Transparent
+                                    ),
+                                    startY = 0f,
+                                    endY = 40f
                                 )
                             )
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                text = "Spotify, YouTube, Apple or Amazon Music",
-                                style = MaterialTheme.typography.bodySmall.copy(color = appColors.textMuted)
-                            )
-                        }
+                    )
+
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .wrapContentHeight()
+                            .padding(18.dp)
+                    ) {
+                        // TOP BAR
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Import Playlist",
+                                    style = MaterialTheme.typography.titleLarge.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isDark) Color.White else appColors.textPrimary
+                                    )
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = "Spotify, YouTube, Apple or Amazon Music",
+                                    style = MaterialTheme.typography.bodySmall.copy(color = if (isDark) Color(0xFFCBD5E1) else appColors.textMuted)
+                                )
+                            }
 
                         IconButton(
                             onClick = onDismiss,
@@ -322,22 +385,11 @@ private fun ImportSetupContent(
                 val isSelected = state.selectedPlatform == platform
                 Box(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(20.dp))
-                        .background(
-                            if (isSelected) {
-                                appColors.primaryAccent.copy(alpha = if (isDark) 0.22f else 0.14f)
-                            } else {
-                                if (isDark) appColors.chipBackground else Color(0xFFF1F5F9)
-                            }
-                        )
-                        .border(
-                            1.dp,
-                            if (isSelected) {
-                                appColors.primaryAccent
-                            } else {
-                                if (isDark) appColors.chipBorder else Color(0xFFCBD5E1)
-                            },
-                            RoundedCornerShape(20.dp)
+                        .liquidGlassPill(
+                            colors = appColors,
+                            shape = RoundedCornerShape(20.dp),
+                            isActive = isSelected,
+                            elevation = if (isSelected) 4.dp else 1.dp
                         )
                         .clickable { onPlatformChanged(platform) }
                         .padding(horizontal = 14.dp, vertical = 8.dp)
@@ -345,12 +397,8 @@ private fun ImportSetupContent(
                 ) {
                     Text(
                         text = platform,
-                        color = if (isSelected) {
-                            appColors.primaryAccent
-                        } else {
-                            if (isDark) appColors.textSecondary else Color(0xFF475569)
-                        },
-                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                        color = if (isSelected) appColors.onPrimaryAccent else (if (isDark) Color.White else appColors.textPrimary),
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
                         fontSize = 13.sp
                     )
                 }

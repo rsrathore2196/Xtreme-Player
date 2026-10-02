@@ -1,5 +1,6 @@
 package com.example.data.local
 
+import androidx.compose.runtime.Immutable
 import androidx.room.Embedded
 import androidx.room.Entity
 import androidx.room.Index
@@ -8,6 +9,7 @@ import androidx.room.PrimaryKey
 import androidx.room.Relation
 import com.example.data.model.MusicTrack
 
+@Immutable
 @Entity(tableName = "tracks")
 data class TrackEntity(
     @PrimaryKey val id: String,
@@ -85,6 +87,7 @@ data class TrackEntity(
     }
 }
 
+@Immutable
 @Entity(tableName = "playlists")
 data class PlaylistEntity(
     @PrimaryKey(autoGenerate = true) val playlistId: Long = 0L,
@@ -94,6 +97,7 @@ data class PlaylistEntity(
     val createdAt: Long = System.currentTimeMillis()
 )
 
+@Immutable
 @Entity(
     tableName = "playlist_track_cross_ref",
     primaryKeys = ["playlistId", "trackId"],
@@ -105,6 +109,7 @@ data class PlaylistTrackCrossRef(
     val orderIndex: Int = 0
 )
 
+@Immutable
 data class PlaylistWithTracks(
     @Embedded val playlist: PlaylistEntity,
     @Relation(

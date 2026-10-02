@@ -55,6 +55,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.example.ui.util.ImageConfig
+import com.example.ui.util.rememberOptimizedImageRequest
 import com.example.data.local.PlaylistWithTracks
 import com.example.data.model.MusicTrack
 import com.example.playback.PlayerUiState
@@ -65,7 +67,9 @@ import com.example.ui.theme.TextSecondary
 import com.example.ui.theme.XtremeCyan
 import com.example.ui.theme.XtremeGradients
 import com.example.ui.theme.XtremeGreen
-import com.example.ui.theme.XtremeLightBlue
+import com.example.ui.theme.LiquidGlass
+import com.example.ui.theme.liquidGlassButton
+import com.example.ui.theme.bouncyClickable
 
 @Composable
 fun PlaylistDetailScreen(
@@ -263,33 +267,59 @@ fun PlaylistDetailScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = onBackClick) {
+            // Liquid Glass Circle Back Button
+            Box(
+                modifier = Modifier
+                    .size(38.dp)
+                    .liquidGlassButton(appColors, shape = CircleShape, elevation = 4.dp)
+                    .bouncyClickable { onBackClick() }
+                    .testTag("playlist_back_button"),
+                contentAlignment = Alignment.Center
+            ) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                     contentDescription = "Back",
-                    tint = appColors.textPrimary
+                    tint = appColors.textPrimary,
+                    modifier = Modifier.size(19.dp)
                 )
             }
 
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(
-                    onClick = {
-                        newTitleInput = playlist.title
-                        showRenameDialog = true
-                    },
-                    modifier = Modifier.testTag("edit_playlist_name_button")
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(38.dp)
+                        .liquidGlassButton(appColors, shape = CircleShape, elevation = 3.dp)
+                        .bouncyClickable {
+                            newTitleInput = playlist.title
+                            showRenameDialog = true
+                        }
+                        .testTag("edit_playlist_name_button"),
+                    contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = Icons.Default.Edit,
                         contentDescription = "Edit Playlist Name",
-                        tint = appColors.primaryAccent
+                        tint = appColors.primaryAccent,
+                        modifier = Modifier.size(18.dp)
                     )
                 }
-                IconButton(onClick = { showDeletePlaylistDialog = true }) {
+
+                Box(
+                    modifier = Modifier
+                        .size(38.dp)
+                        .liquidGlassButton(appColors, shape = CircleShape, elevation = 3.dp)
+                        .bouncyClickable { showDeletePlaylistDialog = true }
+                        .testTag("delete_playlist_button"),
+                    contentAlignment = Alignment.Center
+                ) {
                     Icon(
                         imageVector = Icons.Default.DeleteOutline,
                         contentDescription = "Delete Playlist",
-                        tint = appColors.textMuted
+                        tint = appColors.textMuted,
+                        modifier = Modifier.size(18.dp)
                     )
                 }
             }
@@ -308,7 +338,7 @@ fun PlaylistDetailScreen(
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     AsyncImage(
-                        model = playlist.coverUrl,
+                        model = rememberOptimizedImageRequest(playlist.coverUrl, ImageConfig.PLAYLIST_HEADER_SIZE),
                         contentDescription = null,
                         contentScale = ContentScale.Crop,
                         modifier = Modifier

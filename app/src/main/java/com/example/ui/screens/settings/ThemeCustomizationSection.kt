@@ -63,16 +63,79 @@ import com.example.data.local.CustomThemeState
 import com.example.data.local.ThemePreferences
 import com.example.data.local.ThemePresets
 import com.example.ui.theme.LocalAppColors
+import com.example.ui.theme.LiquidGlass
+import com.example.ui.theme.liquidGlassCard
+import com.example.ui.theme.liquidGlassPill
+import com.example.ui.theme.bouncyClickable
 
 /**
  * Color data models for pickers
  */
+fun computeAccentHexForShade(baseHex: String, shade: String): String {
+    val colorInt = try {
+        android.graphics.Color.parseColor(baseHex)
+    } catch (e: Exception) {
+        android.graphics.Color.parseColor("#38BDF8")
+    }
+    val hsl = FloatArray(3)
+    androidx.core.graphics.ColorUtils.colorToHSL(colorInt, hsl)
+
+    val isWhiteOrGrey = hsl[1] < 0.08f
+    when (shade) {
+        "300" -> {
+            if (isWhiteOrGrey) {
+                hsl[2] = 1.0f
+            } else {
+                hsl[2] = (hsl[2] + 0.18f).coerceIn(0.20f, 0.84f)
+                hsl[1] = (hsl[1] * 0.90f).coerceIn(0.15f, 1.0f)
+            }
+        }
+        "400" -> {
+            if (isWhiteOrGrey) {
+                hsl[2] = 0.95f
+            } else {
+                hsl[2] = (hsl[2] + 0.08f).coerceIn(0.20f, 0.74f)
+                hsl[1] = (hsl[1] * 0.96f).coerceIn(0.15f, 1.0f)
+            }
+        }
+        "500" -> {
+            if (isWhiteOrGrey) {
+                hsl[2] = 0.88f
+            } else {
+                hsl[2] = hsl[2].coerceIn(0.35f, 0.60f)
+            }
+        }
+        "600" -> {
+            if (isWhiteOrGrey) {
+                hsl[2] = 0.70f
+            } else {
+                hsl[2] = (hsl[2] - 0.12f).coerceIn(0.18f, 0.52f)
+                hsl[1] = (hsl[1] * 1.06f).coerceIn(0.15f, 1.0f)
+            }
+        }
+        "700" -> {
+            if (isWhiteOrGrey) {
+                hsl[2] = 0.52f
+            } else {
+                hsl[2] = (hsl[2] - 0.22f).coerceIn(0.12f, 0.42f)
+                hsl[1] = (hsl[1] * 1.12f).coerceIn(0.15f, 1.0f)
+            }
+        }
+    }
+    val adjusted = androidx.core.graphics.ColorUtils.HSLToColor(hsl)
+    return String.format("#%06X", 0xFFFFFF and adjusted)
+}
+
 data class AccentPreset(
     val name: String,
     val hex400: String,
     val hex500: String,
     val defaultShade: String = "400"
-)
+) {
+    fun getHexForShade(shade: String): String {
+        return computeAccentHexForShade(hex500, shade)
+    }
+}
 
 data class ColorOption(
     val name: String,
@@ -252,9 +315,6 @@ fun ThemeCustomizationSection(
     var showAccentDialog by remember { mutableStateOf(false) }
     var showCanvasDialog by remember { mutableStateOf(false) }
     var showCardDialog by remember { mutableStateOf(false) }
-    var showBgGradientDialog by remember { mutableStateOf(false) }
-    var showCardGradientDialog by remember { mutableStateOf(false) }
-    var showBottomSheetGradientDialog by remember { mutableStateOf(false) }
     var showThemePresetsDialog by remember { mutableStateOf(false) }
 
     fun updateAndPersist(newState: CustomThemeState) {
@@ -268,14 +328,11 @@ fun ThemeCustomizationSection(
         // =====================================================================
         // CARD 1: Choose Theme Preset (5 Dark & 5 Light Curated Aesthetic Themes)
         // =====================================================================
-        Card(
-            shape = RoundedCornerShape(18.dp),
-            colors = CardDefaults.cardColors(containerColor = cardBg),
-            border = BorderStroke(1.dp, cardBorder),
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(18.dp))
-                .clickable {
+                .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = true)
+                .bouncyClickable {
                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                     showThemePresetsDialog = true
                 }
@@ -344,16 +401,15 @@ fun ThemeCustomizationSection(
             }
         }
 
-        Spacer(modifier = Modifier.height(14.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
         // =====================================================================
         // CARD 2: Accent Color & Hue, Canvas Color, Card Color
         // =====================================================================
-        Card(
-            shape = RoundedCornerShape(18.dp),
-            colors = CardDefaults.cardColors(containerColor = cardBg),
-            border = BorderStroke(1.dp, cardBorder),
-            modifier = Modifier.fillMaxWidth()
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = true)
         ) {
             Column(modifier = Modifier.fillMaxWidth()) {
                 // Item 1: Accent Color & Hue
@@ -472,153 +528,15 @@ fun ThemeCustomizationSection(
             }
         }
 
-        Spacer(modifier = Modifier.height(14.dp))
-
-        // =====================================================================
-        // CARD 3: Background Gradient, Card Gradient, Bottom Sheets Gradient
-        // =====================================================================
-        Card(
-            shape = RoundedCornerShape(18.dp),
-            colors = CardDefaults.cardColors(containerColor = cardBg),
-            border = BorderStroke(1.dp, cardBorder),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                // Item 1: Background Gradient
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp))
-                        .clickable { showBgGradientDialog = true }
-                        .padding(horizontal = 18.dp, vertical = 15.dp)
-                        .testTag("item_bg_gradient")
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Background Gradient",
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = appColors.textPrimary
-                        )
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = "Gradient used as background everywhere",
-                            fontSize = 11.5.sp,
-                            color = appColors.textMuted
-                        )
-                    }
-
-                    // Circle Gradient Preview
-                    val bgGradColors = remember(customState.bgGradientName) {
-                        ThemeCustomizationPresets.backgroundGradients.find { it.name == customState.bgGradientName }?.colors
-                            ?: listOf(Color(0xFF000000), Color(0xFF000000))
-                    }
-                    Box(
-                        modifier = Modifier
-                            .size(24.dp)
-                            .clip(CircleShape)
-                            .background(Brush.linearGradient(bgGradColors))
-                            .border(1.dp, Color.White.copy(alpha = 0.4f), CircleShape)
-                    )
-                }
-
-                HorizontalDivider(color = dividerColor, thickness = 1.dp, modifier = Modifier.padding(horizontal = 18.dp))
-
-                // Item 2: Card Gradient
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { showCardGradientDialog = true }
-                        .padding(horizontal = 18.dp, vertical = 15.dp)
-                        .testTag("item_card_gradient")
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Card Gradient",
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = appColors.textPrimary
-                        )
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = "Gradient used in Cards",
-                            fontSize = 11.5.sp,
-                            color = appColors.textMuted
-                        )
-                    }
-
-                    // Circle Gradient Preview
-                    val cardGradColors = remember(customState.cardGradientName) {
-                        ThemeCustomizationPresets.cardGradients.find { it.name == customState.cardGradientName }?.colors
-                            ?: listOf(Color(0xFF111827), Color(0xFF111827))
-                    }
-                    Box(
-                        modifier = Modifier
-                            .size(24.dp)
-                            .clip(CircleShape)
-                            .background(Brush.linearGradient(cardGradColors))
-                            .border(1.dp, Color.White.copy(alpha = 0.4f), CircleShape)
-                    )
-                }
-
-                HorizontalDivider(color = dividerColor, thickness = 1.dp, modifier = Modifier.padding(horizontal = 18.dp))
-
-                // Item 3: Bottom Sheets Gradient
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(bottomStart = 18.dp, bottomEnd = 18.dp))
-                        .clickable { showBottomSheetGradientDialog = true }
-                        .padding(horizontal = 18.dp, vertical = 15.dp)
-                        .testTag("item_bottom_sheets_gradient")
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Bottom Sheets Gradient",
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = appColors.textPrimary
-                        )
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = "Gradient used in Bottom Sheets",
-                            fontSize = 11.5.sp,
-                            color = appColors.textMuted
-                        )
-                    }
-
-                    // Circle Gradient Preview
-                    val bsGradColors = remember(customState.bottomSheetGradientName) {
-                        ThemeCustomizationPresets.bottomSheetGradients.find { it.name == customState.bottomSheetGradientName }?.colors
-                            ?: listOf(Color(0xFF0A0A0A), Color(0xFF000000))
-                    }
-                    Box(
-                        modifier = Modifier
-                            .size(24.dp)
-                            .clip(CircleShape)
-                            .background(Brush.linearGradient(bsGradColors))
-                            .border(1.dp, Color.White.copy(alpha = 0.4f), CircleShape)
-                    )
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(14.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
         // =====================================================================
         // CARD 4: Current Theme & Save Theme
         // =====================================================================
-        Card(
-            shape = RoundedCornerShape(18.dp),
-            colors = CardDefaults.cardColors(containerColor = cardBg),
-            border = BorderStroke(1.dp, cardBorder),
-            modifier = Modifier.fillMaxWidth()
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = true)
         ) {
             Column(modifier = Modifier.fillMaxWidth()) {
                 // Item 1: Current Theme
@@ -749,62 +667,7 @@ fun ThemeCustomizationSection(
         )
     }
 
-    // 4. Background Gradient Dialog
-    if (showBgGradientDialog) {
-        GradientSelectionDialog(
-            title = "Background Gradient",
-            options = ThemeCustomizationPresets.backgroundGradients,
-            currentSelection = customState.bgGradientName,
-            isDarkMode = isDarkMode,
-            onDismiss = { showBgGradientDialog = false },
-            onSelect = { option ->
-                val updated = customState.copy(
-                    bgGradientName = option.name,
-                    currentThemeName = "Custom"
-                )
-                updateAndPersist(updated)
-                showBgGradientDialog = false
-            }
-        )
-    }
 
-    // 5. Card Gradient Dialog
-    if (showCardGradientDialog) {
-        GradientSelectionDialog(
-            title = "Card Gradient",
-            options = ThemeCustomizationPresets.cardGradients,
-            currentSelection = customState.cardGradientName,
-            isDarkMode = isDarkMode,
-            onDismiss = { showCardGradientDialog = false },
-            onSelect = { option ->
-                val updated = customState.copy(
-                    cardGradientName = option.name,
-                    currentThemeName = "Custom"
-                )
-                updateAndPersist(updated)
-                showCardGradientDialog = false
-            }
-        )
-    }
-
-    // 6. Bottom Sheet Gradient Dialog
-    if (showBottomSheetGradientDialog) {
-        GradientSelectionDialog(
-            title = "Bottom Sheets Gradient",
-            options = ThemeCustomizationPresets.bottomSheetGradients,
-            currentSelection = customState.bottomSheetGradientName,
-            isDarkMode = isDarkMode,
-            onDismiss = { showBottomSheetGradientDialog = false },
-            onSelect = { option ->
-                val updated = customState.copy(
-                    bottomSheetGradientName = option.name,
-                    currentThemeName = "Custom"
-                )
-                updateAndPersist(updated)
-                showBottomSheetGradientDialog = false
-            }
-        )
-    }
 
     // 7. Theme Presets Dialog (5 Dark, 5 Light aesthetic presets)
     if (showThemePresetsDialog) {
@@ -892,7 +755,7 @@ private fun AccentColorHueDialog(
                 ) {
                     ThemeCustomizationPresets.accentPresets.forEach { preset ->
                         val isSelected = preset.name == selectedPreset.name
-                        val colorHex = if (selectedShade == "400") preset.hex400 else preset.hex500
+                        val colorHex = preset.getHexForShade(selectedShade)
                         val swatchColor = try {
                             Color(android.graphics.Color.parseColor(colorHex))
                         } catch (e: Exception) {
@@ -919,10 +782,15 @@ private fun AccentColorHueDialog(
                             contentAlignment = Alignment.Center
                         ) {
                             if (isSelected) {
+                                val isBright = try {
+                                    androidx.core.graphics.ColorUtils.calculateLuminance(android.graphics.Color.parseColor(colorHex)) > 0.55
+                                } catch (e: Exception) {
+                                    false
+                                }
                                 Icon(
                                     imageVector = Icons.Default.Check,
                                     contentDescription = null,
-                                    tint = if (preset.name == "White" || preset.name == "Cyan") Color.Black else Color.White,
+                                    tint = if (isBright) Color.Black else Color.White,
                                     modifier = Modifier.size(18.dp)
                                 )
                             }
@@ -946,10 +814,21 @@ private fun AccentColorHueDialog(
                 ) {
                     listOf("300", "400", "500", "600", "700").forEach { shade ->
                         val isShadeSelected = selectedShade == shade
+                        val shadeHex = selectedPreset.getHexForShade(shade)
+                        val shadeColor = try {
+                            Color(android.graphics.Color.parseColor(shadeHex))
+                        } catch (e: Exception) {
+                            accentColor
+                        }
+                        val isBrightShade = try {
+                            androidx.core.graphics.ColorUtils.calculateLuminance(android.graphics.Color.parseColor(shadeHex)) > 0.55
+                        } catch (e: Exception) {
+                            false
+                        }
                         Surface(
                             shape = RoundedCornerShape(8.dp),
-                            color = if (isShadeSelected) accentColor else Color.Transparent,
-                            border = BorderStroke(1.dp, if (isShadeSelected) accentColor else cardBorder),
+                            color = if (isShadeSelected) shadeColor else Color.Transparent,
+                            border = BorderStroke(1.dp, if (isShadeSelected) shadeColor else cardBorder),
                             modifier = Modifier
                                 .weight(1f)
                                 .clip(RoundedCornerShape(8.dp))
@@ -963,7 +842,9 @@ private fun AccentColorHueDialog(
                                     text = shade,
                                     fontSize = 12.sp,
                                     fontWeight = if (isShadeSelected) FontWeight.Bold else FontWeight.Normal,
-                                    color = if (isShadeSelected) appColors.onPrimaryAccent else appColors.textPrimary
+                                    color = if (isShadeSelected) {
+                                        if (isBrightShade) Color.Black else Color.White
+                                    } else appColors.textPrimary
                                 )
                             }
                         }
@@ -972,18 +853,33 @@ private fun AccentColorHueDialog(
 
                 Spacer(modifier = Modifier.height(20.dp))
 
+                val activeHex = selectedPreset.getHexForShade(selectedShade)
+                val activeColor = try {
+                    Color(android.graphics.Color.parseColor(activeHex))
+                } catch (e: Exception) {
+                    accentColor
+                }
+                val isBrightActive = try {
+                    androidx.core.graphics.ColorUtils.calculateLuminance(android.graphics.Color.parseColor(activeHex)) > 0.55
+                } catch (e: Exception) {
+                    false
+                }
+
                 Button(
                     onClick = {
-                        val hex = if (selectedShade == "400") selectedPreset.hex400 else selectedPreset.hex500
+                        val hex = selectedPreset.getHexForShade(selectedShade)
                         onSelect(selectedPreset.name, selectedShade, hex)
                     },
                     shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = accentColor, contentColor = appColors.onPrimaryAccent),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = activeColor,
+                        contentColor = if (isBrightActive) Color.Black else Color.White
+                    ),
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(46.dp)
                 ) {
-                    Text(text = "Apply Accent", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Text(text = "Apply Accent (${selectedPreset.name} $selectedShade)", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                 }
             }
         }

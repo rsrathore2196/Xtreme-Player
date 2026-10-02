@@ -37,6 +37,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.theme.LocalAppColors
+import com.example.ui.theme.LiquidGlass
+import com.example.ui.theme.liquidGlassCard
+
+import com.example.ui.theme.bouncyClickable
 
 @Composable
 fun SettingsCategoryCardGroup(
@@ -46,15 +50,12 @@ fun SettingsCategoryCardGroup(
     modifier: Modifier = Modifier
 ) {
     val appColors = LocalAppColors.current
-    val cardBg = appColors.cardBackground
-    val cardBorder = appColors.cardBorder
     val dividerColor = appColors.dividerColor
 
-    Card(
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = cardBg),
-        border = BorderStroke(1.dp, cardBorder),
-        modifier = modifier.fillMaxWidth()
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = true)
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             categories.forEachIndexed { index, category ->
@@ -65,9 +66,9 @@ fun SettingsCategoryCardGroup(
                 )
                 if (index < categories.size - 1) {
                     HorizontalDivider(
-                        color = dividerColor,
+                        color = dividerColor.copy(alpha = 0.6f),
                         thickness = 1.dp,
-                        modifier = Modifier.padding(start = 68.dp, end = 16.dp)
+                        modifier = Modifier.padding(start = 72.dp, end = 16.dp)
                     )
                 }
             }
@@ -86,15 +87,13 @@ fun SettingsCategoryItemRow(
     val context = LocalContext.current
     val appColors = LocalAppColors.current
     val accentColor = appColors.primaryAccent
-    val iconBg = if (isDarkMode) appColors.primaryAccent.copy(alpha = 0.15f) else appColors.primaryAccent.copy(alpha = 0.12f)
-    val iconBorder = if (isDarkMode) appColors.primaryAccent.copy(alpha = 0.35f) else appColors.primaryAccent.copy(alpha = 0.25f)
 
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
         modifier = modifier
             .fillMaxWidth()
-            .clickable {
+            .bouncyClickable {
                 AppHaptics.performTap(context, haptic)
                 onClick()
             }
@@ -106,13 +105,16 @@ fun SettingsCategoryItemRow(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.weight(1f)
         ) {
-            // Squircle icon container (matching screenshot design)
+            // Squircle icon container with specular border and theme glass
             Box(
                 modifier = Modifier
-                    .size(42.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(iconBg)
-                    .border(BorderStroke(1.dp, iconBorder), RoundedCornerShape(12.dp)),
+                    .size(44.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(LiquidGlass.glassBrush(appColors, translucency = 0.80f, tintAccent = true))
+                    .border(
+                        BorderStroke(1.2.dp, LiquidGlass.specularBorderBrush(appColors, highlightAlpha = 0.55f)),
+                        RoundedCornerShape(14.dp)
+                    ),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(

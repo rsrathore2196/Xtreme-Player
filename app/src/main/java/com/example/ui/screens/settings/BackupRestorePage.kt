@@ -57,6 +57,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import com.example.ui.theme.contrastingContentColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -65,6 +67,11 @@ import androidx.compose.ui.unit.sp
 import com.example.data.local.BackupRestoreManager
 import com.example.data.local.MusicDatabase
 import com.example.ui.theme.LocalAppColors
+import com.example.ui.theme.LiquidGlass
+import com.example.ui.theme.liquidGlassCard
+import com.example.ui.theme.liquidGlassPill
+import com.example.ui.theme.liquidGlassSwitchColors
+import com.example.ui.theme.bouncyClickable
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -82,6 +89,9 @@ fun BackupRestorePage(
     val cardBorder = appColors.cardBorder
     val inputBg = appColors.cardBackgroundElevated
     val accentColor = appColors.primaryAccent
+    val isAccentWhite = accentColor == Color.White || (appColors.isAmoled && accentColor == Color.White) || ((0.299 * accentColor.red + 0.587 * accentColor.green + 0.114 * accentColor.blue) > 0.82f)
+    val btnContainerColor = if (isAccentWhite) Color.White else accentColor
+    val btnContentColor = contrastingContentColor(btnContainerColor)
 
     // Auto backup switch: DEFAULT IS FALSE (off)
     var autoBackupEnabled by remember {
@@ -172,11 +182,10 @@ fun BackupRestorePage(
             .padding(16.dp)
     ) {
         // 1. Create Backup Card
-        Card(
-            shape = RoundedCornerShape(18.dp),
-            colors = CardDefaults.cardColors(containerColor = cardBg),
-            border = BorderStroke(1.dp, cardBorder),
-            modifier = Modifier.fillMaxWidth()
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = true)
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -233,8 +242,10 @@ fun BackupRestorePage(
                     enabled = !isCreatingBackup,
                     shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = accentColor,
-                        contentColor = appColors.onPrimaryAccent
+                        containerColor = btnContainerColor,
+                        contentColor = btnContentColor,
+                        disabledContainerColor = btnContainerColor.copy(alpha = 0.5f),
+                        disabledContentColor = btnContentColor.copy(alpha = 0.5f)
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
@@ -243,20 +254,31 @@ fun BackupRestorePage(
                 ) {
                     if (isCreatingBackup) {
                         CircularProgressIndicator(
-                            color = appColors.onPrimaryAccent,
+                            color = btnContentColor,
                             modifier = Modifier.size(18.dp),
                             strokeWidth = 2.dp
                         )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Saving Backup...", fontSize = 13.5.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            text = "Saving Backup...",
+                            fontSize = 13.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = btnContentColor
+                        )
                     } else {
                         Icon(
                             imageVector = Icons.Default.Save,
                             contentDescription = null,
+                            tint = btnContentColor,
                             modifier = Modifier.size(16.dp)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Create Backup Now", fontSize = 13.5.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            text = "Create Backup Now",
+                            fontSize = 13.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = btnContentColor
+                        )
                     }
                 }
 
@@ -311,11 +333,10 @@ fun BackupRestorePage(
         Spacer(modifier = Modifier.height(16.dp))
 
         // 2. Auto Backup Option Card (Default OFF)
-        Card(
-            shape = RoundedCornerShape(18.dp),
-            colors = CardDefaults.cardColors(containerColor = cardBg),
-            border = BorderStroke(1.dp, cardBorder),
-            modifier = Modifier.fillMaxWidth()
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = true)
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Row(
@@ -372,10 +393,7 @@ fun BackupRestorePage(
                                 BackupRestoreManager.setAutoBackupEnabled(context, false)
                             }
                         },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = appColors.onPrimaryAccent,
-                            checkedTrackColor = accentColor
-                        ),
+                        colors = liquidGlassSwitchColors(appColors),
                         modifier = Modifier.testTag("switch_auto_backup")
                     )
                 }
@@ -385,11 +403,10 @@ fun BackupRestorePage(
         Spacer(modifier = Modifier.height(16.dp))
 
         // 3. Auto Backup Location Card
-        Card(
-            shape = RoundedCornerShape(18.dp),
-            colors = CardDefaults.cardColors(containerColor = cardBg),
-            border = BorderStroke(1.dp, cardBorder),
-            modifier = Modifier.fillMaxWidth()
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = true)
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -464,11 +481,10 @@ fun BackupRestorePage(
         Spacer(modifier = Modifier.height(16.dp))
 
         // 4. Restore Backup Card
-        Card(
-            shape = RoundedCornerShape(18.dp),
-            colors = CardDefaults.cardColors(containerColor = cardBg),
-            border = BorderStroke(1.dp, cardBorder),
-            modifier = Modifier.fillMaxWidth()
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = true)
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -521,8 +537,10 @@ fun BackupRestorePage(
                     enabled = !isRestoringBackup,
                     shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = accentColor,
-                        contentColor = appColors.onPrimaryAccent
+                        containerColor = btnContainerColor,
+                        contentColor = btnContentColor,
+                        disabledContainerColor = btnContainerColor.copy(alpha = 0.5f),
+                        disabledContentColor = btnContentColor.copy(alpha = 0.5f)
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
@@ -531,20 +549,31 @@ fun BackupRestorePage(
                 ) {
                     if (isRestoringBackup) {
                         CircularProgressIndicator(
-                            color = appColors.onPrimaryAccent,
+                            color = btnContentColor,
                             modifier = Modifier.size(18.dp),
                             strokeWidth = 2.dp
                         )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Restoring Backup...", fontSize = 13.5.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            text = "Restoring Backup...",
+                            fontSize = 13.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = btnContentColor
+                        )
                     } else {
                         Icon(
                             imageVector = Icons.Default.Restore,
                             contentDescription = null,
+                            tint = btnContentColor,
                             modifier = Modifier.size(16.dp)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Restore Backup Now", fontSize = 13.5.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            text = "Restore Backup Now",
+                            fontSize = 13.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = btnContentColor
+                        )
                     }
                 }
 
@@ -693,11 +722,11 @@ fun BackupRestorePage(
                         permissionLauncher.launch(BackupRestoreManager.getRequiredStoragePermissions())
                     },
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = accentColor,
-                        contentColor = appColors.onPrimaryAccent
+                        containerColor = btnContainerColor,
+                        contentColor = btnContentColor
                     )
                 ) {
-                    Text("Grant Permission", fontWeight = FontWeight.Bold)
+                    Text("Grant Permission", fontWeight = FontWeight.Bold, color = btnContentColor)
                 }
             },
             dismissButton = {
@@ -762,11 +791,11 @@ fun BackupRestorePage(
                         showChangeLocationDialog = false
                     },
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = accentColor,
-                        contentColor = appColors.onPrimaryAccent
+                        containerColor = btnContainerColor,
+                        contentColor = btnContentColor
                     )
                 ) {
-                    Text("Save", fontWeight = FontWeight.Bold)
+                    Text("Save", fontWeight = FontWeight.Bold, color = btnContentColor)
                 }
             },
             dismissButton = {
@@ -819,11 +848,11 @@ fun BackupRestorePage(
                         }
                     },
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = accentColor,
-                        contentColor = appColors.onPrimaryAccent
+                        containerColor = btnContainerColor,
+                        contentColor = btnContentColor
                     )
                 ) {
-                    Text("Restore Now", fontWeight = FontWeight.Bold)
+                    Text("Restore Now", fontWeight = FontWeight.Bold, color = btnContentColor)
                 }
             },
             dismissButton = {

@@ -140,10 +140,18 @@ class RecommendationEngine {
             !excludedIds.contains(cand.id) &&
             !isSameSongOrVariant(cand.title, currentTrack.title) &&
             sessionList.none { isSameSongOrVariant(cand.title, it.title) || it.id == cand.id }
-        } ?: candidatePool.firstOrNull { cand ->
-            cand.id != currentTrack.id &&
-            !isSameSongOrVariant(cand.title, currentTrack.title) &&
-            sessionList.none { isSameSongOrVariant(cand.title, it.title) || it.id == cand.id }
+        } ?: if (excludedIds.isNotEmpty()) {
+            candidatePool.firstOrNull { cand ->
+                cand.id != currentTrack.id &&
+                !excludedIds.contains(cand.id) &&
+                !isSameSongOrVariant(cand.title, currentTrack.title)
+            }
+        } else {
+            candidatePool.firstOrNull { cand ->
+                cand.id != currentTrack.id &&
+                !isSameSongOrVariant(cand.title, currentTrack.title) &&
+                sessionList.none { isSameSongOrVariant(cand.title, it.title) || it.id == cand.id }
+            }
         }
     }
 
@@ -352,7 +360,7 @@ class RecommendationEngine {
             !isSameSongOrVariant(selectedTrack.title, cand.title) &&
             resultQueue.none { isSameSongOrVariant(it.title, cand.title) } &&
             !seenRoots.contains(root)
-        }
+        }.toMutableList()
 
         var currentPivot = resultQueue.lastOrNull() ?: selectedTrack
         val excludedIds = resultQueue.map { it.id }.toMutableSet()
@@ -365,6 +373,7 @@ class RecommendationEngine {
                 prioritizeArtistAndGenre = true
             )
             if (nextTrack != null) {
+                remainingCandidates.removeAll { it.id == nextTrack.id }
                 val root = extractRootTitle(nextTrack.title)
                 if (root.isNotBlank() && !seenRoots.contains(root) && !seenRoots.any { isSameSongOrVariant(it, root) }) {
                     seenRoots.add(root)

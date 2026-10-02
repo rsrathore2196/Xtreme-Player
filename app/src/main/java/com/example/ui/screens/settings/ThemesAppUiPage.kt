@@ -43,6 +43,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -53,6 +56,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.local.AppThemeMode
 import com.example.ui.theme.LocalAppColors
+import com.example.ui.theme.LiquidGlass
+import com.example.ui.theme.liquidGlassCard
+import com.example.ui.theme.liquidGlassPill
+import com.example.ui.theme.liquidGlassSwitchColors
+import com.example.ui.theme.bouncyClickable
+import com.example.ui.theme.contrastingContentColor
 
 @Composable
 fun ThemesAppUiPage(
@@ -67,7 +76,15 @@ fun ThemesAppUiPage(
     val appColors = LocalAppColors.current
     val cardBg = appColors.cardBackground
     val cardBorder = appColors.cardBorder
-    val accentColor = appColors.primaryAccent
+    val accentColor = remember(customThemeState, appColors.primaryAccent) {
+        customThemeState?.accentColorHex?.let { hex ->
+            try {
+                Color(android.graphics.Color.parseColor(hex.trim()))
+            } catch (_: Exception) {
+                appColors.primaryAccent
+            }
+        } ?: appColors.primaryAccent
+    }
     val dividerColor = appColors.dividerColor
 
     var showMiniHeart by remember { mutableStateOf(true) }
@@ -82,11 +99,10 @@ fun ThemesAppUiPage(
             .padding(16.dp)
     ) {
         // Theme Selection Card
-        Card(
-            shape = RoundedCornerShape(18.dp),
-            colors = CardDefaults.cardColors(containerColor = cardBg),
-            border = BorderStroke(1.dp, cardBorder),
-            modifier = Modifier.fillMaxWidth()
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = true)
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -133,6 +149,7 @@ fun ThemesAppUiPage(
                         icon = Icons.Default.BrightnessAuto,
                         isSelected = themeMode == AppThemeMode.SYSTEM,
                         isDarkMode = isDarkMode,
+                        accentColor = accentColor,
                         onClick = { onSelectThemeMode(AppThemeMode.SYSTEM) },
                         modifier = Modifier.weight(1f)
                     )
@@ -143,6 +160,7 @@ fun ThemesAppUiPage(
                         icon = Icons.Default.DarkMode,
                         isSelected = themeMode == AppThemeMode.DARK,
                         isDarkMode = isDarkMode,
+                        accentColor = accentColor,
                         onClick = { onSelectThemeMode(AppThemeMode.DARK) },
                         modifier = Modifier.weight(1f)
                     )
@@ -153,6 +171,7 @@ fun ThemesAppUiPage(
                         icon = Icons.Default.LightMode,
                         isSelected = themeMode == AppThemeMode.LIGHT,
                         isDarkMode = isDarkMode,
+                        accentColor = accentColor,
                         onClick = { onSelectThemeMode(AppThemeMode.LIGHT) },
                         modifier = Modifier.weight(1f)
                     )
@@ -160,7 +179,7 @@ fun ThemesAppUiPage(
             }
         }
 
-        Spacer(modifier = Modifier.height(14.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
         // Theme Customization Options (Accent Color, Canvas, Card, Gradients, 10 Presets)
         ThemeCustomizationSection(
@@ -170,14 +189,13 @@ fun ThemesAppUiPage(
             onApplyPreset = onApplyPreset
         )
 
-        Spacer(modifier = Modifier.height(14.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
         // App UI & Mini Player Card
-        Card(
-            shape = RoundedCornerShape(18.dp),
-            colors = CardDefaults.cardColors(containerColor = cardBg),
-            border = BorderStroke(1.dp, cardBorder),
-            modifier = Modifier.fillMaxWidth()
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = true)
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -248,10 +266,7 @@ fun ThemesAppUiPage(
                     Switch(
                         checked = showMiniHeart,
                         onCheckedChange = { showMiniHeart = it },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = appColors.onPrimaryAccent,
-                            checkedTrackColor = accentColor
-                        ),
+                        colors = liquidGlassSwitchColors(appColors),
                         modifier = Modifier.testTag("switch_mini_player_heart")
                     )
                 }
@@ -293,10 +308,7 @@ fun ThemesAppUiPage(
                     Switch(
                         checked = showMiniNext,
                         onCheckedChange = { showMiniNext = it },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = appColors.onPrimaryAccent,
-                            checkedTrackColor = accentColor
-                        ),
+                        colors = liquidGlassSwitchColors(appColors),
                         modifier = Modifier.testTag("switch_mini_player_next")
                     )
                 }
@@ -306,11 +318,10 @@ fun ThemesAppUiPage(
         Spacer(modifier = Modifier.height(16.dp))
 
         // Visual Effects & Glow Card
-        Card(
-            shape = RoundedCornerShape(18.dp),
-            colors = CardDefaults.cardColors(containerColor = cardBg),
-            border = BorderStroke(1.dp, cardBorder),
-            modifier = Modifier.fillMaxWidth()
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = true)
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -371,10 +382,7 @@ fun ThemesAppUiPage(
                     Switch(
                         checked = ambientGlowEnabled,
                         onCheckedChange = { ambientGlowEnabled = it },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = appColors.onPrimaryAccent,
-                            checkedTrackColor = accentColor
-                        ),
+                        colors = liquidGlassSwitchColors(appColors),
                         modifier = Modifier.testTag("switch_ambient_glow")
                     )
                 }
@@ -406,10 +414,7 @@ fun ThemesAppUiPage(
                     Switch(
                         checked = highContrastTypography,
                         onCheckedChange = { highContrastTypography = it },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = appColors.onPrimaryAccent,
-                            checkedTrackColor = accentColor
-                        ),
+                        colors = liquidGlassSwitchColors(appColors),
                         modifier = Modifier.testTag("switch_high_contrast")
                     )
                 }
@@ -428,29 +433,75 @@ private fun ThemeModeOptionCard(
     icon: ImageVector,
     isSelected: Boolean,
     isDarkMode: Boolean,
+    accentColor: Color,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val haptic = LocalHapticFeedback.current
     val appColors = LocalAppColors.current
-    val accentColor = appColors.primaryAccent
+    val cardShape = remember { RoundedCornerShape(16.dp) }
+    val isAmoled = appColors.isAmoled
 
-    Surface(
-        onClick = {
-            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-            onClick()
-        },
-        shape = RoundedCornerShape(16.dp),
-        color = if (isSelected) {
-            accentColor.copy(alpha = if (isDarkMode) 0.14f else 0.10f)
+    // Clear Water 3D Liquid Glass body: strictly 10% visibility (90% blur translucency)
+    val glassBackground = if (isSelected) {
+        accentColor.copy(alpha = if (isAmoled) 0.18f else 0.14f)
+    } else {
+        if (isDarkMode) Color.White.copy(alpha = 0.08f) else Color.White.copy(alpha = 0.88f)
+    }
+
+    // Specular border: Crisp top specular edge highlight
+    val borderBrush = if (isSelected) {
+        Brush.linearGradient(
+            colors = listOf(
+                Color.White.copy(alpha = 0.85f),
+                accentColor.copy(alpha = 0.70f),
+                Color.White.copy(alpha = 0.30f)
+            ),
+            start = Offset(0f, 0f),
+            end = Offset(300f, 300f)
+        )
+    } else {
+        if (isDarkMode) {
+            Brush.linearGradient(
+                colors = listOf(
+                    Color.White.copy(alpha = 0.25f),
+                    Color.White.copy(alpha = 0.08f)
+                ),
+                start = Offset(0f, 0f),
+                end = Offset(300f, 300f)
+            )
         } else {
-            appColors.cardBackgroundElevated
-        },
-        border = BorderStroke(
-            width = if (isSelected) 1.8.dp else 1.dp,
-            color = if (isSelected) accentColor else appColors.cardBorder
-        ),
-        modifier = modifier.testTag("theme_button_${mode.storageKey}")
+            Brush.linearGradient(
+                colors = listOf(
+                    Color.White.copy(alpha = 0.80f),
+                    accentColor.copy(alpha = 0.18f),
+                    accentColor.copy(alpha = 0.28f)
+                ),
+                start = Offset(0f, 0f),
+                end = Offset(300f, 300f)
+            )
+        }
+    }
+
+    Box(
+        modifier = modifier
+            .shadow(
+                elevation = if (isSelected) 5.dp else 2.dp,
+                shape = cardShape,
+                spotColor = if (isDarkMode) Color.Black.copy(alpha = 0.40f) else accentColor.copy(alpha = if (isSelected) 0.18f else 0.08f),
+                ambientColor = if (isDarkMode) Color.Black.copy(alpha = 0.20f) else Color.Black.copy(alpha = 0.04f)
+            )
+            .clip(cardShape)
+            .background(glassBackground)
+            .border(
+                BorderStroke(if (isSelected) 1.5.dp else 1.3.dp, borderBrush),
+                cardShape
+            )
+            .bouncyClickable {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                onClick()
+            }
+            .testTag("theme_button_${mode.storageKey}")
     ) {
         Column(
             modifier = Modifier
@@ -459,38 +510,38 @@ private fun ThemeModeOptionCard(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
+            val onAccentColor = remember(accentColor) {
+                contrastingContentColor(accentColor)
+            }
+
+            val circleBg = if (isSelected) {
+                if (isAmoled && accentColor == Color.White) Color.White else accentColor.copy(alpha = 0.22f)
+            } else {
+                if (isDarkMode) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.05f)
+            }
+            val circleBorder = if (isSelected) {
+                accentColor
+            } else {
+                if (isDarkMode) Color.White.copy(alpha = 0.18f) else Color.Black.copy(alpha = 0.10f)
+            }
+            val iconTint = if (isSelected) {
+                if (isAmoled && accentColor == Color.White) Color(0xFF0A0A0A) else accentColor
+            } else {
+                appColors.textSecondary
+            }
+
             Box(
                 modifier = Modifier
                     .size(40.dp)
                     .clip(CircleShape)
-                    .background(
-                        if (isSelected) {
-                            accentColor.copy(alpha = if (isDarkMode) 0.22f else 0.15f)
-                        } else {
-                            appColors.cardBackground
-                        }
-                    )
-                    .border(
-                        BorderStroke(
-                            1.dp,
-                            if (isSelected) {
-                                accentColor.copy(alpha = 0.5f)
-                            } else {
-                                appColors.cardBorder
-                            }
-                        ),
-                        CircleShape
-                    ),
+                    .background(circleBg)
+                    .border(BorderStroke(if (isSelected) 1.2.dp else 1.dp, circleBorder), CircleShape),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = icon,
                     contentDescription = title,
-                    tint = if (isSelected) {
-                        accentColor
-                    } else {
-                        appColors.textPrimary
-                    },
+                    tint = iconTint,
                     modifier = Modifier.size(20.dp)
                 )
             }
@@ -499,13 +550,9 @@ private fun ThemeModeOptionCard(
 
             Text(
                 text = title,
-                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
+                fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
                 fontSize = 13.5.sp,
-                color = if (isSelected) {
-                    accentColor
-                } else {
-                    appColors.textPrimary
-                },
+                color = if (isSelected) (if (isAmoled && accentColor == Color.White) Color.White else accentColor) else appColors.textPrimary,
                 maxLines = 1
             )
 
@@ -514,25 +561,26 @@ private fun ThemeModeOptionCard(
             Text(
                 text = subtitle,
                 fontSize = 10.5.sp,
-                color = appColors.textMuted,
+                color = if (isSelected) (if (isAmoled && accentColor == Color.White) Color.White.copy(alpha = 0.85f) else accentColor.copy(alpha = 0.85f)) else appColors.textMuted,
                 maxLines = 1
             )
 
             Spacer(modifier = Modifier.height(4.dp))
 
             if (isSelected) {
-                Surface(
-                    shape = RoundedCornerShape(6.dp),
-                    color = accentColor.copy(alpha = 0.16f),
-                    border = BorderStroke(0.8.dp, accentColor.copy(alpha = 0.4f)),
-                    modifier = Modifier.padding(top = 2.dp)
+                Box(
+                    modifier = Modifier
+                        .padding(top = 2.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(accentColor)
+                        .border(BorderStroke(1.dp, accentColor), RoundedCornerShape(6.dp))
                 ) {
                     Text(
                         text = "ACTIVE",
                         fontSize = 8.5.sp,
                         fontWeight = FontWeight.ExtraBold,
-                        letterSpacing = 0.4.sp,
-                        color = accentColor,
+                        letterSpacing = 0.5.sp,
+                        color = onAccentColor,
                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                     )
                 }

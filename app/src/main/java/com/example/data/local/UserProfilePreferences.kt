@@ -2,7 +2,9 @@ package com.example.data.local
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.compose.runtime.Immutable
 
+@Immutable
 data class UserProfile(
     val name: String = "",
     val languages: List<String> = listOf("English", "Hindi", "Punjabi"),

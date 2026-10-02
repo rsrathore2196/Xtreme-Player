@@ -3,7 +3,9 @@ package com.example.ui.ai
 import com.example.data.local.UserProfile
 import com.example.data.model.MusicTrack
 import java.util.Calendar
+import androidx.compose.runtime.Immutable
 
+@Immutable
 data class HomeShelf(
     val id: String,
     val title: String,
@@ -94,156 +96,118 @@ object AiMoodEngine {
 
         val shelves = mutableListOf<HomeShelf>()
 
-        // 1. TOP PRIORITY: Country Specific Famous Hits Shelf
-        if (userProfile != null && userProfile.country.isNotBlank()) {
-            val userCountryLangs = userProfile.languages.map { it.lowercase() }
-            val countryPriorityTracks = catalogTracks
-                .filter { track ->
-                    !com.example.data.model.CountryData.hasCountryNameInTitle(track.title, userProfile.country)
-                }
-                .sortedWith(
-                    compareByDescending<MusicTrack> { track ->
-                        userCountryLangs.any { track.language.equals(it, ignoreCase = true) }
-                    }.thenByDescending { it.bitrateKbps }
-                )
-                .distinctAlbumAndCover(12)
-
-            if (countryPriorityTracks.isNotEmpty()) {
-                shelves.add(
-                    HomeShelf(
-                        id = "country_priority",
-                        title = "Famous Hits in ${userProfile.country} ${userProfile.flag}",
-                        subtitle = "Iconic regional chartbusters and top songs",
-                        tracks = countryPriorityTracks
-                    )
-                )
+        // 1. Famous Hits in India (or user's selected country)
+        val targetCountry = userProfile?.country?.takeIf { it.isNotBlank() } ?: "India"
+        val targetFlag = userProfile?.flag?.takeIf { it.isNotBlank() } ?: "🇮🇳"
+        val userCountryLangs = (userProfile?.languages?.takeIf { it.isNotEmpty() } ?: listOf("Hindi", "Punjabi")).map { it.lowercase() }
+        val countryPriorityTracks = catalogTracks
+            .filter { track ->
+                !com.example.data.model.CountryData.hasCountryNameInTitle(track.title, targetCountry)
             }
+            .sortedWith(
+                compareByDescending<MusicTrack> { track ->
+                    userCountryLangs.any { track.language.equals(it, ignoreCase = true) }
+                }.thenByDescending { it.bitrateKbps }
+            )
+            .distinctAlbumAndCover(12)
+
+        if (countryPriorityTracks.isNotEmpty()) {
+            shelves.add(
+                HomeShelf(
+                    id = "country_priority",
+                    title = "Famous Hits in $targetCountry $targetFlag",
+                    subtitle = "Iconic regional chartbusters and top songs",
+                    tracks = countryPriorityTracks
+                )
+            )
         }
+
+        // Deduplication keys to guarantee zero duplicates across sections
+        val usedTrackIds = countryPriorityTracks.map { it.id }.toMutableSet()
+        val usedTitles = countryPriorityTracks.map {
+            com.example.recommendation.RecommendationEngine.normalizeTitle(it.title)
+        }.filter { it.isNotBlank() }.toMutableSet()
 
         // 2. USER PROFILE PERSONALIZED SHELF: "Made For [Name]"
-        if (userProfile != null && userProfile.languages.isNotEmpty()) {
-            val userLangs = userProfile.languages.map { it.lowercase() }
-            val userTracks = catalogTracks.filter { track ->
-                userLangs.any { track.language.equals(it, ignoreCase = true) }
-            }.ifEmpty { catalogTracks.shuffled() }.distinctAlbumAndCover(12)
-
-            val displayName = if (userProfile.name.isNotBlank()) userProfile.name.trim() else "You"
-            shelves.add(
-                HomeShelf(
-                    id = "made_for_user",
-                    title = "Made For $displayName",
-                    subtitle = "Curated in your selected languages (${userProfile.languages.take(3).joinToString(", ")})",
-                    tracks = userTracks
-                )
-            )
-
-            // 3. Language Spotlight Shelves for user's chosen languages
-            for (lang in userProfile.languages.take(3)) {
-                val langTracks = catalogTracks.filter { it.language.equals(lang, ignoreCase = true) }.distinctAlbumAndCover(10)
-                if (langTracks.isNotEmpty()) {
-                    shelves.add(
-                        HomeShelf(
-                            id = "lang_shelf_${lang.lowercase()}",
-                            title = "Best of $lang",
-                            subtitle = "Top streaming hits in $lang",
-                            tracks = langTracks
-                        )
-                    )
-                }
-            }
+        // Strictly filter out any tracks already present in Famous Hits
+        val displayName = userProfile?.name?.trim()?.takeIf { it.isNotBlank() } ?: "You"
+        val userLangs = (userProfile?.languages?.takeIf { it.isNotEmpty() } ?: listOf("Hindi", "Punjabi", "English")).map { it.lowercase() }
+        val candidateUserTracks = catalogTracks.filter { track ->
+            val normTitle = com.example.recommendation.RecommendationEngine.normalizeTitle(track.title)
+            !usedTrackIds.contains(track.id) &&
+            !usedTitles.any { com.example.recommendation.RecommendationEngine.isSameSongOrVariant(it, normTitle) }
         }
 
-        // 4. "Because you listened to [Last Song]" (if played)
-        if (lastPlayedTrack != null) {
-            val matchingVibe = catalogTracks.filter { track ->
-                track.id != lastPlayedTrack.id && (
-                    track.artist.equals(lastPlayedTrack.artist, ignoreCase = true) ||
-                    track.genre.equals(lastPlayedTrack.genre, ignoreCase = true) ||
-                    track.language.equals(lastPlayedTrack.language, ignoreCase = true)
-                )
-            }.ifEmpty {
-                catalogTracks.filter { it.id != lastPlayedTrack.id }
-            }.distinctAlbumAndCover(10)
+        val userTracks = candidateUserTracks.filter { track ->
+            userLangs.any { track.language.equals(it, ignoreCase = true) }
+        }.ifEmpty { candidateUserTracks.shuffled() }.distinctAlbumAndCover(12)
 
-            if (matchingVibe.isNotEmpty()) {
-                shelves.add(
-                    HomeShelf(
-                        id = "because_last_played",
-                        title = "Because you listened to \"${lastPlayedTrack.title}\"",
-                        subtitle = "More in ${lastPlayedTrack.genre} • ${lastPlayedTrack.language}",
-                        tracks = matchingVibe
-                    )
-                )
-            }
-        }
-
-        // 5. "For Fans of [Top Singer]"
-        if (topSinger != null) {
-            val singerTracks = catalogTracks.filter { track ->
-                track.artist.contains(topSinger, ignoreCase = true) ||
-                track.singers.contains(topSinger, ignoreCase = true) ||
-                track.album.contains(topSinger, ignoreCase = true) ||
-                track.language.equals(topLanguage, ignoreCase = true) && track.genre.equals(topGenre, ignoreCase = true)
-            }.distinctAlbumAndCover(10)
-
-            if (singerTracks.isNotEmpty()) {
-                shelves.add(
-                    HomeShelf(
-                        id = "singer_spotlight",
-                        title = "For Fans of $topSinger",
-                        subtitle = "Songs and similar artists you might love",
-                        tracks = singerTracks
-                    )
-                )
-            }
-        }
-
-        // 6. "Jump Back In" (User's Recently Played & Favorites)
-        val jumpBackTracks = (recentlyPlayed + favoriteTracks).distinctAlbumAndCover(10)
-        if (jumpBackTracks.isNotEmpty()) {
-            shelves.add(
-                HomeShelf(
-                    id = "jump_back_in",
-                    title = "Jump Back In",
-                    subtitle = "Pick up right where you left off",
-                    tracks = jumpBackTracks
-                )
-            )
-        }
-
-        // 7. Time of Day contextual vibe
-        val timeTracks = catalogTracks.filter { track ->
-            when (hour) {
-                in 5..11 -> track.genre.contains("Acoustic", ignoreCase = true) || track.genre.contains("Pop", ignoreCase = true) || track.genre.contains("Chill", ignoreCase = true)
-                in 12..16 -> track.genre.contains("Electronic", ignoreCase = true) || track.genre.contains("Rock", ignoreCase = true) || track.genre.contains("Hip-Hop", ignoreCase = true)
-                in 17..21 -> track.genre.contains("Jazz", ignoreCase = true) || track.genre.contains("Soul", ignoreCase = true) || track.genre.contains("Pop", ignoreCase = true)
-                else -> track.genre.contains("Ambient", ignoreCase = true) || track.genre.contains("Synthwave", ignoreCase = true) || track.genre.contains("Lo-Fi", ignoreCase = true) || track.genre.contains("Chillhop", ignoreCase = true)
-            }
-        }.ifEmpty { catalogTracks.shuffled() }.distinctAlbumAndCover(10)
-
+        val langsSubtitle = userProfile?.languages?.takeIf { it.isNotEmpty() }?.take(3)?.joinToString(", ") ?: "Hindi, Punjabi, English"
         shelves.add(
             HomeShelf(
-                id = "time_of_day_vibe",
-                title = timeShelfTitle,
-                subtitle = timeShelfSubtitle,
-                tracks = timeTracks
+                id = "made_for_user",
+                title = "Made For $displayName",
+                subtitle = "Curated in your favorite vibe ($langsSubtitle)",
+                tracks = userTracks
             )
         )
 
-        // 8. High Fidelity Master Streams
-        val highDefTracks = catalogTracks.filter { it.bitrateKbps >= 320 }.distinctAlbumAndCover(10)
-        if (highDefTracks.isNotEmpty()) {
-            shelves.add(
-                HomeShelf(
-                    id = "master_quality_320k",
-                    title = "320 kbps Master Quality",
-                    subtitle = "Studio precision audio with crisp acoustics",
-                    tracks = highDefTracks
-                )
-            )
+        return shelves
+    }
+
+    /**
+     * Generates dynamic "New Releases" filtered by user's saved Country and Recommendation Languages preferences,
+     * sorted by recent release dates/year descending, and deduplicated against existing shelves.
+     */
+    fun generateNewReleases(
+        catalogTracks: List<MusicTrack>,
+        userProfile: UserProfile?,
+        existingShelves: List<HomeShelf>,
+        limit: Int = 12
+    ): List<MusicTrack> {
+        if (catalogTracks.isEmpty()) return emptyList()
+
+        val userLangs = (userProfile?.languages?.takeIf { it.isNotEmpty() } ?: listOf("Hindi", "Punjabi", "English"))
+            .map { it.lowercase().trim() }
+        val currentYear = Calendar.getInstance().get(Calendar.YEAR)
+        val currentYearStr = currentYear.toString()
+        val recentYearStr = (currentYear - 1).toString()
+
+        // 1. Filter tracks matching the user's selected languages
+        val langMatchedTracks = catalogTracks.filter { track ->
+            val trackLang = track.language.lowercase().trim()
+            trackLang.isNotBlank() && userLangs.any { userLang ->
+                trackLang.contains(userLang) || userLang.contains(trackLang)
+            }
+        }.ifEmpty { catalogTracks }
+
+        // 2. Filter by current year released songs first
+        val currentYearMatches = langMatchedTracks.filter { track ->
+            track.year == currentYearStr || track.year.toIntOrNull() == currentYear
         }
 
-        return shelves
+        // 3. Recent year released songs (current year - 1)
+        val recentYearMatches = langMatchedTracks.filter { track ->
+            track.year == recentYearStr || track.year.toIntOrNull() == (currentYear - 1)
+        }
+
+        // 4. Combine current year prioritized, followed by recent year and latest releases
+        val candidateReleases = (currentYearMatches + recentYearMatches + langMatchedTracks)
+            .distinctBy { it.id }
+            .sortedWith(
+                compareByDescending<MusicTrack> { track ->
+                    val y = track.year.toIntOrNull() ?: 0
+                    if (y == currentYear) 3 else if (y == currentYear - 1) 2 else if (y >= 2023) 1 else 0
+                }.thenByDescending { track ->
+                    val trackLang = track.language.lowercase().trim()
+                    if (userLangs.any { trackLang.contains(it) || it.contains(trackLang) }) 1 else 0
+                }.thenByDescending { track ->
+                    track.year.toIntOrNull() ?: 0
+                }.thenByDescending { it.bitrateKbps }
+            )
+            .distinctAlbumAndCover(limit)
+
+        return candidateReleases.take(limit)
     }
 
     /**

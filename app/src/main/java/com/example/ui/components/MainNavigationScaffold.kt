@@ -7,32 +7,43 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LibraryMusic
@@ -43,30 +54,36 @@ import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Icon
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import com.example.ui.theme.LiquidGlass
+import com.example.ui.theme.bouncyClickable
+import com.example.ui.theme.liquidGlass
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
-import com.example.util.AppHaptics
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import android.app.Application
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.XtremeMusicApp
 import com.example.data.model.MusicTrack
@@ -76,12 +93,9 @@ import com.example.ui.screens.PlaylistDetailScreen
 import com.example.ui.screens.SearchScreen
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.theme.LocalAppColors
-import com.example.ui.theme.TextMuted
-import com.example.ui.theme.TextPrimary
-import com.example.ui.theme.XtremeGreen
-import com.example.ui.theme.XtremeLightBlue
 import com.example.ui.viewmodel.HomeViewModel
 import com.example.ui.viewmodel.PlayerViewModel
+import com.example.util.AppHaptics
 
 enum class NavigationTab(val title: String) {
     HOME("Home"),
@@ -141,6 +155,7 @@ fun MainNavigationScaffold(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+        com.example.updater.AppUpdateManager.checkForUpdate(context = context)
     }
 
     // Handle Back Press gracefully across the app
@@ -164,191 +179,10 @@ fun MainNavigationScaffold(
 
     Box(modifier = modifier.fillMaxSize().background(appColors.scaffoldBackground)) {
         Scaffold(
-            bottomBar = {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .navigationBarsPadding()
-                ) {
-                    // Floating MiniPlayer: Sleek, attractive, non-bouncy transition
-                    // Stays stably anchored at the bottom even while navigating sub-settings
-                    val isMiniPlayerVisible = playerUiState.currentTrack != null && !isPlayerExpanded
-
-                    AnimatedVisibility(
-                        visible = isMiniPlayerVisible,
-                        enter = slideInVertically(
-                            animationSpec = tween(220, easing = FastOutSlowInEasing),
-                            initialOffsetY = { it }
-                        ) + fadeIn(animationSpec = tween(180, easing = LinearOutSlowInEasing)),
-                        exit = slideOutVertically(
-                            animationSpec = tween(180, easing = FastOutSlowInEasing),
-                            targetOffsetY = { it }
-                        ) + fadeOut(animationSpec = tween(140, easing = FastOutLinearInEasing)),
-                        modifier = Modifier.graphicsLayer { clip = false }
-                    ) {
-                        MiniPlayer(
-                            uiState = playerUiState,
-                            onPlayPauseClick = { viewModel.togglePlayPause() },
-                            onSkipNext = { viewModel.skipNext() },
-                            onSkipPrevious = { viewModel.skipPrevious() },
-                            onClick = { isPlayerExpanded = true }
-                        )
-                    }
-
-                    // Bottom Navigation Bar
-                    val tabItemColors = NavigationBarItemDefaults.colors(
-                        selectedIconColor = appColors.bottomBarSelectedIcon,
-                        selectedTextColor = appColors.bottomBarSelectedIcon,
-                        unselectedIconColor = appColors.bottomBarUnselectedIcon,
-                        unselectedTextColor = appColors.bottomBarUnselectedIcon,
-                        indicatorColor = appColors.bottomBarIndicator
-                    )
-
-                    val homeScale by animateFloatAsState(
-                        targetValue = if (selectedTabIndex == 0) 1.08f else 1.0f,
-                        animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
-                        label = "tab_home_scale"
-                    )
-                    val searchScale by animateFloatAsState(
-                        targetValue = if (selectedTabIndex == 1) 1.08f else 1.0f,
-                        animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
-                        label = "tab_search_scale"
-                    )
-                    val libraryScale by animateFloatAsState(
-                        targetValue = if (selectedTabIndex == 2) 1.08f else 1.0f,
-                        animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
-                        label = "tab_library_scale"
-                    )
-                    val settingsScale by animateFloatAsState(
-                        targetValue = if (selectedTabIndex == 3) 1.08f else 1.0f,
-                        animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
-                        label = "tab_settings_scale"
-                    )
-
-                    NavigationBar(
-                        containerColor = appColors.bottomBarBackground,
-                        tonalElevation = 8.dp,
-                        modifier = Modifier
-                            .testTag("bottom_navigation_bar")
-                            .graphicsLayer { clip = false }
-                    ) {
-                        NavigationBarItem(
-                            selected = selectedTabIndex == 0,
-                            onClick = {
-                                AppHaptics.performTap(context)
-                                selectedTabIndex = 0
-                                viewModel.closePlaylist()
-                            },
-                            icon = {
-                                Icon(
-                                    imageVector = if (selectedTabIndex == 0) Icons.Default.Home else Icons.Outlined.Home,
-                                    contentDescription = "Home",
-                                    modifier = Modifier.graphicsLayer {
-                                        scaleX = homeScale
-                                        scaleY = homeScale
-                                    }
-                                )
-                            },
-                            label = {
-                                Text(
-                                    text = "Home",
-                                    fontSize = 11.sp,
-                                    fontWeight = if (selectedTabIndex == 0) FontWeight.Bold else FontWeight.Normal
-                                )
-                            },
-                            colors = tabItemColors
-                        )
-
-                        NavigationBarItem(
-                            selected = selectedTabIndex == 1,
-                            onClick = {
-                                AppHaptics.performTap(context)
-                                selectedTabIndex = 1
-                                viewModel.closePlaylist()
-                            },
-                            icon = {
-                                Icon(
-                                    imageVector = if (selectedTabIndex == 1) Icons.Default.Search else Icons.Outlined.Search,
-                                    contentDescription = "Search",
-                                    modifier = Modifier.graphicsLayer {
-                                        scaleX = searchScale
-                                        scaleY = searchScale
-                                    }
-                                )
-                            },
-                            label = {
-                                Text(
-                                    text = "Search",
-                                    fontSize = 11.sp,
-                                    fontWeight = if (selectedTabIndex == 1) FontWeight.Bold else FontWeight.Normal
-                                )
-                            },
-                            colors = tabItemColors
-                        )
-
-                        NavigationBarItem(
-                            selected = selectedTabIndex == 2,
-                            onClick = {
-                                AppHaptics.performTap(context)
-                                selectedTabIndex = 2
-                            },
-                            icon = {
-                                Icon(
-                                    imageVector = if (selectedTabIndex == 2) Icons.Default.LibraryMusic else Icons.Outlined.LibraryMusic,
-                                    contentDescription = "Library",
-                                    modifier = Modifier.graphicsLayer {
-                                        scaleX = libraryScale
-                                        scaleY = libraryScale
-                                    }
-                                )
-                            },
-                            label = {
-                                Text(
-                                    text = "Library",
-                                    fontSize = 11.sp,
-                                    fontWeight = if (selectedTabIndex == 2) FontWeight.Bold else FontWeight.Normal
-                                )
-                            },
-                            colors = tabItemColors
-                        )
-
-                        NavigationBarItem(
-                            selected = selectedTabIndex == 3,
-                            onClick = {
-                                AppHaptics.performTap(context)
-                                selectedTabIndex = 3
-                                viewModel.closePlaylist()
-                            },
-                            icon = {
-                                Icon(
-                                    imageVector = if (selectedTabIndex == 3) Icons.Default.Settings else Icons.Outlined.Settings,
-                                    contentDescription = "Settings",
-                                    modifier = Modifier.graphicsLayer {
-                                        scaleX = settingsScale
-                                        scaleY = settingsScale
-                                    }
-                                )
-                            },
-                            label = {
-                                Text(
-                                    text = "Settings",
-                                    fontSize = 11.sp,
-                                    fontWeight = if (selectedTabIndex == 3) FontWeight.Bold else FontWeight.Normal
-                                )
-                            },
-                            colors = tabItemColors
-                        )
-                    }
-                }
-            },
             contentWindowInsets = WindowInsets(0.dp),
             containerColor = appColors.scaffoldBackground
-        ) { innerPadding ->
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding)
-            ) {
+        ) { _ ->
+            Box(modifier = Modifier.fillMaxSize()) {
                 // If playlist detail is open, show it with a smooth animated transition
                 val currentPlaylist = selectedPlaylistWithTracks
                 AnimatedVisibility(
@@ -386,22 +220,72 @@ fun MainNavigationScaffold(
                     AnimatedContent(
                         targetState = selectedTabIndex,
                         transitionSpec = {
-                            // High-performance 120Hz zero-jank crossfade transition
-                            // Eliminates layout re-measurement and frame drops across screens
-                            val enterTransition = fadeIn(
-                                animationSpec = tween(120, easing = LinearOutSlowInEasing)
-                            )
-                            val exitTransition = fadeOut(
-                                animationSpec = tween(80, easing = FastOutLinearInEasing)
-                            )
-
-                            enterTransition.togetherWith(exitTransition)
+                            if (targetState == 3) {
+                                // Zoom in fast snappy transition to open settings tab with kinetic spring
+                                (scaleIn(
+                                    initialScale = 0.88f,
+                                    animationSpec = spring(dampingRatio = 0.80f, stiffness = 850f)
+                                ) + fadeIn(
+                                    animationSpec = tween(140, easing = LinearOutSlowInEasing)
+                                )).togetherWith(
+                                    scaleOut(
+                                        targetScale = 1.04f,
+                                        animationSpec = tween(130, easing = FastOutLinearInEasing)
+                                    ) + fadeOut(
+                                        animationSpec = tween(100, easing = FastOutLinearInEasing)
+                                    )
+                                )
+                            } else if (initialState == 3) {
+                                // Modern, fast, and smooth zoom out closing animation to return from settings
+                                (scaleIn(
+                                    initialScale = 1.04f,
+                                    animationSpec = spring(dampingRatio = 0.82f, stiffness = 850f)
+                                ) + fadeIn(
+                                    animationSpec = tween(140, easing = LinearOutSlowInEasing)
+                                )).togetherWith(
+                                    scaleOut(
+                                        targetScale = 0.88f,
+                                        animationSpec = tween(130, easing = FastOutLinearInEasing)
+                                    ) + fadeOut(
+                                        animationSpec = tween(100, easing = FastOutLinearInEasing)
+                                    )
+                                )
+                            } else if (targetState > initialState) {
+                                // Kinetic directional spring slide & scale forward between tabs (120 FPS tuned)
+                                (slideInHorizontally(
+                                    initialOffsetX = { (it * 0.12f).toInt() },
+                                    animationSpec = spring(dampingRatio = 0.84f, stiffness = 950f)
+                                ) + fadeIn(
+                                    animationSpec = tween(130, easing = LinearOutSlowInEasing)
+                                )).togetherWith(
+                                    slideOutHorizontally(
+                                        targetOffsetX = { (-it * 0.12f).toInt() },
+                                        animationSpec = spring(dampingRatio = 0.84f, stiffness = 950f)
+                                    ) + fadeOut(
+                                        animationSpec = tween(90, easing = FastOutLinearInEasing)
+                                    )
+                                )
+                            } else {
+                                // Kinetic directional spring slide & scale backward between tabs (120 FPS tuned)
+                                (slideInHorizontally(
+                                    initialOffsetX = { (-it * 0.12f).toInt() },
+                                    animationSpec = spring(dampingRatio = 0.84f, stiffness = 950f)
+                                ) + fadeIn(
+                                    animationSpec = tween(130, easing = LinearOutSlowInEasing)
+                                )).togetherWith(
+                                    slideOutHorizontally(
+                                        targetOffsetX = { (it * 0.12f).toInt() },
+                                        animationSpec = spring(dampingRatio = 0.84f, stiffness = 950f)
+                                    ) + fadeOut(
+                                        animationSpec = tween(90, easing = FastOutLinearInEasing)
+                                    )
+                                )
+                            }
                         },
                         label = "tab_navigation_transition",
                         modifier = Modifier
                             .fillMaxSize()
                             .graphicsLayer {
-                                // Hardware acceleration compositing layer for 120Hz rendering
                                 clip = false
                             }
                     ) { tabIndex ->
@@ -409,12 +293,20 @@ fun MainNavigationScaffold(
                             0 -> HomeScreen(
                                 homeViewModel = homeViewModel,
                                 currentPlayingTrackId = currentPlayingTrackId,
+                                isPlaying = playerUiState.isPlaying,
+                                isAutoplayEnabled = playerUiState.isAutoplayEnabled,
+                                currentTrack = playerUiState.currentTrack,
                                 onTrackClick = { track, queue -> viewModel.playTrack(track, queue) },
-                                onToggleFavorite = { track -> viewModel.toggleLike(track) }
+                                onToggleFavorite = { track -> viewModel.toggleLike(track) },
+                                onOpenSettings = { selectedTabIndex = 3 },
+                                onPlayInfiniteRadio = { viewModel.playInfiniteRadio() },
+                                onAddToQueue = { track -> viewModel.addToQueue(track) }
                             )
                             1 -> SearchScreen(
                                 searchState = searchState,
                                 currentPlayingTrackId = currentPlayingTrackId,
+                                isPlaying = playerUiState.isPlaying,
+                                isLoading = playerUiState.isLoading,
                                 onQueryChange = { q -> viewModel.onSearchQueryChange(q) },
                                 onSelectGenre = { g -> viewModel.selectGenre(g) },
                                 onSelectSource = { s -> viewModel.selectSource(s) },
@@ -439,6 +331,7 @@ fun MainNavigationScaffold(
                                 themeMode = themeMode,
                                 userProfile = userProfile,
                                 onSubpageStateChanged = { isOpen -> isSettingsSubpageOpen = isOpen },
+                                onNavigateBackToHome = { selectedTabIndex = 0 },
                                 onUpdateProfile = { updated -> viewModel.updateUserProfile(updated) },
                                 onSelectThemeMode = { mode -> viewModel.setThemeMode(mode) },
                                 onToggleDarkMode = { viewModel.toggleDarkMode() },
@@ -456,67 +349,121 @@ fun MainNavigationScaffold(
                         }
                     }
                 }
+
+                // Floating Overlaid Container (MiniPlayer + Floating Pill Bottom Bar)
+                // Merges with the tab screen seamlessly and floats elevated above the content
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+                        .padding(bottom = 12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    // Floating MiniPlayer: Sleek, attractive, non-bouncy transition
+                    val isMiniPlayerVisible = playerUiState.currentTrack != null && !isPlayerExpanded && !isSettingsSubpageOpen && !isEqualizerOpen
+
+                    AnimatedVisibility(
+                        visible = isMiniPlayerVisible,
+                        enter = slideInVertically(
+                            animationSpec = tween(170, easing = FastOutSlowInEasing),
+                            initialOffsetY = { it }
+                        ) + fadeIn(animationSpec = tween(140, easing = LinearOutSlowInEasing)),
+                        exit = slideOutVertically(
+                            animationSpec = tween(140, easing = FastOutSlowInEasing),
+                            targetOffsetY = { it }
+                        ) + fadeOut(animationSpec = tween(100, easing = FastOutLinearInEasing)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp, vertical = 6.dp)
+                    ) {
+                        MiniPlayer(
+                            uiState = playerUiState,
+                            onPlayPauseClick = { viewModel.togglePlayPause() },
+                            onSkipNext = { viewModel.skipNext() },
+                            onSkipPrevious = { viewModel.skipPrevious() },
+                            onClick = { isPlayerExpanded = true },
+                            currentPositionProvider = { viewModel.currentPosition }
+                        )
+                    }
+
+                    // Floating Pill Navigation Bar
+                    // Only show when not in settings subpage and player not expanded
+                    AnimatedVisibility(
+                        visible = !isSettingsSubpageOpen && !isPlayerExpanded,
+                        enter = fadeIn(animationSpec = tween(180)),
+                        exit = fadeOut(animationSpec = tween(140))
+                    ) {
+                        FloatingPillBottomBar(
+                            selectedTabIndex = selectedTabIndex,
+                            onTabSelected = { index ->
+                                AppHaptics.performTap(context)
+                                if (index != 3) {
+                                    isSettingsSubpageOpen = false
+                                }
+                                selectedTabIndex = index
+                                viewModel.closePlaylist()
+                            }
+                        )
+                    }
+                }
+
+                // Floating 3D Liquid Glass Auto-Update Pop-up Bar at top of main screen
+                if (!isPlayerExpanded && !isSettingsSubpageOpen) {
+                    UpdateNotificationBar(
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .statusBarsPadding()
+                            .padding(top = 4.dp)
+                    )
+                }
             }
         }
 
-        // FULL SCREEN EXPANDED PLAYER (Animates vertically with smooth 120Hz high-frame-rate spring)
+        // FULL SCREEN EXPANDED PLAYER (Smooth, responsive push/pop spring transitions from LastWave-Native)
         AnimatedVisibility(
             visible = isPlayerExpanded && playerUiState.currentTrack != null,
             enter = slideInVertically(
                 initialOffsetY = { it },
-                animationSpec = spring(
-                    dampingRatio = 0.84f,
-                    stiffness = 620f
-                )
-            ) + fadeIn(
-                animationSpec = tween(170, easing = LinearOutSlowInEasing)
+                animationSpec = LiquidGlass.PushPopIntOffsetSpring
             ) + scaleIn(
-                initialScale = 0.96f,
-                animationSpec = spring(
-                    dampingRatio = 0.84f,
-                    stiffness = 620f
-                )
-            ),
+                initialScale = 0.92f,
+                animationSpec = LiquidGlass.PushPopSpring
+            ) + fadeIn(animationSpec = tween(190)),
             exit = slideOutVertically(
                 targetOffsetY = { it },
-                animationSpec = spring(
-                    dampingRatio = 0.84f,
-                    stiffness = 620f
-                )
-            ) + fadeOut(
-                animationSpec = tween(130, easing = FastOutLinearInEasing)
+                animationSpec = LiquidGlass.PushPopIntOffsetSpring
             ) + scaleOut(
-                targetScale = 0.97f,
-                animationSpec = spring(
-                    dampingRatio = 0.84f,
-                    stiffness = 620f
-                )
-            ),
-            modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer { clip = true }
+                targetScale = 0.92f,
+                animationSpec = LiquidGlass.PushPopSpring
+            ) + fadeOut(animationSpec = tween(140)),
+            modifier = Modifier.fillMaxSize()
         ) {
             ExpandedPlayerScreen(
                 uiState = playerUiState,
                 onMinimize = { isPlayerExpanded = false },
                 onPlayPause = { viewModel.togglePlayPause() },
-                onSeekTo = { pos -> viewModel.seekTo(pos) },
+                onSeekTo = { viewModel.seekTo(it) },
                 onSkipNext = { viewModel.skipNext() },
                 onSkipPrevious = { viewModel.skipPrevious() },
                 onToggleShuffle = { viewModel.toggleShuffle() },
                 onToggleRepeat = { viewModel.toggleRepeat() },
                 onToggleFavorite = { track -> viewModel.toggleLike(track) },
                 onOpenQueue = { isQueueOpen = true },
+                onOpenEqualizer = { isEqualizerOpen = true },
                 onAddToPlaylist = { track -> trackToAddToPlaylist = track },
+                onAddToQueue = { track -> viewModel.addToQueue(track) },
                 lyrics = currentLyrics,
                 onRetryLyrics = { viewModel.retryLyrics() },
                 availableAudioDevices = availableAudioDevices,
                 onSelectAudioDevice = { deviceId -> viewModel.selectAudioOutputDevice(deviceId) },
-                isDark = isDarkMode
+                currentPositionProvider = { viewModel.currentPosition },
+                trackDurationProvider = { viewModel.trackDuration.value },
+                bufferedPositionProvider = { viewModel.bufferedPosition.value }
             )
         }
 
-        // UP-NEXT QUEUE BOTTOM SHEET
+        // QUEUE BOTTOM SHEET
         if (isQueueOpen) {
             QueueBottomSheet(
                 queue = playerUiState.queue,
@@ -530,29 +477,17 @@ fun MainNavigationScaffold(
             )
         }
 
-        // EQUALIZER MODAL
+        // EQUALIZER DIALOG
         if (isEqualizerOpen) {
             EqualizerDialog(
                 effectsState = effectsState,
                 onEnableChanged = { viewModel.setEqualizerEnabled(it) },
-                onPresetSelected = { preset -> viewModel.setEqualizerPreset(preset) },
+                onPresetSelected = { viewModel.setEqualizerPreset(it) },
                 onBandLevelChanged = { band, level -> viewModel.setBandLevel(band, level) },
                 onBassBoostChanged = { viewModel.setBassBoost(it) },
                 onVirtualizerChanged = { viewModel.setVirtualizer(it) },
                 onReset = { viewModel.resetEqualizer() },
                 onDismiss = { isEqualizerOpen = false }
-            )
-        }
-
-        // CREATE PLAYLIST DIALOG
-        if (isCreatePlaylistOpen) {
-            CreatePlaylistDialog(
-                isDarkMode = isDarkMode,
-                onDismiss = { isCreatePlaylistOpen = false },
-                onConfirm = { title, desc ->
-                    viewModel.createPlaylist(title, desc)
-                    isCreatePlaylistOpen = false
-                }
             )
         }
 
@@ -571,6 +506,18 @@ fun MainNavigationScaffold(
                     isCreatePlaylistOpen = true
                 },
                 onDismiss = { trackToAddToPlaylist = null }
+            )
+        }
+
+        // CREATE PLAYLIST DIALOG
+        if (isCreatePlaylistOpen) {
+            CreatePlaylistDialog(
+                isDarkMode = isDarkMode,
+                onDismiss = { isCreatePlaylistOpen = false },
+                onConfirm = { title, description ->
+                    viewModel.createPlaylist(title, description)
+                    isCreatePlaylistOpen = false
+                }
             )
         }
 
@@ -593,4 +540,34 @@ fun MainNavigationScaffold(
             )
         }
     }
+}
+
+/**
+ * Floating Pill Navigation Bar
+ * - Rounded from left and right sides (CircleShape / Pill).
+ * - Floats above the tab screens with generous size and shadow.
+ * - Only the icon/logo is shown when unselected.
+ * - Expanding pill shows both full text and logo when selected.
+ * - Tabs: Home, Search, Library.
+ */
+@Composable
+fun FloatingPillBottomBar(
+    selectedTabIndex: Int,
+    onTabSelected: (Int) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val items = remember {
+        listOf(
+            AnimatedBottomBarItem(0, "Home", Icons.Default.Home, Icons.Outlined.Home),
+            AnimatedBottomBarItem(1, "Search", Icons.Default.Search, Icons.Outlined.Search),
+            AnimatedBottomBarItem(2, "Library", Icons.Default.LibraryMusic, Icons.Outlined.LibraryMusic)
+        )
+    }
+
+    AnimatedBottomBar(
+        selectedTabIndex = selectedTabIndex,
+        onTabSelected = onTabSelected,
+        items = items,
+        modifier = modifier
+    )
 }

@@ -205,15 +205,17 @@ object OnlineMusicApiService {
         }
 
         val candidates = mutableListOf<String>()
+        val currentYear = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
+        for (lang in languages.take(3)) {
+            candidates.add("New $lang Songs $currentYear")
+            candidates.add("Latest $lang Hits $currentYear")
+            candidates.add("Top $lang Songs")
+        }
         if (country.isNotBlank()) {
             val famousQueries = com.example.data.model.CountryData.getFamousMusicQueriesForCountry(country)
             candidates.addAll(famousQueries.shuffled().take(2))
         }
-        for (lang in languages.take(2)) {
-            candidates.add("Top $lang Hits")
-            candidates.add("Best of $lang Songs")
-        }
-        candidates.add("Top Global Hits")
+        candidates.add("Top Global Hits $currentYear")
 
         val distinctQueries = candidates.distinct().take(4)
         val deferredList = distinctQueries.map { candidate ->

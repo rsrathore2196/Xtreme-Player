@@ -288,7 +288,7 @@ object BackupRestoreManager {
 
             val rootJson = JSONObject()
             rootJson.put("app", "Xtreme Player")
-            rootJson.put("version", "1.6.0")
+            rootJson.put("version", "1.7.0")
             rootJson.put("schemaVersion", 2)
             rootJson.put("createdAt", System.currentTimeMillis())
 

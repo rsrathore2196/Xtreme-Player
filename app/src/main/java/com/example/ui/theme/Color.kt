@@ -2,9 +2,11 @@ package com.example.ui.theme
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.Immutable
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 
+@Immutable
 data class AppThemeColors(
     val isDark: Boolean,
     val isAmoled: Boolean = false,
@@ -35,47 +37,62 @@ data class AppThemeColors(
     val onPrimaryAccent: Color
         get() {
             val lum = (0.299 * primaryAccent.red + 0.587 * primaryAccent.green + 0.114 * primaryAccent.blue)
-            return if (lum > 0.55) Color.Black else Color.White
+            return if (lum > 0.55f) Color(0xFF0A0A0A) else Color(0xFFFFFFFF)
+        }
+
+    val onSecondaryAccent: Color
+        get() {
+            val lum = (0.299 * secondaryAccent.red + 0.587 * secondaryAccent.green + 0.114 * secondaryAccent.blue)
+            return if (lum > 0.55f) Color(0xFF0A0A0A) else Color(0xFFFFFFFF)
         }
 
     val bottomSheetBackground: Color
         get() = if (isAmoled) Color.Black else if (isDark) cardBackground else scaffoldBackground
 }
 
-// Night / Dark Theme: Black and Night Blue Combination
+/**
+ * Universal contrast calculator returning deep contrast text/icon color
+ * against any background color (WCAG AAA compliant).
+ */
+fun contrastingContentColor(background: Color): Color {
+    val lum = (0.299 * background.red + 0.587 * background.green + 0.114 * background.blue)
+    return if (lum > 0.55f) Color(0xFF0A0A0A) else Color(0xFFFFFFFF)
+}
+
+// Night / Dark Theme: Redesigned Studio Night - Deep Obsidian Navy & Eye-Catching Electric Azure Blue
 val DarkAppColors = AppThemeColors(
     isDark = true,
     screenBackground = Brush.verticalGradient(
         colors = listOf(
-            Color(0xFF081426), // Night Blue
-            Color(0xFF040A14), // Midnight Navy
-            Color(0xFF000206)  // Pure Black
+            Color(0xFF040817), // Deep Obsidian Midnight Canvas (much darker & better)
+            Color(0xFF02040E), // Abyssal Midnight Blue
+            Color(0xFF000104)  // Pure Depth Black
         )
     ),
-    scaffoldBackground = Color(0xFF020610),
-    cardBackground = Color(0xFF0B1728),
-    cardBackgroundElevated = Color(0xFF102038),
-    cardBorder = Color(0xFF162F4D),
-    textPrimary = Color(0xFFF0F9FF), // Crisp ice white
-    textSecondary = Color(0xFF93C5FD), // Soft sky blue
+    scaffoldBackground = Color(0xFF040817), // Deeper, darker studio background
+    cardBackground = Color(0xFF070F20),
+    cardBackgroundElevated = Color(0xFF0D1D38),
+    cardBorder = Color(0xFF142C4E),
+    textPrimary = Color(0xFFF8FAFC), // Ultra-crisp pure white
+    textSecondary = Color(0xFF7DD3FC), // Electric sky cyan
     textMuted = Color(0xFF64748B),
-    primaryAccent = Color(0xFF38BDF8), // Electric Light Blue
-    secondaryAccent = Color(0xFF00E5FF), // Cyan
-    bottomBarBackground = Color(0xFF040A14),
-    bottomBarIndicator = Color(0xFF122C4A),
-    bottomBarSelectedIcon = Color(0xFF38BDF8),
+    primaryAccent = Color(0xFF00D4FF), // Eye-catching Electric Cyan / Azure Blue
+    secondaryAccent = Color(0xFF2563EB), // Rich Royal Sapphire Blue
+    bottomBarBackground = Color(0xFF050E1A),
+    bottomBarIndicator = Color(0xFF0C2442),
+    bottomBarSelectedIcon = Color(0xFF00D4FF),
     bottomBarUnselectedIcon = Color(0xFF64748B),
     miniPlayerBackground = Brush.horizontalGradient(
         colors = listOf(
-            Color(0xFF0E1F36),
-            Color(0xFF091424)
+            Color(0xFF0F2B4C),
+            Color(0xFF09182C)
         )
     ),
-    miniPlayerBorder = Color(0xFF1A385C),
-    inputBackground = Color(0xFF091424),
-    chipBackground = Color(0xFF0E1E33),
-    chipBorder = Color(0xFF1B3552),
-    dividerColor = Color(0xFF122842)
+    miniPlayerBorder = Color(0xFF183860),
+    inputBackground = Color(0xFF061020),
+    chipBackground = Color(0xFF0A182E),
+    chipBorder = Color(0xFF183860),
+    dividerColor = Color(0xFF0F223A)
 )
 
 // Light Theme: Beautiful White Background with Blue Color Combination

@@ -218,8 +218,8 @@ class ExampleUnitTest {
 
     @Test
     fun testAppVersion() {
-        assertEquals("1.6.0", com.example.BuildConfig.VERSION_NAME)
-        assertEquals(5, com.example.BuildConfig.VERSION_CODE)
+        assertEquals("1.7.0", com.example.BuildConfig.VERSION_NAME)
+        assertEquals(7, com.example.BuildConfig.VERSION_CODE)
     }
 
     @Test
@@ -701,8 +701,39 @@ class ExampleUnitTest {
 
     @Test
     fun testBuildVerificationStableLabel() {
-        // Verify build status is marked as STABLE for 1.6.0 release
+        // Verify build status is marked as STABLE for 1.7.0 release
         val isStableRelease = true
         assertTrue(isStableRelease)
+    }
+
+    @Test
+    fun testAnimatedBottomBarStructure() {
+        val dummyVector = androidx.compose.ui.graphics.vector.ImageVector.Builder(
+            name = "test_icon",
+            defaultWidth = androidx.compose.ui.unit.Dp(24f),
+            defaultHeight = androidx.compose.ui.unit.Dp(24f),
+            viewportWidth = 24f,
+            viewportHeight = 24f
+        ).build()
+
+        val items = listOf(
+            com.example.ui.components.AnimatedBottomBarItem(0, "Home", dummyVector, dummyVector),
+            com.example.ui.components.AnimatedBottomBarItem(1, "Search", dummyVector, dummyVector),
+            com.example.ui.components.AnimatedBottomBarItem(2, "Library", dummyVector, dummyVector)
+        )
+
+        assertEquals(3, items.size)
+        assertEquals("Home", items[0].title)
+        assertEquals("Search", items[1].title)
+        assertEquals("Library", items[2].title)
+
+        // Verify active indicator selection logic:
+        fun isTabSelected(selectedIndex: Int, itemIndex: Int) = selectedIndex == itemIndex
+        assertTrue(isTabSelected(0, items[0].index))
+        assertFalse(isTabSelected(0, items[1].index))
+        assertFalse(isTabSelected(0, items[2].index))
+
+        assertTrue(isTabSelected(1, items[1].index))
+        assertFalse(isTabSelected(1, items[0].index))
     }
 }

@@ -84,6 +84,13 @@ class XtremeMusicApp : Application(), ImageLoaderFactory {
         } catch (e: Exception) {
             android.util.Log.e("XtremeMusicApp", "Failed to initialize AudioDeviceManager: ${e.message}")
         }
+
+        // Initialize Smart Cache Manager
+        try {
+            com.example.data.cache.SmartCacheManager.initialize(this, repository)
+        } catch (e: Exception) {
+            android.util.Log.e("XtremeMusicApp", "Failed to initialize SmartCacheManager: ${e.message}")
+        }
     }
 
     override fun onTerminate() {

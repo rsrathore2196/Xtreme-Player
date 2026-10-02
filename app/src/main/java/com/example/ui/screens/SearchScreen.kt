@@ -22,11 +22,18 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import com.example.ui.theme.LiquidGlass
+import com.example.ui.theme.liquidGlassPill
+import com.example.ui.theme.bouncyClickable
+import com.example.ui.theme.TextPrimary
+import com.example.ui.theme.TextMuted
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Album
@@ -45,11 +52,20 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
+import com.example.data.local.RecentSearchPreferences
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -62,13 +78,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.example.ui.util.ImageConfig
+import com.example.ui.util.rememberOptimizedImageRequest
 import com.example.data.model.MusicTrack
 import com.example.data.remote.MusicDataSource
 import com.example.playback.PlayerUiState
 import com.example.ui.theme.LocalAppColors
-import com.example.ui.theme.TextMuted
-import com.example.ui.theme.TextPrimary
-import com.example.ui.theme.TextSecondary
 import com.example.ui.theme.XtremeBorder
 import com.example.ui.theme.XtremeCard
 import com.example.ui.theme.XtremeCyan
@@ -79,11 +94,14 @@ import com.example.ui.theme.XtremePurple
 import com.example.ui.theme.XtremeRose
 import com.example.ui.viewmodel.SearchUiState
 
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun SearchScreen(
     searchState: SearchUiState,
     playerUiState: PlayerUiState? = null,
     currentPlayingTrackId: String? = null,
+    isPlaying: Boolean = playerUiState?.isPlaying == true,
+    isLoading: Boolean = playerUiState?.isLoading == true,
     onQueryChange: (String) -> Unit,
     onSelectGenre: (String) -> Unit,
     onSelectSource: (String) -> Unit = {},
@@ -92,6 +110,16 @@ fun SearchScreen(
     modifier: Modifier = Modifier
 ) {
     val currentPlayingId = currentPlayingTrackId ?: playerUiState?.currentTrack?.id
+    val isCurrentlyPlaying = isPlaying || (playerUiState?.isPlaying == true)
+    val isCurrentlyLoading = isLoading || (playerUiState?.isLoading == true)
+    var pendingLoadingTrackId by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(currentPlayingId, isCurrentlyPlaying, isCurrentlyLoading) {
+        if (currentPlayingId == pendingLoadingTrackId && isCurrentlyPlaying && !isCurrentlyLoading) {
+            pendingLoadingTrackId = null
+        }
+    }
+
     val hasQuery = searchState.query.isNotBlank()
     val isGenreActive = !searchState.selectedGenre.equals("All", ignoreCase = true)
     val appColors = LocalAppColors.current
@@ -99,14 +127,17 @@ fun SearchScreen(
     val focusManager = LocalFocusManager.current
     val listState = rememberLazyListState()
 
+    var selectedTypeFilter by remember { mutableStateOf<String?>(null) }
+
     // Gracefully handle back press: Return to default "All" genres page rather than closing the app
-    BackHandler(enabled = isGenreActive || hasQuery) {
+    BackHandler(enabled = isGenreActive || hasQuery || selectedTypeFilter != null) {
         keyboardController?.hide()
         focusManager.clearFocus()
-        if (isGenreActive) {
+        if (selectedTypeFilter != null) {
+            selectedTypeFilter = null
+        } else if (isGenreActive) {
             onSelectGenre("All")
-        }
-        if (hasQuery) {
+        } else if (hasQuery) {
             onQueryChange("")
         }
     }
@@ -119,7 +150,20 @@ fun SearchScreen(
         }
     }
 
-    val sources = listOf("All", "HD Stream", "Extended Stream")
+    val context = LocalContext.current
+    var recentSearches by remember {
+        mutableStateOf(RecentSearchPreferences.getRecentSearches(context))
+    }
+
+    val triggerSearch: (String) -> Unit = { queryText ->
+        val clean = queryText.trim()
+        keyboardController?.hide()
+        focusManager.clearFocus()
+        if (clean.isNotEmpty()) {
+            recentSearches = RecentSearchPreferences.addRecentSearch(context, clean)
+            onQueryChange(clean)
+        }
+    }
 
     Box(
         modifier = modifier
@@ -134,24 +178,26 @@ fun SearchScreen(
                 .widthIn(max = 640.dp)
                 .statusBarsPadding()
                 .testTag("search_screen"),
-            contentPadding = PaddingValues(bottom = 120.dp)
+            contentPadding = PaddingValues(bottom = 150.dp)
         ) {
         // SEARCH INPUT BAR
         item {
             Column(modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 6.dp, bottom = 8.dp)) {
                 Text(
                     text = "Search Online Music",
-                    style = MaterialTheme.typography.headlineSmall.copy(
-                        fontWeight = FontWeight.Bold,
-                        color = TextPrimary
+                    style = MaterialTheme.typography.headlineMedium.copy(
+                        fontWeight = FontWeight.Black,
+                        fontSize = 28.sp,
+                        letterSpacing = (-0.6).sp,
+                        color = appColors.textPrimary
                     )
                 )
                 Text(
                     text = "Stream millions of high-res 320kbps tracks",
-                    style = MaterialTheme.typography.bodySmall.copy(color = TextMuted)
+                    style = MaterialTheme.typography.bodySmall.copy(color = appColors.textMuted)
                 )
 
-                Spacer(modifier = Modifier.height(14.dp))
+                Spacer(modifier = Modifier.height(22.dp))
 
                 OutlinedTextField(
                     value = searchState.query,
@@ -167,22 +213,15 @@ fun SearchScreen(
                     placeholder = {
                         Text(
                             text = "What do you want to play?",
-                            color = TextMuted,
+                            color = appColors.textMuted,
                             fontSize = 14.sp
-                        )
-                    },
-                    leadingIcon = {
-                        Icon(
-                            imageVector = Icons.Default.Search,
-                            contentDescription = "Search",
-                            tint = XtremeLightBlue
                         )
                     },
                     trailingIcon = {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.End,
-                            modifier = Modifier.padding(end = 8.dp)
+                            modifier = Modifier.padding(end = 6.dp)
                         ) {
                             if (searchState.isSearching) {
                                 CircularProgressIndicator(
@@ -203,53 +242,69 @@ fun SearchScreen(
                                     Icon(
                                         imageVector = Icons.Default.Clear,
                                         contentDescription = "Clear",
-                                        tint = TextMuted,
+                                        tint = appColors.textMuted,
                                         modifier = Modifier.size(15.dp)
                                     )
                                 }
                                 Spacer(modifier = Modifier.width(6.dp))
                             }
 
-                            // Sleek, compact and modern aesthetic circular search button
-                            val activeBrush = appColors.heroGradient
-                            val inactiveBrush = Brush.linearGradient(
-                                if (appColors.isDark) {
-                                    listOf(Color(0xFF16253B), Color(0xFF0F1B2B))
+                            // Wide pill-shaped 3D clear water glass search action button (icon only)
+                            val searchPillShape = remember { RoundedCornerShape(17.dp) }
+                            val isSearchActive = hasQuery
+
+                            val searchPillBrush = if (isSearchActive) {
+                                Brush.verticalGradient(
+                                    listOf(
+                                        appColors.primaryAccent.copy(alpha = 0.32f),
+                                        appColors.primaryAccent.copy(alpha = 0.18f)
+                                    )
+                                )
+                            } else {
+                                LiquidGlass.miniPlayerAndBottomBarBrush(appColors)
+                            }
+
+                            val searchPillBorder = BorderStroke(
+                                1.2.dp,
+                                if (isSearchActive) {
+                                    Brush.verticalGradient(
+                                        listOf(
+                                            Color.White.copy(alpha = 0.40f),
+                                            appColors.primaryAccent.copy(alpha = 0.45f)
+                                        )
+                                    )
                                 } else {
-                                    listOf(Color(0xFFF1F5F9), Color(0xFFE2E8F0))
+                                    LiquidGlass.specularBorderBrush(appColors, highlightAlpha = if (appColors.isDark) 0.38f else 0.45f)
                                 }
                             )
 
                             Box(
-                                contentAlignment = Alignment.Center,
                                 modifier = Modifier
-                                    .size(32.dp)
-                                    .clip(CircleShape)
-                                    .background(if (hasQuery) activeBrush else inactiveBrush)
-                                    .border(
-                                        width = 1.dp,
-                                        color = if (hasQuery) {
-                                            appColors.primaryAccent.copy(alpha = 0.6f)
-                                        } else {
-                                            appColors.chipBorder.copy(alpha = 0.5f)
-                                        },
-                                        shape = CircleShape
-                                    )
+                                    .height(34.dp)
+                                    .clip(searchPillShape)
+                                    .background(searchPillBrush)
+                                    .border(searchPillBorder, searchPillShape)
                                     .clickable {
-                                        keyboardController?.hide()
-                                        focusManager.clearFocus()
+                                        if (searchState.query.isNotBlank()) {
+                                            triggerSearch(searchState.query)
+                                        } else {
+                                            keyboardController?.hide()
+                                            focusManager.clearFocus()
+                                        }
                                     }
-                                    .testTag("finish_search_button")
+                                    .padding(horizontal = 14.dp, vertical = 6.dp)
+                                    .testTag("finish_search_button"),
+                                contentAlignment = Alignment.Center
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Search,
-                                    contentDescription = "Finish search",
-                                    tint = if (hasQuery) {
-                                        if (appColors.isDark) Color(0xFF031428) else Color.White
+                                    contentDescription = "Search",
+                                    tint = if (isSearchActive) {
+                                        if (appColors.isDark) Color.White else appColors.primaryAccent
                                     } else {
-                                        TextMuted
+                                        if (appColors.isDark) Color.White.copy(alpha = 0.75f) else appColors.textMuted
                                     },
-                                    modifier = Modifier.size(15.dp)
+                                    modifier = Modifier.size(16.dp)
                                 )
                             }
                         }
@@ -259,16 +314,13 @@ fun SearchScreen(
                     ),
                     keyboardActions = KeyboardActions(
                         onSearch = {
-                            keyboardController?.hide()
-                            focusManager.clearFocus()
+                            triggerSearch(searchState.query)
                         },
                         onDone = {
-                            keyboardController?.hide()
-                            focusManager.clearFocus()
+                            triggerSearch(searchState.query)
                         },
                         onGo = {
-                            keyboardController?.hide()
-                            focusManager.clearFocus()
+                            triggerSearch(searchState.query)
                         }
                     ),
                     singleLine = true,
@@ -277,67 +329,59 @@ fun SearchScreen(
                         focusedContainerColor = appColors.inputBackground,
                         unfocusedContainerColor = appColors.inputBackground,
                         focusedBorderColor = appColors.primaryAccent,
-                        unfocusedBorderColor = appColors.cardBorder,
-                        focusedTextColor = TextPrimary,
-                        unfocusedTextColor = TextPrimary
+                        unfocusedBorderColor = Color.Transparent,
+                        focusedTextColor = appColors.textPrimary,
+                        unfocusedTextColor = appColors.textPrimary
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
+                        .shadow(
+                            elevation = if (appColors.isDark) 4.dp else 6.dp,
+                            shape = RoundedCornerShape(16.dp),
+                            spotColor = if (appColors.isDark) Color.Black.copy(alpha = 0.40f) else appColors.primaryAccent.copy(alpha = 0.10f),
+                            ambientColor = if (appColors.isDark) Color.Black.copy(alpha = 0.20f) else Color.Black.copy(alpha = 0.05f)
+                        )
+                        .border(
+                            BorderStroke(
+                                1.3.dp,
+                                LiquidGlass.specularBorderBrush(appColors, highlightAlpha = if (appColors.isDark) 0.35f else 0.55f)
+                            ),
+                            RoundedCornerShape(16.dp)
+                        )
                         .testTag("search_query_input")
                 )
-            }
-        }
 
-        // SOURCE TOGGLE CHIPS
-        item {
-            LazyRow(
-                contentPadding = PaddingValues(horizontal = 20.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.padding(bottom = 6.dp)
-            ) {
-                items(sources) { src ->
-                    val isSelected = searchState.selectedSource.equals(src, ignoreCase = true)
-                    val label = when (src) {
-                        "All" -> "All Streams"
-                        "Extended Stream" -> "Extended Stream"
-                        else -> "HD Audio Stream"
-                    }
-                    val badgeColor = when (src) {
-                        "Extended Stream" -> Color(0xFFFF5252)
-                        "HD Stream" -> XtremeLightBlue
-                        else -> appColors.primaryAccent
-                    }
-                    Surface(
-                        shape = RoundedCornerShape(16.dp),
-                        color = if (isSelected) badgeColor.copy(alpha = 0.2f) else appColors.chipBackground,
-                        border = BorderStroke(
-                            1.dp,
-                            if (isSelected) badgeColor else appColors.chipBorder
-                        ),
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(16.dp))
-                            .clickable {
-                                keyboardController?.hide()
-                                focusManager.clearFocus()
-                                onSelectSource(src)
-                            }
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Pill-shaped category filter buttons attached under the search bar
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    val filterCategories = listOf("Tracks", "Artists", "Albums", "Playlists")
+                    filterCategories.forEach { filterName ->
+                        val isSelected = selectedTypeFilter == filterName
+                        Box(
+                            modifier = Modifier
+                                .liquidGlassPill(
+                                    colors = appColors,
+                                    shape = RoundedCornerShape(20.dp),
+                                    isActive = isSelected,
+                                    elevation = if (isSelected) 6.dp else 2.dp
+                                )
+                                .bouncyClickable {
+                                    selectedTypeFilter = if (selectedTypeFilter == filterName) null else filterName
+                                }
+                                .testTag("filter_pill_${filterName.lowercase()}")
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(6.dp)
-                                    .clip(CircleShape)
-                                    .background(badgeColor)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = label,
-                                color = if (isSelected) TextPrimary else TextSecondary,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                fontSize = 12.sp
+                                text = filterName,
+                                color = if (isSelected) appColors.onPrimaryAccent else (if (appColors.isDark) Color.White else appColors.textPrimary),
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
+                                fontSize = 13.sp,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 7.dp)
                             )
                         }
                     }
@@ -345,42 +389,162 @@ fun SearchScreen(
             }
         }
 
-        // GENRE QUICK-FILTER CHIPS
-        item {
-            LazyRow(
-                contentPadding = PaddingValues(horizontal = 20.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.padding(bottom = 12.dp)
-            ) {
-                items(MusicDataSource.genres) { genre ->
-                    val isSelected = searchState.selectedGenre.equals(genre, ignoreCase = true)
-                    Surface(
-                        shape = RoundedCornerShape(20.dp),
-                        color = if (isSelected) appColors.primaryAccent else appColors.chipBackground,
-                        border = if (!isSelected) BorderStroke(1.dp, appColors.chipBorder) else null,
+        // RECENT SEARCHES SECTION (Positioned directly above the genre pills)
+        if (!hasQuery && recentSearches.isNotEmpty()) {
+            item {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 12.dp)
+                ) {
+                    Row(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(20.dp))
-                            .clickable {
-                                keyboardController?.hide()
-                                focusManager.clearFocus()
-                                onSelectGenre(genre)
-                            }
+                            .fillMaxWidth()
+                            .padding(bottom = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = genre,
-                            color = if (isSelected) Color.White else TextSecondary,
-                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                            fontSize = 13.sp,
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
+                            text = "Recent Searches",
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = appColors.textPrimary,
+                                fontSize = 18.sp
+                            )
                         )
+                        Text(
+                            text = "Clear all",
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                color = appColors.textMuted,
+                                fontSize = 11.5.sp
+                            ),
+                            modifier = Modifier
+                                .clickable {
+                                    RecentSearchPreferences.clearRecentSearches(context)
+                                    recentSearches = emptyList()
+                                }
+                                .padding(4.dp)
+                                .testTag("clear_recent_searches_button")
+                        )
+                    }
+
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        recentSearches.forEach { queryItem ->
+                            Box(
+                                modifier = Modifier
+                                    .liquidGlassPill(
+                                        colors = appColors,
+                                        shape = RoundedCornerShape(20.dp),
+                                        isActive = false,
+                                        elevation = 3.dp
+                                    )
+                                    .testTag("recent_search_chip_$queryItem")
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .bouncyClickable { triggerSearch(queryItem) }
+                                        .padding(start = 14.dp, end = 7.dp, top = 6.dp, bottom = 6.dp)
+                                ) {
+                                    Text(
+                                        text = queryItem,
+                                        color = if (appColors.isDark) Color.White else appColors.textPrimary,
+                                        fontSize = 13.8.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Spacer(modifier = Modifier.width(5.dp))
+                                    Box(
+                                        modifier = Modifier
+                                            .size(22.dp)
+                                            .clip(CircleShape)
+                                            .clickable {
+                                                recentSearches = RecentSearchPreferences.removeRecentSearch(context, queryItem)
+                                            }
+                                            .testTag("remove_recent_search_$queryItem"),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Clear,
+                                            contentDescription = "Remove $queryItem",
+                                            tint = if (appColors.isDark) Color.White.copy(alpha = 0.70f) else appColors.textMuted,
+                                            modifier = Modifier.size(13.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
 
-        // IF QUERY ACTIVE -> SHOW CATEGORIZED RESULTS
-        if (hasQuery || searchState.selectedGenre != "All") {
+        // GENRE QUICK-FILTER CHIPS (Multi-line FlowRow with fixed 8dp spacing)
+        if (!hasQuery) {
+            item {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 14.dp)
+                ) {
+                    Text(
+                        text = "Explore genres & moods",
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = appColors.textPrimary,
+                            fontSize = 18.sp
+                        ),
+                        modifier = Modifier.padding(bottom = 10.dp)
+                    )
+
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        MusicDataSource.genres.forEach { genre ->
+                            val isSelected = searchState.selectedGenre.equals(genre, ignoreCase = true)
+                            Box(
+                                modifier = Modifier
+                                    .liquidGlassPill(
+                                        colors = appColors,
+                                        shape = RoundedCornerShape(23.dp),
+                                        isActive = isSelected,
+                                        elevation = if (isSelected) 6.dp else 2.dp
+                                    )
+                                    .bouncyClickable {
+                                        keyboardController?.hide()
+                                        focusManager.clearFocus()
+                                        onSelectGenre(genre)
+                                    }
+                                    .testTag("genre_chip_${genre.lowercase()}")
+                            ) {
+                                Text(
+                                    text = genre,
+                                    color = if (isSelected) appColors.onPrimaryAccent else (if (appColors.isDark) Color.White else appColors.textPrimary),
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
+                                    fontSize = 14.5.sp,
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // IF QUERY ACTIVE OR FILTER SELECTED -> SHOW CATEGORIZED RESULTS
+        if (hasQuery || searchState.selectedGenre != "All" || selectedTypeFilter != null) {
             val results = searchState.result
+            val showTracks = selectedTypeFilter == null || selectedTypeFilter == "Tracks"
+            val showArtists = selectedTypeFilter == null || selectedTypeFilter == "Artists"
+            val showAlbums = selectedTypeFilter == null || selectedTypeFilter == "Albums"
+            val showPlaylists = selectedTypeFilter == "Playlists"
 
             // GENRE BREADCRUMB & RESHUFFLE BAR
             if (isGenreActive) {
@@ -392,13 +556,15 @@ fun SearchScreen(
                             .fillMaxWidth()
                             .padding(horizontal = 20.dp, vertical = 4.dp)
                     ) {
-                        Surface(
-                            shape = RoundedCornerShape(20.dp),
-                            color = appColors.chipBackground,
-                            border = BorderStroke(1.dp, appColors.chipBorder),
+                        Box(
                             modifier = Modifier
-                                .clip(RoundedCornerShape(20.dp))
-                                .clickable {
+                                .liquidGlassPill(
+                                    colors = appColors,
+                                    shape = RoundedCornerShape(20.dp),
+                                    isActive = false,
+                                    elevation = 3.dp
+                                )
+                                .bouncyClickable {
                                     keyboardController?.hide()
                                     focusManager.clearFocus()
                                     onSelectGenre("All")
@@ -415,23 +581,25 @@ fun SearchScreen(
                                     tint = appColors.primaryAccent,
                                     modifier = Modifier.size(15.dp)
                                 )
-                                Spacer(modifier = Modifier.width(6.dp))
+                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
                                     text = "All Genres",
-                                    color = TextPrimary,
+                                    color = appColors.textPrimary,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.SemiBold
                                 )
                             }
                         }
 
-                        Surface(
-                            shape = RoundedCornerShape(20.dp),
-                            color = appColors.primaryAccent.copy(alpha = 0.15f),
-                            border = BorderStroke(1.dp, appColors.primaryAccent.copy(alpha = 0.4f)),
+                        Box(
                             modifier = Modifier
-                                .clip(RoundedCornerShape(20.dp))
-                                .clickable {
+                                .liquidGlassPill(
+                                    colors = appColors,
+                                    shape = RoundedCornerShape(20.dp),
+                                    isActive = true,
+                                    elevation = 4.dp
+                                )
+                                .bouncyClickable {
                                     keyboardController?.hide()
                                     focusManager.clearFocus()
                                     onSelectGenre(searchState.selectedGenre)
@@ -445,13 +613,13 @@ fun SearchScreen(
                                 Icon(
                                     imageVector = Icons.Default.Shuffle,
                                     contentDescription = "Shuffle songs",
-                                    tint = appColors.primaryAccent,
+                                    tint = appColors.onPrimaryAccent,
                                     modifier = Modifier.size(14.dp)
                                 )
                                 Spacer(modifier = Modifier.width(5.dp))
                                 Text(
                                     text = "Shuffle Songs",
-                                    color = appColors.primaryAccent,
+                                    color = appColors.onPrimaryAccent,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.SemiBold
                                 )
@@ -462,94 +630,107 @@ fun SearchScreen(
             }
 
             // TOP RESULT CARD
-            results.topResult?.let { top ->
-                item {
-                    Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
-                        Text(
-                            text = "Top Result",
-                            style = MaterialTheme.typography.titleMedium.copy(
-                                fontWeight = FontWeight.Bold,
-                                color = TextPrimary
+            if (showTracks) {
+                results.topResult?.let { top ->
+                    item {
+                        Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
+                            Text(
+                                text = "Top Result",
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = appColors.textPrimary,
+                                    fontSize = 18.sp
+                                )
                             )
-                        )
-                        Spacer(modifier = Modifier.height(10.dp))
+                            Spacer(modifier = Modifier.height(10.dp))
 
-                        Card(
-                            shape = RoundedCornerShape(18.dp),
-                            colors = CardDefaults.cardColors(containerColor = XtremeCard),
-                            border = BorderStroke(1.dp, XtremeBorder),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    keyboardController?.hide()
-                                    focusManager.clearFocus()
-                                    onTrackClick(top, results.songs)
-                                }
-                        ) {
-                            Row(
+                            val isTopLoading = (top.id == pendingLoadingTrackId) || (top.id == currentPlayingId && isCurrentlyLoading)
+                            Card(
+                                shape = RoundedCornerShape(18.dp),
+                                colors = CardDefaults.cardColors(containerColor = appColors.cardBackground),
+                                border = BorderStroke(1.dp, appColors.cardBorder),
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(14.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                AsyncImage(
-                                    model = top.coverUrl,
-                                    contentDescription = null,
-                                    contentScale = ContentScale.Crop,
-                                    modifier = Modifier
-                                        .size(68.dp)
-                                        .clip(RoundedCornerShape(12.dp))
-                                )
-
-                                Spacer(modifier = Modifier.width(14.dp))
-
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = top.title,
-                                        style = MaterialTheme.typography.titleMedium.copy(
-                                            fontWeight = FontWeight.Bold,
-                                            color = TextPrimary
-                                        ),
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    Spacer(modifier = Modifier.height(2.dp))
-                                    Text(
-                                        text = "Song • ${top.artist}",
-                                        style = MaterialTheme.typography.bodyMedium.copy(
-                                            color = TextSecondary
-                                        ),
-                                        maxLines = 1
-                                    )
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Surface(
-                                        color = XtremeLightBlue.copy(alpha = 0.15f),
-                                        shape = RoundedCornerShape(4.dp)
-                                    ) {
-                                        Text(
-                                            text = "HQ • 320 KBPS",
-                                            color = XtremeLightBlue,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 9.sp,
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                        )
+                                    .clickable {
+                                        keyboardController?.hide()
+                                        focusManager.clearFocus()
+                                        pendingLoadingTrackId = top.id
+                                        onTrackClick(top, results.songs)
                                     }
-                                }
-
-                                // Play button
-                                Box(
+                            ) {
+                                Row(
                                     modifier = Modifier
-                                        .size(46.dp)
-                                        .clip(CircleShape)
-                                        .background(XtremeGradients.ButtonGradient),
-                                    contentAlignment = Alignment.Center
+                                        .fillMaxWidth()
+                                        .padding(14.dp),
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Icon(
-                                        imageVector = Icons.Default.PlayArrow,
-                                        contentDescription = "Play",
-                                        tint = Color(0xFF031428),
-                                        modifier = Modifier.size(28.dp)
+                                    AsyncImage(
+                                        model = rememberOptimizedImageRequest(top.coverUrl, ImageConfig.LIST_ITEM_SIZE),
+                                        contentDescription = null,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier
+                                            .size(68.dp)
+                                            .clip(RoundedCornerShape(12.dp))
                                     )
+
+                                    Spacer(modifier = Modifier.width(14.dp))
+
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = top.title,
+                                            style = MaterialTheme.typography.titleMedium.copy(
+                                                fontWeight = FontWeight.Bold,
+                                                color = appColors.textPrimary
+                                            ),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Spacer(modifier = Modifier.height(2.dp))
+                                        Text(
+                                            text = "Song • ${top.artist}",
+                                            style = MaterialTheme.typography.bodyMedium.copy(
+                                                color = appColors.textSecondary
+                                            ),
+                                            maxLines = 1
+                                        )
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Surface(
+                                            color = appColors.primaryAccent.copy(alpha = 0.15f),
+                                            shape = RoundedCornerShape(4.dp)
+                                        ) {
+                                            Text(
+                                                text = "HQ • 320 KBPS",
+                                                color = appColors.primaryAccent,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 9.sp,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    }
+
+                                    // Play button
+                                    Box(
+                                        modifier = Modifier
+                                            .size(46.dp)
+                                            .clip(CircleShape)
+                                            .background(XtremeGradients.ButtonGradient),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        if (isTopLoading) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(24.dp),
+                                                strokeWidth = 2.5.dp,
+                                                color = appColors.onPrimaryAccent
+                                            )
+                                        } else {
+                                            Icon(
+                                                imageVector = if (top.id == currentPlayingId && isCurrentlyPlaying) Icons.Default.Equalizer else Icons.Default.PlayArrow,
+                                                contentDescription = if (top.id == currentPlayingId && isCurrentlyPlaying) "Playing" else "Play",
+                                                tint = appColors.onPrimaryAccent,
+                                                modifier = Modifier.size(28.dp)
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -566,7 +747,7 @@ fun SearchScreen(
             }
             val displayDirectList = if (hasQuery) directList.take(5) else directList
 
-            if (displayDirectList.isNotEmpty()) {
+            if (showTracks && displayDirectList.isNotEmpty()) {
                 item {
                     val sectionTitle = if (hasQuery) {
                         "Songs Matching \"${searchState.query.trim()}\""
@@ -577,19 +758,23 @@ fun SearchScreen(
                         text = sectionTitle,
                         style = MaterialTheme.typography.titleMedium.copy(
                             fontWeight = FontWeight.Bold,
-                            color = TextPrimary
+                            color = TextPrimary,
+                            fontSize = 18.sp
                         ),
                         modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 8.dp)
                     )
                 }
 
-                items(displayDirectList, key = { "direct_${it.id}" }) { song ->
+                items(displayDirectList, key = { "direct_${it.id}" }, contentType = { "track" }) { song ->
+                    val isTrackLoading = (song.id == pendingLoadingTrackId) || (song.id == currentPlayingId && isCurrentlyLoading)
                     TrackListItem(
                         track = song,
-                        isPlaying = song.id == currentPlayingId,
+                        isPlaying = song.id == currentPlayingId && isCurrentlyPlaying,
+                        isLoading = isTrackLoading,
                         onClick = {
                             keyboardController?.hide()
                             focusManager.clearFocus()
+                            pendingLoadingTrackId = song.id
                             onTrackClick(song, results.songs)
                         },
                         onToggleFavorite = { onToggleFavorite(song) },
@@ -599,7 +784,7 @@ fun SearchScreen(
             }
 
             // RECOMMENDED TRACKS VIA RECOMMENDATION ENGINE (Strictly 5 to 6 songs matching mood, language, genre, vibe and artist)
-            if (hasQuery && results.recommendedTracks.isNotEmpty()) {
+            if (showTracks && hasQuery && results.recommendedTracks.isNotEmpty()) {
                 item(key = "rec_section_header") {
                     Row(
                         modifier = Modifier
@@ -611,7 +796,8 @@ fun SearchScreen(
                             text = "Recommended For You",
                             style = MaterialTheme.typography.titleMedium.copy(
                                 fontWeight = FontWeight.Bold,
-                                color = TextPrimary
+                                color = TextPrimary,
+                                fontSize = 18.sp
                             ),
                             modifier = Modifier.weight(1f)
                         )
@@ -630,13 +816,16 @@ fun SearchScreen(
                     }
                 }
 
-                items(results.recommendedTracks.take(6), key = { "rec_${it.id}" }) { song ->
+                items(results.recommendedTracks.take(6), key = { "rec_${it.id}" }, contentType = { "track" }) { song ->
+                    val isTrackLoading = (song.id == pendingLoadingTrackId) || (song.id == currentPlayingId && isCurrentlyLoading)
                     TrackListItem(
                         track = song,
-                        isPlaying = song.id == currentPlayingId,
+                        isPlaying = song.id == currentPlayingId && isCurrentlyPlaying,
+                        isLoading = isTrackLoading,
                         onClick = {
                             keyboardController?.hide()
                             focusManager.clearFocus()
+                            pendingLoadingTrackId = song.id
                             onTrackClick(song, results.songs)
                         },
                         onToggleFavorite = { onToggleFavorite(song) },
@@ -646,7 +835,7 @@ fun SearchScreen(
             }
 
             // SAME SINGER'S OTHER SONGS
-            if (results.artistSongs.isNotEmpty()) {
+            if (showArtists && results.artistSongs.isNotEmpty()) {
                 item(key = "artist_songs_header") {
                     val singerTitle = if (results.matchedArtistName.isNotBlank()) {
                         "More by ${results.matchedArtistName}"
@@ -663,7 +852,8 @@ fun SearchScreen(
                             text = singerTitle,
                             style = MaterialTheme.typography.titleMedium.copy(
                                 fontWeight = FontWeight.Bold,
-                                color = TextPrimary
+                                color = TextPrimary,
+                                fontSize = 18.sp
                             ),
                             modifier = Modifier.weight(1f)
                         )
@@ -682,13 +872,16 @@ fun SearchScreen(
                     }
                 }
 
-                items(results.artistSongs, key = { "artist_${it.id}" }) { song ->
+                items(results.artistSongs, key = { "artist_${it.id}" }, contentType = { "track" }) { song ->
+                    val isTrackLoading = (song.id == pendingLoadingTrackId) || (song.id == currentPlayingId && isCurrentlyLoading)
                     TrackListItem(
                         track = song,
-                        isPlaying = song.id == currentPlayingId,
+                        isPlaying = song.id == currentPlayingId && isCurrentlyPlaying,
+                        isLoading = isTrackLoading,
                         onClick = {
                             keyboardController?.hide()
                             focusManager.clearFocus()
+                            pendingLoadingTrackId = song.id
                             onTrackClick(song, results.songs)
                         },
                         onToggleFavorite = { onToggleFavorite(song) },
@@ -698,7 +891,7 @@ fun SearchScreen(
             }
 
             // SAME TYPE / SAME GENRE SONGS
-            if (results.similarTypeSongs.isNotEmpty() && !isGenreActive) {
+            if (showTracks && results.similarTypeSongs.isNotEmpty() && !isGenreActive) {
                 item(key = "similar_type_header") {
                     val genreTitle = if (results.matchedGenreOrType.isNotBlank()) {
                         "Similar Songs • ${results.matchedGenreOrType} Vibe"
@@ -715,7 +908,8 @@ fun SearchScreen(
                             text = genreTitle,
                             style = MaterialTheme.typography.titleMedium.copy(
                                 fontWeight = FontWeight.Bold,
-                                color = TextPrimary
+                                color = TextPrimary,
+                                fontSize = 18.sp
                             ),
                             modifier = Modifier.weight(1f)
                         )
@@ -734,13 +928,16 @@ fun SearchScreen(
                     }
                 }
 
-                items(results.similarTypeSongs, key = { "sim_${it.id}" }) { song ->
+                items(results.similarTypeSongs, key = { "sim_${it.id}" }, contentType = { "track" }) { song ->
+                    val isTrackLoading = (song.id == pendingLoadingTrackId) || (song.id == currentPlayingId && isCurrentlyLoading)
                     TrackListItem(
                         track = song,
-                        isPlaying = song.id == currentPlayingId,
+                        isPlaying = song.id == currentPlayingId && isCurrentlyPlaying,
+                        isLoading = isTrackLoading,
                         onClick = {
                             keyboardController?.hide()
                             focusManager.clearFocus()
+                            pendingLoadingTrackId = song.id
                             onTrackClick(song, results.songs)
                         },
                         onToggleFavorite = { onToggleFavorite(song) },
@@ -750,146 +947,159 @@ fun SearchScreen(
             }
 
             // ARTISTS & ALBUMS CATEGORIES
-            if (results.artists.isNotEmpty() || results.albums.isNotEmpty()) {
+            val hasArtistsToShow = showArtists && results.artists.isNotEmpty()
+            val hasAlbumsToShow = showAlbums && results.albums.isNotEmpty()
+            if (hasArtistsToShow || hasAlbumsToShow) {
                 item {
                     Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp)) {
+                        val headerLabel = if (hasArtistsToShow && hasAlbumsToShow) "Artists & Albums" else if (hasArtistsToShow) "Artists" else "Albums"
                         Text(
-                            text = "Artists & Albums",
+                            text = headerLabel,
                             style = MaterialTheme.typography.titleMedium.copy(
                                 fontWeight = FontWeight.Bold,
-                                color = TextPrimary
+                                color = TextPrimary,
+                                fontSize = 18.sp
                             )
                         )
                         Spacer(modifier = Modifier.height(10.dp))
 
-                        results.artists.forEach { artist ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .clickable {
-                                        keyboardController?.hide()
-                                        focusManager.clearFocus()
-                                        onQueryChange(artist)
-                                    }
-                                    .padding(vertical = 8.dp, horizontal = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Box(
+                        if (hasArtistsToShow) {
+                            results.artists.forEach { artist ->
+                                Row(
                                     modifier = Modifier
-                                        .size(40.dp)
-                                        .clip(CircleShape)
-                                        .background(Color(0xFF163255)),
-                                    contentAlignment = Alignment.Center
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .clickable {
+                                            keyboardController?.hide()
+                                            focusManager.clearFocus()
+                                            onQueryChange(artist)
+                                        }
+                                        .padding(vertical = 8.dp, horizontal = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Person,
-                                        contentDescription = null,
-                                        tint = XtremeLightBlue,
-                                        modifier = Modifier.size(22.dp)
-                                    )
-                                }
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Column {
-                                    Text(text = artist, color = TextPrimary, fontWeight = FontWeight.SemiBold)
-                                    Text(text = "Artist • Tap to view songs", color = TextMuted, fontSize = 12.sp)
+                                    Box(
+                                        modifier = Modifier
+                                            .size(40.dp)
+                                            .clip(CircleShape)
+                                            .background(Color(0xFF163255)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Person,
+                                            contentDescription = null,
+                                            tint = XtremeLightBlue,
+                                            modifier = Modifier.size(22.dp)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Column {
+                                        Text(text = artist, color = TextPrimary, fontWeight = FontWeight.SemiBold)
+                                        Text(text = "Artist • Tap to view songs", color = TextMuted, fontSize = 12.sp)
+                                    }
                                 }
                             }
                         }
 
-                        results.albums.forEach { album ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .clickable {
-                                        keyboardController?.hide()
-                                        focusManager.clearFocus()
-                                        onQueryChange(album)
-                                    }
-                                    .padding(vertical = 8.dp, horizontal = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Box(
+                        if (hasAlbumsToShow) {
+                            results.albums.forEach { album ->
+                                Row(
                                     modifier = Modifier
-                                        .size(40.dp)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(Color(0xFF163255)),
-                                    contentAlignment = Alignment.Center
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .clickable {
+                                            keyboardController?.hide()
+                                            focusManager.clearFocus()
+                                            onQueryChange(album)
+                                        }
+                                        .padding(vertical = 8.dp, horizontal = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Album,
-                                        contentDescription = null,
-                                        tint = XtremeLightBlue,
-                                        modifier = Modifier.size(22.dp)
-                                    )
-                                }
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Column {
-                                    Text(text = album, color = TextPrimary, fontWeight = FontWeight.SemiBold)
-                                    Text(text = "Album • Tap to view songs", color = TextMuted, fontSize = 12.sp)
+                                    Box(
+                                        modifier = Modifier
+                                            .size(40.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(Color(0xFF163255)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Album,
+                                            contentDescription = null,
+                                            tint = XtremeLightBlue,
+                                            modifier = Modifier.size(22.dp)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Column {
+                                        Text(text = album, color = TextPrimary, fontWeight = FontWeight.SemiBold)
+                                        Text(text = "Album • Tap to view songs", color = TextMuted, fontSize = 12.sp)
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
-        } else {
-            // NO QUERY ACTIVE -> SHOW BROWSE ALL GENRE TILES
-            item {
-                Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)) {
-                    Text(
-                        text = "Browse All Genres",
-                        style = MaterialTheme.typography.titleMedium.copy(
-                            fontWeight = FontWeight.Bold,
-                            color = TextPrimary
+
+            // PLAYLISTS CATEGORY
+            if (showPlaylists) {
+                val matchingGenres = MusicDataSource.genres.filter {
+                    it.contains(searchState.query, ignoreCase = true)
+                }.ifEmpty { MusicDataSource.genres.take(6) }
+
+                item {
+                    Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp)) {
+                        Text(
+                            text = "Playlists",
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = TextPrimary,
+                                fontSize = 18.sp
+                            )
                         )
-                    )
-                    Spacer(modifier = Modifier.height(14.dp))
+                        Spacer(modifier = Modifier.height(10.dp))
 
-                    val browseCategories = listOf(
-                        Pair("Pop", Brush.linearGradient(listOf(Color(0xFFF59E0B), Color(0xFFE11D48)))),
-                        Pair("Hip-Hop", Brush.linearGradient(listOf(Color(0xFFD97706), Color(0xFFB45309)))),
-                        Pair("Rock", Brush.linearGradient(listOf(Color(0xFFEF4444), Color(0xFFF97316)))),
-                        Pair("Electronic", Brush.linearGradient(listOf(Color(0xFF06B6D4), Color(0xFF3B82F6)))),
-                        Pair("Bollywood", Brush.linearGradient(listOf(Color(0xFFEC4899), Color(0xFF8B5CF6)))),
-                        Pair("Punjabi", Brush.linearGradient(listOf(Color(0xFF10B981), Color(0xFF059669)))),
-                        Pair("Lo-Fi", Brush.linearGradient(listOf(Color(0xFF8B5CF6), Color(0xFF6366F1)))),
-                        Pair("Synthwave", Brush.linearGradient(listOf(Color(0xFF6366F1), Color(0xFF4F46E5))))
-                    )
-
-                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        for (i in 0 until (browseCategories.size + 1) / 2) {
+                        matchingGenres.forEach { genreName ->
                             Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                val c1 = browseCategories[i * 2]
-                                val c2 = browseCategories.getOrNull(i * 2 + 1)
-
-                                GenreTile(
-                                    title = c1.first,
-                                    brush = c1.second,
-                                    modifier = Modifier.weight(1f),
-                                    onClick = {
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 4.dp)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(appColors.chipBackground)
+                                    .border(BorderStroke(1.dp, appColors.chipBorder), RoundedCornerShape(14.dp))
+                                    .clickable {
                                         keyboardController?.hide()
                                         focusManager.clearFocus()
-                                        onSelectGenre(c1.first)
+                                        onSelectGenre(genreName)
                                     }
-                                )
-                                if (c2 != null) {
-                                    GenreTile(
-                                        title = c2.first,
-                                        brush = c2.second,
-                                        modifier = Modifier.weight(1f),
-                                        onClick = {
-                                            keyboardController?.hide()
-                                            focusManager.clearFocus()
-                                            onSelectGenre(c2.first)
-                                        }
+                                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(40.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(appColors.primaryAccent.copy(alpha = 0.15f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                        contentDescription = null,
+                                        tint = appColors.primaryAccent,
+                                        modifier = Modifier.size(20.dp)
                                     )
-                                } else {
-                                    Spacer(modifier = Modifier.weight(1f))
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column {
+                                    Text(
+                                        text = "$genreName Essentials",
+                                        color = TextPrimary,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Text(
+                                        text = "Curated Playlist • HD 320k",
+                                        color = TextMuted,
+                                        fontSize = 12.sp
+                                    )
                                 }
                             }
                         }
@@ -899,29 +1109,4 @@ fun SearchScreen(
         }
     }
 }
-}
-
-@Composable
-fun GenreTile(
-    title: String,
-    brush: Brush,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit
-) {
-    Box(
-        modifier = modifier
-            .height(95.dp)
-            .clip(RoundedCornerShape(14.dp))
-            .background(brush)
-            .clickable { onClick() }
-            .padding(14.dp),
-        contentAlignment = Alignment.BottomStart
-    ) {
-        Text(
-            text = title,
-            color = Color.White,
-            fontWeight = FontWeight.Bold,
-            fontSize = 16.sp
-        )
-    }
 }

@@ -40,6 +40,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -54,6 +55,8 @@ import com.example.ui.theme.TextSecondary
 import com.example.ui.theme.XtremeCyan
 import com.example.ui.theme.XtremeGreen
 import com.example.ui.theme.XtremeLightBlue
+import com.example.ui.util.ImageConfig
+import com.example.ui.util.rememberOptimizedImageRequest
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -89,6 +92,7 @@ fun QueueBottomSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .graphicsLayer()
                 .padding(horizontal = 20.dp, vertical = 8.dp)
         ) {
             Row(
@@ -171,7 +175,7 @@ fun QueueBottomSheet(
                         Spacer(modifier = Modifier.width(10.dp))
                         Column {
                             Text(
-                                text = "Infinity Autoplay",
+                                text = "Infinite Autoplay",
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 13.sp,
                                 color = appColors.textPrimary
@@ -195,12 +199,7 @@ fun QueueBottomSheet(
                     Switch(
                         checked = isAutoplayEnabled,
                         onCheckedChange = { onToggleAutoplay() },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = appColors.onPrimaryAccent,
-                            checkedTrackColor = appColors.primaryAccent,
-                            uncheckedThumbColor = appColors.textMuted,
-                            uncheckedTrackColor = appColors.cardBorder
-                        )
+                        colors = com.example.ui.theme.liquidGlassSwitchColors(appColors)
                     )
                 }
             }
@@ -249,7 +248,7 @@ fun QueueBottomSheet(
                     ) {
                         // Artwork
                         AsyncImage(
-                            model = track.coverUrl,
+                            model = rememberOptimizedImageRequest(track.coverUrl, ImageConfig.LIST_ITEM_SIZE),
                             contentDescription = null,
                             contentScale = ContentScale.Crop,
                             modifier = Modifier
@@ -262,7 +261,7 @@ fun QueueBottomSheet(
                         Column(modifier = Modifier.weight(1f)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(
-                                    text = track.title,
+                                    text = track.cleanTitle,
                                     color = if (isCurrentlyPlaying) {
                                         appColors.primaryAccent
                                     } else {
@@ -321,7 +320,7 @@ fun QueueBottomSheet(
                                         shape = RoundedCornerShape(4.dp)
                                     ) {
                                         Text(
-                                            text = "AUTOPLAY",
+                                            text = "INFINITE AUTOPLAY",
                                             fontSize = 8.5.sp,
                                             fontWeight = FontWeight.SemiBold,
                                             color = appColors.textMuted,

@@ -1,8 +1,13 @@
 package com.example.ui.screens
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -35,15 +40,19 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -89,9 +98,16 @@ import com.example.data.model.LanguageData
 import com.example.data.model.LanguageOption
 import com.example.ui.components.AppDynamicLogo
 import com.example.ui.theme.LocalAppColors
+import com.example.ui.theme.LiquidGlass
+import com.example.ui.theme.liquidGlass
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.XtremeGradients
 import com.example.util.AppHaptics
+
+enum class OnboardingStep {
+    STARTUP,
+    DETAILS
+}
 
 private val FEATURED_LANGUAGE_NAMES = listOf(
     "English", "Hindi", "Punjabi", "Spanish", "Korean", "Tamil", "Telugu", "Arabic"
@@ -108,6 +124,7 @@ fun OnboardingScreen(
     val isDark = appColors.isDark
     val focusManager = LocalFocusManager.current
 
+    var currentStep by remember { mutableStateOf(OnboardingStep.STARTUP) }
     var nameInput by remember { mutableStateOf("") }
     var selectedLanguages by remember { mutableStateOf(setOf("English", "Punjabi", "Hindi")) }
     var selectedCountry by remember {
@@ -115,6 +132,10 @@ fun OnboardingScreen(
     }
     var isCountryPickerOpen by remember { mutableStateOf(false) }
     var isLanguagePickerOpen by remember { mutableStateOf(false) }
+
+    BackHandler(enabled = currentStep == OnboardingStep.DETAILS) {
+        currentStep = OnboardingStep.STARTUP
+    }
 
     // Dynamic gradient adapting cleanly to current theme colors
     val backgroundBrush = Brush.verticalGradient(
@@ -154,74 +175,105 @@ fun OnboardingScreen(
             .testTag("onboarding_screen"),
         contentAlignment = Alignment.Center
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .widthIn(max = 560.dp)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.SpaceBetween,
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            // TOP HEADER: Aesthetic Compact Brand Bar
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 4.dp, bottom = 12.dp)
-            ) {
-                // Original High-Fidelity App Logo
-                AppDynamicLogo(
-                    modifier = Modifier.size(54.dp),
-                    primaryAccent = appColors.primaryAccent,
-                    secondaryAccent = appColors.secondaryAccent,
-                    cutoutColor = appColors.scaffoldBackground
-                )
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    Text(
-                        text = "XTREME",
-                        style = MaterialTheme.typography.titleLarge.copy(
-                            fontWeight = FontWeight.Black,
-                            letterSpacing = 2.5.sp,
-                            color = primaryAccent
-                        )
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "PLAYER",
-                        style = MaterialTheme.typography.titleLarge.copy(
-                            fontWeight = FontWeight.Black,
-                            letterSpacing = 2.5.sp,
-                            color = textPrimary
-                        )
+        AnimatedContent(
+            targetState = currentStep,
+            transitionSpec = {
+                if (targetState == OnboardingStep.DETAILS) {
+                    (slideInHorizontally { width -> width / 2 } + fadeIn()) togetherWith
+                    (slideOutHorizontally { width -> -width / 2 } + fadeOut())
+                } else {
+                    (slideInHorizontally { width -> -width / 2 } + fadeIn()) togetherWith
+                    (slideOutHorizontally { width -> width / 2 } + fadeOut())
+                }
+            },
+            label = "onboarding_step_crossfade"
+        ) { step ->
+            when (step) {
+                OnboardingStep.STARTUP -> {
+                    OnboardingStartupPage(
+                        onStartListening = {
+                            AppHaptics.performTap(context)
+                            currentStep = OnboardingStep.DETAILS
+                        }
                     )
                 }
+                OnboardingStep.DETAILS -> {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .widthIn(max = 560.dp)
+                            .verticalScroll(rememberScrollState())
+                            .padding(horizontal = 20.dp, vertical = 12.dp),
+                        verticalArrangement = Arrangement.SpaceBetween,
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        // TOP HEADER: Centered Logo and App Name
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 4.dp, bottom = 14.dp)
+                        ) {
+                            // 1. Logo in the center
+                            AppDynamicLogo(
+                                modifier = Modifier.size(56.dp),
+                                primaryAccent = primaryAccent,
+                                secondaryAccent = appColors.secondaryAccent,
+                                cutoutColor = appColors.scaffoldBackground
+                            )
 
-                Text(
-                    text = "Personalize your high-fidelity music experience",
-                    style = MaterialTheme.typography.bodySmall.copy(
-                        color = textMuted,
-                        fontSize = 12.5.sp,
-                        fontWeight = FontWeight.Medium
-                    ),
-                    modifier = Modifier.padding(top = 2.dp)
-                )
-            }
+                            Spacer(modifier = Modifier.height(10.dp))
 
-            // UNIFIED COMPACT CARD: Name, Country, and Languages
-            Card(
-                shape = RoundedCornerShape(22.dp),
-                colors = CardDefaults.cardColors(containerColor = cardBg),
-                border = BorderStroke(1.dp, cardBorder),
-                elevation = CardDefaults.cardElevation(defaultElevation = if (isDark) 4.dp else 2.dp),
+                            // 2. App Name "Xtreme Player" under the logo in the center
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                Text(
+                                    text = "Xtreme",
+                                    style = MaterialTheme.typography.titleLarge.copy(
+                                        fontWeight = FontWeight.Black,
+                                        letterSpacing = 1.2.sp,
+                                        fontSize = 24.sp,
+                                        color = primaryAccent
+                                    )
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Player",
+                                    style = MaterialTheme.typography.titleLarge.copy(
+                                        fontWeight = FontWeight.Black,
+                                        letterSpacing = 1.2.sp,
+                                        fontSize = 24.sp,
+                                        color = textPrimary
+                                    )
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(3.dp))
+
+                            Text(
+                                text = "Personalize your recommendations",
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    color = textMuted,
+                                    fontSize = 12.5.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            )
+                        }
+
+            // UNIFIED COMPACT CARD: Name, Country, and Languages with Liquid Glass Layer
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .liquidGlass(
+                        colors = appColors,
+                        shape = RoundedCornerShape(22.dp),
+                        elevation = 0.dp,
+                        translucency = 0.90f,
+                        sheenAlpha = 0.10f,
+                        highlightAlpha = 0.25f
+                    )
                     .testTag("onboarding_name_card")
             ) {
                 Column(
@@ -290,11 +342,11 @@ fun OnboardingScreen(
                         shape = RoundedCornerShape(12.dp),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = primaryAccent,
-                            unfocusedBorderColor = cardBorder,
+                            unfocusedBorderColor = cardBorder.copy(alpha = 0.5f),
                             focusedTextColor = textPrimary,
                             unfocusedTextColor = textPrimary,
-                            focusedContainerColor = appColors.cardBackgroundElevated.copy(alpha = 0.5f),
-                            unfocusedContainerColor = appColors.cardBackgroundElevated.copy(alpha = 0.25f)
+                            focusedContainerColor = Color.Transparent,
+                            unfocusedContainerColor = Color.Transparent
                         ),
                         modifier = Modifier
                             .fillMaxWidth()
@@ -570,7 +622,7 @@ fun OnboardingScreen(
                         horizontalArrangement = Arrangement.Center
                     ) {
                         Text(
-                            text = "Start Listening",
+                            text = "Continue to Music",
                             fontSize = 15.5.sp,
                             fontWeight = FontWeight.Bold
                         )
@@ -594,6 +646,9 @@ fun OnboardingScreen(
             }
         }
     }
+}
+    }
+}
 
     // SEARCHABLE COUNTRY PICKER BOTTOM SHEET
     if (isCountryPickerOpen) {
@@ -620,6 +675,250 @@ fun OnboardingScreen(
             },
             onDismiss = { isLanguagePickerOpen = false }
         )
+    }
+}
+
+/**
+ * Initial startup page shown the first time a user opens Xtreme Player.
+ * Displays the big dynamic app logo, the app name "Xtreme Player" directly under the logo,
+ * rich studio-quality audio highlights, and an attractive "Start Listening" button.
+ */
+@Composable
+fun OnboardingStartupPage(
+    onStartListening: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val appColors = LocalAppColors.current
+    val isDark = appColors.isDark
+    val primaryAccent = appColors.primaryAccent
+    val textPrimary = appColors.textPrimary
+    val textMuted = appColors.textMuted
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .widthIn(max = 560.dp)
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 24.dp, vertical = 16.dp),
+        verticalArrangement = Arrangement.SpaceBetween,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // Center Brand Identity
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            // Big App Logo with ambient theme-matching circular halo
+            Box(
+                modifier = Modifier
+                    .size(144.dp)
+                    .clip(CircleShape)
+                    .background(
+                        Brush.radialGradient(
+                            colors = listOf(
+                                primaryAccent.copy(alpha = if (isDark) 0.32f else 0.22f),
+                                primaryAccent.copy(alpha = if (isDark) 0.10f else 0.05f),
+                                Color.Transparent
+                            )
+                        )
+                    )
+                    .border(
+                        BorderStroke(
+                            1.5.dp,
+                            Brush.sweepGradient(
+                                listOf(
+                                    primaryAccent.copy(alpha = 0.75f),
+                                    appColors.secondaryAccent.copy(alpha = 0.4f),
+                                    primaryAccent.copy(alpha = 0.75f)
+                                )
+                            )
+                        ),
+                        CircleShape
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                AppDynamicLogo(
+                    modifier = Modifier.size(104.dp),
+                    primaryAccent = primaryAccent,
+                    secondaryAccent = appColors.secondaryAccent,
+                    cutoutColor = appColors.scaffoldBackground
+                )
+            }
+
+            Spacer(modifier = Modifier.height(26.dp))
+
+            // App name "Xtreme Player" directly under the logo
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                Text(
+                    text = "Xtreme",
+                    style = MaterialTheme.typography.headlineLarge.copy(
+                        fontWeight = FontWeight.Black,
+                        letterSpacing = 1.sp,
+                        fontSize = 34.sp,
+                        color = primaryAccent
+                    )
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Player",
+                    style = MaterialTheme.typography.headlineLarge.copy(
+                        fontWeight = FontWeight.Black,
+                        letterSpacing = 1.sp,
+                        fontSize = 34.sp,
+                        color = textPrimary
+                    )
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text(
+                text = "Pure 320 kbps High-Fidelity Music",
+                style = MaterialTheme.typography.titleMedium.copy(
+                    color = primaryAccent.copy(alpha = 0.9f),
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.5.sp,
+                    fontSize = 15.sp
+                )
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text(
+                text = "Studio master sound quality, zero buffering, and intelligent regional recommendations tailored just for you.",
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    color = textMuted,
+                    textAlign = TextAlign.Center,
+                    lineHeight = 21.sp,
+                    fontSize = 13.5.sp
+                ),
+                modifier = Modifier.padding(horizontal = 8.dp)
+            )
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Feature Badges
+            Column(
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                StartupFeaturePill(
+                    icon = Icons.Default.GraphicEq,
+                    title = "True 320 kbps Master Audio",
+                    description = "Crystal-clear high-definition sound and lossless FLAC"
+                )
+                StartupFeaturePill(
+                    icon = Icons.Default.Speed,
+                    title = "Instant Zero Buffering",
+                    description = "Intelligent pre-caching ensures uninterrupted playback"
+                )
+                StartupFeaturePill(
+                    icon = Icons.Default.Star,
+                    title = "Personalized Just For You",
+                    description = "Regional chart hits and customized curated mixes"
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // Attractive Button Below: "Start Listening"
+        Button(
+            onClick = {
+                AppHaptics.performTap(context)
+                onStartListening()
+            },
+            shape = RoundedCornerShape(22.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = primaryAccent,
+                contentColor = Color.White
+            ),
+            elevation = ButtonDefaults.buttonElevation(defaultElevation = 8.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(54.dp)
+                .shadow(
+                    elevation = 16.dp,
+                    shape = RoundedCornerShape(22.dp),
+                    spotColor = primaryAccent.copy(alpha = 0.65f)
+                )
+                .testTag("start_listening_button")
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                Text(
+                    text = "Start Listening",
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.5.sp
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun StartupFeaturePill(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    description: String
+) {
+    val appColors = LocalAppColors.current
+    val isDark = appColors.isDark
+
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = appColors.cardBackground.copy(alpha = if (isDark) 0.65f else 0.85f),
+        border = BorderStroke(1.dp, LiquidGlass.specularBorderBrush(appColors, highlightAlpha = 0.35f)),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(appColors.primaryAccent.copy(alpha = 0.14f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = appColors.primaryAccent,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Column {
+                Text(
+                    text = title,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.5.sp,
+                    color = appColors.textPrimary
+                )
+                Text(
+                    text = description,
+                    fontSize = 11.5.sp,
+                    color = appColors.textMuted
+                )
+            }
+        }
     }
 }
 
