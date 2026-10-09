@@ -54,6 +54,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
@@ -80,6 +81,7 @@ import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Usb
 import androidx.compose.runtime.collectAsState
 import com.example.playback.AudioDeviceManager
+import com.example.playback.AudioQuality
 import com.example.playback.SoundOutputDevice
 import com.example.ui.util.ImageConfig
 import com.example.ui.util.TrackPaletteCache
@@ -134,6 +136,9 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import coil.request.SuccessResult
 import com.example.data.model.MusicTrack
+import com.example.data.repository.ArtworkDimensions
+import com.example.data.repository.iTunesArtworkRepository
+import com.example.data.repository.toMediaItem
 import com.example.playback.PlayerUiState
 import com.example.playback.RepeatMode
 import com.example.ui.theme.LocalAppColors
@@ -182,8 +187,8 @@ fun ExpandedPlayerScreen(
     val haptic = LocalHapticFeedback.current
     val appColors = LocalAppColors.current
 
-    // Upgrade image URL to high-definition quality (1200x1200 or 500x500) if standard low-res jio/saavn or yt thumbnail
-    val highResCoverUrl = remember(track.coverUrl) {
+    val itunesRepo = remember { iTunesArtworkRepository.getInstance(context) }
+    val initialRawCoverUrl = remember(track.coverUrl) {
         val raw = track.coverUrl
         when {
             raw.contains("150x150.jpg") -> raw.replace("150x150.jpg", "500x500.jpg")
@@ -191,7 +196,28 @@ fun ExpandedPlayerScreen(
             raw.contains("hqdefault.jpg") -> raw.replace("hqdefault.jpg", "maxresdefault.jpg")
             raw.contains("mqdefault.jpg") -> raw.replace("mqdefault.jpg", "maxresdefault.jpg")
             raw.contains("default.jpg") && !raw.contains("maxresdefault.jpg") -> raw.replace("default.jpg", "maxresdefault.jpg")
+            raw.contains("100x100bb") -> itunesRepo.formatUrl(raw, ArtworkDimensions.EXPANDED_PLAYER)
+            raw.contains("100x100") -> itunesRepo.formatUrl(raw, ArtworkDimensions.EXPANDED_PLAYER)
             else -> raw
+        }
+    }
+
+    val memoryItunesUrl = remember(track.id) {
+        itunesRepo.getMemoryCachedUrl(track.toMediaItem(), ArtworkDimensions.EXPANDED_PLAYER)
+    }
+
+    var highResCoverUrl by remember(track.id) {
+        mutableStateOf(memoryItunesUrl ?: initialRawCoverUrl)
+    }
+
+    LaunchedEffect(track.id) {
+        if (memoryItunesUrl == null) {
+            val resolved = withContext(Dispatchers.IO) {
+                itunesRepo.resolveArtwork(track.toMediaItem(), ArtworkDimensions.EXPANDED_PLAYER)
+            }
+            if (resolved.isNotBlank() && resolved != highResCoverUrl) {
+                highResCoverUrl = resolved
+            }
         }
     }
 
@@ -200,7 +226,8 @@ fun ExpandedPlayerScreen(
             .data(highResCoverUrl)
             .size(coil.size.Size.ORIGINAL) // Full High Quality album art without downscaling
             .scale(coil.size.Scale.FILL)
-            .crossfade(180)
+            .crossfade(true)
+            .crossfade(200) // smooth 200ms crossfade transition once resolved
             .allowHardware(true)
             .memoryCachePolicy(coil.request.CachePolicy.ENABLED)
             .diskCachePolicy(coil.request.CachePolicy.ENABLED)
@@ -361,9 +388,8 @@ fun ExpandedPlayerScreen(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
                 onClick = { /* consume background clicks to prevent touch pass-through */ }
-            )
-            .testTag("expanded_player_screen"),
-        color = if (appColors.isAmoled) Color(0xFF000000) else if (isDark) appColors.scaffoldBackground else Color(0xFFFFFFFF) // 100% OPAQUE base - ZERO reflection, ZERO transparency
+            ),
+        color = if (appColors.isAmoled) Color(0xFF000000) else appColors.scaffoldBackground // 100% OPAQUE base inheriting Canvas Color
     ) {
         Box(
             modifier = Modifier.fillMaxSize(),
@@ -412,6 +438,7 @@ fun ExpandedPlayerScreen(
                             if (isLyricsActive) {
                                 SyncedLyricsView(
                                     lyrics = lyrics,
+                                    isPlaying = uiState.isPlaying,
                                     currentPositionProvider = currentPositionProvider,
                                     onSeekTo = onSeekTo,
                                     dominantColor = animatedDominantColor,
@@ -465,40 +492,21 @@ fun ExpandedPlayerScreen(
                                             .testTag("flip_album_art_card")
                                     ) {
                                         if (flipRotation <= 90f) {
-                                            // FRONT SIDE: Album Artwork
-                                            Box(modifier = Modifier.fillMaxSize()) {
-                                                AsyncImage(
-                                                    model = highResImageRequest,
-                                                    contentDescription = "Cover Art - Tap to flip",
-                                                    contentScale = ContentScale.Crop,
-                                                    modifier = Modifier
-                                                        .fillMaxSize()
-                                                        .background(Color(0xFF14243B))
-                                                )
-                                            }
+                                            // FRONT SIDE: Album Artwork with Motion Video Support
+                                            MotionAlbumArtPlayer(
+                                                videoUrl = track.motionArtworkUrl,
+                                                staticCoverUrl = highResCoverUrl,
+                                                contentDescription = "Cover Art - Tap to flip",
+                                                shape = RoundedCornerShape(22.dp),
+                                                modifier = Modifier.fillMaxSize()
+                                            )
                                         } else {
                                             // BACK SIDE: Song credits
                                             Box(
                                                 modifier = Modifier
                                                     .fillMaxSize()
                                                     .graphicsLayer { rotationY = 180f }
-                                                    .background(
-                                                        Brush.verticalGradient(
-                                                            if (isDark) {
-                                                                listOf(
-                                                                    appColors.cardBackgroundElevated.copy(alpha = 0.95f),
-                                                                    appColors.cardBackground.copy(alpha = 0.98f),
-                                                                    appColors.scaffoldBackground
-                                                                )
-                                                            } else {
-                                                                listOf(
-                                                                    appColors.cardBackgroundElevated,
-                                                                    appColors.cardBackground,
-                                                                    appColors.scaffoldBackground
-                                                                )
-                                                            }
-                                                        )
-                                                    )
+                                                    .background(if (appColors.isAmoled) Color(0xFF000000) else appColors.cardBackground)
                                                     .border(
                                                         BorderStroke(
                                                             1.5.dp,
@@ -655,7 +663,8 @@ fun ExpandedPlayerScreen(
                                     track = track,
                                     onAddToQueue = onAddToQueue,
                                     onAddToPlaylist = onAddToPlaylist,
-                                    isDark = isDark
+                                    isDark = isDark,
+                                    appColors = appColors
                                 )
                             }
                         }
@@ -716,10 +725,19 @@ fun ExpandedPlayerScreen(
                         }
 
                         // Scrubber Timeline
+                        val qualityChipText = when (uiState.selectedQuality) {
+                            AudioQuality.HI_RES_LOSSLESS -> {
+                                val isArchiveLossless = track.isLossless && (track.audioUrl.contains("archive.org") || track.source.equals("INTERNET_ARCHIVE", ignoreCase = true) || track.id.startsWith("ia_"))
+                                if (isArchiveLossless) "Hi-Res Lossless" else "Lossless"
+                            }
+                            AudioQuality.ULTRA_HD_320 -> "Ultra HD"
+                            AudioQuality.HIGH_160 -> "HD Audio"
+                            AudioQuality.MEDIUM_96 -> "Data Saver"
+                        }
                         PlayerTimelineSection(
                             currentPositionProvider = currentPositionProvider,
                             trackDurationProvider = trackDurationProvider,
-                            qualityBadge = uiState.qualityBadge,
+                            qualityChipText = qualityChipText,
                             onSeekTo = onSeekTo,
                             isDark = isDark,
                             isPlaying = uiState.isPlaying
@@ -1237,7 +1255,8 @@ fun ExpandedPlayerScreen(
                         track = track,
                         onAddToQueue = onAddToQueue,
                         onAddToPlaylist = onAddToPlaylist,
-                        isDark = isDark
+                        isDark = isDark,
+                        appColors = appColors
                     )
                 }
             }
@@ -1260,6 +1279,7 @@ fun ExpandedPlayerScreen(
                 if (isLyricsActive) {
                     SyncedLyricsView(
                         lyrics = lyrics,
+                        isPlaying = uiState.isPlaying,
                         currentPositionProvider = currentPositionProvider,
                         onSeekTo = onSeekTo,
                         dominantColor = animatedDominantColor,
@@ -1318,40 +1338,21 @@ fun ExpandedPlayerScreen(
                         .testTag("flip_album_art_card")
                 ) {
                     if (flipRotation <= 90f) {
-                        // FRONT SIDE: Album Artwork
-                        Box(modifier = Modifier.fillMaxSize()) {
-                            AsyncImage(
-                                model = highResImageRequest,
-                                contentDescription = "Cover Art - Tap to flip",
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .background(Color(0xFF14243B))
-                            )
-                        }
+                        // FRONT SIDE: Album Artwork with Motion Video Support
+                        MotionAlbumArtPlayer(
+                            videoUrl = track.motionArtworkUrl,
+                            staticCoverUrl = highResCoverUrl,
+                            contentDescription = "Cover Art - Tap to flip",
+                            shape = RoundedCornerShape(24.dp),
+                            modifier = Modifier.fillMaxSize()
+                        )
                     } else {
                         // BACK SIDE: Song credits and information (Fully theme adaptive)
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .graphicsLayer { rotationY = 180f }
-                                .background(
-                                    Brush.verticalGradient(
-                                        if (isDark) {
-                                            listOf(
-                                                appColors.cardBackgroundElevated.copy(alpha = 0.95f),
-                                                appColors.cardBackground.copy(alpha = 0.98f),
-                                                appColors.scaffoldBackground
-                                            )
-                                        } else {
-                                            listOf(
-                                                appColors.cardBackgroundElevated,
-                                                appColors.cardBackground,
-                                                appColors.scaffoldBackground
-                                            )
-                                        }
-                                    )
-                                )
+                                .background(if (appColors.isAmoled) Color(0xFF000000) else appColors.cardBackground)
                                 .border(
                                     BorderStroke(
                                         1.5.dp,
@@ -1520,11 +1521,20 @@ fun ExpandedPlayerScreen(
 
             Spacer(modifier = Modifier.height(if (isLandscape) 4.dp else 14.dp))
 
-            // TIMELINE SCRUB BAR WITH 320 KBPS BADGE (Isolated recomposition)
+            // TIMELINE SCRUB BAR (Isolated recomposition)
+            val landscapeQualityChipText = when (uiState.selectedQuality) {
+                AudioQuality.HI_RES_LOSSLESS -> {
+                    val isArchiveLossless = track.isLossless && (track.audioUrl.contains("archive.org") || track.source.equals("INTERNET_ARCHIVE", ignoreCase = true) || track.id.startsWith("ia_"))
+                    if (isArchiveLossless) "Hi-Res Lossless" else "Lossless"
+                }
+                AudioQuality.ULTRA_HD_320 -> "Ultra HD"
+                AudioQuality.HIGH_160 -> "HD Audio"
+                AudioQuality.MEDIUM_96 -> "Data Saver"
+            }
             PlayerTimelineSection(
                 currentPositionProvider = currentPositionProvider,
                 trackDurationProvider = trackDurationProvider,
-                qualityBadge = uiState.qualityBadge,
+                qualityChipText = landscapeQualityChipText,
                 onSeekTo = onSeekTo,
                 isDark = isDark,
                 isPlaying = uiState.isPlaying
@@ -1954,8 +1964,6 @@ fun ExpandedPlayerScreen(
             }
         }
     }
-}
-}
 
     // Sound Output Devices Popup Dialog
     if (showSoundOutputDialog) {
@@ -1968,6 +1976,8 @@ fun ExpandedPlayerScreen(
             },
             onDismiss = { showSoundOutputDialog = false }
         )
+    }
+        }
     }
 }
 
@@ -2309,182 +2319,175 @@ private fun PlayerOptionsMenu(
     onAddToQueue: (MusicTrack) -> Unit,
     onAddToPlaylist: (MusicTrack) -> Unit,
     isDark: Boolean,
+    appColors: com.example.ui.theme.AppThemeColors = LocalAppColors.current,
     modifier: Modifier = Modifier
 ) {
-    val appColors = LocalAppColors.current
     val context = LocalContext.current
 
-    val opaqueMenuBaseColor = if (isDark) Color(0xFF161E2C) else Color(0xFFFFFFFF)
-    val opaqueMenuBrush = if (isDark) {
-        Brush.verticalGradient(
-            listOf(
-                Color(0xFF222B3D),
-                Color(0xFF161E2C),
-                Color(0xFF0F141E)
-            )
-        )
+    val opaqueMenuBaseColor = if (appColors.isAmoled) Color(0xFF000000) else appColors.cardBackground
+    val opaqueMenuBrush = Brush.verticalGradient(
+        if (appColors.isAmoled) {
+            listOf(Color(0xFF000000), Color(0xFF000000))
+        } else {
+            listOf(appColors.cardBackground, appColors.cardBackground)
+        }
+    )
+
+    val menuBorderStroke = if (appColors.isAmoled) {
+        BorderStroke(1.2.dp, Color(0xFF222222))
     } else {
-        Brush.verticalGradient(
-            listOf(
-                Color(0xFFFFFFFF),
-                Color(0xFFF8FAFC),
-                Color(0xFFF1F5F9)
-            )
-        )
+        BorderStroke(1.2.dp, appColors.cardBorder.copy(alpha = if (isDark) 0.60f else 0.75f))
     }
 
-    DropdownMenu(
-        expanded = expanded,
-        onDismissRequest = onDismissRequest,
-        shape = RoundedCornerShape(22.dp),
-        containerColor = opaqueMenuBaseColor,
-        tonalElevation = 0.dp,
-        shadowElevation = 18.dp,
-        border = BorderStroke(
-            1.2.dp,
-            LiquidGlass.specularBorderBrush(appColors, highlightAlpha = if (isDark) 0.45f else 0.55f)
-        ),
-        modifier = modifier
-            .widthIn(min = 220.dp)
-            .clip(RoundedCornerShape(22.dp))
-            .background(opaqueMenuBrush)
-            .drawWithContent {
-                // Optical frosted diffusion layer beneath content
-                val frostedDiffusion = Brush.verticalGradient(
-                    colors = listOf(
-                        Color.White.copy(alpha = if (isDark) 0.10f else 0.35f),
-                        Color.White.copy(alpha = if (isDark) 0.02f else 0.10f)
-                    )
-                )
-                drawRect(frostedDiffusion)
-                drawContent()
-                // Top specular reflection sheen
-                val sheenBrush = Brush.verticalGradient(
-                    colors = listOf(
-                        Color.White.copy(alpha = if (isDark) 0.16f else 0.25f),
-                        Color.Transparent
-                    ),
-                    startY = 0f,
-                    endY = 40f
-                )
-                drawRect(sheenBrush)
-            }
-            .padding(vertical = 4.dp, horizontal = 4.dp)
+    CompositionLocalProvider(
+        LocalAppColors provides appColors
     ) {
-        // Action 1: Add to Queue
-        DropdownMenuItem(
-            text = {
-                Text(
-                    text = "Add to Queue",
-                    style = MaterialTheme.typography.bodyMedium.copy(
-                        fontWeight = FontWeight.SemiBold,
-                        color = if (isDark) Color.White else appColors.textPrimary
-                    )
-                )
-            },
-            leadingIcon = {
-                Box(
-                    modifier = Modifier
-                        .size(34.dp)
-                        .clip(CircleShape)
-                        .background(if (isDark) Color.White.copy(alpha = 0.12f) else Color.Black.copy(alpha = 0.05f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.QueueMusic,
-                        contentDescription = null,
-                        tint = appColors.primaryAccent,
-                        modifier = Modifier.size(18.dp)
-                    )
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = onDismissRequest,
+            shape = RoundedCornerShape(22.dp),
+            containerColor = opaqueMenuBaseColor,
+            tonalElevation = 0.dp,
+            shadowElevation = 18.dp,
+            border = menuBorderStroke,
+            modifier = modifier
+                .widthIn(min = 220.dp)
+                .clip(RoundedCornerShape(22.dp))
+                .background(opaqueMenuBrush)
+                .drawWithContent {
+                    drawContent()
+                    if (!appColors.isAmoled) {
+                        // Top specular reflection sheen
+                        val sheenBrush = Brush.verticalGradient(
+                            colors = listOf(
+                                Color.White.copy(alpha = if (isDark) 0.12f else 0.25f),
+                                Color.Transparent
+                            ),
+                            startY = 0f,
+                            endY = 40f
+                        )
+                        drawRect(sheenBrush)
+                    }
                 }
-            },
-            onClick = {
-                AppHaptics.performTap(context)
-                onAddToQueue(track)
-                onDismissRequest()
-                android.widget.Toast.makeText(
-                    context,
-                    "Added \"${track.title}\" to Queue",
-                    android.widget.Toast.LENGTH_SHORT
-                ).show()
-            },
-            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-        )
+                .padding(vertical = 4.dp, horizontal = 4.dp)
+        ) {
+            val itemIconBg = if (appColors.isAmoled) Color(0xFF141414) else if (isDark) appColors.cardBorder.copy(alpha = 0.35f) else appColors.chipBackground
 
-        // Action 2: Add to Playlist
-        DropdownMenuItem(
-            text = {
-                Text(
-                    text = "Add to Playlist",
-                    style = MaterialTheme.typography.bodyMedium.copy(
-                        fontWeight = FontWeight.SemiBold,
-                        color = if (isDark) Color.White else appColors.textPrimary
+            // Action 1: Add to Queue
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        text = "Add to Queue",
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            fontWeight = FontWeight.SemiBold,
+                            color = appColors.textPrimary
+                        )
                     )
-                )
-            },
-            leadingIcon = {
-                Box(
-                    modifier = Modifier
-                        .size(34.dp)
-                        .clip(CircleShape)
-                        .background(if (isDark) Color.White.copy(alpha = 0.12f) else Color.Black.copy(alpha = 0.05f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.PlaylistAdd,
-                        contentDescription = null,
-                        tint = appColors.primaryAccent,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-            },
-            onClick = {
-                AppHaptics.performTap(context)
-                onDismissRequest()
-                onAddToPlaylist(track)
-            },
-            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-        )
+                },
+                leadingIcon = {
+                    Box(
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clip(CircleShape)
+                            .background(itemIconBg),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                            contentDescription = null,
+                            tint = appColors.primaryAccent,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                },
+                onClick = {
+                    AppHaptics.performTap(context)
+                    onAddToQueue(track)
+                    onDismissRequest()
+                    android.widget.Toast.makeText(
+                        context,
+                        "Added \"${track.title}\" to Queue",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                },
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+            )
 
-        // Action 3: Share Track
-        DropdownMenuItem(
-            text = {
-                Text(
-                    text = "Share Track",
-                    style = MaterialTheme.typography.bodyMedium.copy(
-                        fontWeight = FontWeight.SemiBold,
-                        color = if (isDark) Color.White else appColors.textPrimary
+            // Action 2: Add to Playlist
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        text = "Add to Playlist",
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            fontWeight = FontWeight.SemiBold,
+                            color = appColors.textPrimary
+                        )
                     )
-                )
-            },
-            leadingIcon = {
-                Box(
-                    modifier = Modifier
-                        .size(34.dp)
-                        .clip(CircleShape)
-                        .background(if (isDark) Color.White.copy(alpha = 0.12f) else Color.Black.copy(alpha = 0.05f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Share,
-                        contentDescription = null,
-                        tint = appColors.primaryAccent,
-                        modifier = Modifier.size(18.dp)
+                },
+                leadingIcon = {
+                    Box(
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clip(CircleShape)
+                            .background(itemIconBg),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.PlaylistAdd,
+                            contentDescription = null,
+                            tint = appColors.primaryAccent,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                },
+                onClick = {
+                    AppHaptics.performTap(context)
+                    onDismissRequest()
+                    onAddToPlaylist(track)
+                },
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+            )
+
+            // Action 3: Share Track
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        text = "Share Track",
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            fontWeight = FontWeight.SemiBold,
+                            color = appColors.textPrimary
+                        )
                     )
-                }
-            },
-            onClick = {
-                AppHaptics.performTap(context)
-                onDismissRequest()
-                val sendIntent = android.content.Intent().apply {
-                    action = android.content.Intent.ACTION_SEND
-                    putExtra(android.content.Intent.EXTRA_TEXT, "Listening to \"${track.title}\" by ${track.artist} on Xtreme Player!")
-                    type = "text/plain"
-                }
-                context.startActivity(android.content.Intent.createChooser(sendIntent, "Share Track"))
-            },
-            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-        )
+                },
+                leadingIcon = {
+                    Box(
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clip(CircleShape)
+                            .background(itemIconBg),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Share,
+                            contentDescription = null,
+                            tint = appColors.primaryAccent,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                },
+                onClick = {
+                    AppHaptics.performTap(context)
+                    onDismissRequest()
+                    val sendIntent = android.content.Intent().apply {
+                        action = android.content.Intent.ACTION_SEND
+                        putExtra(android.content.Intent.EXTRA_TEXT, "Listening to \"${track.title}\" by ${track.artist} on Xtreme Player!")
+                        type = "text/plain"
+                    }
+                    context.startActivity(android.content.Intent.createChooser(sendIntent, "Share Track"))
+                },
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+            )
+        }
     }
 }
 
@@ -2492,7 +2495,7 @@ private fun PlayerOptionsMenu(
 private fun PlayerTimelineSection(
     currentPositionProvider: () -> Long,
     trackDurationProvider: () -> Long,
-    qualityBadge: String,
+    qualityChipText: String = "",
     onSeekTo: (Long) -> Unit,
     isDark: Boolean,
     isPlaying: Boolean = false,
@@ -2535,15 +2538,6 @@ private fun PlayerTimelineSection(
     }
     val sliderValue = if (isUserScrubbing) scrubPosition else (currentPosition.toFloat() / trackDuration.toFloat()).coerceIn(0f, 1f)
 
-    val cleanBadge = remember(qualityBadge) {
-        qualityBadge
-            .replace("YouTube Music", "HQ Stream", ignoreCase = true)
-            .replace("YouTube", "HQ Stream", ignoreCase = true)
-            .replace("YT Music", "HQ", ignoreCase = true)
-            .replace("JioSaavn", "HD Stream", ignoreCase = true)
-            .replace("Saavn", "HD Stream", ignoreCase = true)
-    }
-
     Column(modifier = modifier.fillMaxWidth().graphicsLayer()) {
         WavyScrubberBar(
             progress = sliderValue,
@@ -2581,36 +2575,38 @@ private fun PlayerTimelineSection(
                 )
             )
 
-            // High Quality Audio Badge with Frosted Liquid Glass UI
-            Surface(
-                color = Color.Transparent,
-                border = BorderStroke(1.dp, LiquidGlass.specularBorderBrush(appColors, highlightAlpha = 0.22f)),
-                shape = RoundedCornerShape(10.dp),
-                modifier = Modifier
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(LiquidGlass.glassBrush(appColors, translucency = 0.85f, tintAccent = false))
-                    .padding(horizontal = 2.dp)
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+            // Dynamic Quality Chip (Hi Res Lossless, Lossless, Ultra HD, HD Audio, Data Saver)
+            if (qualityChipText.isNotBlank()) {
+                Surface(
+                    color = Color.Transparent,
+                    border = BorderStroke(1.dp, LiquidGlass.specularBorderBrush(appColors, highlightAlpha = 0.22f)),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(LiquidGlass.glassBrush(appColors, translucency = 0.85f, tintAccent = false))
+                        .padding(horizontal = 2.dp)
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(6.dp)
-                            .clip(CircleShape)
-                            .background(appColors.primaryAccent)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = cleanBadge.uppercase(),
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            color = appColors.primaryAccent,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 10.sp,
-                            letterSpacing = 0.5.sp
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(6.dp)
+                                .clip(CircleShape)
+                                .background(appColors.primaryAccent)
                         )
-                    )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = qualityChipText,
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                color = appColors.primaryAccent,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 10.sp,
+                                letterSpacing = 0.5.sp
+                            )
+                        )
+                    }
                 }
             }
 

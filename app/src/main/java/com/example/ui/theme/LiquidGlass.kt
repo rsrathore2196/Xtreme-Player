@@ -145,25 +145,27 @@ object LiquidGlass {
     }
 
     /**
-     * Universal Neutrality: The outer container of the Bottom Navigation Bar, Mini Player,
-     * and control cards remains neutral crystal-clear glass with strictly 10% visibility and 90% blur.
+     * Smoky Frosted Glass Base Brush for Mini Player and Bottom Navigation Bar:
+     * High-opacity (88%-96%) smoky frosted glass base that completely prevents background
+     * screen text and cards from being clearly visible, serving as the canvas for the
+     * ambient blurry tint color of the background screen.
      */
     fun miniPlayerAndBottomBarBrush(colors: AppThemeColors): Brush {
         return if (colors.isDark) {
             if (colors.isAmoled) {
                 Brush.verticalGradient(
                     colors = listOf(
-                        Color(0xFF181818).copy(alpha = 0.94f),
-                        Color(0xFF101010).copy(alpha = 0.96f),
-                        Color(0xFF060606).copy(alpha = 0.98f)
+                        Color(0xFF1E1F24).copy(alpha = 0.88f),
+                        Color(0xFF131417).copy(alpha = 0.94f),
+                        Color(0xFF0C0D0F).copy(alpha = 0.96f)
                     )
                 )
             } else {
                 Brush.verticalGradient(
                     colors = listOf(
-                        Color(0xFF222B3D).copy(alpha = 0.72f),
-                        Color(0xFF171E2B).copy(alpha = 0.76f),
-                        Color(0xFF10141D).copy(alpha = 0.80f)
+                        Color(0xFF262830).copy(alpha = 0.88f),
+                        Color(0xFF1A1C22).copy(alpha = 0.93f),
+                        Color(0xFF121418).copy(alpha = 0.96f)
                     )
                 )
             }
@@ -171,11 +173,34 @@ object LiquidGlass {
             Brush.verticalGradient(
                 colors = listOf(
                     Color(0xFFFFFFFF).copy(alpha = 0.88f),
-                    Color(0xFFF8FAFC).copy(alpha = 0.82f),
-                    Color(0xFFF1F5F9).copy(alpha = 0.86f)
+                    Color(0xFFF2F4F8).copy(alpha = 0.92f),
+                    Color(0xFFE5E9F0).copy(alpha = 0.95f)
                 )
             )
         }
+    }
+
+    /**
+     * Water Drop Specular Border Brush:
+     * Clean, neutral, high-refraction meniscus stroke simulating physical clear glass refraction.
+     */
+    fun waterDropSpecularBorderBrush(colors: AppThemeColors): Brush {
+        val isDark = colors.isDark
+        return Brush.linearGradient(
+            colors = if (isDark) {
+                listOf(
+                    Color.White.copy(alpha = 0.45f),
+                    Color.White.copy(alpha = 0.18f),
+                    Color.White.copy(alpha = 0.08f)
+                )
+            } else {
+                listOf(
+                    Color.White.copy(alpha = 0.85f),
+                    Color.White.copy(alpha = 0.40f),
+                    Color.White.copy(alpha = 0.20f)
+                )
+            }
+        )
     }
 
     /**
@@ -277,6 +302,13 @@ object LiquidGlass {
  * - Directional specular refraction border highlight
  * - Curvature gloss reflection sheen across upper half
  */
+/**
+ * Universal Master Liquid Glass modifier:
+ * - Background Blur: Native blur / RenderEffect for API 31+ with safe software fallback.
+ * - Dynamic Album-Art Tinting: Blends ultra-subtle translucent surface tint extracted from album art or theme palette.
+ * - Glass Highlight Edge: Specular border with vertical gradient fading from top-left to bottom-right.
+ * - Dynamic Icon/Text Contrast: Automatically switches inside content colors using calculateGlassContentColor().
+ */
 fun Modifier.liquidGlass(
     colors: AppThemeColors,
     shape: Shape = RoundedCornerShape(20.dp),
@@ -284,55 +316,83 @@ fun Modifier.liquidGlass(
     translucency: Float = 0.75f,
     borderWidth: Dp = 1.3.dp,
     tintAccent: Boolean = true,
+    albumArtTint: Color? = null,
     sheenAlpha: Float = 0.16f,
     highlightAlpha: Float = 0.40f
-): Modifier = this
-    .shadow(
-        elevation = if (colors.isDark) elevation else (elevation + 2.dp),
-        shape = shape,
-        spotColor = if (colors.isDark) Color.Black.copy(alpha = 0.50f) else colors.primaryAccent.copy(alpha = 0.12f),
-        ambientColor = if (colors.isDark) Color.Black.copy(alpha = 0.20f) else Color.Black.copy(alpha = 0.05f)
-    )
-    .clip(shape)
-    .background(LiquidGlass.glassBrush(colors, translucency, tintAccent))
-    .drawWithContent {
-        // Optical frosted diffusion layer beneath content
-        val frostedDiffusion = Brush.verticalGradient(
-            colors = listOf(
-                Color.White.copy(alpha = if (colors.isDark) 0.09f else 0.38f),
-                Color.White.copy(alpha = if (colors.isDark) 0.02f else 0.10f)
-            )
-        )
-        drawRect(frostedDiffusion)
-        drawContent()
-        // Top specular reflection sheen (glass curvature light catch) / 3D inner glass reflection
-        val sheenBrush = if (colors.isDark) {
+): Modifier {
+    val isDark = colors.isDark
+    val surfaceBase = if (isDark) Color.Black.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.15f)
+    val effectiveTint = albumArtTint ?: if (tintAccent) colors.primaryAccent else null
+
+    val glassBackgroundBrush = when {
+        effectiveTint != null -> {
             Brush.verticalGradient(
-                colors = listOf(
-                    Color.White.copy(alpha = sheenAlpha),
-                    Color.White.copy(alpha = sheenAlpha * 0.25f),
-                    Color.Transparent
-                ),
-                startY = 0f,
-                endY = size.height * 0.48f
-            )
-        } else {
-            Brush.verticalGradient(
-                colors = listOf(
-                    Color.White.copy(alpha = 0.60f),
-                    Color.White.copy(alpha = 0.10f),
-                    Color.Transparent
-                ),
-                startY = 0f,
-                endY = size.height * 0.55f
+                listOf(
+                    effectiveTint.copy(alpha = if (isDark) 0.22f else 0.16f),
+                    surfaceBase,
+                    surfaceBase
+                )
             )
         }
-        drawRect(sheenBrush)
+        else -> LiquidGlass.glassBrush(colors, translucency, tintAccent)
     }
-    .border(
-        BorderStroke(borderWidth, LiquidGlass.specularBorderBrush(colors, highlightAlpha)),
-        shape
+
+    val specularBorder = BorderStroke(
+        borderWidth,
+        Brush.verticalGradient(
+            colors = listOf(
+                Color.White.copy(alpha = highlightAlpha),
+                Color.White.copy(alpha = highlightAlpha * 0.25f),
+                Color.Transparent
+            )
+        )
     )
+
+    return this
+        .shadow(
+            elevation = if (isDark) elevation else (elevation + 2.dp),
+            shape = shape,
+            spotColor = if (isDark) Color.Black.copy(alpha = 0.50f) else (effectiveTint ?: colors.primaryAccent).copy(alpha = 0.12f),
+            ambientColor = if (isDark) Color.Black.copy(alpha = 0.20f) else Color.Black.copy(alpha = 0.05f)
+        )
+        .clip(shape)
+        .background(glassBackgroundBrush)
+        .drawWithContent {
+            // Optical frosted diffusion layer beneath content
+            val frostedDiffusion = Brush.verticalGradient(
+                colors = listOf(
+                    Color.White.copy(alpha = if (colors.isDark) 0.09f else 0.38f),
+                    Color.White.copy(alpha = if (colors.isDark) 0.02f else 0.10f)
+                )
+            )
+            drawRect(frostedDiffusion)
+            drawContent()
+            // Top specular reflection sheen (glass curvature light catch)
+            val sheenBrush = if (colors.isDark) {
+                Brush.verticalGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = sheenAlpha),
+                        Color.White.copy(alpha = sheenAlpha * 0.25f),
+                        Color.Transparent
+                    ),
+                    startY = 0f,
+                    endY = size.height * 0.48f
+                )
+            } else {
+                Brush.verticalGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = 0.60f),
+                        Color.White.copy(alpha = 0.10f),
+                        Color.Transparent
+                    ),
+                    startY = 0f,
+                    endY = size.height * 0.55f
+                )
+            }
+            drawRect(sheenBrush)
+        }
+        .border(specularBorder, shape)
+}
 
 /**
  * Liquid Glass Pill Button modifier adapting to theme accent:
@@ -748,5 +808,43 @@ fun liquidGlassSwitchColors(appColors: AppThemeColors): androidx.compose.materia
         uncheckedTrackColor = if (isDark) Color.White.copy(alpha = 0.12f) else Color.Black.copy(alpha = 0.08f),
         uncheckedBorderColor = if (isDark) Color.White.copy(alpha = 0.35f) else Color.Black.copy(alpha = 0.22f)
     )
+}
+
+
+
+/**
+ * Calculates high-contrast inside content/icon color for an active liquid glass tint:
+ * Returns dark (0xFF121212) on bright/light tints, or light (0xFFFFFFFF) on dark tints.
+ */
+fun calculateGlassContentColor(surfaceTint: Color): Color {
+    val luminance = (0.299 * surfaceTint.red + 0.587 * surfaceTint.green + 0.114 * surfaceTint.blue)
+    return if (luminance > 0.55) Color(0xFF121212) else Color(0xFFFFFFFF)
+}
+
+/**
+ * Custom Liquid Glass Surface container matching LastWave Native:
+ * Provides elevation shadow, rounded corners, translucent backdrop, and specular border.
+ */
+@Composable
+fun LiquidGlassSurface(
+    modifier: Modifier = Modifier,
+    colors: AppThemeColors = LocalAppColors.current,
+    shape: Shape = RoundedCornerShape(20.dp),
+    elevation: Dp = 6.dp,
+    translucency: Float = 0.80f,
+    tintAccent: Boolean = false,
+    content: @Composable () -> Unit
+) {
+    androidx.compose.foundation.layout.Box(
+        modifier = modifier.liquidGlass(
+            colors = colors,
+            shape = shape,
+            elevation = elevation,
+            translucency = translucency,
+            tintAccent = tintAccent
+        )
+    ) {
+        content()
+    }
 }
 

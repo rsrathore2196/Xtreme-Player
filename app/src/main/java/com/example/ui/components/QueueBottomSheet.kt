@@ -216,7 +216,8 @@ fun QueueBottomSheet(
 
                 itemsIndexed(
                     items = queue,
-                    key = { index, track -> "${track.id}_$index" }
+                    key = { index, track -> "${track.id}_$index" },
+                    contentType = { _, _ -> "queue_item" }
                 ) { index, track ->
                     val isCurrentlyPlaying = track.id == currentTrack?.id
                     val isUpNext = !isCurrentlyPlaying && (index == currentIdx + 1 || (currentIdx == -1 && index == 0))
@@ -225,6 +226,7 @@ fun QueueBottomSheet(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .graphicsLayer { }
                             .clip(RoundedCornerShape(12.dp))
                             .background(
                                 if (isCurrentlyPlaying) {
@@ -248,7 +250,7 @@ fun QueueBottomSheet(
                     ) {
                         // Artwork
                         AsyncImage(
-                            model = rememberOptimizedImageRequest(track.coverUrl, ImageConfig.LIST_ITEM_SIZE),
+                            model = rememberOptimizedImageRequest(track = track, targetSize = ImageConfig.LIST_ITEM_SIZE),
                             contentDescription = null,
                             contentScale = ContentScale.Crop,
                             modifier = Modifier

@@ -22,9 +22,19 @@ object OtherSettingsPreferences {
     private const val KEY_TOTAL_LISTENING_MINUTES = "total_listening_minutes"
     private const val KEY_CACHE_CLEARED_TIMESTAMP = "cache_cleared_timestamp"
     private const val KEY_HAPTICS_ENABLED = "haptics_enabled"
+    private const val KEY_DYNAMIC_GLASS_ENABLED = "dynamic_glass_enabled"
 
     private fun getPrefs(context: Context): SharedPreferences {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    }
+
+    // --- Dynamic Blur & Liquid Glass Settings ---
+    fun isDynamicGlassEnabled(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_DYNAMIC_GLASS_ENABLED, true)
+    }
+
+    fun setDynamicGlassEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_DYNAMIC_GLASS_ENABLED, enabled).apply()
     }
 
     // --- Proxy Settings ---

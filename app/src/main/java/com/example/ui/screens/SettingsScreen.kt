@@ -63,6 +63,7 @@ import com.example.ui.theme.LiquidGlass
 import com.example.ui.theme.bouncyClickable
 import com.example.ui.theme.liquidGlassCard
 import com.example.ui.theme.liquidGlassButton
+import com.example.ui.theme.contrastingContentColor
 import com.example.data.local.AppThemeMode
 import com.example.data.local.UserProfile
 import com.example.data.model.CountryData
@@ -84,7 +85,7 @@ import com.example.util.AppHaptics
 
 @Composable
 fun SettingsScreen(
-    selectedQuality: AudioQuality = AudioQuality.EXTREME_320,
+    selectedQuality: AudioQuality = AudioQuality.ULTRA_HD_320,
     effectsState: AudioEffectsState,
     isDarkMode: Boolean,
     themeMode: AppThemeMode,
@@ -102,6 +103,8 @@ fun SettingsScreen(
     onApplyPreset: (com.example.data.local.AppThemePreset) -> Unit = {},
     onTextScaleChanged: (Int) -> Unit = {},
     onUiScaleChanged: (Int) -> Unit = {},
+    isDynamicGlassEnabled: Boolean = true,
+    onToggleDynamicGlass: (Boolean) -> Unit = {},
     onSubpageStateChanged: (Boolean) -> Unit = {},
     onNavigateBackToHome: () -> Unit = {},
     modifier: Modifier = Modifier
@@ -239,7 +242,9 @@ fun SettingsScreen(
                             onSelectThemeMode = onSelectThemeMode,
                             customThemeState = customThemeState,
                             onUpdateCustomThemeState = onUpdateCustomThemeState,
-                            onApplyPreset = onApplyPreset
+                            onApplyPreset = onApplyPreset,
+                            isDynamicGlassEnabled = isDynamicGlassEnabled,
+                            onToggleDynamicGlass = onToggleDynamicGlass
                         )
                     }
                     SettingsCategory.MUSIC_PLAYBACK -> {
@@ -437,12 +442,8 @@ private fun MainProfilePreviewBar(
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 14.dp)
         ) {
-            val avatarBg = if (appColors.isAmoled) {
-                Brush.linearGradient(listOf(Color(0xFF222222), Color(0xFF141414)))
-            } else {
-                Brush.linearGradient(listOf(appColors.primaryAccent, appColors.secondaryAccent))
-            }
-            val initialTextColor = if (appColors.isAmoled) Color.White else appColors.onPrimaryAccent
+            val avatarBg = Brush.linearGradient(listOf(appColors.primaryAccent, appColors.secondaryAccent))
+            val initialTextColor = contrastingContentColor(appColors.primaryAccent)
 
             Box(
                 modifier = Modifier

@@ -12,6 +12,10 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionToken
 import com.example.data.model.MusicTrack
+import com.example.data.local.ListeningEventDao
+import com.example.data.local.ListeningEventEntity
+import com.example.data.local.MusicDatabase
+import com.example.data.local.TrackEntity
 import com.example.data.model.toMediaItem
 import com.example.data.remote.MusicDataSource
 import com.example.recommendation.CustomRecommendationQueryWrapper
@@ -71,8 +75,21 @@ class PlaybackManager(
     private var progressTickerJob: Job? = null
 
     val recommendationEngine = RecommendationEngine()
-    private val candidateCatalogPool = mutableListOf<MusicTrack>()
+    private val candidateCatalogPool = java.util.concurrent.CopyOnWriteArrayList<MusicTrack>()
     private var recommendationFetchJob: Job? = null
+
+    private val database by lazy { MusicDatabase.getDatabase(context) }
+    val listeningEventDao: ListeningEventDao by lazy { database.listeningEventDao() }
+    val automixQueueManager by lazy {
+        AutomixQueueManager(
+            listeningEventDao = listeningEventDao,
+            repository = repository,
+            scope = scope
+        )
+    }
+    private var currentSessionId: String = java.util.UUID.randomUUID().toString()
+    private var currentTrackStartTimeMs: Long = 0L
+    private var hasRecordedMeaningfulPlay: Boolean = false
 
     // Playback history stack for accurate previous song navigation
     private val playbackHistory = mutableListOf<MusicTrack>()
@@ -83,7 +100,13 @@ class PlaybackManager(
     private var lastPlayRequestTimeMs: Long = 0L
     private var lastRequestedTrackId: String? = null
 
-    private val _uiState = MutableStateFlow(PlayerUiState())
+    private val initialQuality = com.example.data.local.AudioQualityPreferences.getSelectedQuality(context)
+    private val _uiState = MutableStateFlow(
+        PlayerUiState(
+            selectedQuality = initialQuality,
+            qualityBadge = initialQuality.badge
+        )
+    )
     val uiState: StateFlow<PlayerUiState> = _uiState.asStateFlow()
 
     // Isolated high-frequency position state flows so high-frequency updates do NOT trigger full-screen recompositions
@@ -138,6 +161,20 @@ class PlaybackManager(
                 _uiState.update { it.copy(isPlaying = isPlaying) }
                 if (isPlaying) {
                     startProgressTicker()
+                    // Genuinely playing: persist track into Room DB listening history immediately
+                    val current = _uiState.value.currentTrack
+                    if (current != null) {
+                        scope.launch(Dispatchers.IO) {
+                            try {
+                                val now = System.currentTimeMillis()
+                                val entity = TrackEntity.fromMusicTrack(current, lastPlayedAt = now)
+                                database.musicDao().insertOrUpdateTrack(entity)
+                                repository?.markTrackPlayed(current)
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Failed updating track history in Room: ${e.message}")
+                            }
+                        }
+                    }
                 } else {
                     stopProgressTicker()
                 }
@@ -164,6 +201,24 @@ class PlaybackManager(
 
                 // Handle natural song completion
                 if (playbackState == Player.STATE_ENDED) {
+                    val completedTrack = _uiState.value.currentTrack
+                    if (completedTrack != null) {
+                        val elapsed = (System.currentTimeMillis() - currentTrackStartTimeMs).coerceAtLeast(0L)
+                        scope.launch(Dispatchers.IO) {
+                            val event = ListeningEventEntity.fromTrack(
+                                track = completedTrack,
+                                sessionId = currentSessionId,
+                                playedDurationMs = elapsed,
+                                trackDurationMs = completedTrack.durationMs,
+                                eventType = "COMPLETED",
+                                completed = true,
+                                skipped = false,
+                                liked = completedTrack.isLiked
+                            )
+                            listeningEventDao.insertListeningEvent(event)
+                        }
+                    }
+
                     Log.i(TAG, "Song completed playback. Autoplay enabled: ${_uiState.value.isAutoplayEnabled}")
                     scope.launch(Dispatchers.Main) {
                         if (_uiState.value.repeatMode == RepeatMode.ONE) {
@@ -205,7 +260,7 @@ class PlaybackManager(
                             currentTrack = matchedTrack,
                             currentIndex = index,
                             durationMs = if (player.duration > 0) player.duration else matchedTrack.durationMs,
-                            qualityBadge = matchedTrack.qualityBadge,
+                            qualityBadge = _uiState.value.selectedQuality.badge,
                             isFavorite = matchedTrack.isLiked,
                             nextRecommendedTrack = nextTrackInQueue
                         )
@@ -214,9 +269,55 @@ class PlaybackManager(
                     // Strictly offload background computations, history recording, and recommendation queries off the main thread
                     scope.launch(Dispatchers.IO) {
                         val oldTrack = _uiState.value.currentTrack
+                        val elapsed = System.currentTimeMillis() - currentTrackStartTimeMs
+
                         if (oldTrack != null && oldTrack.id != matchedTrack.id) {
                             playbackHistory.add(oldTrack)
                             if (playbackHistory.size > 50) playbackHistory.removeAt(0)
+
+                            // Early Skip check: skipped before 15 seconds without meaningful play
+                            if (elapsed < 15_000L && !hasRecordedMeaningfulPlay) {
+                                val skipEvent = ListeningEventEntity.fromTrack(
+                                    track = oldTrack,
+                                    sessionId = currentSessionId,
+                                    playedDurationMs = elapsed,
+                                    trackDurationMs = oldTrack.durationMs,
+                                    eventType = "EARLY_SKIP",
+                                    completed = false,
+                                    skipped = true,
+                                    liked = oldTrack.isLiked
+                                )
+                                listeningEventDao.insertListeningEvent(skipEvent)
+                            }
+                        }
+
+                        // Reset session tracking for newly started track
+                        currentTrackStartTimeMs = System.currentTimeMillis()
+                        hasRecordedMeaningfulPlay = false
+
+                        // Record STARTED event
+                        val startEvent = ListeningEventEntity.fromTrack(
+                            track = matchedTrack,
+                            sessionId = currentSessionId,
+                            playedDurationMs = 0L,
+                            trackDurationMs = matchedTrack.durationMs,
+                            eventType = "STARTED",
+                            completed = false,
+                            skipped = false,
+                            liked = matchedTrack.isLiked
+                        )
+                        listeningEventDao.insertListeningEvent(startEvent)
+
+                        // If playback is actively running or set to play immediately, persist lastPlayedAt
+                        if (player.isPlaying || player.playWhenReady) {
+                            try {
+                                val now = System.currentTimeMillis()
+                                val entity = TrackEntity.fromMusicTrack(matchedTrack, lastPlayedAt = now)
+                                database.musicDao().insertOrUpdateTrack(entity)
+                                repository?.markTrackPlayed(matchedTrack)
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Failed updating track history on transition: ${e.message}")
+                            }
                         }
 
                         // Record track into session memory & co-listening matrix
@@ -229,6 +330,18 @@ class PlaybackManager(
                         // Seamless Infinity Queue: Keep upcoming recommendations stocked
                         if (_uiState.value.isAutoplayEnabled) {
                             refreshAutoplayRecommendation(matchedTrack, isCurrentSessionExplicitPlaylist)
+
+                            // Check and extend queue if remaining tracks <= 3
+                            automixQueueManager.checkAndExtendQueueIfNeeded(
+                                player = controller,
+                                currentTrack = matchedTrack,
+                                currentQueue = activeQueue,
+                                sessionId = currentSessionId,
+                                candidatePool = candidateCatalogPool
+                            ) { appendedTracks ->
+                                activeQueue.addAll(appendedTracks)
+                                _uiState.update { it.copy(queue = activeQueue.toList()) }
+                            }
                         }
                     }
 
@@ -346,6 +459,27 @@ class PlaybackManager(
                     )
                 }
             }
+
+            // Record MEANINGFUL_PLAY only once per track when threshold passes (>=30s or >=50%), zero writes on general ticker
+            if (!hasRecordedMeaningfulPlay && (pos >= 30_000L || (dur > 0 && pos.toFloat() / dur >= 0.5f))) {
+                hasRecordedMeaningfulPlay = true
+                val curTrack = _uiState.value.currentTrack
+                if (curTrack != null) {
+                    scope.launch(Dispatchers.IO) {
+                        val meaningfulEvent = ListeningEventEntity.fromTrack(
+                            track = curTrack,
+                            sessionId = currentSessionId,
+                            playedDurationMs = pos,
+                            trackDurationMs = dur,
+                            eventType = "MEANINGFUL_PLAY",
+                            completed = false,
+                            skipped = false,
+                            liked = curTrack.isLiked
+                        )
+                        listeningEventDao.insertListeningEvent(meaningfulEvent)
+                    }
+                }
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Error updating progress values: ${e.message}", e)
         }
@@ -416,7 +550,14 @@ class PlaybackManager(
             }
             return
         }
-        playTrackInternal(track, queue, isExplicitPlaylist)
+
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+            playTrackInternal(track, queue, isExplicitPlaylist)
+        } else {
+            scope.launch(Dispatchers.Main) {
+                playTrackInternal(track, queue, isExplicitPlaylist)
+            }
+        }
     }
 
     private fun playTrackInternal(track: MusicTrack, queue: List<MusicTrack>, isExplicitPlaylist: Boolean = false) {
@@ -463,7 +604,7 @@ class PlaybackManager(
                         isLoading = true,
                         durationMs = track.durationMs,
                         currentPositionMs = 0L,
-                        qualityBadge = track.qualityBadge,
+                        qualityBadge = _uiState.value.selectedQuality.badge,
                         isFavorite = track.isLiked,
                         errorMessage = null,
                         sessionMemoryCount = recommendationEngine.getSessionTracks().size
@@ -493,7 +634,7 @@ class PlaybackManager(
                         isLoading = true,
                         durationMs = track.durationMs,
                         currentPositionMs = 0L,
-                        qualityBadge = track.qualityBadge,
+                        qualityBadge = _uiState.value.selectedQuality.badge,
                         isFavorite = track.isLiked,
                         errorMessage = null,
                         nextRecommendedTrack = nextInQueue,
@@ -712,8 +853,10 @@ class PlaybackManager(
     }
 
     fun setCandidatePool(pool: List<MusicTrack>) {
-        candidateCatalogPool.clear()
-        candidateCatalogPool.addAll(pool)
+        synchronized(candidateCatalogPool) {
+            candidateCatalogPool.clear()
+            candidateCatalogPool.addAll(pool)
+        }
     }
 
     fun setAutoplayEnabled(enabled: Boolean) {
@@ -997,11 +1140,8 @@ class PlaybackManager(
     }
 
     fun setAudioQuality(quality: AudioQuality) {
-        val player = controller
-        if (player == null) {
-            Log.e(TAG, "Cannot set audio quality: player is null")
-            return
-        }
+        // 1. Immediately persist selection to persistent local storage so preference survives cold restarts
+        com.example.data.local.AudioQualityPreferences.setSelectedQuality(context, quality)
 
         try {
             _uiState.update {
@@ -1010,6 +1150,13 @@ class PlaybackManager(
                     qualityBadge = quality.badge
                 )
             }
+
+            val player = controller
+            if (player == null) {
+                Log.d(TAG, "Quality preference persisted to storage; player controller not yet initialized")
+                return
+            }
+
             val currentTrack = _uiState.value.currentTrack ?: return
             if (currentTrack.audioUrl.contains("saavncdn.com")) {
                 val updatedUrl = com.example.data.remote.OnlineMusicApiService.formatUrlForQuality(
@@ -1036,7 +1183,7 @@ class PlaybackManager(
                         qualityBadge = quality.badge
                     )
                 }
-                Log.i(TAG, "Audio quality changed to: ${quality.id}")
+                Log.i(TAG, "Audio quality changed to: ${quality.id} (${quality.badge})")
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error setting audio quality: ${e.message}", e)
@@ -1085,7 +1232,7 @@ class PlaybackManager(
             audioUrl
         }
         val effectiveBitrate = if (audioUrl.contains("saavncdn.com")) targetQuality.kbps else bitrateKbps
-        val rawBadge = if (audioUrl.contains("saavncdn.com")) targetQuality.badge else qualityBadge
+        val rawBadge = targetQuality.badge
         val effectiveBadge = rawBadge
             .replace("YouTube Music", "HQ Stream", ignoreCase = true)
             .replace("YouTube", "HQ Stream", ignoreCase = true)

@@ -50,16 +50,12 @@ fun resolveAppThemeColors(darkTheme: Boolean, custom: CustomThemeState): AppThem
 
     val scaffoldBg = if (isAmoled) {
         Color(0xFF000000)
-    } else if (isBrightnessMismatch) {
-        if (isDark) Color(0xFF101014) else Color(0xFFFAFAFC)
     } else {
         parseColorSafe(effectiveCustom.canvasColorHex, if (isDark) Color(0xFF101014) else Color(0xFFFAFAFC))
     }
 
     val cardBg = if (isAmoled) {
         Color(0xFF000000)
-    } else if (isBrightnessMismatch) {
-        if (isDark) Color(0xFF18181E) else Color(0xFFFFFFFF)
     } else {
         parseColorSafe(effectiveCustom.cardColorHex, if (isDark) Color(0xFF18181E) else Color(0xFFFFFFFF))
     }
@@ -112,16 +108,16 @@ fun resolveAppThemeColors(darkTheme: Boolean, custom: CustomThemeState): AppThem
         else try {
             Color(android.graphics.Color.parseColor(effectiveCustom.cardColorHex)).copy(alpha = 0.95f)
         } catch (_: Exception) {
-            Color(0xFF202028)
+            cardBg
         }
     } else {
-        Color(0xFFF1F5F9)
+        cardBg
     }
 
     val bottomBarBg = if (isDark) {
         if (isAmoled) Color(0xFF000000) else scaffoldBg
     } else {
-        Color(0xFFFFFFFF)
+        scaffoldBg
     }
 
     val chipBg = if (isDark) {

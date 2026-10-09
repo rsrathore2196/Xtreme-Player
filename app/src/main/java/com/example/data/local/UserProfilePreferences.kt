@@ -3,6 +3,9 @@ package com.example.data.local
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.compose.runtime.Immutable
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 @Immutable
 data class UserProfile(
@@ -61,6 +64,19 @@ object UserProfilePreferences {
         )
     }
 
+    private var _userProfileFlow: MutableStateFlow<UserProfile>? = null
+
+    fun getUserProfileFlow(context: Context): StateFlow<UserProfile> {
+        synchronized(this) {
+            var flow = _userProfileFlow
+            if (flow == null) {
+                flow = MutableStateFlow(getUserProfile(context))
+                _userProfileFlow = flow
+            }
+            return flow.asStateFlow()
+        }
+    }
+
     fun saveUserProfile(context: Context, profile: UserProfile) {
         val prefs = getPrefs(context)
         val languagesRaw = profile.languages.joinToString(",")
@@ -73,6 +89,14 @@ object UserProfilePreferences {
             .putString(KEY_APP_LANGUAGE, profile.appLanguage.trim())
             .putBoolean(KEY_ONBOARDING_COMPLETED, profile.isOnboardingCompleted)
             .apply()
+        synchronized(this) {
+            val flow = _userProfileFlow
+            if (flow == null) {
+                _userProfileFlow = MutableStateFlow(profile)
+            } else {
+                flow.value = profile
+            }
+        }
     }
 
     fun isOnboardingCompleted(context: Context): Boolean {

@@ -7,31 +7,47 @@ enum class AudioQuality(
     val badge: String,
     val description: String
 ) {
-    EXTREME_320(
+    HI_RES_LOSSLESS(
+        id = "lossless",
+        title = "Hi-Res Lossless • 24-bit/192 kHz (Studio Master)",
+        kbps = 9216,
+        badge = "Hi-Res Lossless",
+        description = "Highest Studio Grade Quality FLAC Audio"
+    ),
+    ULTRA_HD_320(
         id = "320",
-        title = "Extreme HD (320 kbps)",
+        title = "Ultra HD • 320 kbps (Limitless)",
         kbps = 320,
-        badge = "HD • 320 kbps",
-        description = "Lossless-grade studio master fidelity & maximum acoustic detail"
+        badge = "Ultra HD",
+        description = "Audiophile Grade High Quality Sound Reproduction"
     ),
     HIGH_160(
         id = "160",
-        title = "High Quality (160 kbps)",
+        title = "High • 160 kbps (Balanced)",
         kbps = 160,
-        badge = "HQ • 160 kbps",
-        description = "Balanced acoustic clarity with fast streaming & low latency"
+        badge = "HD Audio",
+        description = "Optimized clear sound with fast data streaming"
     ),
-    DATA_SAVER_96(
+    MEDIUM_96(
         id = "96",
-        title = "Data Saver (96 kbps)",
+        title = "Medium • 96 kbps (Data Saver)",
         kbps = 96,
-        badge = "SD • 96 kbps",
-        description = "Lightweight compression optimized for mobile data networks"
+        badge = "Data Saver",
+        description = "Lowest network bandwidth usage"
     );
 
     companion object {
+        val EXTREME_320 get() = ULTRA_HD_320
+        val DATA_SAVER_96 get() = MEDIUM_96
+
         fun fromId(id: String): AudioQuality {
-            return entries.find { it.id == id } ?: EXTREME_320
+            return when (id.lowercase().trim()) {
+                "lossless", "hires", "flac" -> HI_RES_LOSSLESS
+                "320", "ultrahd", "extreme" -> ULTRA_HD_320
+                "160", "high" -> HIGH_160
+                "96", "medium", "standard", "datasaver" -> MEDIUM_96
+                else -> ULTRA_HD_320
+            }
         }
     }
 }

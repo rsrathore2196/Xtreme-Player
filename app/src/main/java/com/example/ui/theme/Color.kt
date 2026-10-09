@@ -59,40 +59,40 @@ fun contrastingContentColor(background: Color): Color {
     return if (lum > 0.55f) Color(0xFF0A0A0A) else Color(0xFFFFFFFF)
 }
 
-// Night / Dark Theme: Redesigned Studio Night - Deep Obsidian Navy & Eye-Catching Electric Azure Blue
+// Night / Dark Theme: Neutral Studio Night - Deep Obsidian Charcoal & Eye-Catching Electric Azure Blue
 val DarkAppColors = AppThemeColors(
     isDark = true,
     screenBackground = Brush.verticalGradient(
         colors = listOf(
-            Color(0xFF040817), // Deep Obsidian Midnight Canvas (much darker & better)
-            Color(0xFF02040E), // Abyssal Midnight Blue
-            Color(0xFF000104)  // Pure Depth Black
+            Color(0xFF0D0E12),
+            Color(0xFF08090C),
+            Color(0xFF040406)
         )
     ),
-    scaffoldBackground = Color(0xFF040817), // Deeper, darker studio background
-    cardBackground = Color(0xFF070F20),
-    cardBackgroundElevated = Color(0xFF0D1D38),
-    cardBorder = Color(0xFF142C4E),
-    textPrimary = Color(0xFFF8FAFC), // Ultra-crisp pure white
-    textSecondary = Color(0xFF7DD3FC), // Electric sky cyan
+    scaffoldBackground = Color(0xFF0D0E12),
+    cardBackground = Color(0xFF15161C),
+    cardBackgroundElevated = Color(0xFF1C1D24),
+    cardBorder = Color(0xFF282932),
+    textPrimary = Color(0xFFF8FAFC),
+    textSecondary = Color(0xFF94A3B8),
     textMuted = Color(0xFF64748B),
-    primaryAccent = Color(0xFF00D4FF), // Eye-catching Electric Cyan / Azure Blue
-    secondaryAccent = Color(0xFF2563EB), // Rich Royal Sapphire Blue
-    bottomBarBackground = Color(0xFF050E1A),
-    bottomBarIndicator = Color(0xFF0C2442),
+    primaryAccent = Color(0xFF00D4FF),
+    secondaryAccent = Color(0xFF38BDF8),
+    bottomBarBackground = Color(0xFF0D0E12),
+    bottomBarIndicator = Color(0xFF22242D),
     bottomBarSelectedIcon = Color(0xFF00D4FF),
     bottomBarUnselectedIcon = Color(0xFF64748B),
     miniPlayerBackground = Brush.horizontalGradient(
         colors = listOf(
-            Color(0xFF0F2B4C),
-            Color(0xFF09182C)
+            Color(0xFF181920),
+            Color(0xFF121318)
         )
     ),
-    miniPlayerBorder = Color(0xFF183860),
-    inputBackground = Color(0xFF061020),
-    chipBackground = Color(0xFF0A182E),
-    chipBorder = Color(0xFF183860),
-    dividerColor = Color(0xFF0F223A)
+    miniPlayerBorder = Color(0xFF282932),
+    inputBackground = Color(0xFF121318),
+    chipBackground = Color(0xFF181920),
+    chipBorder = Color(0xFF282932),
+    dividerColor = Color(0xFF20222A)
 )
 
 // Light Theme: Beautiful White Background with Blue Color Combination
@@ -307,5 +307,65 @@ object XtremeGradients {
                 )
             )
         }
+}
+
+// =========================================================================
+// LASTWAVE NATIVE (Clash-Projects/LastWave-native) LIQUID GLASS COLOR SYSTEM
+// =========================================================================
+
+object LastWaveColors {
+    // 1. Oceanic Abyssal Void & Luminous Azure Glass
+    val OceanicCanvas = Color(0xFF030712)
+    val OceanicCard = Color(0xFF0B1220)
+    val OceanicCardElevated = Color(0xFF132035)
+    val OceanicBorder = Color(0xFF1E3557)
+    val OceanicAccentPrimary = Color(0xFF00D2FF)
+    val OceanicAccentSecondary = Color(0xFF3B82F6)
+
+    // 2. Midnight Nebula Glass & Radiant Amethyst
+    val NebulaCanvas = Color(0xFF070414)
+    val NebulaCard = Color(0xFF120A28)
+    val NebulaCardElevated = Color(0xFF1F1240)
+    val NebulaBorder = Color(0xFF381F66)
+    val NebulaAccentPrimary = Color(0xFFA855F7)
+    val NebulaAccentSecondary = Color(0xFFEC4899)
+
+    // 3. Cyberpunk Matrix & Acid Lime Glass
+    val MatrixCanvas = Color(0xFF020C06)
+    val MatrixCard = Color(0xFF081C10)
+    val MatrixCardElevated = Color(0xFF0F2E1B)
+    val MatrixBorder = Color(0xFF1B4E2F)
+    val MatrixAccentPrimary = Color(0xFF10B981)
+    val MatrixAccentSecondary = Color(0xFF84CC16)
+
+    // 4. Solar Flare & Volcanic Amber Glow
+    val SolarCanvas = Color(0xFF0E0502)
+    val SolarCard = Color(0xFF1D0D07)
+    val SolarCardElevated = Color(0xFF2E160C)
+    val SolarBorder = Color(0xFF4F2314)
+    val SolarAccentPrimary = Color(0xFFF97316)
+    val SolarAccentSecondary = Color(0xFFFBBF24)
+
+    // 5. Glacier Frost Crystal (Light Glass)
+    val GlacierCanvas = Color(0xFFF5F9FF)
+    val GlacierCard = Color(0xFFFFFFFF)
+    val GlacierCardElevated = Color(0xFFE8F1FC)
+    val GlacierBorder = Color(0xFFBFD7F5)
+    val GlacierAccentPrimary = Color(0xFF0284C7)
+    val GlacierAccentSecondary = Color(0xFF06B6D4)
+
+    // 6. Sakura Quartz Crystal (Light Glass)
+    val SakuraCanvas = Color(0xFFFFF6F8)
+    val SakuraCard = Color(0xFFFFFFFF)
+    val SakuraCardElevated = Color(0xFFFDE8ED)
+    val SakuraBorder = Color(0xFFFBC4CF)
+    val SakuraAccentPrimary = Color(0xFFE11D48)
+    val SakuraAccentSecondary = Color(0xFFF43F5E)
+
+    // Translucent Liquid Glass Overlays & Highlights
+    val GlassSpecularHighlightDark = Color(0x66FFFFFF) // rgba(255, 255, 255, 0.40)
+    val GlassSpecularBorderDark = Color(0x14FFFFFF)    // rgba(255, 255, 255, 0.08)
+    val GlassSpecularHighlightLight = Color(0xCCFFFFFF) // rgba(255, 255, 255, 0.80)
+    val GlassSpecularBorderLight = Color(0x26000000)   // rgba(0, 0, 0, 0.15)
 }
 

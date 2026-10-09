@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import com.example.ui.components.bouncyOverscroll
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -49,6 +50,7 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import com.example.ui.components.TrackListItem
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -249,7 +251,7 @@ fun PlaylistDetailScreen(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(appColors.screenBackground),
+            .background(appColors.scaffoldBackground),
         contentAlignment = Alignment.TopCenter
     ) {
         Column(
@@ -326,7 +328,9 @@ fun PlaylistDetailScreen(
         }
 
         LazyColumn(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .bouncyOverscroll(),
             contentPadding = PaddingValues(bottom = 120.dp)
         ) {
             // PLAYLIST HEADER
@@ -377,7 +381,7 @@ fun PlaylistDetailScreen(
                     }
 
                     Text(
-                        text = "${tracks.size} tracks • 320kbps High Fidelity",
+                        text = "${tracks.size} tracks",
                         style = MaterialTheme.typography.bodySmall.copy(
                             color = appColors.primaryAccent,
                             fontWeight = FontWeight.SemiBold

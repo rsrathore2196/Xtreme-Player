@@ -39,6 +39,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -55,6 +56,7 @@ import com.example.ui.theme.liquidGlassCard
 import com.example.ui.theme.liquidGlassPill
 import com.example.ui.theme.liquidGlassButton
 import com.example.ui.theme.bouncyClickable
+import com.example.ui.theme.contrastingContentColor
 import com.example.util.AppHaptics
 
 /**
@@ -87,6 +89,15 @@ fun ProfileDetailPage(
     val displayName = userProfile?.name?.trim()?.ifBlank { "Xtreme Listener" } ?: "Xtreme Listener"
     val displayLanguages = userProfile?.languages?.takeIf { it.isNotEmpty() } ?: listOf("English", "Hindi", "Punjabi")
 
+    // Dynamic contrast & theme management:
+    // Calculates luminance of primary accent to guarantee WCAG compliance and theme-matching vibrancy
+    val accentLum = (0.299f * appColors.primaryAccent.red + 0.587f * appColors.primaryAccent.green + 0.114f * appColors.primaryAccent.blue)
+    val adaptiveAccentColor = when {
+        appColors.isDark && accentLum < 0.38f -> Color(0xFFF8FAFC)
+        !appColors.isDark && accentLum > 0.72f -> Color(0xFF0F172A)
+        else -> appColors.primaryAccent
+    }
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -97,25 +108,26 @@ fun ProfileDetailPage(
     ) {
         Spacer(modifier = Modifier.height(10.dp))
 
-        // Avatar Header Card
-        val avatarBg = if (appColors.isAmoled) {
-            Brush.linearGradient(listOf(Color(0xFF222222), Color(0xFF141414)))
-        } else {
-            Brush.linearGradient(listOf(appColors.primaryAccent, appColors.secondaryAccent))
-        }
+        // Avatar Header Card: Dynamic gradient adapting to current theme
+        val avatarBg = Brush.linearGradient(listOf(appColors.primaryAccent, appColors.secondaryAccent))
+        val avatarTextColor = contrastingContentColor(appColors.primaryAccent)
 
         Box(
             modifier = Modifier
                 .size(80.dp)
                 .clip(CircleShape)
                 .background(avatarBg)
-                .border(2.dp, appColors.primaryAccent.copy(alpha = 0.5f), CircleShape),
+                .border(
+                    width = 2.dp,
+                    color = if (appColors.isDark) Color.White.copy(alpha = 0.35f) else Color.White.copy(alpha = 0.60f),
+                    shape = CircleShape
+                ),
             contentAlignment = Alignment.Center
         ) {
             val initial = userProfile?.getInitials() ?: "X"
             Text(
                 text = initial,
-                color = if (appColors.isAmoled) Color.White else appColors.onPrimaryAccent,
+                color = avatarTextColor,
                 fontWeight = FontWeight.ExtraBold,
                 fontSize = 32.sp
             )
@@ -133,14 +145,24 @@ fun ProfileDetailPage(
 
         Spacer(modifier = Modifier.height(6.dp))
 
-        // Member Badge
+        // High-Res Hi-Fi Listener Badge: Theme-adaptive translucent container with crisp accent text & icon
+        val badgeBg = if (appColors.isAmoled) {
+            appColors.primaryAccent.copy(alpha = 0.14f)
+        } else {
+            appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.18f else 0.10f)
+        }
+        val badgeBorder = if (appColors.isAmoled) {
+            appColors.primaryAccent.copy(alpha = 0.50f)
+        } else {
+            appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.38f else 0.25f)
+        }
+        val badgeContentColor = adaptiveAccentColor
+
         Box(
-            modifier = Modifier.liquidGlassPill(
-                colors = appColors,
-                shape = RoundedCornerShape(12.dp),
-                isActive = true,
-                elevation = 2.dp
-            )
+            modifier = Modifier
+                .clip(RoundedCornerShape(12.dp))
+                .background(badgeBg)
+                .border(1.dp, badgeBorder, RoundedCornerShape(12.dp))
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -149,13 +171,13 @@ fun ProfileDetailPage(
                 Icon(
                     imageVector = Icons.Default.Verified,
                     contentDescription = null,
-                    tint = appColors.onPrimaryAccent,
+                    tint = badgeContentColor,
                     modifier = Modifier.size(13.dp)
                 )
                 Spacer(modifier = Modifier.width(5.dp))
                 Text(
                     text = "High-Res Hi-Fi Listener",
-                    color = appColors.onPrimaryAccent,
+                    color = badgeContentColor,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.SemiBold
                 )
@@ -186,6 +208,7 @@ fun ProfileDetailPage(
             label = "Display Name",
             value = displayName,
             appColors = appColors,
+            accentColor = adaptiveAccentColor,
             cardBg = cardBg,
             cardBorder = cardBorder
         )
@@ -198,6 +221,7 @@ fun ProfileDetailPage(
             label = "Country & Region",
             value = "${currentCountry.flag} ${currentCountry.name} (${currentCountry.code})",
             appColors = appColors,
+            accentColor = adaptiveAccentColor,
             cardBg = cardBg,
             cardBorder = cardBorder
         )
@@ -223,13 +247,13 @@ fun ProfileDetailPage(
                         modifier = Modifier
                             .size(36.dp)
                             .clip(CircleShape)
-                            .background(appColors.primaryAccent.copy(alpha = if (isDarkMode) 0.16f else 0.10f)),
+                            .background(adaptiveAccentColor.copy(alpha = if (isDarkMode) 0.16f else 0.10f)),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             imageVector = Icons.Default.Language,
                             contentDescription = null,
-                            tint = appColors.primaryAccent,
+                            tint = adaptiveAccentColor,
                             modifier = Modifier.size(18.dp)
                         )
                     }
@@ -277,7 +301,7 @@ fun ProfileDetailPage(
                                     modifier = Modifier
                                         .size(6.dp)
                                         .clip(CircleShape)
-                                        .background(appColors.primaryAccent)
+                                        .background(adaptiveAccentColor)
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
@@ -296,11 +320,37 @@ fun ProfileDetailPage(
         Spacer(modifier = Modifier.height(32.dp))
 
         // Prominent "Edit Details" Button Below Attributes
+        // Fully dynamic: Adapts to AMOLED and Dark/Light themes with high-contrast icon and text
+        val isExtremelyDarkAccent = appColors.isDark && accentLum < 0.25f
+        val editButtonBg = if (isExtremelyDarkAccent) {
+            Brush.horizontalGradient(listOf(Color(0xFF2E2E36), Color(0xFF1E1E24)))
+        } else {
+            Brush.horizontalGradient(listOf(appColors.primaryAccent, appColors.secondaryAccent))
+        }
+        val editButtonBorder = if (isExtremelyDarkAccent) {
+            BorderStroke(1.2.dp, Color.White.copy(alpha = 0.50f))
+        } else {
+            BorderStroke(1.dp, if (appColors.isDark) Color.White.copy(alpha = 0.35f) else Color.White.copy(alpha = 0.55f))
+        }
+        val editButtonContentColor = if (isExtremelyDarkAccent) {
+            Color.White
+        } else {
+            contrastingContentColor(appColors.primaryAccent)
+        }
+
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(52.dp)
-                .liquidGlassButton(appColors, shape = RoundedCornerShape(16.dp), elevation = 6.dp, isActive = true)
+                .shadow(
+                    elevation = if (appColors.isAmoled) 6.dp else 4.dp,
+                    shape = RoundedCornerShape(16.dp),
+                    spotColor = if (isExtremelyDarkAccent) Color.Black.copy(alpha = 0.5f) else appColors.primaryAccent.copy(alpha = 0.35f),
+                    ambientColor = if (appColors.isAmoled) appColors.primaryAccent.copy(alpha = 0.15f) else Color.Transparent
+                )
+                .clip(RoundedCornerShape(16.dp))
+                .background(editButtonBg)
+                .border(editButtonBorder, RoundedCornerShape(16.dp))
                 .bouncyClickable {
                     AppHaptics.performTap(context)
                     onEditDetailsClick()
@@ -312,7 +362,7 @@ fun ProfileDetailPage(
                 Icon(
                     imageVector = Icons.Default.Edit,
                     contentDescription = null,
-                    tint = appColors.onPrimaryAccent,
+                    tint = editButtonContentColor,
                     modifier = Modifier.size(18.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
@@ -320,7 +370,7 @@ fun ProfileDetailPage(
                     text = "Edit Details",
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Bold,
-                    color = appColors.onPrimaryAccent
+                    color = editButtonContentColor
                 )
             }
         }
@@ -335,6 +385,7 @@ private fun ProfileAttributeCard(
     label: String,
     value: String,
     appColors: com.example.ui.theme.AppThemeColors,
+    accentColor: Color,
     cardBg: Color,
     cardBorder: Color,
     modifier: Modifier = Modifier
@@ -354,13 +405,13 @@ private fun ProfileAttributeCard(
                 modifier = Modifier
                     .size(36.dp)
                     .clip(CircleShape)
-                    .background(appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.16f else 0.10f)),
+                    .background(accentColor.copy(alpha = if (appColors.isDark) 0.16f else 0.10f)),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = icon,
                     contentDescription = null,
-                    tint = appColors.primaryAccent,
+                    tint = accentColor,
                     modifier = Modifier.size(18.dp)
                 )
             }

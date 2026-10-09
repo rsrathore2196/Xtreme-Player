@@ -20,9 +20,14 @@ data class MusicTrack(
     val writer: String = "",
     val language: String = "Hindi",
     val year: String = "",
-    val source: String = "HD Stream",
-    val isrc: String = ""
+    val source: String = "JIOSAAVN",
+    val isrc: String = "",
+    val isLossless: Boolean = false,
+    val motionArtworkUrl: String? = null
 ) {
+    val streamUrl: String get() = audioUrl
+    val coverArtUrl: String get() = coverUrl
+
     fun formatDuration(): String {
         val totalSeconds = durationMs / 1000
         val minutes = totalSeconds / 60

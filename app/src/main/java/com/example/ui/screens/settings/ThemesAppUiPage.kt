@@ -71,6 +71,8 @@ fun ThemesAppUiPage(
     customThemeState: com.example.data.local.CustomThemeState? = null,
     onUpdateCustomThemeState: (com.example.data.local.CustomThemeState) -> Unit = {},
     onApplyPreset: (com.example.data.local.AppThemePreset) -> Unit = {},
+    isDynamicGlassEnabled: Boolean = true,
+    onToggleDynamicGlass: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val appColors = LocalAppColors.current
@@ -416,6 +418,38 @@ fun ThemesAppUiPage(
                         onCheckedChange = { highContrastTypography = it },
                         colors = liquidGlassSwitchColors(appColors),
                         modifier = Modifier.testTag("switch_high_contrast")
+                    )
+                }
+
+                HorizontalDivider(color = dividerColor, thickness = 1.dp, modifier = Modifier.padding(vertical = 12.dp))
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 12.dp)
+                    ) {
+                        Text(
+                            text = "Dynamic Blur & Liquid Glass",
+                            fontSize = 13.5.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = appColors.textPrimary
+                        )
+                        Text(
+                            text = "BitChord-inspired AGSL lens distortion & backdrop blur on Mini Player and bottom bar. Toggle off for low-end hardware.",
+                            fontSize = 11.sp,
+                            color = appColors.textMuted
+                        )
+                    }
+                    Switch(
+                        checked = isDynamicGlassEnabled,
+                        onCheckedChange = onToggleDynamicGlass,
+                        colors = liquidGlassSwitchColors(appColors),
+                        modifier = Modifier.testTag("switch_dynamic_glass")
                     )
                 }
             }

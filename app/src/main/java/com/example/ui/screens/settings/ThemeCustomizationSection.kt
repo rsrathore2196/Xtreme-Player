@@ -1,10 +1,23 @@
 package com.example.ui.screens.settings
 
+import android.Manifest
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.widget.Toast
+import kotlin.math.roundToInt
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,6 +25,8 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -19,6 +34,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -30,6 +48,7 @@ import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -37,6 +56,8 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -48,16 +69,27 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.core.content.ContextCompat
+import com.example.data.local.ThemeExportManager
 import com.example.data.local.AppThemePreset
 import com.example.data.local.CustomThemeState
 import com.example.data.local.ThemePreferences
@@ -126,6 +158,165 @@ fun computeAccentHexForShade(baseHex: String, shade: String): String {
     return String.format("#%06X", 0xFFFFFF and adjusted)
 }
 
+/**
+ * Smoothly computes hex for continuous shade weight (100 to 900)
+ */
+fun computeAccentHexForContinuousShade(baseHex: String, shadeWeight: Int): String {
+    val colorInt = try {
+        android.graphics.Color.parseColor(baseHex)
+    } catch (e: Exception) {
+        android.graphics.Color.parseColor("#38BDF8")
+    }
+    val hsl = FloatArray(3)
+    androidx.core.graphics.ColorUtils.colorToHSL(colorInt, hsl)
+
+    val isWhiteOrGrey = hsl[1] < 0.08f
+    val delta = (shadeWeight - 500) / 1000f // -0.4f .. +0.4f
+    if (isWhiteOrGrey) {
+        hsl[2] = (1.0f - (shadeWeight / 1000f) * 0.6f).coerceIn(0.15f, 1.0f)
+    } else {
+        // Lower weight = higher lightness (lighter tint), higher weight = deeper tone
+        hsl[2] = (hsl[2] - delta * 0.75f).coerceIn(0.12f, 0.90f)
+        if (shadeWeight > 500) {
+            hsl[1] = (hsl[1] * (1f + delta * 0.5f)).coerceIn(0.2f, 1.0f)
+        } else {
+            hsl[1] = (hsl[1] * (1f + delta * 0.6f)).coerceIn(0.2f, 1.0f)
+        }
+    }
+    val adjusted = androidx.core.graphics.ColorUtils.HSLToColor(hsl)
+    return String.format("#%06X", 0xFFFFFF and adjusted)
+}
+
+/**
+ * Modern 360° circular color gamut wheel (spectrum picker).
+ * Allows continuous 360-degree hue and saturation picking with smooth interactive thumb indicator.
+ */
+@Composable
+fun CircularColorGamutWheel(
+    selectedHue: Float,
+    selectedSaturation: Float,
+    onColorChanged: (hue: Float, saturation: Float) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val currentOnColorChanged by androidx.compose.runtime.rememberUpdatedState(onColorChanged)
+    val currentHue by androidx.compose.runtime.rememberUpdatedState(selectedHue)
+
+    Box(
+        modifier = modifier
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    down.consume()
+                    val centerX = size.width / 2f
+                    val centerY = size.height / 2f
+                    val maxRadius = minOf(centerX, centerY) * 0.88f
+
+                    fun updatePosition(pos: androidx.compose.ui.geometry.Offset) {
+                        val dx = pos.x - centerX
+                        val dy = pos.y - centerY
+                        val distance = kotlin.math.sqrt(dx * dx + dy * dy)
+                        val sat = (distance / maxRadius).coerceIn(0.12f, 1.0f)
+                        if (distance > 5f) {
+                            var angle = Math.toDegrees(kotlin.math.atan2(dy.toDouble(), dx.toDouble())).toFloat()
+                            if (angle < 0f) angle += 360f
+                            currentOnColorChanged(angle, sat)
+                        } else {
+                            currentOnColorChanged(currentHue, sat)
+                        }
+                    }
+
+                    updatePosition(down.position)
+
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull() ?: break
+                        if (!change.pressed) break
+                        change.consume()
+                        updatePosition(change.position)
+                    }
+                }
+            }
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val centerX = size.width / 2f
+            val centerY = size.height / 2f
+            val maxRadius = minOf(centerX, centerY) * 0.88f
+
+            // 1. Draw 360-degree sweep gradient for full spectrum
+            val sweepGradient = Brush.sweepGradient(
+                colors = listOf(
+                    Color(0xFFFF0000), // Red 0 deg
+                    Color(0xFFFFA500), // Orange 30 deg
+                    Color(0xFFFFFF00), // Yellow 60 deg
+                    Color(0xFF00FF00), // Green 120 deg
+                    Color(0xFF00FFFF), // Cyan 180 deg
+                    Color(0xFF0066FF), // Blue 210 deg
+                    Color(0xFF0000FF), // Pure Blue 240 deg
+                    Color(0xFFFF00FF), // Magenta 300 deg
+                    Color(0xFFFF0066), // Rose 330 deg
+                    Color(0xFFFF0000)  // Red 360 deg
+                ),
+                center = Offset(centerX, centerY)
+            )
+
+            drawCircle(
+                brush = sweepGradient,
+                radius = maxRadius,
+                center = Offset(centerX, centerY)
+            )
+
+            // 2. Radial gradient for saturation: White at center smoothly fading to transparent at rim
+            val radialSaturation = Brush.radialGradient(
+                colors = listOf(Color.White.copy(alpha = 0.96f), Color.White.copy(alpha = 0.35f), Color.Transparent),
+                center = Offset(centerX, centerY),
+                radius = maxRadius
+            )
+            drawCircle(
+                brush = radialSaturation,
+                radius = maxRadius,
+                center = Offset(centerX, centerY)
+            )
+
+            // 3. Translucent outer border
+            drawCircle(
+                color = Color.White.copy(alpha = 0.22f),
+                radius = maxRadius,
+                center = Offset(centerX, centerY),
+                style = Stroke(width = 2.dp.toPx())
+            )
+
+            // 4. Calculate thumb position based on selectedHue and selectedSaturation
+            val rad = Math.toRadians(selectedHue.toDouble())
+            val thumbRadiusDist = (selectedSaturation * maxRadius).coerceIn(0f, maxRadius)
+            val thumbX = centerX + (kotlin.math.cos(rad) * thumbRadiusDist).toFloat()
+            val thumbY = centerY + (kotlin.math.sin(rad) * thumbRadiusDist).toFloat()
+
+            val thumbColorInt = android.graphics.Color.HSVToColor(floatArrayOf(selectedHue, selectedSaturation, 1.0f))
+            val thumbColor = Color(thumbColorInt)
+
+            // Outer drop shadow
+            drawCircle(
+                color = Color.Black.copy(alpha = 0.55f),
+                radius = 16.dp.toPx(),
+                center = Offset(thumbX, thumbY)
+            )
+            // Outer white ring
+            drawCircle(
+                color = Color.White,
+                radius = 13.dp.toPx(),
+                center = Offset(thumbX, thumbY),
+                style = Stroke(width = 3.dp.toPx())
+            )
+            // Inner color circle
+            drawCircle(
+                color = thumbColor,
+                radius = 10.dp.toPx(),
+                center = Offset(thumbX, thumbY)
+            )
+        }
+    }
+}
+
 data class AccentPreset(
     val name: String,
     val hex400: String,
@@ -171,7 +362,11 @@ object ThemeCustomizationPresets {
         ColorOption("Astral Violet", "#120924", "Deep cosmic dusk purple canvas", isDark = true),
         ColorOption("Forest Obsidian", "#061A14", "Deep emerald night canvas", isDark = true),
         ColorOption("Warm Espresso", "#1A0F0A", "Rich roasted coffee dark canvas", isDark = true),
-        ColorOption("Gunmetal Zinc", "#18181B", "Refined contemporary neutral zinc canvas", isDark = true)
+        ColorOption("Gunmetal Zinc", "#18181B", "Refined contemporary neutral zinc canvas", isDark = true),
+        ColorOption("Charcoal Onyx", "#0D1117", "Ultra-deep minimalist charcoal canvas", isDark = true),
+        ColorOption("Deep Ruby", "#190A0E", "Rich dark wine velvet canvas", isDark = true),
+        ColorOption("Sapphire Abyss", "#031428", "Deep midnight oceanic navy canvas", isDark = true),
+        ColorOption("Cyber Carbon", "#121316", "High-tech matte carbon dark canvas", isDark = true)
     )
 
     val canvasOptionsLight = listOf(
@@ -180,7 +375,11 @@ object ThemeCustomizationPresets {
         ColorOption("Soft Cool Slate", "#F1F5F9", "Gentle cool slate tinted canvas", isDark = false),
         ColorOption("Warm Alabaster", "#FAF8F5", "Cozy warm cream paper canvas", isDark = false),
         ColorOption("Pastel Mint", "#F0FDF4", "Refreshing pale sage light canvas", isDark = false),
-        ColorOption("Lavender Mist", "#F5F3FF", "Delicate ethereal lilac light canvas", isDark = false)
+        ColorOption("Lavender Mist", "#F5F3FF", "Delicate ethereal lilac light canvas", isDark = false),
+        ColorOption("Morning Sky", "#E0F2FE", "Serene light airy azure canvas", isDark = false),
+        ColorOption("Rose Blush", "#FFF1F2", "Gentle soft pastel rose canvas", isDark = false),
+        ColorOption("Solar Amber", "#FFFBEB", "Sunlit warm golden glow canvas", isDark = false),
+        ColorOption("Silk Cashmere", "#F8F6F0", "Organic premium neutral warm canvas", isDark = false)
     )
 
     val canvasOptions = canvasOptionsDark + canvasOptionsLight
@@ -191,7 +390,11 @@ object ThemeCustomizationPresets {
         ColorOption("Deep Violet Glass", "#22133B", "Rich purple dusk elevated card", isDark = true),
         ColorOption("Emerald Shadow", "#0E2820", "Deep forest teal card", isDark = true),
         ColorOption("Dark Espresso", "#251711", "Warm dark amber roasted card", isDark = true),
-        ColorOption("Steel Zinc", "#27272A", "Contemporary neutral zinc card", isDark = true)
+        ColorOption("Steel Zinc", "#27272A", "Contemporary neutral zinc card", isDark = true),
+        ColorOption("Cyber Slate", "#161B22", "Modern tech translucent surface card", isDark = true),
+        ColorOption("Crimson Obsidian", "#2A1015", "Rich garnet illuminated card", isDark = true),
+        ColorOption("Deep Cobalt", "#0C203F", "Vibrant high-contrast sapphire card", isDark = true),
+        ColorOption("Carbon Matte", "#1E2024", "Refined stealth dark surface card", isDark = true)
     )
 
     val cardOptionsLight = listOf(
@@ -200,7 +403,11 @@ object ThemeCustomizationPresets {
         ColorOption("Warm Linen", "#F5EFE6", "Soft organic warm cream card", isDark = false),
         ColorOption("Morning Sky", "#E0F2FE", "Fresh subtle sky blue tinted card", isDark = false),
         ColorOption("Spring Mint", "#DCFCE7", "Refreshing delicate pale mint card", isDark = false),
-        ColorOption("Silken Lilac", "#EDE9FE", "Soft elegant lilac card", isDark = false)
+        ColorOption("Silken Lilac", "#EDE9FE", "Soft elegant lilac card", isDark = false),
+        ColorOption("Peach Silk", "#FFEDD5", "Delicate warm apricot light card", isDark = false),
+        ColorOption("Rose Petal", "#FFE4E6", "Romantic soft blush card", isDark = false),
+        ColorOption("Frosted Crystal", "#F8FAFC", "Translucent crisp porcelain card", isDark = false),
+        ColorOption("Ivory Cloud", "#FDFBF7", "Luxurious soft warm ivory card", isDark = false)
     )
 
     val cardOptions = cardOptionsDark + cardOptionsLight
@@ -316,6 +523,21 @@ fun ThemeCustomizationSection(
     var showCanvasDialog by remember { mutableStateOf(false) }
     var showCardDialog by remember { mutableStateOf(false) }
     var showThemePresetsDialog by remember { mutableStateOf(false) }
+    var showExportSuccessDialog by remember { mutableStateOf(false) }
+    var exportedThemeFilePath by remember { mutableStateOf<String?>(null) }
+
+    val storagePermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { _ ->
+        val result = ThemeExportManager.exportCustomTheme(context, customState)
+        result.onSuccess { path ->
+            exportedThemeFilePath = path
+            showExportSuccessDialog = true
+            Toast.makeText(context, "Theme exported to $path", Toast.LENGTH_LONG).show()
+        }.onFailure { e ->
+            Toast.makeText(context, "Export error: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     fun updateAndPersist(newState: CustomThemeState) {
         customState = newState
@@ -376,7 +598,7 @@ fun ThemeCustomizationSection(
                         )
                         Spacer(modifier = Modifier.height(3.dp))
                         Text(
-                            text = "10 aesthetic presets (5 Dark, 5 Light)",
+                            text = "${ThemePresets.allPresets.size} aesthetic presets (${ThemePresets.darkPresets.size} Dark, ${ThemePresets.lightPresets.size} Light)",
                             fontSize = 11.5.sp,
                             color = appColors.textMuted
                         )
@@ -576,24 +798,44 @@ fun ThemeCustomizationSection(
                         .clip(RoundedCornerShape(bottomStart = 18.dp, bottomEnd = 18.dp))
                         .clickable {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            ThemePreferences.saveCustomThemeState(context, customState)
-                            Toast.makeText(context, "Theme saved successfully! Preset updated.", Toast.LENGTH_SHORT).show()
+                            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
+                                ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
+                            ) {
+                                storagePermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                            } else {
+                                val result = ThemeExportManager.exportCustomTheme(context, customState)
+                                result.onSuccess { path ->
+                                    exportedThemeFilePath = path
+                                    showExportSuccessDialog = true
+                                    Toast.makeText(context, "Theme exported to $path", Toast.LENGTH_LONG).show()
+                                }.onFailure { e ->
+                                    Toast.makeText(context, "Export error: ${e.message}", Toast.LENGTH_SHORT).show()
+                                }
+                            }
                         }
                         .padding(horizontal = 18.dp, vertical = 16.dp)
                         .testTag("item_save_theme")
                 ) {
-                    Text(
-                        text = "Save Theme",
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = appColors.textPrimary
-                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Save Theme",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = appColors.textPrimary
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "Export customtheme.json to backups & storage",
+                            fontSize = 11.5.sp,
+                            color = appColors.textMuted
+                        )
+                    }
 
                     Icon(
                         imageVector = Icons.Default.Download,
                         contentDescription = "Save Theme",
-                        tint = appColors.textPrimary,
-                        modifier = Modifier.size(20.dp)
+                        tint = appColors.primaryAccent,
+                        modifier = Modifier.size(22.dp)
                     )
                 }
             }
@@ -609,6 +851,7 @@ fun ThemeCustomizationSection(
         AccentColorHueDialog(
             currentAccentName = customState.accentName,
             currentShade = customState.accentShade,
+            currentHex = customState.accentColorHex,
             isDarkMode = isDarkMode,
             onDismiss = { showAccentDialog = false },
             onSelect = { name, shade, hex ->
@@ -636,7 +879,7 @@ fun ThemeCustomizationSection(
             onDismiss = { showCanvasDialog = false },
             onSelect = { option ->
                 val updated = customState.copy(
-                    isAmoled = option.name == "Black" && customState.cardColorName == "Grey900",
+                    isAmoled = option.name.contains("Black", ignoreCase = true) && customState.cardColorName.contains("Black", ignoreCase = true),
                     canvasColorName = option.name,
                     canvasColorHex = option.hex,
                     currentThemeName = "Custom"
@@ -667,6 +910,35 @@ fun ThemeCustomizationSection(
         )
     }
 
+    // 4. Export Theme Success Dialog
+    if (showExportSuccessDialog && exportedThemeFilePath != null) {
+        ThemeExportSuccessDialog(
+            filePath = exportedThemeFilePath!!,
+            state = customState,
+            onDismiss = { showExportSuccessDialog = false },
+            onShare = {
+                try {
+                    val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_SUBJECT, "Xtreme Player Theme - ${customState.currentThemeName}")
+                        putExtra(
+                            Intent.EXTRA_TEXT,
+                            "Xtreme Player Custom Theme: ${customState.currentThemeName}\n" +
+                            "Accent: ${customState.accentName} (${customState.accentColorHex})\n" +
+                            "Shade Weight: ${customState.accentShade}\n" +
+                            "Canvas: ${customState.canvasColorName} (${customState.canvasColorHex})\n" +
+                            "Card: ${customState.cardColorName} (${customState.cardColorHex})\n" +
+                            "Saved location: $exportedThemeFilePath"
+                        )
+                    }
+                    context.startActivity(Intent.createChooser(shareIntent, "Share Custom Theme Configuration"))
+                } catch (e: Exception) {
+                    Toast.makeText(context, "Could not open share dialog", Toast.LENGTH_SHORT).show()
+                }
+            }
+        )
+    }
+
 
 
     // 7. Theme Presets Dialog (5 Dark, 5 Light aesthetic presets)
@@ -687,13 +959,163 @@ fun ThemeCustomizationSection(
 }
 
 /**
- * Dialog for choosing Accent Color and Hue
+ * Modern glassmorphic dialog showing theme export confirmation and share options
  */
-@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ThemeExportSuccessDialog(
+    filePath: String,
+    state: CustomThemeState,
+    onDismiss: () -> Unit,
+    onShare: () -> Unit
+) {
+    val appColors = LocalAppColors.current
+    val cardBg = appColors.cardBackground
+    val cardBorder = appColors.cardBorder
+    val accentColor = appColors.primaryAccent
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(22.dp),
+            color = cardBg,
+            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .padding(22.dp)
+                    .fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                // Success Badge
+                Box(
+                    modifier = Modifier
+                        .size(54.dp)
+                        .clip(CircleShape)
+                        .background(accentColor.copy(alpha = 0.15f))
+                        .border(1.dp, accentColor.copy(alpha = 0.4f), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Download,
+                        contentDescription = "Success",
+                        tint = accentColor,
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Text(
+                    text = "Theme Exported",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = appColors.textPrimary
+                )
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                Text(
+                    text = "Configuration written to customtheme.json in backup directory and downloads.",
+                    fontSize = 12.sp,
+                    color = appColors.textMuted,
+                    textAlign = TextAlign.Center
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Details Card
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = cardBorder.copy(alpha = 0.35f),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            text = "Theme: ${state.currentThemeName}",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = appColors.textPrimary
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "• Accent: ${state.accentName} (${state.accentColorHex}, Shade ${state.accentShade})",
+                            fontSize = 11.sp,
+                            color = appColors.textMuted
+                        )
+                        Text(
+                            text = "• Canvas: ${state.canvasColorName} (${state.canvasColorHex})",
+                            fontSize = 11.sp,
+                            color = appColors.textMuted
+                        )
+                        Text(
+                            text = "• Card: ${state.cardColorName} (${state.cardColorHex})",
+                            fontSize = 11.sp,
+                            color = appColors.textMuted
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "Path: $filePath",
+                            fontSize = 10.sp,
+                            color = accentColor,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Button(
+                        onClick = onShare,
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = cardBorder.copy(alpha = 0.6f),
+                            contentColor = appColors.textPrimary
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(44.dp)
+                    ) {
+                        Icon(imageVector = Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(text = "Share", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    }
+
+                    Button(
+                        onClick = onDismiss,
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = accentColor,
+                            contentColor = appColors.onPrimaryAccent
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(44.dp)
+                    ) {
+                        Text(text = "Done", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Modern Accent Color & Hue modal overhaul with 360° circular color gamut wheel,
+ * live Hex/RGB preview, smooth range slider for shade/hue weight, and real-time glowing action button.
+ */
 @Composable
 private fun AccentColorHueDialog(
     currentAccentName: String,
     currentShade: String,
+    currentHex: String = "#38BDF8",
     isDarkMode: Boolean,
     onDismiss: () -> Unit,
     onSelect: (name: String, shade: String, hex: String) -> Unit
@@ -701,32 +1123,71 @@ private fun AccentColorHueDialog(
     val appColors = LocalAppColors.current
     val cardBg = appColors.cardBackground
     val cardBorder = appColors.cardBorder
-    val accentColor = appColors.primaryAccent
 
-    var selectedPreset by remember {
-        mutableStateOf(
-            ThemeCustomizationPresets.accentPresets.find { it.name == currentAccentName }
-                ?: ThemeCustomizationPresets.accentPresets.first()
-        )
+    val initialHsv = remember(currentHex) {
+        val hsv = FloatArray(3)
+        try {
+            android.graphics.Color.colorToHSV(android.graphics.Color.parseColor(currentHex), hsv)
+        } catch (e: Exception) {
+            hsv[0] = 199f
+            hsv[1] = 0.77f
+            hsv[2] = 0.97f
+        }
+        hsv
     }
-    var selectedShade by remember { mutableStateOf(currentShade) }
+
+    var selectedHue by remember { mutableStateOf(initialHsv[0]) }
+    var selectedSaturation by remember { mutableStateOf(initialHsv[1].coerceIn(0.15f, 1f)) }
+    var shadeSliderValue by remember {
+        mutableStateOf(currentShade.toFloatOrNull() ?: 500f)
+    }
+
+    val currentShadeInt = shadeSliderValue.roundToInt()
+    val baseColorInt = remember(selectedHue, selectedSaturation) {
+        android.graphics.Color.HSVToColor(floatArrayOf(selectedHue, selectedSaturation, 1.0f))
+    }
+    val baseHex = remember(baseColorInt) {
+        String.format("#%06X", 0xFFFFFF and baseColorInt)
+    }
+    val activeHex = remember(baseHex, currentShadeInt) {
+        computeAccentHexForContinuousShade(baseHex, currentShadeInt)
+    }
+    val activeColorInt = remember(activeHex) {
+        try {
+            android.graphics.Color.parseColor(activeHex)
+        } catch (e: Exception) {
+            baseColorInt
+        }
+    }
+    val activeColor = remember(activeColorInt) { Color(activeColorInt) }
+    val activeRed = android.graphics.Color.red(activeColorInt)
+    val activeGreen = android.graphics.Color.green(activeColorInt)
+    val activeBlue = android.graphics.Color.blue(activeColorInt)
+    val isBrightActive = remember(activeColorInt) {
+        androidx.core.graphics.ColorUtils.calculateLuminance(activeColorInt) > 0.55
+    }
 
     Dialog(onDismissRequest = onDismiss) {
         Surface(
-            shape = RoundedCornerShape(20.dp),
+            shape = RoundedCornerShape(22.dp),
             color = cardBg,
-            border = BorderStroke(1.dp, cardBorder),
+            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp)
+                .padding(12.dp)
         ) {
-            Column(modifier = Modifier.padding(20.dp)) {
+            Column(
+                modifier = Modifier
+                    .padding(20.dp)
+                    .fillMaxWidth()
+            ) {
+                // Header
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = "Accent Color & Hue",
                             fontSize = 17.sp,
@@ -734,7 +1195,7 @@ private fun AccentColorHueDialog(
                             color = appColors.textPrimary
                         )
                         Text(
-                            text = "Choose accent tone and shade",
+                            text = "360° circular gamut & continuous shade tuner",
                             fontSize = 11.5.sp,
                             color = appColors.textMuted
                         )
@@ -745,141 +1206,161 @@ private fun AccentColorHueDialog(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(14.dp))
 
-                // Presets Grid
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                // Live Color Preview Box
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = cardBorder.copy(alpha = 0.35f),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.10f)),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    ThemeCustomizationPresets.accentPresets.forEach { preset ->
-                        val isSelected = preset.name == selectedPreset.name
-                        val colorHex = preset.getHexForShade(selectedShade)
-                        val swatchColor = try {
-                            Color(android.graphics.Color.parseColor(colorHex))
-                        } catch (e: Exception) {
-                            Color.White
-                        }
-
-                        Box(
-                            modifier = Modifier
-                                .size(38.dp)
-                                .clip(CircleShape)
-                                .background(swatchColor)
-                                .border(
-                                    width = if (isSelected) 2.5.dp else 1.dp,
-                                    color = if (isSelected) {
-                                        if (appColors.isDark) Color.White else Color.Black
-                                    } else {
-                                        if (appColors.isDark) Color.White.copy(alpha = 0.3f) else Color.Black.copy(alpha = 0.2f)
-                                    },
-                                    shape = CircleShape
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 10.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(42.dp)
+                                    .shadow(elevation = 8.dp, shape = RoundedCornerShape(12.dp), spotColor = activeColor)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(activeColor)
+                                    .border(1.dp, Color.White.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column {
+                                Text(
+                                    text = activeHex,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = appColors.textPrimary
                                 )
-                                .clickable {
-                                    selectedPreset = preset
-                                },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            if (isSelected) {
-                                val isBright = try {
-                                    androidx.core.graphics.ColorUtils.calculateLuminance(android.graphics.Color.parseColor(colorHex)) > 0.55
-                                } catch (e: Exception) {
-                                    false
-                                }
-                                Icon(
-                                    imageVector = Icons.Default.Check,
-                                    contentDescription = null,
-                                    tint = if (isBright) Color.Black else Color.White,
-                                    modifier = Modifier.size(18.dp)
+                                Text(
+                                    text = "RGB: $activeRed, $activeGreen, $activeBlue",
+                                    fontSize = 11.sp,
+                                    color = appColors.textMuted
                                 )
                             }
                         }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // 360° Circular Color Gamut Wheel (Spectrum Picker)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(190.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularColorGamutWheel(
+                        selectedHue = selectedHue,
+                        selectedSaturation = selectedSaturation,
+                        onColorChanged = { hue, sat ->
+                            selectedHue = hue
+                            selectedSaturation = sat
+                        },
+                        modifier = Modifier.size(190.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Hue & Shade Range Slider Bar
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "Hue & Shade Weight",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = appColors.textSecondary
+                    )
+                    Text(
+                        text = "Shade: $currentShadeInt • ${(currentShadeInt / 10)}%",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = activeColor
+                    )
+                }
+
+                Slider(
+                    value = shadeSliderValue,
+                    onValueChange = { shadeSliderValue = it },
+                    valueRange = 100f..900f,
+                    colors = SliderDefaults.colors(
+                        thumbColor = activeColor,
+                        activeTrackColor = activeColor,
+                        inactiveTrackColor = if (isDarkMode) Color.White.copy(alpha = 0.15f) else Color.Black.copy(alpha = 0.15f)
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                // Quick Preset Swatches Row
+                Text(
+                    text = "Quick Presets",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = appColors.textMuted
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    ThemeCustomizationPresets.accentPresets.take(10).forEach { preset ->
+                        val presetColorInt = try {
+                            android.graphics.Color.parseColor(preset.hex400)
+                        } catch (e: Exception) {
+                            android.graphics.Color.WHITE
+                        }
+                        val swatchColor = Color(presetColorInt)
+                        Box(
+                            modifier = Modifier
+                                .size(24.dp)
+                                .clip(CircleShape)
+                                .background(swatchColor)
+                                .border(1.dp, Color.White.copy(alpha = 0.35f), CircleShape)
+                                .clickable {
+                                    val hsv = FloatArray(3)
+                                    android.graphics.Color.colorToHSV(presetColorInt, hsv)
+                                    selectedHue = hsv[0]
+                                    selectedSaturation = hsv[1].coerceIn(0.2f, 1.0f)
+                                }
+                        )
                     }
                 }
 
                 Spacer(modifier = Modifier.height(18.dp))
 
-                // Shade selector
-                Text(
-                    text = "Shade / Hue Weight",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = appColors.textSecondary
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    listOf("300", "400", "500", "600", "700").forEach { shade ->
-                        val isShadeSelected = selectedShade == shade
-                        val shadeHex = selectedPreset.getHexForShade(shade)
-                        val shadeColor = try {
-                            Color(android.graphics.Color.parseColor(shadeHex))
-                        } catch (e: Exception) {
-                            accentColor
-                        }
-                        val isBrightShade = try {
-                            androidx.core.graphics.ColorUtils.calculateLuminance(android.graphics.Color.parseColor(shadeHex)) > 0.55
-                        } catch (e: Exception) {
-                            false
-                        }
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = if (isShadeSelected) shadeColor else Color.Transparent,
-                            border = BorderStroke(1.dp, if (isShadeSelected) shadeColor else cardBorder),
-                            modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable { selectedShade = shade }
-                        ) {
-                            Box(
-                                contentAlignment = Alignment.Center,
-                                modifier = Modifier.padding(vertical = 7.dp)
-                            ) {
-                                Text(
-                                    text = shade,
-                                    fontSize = 12.sp,
-                                    fontWeight = if (isShadeSelected) FontWeight.Bold else FontWeight.Normal,
-                                    color = if (isShadeSelected) {
-                                        if (isBrightShade) Color.Black else Color.White
-                                    } else appColors.textPrimary
-                                )
-                            }
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(20.dp))
-
-                val activeHex = selectedPreset.getHexForShade(selectedShade)
-                val activeColor = try {
-                    Color(android.graphics.Color.parseColor(activeHex))
-                } catch (e: Exception) {
-                    accentColor
-                }
-                val isBrightActive = try {
-                    androidx.core.graphics.ColorUtils.calculateLuminance(android.graphics.Color.parseColor(activeHex)) > 0.55
-                } catch (e: Exception) {
-                    false
-                }
-
+                // Action Button: dynamically reflects accent color and glow
                 Button(
                     onClick = {
-                        val hex = selectedPreset.getHexForShade(selectedShade)
-                        onSelect(selectedPreset.name, selectedShade, hex)
+                        onSelect("Custom Accent", currentShadeInt.toString(), activeHex)
                     },
-                    shape = RoundedCornerShape(12.dp),
+                    shape = RoundedCornerShape(14.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = activeColor,
                         contentColor = if (isBrightActive) Color.Black else Color.White
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(46.dp)
+                        .height(48.dp)
+                        .shadow(elevation = 12.dp, shape = RoundedCornerShape(14.dp), spotColor = activeColor, ambientColor = activeColor)
+                        .testTag("apply_accent_button")
                 ) {
-                    Text(text = "Apply Accent (${selectedPreset.name} $selectedShade)", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Text(
+                        text = "Apply Accent ($activeHex)",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp
+                    )
                 }
             }
         }
@@ -887,7 +1368,7 @@ private fun AccentColorHueDialog(
 }
 
 /**
- * Dialog for choosing Canvas or Card solid color
+ * Modern Color Selection Dialog with rigid SegmentedControl and sleek 2-column grid layout
  */
 @Composable
 private fun ColorSelectionDialog(
@@ -921,15 +1402,16 @@ private fun ColorSelectionDialog(
             border = BorderStroke(1.dp, cardBorder),
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(14.dp)
+                .padding(12.dp)
         ) {
             Column(modifier = Modifier.padding(18.dp)) {
+                // Header
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = title,
                             fontSize = 17.sp,
@@ -948,52 +1430,67 @@ private fun ColorSelectionDialog(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(14.dp))
 
-                // Segmented Filter Tabs: All | Dark / AMOLED | Light Mode
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier.fillMaxWidth()
+                // Rigid Segmented Control (Fixed height 40dp, non-wrapping text, no overflow)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(40.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (appColors.isDark) Color(0xFF111520) else Color(0xFFE2E8F0))
+                        .border(1.dp, if (appColors.isDark) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.08f), RoundedCornerShape(12.dp))
+                        .padding(3.dp)
                 ) {
-                    val tabs = listOf("All", "🌙 Dark / AMOLED", "☀️ Light Mode")
-                    tabs.forEachIndexed { index, label ->
-                        val isTabSelected = selectedFilterTab == index
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = if (isTabSelected) accentColor else accentColor.copy(alpha = 0.08f),
-                            border = BorderStroke(
-                                1.dp,
-                                if (isTabSelected) accentColor else cardBorder
-                            ),
-                            modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(10.dp))
-                                .clickable {
-                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                    selectedFilterTab = index
-                                }
-                        ) {
-                            Text(
-                                text = label,
-                                fontSize = 11.sp,
-                                fontWeight = if (isTabSelected) FontWeight.Bold else FontWeight.Medium,
-                                color = if (isTabSelected) appColors.onPrimaryAccent else appColors.textPrimary,
-                                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                                modifier = Modifier.padding(vertical = 7.dp)
-                            )
+                    Row(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        val tabs = listOf("All", "Dark", "Light")
+                        tabs.forEachIndexed { index, label ->
+                            val isTabSelected = selectedFilterTab == index
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxHeight()
+                                    .clip(RoundedCornerShape(9.dp))
+                                    .background(
+                                        if (isTabSelected) accentColor else Color.Transparent
+                                    )
+                                    .clickable {
+                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        selectedFilterTab = index
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = label,
+                                    fontSize = 11.5.sp,
+                                    fontWeight = if (isTabSelected) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (isTabSelected) appColors.onPrimaryAccent else appColors.textPrimary,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.padding(horizontal = 4.dp)
+                                )
+                            }
                         }
                     }
                 }
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                LazyColumn(
+                // Compact 2-Column Grid Layout (Displays double the options in the same vertical space)
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(2),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 380.dp)
+                        .heightIn(max = 390.dp)
                 ) {
-                    items(displayedOptions) { option ->
+                    items(displayedOptions, key = { it.name }) { option ->
                         val isSelected = option.name == currentSelection
                         val swatchColor = try {
                             Color(android.graphics.Color.parseColor(option.hex))
@@ -1001,57 +1498,78 @@ private fun ColorSelectionDialog(
                             Color.Black
                         }
 
-                        Card(
-                            shape = RoundedCornerShape(12.dp),
-                            colors = CardDefaults.cardColors(
-                                containerColor = if (isSelected) accentColor.copy(alpha = 0.15f) else Color.Transparent
-                            ),
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = if (isSelected) accentColor.copy(alpha = 0.16f) else cardBg.copy(alpha = 0.70f),
                             border = BorderStroke(
-                                width = if (isSelected) 1.5.dp else 1.dp,
+                                width = if (isSelected) 1.8.dp else 1.dp,
                                 color = if (isSelected) accentColor else cardBorder
                             ),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
+                                .clip(RoundedCornerShape(14.dp))
                                 .clickable { onSelect(option) }
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 14.dp, vertical = 11.dp)
+                                    .padding(horizontal = 10.dp, vertical = 9.dp)
                             ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(26.dp)
-                                            .clip(CircleShape)
-                                            .background(swatchColor)
-                                            .border(1.dp, if (appColors.isDark) Color.White.copy(alpha = 0.35f) else Color.Black.copy(alpha = 0.18f), CircleShape)
-                                    )
-                                    Spacer(modifier = Modifier.width(12.dp))
-                                    Column {
-                                        Text(
-                                            text = option.name,
-                                            fontSize = 14.sp,
-                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                            color = appColors.textPrimary
-                                        )
-                                        Text(
-                                            text = option.description,
-                                            fontSize = 11.sp,
-                                            color = appColors.textMuted
+                                // Swatch circle with checkmark if selected
+                                Box(
+                                    modifier = Modifier
+                                        .size(26.dp)
+                                        .clip(CircleShape)
+                                        .background(swatchColor)
+                                        .border(
+                                            width = 1.dp,
+                                            color = if (appColors.isDark) Color.White.copy(alpha = 0.35f) else Color.Black.copy(alpha = 0.18f),
+                                            shape = CircleShape
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (isSelected) {
+                                        val isBright = try {
+                                            androidx.core.graphics.ColorUtils.calculateLuminance(android.graphics.Color.parseColor(option.hex)) > 0.55
+                                        } catch (e: Exception) {
+                                            false
+                                        }
+                                        Icon(
+                                            imageVector = Icons.Default.Check,
+                                            contentDescription = "Selected",
+                                            tint = if (isBright) Color.Black else Color.White,
+                                            modifier = Modifier.size(15.dp)
                                         )
                                     }
                                 }
 
+                                Spacer(modifier = Modifier.width(8.dp))
+
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = option.name,
+                                        fontSize = 12.sp,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
+                                        color = if (isSelected) accentColor else appColors.textPrimary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = option.hex,
+                                        fontSize = 10.sp,
+                                        color = appColors.textMuted,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+
                                 if (isSelected) {
-                                    Icon(
-                                        imageVector = Icons.Default.Check,
-                                        contentDescription = "Selected",
-                                        tint = accentColor,
-                                        modifier = Modifier.size(18.dp)
+                                    Box(
+                                        modifier = Modifier
+                                            .size(7.dp)
+                                            .clip(CircleShape)
+                                            .background(accentColor)
                                     )
                                 }
                             }
@@ -1127,37 +1645,49 @@ private fun GradientSelectionDialog(
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                // Segmented Filter Tabs: All | Dark / AMOLED | Light Mode
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier.fillMaxWidth()
+                // Rigid Segmented Control (Fixed height 40dp, non-wrapping text, no overflow)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(40.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (appColors.isDark) Color(0xFF111520) else Color(0xFFE2E8F0))
+                        .border(1.dp, if (appColors.isDark) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.08f), RoundedCornerShape(12.dp))
+                        .padding(3.dp)
                 ) {
-                    val tabs = listOf("All", "🌙 Dark / AMOLED", "☀️ Light Mode")
-                    tabs.forEachIndexed { index, label ->
-                        val isTabSelected = selectedFilterTab == index
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = if (isTabSelected) accentColor else accentColor.copy(alpha = 0.08f),
-                            border = BorderStroke(
-                                1.dp,
-                                if (isTabSelected) accentColor else cardBorder
-                            ),
-                            modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(10.dp))
-                                .clickable {
-                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                    selectedFilterTab = index
-                                }
-                        ) {
-                            Text(
-                                text = label,
-                                fontSize = 11.sp,
-                                fontWeight = if (isTabSelected) FontWeight.Bold else FontWeight.Medium,
-                                color = if (isTabSelected) appColors.onPrimaryAccent else appColors.textPrimary,
-                                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                                modifier = Modifier.padding(vertical = 7.dp)
-                            )
+                    Row(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        val tabs = listOf("All", "Dark", "Light")
+                        tabs.forEachIndexed { index, label ->
+                            val isTabSelected = selectedFilterTab == index
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxHeight()
+                                    .clip(RoundedCornerShape(9.dp))
+                                    .background(
+                                        if (isTabSelected) accentColor else Color.Transparent
+                                    )
+                                    .clickable {
+                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        selectedFilterTab = index
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = label,
+                                    fontSize = 11.5.sp,
+                                    fontWeight = if (isTabSelected) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (isTabSelected) appColors.onPrimaryAccent else appColors.textPrimary,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.padding(horizontal = 4.dp)
+                                )
+                            }
                         }
                     }
                 }
@@ -1307,7 +1837,7 @@ private fun ThemePresetsDialog(
                             )
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                text = "10 Curated Aesthetic Studio Themes",
+                                text = "${ThemePresets.allPresets.size} Curated Aesthetic Studio & Liquid Glass Themes",
                                 fontSize = 11.5.sp,
                                 color = appColors.textMuted
                             )
@@ -1332,12 +1862,16 @@ private fun ThemePresetsDialog(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Segmented Filter Tabs: All (10) | Dark (5) | Light (5)
+                // Segmented Filter Tabs: All | Dark | Light
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    val tabs = listOf("All (10)", "🌙 Dark (5)", "☀️ Light (5)")
+                    val tabs = listOf(
+                        "All (${ThemePresets.allPresets.size})",
+                        "🌙 Dark (${ThemePresets.darkPresets.size})",
+                        "☀️ Light (${ThemePresets.lightPresets.size})"
+                    )
                     tabs.forEachIndexed { index, label ->
                         val isTabSelected = selectedFilterTab == index
                         Surface(

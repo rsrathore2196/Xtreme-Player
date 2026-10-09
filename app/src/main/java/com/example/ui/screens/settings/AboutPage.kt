@@ -42,6 +42,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
@@ -142,19 +143,29 @@ fun AboutPage(
                 Spacer(modifier = Modifier.height(4.dp))
 
                 Box(
-                    modifier = Modifier.liquidGlassPill(
-                        colors = appColors,
-                        shape = RoundedCornerShape(20.dp),
-                        isActive = true,
-                        elevation = 2.dp
-                    )
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(
+                            if (appColors.isDark) {
+                                accentColor.copy(alpha = 0.24f)
+                            } else {
+                                accentColor.copy(alpha = 0.15f)
+                            }
+                        )
+                        .border(
+                            BorderStroke(
+                                1.dp,
+                                accentColor.copy(alpha = if (appColors.isDark) 0.50f else 0.40f)
+                            ),
+                            RoundedCornerShape(20.dp)
+                        )
                 ) {
                     Text(
                         text = "VERSION $APP_VERSION • AUDIO ENGINE",
                         fontSize = 10.sp,
                         fontWeight = FontWeight.ExtraBold,
                         letterSpacing = 1.sp,
-                        color = appColors.onPrimaryAccent,
+                        color = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
                     )
                 }
@@ -162,7 +173,7 @@ fun AboutPage(
                 Spacer(modifier = Modifier.height(14.dp))
 
                 Text(
-                    text = "High-performance studio-grade music player engineered for audiophiles. Delivering 320 kbps ultra-high definition streaming, real-time 5-band parametric equalization, dynamic bass enhancement, and 3D spatial audio.",
+                    text = "High-performance studio-grade music player engineered for audiophiles. Delivering Hi-Res Lossless and 320 kbps high quality audio streaming, real-time 5-band parametric equalization, dynamic bass enhancement, and 3D spatial audio.",
                     fontSize = 12.5.sp,
                     color = appColors.textMuted,
                     lineHeight = 18.sp,
@@ -219,7 +230,7 @@ fun AboutPage(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = APP_VERSION,
+                            text = APP_VERSION_DISPLAY,
                             fontSize = 13.5.sp,
                             fontWeight = FontWeight.Bold,
                             color = accentColor,
@@ -788,17 +799,56 @@ fun SupportDonationCard(
                         val isSelected = selectedPreset == preset
                         val label = if (preset == "Custom") "Custom" else "₹$preset"
 
+                        val chipBg = if (isSelected) {
+                            Brush.linearGradient(
+                                listOf(
+                                    accentColor,
+                                    appColors.secondaryAccent
+                                )
+                            )
+                        } else {
+                            if (appColors.isDark) {
+                                Brush.verticalGradient(
+                                    listOf(
+                                        Color(0xFF22242C),
+                                        Color(0xFF181A20)
+                                    )
+                                )
+                            } else {
+                                Brush.verticalGradient(
+                                    listOf(
+                                        Color(0xFFFFFFFF),
+                                        Color(0xFFF1F5F9)
+                                    )
+                                )
+                            }
+                        }
+
+                        val chipBorder = if (isSelected) {
+                            BorderStroke(1.dp, Color.White.copy(alpha = if (appColors.isDark) 0.45f else 0.65f))
+                        } else {
+                            BorderStroke(1.dp, cardBorder)
+                        }
+
+                        val chipTextColor = if (isSelected) {
+                            MaterialTheme.colorScheme.onPrimary
+                        } else {
+                            appColors.textPrimary
+                        }
+
                         Box(
                             modifier = Modifier
                                 .weight(1f)
                                 .height(38.dp)
-                                .liquidGlassPill(
-                                    colors = appColors,
+                                .shadow(
+                                    elevation = if (isSelected) 4.dp else 1.dp,
                                     shape = RoundedCornerShape(12.dp),
-                                    isActive = isSelected,
-                                    elevation = if (isSelected) 4.dp else 1.dp
+                                    spotColor = if (isSelected) accentColor.copy(alpha = 0.50f) else Color.Transparent
                                 )
-                                .bouncyClickable { selectedPreset = preset }
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(chipBg)
+                                .border(chipBorder, RoundedCornerShape(12.dp))
+                                .clickable { selectedPreset = preset }
                                 .testTag("donation_chip_$preset"),
                             contentAlignment = Alignment.Center
                         ) {
@@ -806,7 +856,7 @@ fun SupportDonationCard(
                                 text = label,
                                 fontSize = 12.5.sp,
                                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
-                                color = if (isSelected) contrastingContentColor(appColors.primaryAccent) else appColors.textPrimary
+                                color = chipTextColor
                             )
                         }
                     }

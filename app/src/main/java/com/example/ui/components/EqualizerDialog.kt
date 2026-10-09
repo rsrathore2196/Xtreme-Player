@@ -38,6 +38,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
@@ -75,68 +76,69 @@ fun EqualizerDialog(
 
     Dialog(onDismissRequest = onDismiss) {
         androidx.compose.runtime.CompositionLocalProvider(LocalAppColors provides appColors) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 12.dp)
-                .liquidGlass(
-                    colors = appColors,
-                    shape = RoundedCornerShape(24.dp),
-                    elevation = 22.dp,
-                    translucency = 0.88f,
-                    sheenAlpha = 0.20f,
-                    highlightAlpha = 0.55f
-                )
-                .testTag("equalizer_dialog")
-        ) {
-            Column(
+            val dialogBaseColor = if (appColors.isAmoled) Color(0xFF000000) else appColors.cardBackground
+            Surface(
+                shape = RoundedCornerShape(24.dp),
+                color = dialogBaseColor,
+                border = BorderStroke(1.2.dp, appColors.cardBorder),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .verticalScroll(scrollState)
-                    .padding(20.dp)
+                    .padding(vertical = 12.dp)
+                    .shadow(
+                        elevation = 22.dp,
+                        shape = RoundedCornerShape(24.dp),
+                        spotColor = Color.Black.copy(alpha = if (isDark) 0.55f else 0.12f)
+                    )
+                    .testTag("equalizer_dialog")
             ) {
-                // HEADER WITH MASTER SWITCH
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(scrollState)
+                        .padding(20.dp)
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(40.dp)
-                                .clip(CircleShape)
-                                .background(
-                                    if (effectsState.isEnabled) appColors.primaryAccent.copy(alpha = 0.2f)
-                                    else appColors.cardBackgroundElevated
-                                ),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.GraphicEq,
-                                contentDescription = null,
-                                tint = if (effectsState.isEnabled) appColors.primaryAccent else appColors.textMuted,
-                                modifier = Modifier.size(22.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column {
-                            Text(
-                                text = "Audio Equalizer & FX",
-                                style = MaterialTheme.typography.titleMedium.copy(
-                                    fontWeight = FontWeight.Bold,
-                                    color = appColors.textPrimary
+                    // HEADER WITH MASTER SWITCH
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (effectsState.isEnabled) appColors.primaryAccent.copy(alpha = 0.2f)
+                                        else appColors.cardBackgroundElevated
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.GraphicEq,
+                                    contentDescription = null,
+                                    tint = if (effectsState.isEnabled) appColors.primaryAccent else appColors.textMuted,
+                                    modifier = Modifier.size(22.dp)
                                 )
-                            )
-                            Text(
-                                text = if (effectsState.isEnabled) "Real-time DSP Active (320k)" else "Effects Bypassed",
-                                style = MaterialTheme.typography.bodySmall.copy(
-                                    color = if (effectsState.isEnabled) appColors.primaryAccent else appColors.textMuted,
-                                    fontSize = 11.sp
+                            }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column {
+                                Text(
+                                    text = "Audio Equalizer & FX",
+                                    style = MaterialTheme.typography.titleMedium.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        color = appColors.textPrimary
+                                    )
                                 )
-                            )
+                                Text(
+                                    text = if (effectsState.isEnabled) "Real-time DSP Active (Lossless)" else "Effects Bypassed",
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        color = if (effectsState.isEnabled) appColors.primaryAccent else appColors.textMuted,
+                                        fontSize = 11.sp
+                                    )
+                                )
+                            }
                         }
-                    }
 
                     Switch(
                         checked = effectsState.isEnabled,

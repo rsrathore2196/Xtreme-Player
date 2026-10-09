@@ -2,7 +2,7 @@ package com.example.recommendation
 
 import android.util.Log
 import com.example.data.model.MusicTrack
-import com.example.data.remote.OnlineMusicApiService
+import com.example.data.remote.YouTubeMusicApiService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -11,7 +11,8 @@ import kotlinx.coroutines.withContext
 /**
  * Custom Query Wrapper for Smart Infinity Autoplay Recommendations.
  *
- * Avoids default generic endpoints by dynamically extracting:
+ * Exclusively queries the YouTube Music API as mandated by architectural rules.
+ * Dynamically extracts:
  * 1. Exact Primary Artist / Singers
  * 2. Exact Language (e.g. Punjabi, Hindi, English, etc.)
  * 3. Exact Release Year or Era
@@ -56,7 +57,7 @@ object CustomRecommendationQueryWrapper {
         val rawCandidates = coroutineScope {
             val call1 = async {
                 try {
-                    OnlineMusicApiService.searchSongs(query1, limit = 15)
+                    YouTubeMusicApiService.searchSongs(query1, limit = 15)
                 } catch (e: Exception) {
                     Log.w(TAG, "Custom query 1 ('$query1') failed: ${e.message}")
                     emptyList()
@@ -64,7 +65,7 @@ object CustomRecommendationQueryWrapper {
             }
             val call2 = async {
                 try {
-                    OnlineMusicApiService.searchSongs(query2, limit = 15)
+                    YouTubeMusicApiService.searchSongs(query2, limit = 15)
                 } catch (e: Exception) {
                     Log.w(TAG, "Custom query 2 ('$query2') failed: ${e.message}")
                     emptyList()
@@ -72,7 +73,7 @@ object CustomRecommendationQueryWrapper {
             }
             val call3 = async {
                 try {
-                    OnlineMusicApiService.searchSongs(query3, limit = 10)
+                    YouTubeMusicApiService.searchSongs(query3, limit = 10)
                 } catch (e: Exception) {
                     Log.w(TAG, "Custom query 3 ('$query3') failed: ${e.message}")
                     emptyList()

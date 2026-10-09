@@ -121,7 +121,7 @@ fun TrackActionSheet(
                             .background(appColors.cardBorder)
                     ) {
                         AsyncImage(
-                            model = rememberOptimizedImageRequest(track.coverUrl, ImageConfig.LIST_ITEM_SIZE),
+                            model = rememberOptimizedImageRequest(track = track, targetSize = ImageConfig.LIST_ITEM_SIZE),
                             contentDescription = track.title,
                             contentScale = ContentScale.Crop,
                             modifier = Modifier.size(54.dp)
@@ -147,29 +147,13 @@ fun TrackActionSheet(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(4.dp))
-                                    .background(appColors.primaryAccent.copy(alpha = 0.15f))
-                                    .padding(horizontal = 5.dp, vertical = 1.5.dp)
-                            ) {
-                                Text(
-                                    text = track.qualityBadge.ifBlank { "HD • 320k" },
-                                    fontSize = 9.5.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = appColors.primaryAccent
-                                )
-                            }
-                            if (track.year.isNotBlank()) {
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = track.year,
-                                    fontSize = 10.sp,
-                                    color = appColors.textMuted
-                                )
-                            }
+                        if (track.year.isNotBlank()) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = track.year,
+                                fontSize = 11.sp,
+                                color = appColors.textMuted
+                            )
                         }
                     }
 

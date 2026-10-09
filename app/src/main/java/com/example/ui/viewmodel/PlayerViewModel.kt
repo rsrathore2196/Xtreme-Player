@@ -86,7 +86,7 @@ class PlayerViewModel(
     val selectedQuality: StateFlow<AudioQuality> = playbackManager.uiState
         .map { it.selectedQuality }
         .distinctUntilChanged()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), AudioQuality.EXTREME_320)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), playbackManager.uiState.value.selectedQuality)
 
     val currentPlayingTrackId: StateFlow<String?> = playbackManager.uiState
         .map { it.currentTrack?.id }
@@ -135,6 +135,14 @@ class PlayerViewModel(
     private val _uiScaleIndex = MutableStateFlow(com.example.data.local.OtherSettingsPreferences.getUiSizeIndex(application))
     val uiScaleIndex: StateFlow<Int> = _uiScaleIndex.asStateFlow()
 
+    private val _isDynamicGlassEnabled = MutableStateFlow(com.example.data.local.OtherSettingsPreferences.isDynamicGlassEnabled(application))
+    val isDynamicGlassEnabled: StateFlow<Boolean> = _isDynamicGlassEnabled.asStateFlow()
+
+    fun setDynamicGlassEnabled(enabled: Boolean) {
+        com.example.data.local.OtherSettingsPreferences.setDynamicGlassEnabled(application, enabled)
+        _isDynamicGlassEnabled.value = enabled
+    }
+
     fun setTextScaleIndex(index: Int) {
         com.example.data.local.OtherSettingsPreferences.setTextSizeIndex(application, index)
         _textScaleIndex.value = index
@@ -161,17 +169,25 @@ class PlayerViewModel(
         flag: String
     ) {
         val profile = com.example.data.local.UserProfile(
-            name = name,
-            languages = languages,
-            country = country,
-            countryCode = countryCode,
-            flag = flag,
+            name = name.trim().ifBlank { "User" },
+            languages = if (languages.isNotEmpty()) languages else listOf("English", "Hindi", "Punjabi"),
+            country = country.trim().ifBlank { "India" },
+            countryCode = countryCode.trim().ifBlank { "IN" },
+            flag = flag.trim().ifBlank { "🇮🇳" },
             isOnboardingCompleted = true
         )
         _userProfile.value = profile
+        try {
+            com.example.data.local.UserProfilePreferences.saveUserProfile(application, profile)
+        } catch (e: Exception) {
+            android.util.Log.e("PlayerViewModel", "Failed to save user profile: ${e.message}")
+        }
         _isOnboardingCompleted.value = true
-        com.example.data.local.UserProfilePreferences.saveUserProfile(application, profile)
-        loadCatalog()
+        try {
+            loadCatalog()
+        } catch (e: Exception) {
+            android.util.Log.e("PlayerViewModel", "Failed to load catalog after onboarding: ${e.message}")
+        }
     }
 
     fun updateUserProfile(profile: com.example.data.local.UserProfile) {
@@ -390,25 +406,17 @@ class PlayerViewModel(
 
     fun playTrack(track: MusicTrack, queue: List<MusicTrack> = _catalogTracks.value, isExplicitPlaylist: Boolean = false) {
         activePlaybackLaunchJob?.cancel()
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                repository.markTrackPlayed(track)
-            } catch (_: Exception) {}
-        }
-        activePlaybackLaunchJob = viewModelScope.launch(Dispatchers.IO) {
-            playbackManager.playTrack(track, queue, isExplicitPlaylist)
+        activePlaybackLaunchJob = viewModelScope.launch(Dispatchers.Main) {
+            val safeQueue = if (queue.isNotEmpty()) queue else _catalogTracks.value.ifEmpty { listOf(track) }
+            playbackManager.playTrack(track, safeQueue, isExplicitPlaylist)
         }
     }
 
     fun playPlaylistTrack(track: MusicTrack, tracks: List<MusicTrack>) {
         activePlaybackLaunchJob?.cancel()
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                repository.markTrackPlayed(track)
-            } catch (_: Exception) {}
-        }
-        activePlaybackLaunchJob = viewModelScope.launch(Dispatchers.IO) {
-            playbackManager.playTrack(track, tracks, isExplicitPlaylist = true)
+        activePlaybackLaunchJob = viewModelScope.launch(Dispatchers.Main) {
+            val safeQueue = if (tracks.isNotEmpty()) tracks else listOf(track)
+            playbackManager.playTrack(track, safeQueue, isExplicitPlaylist = true)
         }
     }
 
@@ -419,40 +427,57 @@ class PlayerViewModel(
      */
     fun playFromSearch(track: MusicTrack, searchPool: List<MusicTrack>) {
         activePlaybackLaunchJob?.cancel()
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                repository.markTrackPlayed(track)
-            } catch (_: Exception) {}
-        }
         activePlaybackLaunchJob = viewModelScope.launch(Dispatchers.IO) {
             playbackManager.playFromSearch(track, searchPool)
         }
     }
 
     /**
-     * Plays a random recommended track and activates infinite autoplay mode
-     * so that recommendations continue playing infinitely.
+     * Plays a seed track (or dynamically chosen candidate) and activates infinite autoplay mode
+     * so that recommendations continue playing infinitely with continuous queue replenishment.
      */
-    fun playInfiniteRadio() {
+    fun playInfiniteRadio(seedTrack: MusicTrack? = null) {
         viewModelScope.launch {
-            if (!playbackManager.uiState.value.isAutoplayEnabled) {
-                playbackManager.toggleAutoplay(_catalogTracks.value)
+            val allTracks = (_catalogTracks.value + MusicDataSource.curatedTracks).distinctBy { it.id }
+            val current = playbackManager.uiState.value.currentTrack
+
+            // If a specific seed track is currently active, toggle play/pause
+            if (seedTrack != null && current?.id == seedTrack.id) {
+                playbackManager.playPause()
+                return@launch
             }
-            val tracks = _catalogTracks.value
-            if (tracks.isNotEmpty()) {
-                val current = playbackManager.uiState.value.currentTrack
-                val scored = if (current != null) {
-                    playbackManager.recommendationEngine.evaluateAndScoreCandidates(current, tracks)
+
+            if (!playbackManager.uiState.value.isAutoplayEnabled) {
+                playbackManager.toggleAutoplay(allTracks)
+            }
+
+            val chosenTrack = seedTrack ?: run {
+                val scored = if (current != null && allTracks.isNotEmpty()) {
+                    playbackManager.recommendationEngine.evaluateAndScoreCandidates(current, allTracks)
                         .filter { it.totalScore > -50.0 }
                         .map { it.track }
                 } else {
                     emptyList()
                 }
-                val candidatePool = if (scored.isNotEmpty()) scored.take(10) else tracks.take(10)
-                val chosenTrack = candidatePool.shuffled().firstOrNull() ?: tracks.random()
-                val fullQueue = listOf(chosenTrack) + tracks.filter { it.id != chosenTrack.id }.shuffled()
-                playTrack(chosenTrack, fullQueue, isExplicitPlaylist = false)
+                val candidatePool = if (scored.isNotEmpty()) scored.take(10) else allTracks.take(10)
+                candidatePool.shuffled().firstOrNull() ?: allTracks.firstOrNull() ?: MusicDataSource.curatedTracks.first()
             }
+
+            val scoredRecommendations = withContext(Dispatchers.Default) {
+                playbackManager.recommendationEngine
+                    .evaluateAndScoreCandidates(chosenTrack, allTracks)
+                    .filter { it.track.id != chosenTrack.id }
+                    .map { it.track }
+            }
+
+            val queueRemainder = if (scoredRecommendations.isNotEmpty()) {
+                scoredRecommendations.take(15)
+            } else {
+                allTracks.filter { it.id != chosenTrack.id }.shuffled().take(15)
+            }
+
+            val fullQueue = listOf(chosenTrack) + queueRemainder
+            playTrack(chosenTrack, fullQueue, isExplicitPlaylist = false)
         }
     }
 
@@ -499,7 +524,7 @@ class PlayerViewModel(
         searchJob?.cancel()
         searchJob = viewModelScope.launch {
             delay(300) // 300ms debouncing as specified in architectural requirements
-            val results = repository.search(newQuery)
+            val results = repository.search(newQuery, application)
             _searchState.update { it.copy(result = results, isSearching = false) }
         }
     }
@@ -509,7 +534,7 @@ class PlayerViewModel(
         searchJob?.cancel()
         searchJob = viewModelScope.launch {
             if (genre.equals("All", ignoreCase = true)) {
-                val results = repository.search(_searchState.value.query)
+                val results = repository.search(_searchState.value.query, application)
                 _searchState.update { it.copy(selectedGenre = "All", result = results, isSearching = false) }
             } else {
                 val tracks = repository.getTracksByGenre(genre).shuffled()
@@ -610,6 +635,10 @@ class PlayerViewModel(
 
     fun setAudioQuality(quality: com.example.playback.AudioQuality) {
         playbackManager.setAudioQuality(quality)
+        val currentQuery = _searchState.value.query
+        if (currentQuery.isNotBlank()) {
+            onSearchQueryChange(currentQuery)
+        }
     }
 
     fun setCrystalClarityEnabled(enabled: Boolean) {

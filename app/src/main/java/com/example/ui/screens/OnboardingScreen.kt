@@ -779,7 +779,7 @@ fun OnboardingStartupPage(
             Spacer(modifier = Modifier.height(8.dp))
 
             Text(
-                text = "Pure 320 kbps High-Fidelity Music",
+                text = "Hi-Res Lossless and 320 kbps high quality audio",
                 style = MaterialTheme.typography.titleMedium.copy(
                     color = primaryAccent.copy(alpha = 0.9f),
                     fontWeight = FontWeight.Bold,
@@ -810,7 +810,7 @@ fun OnboardingStartupPage(
             ) {
                 StartupFeaturePill(
                     icon = Icons.Default.GraphicEq,
-                    title = "True 320 kbps Master Audio",
+                    title = "Hi-Res Lossless and 320 kbps high quality audio",
                     description = "Crystal-clear high-definition sound and lossless FLAC"
                 )
                 StartupFeaturePill(
@@ -946,7 +946,7 @@ fun CountryPickerBottomSheet(
         }
     }
 
-    val bg = appColors.cardBackground
+    val bg = appColors.bottomSheetBackground
     val cardBorder = appColors.cardBorder
     val textPrimary = appColors.textPrimary
     val textMuted = appColors.textMuted

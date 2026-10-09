@@ -58,6 +58,7 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import com.example.ui.components.TrackListItem
 import androidx.compose.ui.platform.testTag
 import com.example.ui.theme.LiquidGlass
 import com.example.ui.theme.bouncyClickable
@@ -112,7 +113,7 @@ fun LibraryScreen(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(appColors.screenBackground),
+            .background(appColors.scaffoldBackground),
         contentAlignment = Alignment.TopCenter
     ) {
         LazyColumn(
@@ -330,7 +331,7 @@ fun LibraryScreen(
                                     )
                                 )
                                 Text(
-                                    text = "${favoriteTracks.size} tracks saved in 320kbps",
+                                    text = "${favoriteTracks.size} tracks liked",
                                     style = MaterialTheme.typography.bodySmall.copy(
                                         color = if (appColors.isDark) Color(0xFFCBD5E1) else appColors.textSecondary,
                                         fontWeight = FontWeight.Medium
@@ -406,11 +407,6 @@ fun LibraryScreen(
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.SemiBold,
                                     color = appColors.primaryAccent
-                                )
-                                Text(
-                                    text = "Auto-matches tracks to 320kbps HD audio",
-                                    fontSize = 11.sp,
-                                    color = if (appColors.isDark) Color(0xFFCBD5E1) else appColors.textMuted
                                 )
                             }
                         }
@@ -606,7 +602,7 @@ fun PlaylistRowItem(
             )
             Spacer(modifier = Modifier.height(2.dp))
             Text(
-                text = if (playlist.description.isNotBlank()) playlist.description else "Custom Playlist • Xtreme 320k",
+                text = if (playlist.description.isNotBlank()) playlist.description else "Custom Playlist",
                 color = appColors.textSecondary,
                 fontSize = 12.sp,
                 maxLines = 1,

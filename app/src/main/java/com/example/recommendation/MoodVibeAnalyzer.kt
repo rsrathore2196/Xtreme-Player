@@ -223,6 +223,19 @@ object MoodVibeAnalyzer {
         )
     }
 
+    fun inferMoodFromGenre(genre: String): String {
+        val g = genre.lowercase().trim()
+        return when {
+            g.contains("party") || g.contains("dance") || g.contains("club") || g.contains("edm") || g.contains("electronic") -> MOOD_PARTY_DANCE
+            g.contains("workout") || g.contains("gym") || g.contains("rock") || g.contains("metal") || g.contains("punjabi") -> MOOD_WORKOUT_ENERGETIC
+            g.contains("romantic") || g.contains("love") || g.contains("acoustic") || g.contains("pop") -> MOOD_ROMANTIC
+            g.contains("sad") || g.contains("heartbreak") || g.contains("blues") -> MOOD_SAD_MELANCHOLIC
+            g.contains("chill") || g.contains("lofi") || g.contains("lo-fi") || g.contains("ambient") || g.contains("jazz") -> MOOD_CHILL_LOFI
+            g.contains("sufi") || g.contains("devotional") || g.contains("bhajan") || g.contains("qawwali") -> MOOD_DEVOTIONAL_SUFI
+            else -> MOOD_UPBEAT_HAPPY
+        }
+    }
+
     private fun isCompatibleMood(m1: String, m2: String): Boolean {
         return (m1 == MOOD_ROMANTIC && m2 == MOOD_CHILL_LOFI) ||
                 (m1 == MOOD_CHILL_LOFI && m2 == MOOD_ROMANTIC) ||

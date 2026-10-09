@@ -71,32 +71,28 @@ fun CreatePlaylistDialog(
     val dialogShape = RoundedCornerShape(22.dp)
 
     Dialog(onDismissRequest = onDismiss) {
-            val opaqueDialogBaseColor = if (isDark) Color(0xFF161E2C) else Color(0xFFFFFFFF)
-            val opaqueDialogBrush = if (isDark) {
-                Brush.verticalGradient(
-                    listOf(
-                        Color(0xFF222B3D),
-                        Color(0xFF161E2C),
-                        Color(0xFF0F141E)
-                    )
-                )
+        androidx.compose.runtime.CompositionLocalProvider(LocalAppColors provides appColors) {
+            val opaqueDialogBaseColor = if (appColors.isAmoled) Color(0xFF000000) else appColors.cardBackground
+            val opaqueDialogBrush = Brush.verticalGradient(
+                if (appColors.isAmoled) {
+                    listOf(Color(0xFF000000), Color(0xFF000000))
+                } else {
+                    listOf(appColors.cardBackground, appColors.cardBackground)
+                }
+            )
+            val dialogBorderStroke = if (appColors.isAmoled) {
+                BorderStroke(1.2.dp, Color(0xFF222222))
             } else {
-                Brush.verticalGradient(
-                    listOf(
-                        Color(0xFFFFFFFF),
-                        Color(0xFFF8FAFC),
-                        Color(0xFFF1F5F9)
-                    )
+                BorderStroke(
+                    1.2.dp,
+                    appColors.cardBorder.copy(alpha = if (isDark) 0.60f else 0.75f)
                 )
             }
 
             Surface(
                 shape = dialogShape,
                 color = opaqueDialogBaseColor,
-                border = BorderStroke(
-                    1.2.dp,
-                    LiquidGlass.specularBorderBrush(appColors, highlightAlpha = if (isDark) 0.45f else 0.55f)
-                ),
+                border = dialogBorderStroke,
                 modifier = Modifier
                     .fillMaxWidth()
                     .shadow(
@@ -112,39 +108,23 @@ fun CreatePlaylistDialog(
                         .fillMaxWidth()
                         .background(opaqueDialogBrush)
                 ) {
-                    // Frosted diffusion blur layer
-                    Box(
-                        modifier = Modifier
-                            .matchParentSize()
-                            .background(
-                                if (isDark) {
+                    if (!appColors.isAmoled) {
+                        // Top specular highlight sheen
+                        Box(
+                            modifier = Modifier
+                                .matchParentSize()
+                                .background(
                                     Brush.verticalGradient(
-                                        listOf(Color.White.copy(alpha = 0.10f), Color.White.copy(alpha = 0.02f))
+                                        listOf(
+                                            Color.White.copy(alpha = if (isDark) 0.12f else 0.25f),
+                                            Color.Transparent
+                                        ),
+                                        startY = 0f,
+                                        endY = 40f
                                     )
-                                } else {
-                                    Brush.verticalGradient(
-                                        listOf(Color.White.copy(alpha = 0.40f), Color.White.copy(alpha = 0.12f))
-                                    )
-                                }
-                            )
-                            .blur(20.dp)
-                    )
-
-                    // Top specular highlight sheen
-                    Box(
-                        modifier = Modifier
-                            .matchParentSize()
-                            .background(
-                                Brush.verticalGradient(
-                                    listOf(
-                                        Color.White.copy(alpha = if (isDark) 0.16f else 0.28f),
-                                        Color.Transparent
-                                    ),
-                                    startY = 0f,
-                                    endY = 40f
                                 )
-                            )
-                    )
+                        )
+                    }
 
                     Column(
                         modifier = Modifier
@@ -165,7 +145,7 @@ fun CreatePlaylistDialog(
                             value = title,
                             onValueChange = { title = it },
                             label = { Text("Playlist Name") },
-                            placeholder = { Text("e.g. Chill Beats 320k") },
+                            placeholder = { Text("e.g. Chill Beats Ultra") },
                             singleLine = true,
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedBorderColor = appColors.primaryAccent,
@@ -240,6 +220,7 @@ fun CreatePlaylistDialog(
             }
         }
     }
+}
 
 @Composable
 fun AddToPlaylistDialog(
@@ -255,32 +236,28 @@ fun AddToPlaylistDialog(
     val dialogShape = RoundedCornerShape(22.dp)
 
     Dialog(onDismissRequest = onDismiss) {
-        val opaqueDialogBaseColor = if (isDark) Color(0xFF161E2C) else Color(0xFFFFFFFF)
-            val opaqueDialogBrush = if (isDark) {
-                Brush.verticalGradient(
-                    listOf(
-                        Color(0xFF222B3D),
-                        Color(0xFF161E2C),
-                        Color(0xFF0F141E)
-                    )
-                )
+        androidx.compose.runtime.CompositionLocalProvider(LocalAppColors provides appColors) {
+            val opaqueDialogBaseColor = if (appColors.isAmoled) Color(0xFF000000) else appColors.cardBackground
+            val opaqueDialogBrush = Brush.verticalGradient(
+                if (appColors.isAmoled) {
+                    listOf(Color(0xFF000000), Color(0xFF000000))
+                } else {
+                    listOf(appColors.cardBackground, appColors.cardBackground)
+                }
+            )
+            val dialogBorderStroke = if (appColors.isAmoled) {
+                BorderStroke(1.2.dp, Color(0xFF222222))
             } else {
-                Brush.verticalGradient(
-                    listOf(
-                        Color(0xFFFFFFFF),
-                        Color(0xFFF8FAFC),
-                        Color(0xFFF1F5F9)
-                    )
+                BorderStroke(
+                    1.2.dp,
+                    appColors.cardBorder.copy(alpha = if (isDark) 0.60f else 0.75f)
                 )
             }
 
-            Surface(
-                shape = dialogShape,
-                color = opaqueDialogBaseColor,
-                border = BorderStroke(
-                    1.2.dp,
-                    LiquidGlass.specularBorderBrush(appColors, highlightAlpha = if (isDark) 0.45f else 0.55f)
-                ),
+        Surface(
+            shape = dialogShape,
+            color = opaqueDialogBaseColor,
+            border = dialogBorderStroke,
                 modifier = Modifier
                     .fillMaxWidth()
                     .shadow(
@@ -462,4 +439,5 @@ fun AddToPlaylistDialog(
             }
         }
     }
+}
 }

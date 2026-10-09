@@ -38,6 +38,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
@@ -52,6 +53,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import com.example.ui.components.TrackListItem
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -168,7 +170,7 @@ fun SearchScreen(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(XtremeGradients.ScreenBackground),
+            .background(appColors.scaffoldBackground),
         contentAlignment = Alignment.TopCenter
     ) {
         LazyColumn(
@@ -193,7 +195,7 @@ fun SearchScreen(
                     )
                 )
                 Text(
-                    text = "Stream millions of high-res 320kbps tracks",
+                    text = "Stream millions of Ultra High Quality Tracks",
                     style = MaterialTheme.typography.bodySmall.copy(color = appColors.textMuted)
                 )
 
@@ -665,7 +667,7 @@ fun SearchScreen(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     AsyncImage(
-                                        model = rememberOptimizedImageRequest(top.coverUrl, ImageConfig.LIST_ITEM_SIZE),
+                                        model = rememberOptimizedImageRequest(track = top, targetSize = ImageConfig.LIST_ITEM_SIZE),
                                         contentDescription = null,
                                         contentScale = ContentScale.Crop,
                                         modifier = Modifier
@@ -694,17 +696,26 @@ fun SearchScreen(
                                             maxLines = 1
                                         )
                                         Spacer(modifier = Modifier.height(4.dp))
-                                        Surface(
-                                            color = appColors.primaryAccent.copy(alpha = 0.15f),
-                                            shape = RoundedCornerShape(4.dp)
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                            verticalAlignment = Alignment.CenterVertically
                                         ) {
-                                            Text(
-                                                text = "HQ • 320 KBPS",
-                                                color = appColors.primaryAccent,
-                                                fontWeight = FontWeight.Bold,
-                                                fontSize = 9.sp,
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                            )
+                                            if (false) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .clip(RoundedCornerShape(4.dp))
+                                                        .background(appColors.primaryAccent.copy(alpha = 0.18f))
+                                                        .border(BorderStroke(0.5.dp, appColors.primaryAccent.copy(alpha = 0.5f)), RoundedCornerShape(4.dp))
+                                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                                ) {
+                                                    Text(
+                                                        text = "Hi-Res Lossless",
+                                                        fontSize = 9.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = appColors.primaryAccent
+                                                    )
+                                                }
+                                            }
                                         }
                                     }
 
@@ -1096,7 +1107,7 @@ fun SearchScreen(
                                         fontWeight = FontWeight.SemiBold
                                     )
                                     Text(
-                                        text = "Curated Playlist • HD 320k",
+                                        text = "Curated Playlist",
                                         color = TextMuted,
                                         fontSize = 12.sp
                                     )

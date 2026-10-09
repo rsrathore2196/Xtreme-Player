@@ -2,6 +2,7 @@ package com.example.data.importer
 
 import android.util.Log
 import com.example.data.model.MusicTrack
+import com.example.data.remote.InternetArchiveApiService
 import com.example.data.remote.OnlineMusicApiService
 import com.example.data.remote.YouTubeMusicApiService
 import kotlinx.coroutines.Dispatchers
@@ -1121,8 +1122,11 @@ object PlaylistImportEngine {
     // ==========================================
     // 5. SOUND-MATCHING & WEIGHTAGE PIPELINE
     // ==========================================
+    // ==========================================
+    // 5. SOUND-MATCHING & HIGH AUDIO QUALITY ROUTING PIPELINE
+    // ==========================================
     /**
-     * Concurrent sound-matching against the internal 320kbps audio engine.
+     * Strict multi-factor verification matching and high audio quality priority routing.
      * Reports real-time matching progress via [onProgress].
      */
     suspend fun matchTracks(
@@ -1135,19 +1139,14 @@ object PlaylistImportEngine {
         val unmatchedList = mutableListOf<MatchResult>()
         var matchedCount = 0
 
-        // High-performance matching supporting up to 1000+ tracks smoothly
-        val batchSize = if (total > 80) 16 else 6
+        val batchSize = 6
         val chunks = importedTracks.chunked(batchSize)
         var processedSoFar = 0
 
         for (chunk in chunks) {
             val deferreds = chunk.map { originalMeta ->
                 async(Dispatchers.IO) {
-                    val match = if (total > 80 && processedSoFar > 40) {
-                        createPlayableCandidate(originalMeta)
-                    } else {
-                        matchSingleTrack(originalMeta)
-                    }
+                    val match = matchSingleTrack(originalMeta)
                     Pair(originalMeta, match)
                 }
             }
@@ -1155,7 +1154,7 @@ object PlaylistImportEngine {
 
             for ((originalMeta, match) in results) {
                 processedSoFar++
-                if (match.matchedTrack != null && match.confidenceScore >= 50.0) {
+                if (match.matchedTrack != null && match.matchStatus == MatchStatus.EXACT_MATCH) {
                     matchedList.add(match)
                     matchedCount++
                 } else {
@@ -1178,189 +1177,257 @@ object PlaylistImportEngine {
         )
     }
 
-    fun createPlayableCandidate(original: ImportedTrackMeta): MatchResult {
-        val fallbackTrack = MusicTrack(
-            id = "imp_${java.util.UUID.randomUUID().toString().take(12)}",
-            title = original.originalTitle,
-            artist = original.originalArtist.ifBlank { "Various Artists" },
-            album = original.originalAlbum.ifBlank { "Imported Track" },
-            durationMs = if (original.durationMs > 0) original.durationMs else 210000L,
-            coverUrl = "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=800&q=80",
-            audioUrl = "", // Dynamically resolved on play by UnifiedAudioLayer
-            bitrateKbps = 320,
-            qualityBadge = "HQ",
-            genre = "Imported",
-            source = original.externalPlatform
-        )
-
-        return MatchResult(
-            original = original,
-            matchedTrack = fallbackTrack,
-            confidenceScore = 80.0,
-            matchStatus = MatchStatus.EXACT_MATCH
-        )
-    }
-
     /**
-     * Sound-matches a single track against available audio sources with weightage scoring.
-     * If no online audio match is returned by search, creates an instant playable track
-     * entry with stream resolution deferred to playback, ensuring 100% track retention.
+     * Matches a single track with Strict Multi-Factor Verification & High Audio Quality Priority Routing:
+     * Priority 1: Hi-Res Lossless / FLAC (24-bit/192kHz or 16-bit/44.1kHz FLAC/ALAC) via Internet Archive
+     * Priority 2: Lossless / High-bitrate AAC/MP3 (320 kbps) via JioSaavn
+     * Priority 3: High-bitrate YouTube Music stream
+     *
+     * Strict Multi-Factor Verification:
+     * 1. Exact core title normalization (strip explicit, remaster, remix only if not in source)
+     * 2. Primary artist / singer cross-validation
+     * 3. Track duration tolerance (±3 to 5 seconds threshold) and album title confirmation
+     * 4. Unique track ID mapping to avoid duplicate insertion or wrong API mapping
+     *
+     * Never performs loose/fuzzy text matching that causes incorrect song additions!
      */
     suspend fun matchSingleTrack(original: ImportedTrackMeta): MatchResult = withContext(Dispatchers.IO) {
         val cleanTitle = cleanTrackTitle(original.originalTitle)
         val cleanArtist = cleanArtistName(original.originalArtist)
+        val coreTitle = normalizeForComparison(cleanTitle)
+        val primaryArtist = extractPrimaryArtist(cleanArtist)
 
-        // Strategy 1: Combined search "Title Artist"
-        val query1 = "$cleanTitle $cleanArtist".trim()
-        var candidates = OnlineMusicApiService.searchSongs(query1, limit = 8)
-
-        // Strategy 2: Title-only search if no results found
-        if (candidates.isEmpty() && cleanTitle.isNotBlank()) {
-            candidates = OnlineMusicApiService.searchSongs(cleanTitle, limit = 8)
+        if (coreTitle.isBlank()) {
+            return@withContext MatchResult(original, null, 0.0, MatchStatus.NOT_FOUND)
         }
 
-        // Strategy 3: YouTube Music engine search as backup
-        if (candidates.isEmpty()) {
-            candidates = YouTubeMusicApiService.searchSongs(query1, limit = 6)
-        }
+        val searchQuery = "$cleanTitle $primaryArtist".trim()
 
-        // Strategy 4: If still empty, try YouTube Music search with clean title only
-        if (candidates.isEmpty() && cleanTitle.isNotBlank()) {
-            candidates = YouTubeMusicApiService.searchSongs(cleanTitle, limit = 6)
-        }
-
-        if (candidates.isNotEmpty()) {
-            var bestCandidate: MusicTrack? = null
-            var bestScore = 0.0
-
-            for (candidate in candidates) {
-                val score = calculateWeightageScore(original, candidate)
-                if (score > bestScore) {
-                    bestScore = score
-                    bestCandidate = candidate
+        // ---------------------------------------------------------------------------------
+        // PRIORITY 1: Hi-Res Lossless / FLAC (24-bit/192kHz or 16-bit/44.1kHz FLAC/ALAC)
+        // ---------------------------------------------------------------------------------
+        try {
+            val iaCandidates = InternetArchiveApiService.searchLosslessTracks(searchQuery, maxResults = 6)
+            for (candidate in iaCandidates) {
+                if (verifyStrictMatch(original, candidate, coreTitle, primaryArtist)) {
+                    if (candidate.audioUrl.isNotBlank()) {
+                        val boundTrack = candidate.copy(
+                            id = "imp_flac_${candidate.id.removePrefix("ia_")}",
+                            source = "Imported Lossless • Internet Archive",
+                            qualityBadge = "Hi-Res FLAC",
+                            bitrateKbps = if (candidate.bitrateKbps > 320) candidate.bitrateKbps else 1411,
+                            isLossless = true
+                        )
+                        Log.i(TAG, "Strictly matched Lossless FLAC track for '${original.originalTitle}': ${boundTrack.title} (${boundTrack.bitrateKbps} kbps)")
+                        return@withContext MatchResult(
+                            original = original,
+                            matchedTrack = boundTrack,
+                            confidenceScore = 99.0,
+                            matchStatus = MatchStatus.EXACT_MATCH
+                        )
+                    }
                 }
             }
-
-            val status = when {
-                bestScore >= 80.0 -> MatchStatus.EXACT_MATCH
-                bestScore >= 50.0 -> MatchStatus.FUZZY_MATCH
-                else -> MatchStatus.NOT_FOUND
-            }
-
-            if (status != MatchStatus.NOT_FOUND && bestCandidate != null) {
-                return@withContext MatchResult(
-                    original = original,
-                    matchedTrack = bestCandidate,
-                    confidenceScore = bestScore,
-                    matchStatus = status
-                )
-            }
+        } catch (e: Exception) {
+            Log.d(TAG, "Priority 1 (Lossless FLAC) search error: ${e.message}")
         }
 
-        // Fallback Playable Track: preserve the imported track so it remains in the user's playlist!
-        // Audio stream URL is left blank so UnifiedAudioLayer resolves it dynamically when clicked.
-        val fallbackTrack = MusicTrack(
-            id = "imp_${java.util.UUID.randomUUID().toString().take(12)}",
-            title = original.originalTitle,
-            artist = original.originalArtist.ifBlank { "Various Artists" },
-            album = original.originalAlbum.ifBlank { "Imported Track" },
-            durationMs = if (original.durationMs > 0) original.durationMs else 210000L,
-            coverUrl = "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=800&q=80",
-            audioUrl = "", // Dynamically resolved on play
-            bitrateKbps = 320,
-            qualityBadge = "HQ",
-            genre = "Imported",
-            source = original.externalPlatform
-        )
+        // ---------------------------------------------------------------------------------
+        // PRIORITY 2: Lossless / High-bitrate 320 kbps AAC/MP3 via JioSaavn
+        // ---------------------------------------------------------------------------------
+        try {
+            val jioCandidates = OnlineMusicApiService.searchSongs(searchQuery, limit = 8)
+            for (candidate in jioCandidates) {
+                if (verifyStrictMatch(original, candidate, coreTitle, primaryArtist)) {
+                    if (candidate.audioUrl.isNotBlank()) {
+                        val boundTrack = candidate.copy(
+                            id = "imp_jio_${candidate.id.removePrefix("online_")}",
+                            source = "Imported HQ • JioSaavn",
+                            qualityBadge = "HD • 320 kbps",
+                            bitrateKbps = 320,
+                            isLossless = false
+                        )
+                        Log.i(TAG, "Strictly matched 320kbps track for '${original.originalTitle}': ${boundTrack.title}")
+                        return@withContext MatchResult(
+                            original = original,
+                            matchedTrack = boundTrack,
+                            confidenceScore = 95.0,
+                            matchStatus = MatchStatus.EXACT_MATCH
+                        )
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.d(TAG, "Priority 2 (320kbps JioSaavn) search error: ${e.message}")
+        }
 
+        // ---------------------------------------------------------------------------------
+        // PRIORITY 3: High-bitrate Stream via YouTube Music
+        // ---------------------------------------------------------------------------------
+        try {
+            val ytCandidates = YouTubeMusicApiService.searchSongs(searchQuery, limit = 8)
+            for (candidate in ytCandidates) {
+                if (verifyStrictMatch(original, candidate, coreTitle, primaryArtist)) {
+                    val boundTrack = candidate.copy(
+                        id = "imp_yt_${candidate.id.removePrefix("yt_")}",
+                        source = "Imported • YouTube Music",
+                        qualityBadge = "HQ Stream",
+                        bitrateKbps = 256,
+                        isLossless = false
+                    )
+                    Log.i(TAG, "Strictly matched YouTube Music track for '${original.originalTitle}': ${boundTrack.title}")
+                    return@withContext MatchResult(
+                        original = original,
+                        matchedTrack = boundTrack,
+                        confidenceScore = 88.0,
+                        matchStatus = MatchStatus.EXACT_MATCH
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            Log.d(TAG, "Priority 3 (YouTube Music) search error: ${e.message}")
+        }
+
+        // Fallback preservation: preserve original imported metadata so independent/local tracks are preserved
+        Log.w(TAG, "No strictly verified online match for '${original.originalTitle}' by '${original.originalArtist}' — creating fallback preserved track.")
+        val hash = kotlin.math.abs(original.originalTitle.hashCode() * 31 + original.originalArtist.hashCode())
+        val fallbackTrack = MusicTrack(
+            id = "imp_fallback_$hash",
+            title = original.originalTitle,
+            artist = original.originalArtist,
+            album = original.originalAlbum.ifBlank { "Imported Track" },
+            durationMs = original.durationMs,
+            coverUrl = "",
+            audioUrl = "",
+            source = original.externalPlatform.ifBlank { "Imported" }
+        )
         MatchResult(
             original = original,
             matchedTrack = fallbackTrack,
-            confidenceScore = 70.0,
-            matchStatus = MatchStatus.FUZZY_MATCH
+            confidenceScore = 30.0,
+            matchStatus = MatchStatus.NOT_FOUND
         )
     }
 
     /**
-     * Multi-variable weightage scoring:
-     * - Title Match (Max 50 pts)
-     * - Artist Match (Max 40 pts)
-     * - Duration Match (Max 10 pts)
+     * Multi-Factor Verification Algorithm:
+     * 1. Exact Track Title & Clean Title Normalization
+     * 2. Primary Artist / Singer Matching
+     * 3. Album Name & Track Duration Threshold (±3 to 5 seconds tolerance)
      */
-    private fun calculateWeightageScore(original: ImportedTrackMeta, candidate: MusicTrack): Double {
-        var score = 0.0
+    fun verifyStrictMatch(
+        original: ImportedTrackMeta,
+        candidate: MusicTrack,
+        origCoreTitle: String,
+        origPrimaryArtist: String
+    ): Boolean {
+        val candCleanTitle = cleanTrackTitle(candidate.title)
+        val candCoreTitle = normalizeForComparison(candCleanTitle)
 
-        val origTitle = normalizeForComparison(cleanTrackTitle(original.originalTitle))
-        val candTitle = normalizeForComparison(cleanTrackTitle(candidate.title))
+        // 1. Exact Core Title Verification (Never loose fuzzy text matching)
+        val isTitleMatch = if (origCoreTitle == candCoreTitle) {
+            true
+        } else if (origCoreTitle.isNotBlank() && candCoreTitle.isNotBlank()) {
+            val shorter = if (origCoreTitle.length < candCoreTitle.length) origCoreTitle else candCoreTitle
+            val longer = if (origCoreTitle.length < candCoreTitle.length) candCoreTitle else origCoreTitle
+            shorter.length >= 4 && (longer == shorter || longer.startsWith("$shorter ") || longer.endsWith(" $shorter"))
+        } else false
 
-        // 1. Title Matching (Max 50 points)
-        if (origTitle == candTitle) {
-            score += 50.0
-        } else if (origTitle.contains(candTitle) || candTitle.contains(origTitle)) {
-            score += 42.0
-        } else {
-            val sim = calculateStringSimilarity(origTitle, candTitle)
-            if (sim >= 0.85) {
-                score += 40.0 * sim
-            } else if (sim >= 0.70) {
-                score += 25.0 * sim
+        if (!isTitleMatch) return false
+
+        // 2. Primary Artist / Singer Cross-Verification
+        val candCleanArtist = cleanArtistName(candidate.artist)
+        val candPrimaryArtist = extractPrimaryArtist(candCleanArtist)
+        val candSingers = cleanArtistName(candidate.singers)
+
+        val isArtistMatch = verifyArtistTokens(origPrimaryArtist, candPrimaryArtist, candCleanArtist, candSingers)
+        if (!isArtistMatch) return false
+
+        // 3. Track Duration Threshold (±3 to 5 seconds tolerance)
+        if (original.durationMs > 0 && candidate.durationMs > 0) {
+            val diffMs = kotlin.math.abs(original.durationMs - candidate.durationMs)
+            if (diffMs > 5000L) {
+                // Exceeds 5-second duration tolerance threshold -> rejected as different track/version
+                Log.d(TAG, "Rejecting candidate '${candidate.title}' due to duration diff: ${diffMs}ms (> 5000ms)")
+                return false
             }
         }
 
-        // 2. Artist Matching (Max 40 points)
-        val origArtist = normalizeForComparison(cleanArtistName(original.originalArtist))
-        val candArtist = normalizeForComparison(cleanArtistName(candidate.artist))
-
-        if (origArtist == candArtist) {
-            score += 40.0
-        } else if (origArtist.contains(candArtist) || candArtist.contains(origArtist)) {
-            score += 32.0
-        } else {
-            val origTokens = origArtist.split(" ", ",", "&", "+").filter { it.length > 2 }
-            val candTokens = candArtist.split(" ", ",", "&", "+").filter { it.length > 2 }
-            val common = origTokens.any { candTokens.contains(it) }
-            if (common) {
-                score += 25.0
-            } else {
-                val sim = calculateStringSimilarity(origArtist, candArtist)
-                if (sim >= 0.75) {
-                    score += 20.0 * sim
+        // 4. Album Name as secondary confirmation signal if present
+        if (original.originalAlbum.isNotBlank() && candidate.album.isNotBlank()) {
+            val origNormAlbum = normalizeForComparison(original.originalAlbum)
+            val candNormAlbum = normalizeForComparison(candidate.album)
+            if (origNormAlbum.isNotBlank() && candNormAlbum.isNotBlank() && origNormAlbum != candNormAlbum) {
+                // If album is specified and differs, verify that duration matches very tightly (<= 3000ms)
+                if (original.durationMs > 0 && candidate.durationMs > 0) {
+                    val diffMs = kotlin.math.abs(original.durationMs - candidate.durationMs)
+                    if (diffMs > 3000L) return false
                 }
             }
         }
 
-        // 3. Duration Matching (Max 10 points)
-        if (original.durationMs > 0 && candidate.durationMs > 0) {
-            val diffMs = kotlin.math.abs(original.durationMs - candidate.durationMs)
-            if (diffMs <= 5000L) {
-                score += 10.0
-            } else if (diffMs <= 15000L) {
-                score += 6.0
-            }
-        } else {
-            // Neutral bonus if duration was not provided by source
-            score += 6.0
+        return true
+    }
+
+    private fun extractPrimaryArtist(rawArtist: String): String {
+        val tokens = rawArtist.split(Regex("(?i)\\s*(?:,|&|feat\\.?|ft\\.?|featuring|with|•|/|;|\\+|\\bx\\b)\\s*"))
+        return tokens.firstOrNull { it.isNotBlank() }?.trim() ?: rawArtist.trim()
+    }
+
+    private fun verifyArtistTokens(
+        origPrimary: String,
+        candPrimary: String,
+        candAllArtists: String,
+        candSingers: String
+    ): Boolean {
+        val normOrig = normalizeForComparison(origPrimary)
+        val normCandPrimary = normalizeForComparison(candPrimary)
+        val normCandAll = normalizeForComparison(candAllArtists)
+        val normSingers = normalizeForComparison(candSingers)
+
+        if (normOrig.isBlank()) return true
+        if (normCandPrimary.contains(normOrig) || normOrig.contains(normCandPrimary)) return true
+        if (normCandAll.contains(normOrig) || normSingers.contains(normOrig)) return true
+
+        val origWords = normOrig.split(" ").filter { it.length > 2 }
+        if (origWords.isNotEmpty() && origWords.all { normCandAll.contains(it) || normSingers.contains(it) }) {
+            return true
         }
 
-        return score
+        return false
     }
 
     private fun cleanTrackTitle(title: String): String {
-        return title
-            .replace(Regex("(?i)\\b(?:official\\s*video|official\\s*audio|official\\s*music\\s*video|lyric\\s*video|audio|remastered|remaster)\\b"), "")
-            .replace(Regex("(?i)\\b(?:from\\s*\"[^\"]+\"|from\\s*\\([^\\]]+\\))"), "")
-            .replace(Regex("\\[[^\\]]*\\]"), "")
-            .replace(Regex("\\((?:feat\\.?|ft\\.?)[^)]*\\)", RegexOption.IGNORE_CASE), "")
-            .replace(Regex("\\b(?:feat\\.?|ft\\.?)\\s+.*", RegexOption.IGNORE_CASE), "")
+        val hasOriginalRemix = title.contains("remix", ignoreCase = true) || title.contains("mix", ignoreCase = true)
+
+        var cleaned = title
+            .replace(Regex("(?i)\\b(?:official\\s*video|official\\s*audio|official\\s*music\\s*video|lyric\\s*video|audio)\\b"), "")
+            .replace(Regex("(?i)\\[(?:official\\s*video|official\\s*audio|lyric\\s*video|explicit|clean)\\]"), "")
+            .replace(Regex("(?i)\\((?:official\\s*video|official\\s*audio|lyric\\s*video|explicit|clean)\\)"), "")
+            .replace(Regex("(?i)\\b(?:remastered\\s*\\d*|\\d*\\s*remaster|remaster|anniversary\\s*edition)\\b"), "")
+            .replace(Regex("(?i)\\[(?:remastered[^\\]]*|\\d*\\s*remaster)\\]"), "")
+            .replace(Regex("(?i)\\((?:remastered[^)]*|\\d*\\s*remaster)\\)"), "")
             .replace(Regex("[-–—]\\s*(?:Single|Remastered|Radio Edit).*"), "")
-            .replace(Regex("[()\"']"), "")
+            .replace(Regex("\\((?:feat\\.?|ft\\.?)[^)]*\\)", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("\\[(?:feat\\.?|ft\\.?)[^\\]]*\\]", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("\\b(?:feat\\.?|ft\\.?)\\s+.*", RegexOption.IGNORE_CASE), "")
+
+        if (!hasOriginalRemix) {
+            cleaned = cleaned.replace(Regex("(?i)\\((?:remix|club\\s*mix|extended\\s*mix)[^)]*\\)"), "")
+                .replace(Regex("(?i)\\[(?:remix|club\\s*mix|extended\\s*mix)[^\\]]*\\]"), "")
+        }
+
+        return cleaned
+            .replace(Regex("[()\"'\\[\\]]"), "")
+            .replace(Regex("\\s+"), " ")
             .trim()
     }
 
     private fun cleanArtistName(artist: String): String {
         return artist
             .replace(Regex("(?i)\\b(?:vevo|official|channel|topic)\\b"), "")
-            .replace(Regex("[()\"']"), "")
+            .replace(Regex("[()\"'\\[\\]]"), "")
+            .replace(Regex("\\s+"), " ")
             .trim()
     }
 

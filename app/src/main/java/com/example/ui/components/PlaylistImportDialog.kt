@@ -135,29 +135,25 @@ fun PlaylistImportDialog(
     ) {
         androidx.compose.runtime.CompositionLocalProvider(LocalAppColors provides appColors) {
             val dialogShape = RoundedCornerShape(22.dp)
-            val opaqueDialogBaseColor = if (isDark) Color(0xFF161E2C) else Color(0xFFFFFFFF)
-            val opaqueDialogBrush = if (isDark) {
-                Brush.verticalGradient(
-                    listOf(
-                        Color(0xFF222B3D),
-                        Color(0xFF161E2C),
-                        Color(0xFF0F141E)
-                    )
-                )
+            val opaqueDialogBaseColor = if (appColors.isAmoled) Color(0xFF000000) else appColors.cardBackground
+            val opaqueDialogBrush = Brush.verticalGradient(
+                if (appColors.isAmoled) {
+                    listOf(Color(0xFF000000), Color(0xFF000000))
+                } else {
+                    listOf(appColors.cardBackground, appColors.cardBackground)
+                }
+            )
+
+            val dialogBorderStroke = if (appColors.isAmoled) {
+                BorderStroke(1.2.dp, Color(0xFF222222))
             } else {
-                Brush.verticalGradient(
-                    listOf(
-                        Color(0xFFFFFFFF),
-                        Color(0xFFF8FAFC),
-                        Color(0xFFF1F5F9)
-                    )
-                )
+                BorderStroke(1.2.dp, appColors.cardBorder.copy(alpha = if (isDark) 0.60f else 0.75f))
             }
 
             Surface(
                 shape = dialogShape,
                 color = opaqueDialogBaseColor,
-                border = BorderStroke(1.2.dp, LiquidGlass.specularBorderBrush(appColors, highlightAlpha = if (isDark) 0.45f else 0.55f)),
+                border = dialogBorderStroke,
                 modifier = Modifier
                     .fillMaxWidth()
                     .widthIn(max = 480.dp)
@@ -292,7 +288,7 @@ fun PlaylistImportDialog(
 
                         is PlaylistImportStep.Matching -> {
                             ImportLoadingContent(
-                                title = "Matching 320kbps Audio Streams",
+                                title = "Matching Hi-Res Audio Streams",
                                 subtitle = "Matching ${currentStep.current} of ${currentStep.total}: ${currentStep.currentTrackName}",
                                 isIndeterminate = false,
                                 progress = if (currentStep.total > 0) currentStep.current.toFloat() / currentStep.total else 0f,
@@ -661,7 +657,7 @@ private fun ImportLoadingContent(
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "${(progress * 100).toInt()}% • $matchedCount tracks matched in 320kbps",
+                    text = "${(progress * 100).toInt()}% • $matchedCount tracks matched in Hi-Res Lossless",
                     color = if (isDark) XtremeGreen else Color(0xFF059669),
                     fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold

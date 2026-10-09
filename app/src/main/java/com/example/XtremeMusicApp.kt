@@ -28,19 +28,22 @@ class XtremeMusicApp : Application(), ImageLoaderFactory {
         return ImageLoader.Builder(this)
             .memoryCache {
                 MemoryCache.Builder(this)
-                    .maxSizePercent(0.12)
+                    .maxSizePercent(0.20)
                     .build()
             }
             .diskCache {
                 DiskCache.Builder()
                     .directory(cacheDir.resolve("image_cache"))
-                    .maxSizeBytes(25L * 1024 * 1024) // 25 MB smart lean image disk cache
+                    .maxSizeBytes(60L * 1024 * 1024) // 60 MB high-speed disk cache
                     .build()
             }
+            .bitmapConfig(android.graphics.Bitmap.Config.HARDWARE)
+            .allowHardware(true)
+            .allowRgb565(true)
             .memoryCachePolicy(CachePolicy.ENABLED)
             .diskCachePolicy(CachePolicy.ENABLED)
             .respectCacheHeaders(false)
-            .crossfade(true)
+            .crossfade(false)
             .build()
     }
 
@@ -72,7 +75,7 @@ class XtremeMusicApp : Application(), ImageLoaderFactory {
 
         // Initialize repository - with null safety checks
         try {
-            repository = MusicRepository(database.musicDao())
+            repository = MusicRepository(database.musicDao(), this)
         } catch (e: Exception) {
             android.util.Log.e("XtremeMusicApp", "Failed to initialize repository: ${e.message}")
             throw RuntimeException("Critical: Cannot initialize repository", e)

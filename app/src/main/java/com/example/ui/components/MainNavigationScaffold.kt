@@ -58,6 +58,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.animation.animateContentSize
@@ -127,6 +128,7 @@ fun MainNavigationScaffold(
     val availableAudioDevices by viewModel.availableAudioDevices.collectAsState()
     val importState by viewModel.importState.collectAsState()
     val userProfile by viewModel.userProfile.collectAsState()
+    val isDynamicGlassEnabled by viewModel.isDynamicGlassEnabled.collectAsState()
 
     val context = LocalContext.current
     val app = context.applicationContext as XtremeMusicApp
@@ -177,11 +179,12 @@ fun MainNavigationScaffold(
 
     val appColors = LocalAppColors.current
 
-    Box(modifier = modifier.fillMaxSize().background(appColors.scaffoldBackground)) {
-        Scaffold(
-            contentWindowInsets = WindowInsets(0.dp),
-            containerColor = appColors.scaffoldBackground
-        ) { _ ->
+    CompositionLocalProvider(LocalDynamicGlassEnabled provides isDynamicGlassEnabled) {
+        Box(modifier = modifier.fillMaxSize().background(appColors.scaffoldBackground)) {
+            Scaffold(
+                contentWindowInsets = WindowInsets(0.dp),
+                containerColor = appColors.scaffoldBackground
+            ) { _ ->
             Box(modifier = Modifier.fillMaxSize()) {
                 // If playlist detail is open, show it with a smooth animated transition
                 val currentPlaylist = selectedPlaylistWithTracks
@@ -285,9 +288,7 @@ fun MainNavigationScaffold(
                         label = "tab_navigation_transition",
                         modifier = Modifier
                             .fillMaxSize()
-                            .graphicsLayer {
-                                clip = false
-                            }
+                            .xtremeSharedBackdropSource(enabled = isDynamicGlassEnabled)
                     ) { tabIndex ->
                         when (tabIndex) {
                             0 -> HomeScreen(
@@ -299,7 +300,7 @@ fun MainNavigationScaffold(
                                 onTrackClick = { track, queue -> viewModel.playTrack(track, queue) },
                                 onToggleFavorite = { track -> viewModel.toggleLike(track) },
                                 onOpenSettings = { selectedTabIndex = 3 },
-                                onPlayInfiniteRadio = { viewModel.playInfiniteRadio() },
+                                onPlayInfiniteRadio = { seed -> viewModel.playInfiniteRadio(seed) },
                                 onAddToQueue = { track -> viewModel.addToQueue(track) }
                             )
                             1 -> SearchScreen(
@@ -330,6 +331,8 @@ fun MainNavigationScaffold(
                                 isDarkMode = isDarkMode,
                                 themeMode = themeMode,
                                 userProfile = userProfile,
+                                isDynamicGlassEnabled = isDynamicGlassEnabled,
+                                onToggleDynamicGlass = { viewModel.setDynamicGlassEnabled(it) },
                                 onSubpageStateChanged = { isOpen -> isSettingsSubpageOpen = isOpen },
                                 onNavigateBackToHome = { selectedTabIndex = 0 },
                                 onUpdateProfile = { updated -> viewModel.updateUserProfile(updated) },
@@ -387,8 +390,6 @@ fun MainNavigationScaffold(
                         )
                     }
 
-                    // Floating Pill Navigation Bar
-                    // Only show when not in settings subpage and player not expanded
                     AnimatedVisibility(
                         visible = !isSettingsSubpageOpen && !isPlayerExpanded,
                         enter = fadeIn(animationSpec = tween(180)),
@@ -541,6 +542,7 @@ fun MainNavigationScaffold(
         }
     }
 }
+}
 
 /**
  * Floating Pill Navigation Bar
@@ -554,7 +556,8 @@ fun MainNavigationScaffold(
 fun FloatingPillBottomBar(
     selectedTabIndex: Int,
     onTabSelected: (Int) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    ambientGlowColor: Color = LocalAppColors.current.primaryAccent
 ) {
     val items = remember {
         listOf(
@@ -568,6 +571,7 @@ fun FloatingPillBottomBar(
         selectedTabIndex = selectedTabIndex,
         onTabSelected = onTabSelected,
         items = items,
-        modifier = modifier
+        modifier = modifier,
+        ambientGlowColor = ambientGlowColor
     )
 }

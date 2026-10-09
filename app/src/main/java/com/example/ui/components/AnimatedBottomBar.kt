@@ -30,7 +30,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
@@ -82,91 +81,43 @@ fun AnimatedBottomBar(
     onTabSelected: (Int) -> Unit,
     items: List<AnimatedBottomBarItem>,
     modifier: Modifier = Modifier,
-    appColors: AppThemeColors = LocalAppColors.current
+    appColors: AppThemeColors = LocalAppColors.current,
+    ambientGlowColor: Color = appColors.primaryAccent
 ) {
-    Surface(
+    Box(
         modifier = modifier
             .testTag("floating_bottom_navigation_bar")
             .wrapContentWidth()
-            .height(64.dp)
-            .shadow(
-                elevation = 16.dp,
-                shape = CircleShape,
-                spotColor = if (appColors.isDark) Color.Black.copy(alpha = 0.60f) else appColors.primaryAccent.copy(alpha = 0.16f),
-                ambientColor = if (appColors.isDark) Color.Black.copy(alpha = 0.30f) else Color.Black.copy(alpha = 0.08f)
-            )
-            .clip(CircleShape),
-        shape = CircleShape,
-        color = Color.Transparent,
-        border = BorderStroke(
-            1.4.dp,
-            LiquidGlass.specularBorderBrush(
-                appColors,
-                highlightAlpha = if (appColors.isDark) 0.40f else 0.55f
-            )
-        )
+            .height(64.dp),
+        contentAlignment = Alignment.Center
     ) {
+        // LAYER 1: GLASS BACKGROUND SURFACE ONLY (Colorless Liquid Glass)
         Box(
+            modifier = Modifier
+                .matchParentSize()
+                .xtremeLiquidGlassBackground(
+                    shape = CircleShape,
+                    blurRadius = 8.dp,
+                    surfaceTintAlpha = 0f,
+                    tintColor = Color.Transparent,
+                    borderWidth = 0.5.dp,
+                    elevation = 16.dp,
+                    appColors = appColors
+                )
+        )
+
+        // LAYER 2: UNBLURRED FOREGROUND CONTENT
+        Row(
             modifier = Modifier
                 .wrapContentWidth()
                 .height(64.dp)
-                .background(
-                    LiquidGlass.miniPlayerAndBottomBarBrush(appColors)
-                ),
-            contentAlignment = Alignment.Center
+                .padding(horizontal = 6.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally)
         ) {
-            // Frosted blur diffusion layer
-            Box(
-                modifier = Modifier
-                    .matchParentSize()
-                    .background(
-                        if (appColors.isDark) {
-                            Brush.verticalGradient(
-                                listOf(
-                                    Color.White.copy(alpha = 0.10f),
-                                    Color.White.copy(alpha = 0.02f)
-                                )
-                            )
-                        } else {
-                            Brush.verticalGradient(
-                                listOf(
-                                    Color.White.copy(alpha = 0.40f),
-                                    Color.White.copy(alpha = 0.15f)
-                                )
-                            )
-                        }
-                    )
-                    .blur(20.dp)
-            )
-
-            // Liquid Glass Specular Highlight Sheen across top curvature
-            Box(
-                modifier = Modifier
-                    .matchParentSize()
-                    .background(
-                        Brush.verticalGradient(
-                            listOf(
-                                Color.White.copy(alpha = if (appColors.isDark) 0.14f else 0.25f),
-                                Color.Transparent
-                            ),
-                            startY = 0f,
-                            endY = 40f
-                        )
-                    )
-            )
-
-            // Navigation items container with dynamic spring-based layout transition
-            Row(
-                modifier = Modifier
-                    .wrapContentWidth()
-                    .height(64.dp)
-                    .padding(horizontal = 6.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally)
-            ) {
-                items.forEach { item ->
-                    key(item.index) {
-                        val isSelected = selectedTabIndex == item.index
+            items.forEach { item ->
+                key(item.index) {
+                    val isSelected = selectedTabIndex == item.index
 
                     val iconScale by animateFloatAsState(
                         targetValue = if (isSelected) 1.12f else 1.0f,
@@ -252,47 +203,7 @@ fun AnimatedBottomBar(
                         contentAlignment = Alignment.Center
                     ) {
                         if (isSelected) {
-                            // 1. Theme Accent Colour Blur Layer (same look as music player background)
-                            Box(
-                                modifier = Modifier
-                                    .matchParentSize()
-                                    .clip(CircleShape)
-                                    .background(
-                                        Brush.radialGradient(
-                                            colors = listOf(
-                                                appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.55f else 0.40f),
-                                                appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.25f else 0.18f),
-                                                Color.Transparent
-                                            )
-                                        )
-                                    )
-                                    .blur(16.dp)
-                            )
-                            // 2. Optical Frosted Gaussian Blur Diffusion Layer
-                            Box(
-                                modifier = Modifier
-                                    .matchParentSize()
-                                    .clip(CircleShape)
-                                    .background(
-                                        if (appColors.isDark) {
-                                            Brush.verticalGradient(
-                                                listOf(
-                                                    Color.White.copy(alpha = 0.15f),
-                                                    Color.White.copy(alpha = 0.03f)
-                                                )
-                                            )
-                                        } else {
-                                            Brush.verticalGradient(
-                                                listOf(
-                                                    Color.White.copy(alpha = 0.42f),
-                                                    Color.White.copy(alpha = 0.16f)
-                                                )
-                                            )
-                                        }
-                                    )
-                                    .blur(12.dp)
-                            )
-                            // 3. 3D Liquid Glass Specular Highlight Sheen across top curvature
+                            // 3D Liquid Glass Specular Highlight Sheen across top curvature (unblurred)
                             Box(
                                 modifier = Modifier
                                     .matchParentSize()
@@ -300,7 +211,7 @@ fun AnimatedBottomBar(
                                     .background(
                                         Brush.verticalGradient(
                                             listOf(
-                                                Color.White.copy(alpha = if (appColors.isDark) 0.38f else 0.50f),
+                                                Color.White.copy(alpha = if (appColors.isDark) 0.35f else 0.48f),
                                                 Color.Transparent
                                             ),
                                             startY = 0f,
@@ -381,4 +292,3 @@ fun AnimatedBottomBar(
             }
         }
     }
-}

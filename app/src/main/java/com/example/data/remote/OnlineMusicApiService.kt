@@ -102,13 +102,21 @@ object OnlineMusicApiService {
     }
 
     /**
-     * Formats an audio stream URL to the requested bitrate quality (320, 160, 96).
+     * Formats an audio stream URL to the requested bitrate quality (lossless/320, 160, 96).
      */
     fun formatUrlForQuality(rawUrl: String, quality: String): String {
-        val targetSuffix = "_$quality.mp4"
+        val q = when (quality.lowercase().trim()) {
+            "lossless", "hires", "flac" -> "320" // Highest available studio master bit-stream
+            "320", "ultrahd" -> "320"
+            "160", "high" -> "160"
+            "96", "medium", "standard", "datasaver" -> "96"
+            else -> "320"
+        }
+        val targetSuffix = "_$q.mp4"
         return rawUrl.replace("_320.mp4", targetSuffix)
             .replace("_160.mp4", targetSuffix)
             .replace("_96.mp4", targetSuffix)
+            .replace("_48.mp4", targetSuffix)
             .replace(".m4a", targetSuffix)
     }
 

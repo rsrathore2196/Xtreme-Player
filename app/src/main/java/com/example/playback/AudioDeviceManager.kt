@@ -88,24 +88,35 @@ object AudioDeviceManager {
                     val typeLabel = if (isCar) "Car Audio System" else getDeviceTypeLabel(device.type)
                     val friendlyName = getDeviceFriendlyName(device)
 
-                    list.add(
-                        SoundOutputDevice(
-                            id = device.id,
-                            name = friendlyName,
-                            typeName = typeLabel,
-                            type = device.type,
-                            isSelected = (currentSelected == device.id),
-                            isBuiltInSpeaker = isSpeaker,
-                            isBluetooth = isBt,
-                            isWired = isWired,
-                            isUsb = isUsb,
-                            isCar = isCar
-                        )
-                    )
+                    val isGenericAlias = friendlyName.contains("System Default", ignoreCase = true) ||
+                            friendlyName.contains("Default Audio", ignoreCase = true) ||
+                            friendlyName.equals("Default", ignoreCase = true) ||
+                            friendlyName.contains("Default Device", ignoreCase = true) ||
+                            friendlyName.startsWith("Audio Output (", ignoreCase = true)
+
+                    if (!isGenericAlias) {
+                        // Avoid duplicate speaker entries
+                        if (!isSpeaker || list.none { it.isBuiltInSpeaker }) {
+                            list.add(
+                                SoundOutputDevice(
+                                    id = device.id,
+                                    name = friendlyName,
+                                    typeName = typeLabel,
+                                    type = device.type,
+                                    isSelected = (currentSelected == device.id),
+                                    isBuiltInSpeaker = isSpeaker,
+                                    isBluetooth = isBt,
+                                    isWired = isWired,
+                                    isUsb = isUsb,
+                                    isCar = isCar
+                                )
+                            )
+                        }
+                    }
                 }
             }
 
-            // If no specific speaker device was explicitly found in the array, add default speaker
+            // If no speaker device was explicitly found in the array, add default speaker
             if (list.none { it.isBuiltInSpeaker }) {
                 list.add(0, getFallbackSpeakerDevice())
             }

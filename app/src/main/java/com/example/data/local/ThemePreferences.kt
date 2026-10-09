@@ -344,19 +344,180 @@ object ThemePresets {
         bottomSheetGradientName = "Clean White"
     )
 
+    // ==========================================
+    // LASTWAVE NATIVE (Liquid Glass) PRESETS
+    // Extracted from Clash-Projects/LastWave-native
+    // ==========================================
+
+    val LastWaveOceanicGlass = AppThemePreset(
+        id = "lastwave_oceanic_glass",
+        name = "LastWave Oceanic",
+        subtitle = "LastWave signature deep oceanic void with electric azure translucent glass",
+        isDark = true,
+        accentName = "Electric Azure",
+        accentShade = "400",
+        accentColorHex = "#00D2FF",
+        secondaryAccentHex = "#3B82F6",
+        canvasColorName = "Oceanic Void",
+        canvasColorHex = "#030712",
+        cardColorName = "Abyssal Navy Glass",
+        cardColorHex = "#0B1220",
+        cardBorderHex = "#1E3557",
+        textPrimaryHex = "#F9FAFB",
+        textSecondaryHex = "#60A5FA",
+        textMutedHex = "#64748B",
+        bgGradientColorsHex = listOf("#030712", "#070E22", "#02040A"),
+        cardGradientColorsHex = listOf("#0E1A30", "#080F1E"),
+        bottomSheetGradientColorsHex = listOf("#0A1426", "#030712"),
+        bgGradientName = "Oceanic Void",
+        cardGradientName = "Liquid Glass",
+        bottomSheetGradientName = "Abyssal Glass"
+    )
+
+    val LastWaveNebulaGlass = AppThemePreset(
+        id = "lastwave_nebula_glass",
+        name = "LastWave Nebula",
+        subtitle = "LastWave celestial midnight obsidian with vibrant amethyst & magenta glass",
+        isDark = true,
+        accentName = "Amethyst Quartz",
+        accentShade = "500",
+        accentColorHex = "#A855F7",
+        secondaryAccentHex = "#EC4899",
+        canvasColorName = "Nebula Void",
+        canvasColorHex = "#070414",
+        cardColorName = "Cosmic Violet Glass",
+        cardColorHex = "#120A28",
+        cardBorderHex = "#381F66",
+        textPrimaryHex = "#FAF5FF",
+        textSecondaryHex = "#D8B4FE",
+        textMutedHex = "#9484A8",
+        bgGradientColorsHex = listOf("#1A0B36", "#0B051D", "#03010A"),
+        cardGradientColorsHex = listOf("#1E113B", "#100824"),
+        bottomSheetGradientColorsHex = listOf("#17092E", "#070414"),
+        bgGradientName = "Nebula Glow",
+        cardGradientName = "Liquid Glass",
+        bottomSheetGradientName = "Cosmic Glass"
+    )
+
+    val LastWaveMatrixGlass = AppThemePreset(
+        id = "lastwave_matrix_glass",
+        name = "LastWave Matrix",
+        subtitle = "LastWave cybernetic deep obsidian with radiant emerald & acid lime accents",
+        isDark = true,
+        accentName = "Matrix Emerald",
+        accentShade = "500",
+        accentColorHex = "#10B981",
+        secondaryAccentHex = "#84CC16",
+        canvasColorName = "Matrix Black",
+        canvasColorHex = "#020C06",
+        cardColorName = "Dark Forest Glass",
+        cardColorHex = "#081C10",
+        cardBorderHex = "#1B4E2F",
+        textPrimaryHex = "#ECFDF5",
+        textSecondaryHex = "#6EE7B7",
+        textMutedHex = "#5E8370",
+        bgGradientColorsHex = listOf("#062615", "#031309", "#010603"),
+        cardGradientColorsHex = listOf("#0D2A19", "#06180E"),
+        bottomSheetGradientColorsHex = listOf("#092113", "#020C06"),
+        bgGradientName = "Matrix Flow",
+        cardGradientName = "Liquid Glass",
+        bottomSheetGradientName = "Emerald Glass"
+    )
+
+    val LastWaveSolarGlass = AppThemePreset(
+        id = "lastwave_solar_glass",
+        name = "LastWave Solar",
+        subtitle = "LastWave magma obsidian canvas with glowing amber & solar flare highlights",
+        isDark = true,
+        accentName = "Solar Amber",
+        accentShade = "500",
+        accentColorHex = "#F97316",
+        secondaryAccentHex = "#FBBF24",
+        canvasColorName = "Magma Canvas",
+        canvasColorHex = "#0E0502",
+        cardColorName = "Volcanic Glass",
+        cardColorHex = "#1D0D07",
+        cardBorderHex = "#4F2314",
+        textPrimaryHex = "#FFF7ED",
+        textSecondaryHex = "#FDBA74",
+        textMutedHex = "#9A7265",
+        bgGradientColorsHex = listOf("#2E0E05", "#140602", "#050100"),
+        cardGradientColorsHex = listOf("#2B130A", "#170905"),
+        bottomSheetGradientColorsHex = listOf("#220D06", "#0E0502"),
+        bgGradientName = "Solar Flare",
+        cardGradientName = "Liquid Glass",
+        bottomSheetGradientName = "Volcanic Glass"
+    )
+
+    val LastWaveGlacierGlass = AppThemePreset(
+        id = "lastwave_glacier_glass",
+        name = "LastWave Glacier",
+        subtitle = "LastWave crystalline frost light canvas with translucent ocean glass surfaces",
+        isDark = false,
+        accentName = "Glacier Azure",
+        accentShade = "500",
+        accentColorHex = "#0284C7",
+        secondaryAccentHex = "#06B6D4",
+        canvasColorName = "Frost Sky",
+        canvasColorHex = "#F5F9FF",
+        cardColorName = "Glacier Crystal White",
+        cardColorHex = "#FFFFFF",
+        cardBorderHex = "#BFD7F5",
+        textPrimaryHex = "#0B192C",
+        textSecondaryHex = "#0369A1",
+        textMutedHex = "#64748B",
+        bgGradientColorsHex = listOf("#FFFFFF", "#F0F7FF", "#E2EFFF"),
+        cardGradientColorsHex = listOf("#FFFFFF", "#F8FBFF"),
+        bottomSheetGradientColorsHex = listOf("#FFFFFF", "#EEF6FF"),
+        bgGradientName = "Glacier Frost",
+        cardGradientName = "Liquid Glass",
+        bottomSheetGradientName = "Clean Crystal"
+    )
+
+    val LastWaveSakuraGlass = AppThemePreset(
+        id = "lastwave_sakura_glass",
+        name = "LastWave Sakura",
+        subtitle = "LastWave blooming quartz light canvas with translucent rose glass surfaces",
+        isDark = false,
+        accentName = "Sakura Rose",
+        accentShade = "500",
+        accentColorHex = "#E11D48",
+        secondaryAccentHex = "#F43F5E",
+        canvasColorName = "Quartz Rose",
+        canvasColorHex = "#FFF6F8",
+        cardColorName = "Sakura Crystal White",
+        cardColorHex = "#FFFFFF",
+        cardBorderHex = "#FBC4CF",
+        textPrimaryHex = "#1F0A11",
+        textSecondaryHex = "#BE123C",
+        textMutedHex = "#8C6873",
+        bgGradientColorsHex = listOf("#FFFFFF", "#FFF1F4", "#FDE5EB"),
+        cardGradientColorsHex = listOf("#FFFFFF", "#FFF7F9"),
+        bottomSheetGradientColorsHex = listOf("#FFFFFF", "#FCE8EE"),
+        bgGradientName = "Sakura Glow",
+        cardGradientName = "Liquid Glass",
+        bottomSheetGradientName = "Clean Crystal"
+    )
+
     val allPresets: List<AppThemePreset> = listOf(
-        // 5 Dark Presets
+        // Dark Presets
         StudioNight,
         AmoledPureBlack,
         CyberpunkNeon,
         EmeraldNebula,
         SunsetHorizon,
-        // 5 Light Presets
+        LastWaveOceanicGlass,
+        LastWaveNebulaGlass,
+        LastWaveMatrixGlass,
+        LastWaveSolarGlass,
+        // Light Presets
         CleanFrost,
         MinimalIvory,
         CherryBlossom,
         ElectricMint,
-        SunsetPeach
+        SunsetPeach,
+        LastWaveGlacierGlass,
+        LastWaveSakuraGlass
     )
 
     val darkPresets: List<AppThemePreset> = allPresets.filter { it.isDark }

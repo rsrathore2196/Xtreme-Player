@@ -67,7 +67,7 @@ import com.example.ui.theme.bouncyClickable
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun MusicPlaybackPage(
-    selectedQuality: AudioQuality = AudioQuality.EXTREME_320,
+    selectedQuality: AudioQuality = AudioQuality.ULTRA_HD_320,
     effectsState: AudioEffectsState,
     isDarkMode: Boolean,
     onAudioQualitySelected: (AudioQuality) -> Unit,
@@ -135,12 +135,23 @@ fun MusicPlaybackPage(
                 Spacer(modifier = Modifier.height(14.dp))
 
                 AudioQualityOption(
-                    title = "Ultra HD • 320 kbps (Studio Master)",
-                    subtitle = "Audiophile grade CD-quality sound reproduction",
-                    isSelected = selectedQuality == AudioQuality.EXTREME_320,
+                    title = "Hi-Res Lossless • 24-bit/192 kHz (Studio Master)",
+                    subtitle = "Highest Studio Grade Quality FLAC Audio",
+                    isSelected = selectedQuality == AudioQuality.HI_RES_LOSSLESS,
                     isDarkMode = isDarkMode,
                     accentColor = accentColor,
-                    onClick = { onAudioQualitySelected(AudioQuality.EXTREME_320) }
+                    onClick = { onAudioQualitySelected(AudioQuality.HI_RES_LOSSLESS) }
+                )
+
+                HorizontalDivider(color = dividerColor, thickness = 1.dp, modifier = Modifier.padding(vertical = 10.dp))
+
+                AudioQualityOption(
+                    title = "Ultra HD • 320 kbps (Limitless)",
+                    subtitle = "Audiophile Grade High Quality Sound Reproduction",
+                    isSelected = selectedQuality == AudioQuality.ULTRA_HD_320,
+                    isDarkMode = isDarkMode,
+                    accentColor = accentColor,
+                    onClick = { onAudioQualitySelected(AudioQuality.ULTRA_HD_320) }
                 )
 
                 HorizontalDivider(color = dividerColor, thickness = 1.dp, modifier = Modifier.padding(vertical = 10.dp))
@@ -159,10 +170,10 @@ fun MusicPlaybackPage(
                 AudioQualityOption(
                     title = "Medium • 96 kbps (Data Saver)",
                     subtitle = "Lowest network bandwidth usage",
-                    isSelected = selectedQuality == AudioQuality.DATA_SAVER_96,
+                    isSelected = selectedQuality == AudioQuality.MEDIUM_96,
                     isDarkMode = isDarkMode,
                     accentColor = accentColor,
-                    onClick = { onAudioQualitySelected(AudioQuality.DATA_SAVER_96) }
+                    onClick = { onAudioQualitySelected(AudioQuality.MEDIUM_96) }
                 )
             }
         }

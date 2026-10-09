@@ -270,7 +270,7 @@ fun EditProfileSheet(
                             Surface(
                                 shape = RoundedCornerShape(10.dp),
                                 color = if (isSelected) {
-                                    if (isDark) primaryAccent.copy(alpha = 0.22f) else Color(0xFFDBEAFE)
+                                    primaryAccent.copy(alpha = if (isDark) 0.22f else 0.16f)
                                 } else {
                                     appColors.chipBackground
                                 },
@@ -350,9 +350,17 @@ fun EditProfileSheet(
 
                     Spacer(modifier = Modifier.height(10.dp))
 
+                    val countryBoxBg = if (appColors.isAmoled) {
+                        Color(0xFF0A0A0A)
+                    } else if (isDark) {
+                        appColors.inputBackground
+                    } else {
+                        appColors.inputBackground
+                    }
+
                     Surface(
                         shape = RoundedCornerShape(10.dp),
-                        color = if (isDark) Color(0xFF071424) else Color(0xFFFFFFFF),
+                        color = countryBoxBg,
                         border = BorderStroke(1.dp, cardBorder),
                         modifier = Modifier
                             .fillMaxWidth()

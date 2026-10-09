@@ -56,6 +56,14 @@ data class AcousticFeatures(
     }
 
     companion object {
+        /**
+         * Normalized similarity between two acoustic vectors (0.0 = completely different, 1.0 = identical).
+         */
+        fun calculateAcousticSimilarity(a: AcousticFeatures, b: AcousticFeatures): Double {
+            val dist = a.normalizedDistance(b)
+            return (1.0 - dist.toDouble()).coerceIn(0.0, 1.0)
+        }
+
         // Curated precise acoustic vectors for known catalogue tracks
         private val KNOWN_FEATURES = mapOf(
             "xtreme_01" to AcousticFeatures(128f, 7, 0.85f, 0.65f, 0.78f, -5.2f, 0.08f), // Cybernetic Horizon (Synthwave)

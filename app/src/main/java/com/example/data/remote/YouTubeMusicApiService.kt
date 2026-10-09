@@ -3,6 +3,9 @@ package com.example.data.remote
 import android.util.Log
 import com.example.data.model.MusicTrack
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -644,5 +647,125 @@ object YouTubeMusicApiService {
      */
     suspend fun getPlaylistTracks(playlistId: String): List<MusicTrack> = withContext(Dispatchers.IO) {
         getPlaylistDetails(playlistId)?.tracks.orEmpty()
+    }
+
+    /**
+     * Fetches trending recommendation songs for the Home Screen exclusively via YouTube Music API.
+     */
+    suspend fun getTrendingSongs(limit: Int = 25): List<MusicTrack> = withContext(Dispatchers.IO) {
+        val trendingQueries = listOf("Top Hits", "Trending Songs", "Global Hits", "Billboard Top 50")
+        try {
+            val results = coroutineScope {
+                trendingQueries.map { q ->
+                    async {
+                        try {
+                            searchSongs(q, limit = limit / 2 + 5)
+                        } catch (_: Exception) {
+                            emptyList()
+                        }
+                    }
+                }.awaitAll()
+            }
+            val flattened = results.flatten().distinctBy { it.id }
+            if (flattened.isNotEmpty()) flattened.take(limit) else searchSongs("Top Music Hits", limit)
+        } catch (e: Exception) {
+            Log.w(TAG, "Error fetching trending songs from YouTube Music: ${e.message}")
+            searchSongs("Top Music", limit)
+        }
+    }
+
+    /**
+     * Fetches profile/language/country tailored recommendation tracks exclusively via YouTube Music API.
+     */
+    suspend fun getTrendingSongsForProfile(
+        country: String,
+        languages: List<String>,
+        limit: Int = 25
+    ): List<MusicTrack> = withContext(Dispatchers.IO) {
+        try {
+            val queries = mutableListOf<String>()
+            languages.filter { it.isNotBlank() }.forEach { lang ->
+                queries.add("$lang top songs")
+                queries.add("$lang trending hits")
+            }
+            if (country.isNotBlank()) {
+                queries.add("Top songs in $country")
+            }
+            if (queries.isEmpty()) {
+                queries.add("Top Worldwide Hits")
+            }
+
+            val results = coroutineScope {
+                queries.take(6).map { q ->
+                    async {
+                        try {
+                            searchSongs(q, limit = 8)
+                        } catch (_: Exception) {
+                            emptyList()
+                        }
+                    }
+                }.awaitAll()
+            }
+            results.flatten().distinctBy { it.id }.take(limit)
+        } catch (e: Exception) {
+            Log.w(TAG, "Error fetching profile recommendations from YouTube Music: ${e.message}")
+            emptyList()
+        }
+    }
+
+    /**
+     * Fetches Punjabi hits exclusively via YouTube Music API.
+     */
+    suspend fun getPunjabiHits(limit: Int = 15): List<MusicTrack> = withContext(Dispatchers.IO) {
+        val queries = listOf("Diljit Dosanjh hits", "Sidhu Moose Wala hits", "Karan Aujla hits", "AP Dhillon hits", "Amrinder Gill hits", "Top Punjabi Hits")
+        try {
+            val results = coroutineScope {
+                queries.map { q ->
+                    async {
+                        try {
+                            searchSongs(q, limit = 6)
+                        } catch (_: Exception) {
+                            emptyList()
+                        }
+                    }
+                }.awaitAll()
+            }
+            results.flatten().distinctBy { it.id }.take(limit)
+        } catch (e: Exception) {
+            Log.w(TAG, "Error fetching Punjabi hits from YouTube Music: ${e.message}")
+            searchSongs("Top Punjabi Songs", limit)
+        }
+    }
+
+    /**
+     * Fetches Era-specific hits exclusively via YouTube Music API.
+     */
+    suspend fun getEraHits(limit: Int = 15): List<MusicTrack> = withContext(Dispatchers.IO) {
+        val queries = listOf("90s Bollywood Classics", "2000s Bollywood Hits", "Retro Golden Hits", "Kumar Sanu hits", "Udit Narayan hits", "Sonu Nigam hits")
+        try {
+            val results = coroutineScope {
+                queries.map { q ->
+                    async {
+                        try {
+                            searchSongs(q, limit = 6)
+                        } catch (_: Exception) {
+                            emptyList()
+                        }
+                    }
+                }.awaitAll()
+            }
+            results.flatten().distinctBy { it.id }.take(limit)
+        } catch (e: Exception) {
+            Log.w(TAG, "Error fetching Era hits from YouTube Music: ${e.message}")
+            searchSongs("90s and 2000s Bollywood Hits", limit)
+        }
+    }
+
+    /**
+     * Fetches Genre-specific tracks exclusively via YouTube Music API.
+     */
+    suspend fun getGenreTracks(genre: String, limit: Int = 25): List<MusicTrack> = withContext(Dispatchers.IO) {
+        val q = if (genre.equals("All", true)) "Top Hit Songs" else "$genre top hits"
+        searchSongs(q, limit)
     }
 }
