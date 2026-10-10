@@ -197,6 +197,13 @@ class HomeViewModel(
     val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
     val isSilentRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
 
+    private val _refreshErrorMessage = MutableStateFlow<String?>(null)
+    val refreshErrorMessage: StateFlow<String?> = _refreshErrorMessage.asStateFlow()
+
+    fun clearRefreshError() {
+        _refreshErrorMessage.value = null
+    }
+
     private var regionalTrendingJob: Job? = null
 
     fun loadRegionalTrending(country: String, countryCode: String = "IN", forceRefresh: Boolean = false) {
@@ -302,17 +309,16 @@ class HomeViewModel(
 
     private fun loadInitialLocalData() {
         viewModelScope.launch(Dispatchers.IO) {
-            val initial = repository.getInitialCatalog(_userProfile.value)
-            _catalogTracks.value = initial
-            playbackManager.setCandidatePool(initial)
+            try {
+                val initial = repository.getInitialCatalog(_userProfile.value)
+                _catalogTracks.value = initial
+                playbackManager.setCandidatePool(initial)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Graceful handling of local data reading error
+            }
         }
-    }
-
-    private val _refreshErrorMessage = MutableStateFlow<String?>(null)
-    val refreshErrorMessage: StateFlow<String?> = _refreshErrorMessage.asStateFlow()
-
-    fun clearRefreshError() {
-        _refreshErrorMessage.value = null
     }
 
     /**
@@ -434,6 +440,8 @@ class HomeViewModel(
                         isLoaded = true
                     )
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 // Graceful fallback to local Room data
                 if (isExplicitPull) {
