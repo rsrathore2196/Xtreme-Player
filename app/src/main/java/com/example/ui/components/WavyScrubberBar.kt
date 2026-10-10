@@ -37,8 +37,7 @@ import kotlin.math.PI
 import kotlin.math.sin
 
 /**
- * Dynamic Wavy Scrubber Bar with Real-time Audio Visualizer Motion.
- * Adapted from LastWave-Native's interactive fluid progress design:
+ * Dynamic Wavy Scrubber Bar with Real-time Audio Visualizer Motion:
  * - Active progress renders as an animated traveling sine wave during playback.
  * - Gracefully flattens into a sleek smooth line when paused or scrubbing.
  * - Interactive thumb with tactile spring expansion and specular liquid glass glow.

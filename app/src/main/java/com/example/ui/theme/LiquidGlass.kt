@@ -30,7 +30,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 /**
- * Liquid Glass UI & Kinetic Motion Architecture (LastWave-Native Paradigm).
+ * Liquid Glass UI & Kinetic Motion Architecture.
  * Provides multi-layer depth, frosted glass background, real-time translucent gradient blur,
  * specular refraction edge highlights, and bouncy tactile spring animations that adapt cleanly
  * to system light/dark mode and user-selected custom dynamic accent colors.
@@ -822,7 +822,7 @@ fun calculateGlassContentColor(surfaceTint: Color): Color {
 }
 
 /**
- * Custom Liquid Glass Surface container matching LastWave Native:
+ * Custom Liquid Glass Surface container:
  * Provides elevation shadow, rounded corners, translucent backdrop, and specular border.
  */
 @Composable

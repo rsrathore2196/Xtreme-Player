@@ -282,14 +282,33 @@ fun ExpandedPlayerScreen(
                             (appColors.primaryAccent.green * 255).toInt(),
                             (appColors.primaryAccent.blue * 255).toInt()
                         )
-                        val dom = palette.getDarkVibrantColor(
-                            palette.getDominantColor(android.graphics.Color.parseColor("#0F2B48"))
+                        val defaultDomInt = android.graphics.Color.rgb(
+                            (appColors.cardBackgroundElevated.red * 255).toInt(),
+                            (appColors.cardBackgroundElevated.green * 255).toInt(),
+                            (appColors.cardBackgroundElevated.blue * 255).toInt()
                         )
-                        val acc = palette.getLightVibrantColor(
-                            palette.getVibrantColor(defaultAccentInt)
-                        )
+                        val dom = if (isDark) {
+                            palette.getDarkVibrantColor(
+                                palette.getDominantColor(palette.getDarkMutedColor(defaultDomInt))
+                            )
+                        } else {
+                            palette.getLightMutedColor(
+                                palette.getLightVibrantColor(palette.getDominantColor(defaultDomInt))
+                            )
+                        }
+                        val acc = if (isDark) {
+                            palette.getLightVibrantColor(
+                                palette.getVibrantColor(defaultAccentInt)
+                            )
+                        } else {
+                            palette.getVibrantColor(
+                                palette.getDarkVibrantColor(defaultAccentInt)
+                            )
+                        }
                         val vib = palette.getVibrantColor(
-                            palette.getLightVibrantColor(defaultAccentInt)
+                            palette.getLightVibrantColor(
+                                palette.getDominantColor(defaultAccentInt)
+                            )
                         )
                         val extracted = ExtractedTrackColors(
                             dominantColor = Color(dom),
@@ -2060,7 +2079,7 @@ private fun PlayerBokehBackground(
     )
 
     val pulseAnim by infiniteTransition.animateFloat(
-        initialValue = 0.70f,
+        initialValue = 0.75f,
         targetValue = 1.0f,
         animationSpec = infiniteRepeatable(
             animation = tween(5500, easing = FastOutSlowInEasing),
@@ -2072,8 +2091,18 @@ private fun PlayerBokehBackground(
     val isAmoled = appColors.isAmoled
 
     Box(modifier = modifier.fillMaxSize()) {
-        // 1. Root theme canvas base fill: AMOLED pure black or theme scaffoldBackground
-        val baseColor = if (isAmoled) Color(0xFF000000) else if (isDark) appColors.scaffoldBackground else Color(0xFFF8FAFC)
+        // 1. Root theme canvas base fill:
+        // - AMOLED: Solid black #000000 at the foundation
+        // - Dark: theme scaffoldBackground
+        // - Light: theme scaffoldBackground or pristine #F8FAFC
+        val baseColor = if (isAmoled) {
+            Color(0xFF000000)
+        } else if (isDark) {
+            appColors.scaffoldBackground
+        } else {
+            appColors.scaffoldBackground
+        }
+
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -2086,32 +2115,59 @@ private fun PlayerBokehBackground(
             modifier = Modifier
                 .fillMaxSize()
                 .blur(48.dp)
-                .graphicsLayer { alpha = 0.85f }
+                .graphicsLayer { alpha = 0.88f }
         ) {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val w = size.width
                 val h = size.height
 
-                val themeAccent = appColors.primaryAccent
-                val effectiveAccent = if (isDark) {
-                    Color(
-                        red = (accentColor.red * 0.45f + themeAccent.red * 0.55f),
-                        green = (accentColor.green * 0.45f + themeAccent.green * 0.55f),
-                        blue = (accentColor.blue * 0.45f + themeAccent.blue * 0.55f)
-                    )
-                } else {
-                    accentColor
-                }
+                val bgCenter = Offset(
+                    x = w * (0.50f + 0.05f * (floatAnim1 - 0.5f)),
+                    y = h * (0.38f + 0.05f * (floatAnim2 - 0.5f))
+                )
+                val bgRadius = w * 0.95f
 
-                if (!isAmoled) {
-                    // Deep foundation backdrop bloom
-                    val bgCenter = Offset(w * 0.50f, h * 0.40f)
-                    val bgRadius = w * 0.95f
+                if (isAmoled) {
+                    // AMOLED Dark Mode Adaptation:
+                    // Subtle, dark-tinted dynamic radial glow derived directly from album art palette
+                    // fading into deep pure AMOLED black at the edges to preserve battery savings while looking rich.
                     drawCircle(
                         brush = Brush.radialGradient(
                             colors = listOf(
-                                dominantColor.copy(alpha = if (isDark) 0.70f * pulseAnim else 0.30f * pulseAnim),
-                                vibrantColor.copy(alpha = if (isDark) 0.50f * pulseAnim else 0.20f * pulseAnim),
+                                dominantColor.copy(alpha = 0.42f * pulseAnim),
+                                vibrantColor.copy(alpha = 0.25f * pulseAnim),
+                                Color(0xFF000000).copy(alpha = 0.85f),
+                                Color(0xFF000000)
+                            ),
+                            center = bgCenter,
+                            radius = bgRadius
+                        ),
+                        center = bgCenter,
+                        radius = bgRadius
+                    )
+                } else if (!isDark) {
+                    // Light Mode Adaptation:
+                    // Soft, pastel/translucent ambient foundation derived from album art palette
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                dominantColor.copy(alpha = 0.28f * pulseAnim),
+                                vibrantColor.copy(alpha = 0.18f * pulseAnim),
+                                Color.Transparent
+                            ),
+                            center = bgCenter,
+                            radius = bgRadius
+                        ),
+                        center = bgCenter,
+                        radius = bgRadius
+                    )
+                } else {
+                    // Standard Dark Mode
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                dominantColor.copy(alpha = 0.70f * pulseAnim),
+                                vibrantColor.copy(alpha = 0.50f * pulseAnim),
                                 Color.Transparent
                             ),
                             center = bgCenter,
@@ -2135,27 +2191,44 @@ private fun PlayerBokehBackground(
                 val w = size.width
                 val h = size.height
 
-                val themeAccent = appColors.primaryAccent
-                val themeSecondary = appColors.secondaryAccent
-                val effectiveAccent = if (isDark) {
-                    Color(
-                        red = (accentColor.red * 0.45f + themeAccent.red * 0.55f),
-                        green = (accentColor.green * 0.45f + themeAccent.green * 0.55f),
-                        blue = (accentColor.blue * 0.45f + themeAccent.blue * 0.55f)
-                    )
-                } else {
-                    accentColor
-                }
+                val effectiveAccent = accentColor
+                val effectiveVibrant = vibrantColor
+                val effectiveDominant = dominantColor
 
                 if (isAmoled) {
-                    // AMOLED mode: elegant ambient theme + artwork glow
-                    val orb1Center = Offset(w * 0.5f, h * 0.35f)
-                    val orb1Radius = w * 0.75f
+                    // AMOLED mode: Dark-tinted dynamic glowing aura behind artwork
+                    // Radial gradient concentrates glow centrally and gracefully fades to true black (#000000)
+                    val auraCenter = Offset(
+                        x = w * (0.50f + 0.06f * (floatAnim1 - 0.5f)),
+                        y = h * (0.35f + 0.05f * (floatAnim2 - 0.5f))
+                    )
+                    val auraRadius = w * 0.82f
                     drawCircle(
                         brush = Brush.radialGradient(
                             colors = listOf(
-                                effectiveAccent.copy(alpha = 0.25f * pulseAnim),
-                                vibrantColor.copy(alpha = 0.15f * pulseAnim),
+                                effectiveVibrant.copy(alpha = 0.38f * pulseAnim),
+                                effectiveAccent.copy(alpha = 0.26f * pulseAnim),
+                                effectiveDominant.copy(alpha = 0.14f * pulseAnim),
+                                Color.Transparent
+                            ),
+                            center = auraCenter,
+                            radius = auraRadius
+                        ),
+                        center = auraCenter,
+                        radius = auraRadius
+                    )
+
+                    // Secondary subtle ambient highlight
+                    val orb1Center = Offset(
+                        x = w * (0.28f + 0.08f * (floatAnim2 - 0.5f)),
+                        y = h * (0.24f + 0.06f * (floatAnim1 - 0.5f))
+                    )
+                    val orb1Radius = w * 0.60f
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                effectiveDominant.copy(alpha = 0.24f * pulseAnim),
+                                effectiveAccent.copy(alpha = 0.12f * pulseAnim),
                                 Color.Transparent
                             ),
                             center = orb1Center,
@@ -2164,98 +2237,166 @@ private fun PlayerBokehBackground(
                         center = orb1Center,
                         radius = orb1Radius
                     )
-                    return@Canvas
-                }
+                } else if (!isDark) {
+                    // Light Mode Adaptation:
+                    // Blend soft, pastel/translucent gradient derived from album art palette
+                    // with high text/icon legibility
+                    val dominantAlpha = 0.26f
+                    val accentAlpha = 0.30f
+                    val vibrantAlpha = 0.24f
 
-                val dominantAlpha = if (isDark) 0.85f else 0.35f
-                val accentAlpha = if (isDark) 0.90f else 0.40f
-                val vibrantAlpha = if (isDark) 0.75f else 0.30f
-
-                // Dynamic primary ambient radial glass aura centered behind artwork
-                val auraCenter = Offset(
-                    x = w * (0.50f + 0.08f * (floatAnim1 - 0.5f)),
-                    y = h * (0.36f + 0.06f * (floatAnim2 - 0.5f))
-                )
-                val auraRadius = w * 0.88f
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(
-                            effectiveAccent.copy(alpha = accentAlpha * pulseAnim),
-                            vibrantColor.copy(alpha = (vibrantAlpha * 0.75f) * pulseAnim),
-                            dominantColor.copy(alpha = (dominantAlpha * 0.50f) * pulseAnim),
-                            Color.Transparent
+                    // Primary ambient radial pastel aura behind artwork
+                    val auraCenter = Offset(
+                        x = w * (0.50f + 0.08f * (floatAnim1 - 0.5f)),
+                        y = h * (0.36f + 0.06f * (floatAnim2 - 0.5f))
+                    )
+                    val auraRadius = w * 0.88f
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                effectiveAccent.copy(alpha = accentAlpha * pulseAnim),
+                                effectiveVibrant.copy(alpha = vibrantAlpha * pulseAnim),
+                                effectiveDominant.copy(alpha = dominantAlpha * pulseAnim),
+                                Color.Transparent
+                            ),
+                            center = auraCenter,
+                            radius = auraRadius
                         ),
                         center = auraCenter,
                         radius = auraRadius
-                    ),
-                    center = auraCenter,
-                    radius = auraRadius
-                )
+                    )
 
-                // Secondary ambient glow floating upper-left
-                val orb1Center = Offset(
-                    x = w * (0.24f + 0.10f * (floatAnim1 - 0.5f)),
-                    y = h * (0.22f + 0.08f * (floatAnim2 - 0.5f))
-                )
-                val orb1Radius = w * 0.72f
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(
-                            dominantColor.copy(alpha = dominantAlpha * pulseAnim),
-                            themeSecondary.copy(alpha = (dominantAlpha * 0.40f) * pulseAnim),
-                            Color.Transparent
+                    // Secondary pastel orb floating upper-left
+                    val orb1Center = Offset(
+                        x = w * (0.24f + 0.10f * (floatAnim1 - 0.5f)),
+                        y = h * (0.22f + 0.08f * (floatAnim2 - 0.5f))
+                    )
+                    val orb1Radius = w * 0.72f
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                effectiveDominant.copy(alpha = (dominantAlpha * 0.8f) * pulseAnim),
+                                effectiveAccent.copy(alpha = (accentAlpha * 0.5f) * pulseAnim),
+                                Color.Transparent
+                            ),
+                            center = orb1Center,
+                            radius = orb1Radius
                         ),
                         center = orb1Center,
                         radius = orb1Radius
-                    ),
-                    center = orb1Center,
-                    radius = orb1Radius
-                )
+                    )
 
-                // Vibrant bokeh orb floating mid-right
-                val orb2Center = Offset(
-                    x = w * (0.78f - 0.12f * (floatAnim2 - 0.5f)),
-                    y = h * (0.48f + 0.10f * (floatAnim1 - 0.5f))
-                )
-                val orb2Radius = w * 0.70f
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(
-                            vibrantColor.copy(alpha = vibrantAlpha * pulseAnim),
-                            effectiveAccent.copy(alpha = (accentAlpha * 0.50f) * pulseAnim),
-                            Color.Transparent
+                    // Floating pastel orb mid-right
+                    val orb2Center = Offset(
+                        x = w * (0.78f - 0.12f * (floatAnim2 - 0.5f)),
+                        y = h * (0.48f + 0.10f * (floatAnim1 - 0.5f))
+                    )
+                    val orb2Radius = w * 0.70f
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                effectiveVibrant.copy(alpha = (vibrantAlpha * 0.8f) * pulseAnim),
+                                effectiveAccent.copy(alpha = (accentAlpha * 0.4f) * pulseAnim),
+                                Color.Transparent
+                            ),
+                            center = orb2Center,
+                            radius = orb2Radius
                         ),
                         center = orb2Center,
                         radius = orb2Radius
-                    ),
-                    center = orb2Center,
-                    radius = orb2Radius
-                )
+                    )
+                } else {
+                    // Standard Dark Mode
+                    val dominantAlpha = 0.85f
+                    val accentAlpha = 0.90f
+                    val vibrantAlpha = 0.75f
 
-                // Lower aura floating bottom-left
-                val orb3Center = Offset(
-                    x = w * (0.30f + 0.14f * (floatAnim2 - 0.5f)),
-                    y = h * (0.78f - 0.08f * (floatAnim1 - 0.5f))
-                )
-                val orb3Radius = w * 0.74f
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(
-                            (if (isDark) themeSecondary else effectiveAccent).copy(alpha = (if (isDark) 0.60f else 0.25f) * pulseAnim),
-                            dominantColor.copy(alpha = (if (isDark) 0.30f else 0.10f)),
-                            Color.Transparent
+                    // Dynamic primary ambient radial glass aura centered behind artwork
+                    val auraCenter = Offset(
+                        x = w * (0.50f + 0.08f * (floatAnim1 - 0.5f)),
+                        y = h * (0.36f + 0.06f * (floatAnim2 - 0.5f))
+                    )
+                    val auraRadius = w * 0.88f
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                effectiveAccent.copy(alpha = accentAlpha * pulseAnim),
+                                effectiveVibrant.copy(alpha = (vibrantAlpha * 0.75f) * pulseAnim),
+                                effectiveDominant.copy(alpha = (dominantAlpha * 0.50f) * pulseAnim),
+                                Color.Transparent
+                            ),
+                            center = auraCenter,
+                            radius = auraRadius
+                        ),
+                        center = auraCenter,
+                        radius = auraRadius
+                    )
+
+                    // Secondary ambient glow floating upper-left
+                    val orb1Center = Offset(
+                        x = w * (0.24f + 0.10f * (floatAnim1 - 0.5f)),
+                        y = h * (0.22f + 0.08f * (floatAnim2 - 0.5f))
+                    )
+                    val orb1Radius = w * 0.72f
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                effectiveDominant.copy(alpha = dominantAlpha * pulseAnim),
+                                effectiveAccent.copy(alpha = (dominantAlpha * 0.40f) * pulseAnim),
+                                Color.Transparent
+                            ),
+                            center = orb1Center,
+                            radius = orb1Radius
+                        ),
+                        center = orb1Center,
+                        radius = orb1Radius
+                    )
+
+                    // Vibrant bokeh orb floating mid-right
+                    val orb2Center = Offset(
+                        x = w * (0.78f - 0.12f * (floatAnim2 - 0.5f)),
+                        y = h * (0.48f + 0.10f * (floatAnim1 - 0.5f))
+                    )
+                    val orb2Radius = w * 0.70f
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                effectiveVibrant.copy(alpha = vibrantAlpha * pulseAnim),
+                                effectiveAccent.copy(alpha = (accentAlpha * 0.50f) * pulseAnim),
+                                Color.Transparent
+                            ),
+                            center = orb2Center,
+                            radius = orb2Radius
+                        ),
+                        center = orb2Center,
+                        radius = orb2Radius
+                    )
+
+                    // Lower aura floating bottom-left
+                    val orb3Center = Offset(
+                        x = w * (0.30f + 0.14f * (floatAnim2 - 0.5f)),
+                        y = h * (0.78f - 0.08f * (floatAnim1 - 0.5f))
+                    )
+                    val orb3Radius = w * 0.74f
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                effectiveAccent.copy(alpha = 0.55f * pulseAnim),
+                                effectiveDominant.copy(alpha = 0.25f),
+                                Color.Transparent
+                            ),
+                            center = orb3Center,
+                            radius = orb3Radius
                         ),
                         center = orb3Center,
                         radius = orb3Radius
-                    ),
-                    center = orb3Center,
-                    radius = orb3Radius
-                )
+                    )
+                }
             }
         }
 
         // 3. Subtle Frosted Glass Micro-Texture Noise Overlay
-        Canvas(modifier = Modifier.fillMaxSize().graphicsLayer { alpha = 0.045f }) {
+        Canvas(modifier = Modifier.fillMaxSize().graphicsLayer { alpha = 0.040f }) {
             val step = 4f
             var y = 0f
             while (y < size.height) {
@@ -2280,8 +2421,8 @@ private fun PlayerBokehBackground(
             // Top specular caustic sheen across upper glass curvature
             val glassCausticBrush = Brush.verticalGradient(
                 colors = listOf(
-                    Color.White.copy(alpha = if (isDark) 0.16f else 0.30f),
-                    Color.White.copy(alpha = if (isDark) 0.04f else 0.08f),
+                    Color.White.copy(alpha = if (isDark) 0.14f else 0.25f),
+                    Color.White.copy(alpha = if (isDark) 0.03f else 0.06f),
                     Color.Transparent
                 ),
                 startY = 0f,
@@ -2289,9 +2430,16 @@ private fun PlayerBokehBackground(
             )
             drawRect(glassCausticBrush)
 
-            // Cinematic contrast vignette overlay to protect text readability
-            val vignetteColors = if (isDark) {
-                val darkBase = if (isAmoled) Color(0xFF000000) else appColors.scaffoldBackground
+            // Dynamic vignette overlay to guarantee controls and text legibility across all themes
+            val vignetteColors = if (isAmoled) {
+                listOf(
+                    Color(0xFF000000).copy(alpha = 0.40f),
+                    Color.Transparent,
+                    Color(0xFF000000).copy(alpha = 0.65f),
+                    Color(0xFF000000).copy(alpha = 0.95f)
+                )
+            } else if (isDark) {
+                val darkBase = appColors.scaffoldBackground
                 listOf(
                     darkBase.copy(alpha = 0.30f),
                     Color.Transparent,
@@ -2299,11 +2447,12 @@ private fun PlayerBokehBackground(
                     darkBase.copy(alpha = 0.90f)
                 )
             } else {
+                val lightBase = appColors.scaffoldBackground
                 listOf(
-                    Color.White.copy(alpha = 0.25f),
+                    lightBase.copy(alpha = 0.20f),
                     Color.Transparent,
-                    Color.White.copy(alpha = 0.35f),
-                    Color.White.copy(alpha = 0.85f)
+                    lightBase.copy(alpha = 0.35f),
+                    lightBase.copy(alpha = 0.88f)
                 )
             }
             drawRect(brush = Brush.verticalGradient(colors = vignetteColors))

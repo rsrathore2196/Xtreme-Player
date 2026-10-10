@@ -310,8 +310,10 @@ object XtremeGradients {
 }
 
 // =========================================================================
-// LASTWAVE NATIVE (Clash-Projects/LastWave-native) LIQUID GLASS COLOR SYSTEM
+// LIQUID GLASS COLOR SYSTEM
 // =========================================================================
+
+typealias LiquidGlassColors = LastWaveColors
 
 object LastWaveColors {
     // 1. Oceanic Abyssal Void & Luminous Azure Glass

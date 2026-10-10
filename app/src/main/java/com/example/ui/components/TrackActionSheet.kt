@@ -234,7 +234,7 @@ fun TrackActionSheet(
                             putExtra(Intent.EXTRA_SUBJECT, track.title)
                             putExtra(
                                 Intent.EXTRA_TEXT,
-                                "Listening to \"${track.title}\" by ${track.artist} on LastWave Native Audio!"
+                                "Listening to \"${track.title}\" by ${track.artist} on Xtreme Player!"
                             )
                         }
                         context.startActivity(Intent.createChooser(shareIntent, "Share \"${track.title}\""))

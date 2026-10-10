@@ -345,14 +345,13 @@ object ThemePresets {
     )
 
     // ==========================================
-    // LASTWAVE NATIVE (Liquid Glass) PRESETS
-    // Extracted from Clash-Projects/LastWave-native
+    // LIQUID GLASS PRESETS
     // ==========================================
 
-    val LastWaveOceanicGlass = AppThemePreset(
-        id = "lastwave_oceanic_glass",
-        name = "LastWave Oceanic",
-        subtitle = "LastWave signature deep oceanic void with electric azure translucent glass",
+    val OceanicGlass = AppThemePreset(
+        id = "oceanic_glass",
+        name = "Oceanic Liquid Glass",
+        subtitle = "Signature deep oceanic void with electric azure translucent glass",
         isDark = true,
         accentName = "Electric Azure",
         accentShade = "400",
@@ -374,10 +373,10 @@ object ThemePresets {
         bottomSheetGradientName = "Abyssal Glass"
     )
 
-    val LastWaveNebulaGlass = AppThemePreset(
-        id = "lastwave_nebula_glass",
-        name = "LastWave Nebula",
-        subtitle = "LastWave celestial midnight obsidian with vibrant amethyst & magenta glass",
+    val NebulaGlass = AppThemePreset(
+        id = "nebula_glass",
+        name = "Nebula Liquid Glass",
+        subtitle = "Celestial midnight obsidian with vibrant amethyst & magenta glass",
         isDark = true,
         accentName = "Amethyst Quartz",
         accentShade = "500",
@@ -399,10 +398,10 @@ object ThemePresets {
         bottomSheetGradientName = "Cosmic Glass"
     )
 
-    val LastWaveMatrixGlass = AppThemePreset(
-        id = "lastwave_matrix_glass",
-        name = "LastWave Matrix",
-        subtitle = "LastWave cybernetic deep obsidian with radiant emerald & acid lime accents",
+    val MatrixGlass = AppThemePreset(
+        id = "matrix_glass",
+        name = "Matrix Liquid Glass",
+        subtitle = "Cybernetic deep obsidian with radiant emerald & acid lime accents",
         isDark = true,
         accentName = "Matrix Emerald",
         accentShade = "500",
@@ -424,10 +423,10 @@ object ThemePresets {
         bottomSheetGradientName = "Emerald Glass"
     )
 
-    val LastWaveSolarGlass = AppThemePreset(
-        id = "lastwave_solar_glass",
-        name = "LastWave Solar",
-        subtitle = "LastWave magma obsidian canvas with glowing amber & solar flare highlights",
+    val SolarGlass = AppThemePreset(
+        id = "solar_glass",
+        name = "Solar Liquid Glass",
+        subtitle = "Magma obsidian canvas with glowing amber & solar flare highlights",
         isDark = true,
         accentName = "Solar Amber",
         accentShade = "500",
@@ -449,10 +448,10 @@ object ThemePresets {
         bottomSheetGradientName = "Volcanic Glass"
     )
 
-    val LastWaveGlacierGlass = AppThemePreset(
-        id = "lastwave_glacier_glass",
-        name = "LastWave Glacier",
-        subtitle = "LastWave crystalline frost light canvas with translucent ocean glass surfaces",
+    val GlacierGlass = AppThemePreset(
+        id = "glacier_glass",
+        name = "Glacier Liquid Glass",
+        subtitle = "Crystalline frost light canvas with translucent ocean glass surfaces",
         isDark = false,
         accentName = "Glacier Azure",
         accentShade = "500",
@@ -474,10 +473,10 @@ object ThemePresets {
         bottomSheetGradientName = "Clean Crystal"
     )
 
-    val LastWaveSakuraGlass = AppThemePreset(
-        id = "lastwave_sakura_glass",
-        name = "LastWave Sakura",
-        subtitle = "LastWave blooming quartz light canvas with translucent rose glass surfaces",
+    val SakuraGlass = AppThemePreset(
+        id = "sakura_glass",
+        name = "Sakura Liquid Glass",
+        subtitle = "Blooming quartz light canvas with translucent rose glass surfaces",
         isDark = false,
         accentName = "Sakura Rose",
         accentShade = "500",
@@ -499,6 +498,14 @@ object ThemePresets {
         bottomSheetGradientName = "Clean Crystal"
     )
 
+    // Backward compatibility aliases
+    val LastWaveOceanicGlass = OceanicGlass
+    val LastWaveNebulaGlass = NebulaGlass
+    val LastWaveMatrixGlass = MatrixGlass
+    val LastWaveSolarGlass = SolarGlass
+    val LastWaveGlacierGlass = GlacierGlass
+    val LastWaveSakuraGlass = SakuraGlass
+
     val allPresets: List<AppThemePreset> = listOf(
         // Dark Presets
         StudioNight,
@@ -506,29 +513,39 @@ object ThemePresets {
         CyberpunkNeon,
         EmeraldNebula,
         SunsetHorizon,
-        LastWaveOceanicGlass,
-        LastWaveNebulaGlass,
-        LastWaveMatrixGlass,
-        LastWaveSolarGlass,
+        OceanicGlass,
+        NebulaGlass,
+        MatrixGlass,
+        SolarGlass,
         // Light Presets
         CleanFrost,
         MinimalIvory,
         CherryBlossom,
         ElectricMint,
         SunsetPeach,
-        LastWaveGlacierGlass,
-        LastWaveSakuraGlass
+        GlacierGlass,
+        SakuraGlass
     )
 
     val darkPresets: List<AppThemePreset> = allPresets.filter { it.isDark }
     val lightPresets: List<AppThemePreset> = allPresets.filter { !it.isDark }
 
     fun findById(id: String): AppThemePreset? {
-        return allPresets.find { it.id.equals(id, ignoreCase = true) }
+        val sanitized = id.removePrefix("lastwave_").trim()
+        return allPresets.find {
+            it.id.equals(id, ignoreCase = true) ||
+                    it.id.equals(sanitized, ignoreCase = true) ||
+                    it.id.equals("${sanitized}_glass", ignoreCase = true)
+        }
     }
 
     fun findByName(name: String): AppThemePreset? {
-        return allPresets.find { it.name.equals(name, ignoreCase = true) }
+        val sanitized = name.replace("LastWave", "", ignoreCase = true).trim()
+        return allPresets.find {
+            it.name.equals(name, ignoreCase = true) ||
+                    it.name.equals(sanitized, ignoreCase = true) ||
+                    it.name.startsWith(sanitized, ignoreCase = true)
+        }
     }
 }
 

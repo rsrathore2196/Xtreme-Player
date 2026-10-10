@@ -61,7 +61,7 @@ data class AnimatedBottomBarItem(
 )
 
 /**
- * Standalone, reusable AnimatedBottomBar implementing the LastWave Native tab-changing animation.
+ * Standalone, reusable AnimatedBottomBar implementing fluid tab-changing animation.
  *
  * Key Animation Behaviors:
  * 1. Pill-Style Active Indicator: Active tab is contained within a rounded pill background that

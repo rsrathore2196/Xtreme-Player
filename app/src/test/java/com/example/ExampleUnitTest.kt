@@ -152,7 +152,7 @@ class ExampleUnitTest {
         val punjabiLyrics = com.example.data.remote.LyricsProvider.getLyricsForTrack(punjabiTrack)
         if (punjabiLyrics.lines.isNotEmpty()) {
             assertTrue(punjabiLyrics.isSynced)
-            assertTrue(punjabiLyrics.lines[0].words.isNotEmpty())
+            assertTrue(punjabiLyrics.lines[0].text.isNotBlank())
         }
 
         // Hindi track test
@@ -170,7 +170,7 @@ class ExampleUnitTest {
         val hindiLyrics = com.example.data.remote.LyricsProvider.getLyricsForTrack(hindiTrack)
         if (hindiLyrics.lines.isNotEmpty()) {
             assertTrue(hindiLyrics.isSynced)
-            assertTrue(hindiLyrics.lines[0].words.isNotEmpty())
+            assertTrue(hindiLyrics.lines[0].text.isNotBlank())
         }
 
         // English track test
@@ -188,7 +188,7 @@ class ExampleUnitTest {
         val englishLyrics = com.example.data.remote.LyricsProvider.getLyricsForTrack(englishTrack)
         if (englishLyrics.lines.isNotEmpty()) {
             assertTrue(englishLyrics.isSynced)
-            assertTrue(englishLyrics.lines[0].words.isNotEmpty())
+            assertTrue(englishLyrics.lines[0].text.isNotBlank())
         }
     }
 

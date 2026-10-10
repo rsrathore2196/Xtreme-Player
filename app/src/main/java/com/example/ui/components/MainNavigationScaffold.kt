@@ -421,7 +421,7 @@ fun MainNavigationScaffold(
             }
         }
 
-        // FULL SCREEN EXPANDED PLAYER (Smooth, responsive push/pop spring transitions from LastWave-Native)
+        // FULL SCREEN EXPANDED PLAYER (Smooth, responsive push/pop spring transitions)
         AnimatedVisibility(
             visible = isPlayerExpanded && playerUiState.currentTrack != null,
             enter = slideInVertically(
