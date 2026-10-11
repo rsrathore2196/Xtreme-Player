@@ -132,19 +132,7 @@ class MusicService : MediaLibraryService() {
 
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                 android.util.Log.w("MusicService", "Player error encountered: ${error.errorCodeName} - ${error.message}")
-                if (error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_DECODER_INIT_FAILED ||
-                    error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_DECODING_FAILED ||
-                    error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED
-                ) {
-                    try {
-                        player.prepare()
-                        if (player.playWhenReady) {
-                            player.play()
-                        }
-                    } catch (e: Exception) {
-                        android.util.Log.e("MusicService", "Error attempting player recovery: ${e.message}")
-                    }
-                }
+                // The controller owns bounded stream recovery. Do not retry indefinitely here.
             }
         })
 

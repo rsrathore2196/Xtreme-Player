@@ -55,7 +55,7 @@ class MusicRepository(
 
     // LRU / in-memory cache to avoid duplicate network calls and prevent rate limiting
     private val searchCache = ConcurrentHashMap<String, SearchResultCategory>()
-    private val playableTrackCache = ConcurrentHashMap<String, MusicTrack>()
+    private val streamResolver = StreamResolver()
 
     // Static memory cache for enriched catalog to persist across fast navigations
     companion object {
@@ -154,7 +154,7 @@ class MusicRepository(
                         isLiked = likedIds.contains(track.id)
                     )
                 }
-                musicDao.insertOrUpdateTracks(entities)
+                musicDao.mergeTracksMetadata(entities)
             } catch (_: Exception) {}
         }
 
@@ -199,7 +199,7 @@ class MusicRepository(
 
         val finalTracks = if (diversifiedOnline.isNotEmpty()) {
             val entities = diversifiedOnline.map { TrackEntity.fromMusicTrack(it).copy(isCached = true, language = "Punjabi") }
-            try { musicDao.insertOrUpdateTracks(entities) } catch (_: Exception) {}
+            try { musicDao.mergeTracksMetadata(entities) } catch (_: Exception) {}
             diversifiedOnline.map { it.copy(isLiked = likedIds.contains(it.id)) }
         } else if (roomDiversified.isNotEmpty()) {
             roomDiversified
@@ -239,7 +239,7 @@ class MusicRepository(
 
         val finalTracks = if (diversified.isNotEmpty()) {
             val entities = diversified.map { TrackEntity.fromMusicTrack(it).copy(isCached = true, genre = "Retro") }
-            try { musicDao.insertOrUpdateTracks(entities) } catch (_: Exception) {}
+            try { musicDao.mergeTracksMetadata(entities) } catch (_: Exception) {}
             diversified.map { it.copy(isLiked = likedIds.contains(it.id)) }
         } else {
             val roomCached = try { musicDao.getCachedTracksSync(30).filter { it.genre.equals("Retro", ignoreCase = true) } } catch (_: Exception) { emptyList() }
@@ -270,7 +270,7 @@ class MusicRepository(
         val diversified = AlbumArtDeduplicator.interleaveAndDiversify(onlineResults, limit)
         if (diversified.isNotEmpty()) {
             val entities = diversified.map { TrackEntity.fromMusicTrack(it).copy(isCached = true) }
-            try { musicDao.insertOrUpdateTracks(entities) } catch (_: Exception) {}
+            try { musicDao.mergeTracksMetadata(entities) } catch (_: Exception) {}
             diversified.map { it.copy(isLiked = likedIds.contains(it.id)) }
         } else {
             val roomCached = try { musicDao.getCachedTracksSync(limit) } catch (_: Exception) { emptyList() }
@@ -317,7 +317,7 @@ class MusicRepository(
         val diversified = AlbumArtDeduplicator.interleaveAndDiversify(onlineResults, limit)
         if (diversified.isNotEmpty()) {
             val entities = diversified.map { TrackEntity.fromMusicTrack(it).copy(isCached = true, language = languages.firstOrNull() ?: "Hindi") }
-            try { musicDao.insertOrUpdateTracks(entities) } catch (_: Exception) {}
+            try { musicDao.mergeTracksMetadata(entities) } catch (_: Exception) {}
             diversified.map { it.copy(isLiked = likedIds.contains(it.id)) }
         } else {
             val roomCached = try {
@@ -480,27 +480,11 @@ class MusicRepository(
         return musicDao.getPlaylistWithTracks(playlistId)
     }
 
-    suspend fun toggleFavorite(track: MusicTrack): Boolean {
-        val newLiked = !track.isLiked
-        val existing = musicDao.getTrackById(track.id)
-        if (existing != null) {
-            musicDao.updateFavorite(track.id, newLiked)
-        } else {
-            val entity = TrackEntity.fromMusicTrack(track.copy(isLiked = newLiked))
-            musicDao.insertOrUpdateTrack(entity)
-        }
-        return newLiked
-    }
+    suspend fun toggleFavorite(track: MusicTrack): Boolean =
+        musicDao.toggleTrackFavorite(TrackEntity.fromMusicTrack(track))
 
     suspend fun markTrackPlayed(track: MusicTrack) {
-        val now = System.currentTimeMillis()
-        val existing = musicDao.getTrackById(track.id)
-        val entity = if (existing != null) {
-            existing.copy(lastPlayedAt = now)
-        } else {
-            TrackEntity.fromMusicTrack(track, lastPlayedAt = now)
-        }
-        musicDao.insertOrUpdateTrack(entity)
+        musicDao.recordTrackPlayed(TrackEntity.fromMusicTrack(track), System.currentTimeMillis())
     }
 
     suspend fun createPlaylist(title: String, description: String, coverUrl: String = ""): Long {
@@ -526,7 +510,7 @@ class MusicRepository(
                     orderIndex = index
                 )
             }
-            musicDao.insertOrUpdateTracks(entities)
+            musicDao.mergeTracksMetadata(entities)
             musicDao.insertPlaylistTrackRefs(refs)
         }
         return playlistId
@@ -543,7 +527,7 @@ class MusicRepository(
     suspend fun addTrackToPlaylist(playlistId: Long, track: MusicTrack) {
         // Always ensure complete track entity is stored in DB so relationships persist
         val entity = TrackEntity.fromMusicTrack(track)
-        musicDao.insertOrUpdateTrack(entity)
+        musicDao.mergeTrackMetadata(entity)
         musicDao.insertPlaylistTrackRef(
             PlaylistTrackCrossRef(
                 playlistId = playlistId,
@@ -742,100 +726,14 @@ class MusicRepository(
      *   Tier 1: JioSaavn API (320kbps stream)
      *   Tier 2: YouTube Music / audio fallback stream
      */
-    suspend fun resolvePlayableTrack(track: MusicTrack): MusicTrack = withContext(Dispatchers.IO) {
-        playableTrackCache[track.id]?.let { return@withContext it }
-
-        if (track.audioUrl.isNotBlank() && !track.audioUrl.startsWith("yt_") && !track.audioUrl.contains("placeholder")) {
-            return@withContext track
-        }
-
-        val cleanTitle = track.title
-            .replace(Regex("(?i)\\b(official\\s*(video|audio)?|lyric\\s*video|full\\s*song|video|audio|remix|hd|4k|hq)\\b"), "")
-            .replace(Regex("\\(.*?\\)|\\[.*?\\]"), "")
-            .trim()
-        val cleanArtist = track.artist.split(",", "&", "feat.", "ft.", "•", "/").first().trim()
-
-        val query = if (cleanTitle.isNotBlank() && cleanArtist.isNotBlank()) "$cleanTitle $cleanArtist" else cleanTitle
-
-        val selectedQuality = context?.let { AudioQualityPreferences.getSelectedQuality(it) } ?: AudioQuality.ULTRA_HD_320
-
-        if (selectedQuality == AudioQuality.HI_RES_LOSSLESS) {
-            // Tier 1: Internet Archive API (Lossless verification)
-            try {
-                val losslessCandidates = InternetArchiveApiService.searchLosslessTracks(query, maxResults = 3)
-                val bestLossless = losslessCandidates.firstOrNull { it.audioUrl.isNotBlank() }
-                if (bestLossless != null) {
-                    val resolved = track.copy(
-                        audioUrl = bestLossless.audioUrl,
-                        bitrateKbps = bestLossless.bitrateKbps,
-                        qualityBadge = "Hi-Res Lossless",
-                        isLossless = true
-                    )
-                    playableTrackCache[track.id] = resolved
-                    return@withContext resolved
-                }
-            } catch (_: Exception) {}
-
-            // Tier 2: JioSaavn API Fallback
-            try {
-                val candidates = OnlineMusicApiService.searchSongs(query, limit = 5)
-                val bestCandidate = candidates.firstOrNull { it.audioUrl.isNotBlank() }
-                    ?: OnlineMusicApiService.searchSongs(cleanTitle, limit = 5).firstOrNull { it.audioUrl.isNotBlank() }
-                if (bestCandidate != null) {
-                    val resolved = track.copy(
-                        audioUrl = bestCandidate.audioUrl,
-                        bitrateKbps = bestCandidate.bitrateKbps,
-                        qualityBadge = bestCandidate.qualityBadge,
-                        isLossless = false
-                    )
-                    playableTrackCache[track.id] = resolved
-                    return@withContext resolved
-                }
-            } catch (_: Exception) {}
-
-            // Tier 3: YouTube Music / curated audio stream fallback
-            val fallback = MusicDataSource.curatedTracks.firstOrNull()?.audioUrl ?: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3"
-            val resolved = track.copy(
-                audioUrl = fallback,
-                qualityBadge = "HQ • 256 kbps",
-                isLossless = false
-            )
-            playableTrackCache[track.id] = resolved
-            return@withContext resolved
-        } else {
-            // SCENARIO B: Standard / High / Ultra HD (Lossy Streaming)
-            val candidates = try {
-                OnlineMusicApiService.searchSongs(query, limit = 5)
-            } catch (e: Exception) {
-                emptyList()
-            }
-
-            val bestCandidate = candidates.firstOrNull { it.audioUrl.isNotBlank() }
-                ?: try {
-                    OnlineMusicApiService.searchSongs(cleanTitle, limit = 5).firstOrNull { it.audioUrl.isNotBlank() }
-                } catch (e: Exception) {
-                    null
-                }
-
-            val resolved = if (bestCandidate != null) {
-                track.copy(
-                    audioUrl = bestCandidate.audioUrl,
-                    bitrateKbps = bestCandidate.bitrateKbps,
-                    qualityBadge = bestCandidate.qualityBadge,
-                    isLossless = false
-                )
-            } else {
-                val fallback = MusicDataSource.curatedTracks.firstOrNull()?.audioUrl ?: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3"
-                track.copy(
-                    audioUrl = fallback,
-                    qualityBadge = "HQ • 256 kbps",
-                    isLossless = false
-                )
-            }
-
-            playableTrackCache[track.id] = resolved
-            return@withContext resolved
-        }
+    suspend fun resolvePlayableTrack(
+        track: MusicTrack,
+        forceRefresh: Boolean = false,
+        failedUrl: String? = null
+    ): MusicTrack = withContext(Dispatchers.IO) {
+        val quality = context?.let { AudioQualityPreferences.getSelectedQuality(it) }
+            ?: AudioQuality.ULTRA_HD_320
+        streamResolver.resolve(track, quality, forceRefresh, failedUrl)
     }
 
     suspend fun getTracksByGenre(genre: String): List<MusicTrack> {
@@ -867,10 +765,10 @@ class MusicRepository(
 
     fun clearSearchCache() {
         searchCache.clear()
-        playableTrackCache.clear()
+        streamResolver.clear()
     }
 
     fun getSearchCacheEntryCount(): Int {
-        return searchCache.size + playableTrackCache.size
+        return searchCache.size + streamResolver.cacheSize
     }
 }

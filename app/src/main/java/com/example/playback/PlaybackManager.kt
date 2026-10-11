@@ -26,6 +26,10 @@ import com.google.common.util.concurrent.MoreExecutors
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.cancel
+import com.example.data.repository.TrackUnavailableException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -69,10 +73,12 @@ class PlaybackManager(
 ) {
     private val TAG = "PlaybackManager"
 
-    private val scope = CoroutineScope(Dispatchers.Main + Job())
+    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private var controller: MediaController? = null
     private var progressTickerJob: Job? = null
+    private var recoveryJob: Job? = null
+    private val recoveryGuard = PlaybackRecoveryGuard()
 
     val recommendationEngine = RecommendationEngine()
     private val candidateCatalogPool = java.util.concurrent.CopyOnWriteArrayList<MusicTrack>()
@@ -168,8 +174,7 @@ class PlaybackManager(
                             try {
                                 val now = System.currentTimeMillis()
                                 val entity = TrackEntity.fromMusicTrack(current, lastPlayedAt = now)
-                                database.musicDao().insertOrUpdateTrack(entity)
-                                repository?.markTrackPlayed(current)
+                                database.musicDao().recordTrackPlayed(entity, now)
                             } catch (e: Exception) {
                                 Log.w(TAG, "Failed updating track history in Room: ${e.message}")
                             }
@@ -240,6 +245,13 @@ class PlaybackManager(
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 if (mediaItem != null) {
                     val trackId = mediaItem.mediaId
+                    recoveryGuard.select(trackId)
+                    val oldTrack = _uiState.value.currentTrack
+                    val elapsed = (System.currentTimeMillis() - currentTrackStartTimeMs).coerceAtLeast(0L)
+                    val wasMeaningful = hasRecordedMeaningfulPlay
+                    val shouldRecordPlayback = player.isPlaying || player.playWhenReady
+                    currentTrackStartTimeMs = System.currentTimeMillis()
+                    hasRecordedMeaningfulPlay = false
                     val matchedTrack = activeQueue.find { it.id == trackId }
                         ?: MusicTrack(
                             id = trackId,
@@ -266,17 +278,15 @@ class PlaybackManager(
                         )
                     }
 
-                    // Strictly offload background computations, history recording, and recommendation queries off the main thread
-                    scope.launch(Dispatchers.IO) {
-                        val oldTrack = _uiState.value.currentTrack
-                        val elapsed = System.currentTimeMillis() - currentTrackStartTimeMs
+                    // Keep player/queue access on Main; only persistence runs on IO.
+                    scope.launch {
 
                         if (oldTrack != null && oldTrack.id != matchedTrack.id) {
                             playbackHistory.add(oldTrack)
                             if (playbackHistory.size > 50) playbackHistory.removeAt(0)
 
                             // Early Skip check: skipped before 15 seconds without meaningful play
-                            if (elapsed < 15_000L && !hasRecordedMeaningfulPlay) {
+                            if (elapsed < 15_000L && !wasMeaningful) {
                                 val skipEvent = ListeningEventEntity.fromTrack(
                                     track = oldTrack,
                                     sessionId = currentSessionId,
@@ -287,13 +297,10 @@ class PlaybackManager(
                                     skipped = true,
                                     liked = oldTrack.isLiked
                                 )
-                                listeningEventDao.insertListeningEvent(skipEvent)
+                                withContext(Dispatchers.IO) { listeningEventDao.insertListeningEvent(skipEvent) }
                             }
                         }
 
-                        // Reset session tracking for newly started track
-                        currentTrackStartTimeMs = System.currentTimeMillis()
-                        hasRecordedMeaningfulPlay = false
 
                         // Record STARTED event
                         val startEvent = ListeningEventEntity.fromTrack(
@@ -306,15 +313,14 @@ class PlaybackManager(
                             skipped = false,
                             liked = matchedTrack.isLiked
                         )
-                        listeningEventDao.insertListeningEvent(startEvent)
+                        withContext(Dispatchers.IO) { listeningEventDao.insertListeningEvent(startEvent) }
 
                         // If playback is actively running or set to play immediately, persist lastPlayedAt
-                        if (player.isPlaying || player.playWhenReady) {
+                        if (shouldRecordPlayback) {
                             try {
                                 val now = System.currentTimeMillis()
                                 val entity = TrackEntity.fromMusicTrack(matchedTrack, lastPlayedAt = now)
-                                database.musicDao().insertOrUpdateTrack(entity)
-                                repository?.markTrackPlayed(matchedTrack)
+                                withContext(Dispatchers.IO) { database.musicDao().recordTrackPlayed(entity, now) }
                             } catch (e: Exception) {
                                 Log.w(TAG, "Failed updating track history on transition: ${e.message}")
                             }
@@ -328,7 +334,7 @@ class PlaybackManager(
                         }
 
                         // Seamless Infinity Queue: Keep upcoming recommendations stocked
-                        if (_uiState.value.isAutoplayEnabled) {
+                        if (_uiState.value.currentTrack?.id == matchedTrack.id && _uiState.value.isAutoplayEnabled) {
                             refreshAutoplayRecommendation(matchedTrack, isCurrentSessionExplicitPlaylist)
 
                             // Check and extend queue if remaining tracks <= 3
@@ -358,63 +364,50 @@ class PlaybackManager(
             }
 
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
-                val player = controller
-                val isDecoderReclaim = error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_DECODER_INIT_FAILED ||
-                        error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_DECODING_FAILED ||
-                        error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED ||
-                        error.message?.contains("resource", ignoreCase = true) == true
-
-                if (isDecoderReclaim && player != null) {
-                    Log.w(TAG, "MediaCodec decoder was reclaimed by resource manager (${error.errorCodeName}). Re-preparing player smoothly...")
-                    try {
-                        player.prepare()
-                        player.play()
-                        return
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Failed quick recovery after decoder reclaim: ${e.message}")
-                    }
-                }
-
-                val current = _uiState.value.currentTrack
+                val player = controller ?: return
+                val current = _uiState.value.currentTrack ?: return
+                // An old player's error must not supersede a newer pending selection.
+                if (player.currentMediaItem?.mediaId != current.id) return
                 val repo = repository
-                if (current != null && repo != null) {
-                    Log.w(TAG, "Audio playback error for '${current.title}'. Attempting cross-API fallback resolution...")
-                    scope.launch {
-                        try {
-                            val fallbackTrack = repo.resolvePlayableTrack(current)
-                            if (fallbackTrack.audioUrl.isNotBlank() && fallbackTrack.audioUrl != current.audioUrl) {
-                                Log.i(TAG, "Fallback stream resolved: ${fallbackTrack.audioUrl}. Retrying playback...")
-                                withContext(Dispatchers.Main) {
-                                    playTrackInternal(fallbackTrack, activeQueue, isCurrentSessionExplicitPlaylist)
-                                }
-                                return@launch
-                            }
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Fallback resolution failed: ${e.message}")
-                        }
-                        val errorMsg = "Audio playback error: ${error.message}"
-                        _uiState.update {
-                            it.copy(
-                                isLoading = false,
-                                isPlaying = false,
-                                errorMessage = errorMsg
-                            )
-                        }
-                    }
+                val token = recoveryGuard.claim(current.id)
+                if (repo == null || token == null) {
+                    showPlaybackFailure("Unable to play '${current.title}'. Please try again.")
                     return
                 }
-
-                val errorMsg = "Audio playback error: ${error.message}"
-                Log.e(TAG, errorMsg, error)
-                _uiState.update {
-                    it.copy(
-                        isLoading = false,
-                        isPlaying = false,
-                        errorMessage = errorMsg
-                    )
+                recoveryJob?.cancel()
+                val failedUrl = player.currentMediaItem?.localConfiguration?.uri?.toString() ?: current.audioUrl
+                recoveryJob = scope.launch {
+                    try {
+                        val resolved = repo.resolvePlayableTrack(current, forceRefresh = true, failedUrl = failedUrl)
+                        if (!recoveryGuard.isCurrent(current.id, token) ||
+                            player.currentMediaItem?.mediaId != current.id) return@launch
+                        val index = player.currentMediaItemIndex
+                        val position = player.currentPosition.coerceAtLeast(0L)
+                        val resume = player.playWhenReady
+                        val replacement = resolved.toMediaItem()
+                        if (replacement.localConfiguration?.uri?.toString() == failedUrl) {
+                            throw TrackUnavailableException(current.title)
+                        }
+                        if (index in activeQueue.indices) activeQueue[index] = resolved
+                        player.replaceMediaItem(index, replacement)
+                        player.seekTo(index, position)
+                        player.prepare()
+                        player.playWhenReady = resume
+                        _uiState.update { it.copy(currentTrack = resolved, queue = activeQueue.toList(), errorMessage = null) }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        if (recoveryGuard.isCurrent(current.id, token)) {
+                            showPlaybackFailure(e.message ?: "Unable to resolve a playable stream.")
+                        }
+                    }
                 }
             }
         })
+    }
+
+    private fun showPlaybackFailure(message: String) {
+        _uiState.update { it.copy(isLoading = false, isPlaying = false, errorMessage = message) }
     }
 
     private fun startProgressTicker() {
@@ -486,6 +479,10 @@ class PlaybackManager(
     }
 
     fun playTrack(track: MusicTrack, queue: List<MusicTrack> = listOf(track), isExplicitPlaylist: Boolean = false) {
+        if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
+            scope.launch { playTrack(track, queue, isExplicitPlaylist) }
+            return
+        }
         val now = System.currentTimeMillis()
         val currentTrack = _uiState.value.currentTrack
         val isSameTrack = currentTrack?.id == track.id
@@ -519,6 +516,8 @@ class PlaybackManager(
 
         lastPlayRequestTimeMs = now
         lastRequestedTrackId = track.id
+        recoveryJob?.cancel()
+        recoveryGuard.select(track.id, newRequest = true)
         isCurrentSessionExplicitPlaylist = isExplicitPlaylist
 
         // Cancel previous unresolved network/stream resolution job and search queue jobs
@@ -528,6 +527,7 @@ class PlaybackManager(
 
         val repo = repository
         if (track.audioUrl.isBlank() && repo != null) {
+            controller?.stop()
             _uiState.update { it.copy(currentTrack = track, isLoading = true, errorMessage = null) }
             playResolutionJob = scope.launch(Dispatchers.IO) {
                 try {
@@ -538,13 +538,12 @@ class PlaybackManager(
                     }
                 } catch (e: Exception) {
                     if (e is kotlinx.coroutines.CancellationException) {
-                        // Job was cancelled by a newer play request - do not leave UI stuck in loading state
-                        _uiState.update { it.copy(isLoading = false) }
-                        return@launch
+                        // A cancelled request must not change the newer selection's state.
+                        throw e
                     }
                     Log.e(TAG, "Failed resolving track stream: ${e.message}", e)
                     withContext(Dispatchers.Main) {
-                        playTrackInternal(track, queue, isExplicitPlaylist)
+                        showPlaybackFailure(e.message ?: "This track is unavailable.")
                     }
                 }
             }
@@ -561,6 +560,10 @@ class PlaybackManager(
     }
 
     private fun playTrackInternal(track: MusicTrack, queue: List<MusicTrack>, isExplicitPlaylist: Boolean = false) {
+        if (track.audioUrl.isBlank()) {
+            showPlaybackFailure("No playable stream is available for '${track.title}'.")
+            return
+        }
         val player = controller
         if (player == null) {
             Log.e(TAG, "Cannot play track: player is null")
@@ -692,9 +695,11 @@ class PlaybackManager(
                 }
 
                 // Resolve playable streams for top recommendations
-                val resolvedRecs = recommendedTracks.map { rec ->
+                val resolvedRecs = recommendedTracks.mapNotNull { rec ->
                     if (rec.audioUrl.isBlank() && repository != null) {
-                        repository?.resolvePlayableTrack(rec) ?: rec
+                        try { repository?.resolvePlayableTrack(rec) }
+                        catch (e: CancellationException) { throw e }
+                        catch (_: TrackUnavailableException) { null }
                     } else rec
                 }
 
@@ -769,6 +774,12 @@ class PlaybackManager(
      * the user's taste across the last 10 songs, rather than just playing the next arbitrary item in search.
      */
     fun playFromSearch(track: MusicTrack, searchContextPool: List<MusicTrack>) {
+        if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
+            scope.launch { playFromSearch(track, searchContextPool) }
+            return
+        }
+        recoveryJob?.cancel()
+        recoveryGuard.select(track.id, newRequest = true)
         // 1. Cancel previous in-flight search play jobs, resolution jobs, and recommendation fetches
         activeSearchPlayJob?.cancel()
         playResolutionJob?.cancel()
@@ -801,9 +812,11 @@ class PlaybackManager(
                 if (repo != null) {
                     try {
                         repo.resolvePlayableTrack(track)
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
-                        Log.w(TAG, "Failed resolving search track stream: ${e.message}")
-                        track
+                        withContext(Dispatchers.Main) { showPlaybackFailure(e.message ?: "This track is unavailable.") }
+                        return@launch
                     }
                 } else track
             } else track
@@ -937,8 +950,13 @@ class PlaybackManager(
 
                         if (nextTrack != null) {
                             val resolvedTrack = withContext(Dispatchers.IO) {
-                                repository?.resolvePlayableTrack(nextTrack) ?: nextTrack
-                            }
+                                try { repository?.resolvePlayableTrack(nextTrack) ?: nextTrack }
+                                catch (e: CancellationException) { throw e }
+                                catch (e: Exception) {
+                                    withContext(Dispatchers.Main) { showPlaybackFailure(e.message ?: "This track is unavailable.") }
+                                    null
+                                }
+                            } ?: return@launch
                             Log.i("InfinityAutoplay", "Autoplay playing resolved track '${resolvedTrack.title}' by '${resolvedTrack.artist}'")
                             activeQueue.add(resolvedTrack)
                             val mediaItem = resolvedTrack.toMediaItem()
@@ -1212,6 +1230,8 @@ class PlaybackManager(
             progressTickerJob?.cancel()
             recommendationFetchJob?.cancel()
             playResolutionJob?.cancel()
+            recoveryGuard.select(null, newRequest = true)
+            scope.cancel()
             controller?.release()
             controllerFuture?.let { MediaController.releaseFuture(it) }
             controller = null

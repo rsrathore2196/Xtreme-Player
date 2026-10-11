@@ -123,13 +123,14 @@ object OnlineMusicApiService {
     /**
      * Search songs online across JioSaavn's comprehensive global and Indian library.
      */
-    suspend fun searchSongs(query: String, limit: Int = 30, page: Int = 1): List<MusicTrack> = withContext(Dispatchers.IO) {
+    suspend fun searchSongs(query: String, limit: Int = 30, page: Int = 1, forceRefresh: Boolean = false): List<MusicTrack> = withContext(Dispatchers.IO) {
         val trimmed = query.trim()
         if (trimmed.isBlank()) return@withContext emptyList()
 
         val cacheKey = "${trimmed.lowercase()}_${page}_$limit"
         synchronized(memoryQueryCache) {
-            memoryQueryCache.get(cacheKey)?.let { return@withContext it }
+            if (forceRefresh) memoryQueryCache.remove(cacheKey)
+            else memoryQueryCache.get(cacheKey)?.let { return@withContext it }
         }
 
         try {
@@ -138,6 +139,7 @@ object OnlineMusicApiService {
 
             val request = Request.Builder()
                 .url(url)
+                .apply { if (forceRefresh) cacheControl(okhttp3.CacheControl.FORCE_NETWORK) }
                 .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
                 .addHeader("Accept", "application/json")
                 .build()
