@@ -1191,6 +1191,16 @@ object PlaylistImportEngine {
      *
      * Never performs loose/fuzzy text matching that causes incorrect song additions!
      */
+    /**
+     * Matches a single track with Strict Original-Recording Verification & Audio Quality Routing:
+     * Priority:
+     * 1. Original recording accuracy first (genuine studio single/album release, artist/album/duration match, no unofficial edits)
+     * 2. Playable stream second (must have a valid, accessible audio URL; empty YouTube Music URLs are NOT considered matched)
+     * 3. Audio quality third (Hi-Res / 320 kbps preferred ONLY AFTER original recording and playable stream are verified;
+     *    never select an unofficial or bootleg recording merely because it claims FLAC/lossless)
+     *
+     * If an original song cannot be verified with confidence, marks it unmatched (NOT_FOUND) instead of importing a wrong replacement.
+     */
     suspend fun matchSingleTrack(original: ImportedTrackMeta): MatchResult = withContext(Dispatchers.IO) {
         val cleanTitle = cleanTrackTitle(original.originalTitle)
         val cleanArtist = cleanArtistName(original.originalArtist)
@@ -1202,44 +1212,20 @@ object PlaylistImportEngine {
         }
 
         val searchQuery = "$cleanTitle $primaryArtist".trim()
+        val isExplicitAlt = com.example.recommendation.OriginalMusicFilter.isExplicitAlternativeQuery(original.originalTitle)
 
-        // ---------------------------------------------------------------------------------
-        // PRIORITY 1: Hi-Res Lossless / FLAC (24-bit/192kHz or 16-bit/44.1kHz FLAC/ALAC)
-        // ---------------------------------------------------------------------------------
-        try {
-            val iaCandidates = InternetArchiveApiService.searchLosslessTracks(searchQuery, maxResults = 6)
-            for (candidate in iaCandidates) {
-                if (verifyStrictMatch(original, candidate, coreTitle, primaryArtist)) {
-                    if (candidate.audioUrl.isNotBlank()) {
-                        val boundTrack = candidate.copy(
-                            id = "imp_flac_${candidate.id.removePrefix("ia_")}",
-                            source = "Imported Lossless • Internet Archive",
-                            qualityBadge = "Hi-Res FLAC",
-                            bitrateKbps = if (candidate.bitrateKbps > 320) candidate.bitrateKbps else 1411,
-                            isLossless = true
-                        )
-                        Log.i(TAG, "Strictly matched Lossless FLAC track for '${original.originalTitle}': ${boundTrack.title} (${boundTrack.bitrateKbps} kbps)")
-                        return@withContext MatchResult(
-                            original = original,
-                            matchedTrack = boundTrack,
-                            confidenceScore = 99.0,
-                            matchStatus = MatchStatus.EXACT_MATCH
-                        )
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            Log.d(TAG, "Priority 1 (Lossless FLAC) search error: ${e.message}")
-        }
+        // Collect candidates across sources and evaluate by:
+        // 1. Original recording accuracy
+        // 2. Playable stream availability
+        // 3. Audio quality (bitrate/lossless)
+        val candidatesWithScore = mutableListOf<Pair<MusicTrack, Double>>()
 
-        // ---------------------------------------------------------------------------------
-        // PRIORITY 2: Lossless / High-bitrate 320 kbps AAC/MP3 via JioSaavn
-        // ---------------------------------------------------------------------------------
+        // SOURCE 1: JioSaavn (Official studio releases with direct 320kbps streams)
         try {
             val jioCandidates = OnlineMusicApiService.searchSongs(searchQuery, limit = 8)
             for (candidate in jioCandidates) {
-                if (verifyStrictMatch(original, candidate, coreTitle, primaryArtist)) {
-                    if (candidate.audioUrl.isNotBlank()) {
+                if (verifyStrictMatch(original, candidate, coreTitle, primaryArtist, isExplicitAlt)) {
+                    if (candidate.audioUrl.isNotBlank() && !candidate.audioUrl.contains("soundhelix.com", ignoreCase = true)) {
                         val boundTrack = candidate.copy(
                             id = "imp_jio_${candidate.id.removePrefix("online_")}",
                             source = "Imported HQ • JioSaavn",
@@ -1247,64 +1233,103 @@ object PlaylistImportEngine {
                             bitrateKbps = 320,
                             isLossless = false
                         )
-                        Log.i(TAG, "Strictly matched 320kbps track for '${original.originalTitle}': ${boundTrack.title}")
-                        return@withContext MatchResult(
-                            original = original,
-                            matchedTrack = boundTrack,
-                            confidenceScore = 95.0,
-                            matchStatus = MatchStatus.EXACT_MATCH
-                        )
+                        val origScore = com.example.recommendation.OriginalMusicFilter.calculateOriginalityScore(boundTrack, original.originalTitle)
+                        // Bonus for 320kbps playable stream
+                        candidatesWithScore.add(boundTrack to (origScore + 30.0))
                     }
                 }
             }
         } catch (e: Exception) {
-            Log.d(TAG, "Priority 2 (320kbps JioSaavn) search error: ${e.message}")
+            Log.d(TAG, "JioSaavn search error: ${e.message}")
         }
 
-        // ---------------------------------------------------------------------------------
-        // PRIORITY 3: High-bitrate Stream via YouTube Music
-        // ---------------------------------------------------------------------------------
+        // SOURCE 2: Internet Archive (FLAC/Lossless)
+        // Only accept if strictly verified as the genuine original recording, NOT a fan tape or bootleg
         try {
-            val ytCandidates = YouTubeMusicApiService.searchSongs(searchQuery, limit = 8)
-            for (candidate in ytCandidates) {
-                if (verifyStrictMatch(original, candidate, coreTitle, primaryArtist)) {
-                    val boundTrack = candidate.copy(
-                        id = "imp_yt_${candidate.id.removePrefix("yt_")}",
-                        source = "Imported • YouTube Music",
-                        qualityBadge = "HQ Stream",
-                        bitrateKbps = 256,
-                        isLossless = false
-                    )
-                    Log.i(TAG, "Strictly matched YouTube Music track for '${original.originalTitle}': ${boundTrack.title}")
-                    return@withContext MatchResult(
-                        original = original,
-                        matchedTrack = boundTrack,
-                        confidenceScore = 88.0,
-                        matchStatus = MatchStatus.EXACT_MATCH
-                    )
+            val iaCandidates = InternetArchiveApiService.searchLosslessTracks(searchQuery, maxResults = 6)
+            for (candidate in iaCandidates) {
+                if (verifyStrictMatch(original, candidate, coreTitle, primaryArtist, isExplicitAlt)) {
+                    if (candidate.audioUrl.isNotBlank() && !candidate.audioUrl.contains("soundhelix.com", ignoreCase = true)) {
+                        // Crucial: Only accept if OriginalMusicFilter confirms it is genuine original music
+                        val isOriginal = com.example.recommendation.OriginalMusicFilter.isOriginalMusic(candidate)
+                        if (isOriginal || isExplicitAlt) {
+                            val boundTrack = candidate.copy(
+                                id = "imp_flac_${candidate.id.removePrefix("ia_")}",
+                                source = "Imported Lossless • Internet Archive",
+                                qualityBadge = "Hi-Res FLAC",
+                                bitrateKbps = if (candidate.bitrateKbps > 320) candidate.bitrateKbps else 1411,
+                                isLossless = true
+                            )
+                            val origScore = com.example.recommendation.OriginalMusicFilter.calculateOriginalityScore(boundTrack, original.originalTitle)
+                            // Bonus for Lossless stream (only added to verified original)
+                            candidatesWithScore.add(boundTrack to (origScore + 35.0))
+                        }
+                    }
                 }
             }
         } catch (e: Exception) {
-            Log.d(TAG, "Priority 3 (YouTube Music) search error: ${e.message}")
+            Log.d(TAG, "Lossless FLAC search error: ${e.message}")
         }
 
-        // Fallback preservation: preserve original imported metadata so independent/local tracks are preserved
-        Log.w(TAG, "No strictly verified online match for '${original.originalTitle}' by '${original.originalArtist}' — creating fallback preserved track.")
-        val hash = kotlin.math.abs(original.originalTitle.hashCode() * 31 + original.originalArtist.hashCode())
-        val fallbackTrack = MusicTrack(
-            id = "imp_fallback_$hash",
-            title = original.originalTitle,
-            artist = original.originalArtist,
-            album = original.originalAlbum.ifBlank { "Imported Track" },
-            durationMs = original.durationMs,
-            coverUrl = "",
-            audioUrl = "",
-            source = original.externalPlatform.ifBlank { "Imported" }
-        )
+        // SOURCE 3: YouTube Music
+        // Only valid if an actual playable stream is present or resolved.
+        // Never treat an empty audio URL as successfully playable!
+        try {
+            val ytCandidates = YouTubeMusicApiService.searchSongs(searchQuery, limit = 8)
+            for (candidate in ytCandidates) {
+                if (verifyStrictMatch(original, candidate, coreTitle, primaryArtist, isExplicitAlt)) {
+                    // Check if it already has a valid playable stream or attempt stream resolution
+                    var playableAudioUrl = candidate.audioUrl
+                    if (playableAudioUrl.isBlank() || playableAudioUrl.startsWith("yt_") || playableAudioUrl.contains("placeholder")) {
+                        try {
+                            val resolved = com.example.data.repository.MusicRepository.getInstance().resolvePlayableTrack(candidate)
+                            playableAudioUrl = resolved.audioUrl
+                        } catch (_: Exception) {
+                            playableAudioUrl = ""
+                        }
+                    }
+
+                    if (playableAudioUrl.isNotBlank() && !playableAudioUrl.contains("soundhelix.com", ignoreCase = true)) {
+                        val boundTrack = candidate.copy(
+                            id = "imp_yt_${candidate.id.removePrefix("yt_")}",
+                            audioUrl = playableAudioUrl,
+                            source = "Imported • YouTube Music",
+                            qualityBadge = "HQ Stream",
+                            bitrateKbps = 256,
+                            isLossless = false
+                        )
+                        val origScore = com.example.recommendation.OriginalMusicFilter.calculateOriginalityScore(boundTrack, original.originalTitle)
+                        candidatesWithScore.add(boundTrack to (origScore + 20.0))
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.d(TAG, "YouTube Music search error: ${e.message}")
+        }
+
+        // Pick best matching candidate based on highest originality and recording accuracy
+        val bestCandidate = candidatesWithScore
+            .filter { it.second > 60.0 && it.first.audioUrl.isNotBlank() }
+            .maxByOrNull { it.second }
+
+        if (bestCandidate != null) {
+            val track = bestCandidate.first
+            Log.i(TAG, "Successfully matched original recording for '${original.originalTitle}' by '${original.originalArtist}': ${track.title} [${track.qualityBadge}]")
+            return@withContext MatchResult(
+                original = original,
+                matchedTrack = track,
+                confidenceScore = bestCandidate.second.coerceIn(70.0, 99.0),
+                matchStatus = MatchStatus.EXACT_MATCH
+            )
+        }
+
+        // If an original song cannot be verified with confidence, mark it UNMATCHED (NOT_FOUND)
+        // instead of importing a wrong replacement or unofficial remix!
+        Log.w(TAG, "No verified original recording found for '${original.originalTitle}' by '${original.originalArtist}' — marking unmatched.")
         MatchResult(
             original = original,
-            matchedTrack = fallbackTrack,
-            confidenceScore = 30.0,
+            matchedTrack = null,
+            confidenceScore = 0.0,
             matchStatus = MatchStatus.NOT_FOUND
         )
     }
@@ -1313,18 +1338,34 @@ object PlaylistImportEngine {
      * Multi-Factor Verification Algorithm:
      * 1. Exact Track Title & Clean Title Normalization
      * 2. Primary Artist / Singer Matching
-     * 3. Album Name & Track Duration Threshold (±3 to 5 seconds tolerance)
+     * 3. Originality Verification (Excludes unofficial remixes, edits, and bootlegs unless user requested)
+     * 4. Album Name & Track Duration Threshold (±3 to 5 seconds tolerance)
      */
     fun verifyStrictMatch(
         original: ImportedTrackMeta,
         candidate: MusicTrack,
         origCoreTitle: String,
-        origPrimaryArtist: String
+        origPrimaryArtist: String,
+        isExplicitAlternativeQuery: Boolean = false
     ): Boolean {
+        // 0. SoundHelix and demo track exclusion
+        if (candidate.id.startsWith("xtreme_") ||
+            candidate.audioUrl.contains("soundhelix.com", ignoreCase = true) ||
+            candidate.title.contains("SoundHelix", ignoreCase = true)
+        ) {
+            return false
+        }
+
+        // 1. Originality check: If not explicitly requested as remix/alt, candidate must be original music
+        if (!isExplicitAlternativeQuery && !com.example.recommendation.OriginalMusicFilter.isOriginalMusic(candidate)) {
+            Log.d(TAG, "Rejecting candidate '${candidate.title}' because it is not an original recording.")
+            return false
+        }
+
         val candCleanTitle = cleanTrackTitle(candidate.title)
         val candCoreTitle = normalizeForComparison(candCleanTitle)
 
-        // 1. Exact Core Title Verification (Never loose fuzzy text matching)
+        // 2. Exact Core Title Verification (Never loose fuzzy text matching)
         val isTitleMatch = if (origCoreTitle == candCoreTitle) {
             true
         } else if (origCoreTitle.isNotBlank() && candCoreTitle.isNotBlank()) {
@@ -1335,7 +1376,7 @@ object PlaylistImportEngine {
 
         if (!isTitleMatch) return false
 
-        // 2. Primary Artist / Singer Cross-Verification
+        // 3. Primary Artist / Singer Cross-Verification
         val candCleanArtist = cleanArtistName(candidate.artist)
         val candPrimaryArtist = extractPrimaryArtist(candCleanArtist)
         val candSingers = cleanArtistName(candidate.singers)
@@ -1343,7 +1384,7 @@ object PlaylistImportEngine {
         val isArtistMatch = verifyArtistTokens(origPrimaryArtist, candPrimaryArtist, candCleanArtist, candSingers)
         if (!isArtistMatch) return false
 
-        // 3. Track Duration Threshold (±3 to 5 seconds tolerance)
+        // 4. Track Duration Threshold (±3 to 5 seconds tolerance)
         if (original.durationMs > 0 && candidate.durationMs > 0) {
             val diffMs = kotlin.math.abs(original.durationMs - candidate.durationMs)
             if (diffMs > 5000L) {
@@ -1353,7 +1394,7 @@ object PlaylistImportEngine {
             }
         }
 
-        // 4. Album Name as secondary confirmation signal if present
+        // 5. Album Name as secondary confirmation signal if present
         if (original.originalAlbum.isNotBlank() && candidate.album.isNotBlank()) {
             val origNormAlbum = normalizeForComparison(original.originalAlbum)
             val candNormAlbum = normalizeForComparison(candidate.album)

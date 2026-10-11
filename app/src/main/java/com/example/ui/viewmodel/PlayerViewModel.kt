@@ -427,9 +427,13 @@ class PlayerViewModel(
      */
     fun playFromSearch(track: MusicTrack, searchPool: List<MusicTrack>) {
         activePlaybackLaunchJob?.cancel()
-        activePlaybackLaunchJob = viewModelScope.launch(Dispatchers.IO) {
+        activePlaybackLaunchJob = viewModelScope.launch(Dispatchers.Main) {
             playbackManager.playFromSearch(track, searchPool)
         }
+    }
+
+    fun retryPlayback() {
+        playbackManager.retryPlayback()
     }
 
     /**

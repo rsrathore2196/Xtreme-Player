@@ -20,15 +20,15 @@ import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
 
 object ImageConfig {
-    const val LIST_ITEM_SIZE = 100 // 100dp x 100dp for track list items, playlist rows, search result items, and queue items
-    const val LIST_THUMBNAIL_SIZE = 100 // alias
-    const val MINI_PLAYER_SIZE = 200 // 200dp x 200dp for the mini player
-    const val PLAYLIST_HEADER_SIZE = 200 // 200dp x 200dp for playlist header cover
-    const val RECOMMENDATION_CARD_SIZE = 300 // 300dp x 300dp for recommendation cards on Home screen
-    const val HERO_BANNER_SIZE = 300 // 300dp x 300dp for Now Playing hero banners
+    const val LIST_ITEM_SIZE = 120 // ~120dp for track list items, playlist rows, search result items, and queue items
+    const val LIST_THUMBNAIL_SIZE = 120 // alias
+    const val MINI_PLAYER_SIZE = 240 // ~200-240dp for the mini player
+    const val PLAYLIST_HEADER_SIZE = 400 // ~400dp for playlist header cover
+    const val RECOMMENDATION_CARD_SIZE = 450 // Crisp 400-600px for recommendation cards on Home screen
+    const val HERO_BANNER_SIZE = 1200 // 1000-1200px ultra high-res for Now Playing hero banners
     const val PLAYER_SCREEN_SIZE = -1 // Full High Quality image (Size.ORIGINAL) for expanded music player screen album art
     const val PLAYER_COVER_SIZE = -1 // alias
-    const val PALETTE_THUMBNAIL_SIZE = 100 // 100dp x 100dp for fast palette extraction
+    const val PALETTE_THUMBNAIL_SIZE = 120 // for fast palette extraction
 }
 
 /**
@@ -59,8 +59,9 @@ object TrackPaletteCache {
 
 fun mapTargetSizeToArtworkDimension(targetSize: Int): Int {
     return when {
-        targetSize >= 500 || targetSize < 0 -> ArtworkDimensions.EXPANDED_PLAYER // 800
-        targetSize in 250..499 -> ArtworkDimensions.HOME_CARD // 400
+        targetSize >= 900 -> ArtworkDimensions.HERO_CARD // 1200
+        targetSize >= 500 || targetSize < 0 -> ArtworkDimensions.EXPANDED_PLAYER // 1200
+        targetSize in 250..899 -> ArtworkDimensions.HOME_CARD // 600
         targetSize in 150..249 -> ArtworkDimensions.MINI_PLAYER // 200
         else -> ArtworkDimensions.SEARCH_AND_LIST // 200
     }

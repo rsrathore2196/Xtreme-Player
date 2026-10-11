@@ -604,16 +604,43 @@ class MusicRepository(
             if (idx < ytTracks.size) mixedOnline.add(ytTracks[idx])
         }
 
-        // Combine direct search matches
-        val allDirect = (mixedOnline + localMatches)
-            .distinctBy { "${it.title.lowercase()}_${it.artist.lowercase()}" }
+        // Apply originality verification and scoring BEFORE deduplication
+        // so an unofficial remix/bootleg cannot overshadow or replace the genuine original recording
+        val isExplicitAlt = com.example.recommendation.OriginalMusicFilter.isExplicitAlternativeQuery(trimmed)
+        val allRawDirect = (mixedOnline + localMatches).filter {
+            // Exclude demo tracks completely
+            !it.id.startsWith("xtreme_") && !it.title.contains("SoundHelix", ignoreCase = true)
+        }
+
+        // Sort by originality score descending (highest quality genuine studio recording first)
+        val sortedDirect = allRawDirect.sortedWith(
+            compareByDescending<MusicTrack> { track ->
+                var score = com.example.recommendation.OriginalMusicFilter.calculateOriginalityScore(track, trimmed)
+                val trackTitleLower = track.title.lowercase(java.util.Locale.ROOT)
+                val trackArtistLower = track.artist.lowercase(java.util.Locale.ROOT)
+                // Exact title query bonus
+                if (trackTitleLower == q) score += 40.0
+                else if (trackTitleLower.startsWith(q) || q.startsWith(trackTitleLower)) score += 20.0
+                // Artist match bonus
+                if (trackArtistLower.contains(q)) score += 15.0
+                score
+            }
+        )
+
+        // Deduplicate using clean title and primary artist AFTER sorting by originality
+        val allDirect = sortedDirect
+            .distinctBy {
+                val cleanTitleKey = it.cleanTitle.lowercase(java.util.Locale.ROOT).trim()
+                val primaryArtistKey = it.artist.split(",", "&", "feat.", "ft.", "•", "/").first().trim().lowercase(java.util.Locale.ROOT)
+                "${cleanTitleKey}_$primaryArtistKey"
+            }
             .map { it.copy(isLiked = likedIds.contains(it.id)) }
 
         val top = allDirect.firstOrNull()
 
         // Exact name/title matches
         val exactMatches = allDirect.filter {
-            it.title.lowercase().contains(q) || q.contains(it.title.lowercase())
+            it.title.lowercase(java.util.Locale.ROOT).contains(q) || q.contains(it.title.lowercase(java.util.Locale.ROOT))
         }.ifEmpty { allDirect.take(10) }
 
         val taggedJioMatches = onlineJioTracks.map { it.copy(isLiked = likedIds.contains(it.id)) }

@@ -23,6 +23,7 @@ fun MusicTrack.toMediaItem(): MediaItem {
         .build()
 
     return MediaItem.Builder()
+        .setMediaId(this.id)
         .setUri(this.audioUrl)
         .setMediaMetadata(metadata)
         .build()

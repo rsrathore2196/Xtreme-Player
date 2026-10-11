@@ -14,6 +14,7 @@ import com.example.ui.theme.LocalAppColors
 fun KaraokeLyricsView(
     lyrics: TrackLyrics?,
     currentPositionMs: Long = 0L,
+    playbackPositionFlow: kotlinx.coroutines.flow.StateFlow<Long>? = null,
     isPlaying: Boolean = true,
     onSeekTo: (Long) -> Unit,
     dominantColor: Color = Color.Transparent,
@@ -26,6 +27,7 @@ fun KaraokeLyricsView(
     SyncedLyricsView(
         lyrics = lyrics,
         currentPositionMs = currentPositionMs,
+        playbackPositionFlow = playbackPositionFlow,
         isPlaying = isPlaying,
         onSeekTo = onSeekTo,
         dominantColor = dominantColor,

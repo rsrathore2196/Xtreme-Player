@@ -140,18 +140,19 @@ class AutomixQueueManager(
                             } catch (_: Exception) {
                                 // Unavailable tracks must not enter the playable queue.
                             }
-                        } else {
+                        } else if (cand.audioUrl.isNotBlank()) {
                             resolvedTracks.add(cand)
                         }
                     }
 
                     // 5. Append to player media items on Main thread
+                    val playableTracks = resolvedTracks.filter { it.audioUrl.isNotBlank() }
                     withContext(Dispatchers.Main) {
-                        for (track in resolvedTracks) {
+                        for (track in playableTracks) {
                             player.addMediaItem(track.toMediaItem())
                         }
-                        onTracksAppended(resolvedTracks)
-                        Log.i(TAG, "Successfully appended ${resolvedTracks.size} infinite play tracks to ExoPlayer queue.")
+                        onTracksAppended(playableTracks)
+                        Log.i(TAG, "Successfully appended ${playableTracks.size} infinite play tracks to ExoPlayer queue.")
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Error extending queue: ${e.message}", e)

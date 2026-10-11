@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import com.example.ui.components.bouncyOverscroll
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -114,10 +115,36 @@ fun SearchScreen(
     val currentPlayingId = currentPlayingTrackId ?: playerUiState?.currentTrack?.id
     val isCurrentlyPlaying = isPlaying || (playerUiState?.isPlaying == true)
     val isCurrentlyLoading = isLoading || (playerUiState?.isLoading == true)
+    val hasError = !playerUiState?.errorMessage.isNullOrBlank()
     var pendingLoadingTrackId by remember { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(currentPlayingId, isCurrentlyPlaying, isCurrentlyLoading) {
-        if (currentPlayingId == pendingLoadingTrackId && isCurrentlyPlaying && !isCurrentlyLoading) {
+    LaunchedEffect(currentPlayingId, isCurrentlyPlaying, isCurrentlyLoading, hasError) {
+        if (pendingLoadingTrackId != null) {
+            when {
+                hasError -> {
+                    pendingLoadingTrackId = null
+                }
+                currentPlayingId != null && currentPlayingId != pendingLoadingTrackId -> {
+                    // Selection changed to a different track or superseded
+                    pendingLoadingTrackId = null
+                }
+                currentPlayingId == pendingLoadingTrackId -> {
+                    if (isCurrentlyPlaying || !isCurrentlyLoading) {
+                        pendingLoadingTrackId = null
+                    }
+                }
+                !isCurrentlyLoading -> {
+                    // Loading finished without transitioning to this track
+                    pendingLoadingTrackId = null
+                }
+            }
+        }
+    }
+
+    // Safety watchdog: never allow loading indicator to hang for more than 6 seconds
+    LaunchedEffect(pendingLoadingTrackId) {
+        if (pendingLoadingTrackId != null) {
+            kotlinx.coroutines.delay(6000L)
             pendingLoadingTrackId = null
         }
     }
@@ -178,6 +205,7 @@ fun SearchScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .widthIn(max = 640.dp)
+                .bouncyOverscroll()
                 .statusBarsPadding()
                 .testTag("search_screen"),
             contentPadding = PaddingValues(bottom = 150.dp)

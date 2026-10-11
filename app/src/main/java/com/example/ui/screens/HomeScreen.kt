@@ -416,47 +416,26 @@ fun HomeScreenContent(
             }
 
             // CARD 1: Recently Played (2 Columns Grid Layout, up to 6 items from real listening history)
-            item(key = "card_1_recently_played_grid") {
-                val pillsTracks = pillsCardTracks.take(6)
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 10.dp, start = 20.dp, end = 20.dp, bottom = 10.dp)
-                ) {
-                    Text(
-                        text = "Recently Played",
-                        style = MaterialTheme.typography.titleMedium.copy(
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 18.sp,
-                            color = textPrimaryColor
+            // Rendered only when pillsCardTracks contains genuine recently played tracks.
+            // When history is empty, completely hide heading, card, placeholder message, and extra spacing.
+            val pillsTracks = pillsCardTracks.take(6)
+            if (pillsTracks.isNotEmpty()) {
+                item(key = "card_1_recently_played_grid") {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 10.dp, start = 20.dp, end = 20.dp, bottom = 10.dp)
+                    ) {
+                        Text(
+                            text = "Recently Played",
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 18.sp,
+                                color = textPrimaryColor
+                            )
                         )
-                    )
-                    Spacer(modifier = Modifier.height(10.dp))
+                        Spacer(modifier = Modifier.height(10.dp))
 
-                    if (pillsTracks.isEmpty()) {
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = cardBg,
-                            border = BorderStroke(1.dp, cardBorderColor),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 20.dp, vertical = 22.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = "Your recently played songs will appear here.",
-                                    style = MaterialTheme.typography.bodyMedium.copy(
-                                        color = textMutedColor,
-                                        fontSize = 14.sp
-                                    ),
-                                    textAlign = TextAlign.Center
-                                )
-                            }
-                        }
-                    } else {
                         val rowCount = (pillsTracks.size + 1) / 2
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             for (row in 0 until rowCount) {
@@ -570,6 +549,11 @@ fun SectionCardLayout(
     textMutedColor: Color,
     onTrackClick: (MusicTrack, List<MusicTrack>) -> Unit
 ) {
+    // If no verified tracks and not loading, completely hide the entire shelf
+    if (!state.isLoading && state.tracks.isEmpty()) {
+        return
+    }
+
     Column(modifier = Modifier.padding(top = 22.dp)) {
         Column(modifier = Modifier.padding(horizontal = 20.dp)) {
             Text(
@@ -610,31 +594,6 @@ fun SectionCardLayout(
                         textPrimaryColor = textPrimaryColor,
                         textMutedColor = textMutedColor,
                         onClick = { onTrackClick(track, safeTracks) }
-                    )
-                }
-            }
-        } else {
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = cardBg,
-                border = BorderStroke(1.dp, cardBorderColor),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 20.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = if (state.errorMessage.isNotBlank()) state.errorMessage else "Trending songs are currently unavailable for this region.",
-                        style = MaterialTheme.typography.bodyMedium.copy(
-                            color = textMutedColor,
-                            fontSize = 13.5.sp
-                        ),
-                        textAlign = TextAlign.Center
                     )
                 }
             }
@@ -800,7 +759,7 @@ fun ShelfTrackCard(
                 )
         ) {
             AsyncImage(
-                model = rememberOptimizedImageRequest(track = track, targetSize = 160),
+                model = rememberOptimizedImageRequest(track = track, targetSize = com.example.ui.util.ImageConfig.RECOMMENDATION_CARD_SIZE),
                 contentDescription = track.title,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()

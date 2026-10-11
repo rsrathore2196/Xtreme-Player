@@ -458,6 +458,7 @@ fun MainNavigationScaffold(
                 onRetryLyrics = { viewModel.retryLyrics() },
                 availableAudioDevices = availableAudioDevices,
                 onSelectAudioDevice = { deviceId -> viewModel.selectAudioOutputDevice(deviceId) },
+                playbackPositionFlow = viewModel.playbackPosition,
                 currentPositionProvider = { viewModel.currentPosition },
                 trackDurationProvider = { viewModel.trackDuration.value },
                 bufferedPositionProvider = { viewModel.bufferedPosition.value }

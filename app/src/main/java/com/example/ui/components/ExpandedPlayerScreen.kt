@@ -155,6 +155,7 @@ import com.example.ui.theme.XtremeGreen
 import com.example.ui.theme.XtremeLightBlue
 import com.example.ui.theme.XtremeRose
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
 
 @Composable
@@ -177,6 +178,7 @@ fun ExpandedPlayerScreen(
     availableAudioDevices: List<SoundOutputDevice> = emptyList(),
     onSelectAudioDevice: (Int) -> Unit = {},
     isDark: Boolean = LocalAppColors.current.isDark,
+    playbackPositionFlow: StateFlow<Long>? = null,
     currentPositionProvider: () -> Long = { uiState.currentPositionMs },
     trackDurationProvider: () -> Long = { if (uiState.durationMs > 0) uiState.durationMs else (uiState.currentTrack?.durationMs ?: 0L) },
     bufferedPositionProvider: () -> Long = { uiState.bufferedPositionMs },
@@ -457,6 +459,8 @@ fun ExpandedPlayerScreen(
                             if (isLyricsActive) {
                                 SyncedLyricsView(
                                     lyrics = lyrics,
+                                    currentPositionMs = currentPositionProvider(),
+                                    playbackPositionFlow = playbackPositionFlow,
                                     isPlaying = uiState.isPlaying,
                                     currentPositionProvider = currentPositionProvider,
                                     onSeekTo = onSeekTo,
@@ -1298,6 +1302,8 @@ fun ExpandedPlayerScreen(
                 if (isLyricsActive) {
                     SyncedLyricsView(
                         lyrics = lyrics,
+                        currentPositionMs = currentPositionProvider(),
+                        playbackPositionFlow = playbackPositionFlow,
                         isPlaying = uiState.isPlaying,
                         currentPositionProvider = currentPositionProvider,
                         onSeekTo = onSeekTo,

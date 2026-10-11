@@ -107,19 +107,57 @@ class HomeBoundaryCoordinator(
     var isRefreshing by mutableStateOf(false)
         internal set
 
+    // Hold progress from 0f to 1f while holding past threshold for 1 full second
+    var holdProgress by mutableStateOf(0f)
+        private set
+
+    // True only when the user has completed the heavy pull and 1 full second hold
+    var isHoldSatisfied by mutableStateOf(false)
+        private set
+
+    private var thresholdCrossedTimeMs = 0L
+    private var holdTimerJob: Job? = null
     private var hasFiredThresholdHaptic = false
     private var springJob: Job? = null
 
-    // Physically tuned spring specs: stiffness = 380f, dampingRatio = 0.78f
+    // Physically tuned spring specs: stiffness = 340f, dampingRatio = 0.76f for smooth bounce
     private val returnSpringSpec = spring<Float>(
-        stiffness = 380f,
-        dampingRatio = 0.78f
+        stiffness = 340f,
+        dampingRatio = 0.76f
     )
 
     private val refreshHoldSpringSpec = spring<Float>(
-        stiffness = 400f,
-        dampingRatio = 0.85f
+        stiffness = 380f,
+        dampingRatio = 0.82f
     )
+
+    private fun cancelHoldTimer() {
+        holdTimerJob?.cancel()
+        holdTimerJob = null
+        thresholdCrossedTimeMs = 0L
+        holdProgress = 0f
+        isHoldSatisfied = false
+    }
+
+    private fun startHoldTimer() {
+        if (holdTimerJob?.isActive == true || isHoldSatisfied) return
+        thresholdCrossedTimeMs = System.currentTimeMillis()
+        holdTimerJob = scope.launch {
+            val requiredHoldDurationMs = 1000L
+            val intervalMs = 16L
+            while (true) {
+                val elapsed = System.currentTimeMillis() - thresholdCrossedTimeMs
+                val progress = (elapsed.toFloat() / requiredHoldDurationMs).coerceIn(0f, 1f)
+                holdProgress = progress
+                if (progress >= 1f) {
+                    isHoldSatisfied = true
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    break
+                }
+                kotlinx.coroutines.delay(intervalMs)
+            }
+        }
+    }
 
     val nestedScrollConnection = object : NestedScrollConnection {
 
@@ -137,7 +175,14 @@ class HomeBoundaryCoordinator(
                 if (current > 0f && available.y < 0f) {
                     // Moving back up from top pull
                     val consumedY = available.y.coerceAtLeast(-current)
-                    scope.launch { offset.snapTo(current + consumedY) }
+                    val nextOffset = current + consumedY
+                    scope.launch { offset.snapTo(nextOffset) }
+
+                    // If user moves back below refresh threshold, reset hold countdown
+                    if (nextOffset < refreshThresholdPx) {
+                        cancelHoldTimer()
+                        hasFiredThresholdHaptic = false
+                    }
                     return Offset(0f, consumedY)
                 } else if (current < 0f && available.y > 0f) {
                     // Moving back down from bottom overscroll
@@ -161,18 +206,25 @@ class HomeBoundaryCoordinator(
 
             if (source == NestedScrollSource.UserInput) {
                 if (available.y > 0f) {
-                    // Pulling down at top boundary -> Pull-To-Refresh gesture
+                    // Pulling down at top boundary -> Pull-To-Refresh gesture (heavy pull with graduated resistance)
                     if (!isRefreshing) {
                         val posCurrent = current.coerceAtLeast(0f)
-                        val resistance = (1f - (posCurrent / maxTopStretchPx).pow(1.5f)).coerceIn(0.15f, 0.65f)
+                        val resistance = (1f - (posCurrent / maxTopStretchPx).pow(1.8f)).coerceIn(0.10f, 0.50f)
                         val delta = available.y * resistance
                         val nextOffset = (posCurrent + delta).coerceIn(0f, maxTopStretchPx)
 
-                        if (!hasFiredThresholdHaptic && nextOffset >= refreshThresholdPx) {
-                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                            hasFiredThresholdHaptic = true
-                        } else if (hasFiredThresholdHaptic && nextOffset < refreshThresholdPx) {
-                            hasFiredThresholdHaptic = false
+                        if (nextOffset >= refreshThresholdPx) {
+                            if (!hasFiredThresholdHaptic) {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                hasFiredThresholdHaptic = true
+                            }
+                            // Start or continue 1-second hold requirement
+                            startHoldTimer()
+                        } else {
+                            if (hasFiredThresholdHaptic) {
+                                hasFiredThresholdHaptic = false
+                            }
+                            cancelHoldTimer()
                         }
 
                         springJob?.cancel()
@@ -192,14 +244,14 @@ class HomeBoundaryCoordinator(
                     return Offset(0f, available.y)
                 }
             } else if (source == NestedScrollSource.SideEffect) {
-                // Fling reached boundary! Immediately absorb unconsumed fling motion
+                // Fling reached boundary! Immediately absorb unconsumed fling motion into spring bounce
                 if (available.y < 0f) {
                     // Fling hit bottom boundary
                     val negCurrent = current.coerceAtMost(0f)
                     val absCurrent = abs(negCurrent)
-                    val factor = 0.35f / (1f + (absCurrent / maxBottomStretchPx) * 2f)
-                    val delta = (available.y * factor).coerceIn(-18f, 0f)
-                    val nextOffset = (negCurrent + delta).coerceIn(-maxBottomStretchPx * 0.55f, 0f)
+                    val factor = 0.40f / (1f + (absCurrent / maxBottomStretchPx) * 2f)
+                    val delta = (available.y * factor).coerceIn(-28f, 0f)
+                    val nextOffset = (negCurrent + delta).coerceIn(-maxBottomStretchPx * 0.70f, 0f)
 
                     scope.launch { offset.snapTo(nextOffset) }
 
@@ -210,11 +262,11 @@ class HomeBoundaryCoordinator(
                     }
                     return Offset(0f, available.y)
                 } else if (available.y > 0f && !isRefreshing) {
-                    // Fling hit top boundary (absorb gentle bounce without triggering refresh)
+                    // Fling hit top boundary (absorb fling bounce without triggering refresh)
                     val posCurrent = current.coerceAtLeast(0f)
-                    val factor = 0.25f / (1f + (posCurrent / maxTopStretchPx) * 2f)
-                    val delta = (available.y * factor).coerceIn(0f, 15f)
-                    val nextOffset = (posCurrent + delta).coerceIn(0f, refreshThresholdPx * 0.6f)
+                    val factor = 0.35f / (1f + (posCurrent / maxTopStretchPx) * 2f)
+                    val delta = (available.y * factor).coerceIn(0f, 24f)
+                    val nextOffset = (posCurrent + delta).coerceIn(0f, refreshThresholdPx * 0.55f)
 
                     scope.launch { offset.snapTo(nextOffset) }
 
@@ -231,20 +283,22 @@ class HomeBoundaryCoordinator(
         }
 
         override suspend fun onPreFling(available: Velocity): Velocity {
+            val satisfied = isHoldSatisfied
+            cancelHoldTimer()
             hasFiredThresholdHaptic = false
             val current = offset.value
 
             if (current > 0f) {
                 // Drag ended at top
-                if (current >= refreshThresholdPx && !isRefreshing) {
-                    // Crossed threshold! Trigger exactly one refresh
+                if (current >= refreshThresholdPx && satisfied && !isRefreshing) {
+                    // Heavy pull AND 1-second hold fulfilled! Trigger refresh
                     onRefresh()
                     springJob?.cancel()
                     springJob = scope.launch {
                         offset.animateTo(refreshRestingHeightPx, refreshHoldSpringSpec)
                     }
                 } else {
-                    // Released below threshold: return to resting 0 smoothly without fetching
+                    // Released below threshold or without 1s hold: smoothly bounce back to 0 without refreshing
                     springJob?.cancel()
                     springJob = scope.launch {
                         offset.animateTo(if (isRefreshing) refreshRestingHeightPx else 0f, returnSpringSpec)
@@ -253,9 +307,9 @@ class HomeBoundaryCoordinator(
                 }
                 return Velocity.Zero
             } else if (current < 0f) {
-                // Drag ended at bottom: return to resting 0 immediately with fling velocity continuity
+                // Drag ended at bottom: return to resting 0 immediately with fling velocity continuity and elastic bounce
                 springJob?.cancel()
-                val initVelocity = available.y.coerceIn(-2000f, 2000f)
+                val initVelocity = available.y.coerceIn(-2500f, 2500f)
                 springJob = scope.launch {
                     offset.animateTo(0f, returnSpringSpec, initialVelocity = initVelocity)
                     offset.snapTo(0f)
@@ -267,11 +321,23 @@ class HomeBoundaryCoordinator(
         }
 
         override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
+            cancelHoldTimer()
             hasFiredThresholdHaptic = false
-            // Absorb any leftover fling velocity hitting bottom
+            // Absorb any leftover fling velocity hitting bottom boundary into an elastic bounce
             if (available.y < 0f && offset.value == 0f) {
-                val flingBounce = (available.y * 0.035f).coerceIn(-maxBottomStretchPx * 0.45f, 0f)
-                if (abs(flingBounce) > 2f) {
+                val flingBounce = (available.y * 0.045f).coerceIn(-maxBottomStretchPx * 0.60f, 0f)
+                if (abs(flingBounce) > 1.5f) {
+                    springJob?.cancel()
+                    springJob = scope.launch {
+                        offset.snapTo(flingBounce)
+                        offset.animateTo(0f, returnSpringSpec)
+                        offset.snapTo(0f)
+                    }
+                }
+            } else if (available.y > 0f && offset.value == 0f && !isRefreshing) {
+                // Fling hitting top boundary bounce
+                val flingBounce = (available.y * 0.035f).coerceIn(0f, maxTopStretchPx * 0.40f)
+                if (flingBounce > 1.5f) {
                     springJob?.cancel()
                     springJob = scope.launch {
                         offset.snapTo(flingBounce)
@@ -293,6 +359,10 @@ class HomeBoundaryCoordinator(
         if (isRefreshing == refreshing) return
         isRefreshing = refreshing
 
+        if (!refreshing) {
+            cancelHoldTimer()
+        }
+
         springJob?.cancel()
         springJob = scope.launch {
             if (refreshing) {
@@ -310,16 +380,17 @@ class HomeBoundaryCoordinator(
 /**
  * Coordinated Container for Home Screen handling both smooth Material 3 Liquid-Glass Pull-To-Refresh
  * and 120Hz Elastic Edge Spring Overscroll without competing nested scroll connections.
+ * Requires a deliberate heavy pull and a 1-second hold before triggering a refresh.
  */
 @Composable
 fun HomePullRefreshOverscrollLayout(
     isRefreshing: Boolean,
     onRefresh: () -> Unit,
     modifier: Modifier = Modifier,
-    refreshThresholdDp: Dp = 72.dp,
-    maxTopStretchDp: Dp = 110.dp,
-    maxBottomStretchDp: Dp = 85.dp,
-    refreshRestingHeightDp: Dp = 56.dp,
+    refreshThresholdDp: Dp = 120.dp,
+    maxTopStretchDp: Dp = 165.dp,
+    maxBottomStretchDp: Dp = 95.dp,
+    refreshRestingHeightDp: Dp = 60.dp,
     content: @Composable BoxScope.(contentOffset: Float) -> Unit
 ) {
     val scope = rememberCoroutineScope()
@@ -348,6 +419,8 @@ fun HomePullRefreshOverscrollLayout(
     }
 
     val currentOffset = coordinator.offset.value
+    val holdProgress = coordinator.holdProgress
+    val isHoldSatisfied = coordinator.isHoldSatisfied
     val isDark = isSystemInDarkTheme()
 
     Box(
@@ -365,17 +438,15 @@ fun HomePullRefreshOverscrollLayout(
             0f
         }
 
-        val showIndicator = currentOffset > 6f || isRefreshing
+        val showIndicator = currentOffset > 10f || isRefreshing
 
         if (showIndicator) {
             val indicatorY = with(density) {
                 // Progressive reveal starting from off-screen
                 val restingY = refreshRestingHeightDp.toPx() * 0.45f
                 val clampedOffset = currentOffset.coerceAtMost(maxTopStretchPx)
-                (-40.dp.toPx() + clampedOffset * 0.75f).coerceAtMost(restingY + 24.dp.toPx())
+                (-45.dp.toPx() + clampedOffset * 0.70f).coerceAtMost(restingY + 30.dp.toPx())
             }
-
-            val isReady = pullProgress >= 1f && !isRefreshing
 
             Box(
                 modifier = Modifier
@@ -390,14 +461,16 @@ fun HomePullRefreshOverscrollLayout(
                     },
                 contentAlignment = Alignment.Center
             ) {
-                // Polished Liquid-Glass Refresh Pill
+                // Polished Liquid-Glass Refresh Pill with 1s hold indicator
                 Surface(
                     shape = RoundedCornerShape(24.dp),
                     color = if (isDark) Color(0xDD18181B) else Color(0xEEFFFFFF),
                     border = BorderStroke(
                         width = 1.dp,
-                        color = if (isReady || isRefreshing) {
-                            MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                        color = if (isHoldSatisfied || isRefreshing) {
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.65f)
+                        } else if (pullProgress >= 1f) {
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
                         } else {
                             if (isDark) Color(0x33FFFFFF) else Color(0x22000000)
                         }
@@ -423,6 +496,38 @@ fun HomePullRefreshOverscrollLayout(
                                     color = if (isDark) Color.White else Color.Black
                                 )
                             )
+                        } else if (isHoldSatisfied) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = "Release to refresh",
+                                modifier = Modifier.size(17.dp),
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Release to refresh",
+                                style = MaterialTheme.typography.labelMedium.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            )
+                        } else if (pullProgress >= 1f) {
+                            // User reached heavy threshold, showing 1-second hold timer progress
+                            CircularProgressIndicator(
+                                progress = { holdProgress },
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.2.dp,
+                                color = MaterialTheme.colorScheme.primary,
+                                trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Hold 1s to refresh",
+                                style = MaterialTheme.typography.labelMedium.copy(
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            )
                         } else {
                             val rotation = pullProgress * 180f
                             Icon(
@@ -431,14 +536,14 @@ fun HomePullRefreshOverscrollLayout(
                                 modifier = Modifier
                                     .size(17.dp)
                                     .rotate(rotation),
-                                tint = if (isReady) MaterialTheme.colorScheme.primary else (if (isDark) Color.White else Color.Black)
+                                tint = if (isDark) Color.White else Color.Black
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = if (isReady) "Release to refresh" else "Pull to refresh",
+                                text = "Pull down & hold",
                                 style = MaterialTheme.typography.labelMedium.copy(
-                                    fontWeight = if (isReady) FontWeight.Bold else FontWeight.Medium,
-                                    color = if (isReady) MaterialTheme.colorScheme.primary else (if (isDark) Color(0xFFE4E4E7) else Color(0xFF27272A))
+                                    fontWeight = FontWeight.Medium,
+                                    color = if (isDark) Color(0xFFE4E4E7) else Color(0xFF27272A)
                                 )
                             )
                         }

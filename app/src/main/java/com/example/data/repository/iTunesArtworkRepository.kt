@@ -28,9 +28,9 @@ data class MediaItem(
 object ArtworkDimensions {
     const val MINI_PLAYER = 200 // 50x50dp (~100x100px) -> 200x200bb.jpg
     const val SEARCH_AND_LIST = 200 // 55x55dp (~110x110px) -> 200x200bb.jpg
-    const val HOME_CARD = 400 // 200x200dp (~300x300px) -> 400x400bb.jpg
-    const val HERO_CARD = 600 // 300x300dp (~600x600px) -> 600x600bb.jpg
-    const val EXPANDED_PLAYER = 800 // 500x500dp (~800x800px) -> 800x800bb.jpg
+    const val HOME_CARD = 600 // 136x136dp to 200x200dp (3x density ~400-600px) -> 600x600bb.jpg for crisp shelf cards
+    const val HERO_CARD = 1200 // Hero banner (3x density ~900-1200px) -> 1200x1200bb.jpg ultra high-res
+    const val EXPANDED_PLAYER = 1200 // 500x500dp (~1200x1200px) -> 1200x1200bb.jpg
 }
 
 fun MusicTrack.toMediaItem(): MediaItem {
@@ -51,7 +51,7 @@ fun MusicTrack.toMediaItem(): MediaItem {
  * Multi-Source iTunes Artwork Resolver with 3-Layer Caching:
  * 1. In-Memory LruCache (up to 200 entries)
  * 2. Room Database Cache (persisted across app restarts)
- * 3. Network Fetch (iTunes Search API with Fallback-First strategy)
+ * 3. Network Fetch (iTunes Search API with Title/Artist Verification & Fallback-First strategy)
  */
 class iTunesArtworkRepository(
     private val apiService: iTunesApiService,
@@ -88,9 +88,30 @@ class iTunesArtworkRepository(
         return try {
             val queryTerm = if (cleanedArtist.isNotBlank()) "$cleanedTitle $cleanedArtist" else cleanedTitle
             val response = withContext(Dispatchers.IO) {
-                apiService.searchSong(term = queryTerm, media = "music", limit = 1)
+                apiService.searchSong(term = queryTerm, media = "music", limit = 4)
             }
-            val rawUrl = response.results.firstOrNull()?.artworkUrl100
+
+            // Verify title and artist matching to avoid showing incorrect artwork covers
+            val matchedResult = response.results.firstOrNull { res ->
+                val trackName = res.trackName?.trim().orEmpty()
+                val artistName = res.artistName?.trim().orEmpty()
+                if (trackName.isBlank() || res.artworkUrl100.isNullOrBlank()) return@firstOrNull false
+
+                val titleMatch = trackName.contains(cleanedTitle, ignoreCase = true) ||
+                        cleanedTitle.contains(trackName, ignoreCase = true)
+                val artistMatch = if (cleanedArtist.isNotBlank() && artistName.isNotBlank()) {
+                    artistName.contains(cleanedArtist, ignoreCase = true) ||
+                            cleanedArtist.contains(artistName, ignoreCase = true)
+                } else true
+
+                titleMatch && artistMatch
+            } ?: response.results.firstOrNull()?.takeIf { res ->
+                // If only 1 result returned, verify title at least partially matches
+                val trackName = res.trackName.orEmpty()
+                trackName.contains(cleanedTitle, ignoreCase = true) || cleanedTitle.contains(trackName, ignoreCase = true)
+            }
+
+            val rawUrl = matchedResult?.artworkUrl100
 
             if (rawUrl != null) {
                 withContext(Dispatchers.IO) {
@@ -101,7 +122,7 @@ class iTunesArtworkRepository(
                 memoryCache.put(cacheKey, rawUrl)
                 formatUrl(rawUrl, targetDimension)
             } else {
-                item.sourceArtworkUrl // Fallback to original API image if not found on iTunes
+                item.sourceArtworkUrl // Fallback to original API image if not verified on iTunes
             }
         } catch (_: Exception) {
             item.sourceArtworkUrl // Fallback on network failure

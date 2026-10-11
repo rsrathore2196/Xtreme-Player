@@ -779,13 +779,18 @@ fun OnboardingStartupPage(
             Spacer(modifier = Modifier.height(8.dp))
 
             Text(
-                text = "Hi-Res Lossless and 320 kbps high quality audio",
+                text = "Redefining High-Fidelity",
                 style = MaterialTheme.typography.titleMedium.copy(
                     color = primaryAccent.copy(alpha = 0.9f),
                     fontWeight = FontWeight.Bold,
                     letterSpacing = 0.5.sp,
-                    fontSize = 15.sp
-                )
+                    fontSize = 15.sp,
+                    textAlign = TextAlign.Center
+                ),
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
             )
 
             Spacer(modifier = Modifier.height(8.dp))

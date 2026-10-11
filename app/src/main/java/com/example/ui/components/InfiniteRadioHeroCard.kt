@@ -40,6 +40,7 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
@@ -106,14 +107,26 @@ fun InfiniteRadioHeroCard(
             )
             .testTag("infinite_radio_hero_card")
     ) {
-        // 1. Edge-to-Edge Seed Artwork
+        // 1. Ambient Blurred Artwork Layer (8–12dp Gaussian blur with dark translucent tint)
         val coverUrl = seedTrack?.coverUrl
-        if (!coverUrl.isNullOrBlank()) {
+        if (seedTrack != null) {
             AsyncImage(
-                model = rememberOptimizedImageRequest(coverUrl, ImageConfig.HERO_BANNER_SIZE),
-                contentDescription = "$seedTitle album art",
+                model = rememberOptimizedImageRequest(track = seedTrack, targetSize = ImageConfig.HERO_BANNER_SIZE),
+                contentDescription = null,
                 contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                            try {
+                                renderEffect = android.graphics.RenderEffect.createBlurEffect(
+                                    26f, // ~10dp blur in pixels
+                                    26f,
+                                    android.graphics.Shader.TileMode.CLAMP
+                                ).asComposeRenderEffect()
+                            } catch (_: Throwable) {}
+                        }
+                    }
             )
         } else {
             // High-quality fallback gradient if artwork URL is blank
@@ -132,119 +145,183 @@ fun InfiniteRadioHeroCard(
             )
         }
 
-        // 2. Liquid Glass Backdrop Shading: Dark vignette gradient so white text remains 100% crisp
+        // 2. Premium Liquid Glass Optical Surface (Smoky translucent tint + depth gradient)
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(
                     Brush.verticalGradient(
                         colors = listOf(
-                            Color.Black.copy(alpha = 0.22f),
-                            Color.Black.copy(alpha = 0.48f),
-                            Color.Black.copy(alpha = 0.86f),
-                            Color.Black.copy(alpha = 0.94f)
+                            Color(0x330A0E1A),
+                            Color(0x77060912),
+                            Color(0xCC030509),
+                            Color(0xF0020306)
                         )
                     )
                 )
         )
 
-        // 3. Ambient Specular Refraction Sheen: Top radial highlight interacting with artwork
+        // 3. Ambient Specular Reflection & Lens Refraction Highlights
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(
                     Brush.radialGradient(
                         colors = listOf(
-                            Color.White.copy(alpha = 0.12f),
+                            Color.White.copy(alpha = 0.22f),
+                            Color.White.copy(alpha = 0.05f),
                             Color.Transparent
                         ),
-                        center = Offset(240f, 90f),
-                        radius = 480f
+                        center = Offset(240f, 60f),
+                        radius = 420f
                     )
                 )
         )
 
-        // 4. Foreground Content Hierarchy
+        // 4. Foreground Content Hierarchy (Enclosed sharp album artwork + song information + buttons)
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 22.dp, vertical = 20.dp),
+                .padding(horizontal = 20.dp, vertical = 18.dp),
             verticalArrangement = Arrangement.SpaceBetween,
             horizontalAlignment = Alignment.Start
         ) {
-            // UPPER LEFT: Translucent Liquid-Glass Badge "MADE FOR YOU"
+            // TOP ROW: "MADE FOR YOU" Liquid-Glass Pill
             Row(
-                modifier = Modifier
-                    .clip(CircleShape)
-                    .background(
-                        Brush.linearGradient(
-                            listOf(
-                                Color.White.copy(alpha = 0.22f),
-                                Color.White.copy(alpha = 0.10f)
-                            )
-                        )
-                    )
-                    .border(
-                        BorderStroke(
-                            0.8.dp,
-                            Brush.linearGradient(
-                                listOf(
-                                    Color.White.copy(alpha = 0.50f),
-                                    Color.White.copy(alpha = 0.20f)
-                                )
-                            )
-                        ),
-                        CircleShape
-                    )
-                    .padding(horizontal = 12.dp, vertical = 6.dp)
-                    .testTag("hero_made_for_you_badge"),
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    imageVector = Icons.Default.AutoAwesome,
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(13.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = "MADE FOR YOU",
-                    style = MaterialTheme.typography.labelSmall.copy(
-                        fontWeight = FontWeight.ExtraBold,
-                        letterSpacing = 1.2.sp,
-                        fontSize = 10.5.sp,
-                        color = Color.White
+                Row(
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .background(
+                            Brush.linearGradient(
+                                listOf(
+                                    Color.White.copy(alpha = 0.24f),
+                                    Color.White.copy(alpha = 0.10f)
+                                )
+                            )
+                        )
+                        .border(
+                            BorderStroke(
+                                0.8.dp,
+                                Brush.linearGradient(
+                                    listOf(
+                                        Color.White.copy(alpha = 0.55f),
+                                        Color.White.copy(alpha = 0.20f)
+                                    )
+                                )
+                            ),
+                            CircleShape
+                        )
+                        .padding(horizontal = 12.dp, vertical = 5.dp)
+                        .testTag("hero_made_for_you_badge"),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.AutoAwesome,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(13.dp)
                     )
-                )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "MADE FOR YOU",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontWeight = FontWeight.ExtraBold,
+                            letterSpacing = 1.2.sp,
+                            fontSize = 10.5.sp,
+                            color = Color.White
+                        )
+                    )
+                }
+
+                // Subtitle badge indicating high-fidelity stream
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color.Black.copy(alpha = 0.35f))
+                        .border(BorderStroke(0.5.dp, Color.White.copy(alpha = 0.25f)), RoundedCornerShape(12.dp))
+                        .padding(horizontal = 9.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "HIGH-FIDELITY",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.8.sp,
+                            fontSize = 9.5.sp,
+                            color = Color.White.copy(alpha = 0.85f)
+                        )
+                    )
+                }
             }
 
-            // LOWER SECTION: Title, Supporting Text, and Liquid-Glass Play Button
-            Column(
-                modifier = Modifier.fillMaxWidth()
+            // MIDDLE / LOWER SECTION: Enclosed Razor-Sharp Foreground Album Artwork + Details + Play Button
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = "Infinite Radio",
-                    style = MaterialTheme.typography.headlineMedium.copy(
-                        fontWeight = FontWeight.Black,
-                        fontSize = 26.sp,
-                        letterSpacing = (-0.4).sp,
-                        color = Color.White
+                // Razor-sharp foreground artwork tile enclosed in liquid-glass curved frame
+                if (seedTrack != null) {
+                    Box(
+                        modifier = Modifier
+                            .size(76.dp)
+                            .shadow(10.dp, RoundedCornerShape(16.dp), spotColor = Color.Black.copy(alpha = 0.6f))
+                            .clip(RoundedCornerShape(16.dp))
+                            .border(
+                                BorderStroke(
+                                    1.dp,
+                                    Brush.linearGradient(
+                                        listOf(
+                                            Color.White.copy(alpha = 0.65f),
+                                            Color.White.copy(alpha = 0.20f)
+                                        )
+                                    )
+                                ),
+                                RoundedCornerShape(16.dp)
+                            )
+                    ) {
+                        AsyncImage(
+                            model = rememberOptimizedImageRequest(track = seedTrack, targetSize = ImageConfig.HERO_BANNER_SIZE),
+                            contentDescription = "$seedTitle cover",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(14.dp))
+                }
+
+                Column(
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(
+                        text = "Infinite Radio",
+                        style = MaterialTheme.typography.headlineMedium.copy(
+                            fontWeight = FontWeight.Black,
+                            fontSize = 24.sp,
+                            letterSpacing = (-0.4).sp,
+                            color = Color.White
+                        )
                     )
-                )
 
-                Spacer(modifier = Modifier.height(4.dp))
+                    Spacer(modifier = Modifier.height(2.dp))
 
-                Text(
-                    text = "Based on: $seedTitle · Endless station",
-                    style = MaterialTheme.typography.bodyMedium.copy(
-                        fontWeight = FontWeight.Medium,
-                        fontSize = 13.sp,
-                        letterSpacing = 0.2.sp,
-                        color = Color.White.copy(alpha = 0.85f)
-                    ),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                    Text(
+                        text = "Based on: $seedTitle · Endless station",
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            fontWeight = FontWeight.Medium,
+                            fontSize = 12.5.sp,
+                            letterSpacing = 0.2.sp,
+                            color = Color.White.copy(alpha = 0.85f)
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
 
                 Spacer(modifier = Modifier.height(14.dp))
 

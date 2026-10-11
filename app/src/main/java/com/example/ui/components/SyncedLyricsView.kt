@@ -8,9 +8,11 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
@@ -64,6 +66,10 @@ import com.example.data.model.LyricWord
 import com.example.data.model.TrackLyrics
 import com.example.data.remote.SyllableSynthesizer
 import com.example.ui.theme.LocalAppColors
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 
 /**
@@ -101,6 +107,7 @@ private data class MeasuredWord(
 fun SyncedLyricsView(
     lyrics: TrackLyrics?,
     currentPositionMs: Long = 0L,
+    playbackPositionFlow: StateFlow<Long>? = null,
     isPlaying: Boolean = true,
     onSeekTo: (Long) -> Unit,
     dominantColor: Color = Color.Transparent,
@@ -117,21 +124,37 @@ fun SyncedLyricsView(
     val lines = lyrics?.lines ?: emptyList()
     val isSynced = lyrics?.isSynced == true
 
-    // High-frequency frame ticker for locked 60Hz/120Hz smooth Canvas redraw without recomposition
-    var frameTick by remember { mutableLongStateOf(0L) }
-    LaunchedEffect(isSynced) {
+    // Lifecycle-aware collection of playbackPosition StateFlow
+    val flowPosition by (playbackPositionFlow ?: remember { MutableStateFlow(0L) })
+        .collectAsStateWithLifecycle(initialValue = currentPositionProvider())
+
+    // High-resolution position state for line-boundary detection
+    var currentPlayheadMs by remember { mutableLongStateOf(currentPositionProvider()) }
+
+    // Synchronize playhead state with real-time playback
+    LaunchedEffect(isSynced, isPlaying, lyrics) {
         if (!isSynced) return@LaunchedEffect
+        currentPlayheadMs = currentPositionProvider()
         while (isActive) {
-            withInfiniteAnimationFrameMillis { frameTick = it }
+            val realPos = currentPositionProvider()
+            if (realPos != currentPlayheadMs) {
+                currentPlayheadMs = realPos
+            }
+            delay(100L)
         }
     }
 
-    // Determine current active lyric line based on media position
+    // Keep playhead immediately responsive to seek, pause, and StateFlow emissions
+    LaunchedEffect(flowPosition) {
+        currentPlayheadMs = currentPositionProvider().coerceAtLeast(flowPosition)
+    }
+
+    // Determine current active lyric line based on observable Compose states
     val activeLineIndex by remember(lines, isSynced) {
         derivedStateOf {
             if (!isSynced || lines.isEmpty()) -1
             else {
-                val pos = currentPositionProvider()
+                val pos = if (flowPosition > 0L && !isPlaying) flowPosition else maxOf(flowPosition, currentPlayheadMs)
                 var found = -1
                 for (i in lines.indices) {
                     if (pos >= lines[i].timestampMs) {
@@ -145,14 +168,44 @@ fun SyncedLyricsView(
         }
     }
 
-    // Smooth active-line auto-scroll: centers the active line vertically
+    // Smooth active-line auto-scroll: accurately centers active line in the lyrics box and immediately jumps on initial open / song switch
+    var hasInitialScrolled by remember(lines) { mutableStateOf(false) }
     LaunchedEffect(activeLineIndex, isSynced) {
-        if (isSynced && !listState.isScrollInProgress && activeLineIndex in lines.indices) {
-            val targetIndex = (activeLineIndex - 1).coerceAtLeast(0)
-            listState.animateScrollToItem(
-                index = targetIndex,
-                scrollOffset = 0
-            )
+        if (isSynced && activeLineIndex in lines.indices) {
+            val visibleItem = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == activeLineIndex }
+            val viewportHeight = listState.layoutInfo.viewportSize.height
+            val itemSize = visibleItem?.size ?: 0
+
+            if (!hasInitialScrolled) {
+                hasInitialScrolled = true
+                val centerOffset = if (viewportHeight > 0 && itemSize > 0) {
+                    -(viewportHeight / 2 - itemSize / 2)
+                } else 0
+                listState.scrollToItem(
+                    index = activeLineIndex,
+                    scrollOffset = centerOffset
+                )
+            } else if (!listState.isScrollInProgress) {
+                if (visibleItem != null && viewportHeight > 0) {
+                    val currentCenter = visibleItem.offset + visibleItem.size / 2
+                    val targetCenter = viewportHeight / 2
+                    val delta = currentCenter - targetCenter
+                    if (kotlin.math.abs(delta) > 2) {
+                        listState.animateScrollBy(
+                            value = delta.toFloat(),
+                            animationSpec = tween(durationMillis = 350, easing = FastOutSlowInEasing)
+                        )
+                    }
+                } else {
+                    val centerOffset = if (viewportHeight > 0 && itemSize > 0) {
+                        -(viewportHeight / 2 - itemSize / 2)
+                    } else 0
+                    listState.animateScrollToItem(
+                        index = activeLineIndex,
+                        scrollOffset = centerOffset
+                    )
+                }
+            }
         }
     }
 
@@ -163,7 +216,7 @@ fun SyncedLyricsView(
     val activeTextColor = if (isDark) Color(0xFFFFFFFF) else Color(0xFF000000)
     val inactiveTextColor = if (isDark) Color(0xFFFFFFFF).copy(alpha = 0.38f) else Color(0xFF000000).copy(alpha = 0.35f)
 
-    Box(
+    BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
             .clip(RoundedCornerShape(24.dp))
@@ -171,6 +224,10 @@ fun SyncedLyricsView(
             .border(BorderStroke(1.dp, boxBorderColor), RoundedCornerShape(24.dp))
             .testTag("synced_lyrics_view")
     ) {
+        val boxHeight = maxHeight
+        val verticalCenterPadding = remember(boxHeight) {
+            if (boxHeight > 100.dp) (boxHeight / 2) - 24.dp else 40.dp
+        }
         if (lyrics == null) {
             Box(
                 modifier = Modifier.fillMaxSize(),
@@ -251,7 +308,7 @@ fun SyncedLyricsView(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(horizontal = 22.dp),
-                contentPadding = if (isSynced) PaddingValues(top = 80.dp, bottom = 96.dp) else PaddingValues(top = 36.dp, bottom = 48.dp),
+                contentPadding = if (isSynced) PaddingValues(top = verticalCenterPadding, bottom = verticalCenterPadding) else PaddingValues(top = 36.dp, bottom = 48.dp),
                 verticalArrangement = if (isSynced) Arrangement.spacedBy(24.dp) else Arrangement.spacedBy(16.dp)
             ) {
                 itemsIndexed(lines, key = { index, item -> "${item.timestampMs}_$index" }) { index, item ->
@@ -322,12 +379,12 @@ fun SyncedLyricsView(
                             isActive = isActive,
                             isPast = isPast,
                             isSynced = isSynced,
+                            isPlaying = isPlaying,
                             trackLanguage = lyrics.language,
                             trackArtist = lyrics.artist,
                             activeTextColor = activeTextColor,
                             inactiveTextColor = inactiveTextColor,
-                            currentPositionProvider = currentPositionProvider,
-                            frameTick = frameTick
+                            currentPositionProvider = currentPositionProvider
                         )
                     }
                 }
@@ -349,12 +406,12 @@ private fun KaraokeLineItem(
     isActive: Boolean,
     isPast: Boolean,
     isSynced: Boolean,
+    isPlaying: Boolean,
     trackLanguage: String?,
     trackArtist: String?,
     activeTextColor: Color,
     inactiveTextColor: Color,
-    currentPositionProvider: () -> Long,
-    frameTick: Long
+    currentPositionProvider: () -> Long
 ) {
     val fontSize = if (isActive) 24.sp else 21.sp
     val fontWeight = if (isActive) FontWeight.Bold else FontWeight.SemiBold
@@ -374,30 +431,34 @@ private fun KaraokeLineItem(
     }
 
     // Pre-calculate word spans in line.text once per line
-    val measuredWords = remember(line.text, line.words) {
+    val measuredWords = remember(line.text, line.words, trackLanguage, trackArtist) {
         val result = mutableListOf<MeasuredWord>()
         var searchIdx = 0
         val text = line.text
         for (word in line.words) {
             val idx = text.indexOf(word.text, startIndex = searchIdx)
-            if (idx >= 0) {
-                val end = idx + word.text.length
+            val matchIdx = if (idx >= 0) idx else text.indexOf(word.text)
+            if (matchIdx >= 0) {
+                val end = matchIdx + word.text.length
                 val isNonEng = SyllableSynthesizer.isNonEnglish(word.text, trackLanguage, trackArtist)
-                result.add(MeasuredWord(word, idx, end, isNonEng))
+                result.add(MeasuredWord(word, matchIdx, end, isNonEng))
                 searchIdx = end
-            } else {
-                val fallbackIdx = text.indexOf(word.text)
-                if (fallbackIdx >= 0) {
-                    val end = fallbackIdx + word.text.length
-                    val isNonEng = SyllableSynthesizer.isNonEnglish(word.text, trackLanguage, trackArtist)
-                    result.add(MeasuredWord(word, fallbackIdx, end, isNonEng))
-                }
             }
         }
         result
     }
 
     var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
+
+    // Frame-based draw invalidation State: read ONLY inside drawWithContent to trigger draw phase redraw without recomposition
+    var localFrameTick by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(isActive, isPlaying) {
+        if (isActive && isPlaying) {
+            while (isActive) {
+                withInfiniteAnimationFrameMillis { localFrameTick = it }
+            }
+        }
+    }
 
     Box(modifier = Modifier.fillMaxWidth()) {
         // LAYER 1: Base Stable Inactive Text
@@ -424,9 +485,9 @@ private fun KaraokeLineItem(
                 modifier = Modifier
                     .fillMaxWidth()
                     .drawWithContent {
-                        // Suppress unused warning on frameTick: forces redraw on frame tick
+                        // Read localFrameTick inside drawWithContent to invalidate ONLY the Draw phase!
                         @Suppress("UNUSED_VARIABLE")
-                        val tick = frameTick
+                        val tick = localFrameTick
 
                         val layout = textLayoutResult ?: return@drawWithContent
                         val currentPos = currentPositionProvider()
@@ -464,6 +525,13 @@ private fun ContentDrawScope.renderKaraokeDraw(
     // CASE A: WORD-LEVEL (AND SYLLABLE-LEVEL) TIMING AVAILABLE
     // =========================================================================
     if (measuredWords.isNotEmpty()) {
+        val lastWordEnd = measuredWords.last().word.endTimeMs
+        if (currentPos >= lastWordEnd) {
+            // Line vocals finished: hold completed throughout silence
+            drawContent()
+            return
+        }
+
         for (mw in measuredWords) {
             val word = mw.word
             val wordStart = word.timestampMs
