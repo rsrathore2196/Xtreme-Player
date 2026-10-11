@@ -135,8 +135,10 @@ class AutomixQueueManager(
                         if (cand.audioUrl.isBlank() && repository != null) {
                             try {
                                 resolvedTracks.add(repository.resolvePlayableTrack(cand))
+                            } catch (e: kotlinx.coroutines.CancellationException) {
+                                throw e
                             } catch (_: Exception) {
-                                resolvedTracks.add(cand)
+                                // Unavailable tracks must not enter the playable queue.
                             }
                         } else {
                             resolvedTracks.add(cand)

@@ -10,6 +10,38 @@ import kotlinx.coroutines.flow.Flow
 @Dao
 interface MusicDao {
 
+    // Catalog metadata must never replace persisted user choices or listening history.
+    @Transaction
+    suspend fun mergeTrackMetadata(track: TrackEntity) {
+        val existing = getTrackById(track.id)
+        insertOrUpdateTrack(if (existing == null) track else track.copy(
+            isLiked = existing.isLiked,
+            isCached = existing.isCached || track.isCached,
+            lastPlayedAt = existing.lastPlayedAt,
+            addedAt = existing.addedAt
+        ))
+    }
+
+    @Transaction
+    suspend fun mergeTracksMetadata(tracks: List<TrackEntity>) {
+        tracks.forEach { mergeTrackMetadata(it) }
+    }
+
+    @Transaction
+    suspend fun recordTrackPlayed(track: TrackEntity, timestamp: Long) {
+        mergeTrackMetadata(track)
+        updateLastPlayed(track.id, timestamp)
+    }
+
+    @Transaction
+    suspend fun toggleTrackFavorite(track: TrackEntity): Boolean {
+        val existing = getTrackById(track.id)
+        val liked = !(existing?.isLiked ?: track.isLiked)
+        if (existing == null) insertOrUpdateTrack(track.copy(isLiked = liked))
+        else updateFavorite(track.id, liked)
+        return liked
+    }
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertOrUpdateTrack(track: TrackEntity)
 
