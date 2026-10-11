@@ -1,51 +1,35 @@
 package com.example.ui.components
 
-import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asComposeRenderEffect
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
@@ -53,18 +37,7 @@ import com.example.data.model.MusicTrack
 import com.example.ui.util.ImageConfig
 import com.example.ui.util.rememberOptimizedImageRequest
 
-/**
- * Polished Liquid-Glass Infinite Radio Hero Card for Xtreme Player Home Screen.
- *
- * Visual Architecture:
- * - Full-width card with generous rounded corners (26dp) and consistent horizontal margins (20dp).
- * - Edge-to-edge seed-track album artwork cropped with high fidelity.
- * - Multi-layer liquid glass overlays: subtle dark gradient + specular sheen so artwork colors interact naturally.
- * - Translucent glass pill at the upper left with sparkle icon and "MADE FOR YOU".
- * - Prominent bold "Infinite Radio" headline.
- * - Dynamic truthful supporting text: "Based on: {seed title} · Endless station".
- * - Tactile rounded liquid-glass Play button reflecting real session playback states (Play, Pause, Resume, Loading).
- */
+/** Artwork-led radio entry point. Playback controls remain in the player. */
 @Composable
 fun InfiniteRadioHeroCard(
     seedTrack: MusicTrack?,
@@ -72,369 +45,85 @@ fun InfiniteRadioHeroCard(
     isPlaying: Boolean,
     isLoading: Boolean = false,
     onPlayInfiniteRadio: (MusicTrack?) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isRadioSession: Boolean = false
 ) {
-    val isThisTrackCurrent = seedTrack != null && seedTrack.id == currentPlayingTrackId
-    val isTrackPlaying = isThisTrackCurrent && isPlaying
-    val isTrackPaused = isThisTrackCurrent && !isPlaying
-    val isTrackLoading = isThisTrackCurrent && isLoading
-
-    val seedTitle = seedTrack?.title?.trim()?.ifBlank { "Top Picks" } ?: "Top Picks"
+    val radioPlaying = isRadioSession && isPlaying
+    val radioLoading = isRadioSession && isLoading && !radioPlaying
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(if (pressed) 0.96f else 1f, spring(), label = "radio_press")
+    val shape = RoundedCornerShape(26.dp)
+    val textShadow = Shadow(Color.Black.copy(alpha = 0.85f), Offset(0f, 2f), 10f)
 
     Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 12.dp)
-            .height(230.dp)
-            .shadow(
-                elevation = 14.dp,
-                shape = RoundedCornerShape(26.dp),
-                spotColor = Color.Black.copy(alpha = 0.50f),
-                ambientColor = Color.Black.copy(alpha = 0.25f)
-            )
-            .clip(RoundedCornerShape(26.dp))
-            .border(
-                BorderStroke(
-                    width = 1.dp,
-                    brush = Brush.verticalGradient(
-                        colors = listOf(
-                            Color.White.copy(alpha = 0.38f),
-                            Color.White.copy(alpha = 0.12f)
-                        )
-                    )
-                ),
-                shape = RoundedCornerShape(26.dp)
-            )
+        modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 12.dp)
+            .height(230.dp).shadow(12.dp, shape).clip(shape)
+            .background(Color(0xFF172030))
+            .border(1.dp, Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.4f), Color.White.copy(alpha = 0.1f))), shape)
             .testTag("infinite_radio_hero_card")
     ) {
-        // 1. Ambient Blurred Artwork Layer (8–12dp Gaussian blur with dark translucent tint)
-        val coverUrl = seedTrack?.coverUrl
         if (seedTrack != null) {
             AsyncImage(
                 model = rememberOptimizedImageRequest(track = seedTrack, targetSize = ImageConfig.HERO_BANNER_SIZE),
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .graphicsLayer {
-                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                            try {
-                                renderEffect = android.graphics.RenderEffect.createBlurEffect(
-                                    26f, // ~10dp blur in pixels
-                                    26f,
-                                    android.graphics.Shader.TileMode.CLAMP
-                                ).asComposeRenderEffect()
-                            } catch (_: Throwable) {}
-                        }
-                    }
-            )
-        } else {
-            // High-quality fallback gradient if artwork URL is blank
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.linearGradient(
-                            listOf(
-                                Color(0xFF1E2638),
-                                Color(0xFF141926),
-                                Color(0xFF0D0F17)
-                            )
-                        )
-                    )
+                modifier = Modifier.fillMaxSize().blur(2.dp)
             )
         }
-
-        // 2. Premium Liquid Glass Optical Surface (Smoky translucent tint + depth gradient)
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            Color(0x330A0E1A),
-                            Color(0x77060912),
-                            Color(0xCC030509),
-                            Color(0xF0020306)
-                        )
-                    )
-                )
-        )
-
-        // 3. Ambient Specular Reflection & Lens Refraction Highlights
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.radialGradient(
-                        colors = listOf(
-                            Color.White.copy(alpha = 0.22f),
-                            Color.White.copy(alpha = 0.05f),
-                            Color.Transparent
-                        ),
-                        center = Offset(240f, 60f),
-                        radius = 420f
-                    )
-                )
-        )
-
-        // 4. Foreground Content Hierarchy (Enclosed sharp album artwork + song information + buttons)
+        // Retain 90% of the artwork beneath a light tint and a subtle glass reflection.
+        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.10f)))
+        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(
+            listOf(Color.White.copy(alpha = 0.04f), Color.Transparent, Color.White.copy(alpha = 0.015f))
+        )))
         Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 20.dp, vertical = 18.dp),
-            verticalArrangement = Arrangement.SpaceBetween,
+            Modifier.fillMaxSize().padding(20.dp),
+            verticalArrangement = Arrangement.Bottom,
             horizontalAlignment = Alignment.Start
         ) {
-            // TOP ROW: "MADE FOR YOU" Liquid-Glass Pill
+            Text("Infinite Radio", style = MaterialTheme.typography.headlineMedium.copy(
+                color = Color.White, fontWeight = FontWeight.Black, fontSize = 26.sp, shadow = textShadow
+            ))
+            Text("A fresh random mix · Endless discoveries", style = MaterialTheme.typography.bodyMedium.copy(
+                color = Color.White, shadow = textShadow
+            ))
+            Spacer(Modifier.height(18.dp))
+            val buttonShape = RoundedCornerShape(24.dp)
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(
-                    modifier = Modifier
-                        .clip(CircleShape)
-                        .background(
-                            Brush.linearGradient(
-                                listOf(
-                                    Color.White.copy(alpha = 0.24f),
-                                    Color.White.copy(alpha = 0.10f)
-                                )
-                            )
-                        )
-                        .border(
-                            BorderStroke(
-                                0.8.dp,
-                                Brush.linearGradient(
-                                    listOf(
-                                        Color.White.copy(alpha = 0.55f),
-                                        Color.White.copy(alpha = 0.20f)
-                                    )
-                                )
-                            ),
-                            CircleShape
-                        )
-                        .padding(horizontal = 12.dp, vertical = 5.dp)
-                        .testTag("hero_made_for_you_badge"),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.AutoAwesome,
-                        contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier.size(13.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "MADE FOR YOU",
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            fontWeight = FontWeight.ExtraBold,
-                            letterSpacing = 1.2.sp,
-                            fontSize = 10.5.sp,
-                            color = Color.White
-                        )
-                    )
-                }
-
-                // Subtitle badge indicating high-fidelity stream
-                Row(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Color.Black.copy(alpha = 0.35f))
-                        .border(BorderStroke(0.5.dp, Color.White.copy(alpha = 0.25f)), RoundedCornerShape(12.dp))
-                        .padding(horizontal = 9.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "HIGH-FIDELITY",
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 0.8.sp,
-                            fontSize = 9.5.sp,
-                            color = Color.White.copy(alpha = 0.85f)
-                        )
-                    )
-                }
-            }
-
-            // MIDDLE / LOWER SECTION: Enclosed Razor-Sharp Foreground Album Artwork + Details + Play Button
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // Razor-sharp foreground artwork tile enclosed in liquid-glass curved frame
-                if (seedTrack != null) {
-                    Box(
-                        modifier = Modifier
-                            .size(76.dp)
-                            .shadow(10.dp, RoundedCornerShape(16.dp), spotColor = Color.Black.copy(alpha = 0.6f))
-                            .clip(RoundedCornerShape(16.dp))
-                            .border(
-                                BorderStroke(
-                                    1.dp,
-                                    Brush.linearGradient(
-                                        listOf(
-                                            Color.White.copy(alpha = 0.65f),
-                                            Color.White.copy(alpha = 0.20f)
-                                        )
-                                    )
-                                ),
-                                RoundedCornerShape(16.dp)
-                            )
-                    ) {
-                        AsyncImage(
-                            model = rememberOptimizedImageRequest(track = seedTrack, targetSize = ImageConfig.HERO_BANNER_SIZE),
-                            contentDescription = "$seedTitle cover",
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.width(14.dp))
-                }
-
-                Column(
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text(
-                        text = "Infinite Radio",
-                        style = MaterialTheme.typography.headlineMedium.copy(
-                            fontWeight = FontWeight.Black,
-                            fontSize = 24.sp,
-                            letterSpacing = (-0.4).sp,
-                            color = Color.White
-                        )
-                    )
-
-                    Spacer(modifier = Modifier.height(2.dp))
-
-                    Text(
-                        text = "Based on: $seedTitle · Endless station",
-                        style = MaterialTheme.typography.bodyMedium.copy(
-                            fontWeight = FontWeight.Medium,
-                            fontSize = 12.5.sp,
-                            letterSpacing = 0.2.sp,
-                            color = Color.White.copy(alpha = 0.85f)
-                        ),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            // Large rounded liquid-glass Play / Pause / Resume button
-            val buttonInteraction = remember { MutableInteractionSource() }
-            val isPressed by buttonInteraction.collectIsPressedAsState()
-            val buttonScale by animateFloatAsState(
-                targetValue = if (isPressed) 0.94f else 1.0f,
-                animationSpec = spring(
-                    dampingRatio = Spring.DampingRatioMediumBouncy,
-                    stiffness = Spring.StiffnessMediumLow
-                ),
-                label = "hero_play_press_spring"
-            )
-
-            Row(
-                modifier = Modifier
-                    .graphicsLayer {
-                        scaleX = buttonScale
-                        scaleY = buttonScale
-                    }
-                    .clip(RoundedCornerShape(22.dp))
-                    .background(
-                        Brush.verticalGradient(
-                            listOf(
-                                Color.White.copy(alpha = 0.30f),
-                                Color.White.copy(alpha = 0.16f)
-                            )
-                        )
-                    )
-                    .border(
-                        BorderStroke(
-                            1.dp,
-                            Brush.verticalGradient(
-                                listOf(
-                                    Color.White.copy(alpha = 0.70f),
-                                    Color.White.copy(alpha = 0.30f)
-                                )
-                            )
-                        ),
-                        RoundedCornerShape(22.dp)
-                    )
+                Modifier.graphicsLayer { scaleX = scale; scaleY = scale }
+                    .shadow(8.dp, buttonShape, spotColor = Color.Black.copy(alpha = 0.25f))
+                    .clip(buttonShape)
+                    .background(Brush.linearGradient(listOf(
+                        Color.White.copy(alpha = 0.34f), Color.White.copy(alpha = 0.10f),
+                        Color.White.copy(alpha = 0.22f)
+                    )))
+                    .border(1.dp, Brush.verticalGradient(listOf(
+                        Color.White.copy(alpha = 0.85f), Color.White.copy(alpha = 0.16f),
+                        Color.White.copy(alpha = 0.48f)
+                    )), buttonShape)
                     .clickable(
-                        interactionSource = buttonInteraction,
+                        enabled = !radioPlaying && !radioLoading,
+                        interactionSource = interaction,
                         indication = null,
-                        onClick = { onPlayInfiniteRadio(seedTrack) }
+                        role = Role.Button,
+                        onClick = { onPlayInfiniteRadio(null) }
                     )
-                    .padding(horizontal = 22.dp, vertical = 11.dp)
+                    .padding(horizontal = 24.dp, vertical = 13.dp)
                     .testTag("hero_play_infinite_radio_button"),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.Center
             ) {
-                when {
-                    isTrackLoading -> {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            color = Color.White,
-                            strokeWidth = 2.dp
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "Loading…",
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 15.sp
-                        )
-                    }
-                    isTrackPlaying -> {
-                        Icon(
-                            imageVector = Icons.Default.Pause,
-                            contentDescription = "Pause",
-                            tint = Color.White,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "Pause",
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 15.sp
-                        )
-                    }
-                    isTrackPaused -> {
-                        Icon(
-                            imageVector = Icons.Default.PlayArrow,
-                            contentDescription = "Resume",
-                            tint = Color.White,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "Resume",
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 15.sp
-                        )
-                    }
-                    else -> {
-                        Icon(
-                            imageVector = Icons.Default.PlayArrow,
-                            contentDescription = "Play",
-                            tint = Color.White,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "Play",
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 15.sp
-                        )
-                    }
+                if (radioLoading) {
+                    CircularProgressIndicator(Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                } else if (!radioPlaying) {
+                    Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(8.dp))
                 }
+                Text(
+                    if (radioPlaying) "Playing" else if (radioLoading) "Starting radio…" else "Play radio",
+                    style = MaterialTheme.typography.labelLarge.copy(color = Color.White, fontWeight = FontWeight.Bold, shadow = textShadow)
+                )
             }
         }
     }

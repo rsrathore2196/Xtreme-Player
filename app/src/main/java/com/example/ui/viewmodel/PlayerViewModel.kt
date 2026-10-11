@@ -441,47 +441,20 @@ class PlayerViewModel(
      * so that recommendations continue playing infinitely with continuous queue replenishment.
      */
     fun playInfiniteRadio(seedTrack: MusicTrack? = null) {
-        viewModelScope.launch {
-            val allTracks = (_catalogTracks.value + MusicDataSource.curatedTracks).distinctBy { it.id }
-            val current = playbackManager.uiState.value.currentTrack
-
-            // If a specific seed track is currently active, toggle play/pause
-            if (seedTrack != null && current?.id == seedTrack.id) {
-                playbackManager.playPause()
-                return@launch
-            }
-
-            if (!playbackManager.uiState.value.isAutoplayEnabled) {
-                playbackManager.toggleAutoplay(allTracks)
-            }
-
-            val chosenTrack = seedTrack ?: run {
-                val scored = if (current != null && allTracks.isNotEmpty()) {
-                    playbackManager.recommendationEngine.evaluateAndScoreCandidates(current, allTracks)
-                        .filter { it.totalScore > -50.0 }
-                        .map { it.track }
-                } else {
-                    emptyList()
-                }
-                val candidatePool = if (scored.isNotEmpty()) scored.take(10) else allTracks.take(10)
-                candidatePool.shuffled().firstOrNull() ?: allTracks.firstOrNull() ?: MusicDataSource.curatedTracks.first()
-            }
-
-            val scoredRecommendations = withContext(Dispatchers.Default) {
-                playbackManager.recommendationEngine
-                    .evaluateAndScoreCandidates(chosenTrack, allTracks)
-                    .filter { it.track.id != chosenTrack.id }
-                    .map { it.track }
-            }
-
-            val queueRemainder = if (scoredRecommendations.isNotEmpty()) {
-                scoredRecommendations.take(15)
-            } else {
-                allTracks.filter { it.id != chosenTrack.id }.shuffled().take(15)
-            }
-
-            val fullQueue = listOf(chosenTrack) + queueRemainder
-            playTrack(chosenTrack, fullQueue, isExplicitPlaylist = false)
+        val state = playbackManager.uiState.value
+        if (state.isInfiniteRadio && (state.isPlaying || state.isLoading)) return
+        activePlaybackLaunchJob?.cancel()
+        activePlaybackLaunchJob = viewModelScope.launch(Dispatchers.Main) {
+            val candidates = (_catalogTracks.value + recentlyPlayed.value + favoriteTracks.value + listOfNotNull(seedTrack))
+                .distinctBy { it.id }
+                .filterNot { it.audioUrl.contains("soundhelix.com", ignoreCase = true) }
+            // Resolve online candidates if the home catalog has not loaded yet.
+            val pool = candidates.ifEmpty { repository.getYtmQuickPicks(limit = 30) }
+            val alternatives = pool.filter { it.id != state.currentTrack?.id }
+            val randomized = alternatives.ifEmpty { pool }.shuffled()
+            val chosen = randomized.firstOrNull() ?: return@launch
+            playbackManager.setAutoplayEnabled(true)
+            playbackManager.playTrack(chosen, randomized, isExplicitPlaylist = false, isInfiniteRadio = true)
         }
     }
 

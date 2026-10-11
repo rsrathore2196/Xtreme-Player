@@ -58,6 +58,7 @@ data class PlayerUiState(
     val errorMessage: String? = null,
     val equalizerPreset: String = "Crystal Clarity",
     val isAutoplayEnabled: Boolean = true,
+    val isInfiniteRadio: Boolean = false,
     val nextRecommendedTrack: MusicTrack? = null,
     val infiniteAutoplayTracks: List<MusicTrack> = emptyList(),
     val sessionMemoryCount: Int = 0
@@ -482,9 +483,9 @@ class PlaybackManager(
         }
     }
 
-    fun playTrack(track: MusicTrack, queue: List<MusicTrack> = listOf(track), isExplicitPlaylist: Boolean = false) {
+    fun playTrack(track: MusicTrack, queue: List<MusicTrack> = listOf(track), isExplicitPlaylist: Boolean = false, isInfiniteRadio: Boolean = false) {
         if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
-            scope.launch { playTrack(track, queue, isExplicitPlaylist) }
+            scope.launch { playTrack(track, queue, isExplicitPlaylist, isInfiniteRadio) }
             return
         }
         val now = System.currentTimeMillis()
@@ -494,7 +495,7 @@ class PlaybackManager(
         // 1. Double-tap on currently playing track:
         // If already playing smoothly, do nothing; if paused, resume playback.
         // If in loading state, reset loading state safely.
-        if (isSameTrack && now - lastPlayRequestTimeMs < 450L) {
+        if (isSameTrack && !isInfiniteRadio && now - lastPlayRequestTimeMs < 450L) {
             val player = controller
             if (player != null) {
                 if (!player.isPlaying) {
@@ -514,7 +515,7 @@ class PlaybackManager(
         }
 
         // 2. Debounce rapid spam clicks on the same track if already loading or processing (<250ms)
-        if (lastRequestedTrackId == track.id && now - lastPlayRequestTimeMs < 250L) {
+        if (lastRequestedTrackId == track.id && !isInfiniteRadio && now - lastPlayRequestTimeMs < 250L) {
             return
         }
 
@@ -523,6 +524,7 @@ class PlaybackManager(
         recoveryJob?.cancel()
         recoveryGuard.select(track.id, newRequest = true)
         isCurrentSessionExplicitPlaylist = isExplicitPlaylist
+        _uiState.update { it.copy(isInfiniteRadio = isInfiniteRadio) }
 
         // Cancel previous unresolved network/stream resolution job and search queue jobs
         activeSearchPlayJob?.cancel()
@@ -806,6 +808,7 @@ class PlaybackManager(
         cancelQueueRefill()
         rememberQueueCandidates(searchContextPool)
         isCurrentSessionExplicitPlaylist = false
+        _uiState.update { it.copy(isInfiniteRadio = false) }
 
         // 2. Pause audio if actively playing without freezing the Main thread with synchronous stops
         try {
@@ -871,7 +874,7 @@ class PlaybackManager(
     fun retryPlayback() {
         val current = _uiState.value.currentTrack ?: return
         recoveryGuard.select(current.id, newRequest = true)
-        playTrack(current, activeQueue, isCurrentSessionExplicitPlaylist)
+        playTrack(current, activeQueue, isCurrentSessionExplicitPlaylist, _uiState.value.isInfiniteRadio)
     }
 
     fun setCandidatePool(pool: List<MusicTrack>) {
@@ -882,7 +885,7 @@ class PlaybackManager(
     }
 
     fun setAutoplayEnabled(enabled: Boolean) {
-        _uiState.update { it.copy(isAutoplayEnabled = enabled) }
+        _uiState.update { it.copy(isAutoplayEnabled = enabled, isInfiniteRadio = enabled && it.isInfiniteRadio) }
         if (enabled) {
             _uiState.value.currentTrack?.let { refreshAutoplayRecommendation(it) }
         } else {
@@ -990,7 +993,7 @@ class PlaybackManager(
                 } else if (playbackHistory.isNotEmpty()) {
                     val prevTrack = playbackHistory.removeAt(playbackHistory.lastIndex)
                     Log.d(TAG, "Second press: playing previous song from history: ${prevTrack.title}")
-                    playTrack(prevTrack, activeQueue.ifEmpty { listOf(prevTrack) })
+                    playTrack(prevTrack, activeQueue.ifEmpty { listOf(prevTrack) }, isInfiniteRadio = _uiState.value.isInfiniteRadio)
                 } else if (activeQueue.size > 1 && player.currentMediaItemIndex > 0) {
                     player.seekTo(player.currentMediaItemIndex - 1, 0L)
                     player.play()

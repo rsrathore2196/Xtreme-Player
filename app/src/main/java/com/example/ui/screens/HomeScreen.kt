@@ -150,6 +150,8 @@ fun HomeScreen(
             listeningHistoryCard = listeningHistoryCard,
             personalizedCard = personalizedCard,
             mostListenedArtists = mostListenedArtists,
+            isRadioSession = playerUiState?.isInfiniteRadio == true,
+            isRadioLoading = playerUiState?.isLoading == true,
             userProfile = userProfile,
             currentTrack = currentTrack ?: playerUiState?.currentTrack,
             isPlaying = isPlaying,
@@ -200,6 +202,8 @@ fun HomeScreen(
         countryLanguageCard = SectionState(title = trendingTitle, tracks = catalogTracks.take(12)),
         listeningHistoryCard = SectionState(title = "Jump Back In", tracks = recentlyPlayed),
         personalizedCard = SectionState(title = "Recommended for You", tracks = catalogTracks.take(12)),
+        isRadioSession = playerUiState?.isInfiniteRadio == true,
+        isRadioLoading = playerUiState?.isLoading == true,
         userProfile = userProfile,
         currentTrack = currentTrack ?: playerUiState?.currentTrack,
         isPlaying = isPlaying,
@@ -234,6 +238,8 @@ fun HomeScreenContent(
     onPlayInfiniteRadio: ((MusicTrack?) -> Unit)? = null,
     onAddToQueue: ((MusicTrack) -> Unit)? = null,
     mostListenedArtists: List<MostListenedArtist> = emptyList(),
+    isRadioSession: Boolean = false,
+    isRadioLoading: Boolean = false,
     boundaryOffset: Float = 0f,
     refreshErrorMessage: String? = null,
     onRetryRefresh: (() -> Unit)? = null,
@@ -403,8 +409,8 @@ fun HomeScreenContent(
             // =========================================================================
             // 1. RESTORED INFINITE RADIO HERO CARD
             // Placement: First content card, below the app header and greeting, above every other card.
-            // Visually rendered with edge-to-edge seed artwork, liquid glass pill, prominent title,
-            // and tactile play/pause/resume glass button reflecting real session state.
+            // Visually rendered with edge-to-edge lightly blurred artwork, a prominent title,
+            // and a radio-only glass button reflecting the actual radio session.
             // Always visible even when user has no listening history.
             // =========================================================================
             item(key = "hero_infinite_radio_card") {
@@ -412,7 +418,8 @@ fun HomeScreenContent(
                     seedTrack = heroSeedTrack,
                     currentPlayingTrackId = currentPlayingId,
                     isPlaying = isPlaying,
-                    isLoading = false,
+                    isLoading = isRadioLoading,
+                    isRadioSession = isRadioSession,
                     onPlayInfiniteRadio = { track ->
                         onPlayInfiniteRadio?.invoke(track)
                     }
@@ -498,24 +505,17 @@ fun HomeScreenContent(
                 )
             }
 
-            item(key = "most_listened_artists") {
-                Column(Modifier.padding(top = 22.dp)) {
-                    Text(
-                        "Most Listened Artists",
-                        modifier = Modifier.padding(horizontal = 20.dp),
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = textPrimaryColor
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    if (mostListenedArtists.isEmpty()) {
+            if (mostListenedArtists.isNotEmpty()) {
+                item(key = "most_listened_artists") {
+                    Column(Modifier.padding(top = 22.dp)) {
                         Text(
-                            "Listen to songs to discover your most played artists here.",
+                            "Most Listened Artists",
                             modifier = Modifier.padding(horizontal = 20.dp),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = textMutedColor
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = textPrimaryColor
                         )
-                    } else {
+                        Spacer(Modifier.height(12.dp))
                         LazyRow(
                             contentPadding = PaddingValues(horizontal = 20.dp),
                             horizontalArrangement = Arrangement.spacedBy(14.dp)
