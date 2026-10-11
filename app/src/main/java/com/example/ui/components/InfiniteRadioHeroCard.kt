@@ -18,7 +18,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
@@ -48,8 +47,8 @@ fun InfiniteRadioHeroCard(
     modifier: Modifier = Modifier,
     isRadioSession: Boolean = false
 ) {
-    val radioPlaying = isRadioSession && isPlaying
-    val radioLoading = isRadioSession && isLoading && !radioPlaying
+    val playbackActive = isPlaying
+    val radioLoading = isRadioSession && isLoading && !playbackActive
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val scale by animateFloatAsState(if (pressed) 0.96f else 1f, spring(), label = "radio_press")
@@ -64,17 +63,26 @@ fun InfiniteRadioHeroCard(
             .testTag("infinite_radio_hero_card")
     ) {
         if (seedTrack != null) {
+            val artworkRequest = rememberOptimizedImageRequest(
+                track = seedTrack, targetSize = ImageConfig.PLAYER_SCREEN_SIZE
+            )
+            val fullQualityArtwork = remember(artworkRequest) {
+                artworkRequest.newBuilder().allowRgb565(false).build()
+            }
             AsyncImage(
-                model = rememberOptimizedImageRequest(track = seedTrack, targetSize = ImageConfig.HERO_BANNER_SIZE),
+                model = fullQualityArtwork,
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize().blur(2.dp)
+                modifier = Modifier.fillMaxSize()
             )
         }
-        // Retain 90% of the artwork beneath a light tint and a subtle glass reflection.
-        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.10f)))
-        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(
-            listOf(Color.White.copy(alpha = 0.04f), Color.Transparent, Color.White.copy(alpha = 0.015f))
+        // A clear lens reflection adds gloss without blurring or dimming the artwork.
+        Box(Modifier.fillMaxSize().background(Brush.linearGradient(
+            0f to Color.White.copy(alpha = 0.20f),
+            0.28f to Color.White.copy(alpha = 0.035f),
+            0.48f to Color.Transparent,
+            0.86f to Color.Transparent,
+            1f to Color.White.copy(alpha = 0.08f)
         )))
         Column(
             Modifier.fillMaxSize().padding(20.dp),
@@ -102,7 +110,7 @@ fun InfiniteRadioHeroCard(
                         Color.White.copy(alpha = 0.48f)
                     )), buttonShape)
                     .clickable(
-                        enabled = !radioPlaying && !radioLoading,
+                        enabled = !playbackActive && !radioLoading,
                         interactionSource = interaction,
                         indication = null,
                         role = Role.Button,
@@ -116,12 +124,12 @@ fun InfiniteRadioHeroCard(
                 if (radioLoading) {
                     CircularProgressIndicator(Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
                     Spacer(Modifier.width(8.dp))
-                } else if (!radioPlaying) {
+                } else if (!playbackActive) {
                     Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
                     Spacer(Modifier.width(8.dp))
                 }
                 Text(
-                    if (radioPlaying) "Playing" else if (radioLoading) "Starting radio…" else "Play radio",
+                    if (playbackActive) "Playing" else if (radioLoading) "Starting radio…" else "Play",
                     style = MaterialTheme.typography.labelLarge.copy(color = Color.White, fontWeight = FontWeight.Bold, shadow = textShadow)
                 )
             }
