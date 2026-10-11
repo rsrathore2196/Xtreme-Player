@@ -1282,7 +1282,7 @@ object PlaylistImportEngine {
                     var playableAudioUrl = candidate.audioUrl
                     if (playableAudioUrl.isBlank() || playableAudioUrl.startsWith("yt_") || playableAudioUrl.contains("placeholder")) {
                         try {
-                            val resolved = com.example.data.repository.MusicRepository.getInstance().resolvePlayableTrack(candidate)
+                            val resolved = com.example.XtremeMusicApp.getInstance().repository.resolvePlayableTrack(candidate)
                             playableAudioUrl = resolved.audioUrl
                         } catch (_: Exception) {
                             playableAudioUrl = ""

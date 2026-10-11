@@ -21,7 +21,7 @@ fun KaraokeLyricsView(
     accentColor: Color = Color.White,
     isDark: Boolean = LocalAppColors.current.isDark,
     onRetry: () -> Unit = {},
-    currentPositionProvider: () -> Long = { currentPositionMs },
+    currentPositionProvider: () -> Long = { playbackPositionFlow?.value ?: currentPositionMs },
     modifier: Modifier = Modifier
 ) {
     SyncedLyricsView(

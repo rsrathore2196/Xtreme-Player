@@ -14,6 +14,7 @@ import com.example.data.remote.MusicDataSource
 import com.example.data.remote.OnlineMusicApiService
 import com.example.data.remote.YouTubeMusicApiService
 import com.example.playback.AudioQuality
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -108,10 +109,18 @@ class MusicRepository(
 
         // HomeScreen Audio Feeds & Recommendation Engine:
         // Fetched EXCLUSIVELY from YouTube Music API per strict architectural rules
-        val (trendingSongs, profileHits) = coroutineScope {
+        val discoveryArtists = (musicDao.getRecentlyPlayedTracks().first() + musicDao.getFavoriteTracks().first())
+            .flatMap { it.artist.split(",") }
+            .map { it.trim() }
+            .filter { it.isNotBlank() && !it.equals("Various Artists", ignoreCase = true) }
+            .distinctBy { it.lowercase() }
+            .take(12)
+            .shuffled()
+            .take(3)
+        val (trendingSongs, profileHits, artistDiscoveries) = coroutineScope {
             val trendingDeferred = async {
                 try {
-                    YouTubeMusicApiService.getTrendingSongs(limit = 25)
+                    YouTubeMusicApiService.getTrendingSongs(limit = 50)
                 } catch (_: Exception) {
                     emptyList()
                 }
@@ -122,7 +131,7 @@ class MusicRepository(
                         YouTubeMusicApiService.getTrendingSongsForProfile(
                             country = profile.country,
                             languages = profile.languages,
-                            limit = 25
+                            limit = 50
                         )
                     } else {
                         emptyList()
@@ -131,17 +140,30 @@ class MusicRepository(
                     emptyList()
                 }
             }
-            Pair(trendingDeferred.await(), profileDeferred.await())
+            val artistDeferred = async {
+                discoveryArtists.map { artist ->
+                    async {
+                        try {
+                            YouTubeMusicApiService.searchSongs("$artist songs", limit = 15)
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (_: Exception) {
+                            emptyList()
+                        }
+                    }
+                }.awaitAll().flatten()
+            }
+            Triple(trendingDeferred.await(), profileDeferred.await(), artistDeferred.await())
         }
 
-        val onlineSongs = (profileHits + trendingSongs).distinctBy { it.id }
+        val onlineSongs = (artistDiscoveries + profileHits + trendingSongs).distinctBy { it.id }
         val combined = if (onlineSongs.isNotEmpty()) {
             onlineSongs + MusicDataSource.curatedTracks
         } else {
             MusicDataSource.curatedTracks
         }
 
-        val result = combined.distinctBy { it.id }.map { track ->
+        val result = combined.distinctBy { it.id }.shuffled().map { track ->
             track.copy(isLiked = likedIds.contains(track.id))
         }
 
@@ -222,12 +244,12 @@ class MusicRepository(
         val likedIds = getLikedTrackIds()
 
         // Fetch online via YouTube Music API
-        val queries = listOf("90s Bollywood Classics", "2000s Bollywood Hits", "Retro Golden Hits", "Kumar Sanu hits", "Udit Narayan hits", "Sonu Nigam hits", "90s Nostalgia hits")
+        val queries = listOf("90s Bollywood Classics", "2000s Bollywood Hits", "Retro Golden Hits", "Kumar Sanu 90s hits", "Udit Narayan 90s hits", "Sonu Nigam 2000s hits", "90s Nostalgia hits").shuffled()
         val onlineResults = coroutineScope {
             queries.map { q ->
                 async {
                     try {
-                        YouTubeMusicApiService.searchSongs(q, limit = 8)
+                        YouTubeMusicApiService.searchSongs(q, limit = 15)
                     } catch (_: Exception) {
                         emptyList()
                     }
@@ -235,7 +257,9 @@ class MusicRepository(
             }.awaitAll()
         }
 
-        val diversified = AlbumArtDeduplicator.interleaveAndDiversify(onlineResults, limit)
+        val diversified = AlbumArtDeduplicator.interleaveAndDiversify(
+            onlineResults.map { it.shuffled() }.shuffled(), limit
+        )
 
         val finalTracks = if (diversified.isNotEmpty()) {
             val entities = diversified.map { TrackEntity.fromMusicTrack(it).copy(isCached = true, genre = "Retro") }
@@ -244,9 +268,13 @@ class MusicRepository(
         } else {
             val roomCached = try { musicDao.getCachedTracksSync(30).filter { it.genre.equals("Retro", ignoreCase = true) } } catch (_: Exception) { emptyList() }
             if (roomCached.isNotEmpty()) {
-                roomCached.map { it.toMusicTrack().copy(isLiked = likedIds.contains(it.id)) }
+                roomCached.shuffled().take(limit).map { it.toMusicTrack().copy(isLiked = likedIds.contains(it.id)) }
             } else {
-                MusicDataSource.curatedTracks.shuffled().distinctAlbumAndCover(limit)
+                MusicDataSource.curatedTracks.filter { track ->
+                    track.year.toIntOrNull()?.let { it in 1960..2009 } == true ||
+                        track.genre.contains("Retro", ignoreCase = true) ||
+                        track.genre.contains("Classic", ignoreCase = true)
+                }.shuffled().distinctAlbumAndCover(limit)
             }
         }
         cachedEraTracks = finalTracks
@@ -260,24 +288,26 @@ class MusicRepository(
             queries.map { q ->
                 async {
                     try {
-                        YouTubeMusicApiService.searchSongs(q, limit = 8)
+                        YouTubeMusicApiService.searchSongs(q, limit = 15)
                     } catch (_: Exception) {
                         emptyList()
                     }
                 }
             }.awaitAll()
         }
-        val diversified = AlbumArtDeduplicator.interleaveAndDiversify(onlineResults, limit)
+        val diversified = AlbumArtDeduplicator.interleaveAndDiversify(
+            onlineResults.map { it.shuffled() }.shuffled(), limit
+        )
         if (diversified.isNotEmpty()) {
             val entities = diversified.map { TrackEntity.fromMusicTrack(it).copy(isCached = true) }
             try { musicDao.mergeTracksMetadata(entities) } catch (_: Exception) {}
             diversified.map { it.copy(isLiked = likedIds.contains(it.id)) }
         } else {
-            val roomCached = try { musicDao.getCachedTracksSync(limit) } catch (_: Exception) { emptyList() }
+            val roomCached = try { musicDao.getCachedTracksSync(limit * 3) } catch (_: Exception) { emptyList() }
             if (roomCached.isNotEmpty()) {
-                roomCached.map { it.toMusicTrack().copy(isLiked = likedIds.contains(it.id)) }
+                roomCached.shuffled().take(limit).map { it.toMusicTrack().copy(isLiked = likedIds.contains(it.id)) }
             } else {
-                MusicDataSource.curatedTracks.take(limit)
+                MusicDataSource.curatedTracks.shuffled().take(limit)
             }
         }
     }

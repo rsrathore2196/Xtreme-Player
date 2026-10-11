@@ -9,7 +9,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -42,6 +44,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -50,7 +54,6 @@ import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.drawscope.ContentDrawScope
-import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -70,6 +73,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 
 /**
@@ -114,7 +118,7 @@ fun SyncedLyricsView(
     accentColor: Color = Color.White,
     isDark: Boolean = LocalAppColors.current.isDark,
     onRetry: () -> Unit = {},
-    currentPositionProvider: () -> Long = { currentPositionMs },
+    currentPositionProvider: () -> Long = { playbackPositionFlow?.value ?: currentPositionMs },
     modifier: Modifier = Modifier
 ) {
     val appColors = LocalAppColors.current
@@ -124,89 +128,79 @@ fun SyncedLyricsView(
     val lines = lyrics?.lines ?: emptyList()
     val isSynced = lyrics?.isSynced == true
 
-    // Lifecycle-aware collection of playbackPosition StateFlow
+    // Always read the latest callback: the default callback captures currentPositionMs.
+    // Do not take max(flow, player): a delayed flow emission must not undo a backward seek.
+    val latestPositionProvider by rememberUpdatedState(currentPositionProvider)
     val flowPosition by (playbackPositionFlow ?: remember { MutableStateFlow(0L) })
-        .collectAsStateWithLifecycle(initialValue = currentPositionProvider())
-
-    // High-resolution position state for line-boundary detection
-    var currentPlayheadMs by remember { mutableLongStateOf(currentPositionProvider()) }
-
-    // Synchronize playhead state with real-time playback
-    LaunchedEffect(isSynced, isPlaying, lyrics) {
+        .collectAsStateWithLifecycle(initialValue = currentPositionMs)
+    var currentPlayheadMs by remember(lyrics?.trackId) {
+        mutableLongStateOf(latestPositionProvider())
+    }
+    LaunchedEffect(isSynced, isPlaying, lyrics?.trackId) {
         if (!isSynced) return@LaunchedEffect
-        currentPlayheadMs = currentPositionProvider()
-        while (isActive) {
-            val realPos = currentPositionProvider()
-            if (realPos != currentPlayheadMs) {
-                currentPlayheadMs = realPos
-            }
-            delay(100L)
-        }
+        do {
+            currentPlayheadMs = latestPositionProvider()
+            delay(50L)
+        } while (isActive && isPlaying)
+    }
+    LaunchedEffect(flowPosition, currentPositionMs, isPlaying, lyrics?.trackId) {
+        currentPlayheadMs = latestPositionProvider()
     }
 
-    // Keep playhead immediately responsive to seek, pause, and StateFlow emissions
-    LaunchedEffect(flowPosition) {
-        currentPlayheadMs = currentPositionProvider().coerceAtLeast(flowPosition)
-    }
-
-    // Determine current active lyric line based on observable Compose states
-    val activeLineIndex by remember(lines, isSynced) {
+    val activeLineIndex by remember(lyrics?.trackId, lines, isSynced) {
         derivedStateOf {
-            if (!isSynced || lines.isEmpty()) -1
-            else {
-                val pos = if (flowPosition > 0L && !isPlaying) flowPosition else maxOf(flowPosition, currentPlayheadMs)
-                var found = -1
-                for (i in lines.indices) {
-                    if (pos >= lines[i].timestampMs) {
-                        found = i
-                    } else {
-                        break
-                    }
-                }
-                found
-            }
+            if (!isSynced) -1
+            else lines.indexOfLast { currentPlayheadMs >= it.timestampMs }
         }
     }
 
-    // Smooth active-line auto-scroll: accurately centers active line in the lyrics box and immediately jumps on initial open / song switch
-    var hasInitialScrolled by remember(lines) { mutableStateOf(false) }
-    LaunchedEffect(activeLineIndex, isSynced) {
-        if (isSynced && activeLineIndex in lines.indices) {
-            val visibleItem = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == activeLineIndex }
-            val viewportHeight = listState.layoutInfo.viewportSize.height
-            val itemSize = visibleItem?.size ?: 0
+    // A gesture temporarily suspends following; the fling can finish before we resume.
+    // Programmatic scrolling does not count as a user gesture and never drops a line change.
+    val isDragged by listState.interactionSource.collectIsDraggedAsState()
+    var followPlayback by remember(lyrics?.trackId) { mutableStateOf(true) }
+    LaunchedEffect(isDragged, lyrics?.trackId) {
+        if (isDragged) {
+            followPlayback = false
+        } else if (!followPlayback) {
+            snapshotFlow { listState.isScrollInProgress }.first { !it }
+            delay(1_200L)
+            followPlayback = true
+        }
+    }
 
-            if (!hasInitialScrolled) {
-                hasInitialScrolled = true
-                val centerOffset = if (viewportHeight > 0 && itemSize > 0) {
-                    -(viewportHeight / 2 - itemSize / 2)
-                } else 0
-                listState.scrollToItem(
-                    index = activeLineIndex,
-                    scrollOffset = centerOffset
+    val viewportSize by remember { derivedStateOf { listState.layoutInfo.viewportSize } }
+    var hasInitialScrolled by remember(lyrics?.trackId, lines) { mutableStateOf(false) }
+    LaunchedEffect(lyrics?.trackId, lines, activeLineIndex, isSynced, followPlayback, isDragged, viewportSize) {
+        if (!isSynced || lines.isEmpty() || !followPlayback || isDragged) return@LaunchedEffect
+        // Before the first vocal, show the first line without marking it active.
+        val targetIndex = activeLineIndex.coerceAtLeast(0)
+        snapshotFlow { listState.layoutInfo }.first {
+            it.viewportSize.height > 0 && it.totalItemsCount == lines.size
+        }
+
+        if (listState.layoutInfo.visibleItemsInfo.none { it.index == targetIndex }) {
+            // Bring an offscreen row into layout before using its actual wrapped height.
+            if (hasInitialScrolled) listState.animateScrollToItem(targetIndex)
+            else listState.scrollToItem(targetIndex)
+        }
+        val layout = listState.layoutInfo
+        val item = layout.visibleItemsInfo.firstOrNull { it.index == targetIndex }
+            ?: return@LaunchedEffect
+        // Item offsets include the negative viewport start caused by content padding.
+        // Using viewportSize / 2 alone shifts the vocal line down by the top padding.
+        val viewportCenter = (layout.viewportStartOffset + layout.viewportEndOffset) / 2f
+        val distanceToCenter = item.offset + item.size / 2f - viewportCenter
+        if (kotlin.math.abs(distanceToCenter) > 1f) {
+            if (hasInitialScrolled) {
+                listState.animateScrollBy(
+                    distanceToCenter,
+                    animationSpec = tween(durationMillis = 350, easing = FastOutSlowInEasing)
                 )
-            } else if (!listState.isScrollInProgress) {
-                if (visibleItem != null && viewportHeight > 0) {
-                    val currentCenter = visibleItem.offset + visibleItem.size / 2
-                    val targetCenter = viewportHeight / 2
-                    val delta = currentCenter - targetCenter
-                    if (kotlin.math.abs(delta) > 2) {
-                        listState.animateScrollBy(
-                            value = delta.toFloat(),
-                            animationSpec = tween(durationMillis = 350, easing = FastOutSlowInEasing)
-                        )
-                    }
-                } else {
-                    val centerOffset = if (viewportHeight > 0 && itemSize > 0) {
-                        -(viewportHeight / 2 - itemSize / 2)
-                    } else 0
-                    listState.animateScrollToItem(
-                        index = activeLineIndex,
-                        scrollOffset = centerOffset
-                    )
-                }
+            } else {
+                listState.scrollBy(distanceToCenter)
             }
         }
+        hasInitialScrolled = true
     }
 
     // Container theme colors
@@ -225,9 +219,8 @@ fun SyncedLyricsView(
             .testTag("synced_lyrics_view")
     ) {
         val boxHeight = maxHeight
-        val verticalCenterPadding = remember(boxHeight) {
-            if (boxHeight > 100.dp) (boxHeight / 2) - 24.dp else 40.dp
-        }
+        // Half a viewport permits exact centering even for the first and last wrapped rows.
+        val verticalCenterPadding = boxHeight / 2
         if (lyrics == null) {
             Box(
                 modifier = Modifier.fillMaxSize(),
@@ -313,7 +306,7 @@ fun SyncedLyricsView(
             ) {
                 itemsIndexed(lines, key = { index, item -> "${item.timestampMs}_$index" }) { index, item ->
                     val distance = if (activeLineIndex >= 0 && isSynced) kotlin.math.abs(index - activeLineIndex) else 0
-                    val isActive = isSynced && (distance == 0)
+                    val isActive = isSynced && index == activeLineIndex
                     val isPast = isSynced && (index < activeLineIndex)
 
                     val targetAlpha = if (!isSynced) {
@@ -345,7 +338,7 @@ fun SyncedLyricsView(
                                 alpha = animatedAlpha
                                 scaleX = animatedScale
                                 scaleY = animatedScale
-                                transformOrigin = TransformOrigin(0f, 0.5f)
+                                transformOrigin = TransformOrigin(0f, 0f)
                             }
                             .clickable(
                                 enabled = isSynced,
@@ -353,6 +346,7 @@ fun SyncedLyricsView(
                                 indication = null,
                                 onClick = {
                                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    followPlayback = true
                                     onSeekTo(item.timestampMs)
                                 }
                             )
@@ -363,7 +357,7 @@ fun SyncedLyricsView(
                         if (!item.romanization.isNullOrBlank()) {
                             Text(
                                 text = item.romanization,
-                                fontSize = if (isActive) 14.sp else 12.sp,
+                                fontSize = 14.sp,
                                 fontWeight = FontWeight.Medium,
                                 lineHeight = 18.sp,
                                 color = if (isActive) activeTextColor.copy(alpha = 0.85f) else inactiveTextColor.copy(alpha = 0.55f),
@@ -384,7 +378,9 @@ fun SyncedLyricsView(
                             trackArtist = lyrics.artist,
                             activeTextColor = activeTextColor,
                             inactiveTextColor = inactiveTextColor,
-                            currentPositionProvider = currentPositionProvider
+                            currentPositionProvider = {
+                                if (isPlaying) latestPositionProvider() else currentPlayheadMs
+                            }
                         )
                     }
                 }
@@ -413,9 +409,11 @@ private fun KaraokeLineItem(
     inactiveTextColor: Color,
     currentPositionProvider: () -> Long
 ) {
-    val fontSize = if (isActive) 24.sp else 21.sp
-    val fontWeight = if (isActive) FontWeight.Bold else FontWeight.SemiBold
-    val lineHeight = if (isActive) 34.sp else 30.sp
+    // Keep line wrapping and row height fixed as activity changes. Emphasis is a
+    // top-anchored graphics transform, so it cannot invalidate the centering target.
+    val fontSize = 24.sp
+    val fontWeight = FontWeight.Bold
+    val lineHeight = 34.sp
 
     if (!isSynced) {
         Text(
@@ -436,8 +434,8 @@ private fun KaraokeLineItem(
         var searchIdx = 0
         val text = line.text
         for (word in line.words) {
-            val idx = text.indexOf(word.text, startIndex = searchIdx)
-            val matchIdx = if (idx >= 0) idx else text.indexOf(word.text)
+            if (word.text.isEmpty()) continue
+            val matchIdx = text.indexOf(word.text, startIndex = searchIdx)
             if (matchIdx >= 0) {
                 val end = matchIdx + word.text.length
                 val isNonEng = SyllableSynthesizer.isNonEnglish(word.text, trackLanguage, trackArtist)
@@ -445,10 +443,12 @@ private fun KaraokeLineItem(
                 searchIdx = end
             }
         }
-        result
+        // If provider tokens cannot be mapped in order, use a sequential line reveal.
+        // Mapping repeated words back to an earlier occurrence animates the wrong row/span.
+        if (result.size == line.words.count { it.text.isNotEmpty() }) result else emptyList()
     }
 
-    var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
+    var textLayoutResult by remember(line.text) { mutableStateOf<TextLayoutResult?>(null) }
 
     // Frame-based draw invalidation State: read ONLY inside drawWithContent to trigger draw phase redraw without recomposition
     var localFrameTick by remember { mutableLongStateOf(0L) }
@@ -586,7 +586,9 @@ private fun ContentDrawScope.renderKaraokeDraw(
     // CASE B: LINE-SYNC FALLBACK (e.g. Standard LRC without word timestamps)
     // =========================================================================
     val lineStart = line.timestampMs
-    val vocalEnd = line.endTimeMs
+    val vocalEnd = line.endTimeMs.takeIf { it > lineStart }
+        ?: nextLine?.timestampMs?.takeIf { it > lineStart }
+        ?: (lineStart + 3_000L)
     val duration = (vocalEnd - lineStart).coerceAtLeast(500L)
 
     val lineProgress = if (currentPos >= vocalEnd) 1f else {
@@ -650,41 +652,38 @@ private fun ContentDrawScope.clipWordRegion(
     val endCharClamped = (charEnd - 1).coerceIn(charStart, layout.layoutInput.text.length - 1)
     val endLine = layout.getLineForOffset(endCharClamped)
 
-    if (startLine == endLine) {
-        // Word is on a single visual line (standard case)
-        val left = layout.getBoundingBox(charStart).left
-        val right = layout.getBoundingBox(endCharClamped).right
-        val top = layout.getLineTop(startLine)
-        val bottom = layout.getLineBottom(startLine)
-
-        val revealRight = if (progress >= 1f) right else (left + (right - left) * progress)
-
-        if (revealRight > left) {
-            clipRect(left = left, top = top, right = revealRight, bottom = bottom) {
-                this@clipWordRegion.drawContent()
-            }
+    // Divide progress over the complete span width, then reveal visual rows in order.
+    // Applying the same fraction to only the first row made wrapped words jump at the end.
+    var totalWidth = 0f
+    for (visualLine in startLine..endLine) {
+        val firstChar = if (visualLine == startLine) charStart else layout.getLineStart(visualLine)
+        val lastChar = if (visualLine == endLine) endCharClamped
+            else (layout.getLineEnd(visualLine, visibleEnd = true) - 1).coerceAtLeast(firstChar)
+        val firstBounds = layout.getBoundingBox(firstChar)
+        val lastBounds = layout.getBoundingBox(lastChar)
+        totalWidth += (maxOf(firstBounds.right, lastBounds.right) -
+            minOf(firstBounds.left, lastBounds.left)).coerceAtLeast(0f)
+    }
+    var remainingWidth = totalWidth * progress.coerceIn(0f, 1f)
+    for (visualLine in startLine..endLine) {
+        if (remainingWidth <= 0f) break
+        val firstChar = if (visualLine == startLine) charStart else layout.getLineStart(visualLine)
+        val lastChar = if (visualLine == endLine) endCharClamped
+            else (layout.getLineEnd(visualLine, visibleEnd = true) - 1).coerceAtLeast(firstChar)
+        val firstBounds = layout.getBoundingBox(firstChar)
+        val lastBounds = layout.getBoundingBox(lastChar)
+        val left = minOf(firstBounds.left, lastBounds.left)
+        val right = maxOf(firstBounds.right, lastBounds.right)
+        val width = (right - left).coerceAtLeast(0f)
+        val revealedWidth = minOf(width, remainingWidth)
+        clipRect(
+            left = left,
+            top = layout.getLineTop(visualLine),
+            right = left + revealedWidth,
+            bottom = layout.getLineBottom(visualLine)
+        ) {
+            this@clipWordRegion.drawContent()
         }
-    } else {
-        // Word wraps across multiple visual lines
-        var p = progress
-        for (l in startLine..endLine) {
-            val top = layout.getLineTop(l)
-            val bottom = layout.getLineBottom(l)
-            val left = if (l == startLine) layout.getBoundingBox(charStart).left else layout.getLineLeft(l)
-            val right = if (l == endLine) layout.getBoundingBox(endCharClamped).right else layout.getLineRight(l)
-
-            if (p >= 1f) {
-                clipRect(left = left, top = top, right = right, bottom = bottom) {
-                    this@clipWordRegion.drawContent()
-                }
-            } else if (p > 0f) {
-                val currentWidth = (right - left).coerceAtLeast(0f)
-                val activeX = left + currentWidth * p
-                clipRect(left = left, top = top, right = activeX, bottom = bottom) {
-                    this@clipWordRegion.drawContent()
-                }
-                p = 0f
-            }
-        }
+        remainingWidth -= width
     }
 }

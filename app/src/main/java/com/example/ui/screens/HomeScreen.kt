@@ -67,6 +67,7 @@ import com.example.ui.components.InfiniteRadioHeroCard
 import com.example.ui.theme.LocalAppColors
 import com.example.ui.util.ImageConfig
 import com.example.ui.util.rememberOptimizedImageRequest
+import com.example.ui.viewmodel.MostListenedArtist
 import com.example.ui.viewmodel.HomeViewModel
 import com.example.ui.viewmodel.SectionState
 import java.util.Calendar
@@ -130,6 +131,7 @@ fun HomeScreen(
     val countryLanguageCard by homeViewModel.countryLanguageCard.collectAsStateWithLifecycle()
     val listeningHistoryCard by homeViewModel.listeningHistoryCard.collectAsStateWithLifecycle()
     val personalizedCard by homeViewModel.personalizedCard.collectAsStateWithLifecycle()
+    val mostListenedArtists by homeViewModel.mostListenedArtists.collectAsStateWithLifecycle()
     val userProfile by homeViewModel.userProfile.collectAsStateWithLifecycle()
     val isRefreshing by homeViewModel.isRefreshing.collectAsStateWithLifecycle()
     val refreshErrorMessage by homeViewModel.refreshErrorMessage.collectAsStateWithLifecycle()
@@ -147,6 +149,7 @@ fun HomeScreen(
             countryLanguageCard = countryLanguageCard,
             listeningHistoryCard = listeningHistoryCard,
             personalizedCard = personalizedCard,
+            mostListenedArtists = mostListenedArtists,
             userProfile = userProfile,
             currentTrack = currentTrack ?: playerUiState?.currentTrack,
             isPlaying = isPlaying,
@@ -230,6 +233,7 @@ fun HomeScreenContent(
     onOpenSettings: (() -> Unit)? = null,
     onPlayInfiniteRadio: ((MusicTrack?) -> Unit)? = null,
     onAddToQueue: ((MusicTrack) -> Unit)? = null,
+    mostListenedArtists: List<MostListenedArtist> = emptyList(),
     boundaryOffset: Float = 0f,
     refreshErrorMessage: String? = null,
     onRetryRefresh: (() -> Unit)? = null,
@@ -492,6 +496,55 @@ fun HomeScreenContent(
                     textMutedColor = textMutedColor,
                     onTrackClick = onTrackClick
                 )
+            }
+
+            item(key = "most_listened_artists") {
+                Column(Modifier.padding(top = 22.dp)) {
+                    Text(
+                        "Most Listened Artists",
+                        modifier = Modifier.padding(horizontal = 20.dp),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = textPrimaryColor
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    if (mostListenedArtists.isEmpty()) {
+                        Text(
+                            "Listen to songs to discover your most played artists here.",
+                            modifier = Modifier.padding(horizontal = 20.dp),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = textMutedColor
+                        )
+                    } else {
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = 20.dp),
+                            horizontalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            items(mostListenedArtists, key = { it.name }) { artist ->
+                                Column(
+                                    Modifier.width(140.dp).clip(RoundedCornerShape(18.dp))
+                                        .background(cardBg)
+                                        .clickable {
+                                            artist.tracks.firstOrNull()?.let { onTrackClick(it, artist.tracks) }
+                                        }.padding(12.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    AsyncImage(
+                                        model = artist.tracks.firstOrNull()?.coverUrl,
+                                        contentDescription = "Music by ${artist.name}",
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.size(104.dp).clip(CircleShape)
+                                    )
+                                    Spacer(Modifier.height(8.dp))
+                                    Text(artist.name, color = textPrimaryColor, fontWeight = FontWeight.SemiBold,
+                                        maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
+                                    Text("${artist.playCount} plays", color = textMutedColor,
+                                        style = MaterialTheme.typography.labelSmall)
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             // CARD 3: Era-Specific Hits Card (90s Hits, 2000s Nostalgia, Retro Classics)

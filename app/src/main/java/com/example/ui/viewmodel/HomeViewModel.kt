@@ -10,6 +10,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.data.local.UserProfile
 import com.example.data.local.UserProfilePreferences
 import com.example.data.local.MusicDatabase
+import com.example.data.local.ListeningEventEntity
 import com.example.data.model.CountryData
 import com.example.data.model.MusicTrack
 import com.example.data.remote.MusicDataSource
@@ -25,6 +26,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -34,7 +36,6 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.util.Calendar
-import java.util.concurrent.ConcurrentHashMap
 import androidx.compose.runtime.Immutable
 
 @Immutable
@@ -46,6 +47,13 @@ data class SectionState(
     val isLoaded: Boolean = false,
     val isError: Boolean = false,
     val errorMessage: String = ""
+)
+
+@Immutable
+data class MostListenedArtist(
+    val name: String,
+    val playCount: Int,
+    val tracks: List<MusicTrack>
 )
 
 @Immutable
@@ -92,7 +100,7 @@ class HomeViewModel(
     private val personalizedEngine by lazy { PersonalizedHomeRecommendationEngine(listeningEventDao) }
 
     // =========================================================================
-    // EXACT MAXIMUM 6 CARDS ARCHITECTURE:
+    // Home shelves use category-specific candidates and real listening history.
     // 1. Small Pills-Based Card (2x3 Grid Layout - 6 items total)
     // 2. YouTube Music Home Screen-Based Card ("Quick Picks")
     // 3. Era-Specific Hits Card ("Era-Specific Hits", 90s, 2000s classics)
@@ -154,7 +162,7 @@ class HomeViewModel(
     private val _countryLanguageCard = MutableStateFlow(
         SectionState(
             title = getAuthoritativeTrendingTitle(resolveCountryDisplayName(_userProfile.value)),
-            subtitle = "Official regional charts & trending hits",
+            subtitle = "Regional chart discoveries",
             isLoading = true
         )
     )
@@ -172,6 +180,70 @@ class HomeViewModel(
     )
     val personalizedCard: StateFlow<SectionState> = _personalizedCard.asStateFlow()
 
+    private val exposurePreferences = application.getSharedPreferences("home_shelf_exposure", Context.MODE_PRIVATE)
+
+    // Remember the last visible tracks across app restarts, so refresh promotes discoveries.
+    private fun freshSelection(key: String, tracks: List<MusicTrack>, limit: Int = 15): List<MusicTrack> {
+        val previous = exposurePreferences.getStringSet(key, emptySet()).orEmpty()
+        val selected = tracks.distinctBy { it.id }.shuffled()
+            .sortedBy { it.id in previous }
+            .take(limit)
+        if (selected.isNotEmpty()) {
+            exposurePreferences.edit().putStringSet(key, selected.map { it.id }.toSet()).apply()
+        }
+        return selected
+    }
+
+    val mostListenedArtists: StateFlow<List<MostListenedArtist>> = combine(
+        listeningEventDao.getMeaningfulListeningCountFlow(),
+        _catalogTracks,
+        recentlyPlayed
+    ) { _, catalog, recent ->
+        withContext(Dispatchers.IO) {
+            buildMostListenedArtists(listeningEventDao.getEventsSince(0L), catalog + recent)
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
+
+    private suspend fun buildMostListenedArtists(
+        events: List<ListeningEventEntity>,
+        availableTracks: List<MusicTrack>
+    ): List<MostListenedArtist> {
+        val countedPlays = mutableSetOf<Pair<String, String>>()
+        val artistNames = mutableMapOf<String, String>()
+        val artistCounts = mutableMapOf<String, Int>()
+        val artistTrackIds = mutableMapOf<String, LinkedHashSet<String>>()
+        // STARTED, MEANINGFUL_PLAY and COMPLETED are milestones of the same play.
+        // A new STARTED resets only that session/track; completion never counts twice.
+        for (event in events.sortedWith(compareBy<ListeningEventEntity> { it.timestamp }.thenBy { it.id })) {
+            val playKey = event.sessionId to event.trackId
+            if (event.eventType == "STARTED") {
+                countedPlays.remove(playKey)
+                continue
+            }
+            if (event.playedDurationMs < 30_000 && !event.completed && event.completionRatio < 0.5f) continue
+            if (!countedPlays.add(playKey)) continue
+            for (artist in event.artistName.split(',').map { it.trim() }.distinctBy { it.lowercase() }) {
+                if (artist.isBlank() || artist.equals("Unknown", true) || artist.equals("Various Artists", true)) continue
+                val key = artist.lowercase()
+                artistNames[key] = artist
+                artistCounts[key] = artistCounts.getOrDefault(key, 0) + 1
+                artistTrackIds.getOrPut(key) { linkedSetOf() }.add(event.trackId)
+            }
+        }
+        val trackById = availableTracks.associateBy { it.id }.toMutableMap()
+        return artistCounts.entries.sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
+            .take(10).mapNotNull { (key, count) ->
+                val playedTracks = artistTrackIds[key].orEmpty().mapNotNull { id ->
+                    trackById[id] ?: database.musicDao().getTrackById(id)?.toMusicTrack()?.also { trackById[id] = it }
+                }
+                val artistCatalog = availableTracks.filter { track ->
+                    (track.artist + "," + track.singers).split(',').any { it.trim().equals(key, true) }
+                }
+                val tracks = (playedTracks.asReversed() + artistCatalog).distinctBy { it.id }.take(30)
+                if (tracks.isEmpty()) null else MostListenedArtist(artistNames.getValue(key), count, tracks)
+            }
+    }
+
     // Smart Shelves flow (backward compatibility)
     private val currentPlayingTrackFlow = playbackManager.uiState
         .map { it.currentTrack?.id to it.currentTrack }
@@ -187,7 +259,8 @@ class HomeViewModel(
         withContext(Dispatchers.Default) {
             personalizedEngine.generateHomeShelves(
                 catalogTracks = catalog,
-                userProfile = profile
+                userProfile = profile,
+                forceRefresh = true
             )
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
@@ -219,8 +292,8 @@ class HomeViewModel(
         if (cached != null && cached.isNotEmpty()) {
             _countryLanguageCard.value = SectionState(
                 title = title,
-                subtitle = "Official regional charts & trending hits",
-                tracks = cached,
+                subtitle = "Regional chart discoveries",
+                tracks = chartSelection(cached),
                 isLoading = false,
                 isLoaded = true
             )
@@ -231,7 +304,7 @@ class HomeViewModel(
         // Never keep previous country's tracks under the new country's title!
         _countryLanguageCard.value = SectionState(
             title = title,
-            subtitle = "Official regional charts & trending hits",
+            subtitle = "Regional chart discoveries",
             tracks = emptyList(),
             isLoading = true,
             isLoaded = false
@@ -242,21 +315,21 @@ class HomeViewModel(
                 val songs = repository.getRegionalTrending(
                     country = countryName,
                     countryCode = resolvedCode,
-                    limit = 20,
+                    limit = 50,
                     forceRefresh = forceRefresh
                 )
                 if (songs.isNotEmpty()) {
                     _countryLanguageCard.value = SectionState(
                         title = title,
-                        subtitle = "Official regional charts & trending hits",
-                        tracks = songs,
+                        subtitle = "Regional chart discoveries",
+                        tracks = chartSelection(songs),
                         isLoading = false,
                         isLoaded = true
                     )
                 } else {
                     _countryLanguageCard.value = SectionState(
                         title = title,
-                        subtitle = "Official regional charts & trending hits",
+                        subtitle = "Regional chart discoveries",
                         tracks = emptyList(),
                         isLoading = false,
                         isLoaded = false,
@@ -269,7 +342,7 @@ class HomeViewModel(
             } catch (e: Exception) {
                 _countryLanguageCard.value = SectionState(
                     title = title,
-                    subtitle = "Official regional charts & trending hits",
+                    subtitle = "Regional chart discoveries",
                     tracks = emptyList(),
                     isLoading = false,
                     isLoaded = false,
@@ -280,11 +353,18 @@ class HomeViewModel(
         }
     }
 
+    private fun chartSelection(tracks: List<MusicTrack>): List<MusicTrack> {
+        val ids = freshSelection("regional_${_userProfile.value.countryCode}", tracks, 20).map { it.id }.toSet()
+        return tracks.filter { it.id in ids } // Keep chart order within the refreshed selection.
+    }
+
     fun updateUserProfile(profile: UserProfile) {
         UserProfilePreferences.saveUserProfile(getApplication(), profile)
         _userProfile.value = profile
-        loadRegionalTrending(profile.country, profile.countryCode, forceRefresh = false)
+        refreshHome(isExplicitPull = false)
     }
+
+    private var homeRefreshJob: Job? = null
 
     init {
         // Step 1: Immediately render local Room cached data (<10ms fast)
@@ -294,11 +374,9 @@ class HomeViewModel(
         viewModelScope.launch {
             UserProfilePreferences.getUserProfileFlow(getApplication()).collect { newProfile ->
                 val prev = _userProfile.value
-                val countryChanged = !newProfile.country.equals(prev.country, ignoreCase = true) ||
-                        !newProfile.countryCode.equals(prev.countryCode, ignoreCase = true)
                 _userProfile.value = newProfile
-                if (countryChanged) {
-                    loadRegionalTrending(newProfile.country, newProfile.countryCode, forceRefresh = false)
+                if (newProfile != prev) {
+                    refreshHome(isExplicitPull = false)
                 }
             }
         }
@@ -311,8 +389,10 @@ class HomeViewModel(
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val initial = repository.getInitialCatalog(_userProfile.value)
-                _catalogTracks.value = initial
-                playbackManager.setCandidatePool(initial)
+                if (_catalogTracks.value.isEmpty()) {
+                    _catalogTracks.value = initial
+                    playbackManager.setCandidatePool(initial)
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -329,23 +409,25 @@ class HomeViewModel(
      * - Fallback gracefully to Room DB cached data if network requests fail or offline.
      */
     fun refreshHome(isExplicitPull: Boolean = true) {
-        if (_isRefreshing.value) return
-        _isRefreshing.value = true
+        if (homeRefreshJob?.isActive == true) return
+        _isRefreshing.value = isExplicitPull
         _refreshErrorMessage.value = null
-        viewModelScope.launch(Dispatchers.IO) {
+        homeRefreshJob = viewModelScope.launch(Dispatchers.IO) {
             try {
                 val profile = _userProfile.value
                 val countryDisplayName = resolveCountryDisplayName(profile)
                 val resolvedCode = profile.countryCode.ifBlank { "IN" }
 
                 // Refresh genuine regional trending for the authoritative selected country
-                loadRegionalTrending(countryDisplayName, resolvedCode, forceRefresh = isExplicitPull)
+                loadRegionalTrending(countryDisplayName, resolvedCode, forceRefresh = true)
 
                 coroutineScope {
                     // 1. Fresh Catalog Sync
                     val catalogDeferred = async {
                         try {
                             repository.syncOnlineCatalog(profile)
+                        } catch (e: CancellationException) {
+                            throw e
                         } catch (_: Exception) {
                             repository.getInitialCatalog(profile)
                         }
@@ -354,7 +436,9 @@ class HomeViewModel(
                     // 2. Fresh YouTube Music Quick Picks
                     val ytmDeferred = async {
                         try {
-                            repository.getYtmQuickPicks(limit = 15, forceRefresh = true)
+                            repository.getYtmQuickPicks(limit = 45, forceRefresh = true)
+                        } catch (e: CancellationException) {
+                            throw e
                         } catch (_: Exception) {
                             emptyList()
                         }
@@ -363,7 +447,9 @@ class HomeViewModel(
                     // 3. Fresh Era-Specific Hits
                     val eraDeferred = async {
                         try {
-                            repository.getEraHits(limit = 15, forceRefresh = true)
+                            repository.getEraHits(limit = 45, forceRefresh = true)
+                        } catch (e: CancellationException) {
+                            throw e
                         } catch (_: Exception) {
                             emptyList()
                         }
@@ -372,20 +458,9 @@ class HomeViewModel(
                     // 4. Fresh Listening History from Room DB
                     val historyDeferred = async {
                         try {
-                            val events = listeningEventDao.getRecentEvents(25)
-                            val recentTracks = database.musicDao().getCachedTracksSync(30).map { it.toMusicTrack() }
-                            val orderedHistory = mutableListOf<MusicTrack>()
-                            for (ev in events) {
-                                val match = recentTracks.firstOrNull { it.id == ev.trackId }
-                                if (match != null && orderedHistory.none { it.id == match.id }) {
-                                    orderedHistory.add(match)
-                                }
-                            }
-                            if (orderedHistory.isEmpty()) {
-                                recentTracks.take(15)
-                            } else {
-                                orderedHistory
-                            }
+                            repository.getRecentlyPlayedTracks().first().distinctBy { it.id }.take(15)
+                        } catch (e: CancellationException) {
+                            throw e
                         } catch (_: Exception) {
                             emptyList()
                         }
@@ -400,7 +475,13 @@ class HomeViewModel(
                                 userProfile = profile,
                                 forceRefresh = true
                             )
-                            shelves.flatMap { it.tracks }.distinctBy { it.id }.take(15)
+                            // Prefer taste-based shelves; curated shelves are only the cold-start fallback.
+                            val personalized = shelves.filter {
+                                it.id in setOf("shelf_mood_vibe", "shelf_top_artist", "shelf_quick_picks")
+                            }
+                            (personalized.ifEmpty { shelves }).flatMap { it.tracks }.distinctBy { it.id }
+                        } catch (e: CancellationException) {
+                            throw e
                         } catch (_: Exception) {
                             emptyList()
                         }
@@ -414,31 +495,32 @@ class HomeViewModel(
 
                     val freshYtm = ytmDeferred.await()
                     _ytmCard.value = _ytmCard.value.copy(
-                        tracks = freshYtm.ifEmpty { _catalogTracks.value.take(12) },
+                        tracks = freshSelection("quick_picks", freshYtm.ifEmpty { _ytmCard.value.tracks }),
                         isLoading = false,
                         isLoaded = true
                     )
 
                     val freshEra = eraDeferred.await()
                     _eraCard.value = _eraCard.value.copy(
-                        tracks = freshEra.ifEmpty { _catalogTracks.value.take(12) },
+                        tracks = freshSelection("era_hits", freshEra.ifEmpty { _eraCard.value.tracks }),
                         isLoading = false,
                         isLoaded = true
                     )
 
                     val freshHistory = historyDeferred.await()
                     _listeningHistoryCard.value = _listeningHistoryCard.value.copy(
-                        tracks = freshHistory.ifEmpty { _catalogTracks.value.take(12) },
+                        tracks = freshHistory,
                         isLoading = false,
                         isLoaded = true
                     )
 
                     val freshPersonalized = personalizedDeferred.await()
                     _personalizedCard.value = _personalizedCard.value.copy(
-                        tracks = freshPersonalized.ifEmpty { _catalogTracks.value.take(12) },
+                        tracks = freshSelection("personalized", freshPersonalized.ifEmpty { _personalizedCard.value.tracks }),
                         isLoading = false,
                         isLoaded = true
                     )
+                    regionalTrendingJob?.join()
                 }
             } catch (e: CancellationException) {
                 throw e

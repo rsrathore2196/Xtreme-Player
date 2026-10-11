@@ -24,6 +24,8 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.LocalOverscrollConfiguration
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -105,6 +107,7 @@ enum class NavigationTab(val title: String) {
     SETTINGS("Settings")
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MainNavigationScaffold(
     viewModel: PlayerViewModel,
@@ -179,7 +182,13 @@ fun MainNavigationScaffold(
 
     val appColors = LocalAppColors.current
 
-    CompositionLocalProvider(LocalDynamicGlassEnabled provides isDynamicGlassEnabled) {
+    // These screens own their edge spring; disable Android's competing stretch effect.
+    val platformOverscroll = LocalOverscrollConfiguration.current
+    CompositionLocalProvider(
+        LocalDynamicGlassEnabled provides isDynamicGlassEnabled,
+        LocalOverscrollConfiguration provides
+            if (selectedTabIndex == 3 && selectedPlaylistWithTracks == null) platformOverscroll else null
+    ) {
         Box(modifier = modifier.fillMaxSize().background(appColors.scaffoldBackground)) {
             Scaffold(
                 contentWindowInsets = WindowInsets(0.dp),

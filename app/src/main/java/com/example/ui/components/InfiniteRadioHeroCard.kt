@@ -323,117 +323,116 @@ fun InfiniteRadioHeroCard(
                 }
             }
 
-                Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(14.dp))
 
-                // Large rounded liquid-glass Play / Pause / Resume button
-                val buttonInteraction = remember { MutableInteractionSource() }
-                val isPressed by buttonInteraction.collectIsPressedAsState()
-                val buttonScale by animateFloatAsState(
-                    targetValue = if (isPressed) 0.94f else 1.0f,
-                    animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioMediumBouncy,
-                        stiffness = Spring.StiffnessMediumLow
-                    ),
-                    label = "hero_play_press_spring"
-                )
+            // Large rounded liquid-glass Play / Pause / Resume button
+            val buttonInteraction = remember { MutableInteractionSource() }
+            val isPressed by buttonInteraction.collectIsPressedAsState()
+            val buttonScale by animateFloatAsState(
+                targetValue = if (isPressed) 0.94f else 1.0f,
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                    stiffness = Spring.StiffnessMediumLow
+                ),
+                label = "hero_play_press_spring"
+            )
 
-                Row(
-                    modifier = Modifier
-                        .graphicsLayer {
-                            scaleX = buttonScale
-                            scaleY = buttonScale
-                        }
-                        .clip(RoundedCornerShape(22.dp))
-                        .background(
+            Row(
+                modifier = Modifier
+                    .graphicsLayer {
+                        scaleX = buttonScale
+                        scaleY = buttonScale
+                    }
+                    .clip(RoundedCornerShape(22.dp))
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(
+                                Color.White.copy(alpha = 0.30f),
+                                Color.White.copy(alpha = 0.16f)
+                            )
+                        )
+                    )
+                    .border(
+                        BorderStroke(
+                            1.dp,
                             Brush.verticalGradient(
                                 listOf(
-                                    Color.White.copy(alpha = 0.30f),
-                                    Color.White.copy(alpha = 0.16f)
+                                    Color.White.copy(alpha = 0.70f),
+                                    Color.White.copy(alpha = 0.30f)
                                 )
                             )
+                        ),
+                        RoundedCornerShape(22.dp)
+                    )
+                    .clickable(
+                        interactionSource = buttonInteraction,
+                        indication = null,
+                        onClick = { onPlayInfiniteRadio(seedTrack) }
+                    )
+                    .padding(horizontal = 22.dp, vertical = 11.dp)
+                    .testTag("hero_play_infinite_radio_button"),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                when {
+                    isTrackLoading -> {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            color = Color.White,
+                            strokeWidth = 2.dp
                         )
-                        .border(
-                            BorderStroke(
-                                1.dp,
-                                Brush.verticalGradient(
-                                    listOf(
-                                        Color.White.copy(alpha = 0.70f),
-                                        Color.White.copy(alpha = 0.30f)
-                                    )
-                                )
-                            ),
-                            RoundedCornerShape(22.dp)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Loading…",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp
                         )
-                        .clickable(
-                            interactionSource = buttonInteraction,
-                            indication = null,
-                            onClick = { onPlayInfiniteRadio(seedTrack) }
+                    }
+                    isTrackPlaying -> {
+                        Icon(
+                            imageVector = Icons.Default.Pause,
+                            contentDescription = "Pause",
+                            tint = Color.White,
+                            modifier = Modifier.size(20.dp)
                         )
-                        .padding(horizontal = 22.dp, vertical = 11.dp)
-                        .testTag("hero_play_infinite_radio_button"),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    when {
-                        isTrackLoading -> {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(18.dp),
-                                color = Color.White,
-                                strokeWidth = 2.dp
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "Loading…",
-                                color = Color.White,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 15.sp
-                            )
-                        }
-                        isTrackPlaying -> {
-                            Icon(
-                                imageVector = Icons.Default.Pause,
-                                contentDescription = "Pause",
-                                tint = Color.White,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "Pause",
-                                color = Color.White,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 15.sp
-                            )
-                        }
-                        isTrackPaused -> {
-                            Icon(
-                                imageVector = Icons.Default.PlayArrow,
-                                contentDescription = "Resume",
-                                tint = Color.White,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "Resume",
-                                color = Color.White,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 15.sp
-                            )
-                        }
-                        else -> {
-                            Icon(
-                                imageVector = Icons.Default.PlayArrow,
-                                contentDescription = "Play",
-                                tint = Color.White,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "Play",
-                                color = Color.White,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 15.sp
-                            )
-                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Pause",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp
+                        )
+                    }
+                    isTrackPaused -> {
+                        Icon(
+                            imageVector = Icons.Default.PlayArrow,
+                            contentDescription = "Resume",
+                            tint = Color.White,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Resume",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp
+                        )
+                    }
+                    else -> {
+                        Icon(
+                            imageVector = Icons.Default.PlayArrow,
+                            contentDescription = "Play",
+                            tint = Color.White,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Play",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp
+                        )
                     }
                 }
             }

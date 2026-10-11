@@ -111,8 +111,8 @@ class PersonalizedHomeRecommendationEngine(
                     track.genre.contains("Bollywood", ignoreCase = true)
             langMatch || countryMatch
         }.ifEmpty { catalogTracks }
-            .filter { seenTrackIds.add(it.id) }
-            .take(15)
+            .asSequence().filter { seenTrackIds.add(it.id) }
+            .take(15).toList()
 
         if (countryTracks.isNotEmpty()) {
             shelves.add(
@@ -129,8 +129,8 @@ class PersonalizedHomeRecommendationEngine(
         val newReleases = catalogTracks
             .filter { !seenTrackIds.contains(it.id) }
             .sortedByDescending { it.year.toIntOrNull() ?: 2024 }
-            .filter { seenTrackIds.add(it.id) }
-            .take(15)
+            .asSequence().filter { seenTrackIds.add(it.id) }
+            .take(15).toList()
 
         if (newReleases.isNotEmpty()) {
             shelves.add(
@@ -151,8 +151,8 @@ class PersonalizedHomeRecommendationEngine(
                 yr < 2015 || it.genre.contains("Retro", ignoreCase = true) || it.genre.contains("Classic", ignoreCase = true)
             }
             .ifEmpty { catalogTracks.filter { !seenTrackIds.contains(it.id) } }
-            .filter { seenTrackIds.add(it.id) }
-            .take(15)
+            .asSequence().filter { seenTrackIds.add(it.id) }
+            .take(15).toList()
 
         if (eraTracks.isNotEmpty()) {
             shelves.add(
@@ -190,10 +190,11 @@ class PersonalizedHomeRecommendationEngine(
             val artistAff = tasteProfile.artistAffinities[track.artist.trim().lowercase()] ?: 0f
             val genreAff = tasteProfile.genreAffinities[track.genre.trim().lowercase()] ?: 0f
             artistAff * 2f + genreAff
-        }.filter { track ->
+        }.asSequence().filter { track ->
             val norm = RecommendationEngine.normalizeTitle(track.title)
-            seenTrackIds.add(track.id) && seenNormalizedTitles.add(norm)
-        }.take(12)
+            if (track.id in seenTrackIds || norm in seenNormalizedTitles) false
+            else { seenTrackIds.add(track.id); seenNormalizedTitles.add(norm); true }
+        }.take(12).toList()
 
         if (quickPicks.isNotEmpty()) {
             shelves.add(
@@ -216,10 +217,11 @@ class PersonalizedHomeRecommendationEngine(
             val artistCandidates = catalogTracks.filter { track ->
                 !seenTrackIds.contains(track.id) &&
                 (track.artist.contains(topArtist, ignoreCase = true) || track.singers.contains(topArtist, ignoreCase = true))
-            }.filter { track ->
+            }.asSequence().filter { track ->
                 val norm = RecommendationEngine.normalizeTitle(track.title)
-                seenTrackIds.add(track.id) && seenNormalizedTitles.add(norm)
-            }.take(12)
+                if (track.id in seenTrackIds || norm in seenNormalizedTitles) false
+                else { seenTrackIds.add(track.id); seenNormalizedTitles.add(norm); true }
+            }.take(12).toList()
 
             if (artistCandidates.isNotEmpty()) {
                 shelves.add(
