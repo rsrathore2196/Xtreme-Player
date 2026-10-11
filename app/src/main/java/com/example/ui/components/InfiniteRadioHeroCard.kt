@@ -89,13 +89,33 @@ fun InfiniteRadioHeroCard(
             verticalArrangement = Arrangement.Bottom,
             horizontalAlignment = Alignment.Start
         ) {
-            Text("Infinite Radio", style = MaterialTheme.typography.headlineMedium.copy(
-                color = Color.White, fontWeight = FontWeight.Black, fontSize = 26.sp, shadow = textShadow
-            ))
-            Text("A fresh random mix · Endless discoveries", style = MaterialTheme.typography.bodyMedium.copy(
-                color = Color.White, shadow = textShadow
-            ))
-            Spacer(Modifier.height(18.dp))
+            // Local smoked glass protects text contrast even over white artwork,
+            // while the rest of the cover stays sharp and fully visible.
+            val textGlassShape = RoundedCornerShape(18.dp)
+            Column(
+                Modifier.fillMaxWidth()
+                    .clip(textGlassShape)
+                    .background(Brush.verticalGradient(listOf(
+                        Color(0xB30A101C), Color(0xA30A101C)
+                    )))
+                    .background(Brush.linearGradient(listOf(
+                        Color.White.copy(alpha = 0.06f), Color.Transparent,
+                        Color.White.copy(alpha = 0.015f)
+                    )))
+                    .border(1.dp, Brush.verticalGradient(listOf(
+                        Color.White.copy(alpha = 0.35f), Color.White.copy(alpha = 0.07f)
+                    )), textGlassShape)
+                    .padding(horizontal = 14.dp, vertical = 10.dp)
+            ) {
+                Text("Infinite Radio", style = MaterialTheme.typography.headlineMedium.copy(
+                    color = Color.White, fontWeight = FontWeight.Black, fontSize = 26.sp, shadow = textShadow
+                ))
+                Spacer(Modifier.height(4.dp))
+                Text("A fresh random mix · Endless discoveries", style = MaterialTheme.typography.bodyMedium.copy(
+                    color = Color.White, fontWeight = FontWeight.Medium, shadow = textShadow
+                ))
+            }
+            Spacer(Modifier.height(14.dp))
             val buttonShape = RoundedCornerShape(24.dp)
             Row(
                 Modifier.graphicsLayer { scaleX = scale; scaleY = scale }
