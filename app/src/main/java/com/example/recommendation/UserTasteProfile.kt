@@ -2,14 +2,11 @@ package com.example.recommendation
 
 import com.example.data.local.ListeningEventDao
 import com.example.data.local.ListeningEventEntity
+import com.example.data.model.MusicTrack
 import kotlin.math.exp
+import kotlin.math.abs
 import kotlin.math.ln
 
-/**
- * Cached User Taste Profile model inspired by BitChord.
- * Tracks rolling affinity matrices for artists, genres, languages, and acoustic moods
- * applying an exponential time-decay half-life of 14 days.
- */
 data class UserTasteProfile(
     val artistAffinities: Map<String, Float> = emptyMap(),
     val genreAffinities: Map<String, Float> = emptyMap(),
@@ -18,104 +15,87 @@ data class UserTasteProfile(
     val topRecentTrackIds: List<String> = emptyList(),
     val meaningfulPlaysCount: Int = 0,
     val isColdStart: Boolean = true,
-    val lastUpdatedMs: Long = System.currentTimeMillis()
+    val lastUpdatedMs: Long = System.currentTimeMillis(),
+    val playCounts: Map<String, Int> = emptyMap(),
+    val skipCounts: Map<String, Int> = emptyMap(),
+    val recentRecordings: Set<String> = emptySet(),
+    val favoriteRecordings: Set<String> = emptySet(),
+    val recordingAliases: Map<String, String> = emptyMap()
 ) {
+    fun keyFor(track: MusicTrack): String = HomeRecommendationPolicy.aliases(track)
+        .firstNotNullOfOrNull { recordingAliases[it] } ?: HomeRecommendationPolicy.metadataKey(track)
+
     companion object {
-        private const val HALF_LIFE_DAYS = 14.0
-        private const val HALF_LIFE_MS = HALF_LIFE_DAYS * 24.0 * 60.0 * 60.0 * 1000.0
-        private val DECAY_LAMBDA = ln(2.0) / HALF_LIFE_MS
+        val COLD_START_PROFILE = UserTasteProfile(lastUpdatedMs = 0)
+        fun meaningful(event: ListeningEventEntity): Boolean = event.eventType == "ACTUAL_PLAY" &&
+            (event.playedDurationMs >= 30_000 || (event.trackDurationMs > 0 && event.playedDurationMs >= (event.trackDurationMs + 1) / 2))
 
-        val COLD_START_PROFILE = UserTasteProfile(
-            artistAffinities = emptyMap(),
-            genreAffinities = emptyMap(),
-            languageAffinities = emptyMap(),
-            moodAffinities = emptyMap(),
-            topRecentTrackIds = emptyList(),
-            meaningfulPlaysCount = 0,
-            isColdStart = true,
-            lastUpdatedMs = 0L
-        )
+        suspend fun buildProfile(dao: ListeningEventDao, nowMs: Long = System.currentTimeMillis(),
+            tracks: List<MusicTrack> = emptyList(), favorites: List<MusicTrack> = emptyList()): UserTasteProfile =
+            fromEvents(dao.getActualPlays(), tracks, favorites, nowMs)
 
-        /**
-         * Computes user taste profile from raw Room events applying time-decay scoring.
-         */
-        suspend fun buildProfile(
-            listeningEventDao: ListeningEventDao,
-            nowMs: Long = System.currentTimeMillis()
-        ): UserTasteProfile {
-            val meaningfulCount = listeningEventDao.getMeaningfulListeningCount()
-            if (meaningfulCount < 5) {
-                return COLD_START_PROFILE.copy(
-                    meaningfulPlaysCount = meaningfulCount,
-                    isColdStart = true,
-                    lastUpdatedMs = nowMs
-                )
+        fun fromEvents(events: List<ListeningEventEntity>, tracks: List<MusicTrack>,
+            favorites: List<MusicTrack> = emptyList(), nowMs: Long = System.currentTimeMillis()): UserTasteProfile {
+            val byId = tracks.associateBy { it.id }
+            val aliases = mutableMapOf<String, String>()
+            (tracks + favorites).forEach { track ->
+                val names = HomeRecommendationPolicy.aliases(track)
+                val key = names.firstNotNullOfOrNull { aliases[it] } ?: HomeRecommendationPolicy.metadataKey(track)
+                names.forEach { aliases[it] = key }
             }
-
-            // Fetch events from last 45 days
-            val cutoff = nowMs - (45L * 24L * 60L * 60L * 1000L)
-            val events = listeningEventDao.getEventsSince(cutoff)
-
-            val artistScores = mutableMapOf<String, Float>()
-            val genreScores = mutableMapOf<String, Float>()
-            val languageScores = mutableMapOf<String, Float>()
-            val moodScores = mutableMapOf<String, Float>()
-
-            for (event in events) {
-                val ageMs = (nowMs - event.timestamp).coerceAtLeast(0L)
-                val decay = exp(-DECAY_LAMBDA * ageMs).toFloat()
-
-                // Calculate interaction weight:
-                // Completed play: 1.0 + completion + likeBonus (2.0)
-                // Skipped play: heavily downweighted (0.2)
-                var interactionWeight = event.completionRatio
-                if (event.completed) interactionWeight += 1.0f
-                if (event.liked) interactionWeight += 2.0f
-                if (event.skipped) interactionWeight *= 0.2f
-
-                val finalWeight = decay * interactionWeight
-
-                // Artist
-                if (event.artistName.isNotBlank() && !event.artistName.equals("Unknown", ignoreCase = true)) {
-                    val aKey = event.artistName.trim().lowercase()
-                    artistScores[aKey] = artistScores.getOrDefault(aKey, 0f) + finalWeight
-                }
-
-                // Genre
-                if (event.genre.isNotBlank()) {
-                    val gKey = event.genre.trim().lowercase()
-                    genreScores[gKey] = genreScores.getOrDefault(gKey, 0f) + finalWeight
-
-                    // Infer Mood from Genre
-                    val inferredMood = MoodVibeAnalyzer.inferMoodFromGenre(gKey)
-                    moodScores[inferredMood] = moodScores.getOrDefault(inferredMood, 0f) + finalWeight
-                }
-
-                // Language
-                if (event.language.isNotBlank()) {
-                    val lKey = event.language.trim().lowercase()
-                    languageScores[lKey] = languageScores.getOrDefault(lKey, 0f) + finalWeight
-                }
+            fun keyFor(track: MusicTrack) = HomeRecommendationPolicy.aliases(track)
+                .firstNotNullOfOrNull { aliases[it] } ?: HomeRecommendationPolicy.metadataKey(track)
+            val artists = mutableMapOf<String, Float>()
+            val genres = mutableMapOf<String, Float>()
+            val languages = mutableMapOf<String, Float>()
+            val moods = mutableMapOf<String, Float>()
+            val plays = mutableMapOf<String, Int>()
+            val skips = mutableMapOf<String, Int>()
+            val recent = linkedSetOf<String>()
+            val recentKeys = mutableSetOf<String>()
+            val unique = HomeRecommendationPolicy.Recordings()
+            var uniqueCount = 0
+            fun add(map: MutableMap<String, Float>, value: String, weight: Float) {
+                if (HomeRecommendationPolicy.known(value)) map.merge(HomeRecommendationPolicy.normalize(value), weight, Float::plus)
             }
-
-            val recentTrackIds = listeningEventDao.getRecentUniqueTrackIds(limit = 20)
-
-            return UserTasteProfile(
-                artistAffinities = normalizeScores(artistScores),
-                genreAffinities = normalizeScores(genreScores),
-                languageAffinities = normalizeScores(languageScores),
-                moodAffinities = normalizeScores(moodScores),
-                topRecentTrackIds = recentTrackIds,
-                meaningfulPlaysCount = meaningfulCount,
-                isColdStart = false,
-                lastUpdatedMs = nowMs
-            )
-        }
-
-        private fun normalizeScores(scores: Map<String, Float>): Map<String, Float> {
-            val maxScore = scores.values.maxOrNull() ?: return emptyMap()
-            if (maxScore <= 0f) return emptyMap()
-            return scores.mapValues { (_, score) -> (score / maxScore).coerceIn(0f, 1f) }
+            for (event in events.distinctBy { it.sessionId to it.trackId }.sortedByDescending { it.timestamp }) {
+                val track = byId[event.trackId]
+                val key = track?.let(::keyFor) ?: event.trackId
+                val isMeaningful = meaningful(event)
+                if (isMeaningful) {
+                    if (track != null) { if (unique.add(track)) uniqueCount++ }
+                    // Unresolved metadata cannot prove that two provider IDs are different recordings.
+                    recent.add(event.trackId)
+                    if (nowMs - event.timestamp < 7 * 86_400_000L) recentKeys.add(key)
+                    plays.merge(key, 1, Int::plus)
+                }
+                if (event.skipped) skips.merge(key, 1, Int::plus)
+                if (!isMeaningful && !event.skipped) continue
+                val days = (nowMs - event.timestamp).coerceAtLeast(0) / 86_400_000.0
+                // Recent taste leads, while a slower component retains long-term preferences.
+                val decay = (0.75 * exp(-ln(2.0) * days / 14) + 0.25 * exp(-ln(2.0) * days / 120)).toFloat()
+                val completion = if (event.trackDurationMs > 0) (event.playedDurationMs.toFloat() / event.trackDurationMs).coerceIn(0f, 1f) else 0f
+                val weight = decay * (if (event.skipped) -1.5f else 0.5f + completion * 2f)
+                val names = track?.let(HomeRecommendationPolicy::artists) ?: event.artistName.split(',')
+                names.forEach { add(artists, it, weight / names.size.coerceAtLeast(1)) }
+                add(genres, track?.genre ?: event.genre, weight)
+                HomeRecommendationPolicy.moodForGenre(track?.genre ?: event.genre)?.let { add(moods, it, weight) }
+                add(languages, track?.language ?: event.language, weight)
+            }
+            favorites.forEach { track ->
+                HomeRecommendationPolicy.artists(track).forEach { add(artists, it, 3f) }
+                add(genres, track.genre, 2f); add(languages, track.language, 2f)
+                HomeRecommendationPolicy.moodForGenre(track.genre)?.let { add(moods, it, 2f) }
+            }
+            fun normalized(values: Map<String, Float>): Map<String, Float> {
+                val max = values.values.maxOfOrNull { abs(it) }?.coerceAtLeast(1f) ?: 1f
+                return values.mapValues { (it.value / max).coerceIn(-1f, 1f) }
+            }
+            return UserTasteProfile(normalized(artists), normalized(genres), normalized(languages), moodAffinities = normalized(moods),
+                topRecentTrackIds = recent.take(30), meaningfulPlaysCount = uniqueCount,
+                isColdStart = uniqueCount < 3, lastUpdatedMs = nowMs, playCounts = plays,
+                skipCounts = skips, recentRecordings = recentKeys,
+                favoriteRecordings = favorites.map(::keyFor).toSet(), recordingAliases = aliases)
         }
     }
 }

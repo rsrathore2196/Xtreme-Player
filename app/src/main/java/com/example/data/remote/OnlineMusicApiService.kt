@@ -361,10 +361,10 @@ object OnlineMusicApiService {
                 }
                 val cleanWriter = cleanHtml(rawWriter)
 
-                val rawLanguage = item.optString("language", "Hindi").replaceFirstChar { it.uppercase() }
+                val rawLanguage = item.optString("language", "Unknown").replaceFirstChar { it.uppercase() }
                 val rawYear = item.optString("year", "")
 
-                val durationSec = item.optString("duration", "210").toLongOrNull() ?: 210L
+                val durationSec = item.optString("duration", "0").toLongOrNull() ?: 0L
                 val durationMs = durationSec * 1000L
 
                 val is320k = item.optString("320kbps", "true").equals("true", ignoreCase = true)
@@ -384,7 +384,7 @@ object OnlineMusicApiService {
                         durationMs = durationMs,
                         coverUrl = cleanImage,
                         audioUrl = audioUrl,
-                        genre = fallbackGenre,
+                        genre = item.optString("genre", "Unknown").ifBlank { "Unknown" },
                         bitrateKbps = if (is320k) 320 else 160,
                         qualityBadge = badge,
                         isLiked = false,

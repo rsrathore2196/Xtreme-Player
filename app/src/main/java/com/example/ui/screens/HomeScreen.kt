@@ -125,7 +125,6 @@ fun HomeScreen(
     modifier: Modifier = Modifier
 ) {
     val heroSeedTrack by homeViewModel.heroSeedTrack.collectAsStateWithLifecycle()
-    val pillsCardTracks by homeViewModel.pillsCardTracks.collectAsStateWithLifecycle()
     val ytmCard by homeViewModel.ytmCard.collectAsStateWithLifecycle()
     val eraCard by homeViewModel.eraCard.collectAsStateWithLifecycle()
     val countryLanguageCard by homeViewModel.countryLanguageCard.collectAsStateWithLifecycle()
@@ -143,7 +142,7 @@ fun HomeScreen(
     ) { contentOffset ->
         HomeScreenContent(
             heroSeedTrack = heroSeedTrack,
-            pillsCardTracks = pillsCardTracks,
+            pillsCardTracks = listeningHistoryCard.tracks.take(6),
             ytmCard = ytmCard,
             eraCard = eraCard,
             countryLanguageCard = countryLanguageCard,
@@ -189,19 +188,22 @@ fun HomeScreen(
     onOpenSettings: (() -> Unit)? = null,
     onPlayInfiniteRadio: ((MusicTrack?) -> Unit)? = null,
     onAddToQueue: ((MusicTrack) -> Unit)? = null,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    meaningfulUniqueTracks: Int = 0
 ) {
     val resolvedCountry = userProfile?.country?.trim()?.ifBlank { "India" } ?: "India"
     val trendingTitle = if (resolvedCountry.equals("India", ignoreCase = true)) "Trending in India" else "Trending in $resolvedCountry"
 
     HomeScreenContent(
         heroSeedTrack = recentlyPlayed.firstOrNull() ?: catalogTracks.firstOrNull(),
-        pillsCardTracks = recentlyPlayed.take(6),
-        ytmCard = SectionState(title = "Quick Picks", tracks = catalogTracks.take(12)),
-        eraCard = SectionState(title = "Era-Specific Hits", tracks = catalogTracks.take(12)),
-        countryLanguageCard = SectionState(title = trendingTitle, tracks = catalogTracks.take(12)),
-        listeningHistoryCard = SectionState(title = "Jump Back In", tracks = recentlyPlayed),
-        personalizedCard = SectionState(title = "Recommended for You", tracks = catalogTracks.take(12)),
+        pillsCardTracks = recentlyPlayed.takeIf { meaningfulUniqueTracks >= 3 }.orEmpty().take(6),
+        ytmCard = SectionState(title = "Quick Picks", tracks = com.example.recommendation.HomeRecommendationPolicy.diversify(catalogTracks, 15)),
+        eraCard = SectionState(title = "Era-Specific Hits", tracks = shelves.firstOrNull { it.id == "shelf_era_classics" }?.tracks.orEmpty()),
+        countryLanguageCard = SectionState(title = trendingTitle, tracks = shelves.firstOrNull { it.id == "shelf_country_trending" }?.tracks.orEmpty()),
+        listeningHistoryCard = SectionState(title = "Jump Back In", tracks = recentlyPlayed.takeIf { meaningfulUniqueTracks >= 3 }.orEmpty()),
+        personalizedCard = SectionState(title = "Recommended for You", tracks =
+            shelves.filter { it.id in setOf("shelf_quick_picks", "shelf_top_artist", "shelf_mood_vibe") }
+                .takeIf { meaningfulUniqueTracks >= 3 }?.let { com.example.recommendation.HomeRecommendationPolicy.interleave(it.map { shelf -> shelf.tracks }) }.orEmpty()),
         isRadioSession = playerUiState?.isInfiniteRadio == true,
         isRadioLoading = playerUiState?.isLoading == true,
         userProfile = userProfile,

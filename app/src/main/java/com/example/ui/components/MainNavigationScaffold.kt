@@ -126,7 +126,6 @@ fun MainNavigationScaffold(
     val isDarkMode by viewModel.isDarkMode.collectAsState()
     val themeMode by viewModel.themeMode.collectAsState()
     val customThemeState by viewModel.customThemeState.collectAsState()
-    val homeShelves by viewModel.homeShelves.collectAsState()
     val currentLyrics by viewModel.currentLyrics.collectAsState()
     val availableAudioDevices by viewModel.availableAudioDevices.collectAsState()
     val importState by viewModel.importState.collectAsState()

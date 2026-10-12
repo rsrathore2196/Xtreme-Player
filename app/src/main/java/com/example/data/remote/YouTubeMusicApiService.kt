@@ -30,7 +30,7 @@ object YouTubeMusicApiService {
      * Searches YouTube Music using the official Innertube WEB_REMIX API.
      * Returns a list of standardized MusicTrack objects with source = "YouTube Music".
      */
-    suspend fun searchSongs(query: String, limit: Int = 25): List<MusicTrack> = withContext(Dispatchers.IO) {
+    suspend fun searchSongs(query: String, limit: Int = 25, songsOnly: Boolean = false): List<MusicTrack> = withContext(Dispatchers.IO) {
         if (query.isBlank()) return@withContext emptyList()
 
         try {
@@ -44,6 +44,7 @@ object YouTubeMusicApiService {
                     })
                 })
                 put("query", query.trim())
+                if (songsOnly) put("params", "EgWKAQIIAWoKEAkQBRAKEAMQBA==")
             }
 
             val request = Request.Builder()
@@ -121,43 +122,38 @@ object YouTubeMusicApiService {
             val rawTitle = runs0.getJSONObject(0).optString("text", "").trim()
             if (rawTitle.isBlank()) return null
 
-            // Subtitle runs: contains type (Song/Video), artist, album, duration
-            var artist = "Online Artist"
-            var album = "Online Stream"
-            var durationMs = 210000L
-
-            if (flexCols.length() > 1) {
-                val col1 = flexCols.getJSONObject(1)
-                val text1 = col1.optJSONObject("musicResponsiveListItemFlexColumnRenderer")?.optJSONObject("text")
-                val runs1 = text1?.optJSONArray("runs")
-                if (runs1 != null) {
-                    val texts = mutableListOf<String>()
-                    for (k in 0 until runs1.length()) {
-                        val t = runs1.getJSONObject(k).optString("text", "").trim()
-                        if (t.isNotBlank() && t != "•") {
-                            texts.add(t)
-                        }
-                    }
-                    if (texts.isNotEmpty()) {
-                        // Often texts are ["Song", "Artist Name", "Album Name", "3:45"] or ["Artist Name", "3:45"]
-                        val nonType = if (texts.first().equals("Song", true) || texts.first().equals("Video", true)) {
-                            texts.drop(1)
-                        } else {
-                            texts
-                        }
-                        if (nonType.isNotEmpty()) {
-                            artist = nonType[0]
-                        }
-                        if (nonType.size > 1 && !nonType[1].contains(":")) {
-                            album = nonType[1]
-                        }
-                        val durationText = nonType.find { it.contains(":") }
-                        if (durationText != null) {
-                            durationMs = parseDurationText(durationText)
-                        }
+            // Only artist/album browse endpoints identify these fields reliably. A plain
+            // subtitle may be a channel, view count, or type label instead of an artist.
+            val artists = mutableListOf<String>()
+            var album = "Unknown"
+            var durationMs = 0L
+            var releaseYear = ""
+            for (columnIndex in 1 until flexCols.length()) {
+                val runs = flexCols.optJSONObject(columnIndex)
+                    ?.optJSONObject("musicResponsiveListItemFlexColumnRenderer")
+                    ?.optJSONObject("text")?.optJSONArray("runs") ?: continue
+                for (index in 0 until runs.length()) {
+                    val run = runs.optJSONObject(index) ?: continue
+                    val text = run.optString("text").trim()
+                    val endpoint = run.optJSONObject("navigationEndpoint")?.optJSONObject("browseEndpoint")
+                    val type = endpoint?.optJSONObject("browseEndpointContextSupportedConfigs")
+                        ?.optJSONObject("browseEndpointContextMusicConfig")?.optString("pageType").orEmpty()
+                    val browseId = endpoint?.optString("browseId").orEmpty()
+                    when {
+                        type == "MUSIC_PAGE_TYPE_ARTIST" || browseId.startsWith("UC") -> artists.add(text)
+                        type == "MUSIC_PAGE_TYPE_ALBUM" || browseId.startsWith("MPRE") -> album = text
+                        text.matches(Regex("[0-9]{1,2}:[0-9]{2}(?::[0-9]{2})?")) -> durationMs = parseDurationText(text)
+                        text.matches(Regex("(?:19|20)[0-9]{2}")) -> releaseYear = text
                     }
                 }
             }
+            val fixedColumns = r.optJSONArray("fixedColumns")
+            for (index in 0 until (fixedColumns?.length() ?: 0)) {
+                val text = fixedColumns?.optJSONObject(index)?.optJSONObject("musicResponsiveListItemFixedColumnRenderer")
+                    ?.optJSONObject("text")?.optJSONArray("runs")?.optJSONObject(0)?.optString("text").orEmpty()
+                if (text.matches(Regex("[0-9]{1,2}:[0-9]{2}(?::[0-9]{2})?"))) durationMs = parseDurationText(text)
+            }
+            val artist = artists.distinct().joinToString(", ").ifBlank { "Unknown" }
 
             // Video ID
             var videoId = r.optJSONObject("playlistItemData")?.optString("videoId", "") ?: ""
@@ -210,7 +206,10 @@ object YouTubeMusicApiService {
                 audioUrl = "", // Populated via Unified Audio Layer fallback/stream resolver
                 bitrateKbps = 256,
                 qualityBadge = "HQ • 256 kbps",
-                genre = "Pop",
+                genre = r.optString("genre", "Unknown").ifBlank { "Unknown" },
+                language = r.optString("language", "Unknown").ifBlank { "Unknown" },
+                year = releaseYear,
+                isrc = r.optString("isrc", ""),
                 source = "Extended Stream"
             )
         } catch (e: Exception) {
@@ -224,10 +223,10 @@ object YouTubeMusicApiService {
             when (parts.size) {
                 2 -> (parts[0] * 60 + parts[1]) * 1000L
                 3 -> (parts[0] * 3600 + parts[1] * 60 + parts[2]) * 1000L
-                else -> 210000L
+                else -> 0L
             }
         } catch (e: Exception) {
-            210000L
+            0L
         }
     }
 
@@ -545,12 +544,12 @@ object YouTubeMusicApiService {
                     title = cleanTitle,
                     artist = cleanArtist,
                     album = "YouTube Playlist",
-                    durationMs = if (durSec > 0) durSec * 1000L else 210000L,
+                    durationMs = if (durSec > 0) durSec * 1000L else 0L,
                     coverUrl = thumbUrl.ifBlank { "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=800&q=80" },
                     audioUrl = "",
                     bitrateKbps = 256,
                     qualityBadge = "HQ • 256 kbps",
-                    genre = "Pop",
+                    genre = "Unknown",
                     source = "Extended Stream"
                 )
             }
@@ -572,12 +571,12 @@ object YouTubeMusicApiService {
                     title = cleanTitle,
                     artist = cleanArtist,
                     album = "YouTube Playlist",
-                    durationMs = 210000L,
+                    durationMs = 0L,
                     coverUrl = "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=800&q=80",
                     audioUrl = "",
                     bitrateKbps = 256,
                     qualityBadge = "HQ • 256 kbps",
-                    genre = "Pop",
+                    genre = "Unknown",
                     source = "Extended Stream"
                 )
             }

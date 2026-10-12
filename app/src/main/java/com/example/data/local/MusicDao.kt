@@ -66,6 +66,9 @@ interface MusicDao {
     @Query("SELECT * FROM tracks WHERE id = :trackId LIMIT 1")
     suspend fun getTrackById(trackId: String): TrackEntity?
 
+    @Query("SELECT * FROM tracks WHERE id IN (:trackIds)")
+    suspend fun getTracksByIds(trackIds: List<String>): List<TrackEntity>
+
     @Query("UPDATE tracks SET isLiked = :isLiked WHERE id = :trackId")
     suspend fun updateFavorite(trackId: String, isLiked: Boolean)
 

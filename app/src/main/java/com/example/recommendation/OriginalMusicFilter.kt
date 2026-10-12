@@ -21,6 +21,19 @@ import java.util.Locale
  */
 object OriginalMusicFilter {
 
+    /** Home-only policy leaves explicit search and playback filtering behavior intact. */
+    fun isHomeRecommendation(track: MusicTrack): Boolean {
+        if (track.id.startsWith("xtreme_", true) || track.id.startsWith("demo", true) ||
+            track.audioUrl.contains("soundhelix", true) || track.title.contains("soundhelix", true)) return false
+        if (!HomeRecommendationPolicy.known(track.artist) || track.title.isBlank()) return false
+        if (track.album.equals("YouTube Playlist", true) || track.source.contains("podcast", true)) return false
+        val text = "${track.title} ${track.album}"
+        if (BANNED_TITLE_PATTERNS.any { it.containsMatchIn(text) }) return false
+        if (Regex("(?i)\\b(?:unofficial|bootleg|fan[ -]made|ai[ -](?:cover|generated)|reverb|demo\\s+track)\\b").containsMatchIn(text)) return false
+        // A legitimate artist may have DJ in their name; it is not evidence of a fake upload.
+        return !Regex("(?i)\\b(?:karaoke|tribute band|cover artist|remix channel)\\b").containsMatchIn(track.artist)
+    }
+
     private val BANNED_TITLE_PATTERNS = listOf(
         // Remixes & DJ Edits
         Regex("(?i)\\b(?:remix|re-mix|rmx)\\b"),

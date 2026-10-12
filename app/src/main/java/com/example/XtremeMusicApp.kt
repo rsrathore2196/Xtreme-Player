@@ -21,7 +21,9 @@ class XtremeMusicApp : Application(), ImageLoaderFactory {
         private set
 
     val playbackManager: PlaybackManager by lazy {
-        PlaybackManager(this, repository)
+        PlaybackManager(this, repository).also {
+            com.example.recommendation.RecommendationListeningObserver(database.listeningEventDao()).start(it)
+        }
     }
 
     override fun newImageLoader(): ImageLoader {

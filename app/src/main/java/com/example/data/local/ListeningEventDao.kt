@@ -37,6 +37,13 @@ interface ListeningEventDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertListeningEvent(event: ListeningEventEntity): Long
 
+    // Actual playback rows are updated in place: milestones cannot inflate history counts.
+    @Query("SELECT * FROM listening_events WHERE eventType = 'ACTUAL_PLAY' ORDER BY timestamp DESC LIMIT 5000")
+    fun observeActualPlays(): Flow<List<ListeningEventEntity>>
+
+    @Query("SELECT * FROM listening_events WHERE eventType = 'ACTUAL_PLAY' ORDER BY timestamp DESC LIMIT 5000")
+    suspend fun getActualPlays(): List<ListeningEventEntity>
+
     /**
      * Cold-Start Query: Checks how many tracks have been played meaningfully
      * (> 30 seconds played, or completed, or >= 50% completed).
