@@ -9,6 +9,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -535,11 +536,13 @@ fun HomeScreenContent(
                                 ) {
                                     com.example.ui.components.ArtistPortrait(
                                         artist = com.example.data.repository.CatalogArtist("", artist.name),
+                                        fallbackArtwork = artist.tracks.firstOrNull { it.coverUrl.isNotBlank() }?.coverUrl,
                                         modifier = Modifier.size(104.dp).clip(CircleShape)
                                     )
                                     Spacer(Modifier.height(8.dp))
                                     Text(artist.name, color = textPrimaryColor, fontWeight = FontWeight.SemiBold,
-                                        maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
+                                        modifier = Modifier.fillMaxWidth().basicMarquee(iterations = Int.MAX_VALUE),
+                                        maxLines = 1, softWrap = false, textAlign = TextAlign.Center)
                                     Text("${artist.playCount} plays", color = textMutedColor,
                                         style = MaterialTheme.typography.labelSmall)
                                 }

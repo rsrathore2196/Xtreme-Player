@@ -18,14 +18,17 @@ import com.example.data.repository.CatalogArtist
 import com.example.ui.theme.XtremeLightBlue
 
 @Composable
-fun ArtistPortrait(artist: CatalogArtist, modifier: Modifier = Modifier) {
+fun ArtistPortrait(artist: CatalogArtist, modifier: Modifier = Modifier, fallbackArtwork: String? = null) {
     val context = LocalContext.current.applicationContext
-    val photo by produceState<String?>(null, artist.name, artist.musicBrainzId) {
+    val photo by produceState<String?>(null, artist.name, artist.musicBrainzId, artist.id, fallbackArtwork) {
         value = null
-        value = ArtistPhotoRepository.photo(context, artist)
+        value = ArtistPhotoRepository.photo(context, artist, fallbackArtwork)
     }
+    var photoFailed by remember(photo) { mutableStateOf(false) }
     Box(modifier.background(Color(0xFF163255)), contentAlignment = Alignment.Center) {
         Icon(Icons.Default.Person, contentDescription = null, tint = XtremeLightBlue, modifier = Modifier.fillMaxSize(0.55f))
-        AsyncImage(model = photo, contentDescription = artist.name, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+        AsyncImage(model = if (photoFailed) fallbackArtwork else photo ?: fallbackArtwork,
+            contentDescription = artist.name, contentScale = ContentScale.Crop,
+            onError = { photoFailed = true }, modifier = Modifier.fillMaxSize())
     }
 }

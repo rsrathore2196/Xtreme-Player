@@ -6,14 +6,14 @@ import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.drawable.BitmapDrawable
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.ExperimentalSharedTransitionApi
+import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.animation.ContentTransform
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
@@ -164,6 +164,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
 
+@OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 fun ExpandedPlayerScreen(
     uiState: PlayerUiState,
@@ -448,11 +449,8 @@ fun ExpandedPlayerScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     // LEFT PANE: Album Art / Lyrics (Proper Square Shape Guarantee)
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight(),
-                        contentAlignment = Alignment.Center
+                    SharedTransitionLayout(
+                        modifier = Modifier.weight(1f).fillMaxHeight()
                     ) {
                         AnimatedContent(
                             targetState = showLyrics,
@@ -464,6 +462,29 @@ fun ExpandedPlayerScreen(
                                 .graphicsLayer { clip = false }
                         ) { isLyricsActive ->
                             if (isLyricsActive) {
+                                Column(Modifier.fillMaxSize()) {
+                                    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        AsyncImage(model = highResImageRequest, contentDescription = "Cover Art",
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier.size(44.dp)
+                                                .sharedElement(rememberSharedContentState("lyrics_artwork_${track.id}"),
+                                                    animatedVisibilityScope = this@AnimatedContent,
+                                                    boundsTransform = { _, _ -> tween(500, easing = FastOutSlowInEasing) })
+                                                .clip(RoundedCornerShape(10.dp)))
+                                        Column(Modifier.weight(1f)) {
+                                            Text(track.cleanTitle, color = appColors.textPrimary, fontWeight = FontWeight.Bold,
+                                                maxLines = 1, modifier = Modifier.basicMarquee(), softWrap = false)
+                                            Text(track.artist, color = appColors.textSecondary, fontSize = 12.sp,
+                                                maxLines = 1, modifier = Modifier.basicMarquee(), softWrap = false)
+                                        }
+                                        IconButton(onClick = { onToggleFavorite(track) }) {
+                                            Icon(if (uiState.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                                contentDescription = "Favorite",
+                                                tint = if (uiState.isFavorite) Color(0xFFF43F5E) else appColors.textMuted)
+                                        }
+                                    }
                                 SyncedLyricsView(
                                     lyrics = lyrics,
                                     currentPositionMs = currentPositionProvider(),
@@ -475,8 +496,9 @@ fun ExpandedPlayerScreen(
                                     accentColor = animatedAccentColor,
                                     isDark = isDark,
                                     onRetry = onRetryLyrics,
-                                    modifier = Modifier.fillMaxSize()
+                                    modifier = Modifier.weight(1f).fillMaxWidth()
                                 )
+                                }
                             } else {
                                 Box(
                                     modifier = Modifier.fillMaxSize(),
@@ -504,6 +526,9 @@ fun ExpandedPlayerScreen(
                                         modifier = Modifier
                                             .fillMaxHeight(0.92f)
                                             .aspectRatio(1f)
+                                            .sharedElement(rememberSharedContentState("lyrics_artwork_${track.id}"),
+                                                animatedVisibilityScope = this@AnimatedContent,
+                                                boundsTransform = { _, _ -> tween(500, easing = FastOutSlowInEasing) })
                                             .graphicsLayer {
                                                 rotationY = flipRotation
                                                 cameraDistance = 14f * density
@@ -945,6 +970,7 @@ fun ExpandedPlayerScreen(
                             Surface(
                                 onClick = {
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    if (!showLyrics) isFlipped = false
                                     showLyrics = !showLyrics
                                 },
                                 interactionSource = lyricsInteractionSource,
@@ -1183,259 +1209,334 @@ fun ExpandedPlayerScreen(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // CENTER: SMOOTH ANIMATED REPLACEMENT OF ALBUM ART WITH SYNCED LYRICS
-            AnimatedContent(
-                targetState = showLyrics,
-                transitionSpec = { lyricsArtworkTransition() },
-                contentAlignment = Alignment.Center,
-                label = "lyrics_album_art_transition",
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .graphicsLayer { clip = false }
-            ) { isLyricsActive ->
-                if (isLyricsActive) {
-                    SyncedLyricsView(
-                        lyrics = lyrics,
-                        currentPositionMs = currentPositionProvider(),
-                        playbackPositionFlow = playbackPositionFlow,
-                        isPlaying = uiState.isPlaying,
-                        currentPositionProvider = currentPositionProvider,
-                        onSeekTo = onSeekTo,
-                        dominantColor = animatedDominantColor,
-                        accentColor = animatedAccentColor,
-                        isDark = isDark,
-                        onRetry = onRetryLyrics,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                } else {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                // Adaptive Ambient Glow Layer matching album art with hardware acceleration
-                Box(
-                    modifier = Modifier
-                        .size(if (isLandscape) 190.dp else 280.dp)
-                        .graphicsLayer()
-                        .clip(RoundedCornerShape(36.dp))
-                        .background(
-                            Brush.radialGradient(
-                                colors = listOf(
-                                    animatedAccentColor.copy(alpha = 0.45f),
-                                    animatedDominantColor.copy(alpha = 0.25f),
-                                    Color.Transparent
-                                )
-                            )
-                        )
-                )
-
-                // 3D Flippable Card
-                Box(
-                    modifier = Modifier
-                        .fillMaxHeight(if (isLandscape) 0.88f else 1f)
-                        .fillMaxWidth(albumArtScale)
-                        .sizeIn(
-                            maxWidth = if (isLandscape) 210.dp else 330.dp,
-                            maxHeight = if (isLandscape) 210.dp else 330.dp
-                        )
-                        .aspectRatio(1f)
-                        .graphicsLayer {
-                            rotationY = flipRotation
-                            cameraDistance = 14f * density
-                        }
-                        .shadow(
-                            elevation = 28.dp,
-                            shape = RoundedCornerShape(24.dp),
-                            spotColor = animatedAccentColor.copy(alpha = 0.5f),
-                            ambientColor = Color.Black
-                        )
-                        .clip(RoundedCornerShape(24.dp))
-                        .clickable {
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            isFlipped = !isFlipped
-                        }
-                        .testTag("flip_album_art_card")
-                ) {
-                    if (flipRotation <= 90f) {
-                        // FRONT SIDE: Album Artwork with Motion Video Support
-                        MotionAlbumArtPlayer(
-                            videoUrl = track.motionArtworkUrl,
-                            staticCoverUrl = highResCoverUrl,
-                            contentDescription = "Cover Art - Tap to flip",
-                            shape = RoundedCornerShape(24.dp),
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    } else {
-                        // BACK SIDE: Song credits and information (Fully theme adaptive)
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .graphicsLayer { rotationY = 180f }
-                                .background(if (appColors.isAmoled) Color(0xFF000000) else appColors.cardBackground)
-                                .border(
-                                    BorderStroke(
-                                        1.5.dp,
-                                        if (isDark) animatedAccentColor.copy(alpha = 0.65f) else appColors.cardBorder
-                                    ),
-                                    RoundedCornerShape(24.dp)
-                                )
-                                .padding(20.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center
+            // Shared artwork and metadata travel between their original bounds and the lyrics header.
+            SharedTransitionLayout(Modifier.weight(1f).fillMaxWidth()) {
+                AnimatedContent(
+                    targetState = showLyrics,
+                    transitionSpec = { lyricsArtworkTransition() },
+                    modifier = Modifier.fillMaxSize(),
+                    label = "lyrics_header_transition"
+                ) { isLyricsActive ->
+                    Column(Modifier.fillMaxSize()) {
+                        if (isLyricsActive) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
-                                Surface(
-                                    color = animatedAccentColor.copy(alpha = 0.16f),
-                                    shape = RoundedCornerShape(8.dp)
+                                AsyncImage(
+                                    model = highResImageRequest,
+                                    contentDescription = "Cover Art",
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.size(52.dp)
+                                    .sharedElement(
+                                        rememberSharedContentState("lyrics_artwork_${track.id}"),
+                                        animatedVisibilityScope = this@AnimatedContent,
+                                        boundsTransform = { _, _ -> tween(500, easing = FastOutSlowInEasing) }
+                                    ).clip(RoundedCornerShape(12.dp))
+                                )
+                                Column(Modifier.weight(1f).sharedBounds(
+                                        rememberSharedContentState("lyrics_metadata_${track.id}"),
+                                        animatedVisibilityScope = this@AnimatedContent,
+                                        boundsTransform = { _, _ -> tween(500, easing = FastOutSlowInEasing) }
+                                )) {
+                                    Text(track.cleanTitle, color = appColors.textPrimary,
+                                        fontWeight = FontWeight.Bold, fontSize = 16.sp, maxLines = 1,
+                                        modifier = Modifier.fillMaxWidth().basicMarquee(), softWrap = false)
+                                    Spacer(Modifier.height(2.dp))
+                                    Text(track.artist, color = appColors.textSecondary,
+                                        fontWeight = FontWeight.Medium, fontSize = 13.sp, maxLines = 1,
+                                        modifier = Modifier.fillMaxWidth().basicMarquee(), softWrap = false)
+                                }
+                                // Favorite Heart Toggle - Liquid Glass Button
+                                Box(
+                                    modifier = Modifier
+                                    .size(44.dp)
+                                    .sharedElement(
+                                        rememberSharedContentState("lyrics_favorite_${track.id}"),
+                                        animatedVisibilityScope = this@AnimatedContent,
+                                        boundsTransform = { _, _ -> tween(500, easing = FastOutSlowInEasing) }
+                                    )
+                                    .liquidGlassButton(
+                                        colors = appColors,
+                                        shape = CircleShape,
+                                        elevation = if (uiState.isFavorite) 8.dp else 4.dp,
+                                        isActive = uiState.isFavorite,
+                                        translucency = 0.84f
+                                    )
+                                    .bouncyClickable {
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        onToggleFavorite(track)
+                                    }
+                                    .testTag("player_favorite_toggle"),
+                                    contentAlignment = Alignment.Center
                                 ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Info,
-                                            contentDescription = null,
-                                            tint = animatedAccentColor,
-                                            modifier = Modifier.size(13.dp)
+                                    Icon(
+                                        imageVector = if (uiState.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                        contentDescription = "Favorite",
+                                        tint = if (uiState.isFavorite) Color(0xFFF43F5E) else appColors.textMuted,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            SyncedLyricsView(
+                                lyrics = lyrics,
+                                currentPositionMs = currentPositionProvider(),
+                                playbackPositionFlow = playbackPositionFlow,
+                                isPlaying = uiState.isPlaying,
+                                currentPositionProvider = currentPositionProvider,
+                                onSeekTo = onSeekTo,
+                                dominantColor = animatedDominantColor,
+                                accentColor = animatedAccentColor,
+                                isDark = isDark,
+                                onRetry = onRetryLyrics,
+                                modifier = Modifier.weight(1f).fillMaxWidth()
+                            )
+
+                        } else {
+                            Box(
+                                modifier = Modifier.weight(1f).fillMaxWidth(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                // Adaptive Ambient Glow Layer matching album art with hardware acceleration
+                                Box(
+                                    modifier = Modifier
+                                    .size(if (isLandscape) 190.dp else 280.dp)
+                                    .graphicsLayer()
+                                    .clip(RoundedCornerShape(36.dp))
+                                    .background(
+                                        Brush.radialGradient(
+                                            colors = listOf(
+                                                animatedAccentColor.copy(alpha = 0.45f),
+                                                animatedDominantColor.copy(alpha = 0.25f),
+                                                Color.Transparent
+                                            )
                                         )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text(
-                                            text = "TRACK CREDITS & DETAILS",
-                                            fontSize = 9.sp,
-                                            fontWeight = FontWeight.ExtraBold,
-                                            color = animatedAccentColor,
-                                            letterSpacing = 1.sp
+                                    )
+                                )
+
+                                // 3D Flippable Card
+                                Box(
+                                    modifier = Modifier
+                                    .fillMaxHeight(if (isLandscape) 0.88f else 1f)
+                                    .fillMaxWidth(albumArtScale)
+                                    .sizeIn(
+                                        maxWidth = if (isLandscape) 210.dp else 330.dp,
+                                        maxHeight = if (isLandscape) 210.dp else 330.dp
+                                    )
+                                    .aspectRatio(1f)
+                                    .sharedElement(
+                                        rememberSharedContentState("lyrics_artwork_${track.id}"),
+                                        animatedVisibilityScope = this@AnimatedContent,
+                                        boundsTransform = { _, _ -> tween(500, easing = FastOutSlowInEasing) }
+                                    )
+                                    .graphicsLayer {
+                                        rotationY = flipRotation
+                                        cameraDistance = 14f * density
+                                    }
+                                    .shadow(
+                                        elevation = 28.dp,
+                                        shape = RoundedCornerShape(24.dp),
+                                        spotColor = animatedAccentColor.copy(alpha = 0.5f),
+                                        ambientColor = Color.Black
+                                    )
+                                    .clip(RoundedCornerShape(24.dp))
+                                    .clickable {
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        isFlipped = !isFlipped
+                                    }
+                                    .testTag("flip_album_art_card")
+                                ) {
+                                    if (flipRotation <= 90f) {
+                                        // FRONT SIDE: Album Artwork with Motion Video Support
+                                        MotionAlbumArtPlayer(
+                                            videoUrl = track.motionArtworkUrl,
+                                            staticCoverUrl = highResCoverUrl,
+                                            contentDescription = "Cover Art - Tap to flip",
+                                            shape = RoundedCornerShape(24.dp),
+                                            modifier = Modifier.fillMaxSize()
                                         )
+                                    } else {
+                                        // BACK SIDE: Song credits and information (Fully theme adaptive)
+                                        Box(
+                                            modifier = Modifier
+                                            .fillMaxSize()
+                                            .graphicsLayer { rotationY = 180f }
+                                            .background(if (appColors.isAmoled) Color(0xFF000000) else appColors.cardBackground)
+                                            .border(
+                                                BorderStroke(
+                                                    1.5.dp,
+                                                    if (isDark) animatedAccentColor.copy(alpha = 0.65f) else appColors.cardBorder
+                                                ),
+                                                RoundedCornerShape(24.dp)
+                                            )
+                                            .padding(20.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Column(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalAlignment = Alignment.CenterHorizontally,
+                                                verticalArrangement = Arrangement.Center
+                                            ) {
+                                                Surface(
+                                                    color = animatedAccentColor.copy(alpha = 0.16f),
+                                                    shape = RoundedCornerShape(8.dp)
+                                                ) {
+                                                    Row(
+                                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                                        verticalAlignment = Alignment.CenterVertically
+                                                    ) {
+                                                        Icon(
+                                                            imageVector = Icons.Default.Info,
+                                                            contentDescription = null,
+                                                            tint = animatedAccentColor,
+                                                            modifier = Modifier.size(13.dp)
+                                                        )
+                                                        Spacer(modifier = Modifier.width(6.dp))
+                                                        Text(
+                                                            text = "TRACK CREDITS & DETAILS",
+                                                            fontSize = 9.sp,
+                                                            fontWeight = FontWeight.ExtraBold,
+                                                            color = animatedAccentColor,
+                                                            letterSpacing = 1.sp
+                                                        )
+                                                    }
+                                                }
+
+                                                Spacer(modifier = Modifier.height(12.dp))
+
+                                                Text(
+                                                    text = track.cleanTitle,
+                                                    fontWeight = FontWeight.ExtraBold,
+                                                    fontSize = 17.sp,
+                                                    color = appColors.textPrimary,
+                                                    textAlign = TextAlign.Center,
+                                                    maxLines = 1,
+                                                    softWrap = false,
+                                                    modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .basicMarquee(
+                                                        iterations = Int.MAX_VALUE,
+                                                        initialDelayMillis = 1000
+                                                    )
+                                                )
+
+                                                Spacer(modifier = Modifier.height(12.dp))
+
+                                                CreditDetailRow(
+                                                    label = "Album / Movie",
+                                                    value = track.album.ifBlank { "Original Single" },
+                                                    isDark = isDark
+                                                )
+                                                CreditDetailRow(
+                                                    label = "Singers / Artists",
+                                                    value = if (track.singers.isNotBlank()) track.singers else track.artist,
+                                                    isDark = isDark
+                                                )
+                                                CreditDetailRow(
+                                                    label = "Composer / Writer",
+                                                    value = if (track.writer.isNotBlank()) track.writer else "Original Composer",
+                                                    isDark = isDark
+                                                )
+                                                CreditDetailRow(
+                                                    label = "Genre & Language",
+                                                    value = "${track.genre} • ${if (track.language.isNotBlank()) track.language else "Hindi"}${if (track.year.isNotBlank()) " (${track.year})" else ""}",
+                                                    isDark = isDark
+                                                )
+                                                CreditDetailRow(
+                                                    label = "Audio Fidelity",
+                                                    value = "${track.bitrateKbps} kbps Studio Master • 44.1 kHz • 24-Bit Lossless",
+                                                    isDark = isDark
+                                                )
+                                                if (track.isrc.isNotBlank()) {
+                                                    CreditDetailRow(
+                                                        label = "ISRC Code",
+                                                        value = track.isrc,
+                                                        isDark = isDark
+                                                    )
+                                                }
+
+                                                Spacer(modifier = Modifier.height(12.dp))
+
+                                                Text(
+                                                    text = "🔄 Tap anywhere to flip back",
+                                                    fontSize = 10.sp,
+                                                    color = appColors.textMuted,
+                                                    fontWeight = FontWeight.Medium
+                                                )
+                                            }
+                                        }
                                     }
                                 }
-
-                                Spacer(modifier = Modifier.height(12.dp))
-
-                                Text(
-                                    text = track.cleanTitle,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    fontSize = 17.sp,
-                                    color = appColors.textPrimary,
-                                    textAlign = TextAlign.Center,
-                                    maxLines = 1,
-                                    softWrap = false,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .basicMarquee(
-                                            iterations = Int.MAX_VALUE,
-                                            initialDelayMillis = 1000
-                                        )
-                                )
-
-                                Spacer(modifier = Modifier.height(12.dp))
-
-                                CreditDetailRow(
-                                    label = "Album / Movie",
-                                    value = track.album.ifBlank { "Original Single" },
-                                    isDark = isDark
-                                )
-                                CreditDetailRow(
-                                    label = "Singers / Artists",
-                                    value = if (track.singers.isNotBlank()) track.singers else track.artist,
-                                    isDark = isDark
-                                )
-                                CreditDetailRow(
-                                    label = "Composer / Writer",
-                                    value = if (track.writer.isNotBlank()) track.writer else "Original Composer",
-                                    isDark = isDark
-                                )
-                                CreditDetailRow(
-                                    label = "Genre & Language",
-                                    value = "${track.genre} • ${if (track.language.isNotBlank()) track.language else "Hindi"}${if (track.year.isNotBlank()) " (${track.year})" else ""}",
-                                    isDark = isDark
-                                )
-                                CreditDetailRow(
-                                    label = "Audio Fidelity",
-                                    value = "${track.bitrateKbps} kbps Studio Master • 44.1 kHz • 24-Bit Lossless",
-                                    isDark = isDark
-                                )
-                                if (track.isrc.isNotBlank()) {
-                                    CreditDetailRow(
-                                        label = "ISRC Code",
-                                        value = track.isrc,
-                                        isDark = isDark
+                            }
+                            Spacer(Modifier.height(16.dp))
+                            // TRACK INFO & FAVORITE TOGGLE
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f).sharedBounds(
+                                        rememberSharedContentState("lyrics_metadata_${track.id}"),
+                                        animatedVisibilityScope = this@AnimatedContent,
+                                        boundsTransform = { _, _ -> tween(500, easing = FastOutSlowInEasing) }
+                                )) {
+                                    Text(
+                                        text = track.cleanTitle,
+                                        style = (if (isLandscape) MaterialTheme.typography.titleMedium else MaterialTheme.typography.headlineSmall).copy(
+                                            fontWeight = FontWeight.Bold,
+                                            color = appColors.textPrimary
+                                        ),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = "${track.artist} • ${track.album}",
+                                        style = MaterialTheme.typography.titleSmall.copy(
+                                            color = appColors.textSecondary,
+                                            fontWeight = FontWeight.Medium
+                                        ),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 }
 
-                                Spacer(modifier = Modifier.height(12.dp))
-
-                                Text(
-                                    text = "🔄 Tap anywhere to flip back",
-                                    fontSize = 10.sp,
-                                    color = appColors.textMuted,
-                                    fontWeight = FontWeight.Medium
-                                )
+                                // Favorite Heart Toggle - Liquid Glass Button
+                                Box(
+                                    modifier = Modifier
+                                    .size(44.dp)
+                                    .sharedElement(
+                                        rememberSharedContentState("lyrics_favorite_${track.id}"),
+                                        animatedVisibilityScope = this@AnimatedContent,
+                                        boundsTransform = { _, _ -> tween(500, easing = FastOutSlowInEasing) }
+                                    )
+                                    .liquidGlassButton(
+                                        colors = appColors,
+                                        shape = CircleShape,
+                                        elevation = if (uiState.isFavorite) 8.dp else 4.dp,
+                                        isActive = uiState.isFavorite,
+                                        translucency = 0.84f
+                                    )
+                                    .bouncyClickable {
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        onToggleFavorite(track)
+                                    }
+                                    .testTag("player_favorite_toggle"),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = if (uiState.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                        contentDescription = "Favorite",
+                                        tint = if (uiState.isFavorite) Color(0xFFF43F5E) else appColors.textMuted,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                }
                             }
+
                         }
                     }
-                }
-            }
-        }
-    }
-
-            Spacer(modifier = Modifier.height(if (isLandscape) 4.dp else 16.dp))
-
-            // TRACK INFO & FAVORITE TOGGLE
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = track.cleanTitle,
-                        style = (if (isLandscape) MaterialTheme.typography.titleMedium else MaterialTheme.typography.headlineSmall).copy(
-                            fontWeight = FontWeight.Bold,
-                            color = appColors.textPrimary
-                        ),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = "${track.artist} • ${track.album}",
-                        style = MaterialTheme.typography.titleSmall.copy(
-                            color = appColors.textSecondary,
-                            fontWeight = FontWeight.Medium
-                        ),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-
-                // Favorite Heart Toggle - Liquid Glass Button
-                Box(
-                    modifier = Modifier
-                        .size(44.dp)
-                        .liquidGlassButton(
-                            colors = appColors,
-                            shape = CircleShape,
-                            elevation = if (uiState.isFavorite) 8.dp else 4.dp,
-                            isActive = uiState.isFavorite,
-                            translucency = 0.84f
-                        )
-                        .bouncyClickable {
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            onToggleFavorite(track)
-                        }
-                        .testTag("player_favorite_toggle"),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = if (uiState.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                        contentDescription = "Favorite",
-                        tint = if (uiState.isFavorite) Color(0xFFF43F5E) else appColors.textMuted,
-                        modifier = Modifier.size(24.dp)
-                    )
                 }
             }
 
@@ -1636,6 +1737,7 @@ fun ExpandedPlayerScreen(
                 Surface(
                     onClick = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        if (!showLyrics) isFlipped = false
                         showLyrics = !showLyrics
                     },
                     interactionSource = lyricsInteractionSource,
@@ -2196,13 +2298,7 @@ private fun PlayerTimelineSection(
     }
 }
 
-/** Shared, reversible depth transition; the surrounding player keeps its existing bounds. */
-private fun AnimatedContentTransitionScope<Boolean>.lyricsArtworkTransition(): ContentTransform {
-    val motion = tween<Float>(durationMillis = 420, easing = FastOutSlowInEasing)
-    val enter = fadeIn(tween(320, delayMillis = 60, easing = FastOutSlowInEasing)) +
-        scaleIn(initialScale = if (targetState) 0.94f else 1.025f, animationSpec = motion)
-    val exit = fadeOut(tween(260, easing = FastOutSlowInEasing)) +
-        scaleOut(targetScale = if (targetState) 1.025f else 0.94f, animationSpec = motion)
-    // Layer-only transforms avoid resizing controls or clipping the artwork shadow during the swap.
-    return (enter togetherWith exit).using(null)
-}
+/** Shared bounds carry the cover/header; only the lyrics and ambient glow fade. */
+private fun AnimatedContentTransitionScope<Boolean>.lyricsArtworkTransition(): ContentTransform =
+    (fadeIn(tween(240, delayMillis = if (targetState) 230 else 0, easing = FastOutSlowInEasing)) togetherWith
+        fadeOut(tween(150, easing = FastOutSlowInEasing))).using(null)

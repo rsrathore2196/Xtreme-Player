@@ -6,7 +6,7 @@ import java.util.Locale
 import com.example.data.model.MusicTrack
 
 /** Provider IDs are kept separate from display names and from TheAudioDB IDs. */
-data class CatalogArtist(val id: String, val name: String, val musicBrainzId: String = "", val aliases: List<String> = emptyList())
+data class CatalogArtist(val id: String, val name: String, val musicBrainzId: String = "", val aliases: List<String> = emptyList(), val image: String = "")
 data class CatalogAlbum(val id: String, val title: String, val artists: List<CatalogArtist>, val image: String, val year: String)
 data class CatalogPlaylist(val id: String, val title: String, val image: String)
 data class CatalogPage(

@@ -43,7 +43,7 @@ class CatalogRepository {
         val id = text(o, "id"); val name = text(o, "name").ifBlank { text(o, "title") }
         if (id.isBlank() || name.isBlank() || text(o, "type").let { it.isNotBlank() && it != "artist" }) return null
         if (CatalogNames.normalize(name) in setOf("unknown", "unknown artist", "various artists")) return null
-        return CatalogArtist(id, name, text(o, "musicbrainz_id"), text(o, "aka").split(';', '|').filter(String::isNotBlank))
+        return CatalogArtist(id, name, text(o, "musicbrainz_id"), text(o, "aka").split(';', '|').filter(String::isNotBlank), image(o))
     }
     private fun credits(o: JSONObject, album: Boolean = false): List<CatalogArtist> {
         val map = o.optJSONObject("more_info")?.optJSONObject("artistMap") ?: return emptyList()

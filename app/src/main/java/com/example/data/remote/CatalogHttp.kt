@@ -7,9 +7,13 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 /** Cancellable requests shared by catalog metadata lookups, never by the playback pipeline. */
-internal suspend fun OkHttpClient.catalogGet(url: String): String = suspendCancellableCoroutine { continuation ->
-    val call = newCall(Request.Builder().url(url).header("User-Agent", "Mozilla/5.0")
-        .header("Accept", "application/json").build())
+internal suspend fun OkHttpClient.catalogGet(url: String): String = catalogRequest(
+    Request.Builder().url(url).header("User-Agent", "Mozilla/5.0")
+        .header("Accept", "application/json").build()
+)
+
+internal suspend fun OkHttpClient.catalogRequest(request: Request): String = suspendCancellableCoroutine { continuation ->
+    val call = newCall(request)
     continuation.invokeOnCancellation { call.cancel() }
     call.enqueue(object : Callback {
         override fun onFailure(call: Call, e: IOException) {

@@ -215,19 +215,13 @@ fun SyncedLyricsView(
         hasInitialScrolled = true
     }
 
-    // Container theme colors
-    val boxBgColor = if (appColors.isAmoled) Color(0xFF000000) else appColors.cardBackground
-    val boxBorderColor = if (appColors.isAmoled) Color(0xFF222222) else appColors.cardBorder
-
     val activeTextColor = if (isDark) Color(0xFFFFFFFF) else Color(0xFF000000)
-    val inactiveTextColor = if (isDark) Color(0xFFFFFFFF).copy(alpha = 0.38f) else Color(0xFF000000).copy(alpha = 0.35f)
+    val inactiveTextColor = if (isDark) Color(0xFFFFFFFF).copy(alpha = 0.62f) else Color(0xFF000000).copy(alpha = 0.60f)
 
     BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
             .clip(RoundedCornerShape(24.dp))
-            .background(boxBgColor)
-            .border(BorderStroke(1.dp, boxBorderColor), RoundedCornerShape(24.dp))
             .testTag("synced_lyrics_view")
     ) {
         val boxHeight = maxHeight
@@ -324,11 +318,13 @@ fun SyncedLyricsView(
                     val targetAlpha = if (!isSynced) {
                         1.0f
                     } else when {
+                        // Upcoming text must remain legible through the intro and silent lead-in.
+                        activeLineIndex < 0 -> when (index) { 0 -> 1f; 1 -> 0.82f; else -> 0.65f }
                         isActive -> 1.0f
                         isPast -> 0.44f
-                        distance == 1 -> 0.32f
-                        distance == 2 -> 0.20f
-                        else -> 0.14f
+                        distance == 1 -> 0.82f
+                        distance == 2 -> 0.65f
+                        else -> 0.50f
                     }
 
                     val animatedAlpha by animateFloatAsState(

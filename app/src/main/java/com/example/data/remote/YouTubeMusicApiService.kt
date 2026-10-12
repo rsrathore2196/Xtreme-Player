@@ -26,6 +26,48 @@ object YouTubeMusicApiService {
             .build()
     }
 
+    /** Only an exact, unique artist entity can supply a portrait; song thumbnails are not portraits. */
+    suspend fun artistPhoto(name: String): String? = withContext(Dispatchers.IO) {
+        if (name.isBlank()) return@withContext null
+        val payload = JSONObject().apply {
+            put("context", JSONObject().put("client", JSONObject().put("clientName", "WEB_REMIX")
+                .put("clientVersion", "1.20231204.01.00").put("hl", "en").put("gl", "US")))
+            put("query", name)
+            put("params", "EgWKAQIgAWoKEAkQChAFEAMQBA==")
+        }
+        val request = Request.Builder().url("https://music.youtube.com/youtubei/v1/search")
+            .post(payload.toString().toRequestBody(jsonMediaType))
+            .header("User-Agent", "Mozilla/5.0").header("Referer", "https://music.youtube.com/").build()
+        val matches = mutableMapOf<String, String>()
+        fun visit(node: Any?) {
+            when (node) {
+                is JSONObject -> {
+                    node.optJSONObject("musicResponsiveListItemRenderer")?.let { item ->
+                        val browse = item.optJSONObject("navigationEndpoint")?.optJSONObject("browseEndpoint")
+                        val id = browse?.optString("browseId").orEmpty()
+                        val type = browse?.optJSONObject("browseEndpointContextSupportedConfigs")
+                            ?.optJSONObject("browseEndpointContextMusicConfig")?.optString("pageType")
+                        val runs = item.optJSONArray("flexColumns")?.optJSONObject(0)
+                            ?.optJSONObject("musicResponsiveListItemFlexColumnRenderer")?.optJSONObject("text")?.optJSONArray("runs")
+                        val title = (0 until (runs?.length() ?: 0)).joinToString("") { runs?.optJSONObject(it)?.optString("text").orEmpty() }
+                        if (id.startsWith("UC") && type == "MUSIC_PAGE_TYPE_ARTIST" &&
+                            com.example.data.repository.CatalogNames.same(name, title)) {
+                            val thumbs = item.optJSONObject("thumbnail")?.optJSONObject("musicThumbnailRenderer")
+                                ?.optJSONObject("thumbnail")?.optJSONArray("thumbnails")
+                            (0 until (thumbs?.length() ?: 0)).mapNotNull { thumbs?.optJSONObject(it) }
+                                .filter { it.optString("url").startsWith("https://") }
+                                .maxByOrNull { it.optInt("width") }?.optString("url")?.let { matches[id] = it }
+                        }
+                    }
+                    node.keys().forEach { visit(node.opt(it)) }
+                }
+                is JSONArray -> for (i in 0 until node.length()) visit(node.opt(i))
+            }
+        }
+        visit(JSONObject(httpClient.catalogRequest(request)))
+        matches.values.singleOrNull()
+    }
+
     /**
      * Searches YouTube Music using the official Innertube WEB_REMIX API.
      * Returns a list of standardized MusicTrack objects with source = "YouTube Music".
