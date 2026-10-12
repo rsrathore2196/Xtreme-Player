@@ -70,6 +70,7 @@ object LyricsProvider {
         return try {
             val content = file.readText(Charsets.UTF_8)
             val json = JSONObject(content)
+            if (json.optInt("timingVersion", 0) != 2) return null
             val trackId = json.optString("trackId", "")
             val title = json.optString("title", "")
             val artist = json.optString("artist", "")
@@ -97,7 +98,8 @@ object LyricsProvider {
                                     LyricSyllable(
                                         timestampMs = sObj.optLong("t", 0L),
                                         durationMs = sObj.optLong("d", 0L),
-                                        text = sObj.optString("x", "")
+                                        text = sObj.optString("x", ""),
+                                        isReliableTiming = sObj.optBoolean("reliable", false)
                                     )
                                 )
                             }
@@ -107,7 +109,8 @@ object LyricsProvider {
                                 timestampMs = wObj.optLong("t", 0L),
                                 durationMs = wObj.optLong("d", 0L),
                                 text = wObj.optString("x", ""),
-                                syllables = syllables
+                                syllables = syllables,
+                                isReliableTiming = wObj.optBoolean("reliable", false)
                             )
                         )
                     }
@@ -119,7 +122,8 @@ object LyricsProvider {
                         durationMs = item.optLong("d", 3000L),
                         words = words,
                         translation = item.optString("tr", "").ifBlank { null },
-                        romanization = item.optString("ro", "").ifBlank { null }
+                        romanization = item.optString("ro", "").ifBlank { null },
+                        isReliableDuration = item.optBoolean("reliable", false)
                     )
                 )
             }
@@ -133,6 +137,7 @@ object LyricsProvider {
                     provider = provider,
                     language = language,
                     hasWordTiming = hasWordTiming,
+                    hasSyllableTiming = json.optBoolean("hasSyllableTiming", false),
                     hasTranslation = hasTranslation,
                     hasRomanization = hasRomanization
                 )
@@ -203,6 +208,7 @@ object LyricsProvider {
         val dir = getDiskCacheDir() ?: return
         try {
             val json = JSONObject()
+            json.put("timingVersion", 2)
             json.put("trackId", trackId)
             json.put("title", lyrics.title)
             json.put("artist", lyrics.artist)
@@ -210,6 +216,7 @@ object LyricsProvider {
             json.put("provider", lyrics.provider)
             json.put("language", lyrics.language ?: "")
             json.put("hasWordTiming", lyrics.hasWordTiming)
+            json.put("hasSyllableTiming", lyrics.hasSyllableTiming)
             json.put("hasTranslation", lyrics.hasTranslation)
             json.put("hasRomanization", lyrics.hasRomanization)
             json.put("cachedAt", System.currentTimeMillis())
@@ -220,6 +227,7 @@ object LyricsProvider {
                 lineObj.put("t", line.timestampMs)
                 lineObj.put("x", line.text)
                 lineObj.put("d", line.durationMs)
+                lineObj.put("reliable", line.isReliableDuration)
                 if (!line.translation.isNullOrBlank()) lineObj.put("tr", line.translation)
                 if (!line.romanization.isNullOrBlank()) lineObj.put("ro", line.romanization)
 
@@ -230,6 +238,7 @@ object LyricsProvider {
                         wObj.put("t", w.timestampMs)
                         wObj.put("d", w.durationMs)
                         wObj.put("x", w.text)
+                        wObj.put("reliable", w.isReliableTiming)
                         if (w.syllables.isNotEmpty()) {
                             val sArray = JSONArray()
                             for (s in w.syllables) {
@@ -237,6 +246,7 @@ object LyricsProvider {
                                 sObj.put("t", s.timestampMs)
                                 sObj.put("d", s.durationMs)
                                 sObj.put("x", s.text)
+                                sObj.put("reliable", s.isReliableTiming)
                                 sArray.put(sObj)
                             }
                             wObj.put("s", sArray)
@@ -564,7 +574,7 @@ object LyricsProvider {
                 if (gapToNext > estimatedSinging + 600L) {
                     estimatedSinging
                 } else {
-                    (gapToNext - 400L).coerceIn(600L, gapToNext)
+                    (gapToNext - 400L).coerceIn(minOf(600L, gapToNext.coerceAtLeast(0L)), gapToNext.coerceAtLeast(0L))
                 }
             } else {
                 (wordCount * 450L).coerceIn(2000L, 5000L)
@@ -760,15 +770,16 @@ object LyricsProvider {
                                     }
                                     wordEndMs = sTime + sDur
                                     wordText.append(cleanS)
-                                    currentSyllables.add(LyricSyllable(sTime, sDur, cleanS))
+                                    currentSyllables.add(LyricSyllable(sTime, sDur.coerceAtLeast(0L), cleanS, isReliableTiming = sObj.has("time") && sDur > 0L))
 
                                     if (endsWithSpace) {
                                         words.add(
                                             LyricWord(
                                                 timestampMs = wordStartMs,
-                                                durationMs = (wordEndMs - wordStartMs).coerceAtLeast(50L),
+                                                durationMs = (wordEndMs - wordStartMs).coerceAtLeast(0L),
                                                 text = wordText.toString(),
-                                                syllables = currentSyllables.toList()
+                                                syllables = currentSyllables.toList(),
+                                            isReliableTiming = currentSyllables.all { it.isReliableTiming }
                                             )
                                         )
                                         currentSyllables.clear()
@@ -780,9 +791,10 @@ object LyricsProvider {
                                     words.add(
                                         LyricWord(
                                             timestampMs = wordStartMs,
-                                            durationMs = (wordEndMs - wordStartMs).coerceAtLeast(50L),
+                                            durationMs = (wordEndMs - wordStartMs).coerceAtLeast(0L),
                                             text = wordText.toString(),
-                                            syllables = currentSyllables.toList()
+                                            syllables = currentSyllables.toList(),
+                                            isReliableTiming = currentSyllables.all { it.isReliableTiming }
                                         )
                                     )
                                 }
@@ -799,7 +811,8 @@ object LyricsProvider {
                                     durationMs = if (durMs > 0) durMs else 3000L,
                                     words = words,
                                     translation = translation,
-                                    romanization = romanization
+                                    romanization = romanization,
+                                    isReliableDuration = durMs > 0L
                                 )
                             )
                         }

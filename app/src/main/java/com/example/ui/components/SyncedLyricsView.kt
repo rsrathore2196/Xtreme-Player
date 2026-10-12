@@ -3,7 +3,7 @@ package com.example.ui.components
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.core.withInfiniteAnimationFrameMillis
+import androidx.compose.runtime.withFrameMillis
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -50,11 +50,19 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.drawscope.ContentDrawScope
 import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.style.ResolvedTextDirection
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -67,11 +75,8 @@ import androidx.compose.ui.unit.sp
 import com.example.data.model.LyricLine
 import com.example.data.model.LyricWord
 import com.example.data.model.TrackLyrics
-import com.example.data.remote.SyllableSynthesizer
 import com.example.ui.theme.LocalAppColors
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
@@ -82,8 +87,7 @@ import kotlinx.coroutines.isActive
 private data class MeasuredWord(
     val word: LyricWord,
     val charStart: Int,
-    val charEnd: Int,
-    val isNonEnglish: Boolean
+    val charEnd: Int
 )
 
 /**
@@ -94,9 +98,8 @@ private data class MeasuredWord(
  *    - Identical glyph positions, font sizing, and line wraps with zero layout recalculation.
  *    - Never replaces strings or moves individual characters.
  *
- * 2. Language-Specific Animation:
- *    - English: Syllable progression when reliable syllable timings exist; smooth word highlighting otherwise.
- *    - Hindi, Punjabi & Non-English: Whole words as timing units, never characters or syllables.
+ * 2. Provider-Timed Animation:
+ *    - Preserves genuine syllable progression in every language; otherwise uses reliable word timing.
  *    - Preserves script shaping, combining marks, matras, and conjuncts intact.
  *
  * 3. Vocal Timings & Silent Gaps:
@@ -131,20 +134,21 @@ fun SyncedLyricsView(
     // Always read the latest callback: the default callback captures currentPositionMs.
     // Do not take max(flow, player): a delayed flow emission must not undo a backward seek.
     val latestPositionProvider by rememberUpdatedState(currentPositionProvider)
-    val flowPosition by (playbackPositionFlow ?: remember { MutableStateFlow(0L) })
-        .collectAsStateWithLifecycle(initialValue = currentPositionMs)
-    var currentPlayheadMs by remember(lyrics?.trackId) {
-        mutableLongStateOf(latestPositionProvider())
-    }
+    var currentPlayheadMs by remember(lyrics?.trackId) { mutableLongStateOf(latestPositionProvider()) }
+    // One display-frame clock feeds both centering and the draw phase. Never tween the playhead:
+    // easing a timestamp introduces vocal lag and can keep highlighting after a pause or seek.
     LaunchedEffect(isSynced, isPlaying, lyrics?.trackId) {
         if (!isSynced) return@LaunchedEffect
-        do {
-            currentPlayheadMs = latestPositionProvider()
-            delay(50L)
-        } while (isActive && isPlaying)
-    }
-    LaunchedEffect(flowPosition, currentPositionMs, isPlaying, lyrics?.trackId) {
         currentPlayheadMs = latestPositionProvider()
+        if (isPlaying) while (isActive) {
+            withFrameMillis { currentPlayheadMs = latestPositionProvider() }
+        }
+    }
+    LaunchedEffect(currentPositionMs, isPlaying, lyrics?.trackId) {
+        currentPlayheadMs = latestPositionProvider()
+    }
+    LaunchedEffect(playbackPositionFlow, isPlaying, lyrics?.trackId) {
+        if (!isPlaying) playbackPositionFlow?.collect { currentPlayheadMs = latestPositionProvider() }
     }
 
     val activeLineIndex by remember(lyrics?.trackId, lines, isSynced) {
@@ -379,7 +383,7 @@ fun SyncedLyricsView(
                             activeTextColor = activeTextColor,
                             inactiveTextColor = inactiveTextColor,
                             currentPositionProvider = {
-                                if (isPlaying) latestPositionProvider() else currentPlayheadMs
+                                currentPlayheadMs
                             }
                         )
                     }
@@ -428,262 +432,141 @@ private fun KaraokeLineItem(
         return
     }
 
-    // Pre-calculate word spans in line.text once per line
-    val measuredWords = remember(line.text, line.words, trackLanguage, trackArtist) {
+    val measuredWords = remember(line.text, line.words) {
         val result = mutableListOf<MeasuredWord>()
-        var searchIdx = 0
-        val text = line.text
+        var cursor = 0
         for (word in line.words) {
-            if (word.text.isEmpty()) continue
-            val matchIdx = text.indexOf(word.text, startIndex = searchIdx)
-            if (matchIdx >= 0) {
-                val end = matchIdx + word.text.length
-                val isNonEng = SyllableSynthesizer.isNonEnglish(word.text, trackLanguage, trackArtist)
-                result.add(MeasuredWord(word, matchIdx, end, isNonEng))
-                searchIdx = end
-            }
+            val match = line.text.indexOf(word.text, startIndex = cursor)
+            if (word.text.isBlank() || !word.isReliableTiming || word.durationMs <= 0 || match < 0) break
+            result.add(MeasuredWord(word, match, match + word.text.length))
+            cursor = match + word.text.length
         }
-        // If provider tokens cannot be mapped in order, use a sequential line reveal.
-        // Mapping repeated words back to an earlier occurrence animates the wrong row/span.
-        if (result.size == line.words.count { it.text.isNotEmpty() }) result else emptyList()
+        if (result.size == line.words.size) result else emptyList()
     }
-
     var textLayoutResult by remember(line.text) { mutableStateOf<TextLayoutResult?>(null) }
+    val latestPosition by rememberUpdatedState(currentPositionProvider)
 
-    // Frame-based draw invalidation State: read ONLY inside drawWithContent to trigger draw phase redraw without recomposition
-    var localFrameTick by remember { mutableLongStateOf(0L) }
-    LaunchedEffect(isActive, isPlaying) {
-        if (isActive && isPlaying) {
-            while (isActive) {
-                withInfiniteAnimationFrameMillis { localFrameTick = it }
+    Text(
+        text = line.text,
+        fontSize = fontSize,
+        fontWeight = fontWeight,
+        lineHeight = lineHeight,
+        color = if (isPast) activeTextColor else inactiveTextColor,
+        textAlign = TextAlign.Start,
+        onTextLayout = { textLayoutResult = it },
+        modifier = Modifier.fillMaxWidth().drawWithCache {
+            val layout = textLayoutResult
+            // Glyph bounds and wrapped/bidirectional runs are prepared once, not per frame.
+            val units = if (layout == null) emptyList() else buildRevealUnits(layout, measuredWords)
+            val fallbackRows = if (layout == null || units.isNotEmpty()) emptyList() else
+                (0 until layout.lineCount).map { index ->
+                    RevealRegion(Rect(layout.getLineLeft(index), layout.getLineTop(index), layout.getLineRight(index), layout.getLineBottom(index)),
+                        layout.getParagraphDirection(layout.getLineStart(index)) == ResolvedTextDirection.Rtl)
+                }
+            val completed = Path()
+            val feather = 5.dp.toPx()
+            val glowRadius = 7.dp.toPx()
+            onDrawWithContent {
+                drawContent()
+                if (!isActive || layout == null) return@onDrawWithContent
+                val position = latestPosition()
+                if (position < line.timestampMs) return@onDrawWithContent
+                completed.reset()
+                if (units.isEmpty()) {
+                    // Line-only sources cannot locate individual vocals. Preserve a smooth visual
+                    // sweep as an approximation; do not manufacture word/syllable timestamps.
+                    val end = line.endTimeMs.takeIf { line.isReliableDuration && it > line.timestampMs }
+                        ?: nextLine?.timestampMs?.takeIf { it > line.timestampMs }
+                        ?: line.endTimeMs.takeIf { it > line.timestampMs } ?: (line.timestampMs + 3_000)
+                    val progress = ((position - line.timestampMs).toFloat() / (end - line.timestampMs).coerceAtLeast(1)).coerceIn(0f, 1f)
+                    drawReveal(layout, fallbackRows, progress, activeTextColor, feather, glowRadius, completed, glow = 0.22f)
+                } else {
+                    for (unit in units) {
+                        if (position < unit.start) continue
+                        val progress = ((position - unit.start).toFloat() / (unit.end - unit.start).coerceAtLeast(1)).coerceIn(0f, 1f)
+                        val glow = if (position <= unit.end) 0.32f else
+                            (1f - (position - unit.end) / 180f).coerceIn(0f, 1f) * 0.32f
+                        drawReveal(layout, unit.regions, progress, activeTextColor, feather, glowRadius, completed, glow)
+                    }
+                }
+                // Completed syllables are one draw, regardless of how many words were sung.
+                clipPath(completed) { drawText(layout, color = activeTextColor) }
             }
         }
+    )
+}
+
+private data class RevealRegion(val bounds: Rect, val rtl: Boolean)
+private data class RevealUnit(val start: Long, val end: Long, val regions: List<RevealRegion>)
+
+private fun buildRevealUnits(layout: TextLayoutResult, words: List<MeasuredWord>): List<RevealUnit> {
+    fun regions(start: Int, end: Int): List<RevealRegion> {
+        if (start >= end || end > layout.layoutInput.text.length) return emptyList()
+        val result = mutableListOf<RevealRegion>()
+        var cursor = start
+        while (cursor < end) {
+            val row = layout.getLineForOffset(cursor)
+            val direction = layout.getBidiRunDirection(cursor)
+            val begin = cursor
+            cursor++
+            while (cursor < end && layout.getLineForOffset(cursor) == row && layout.getBidiRunDirection(cursor) == direction) cursor++
+            // Union all glyph boxes: combining marks and ligatures must retain the original shaping.
+            var left = Float.POSITIVE_INFINITY
+            var right = Float.NEGATIVE_INFINITY
+            for (index in begin until cursor) {
+                val bounds = layout.getBoundingBox(index)
+                left = minOf(left, bounds.left); right = maxOf(right, bounds.right)
+            }
+            if (right > left) result.add(RevealRegion(Rect(left, layout.getLineTop(row), right, layout.getLineBottom(row)), direction == ResolvedTextDirection.Rtl))
+        }
+        return result
     }
-
-    Box(modifier = Modifier.fillMaxWidth()) {
-        // LAYER 1: Base Stable Inactive Text
-        Text(
-            text = line.text,
-            fontSize = fontSize,
-            fontWeight = fontWeight,
-            lineHeight = lineHeight,
-            color = if (isPast) activeTextColor else inactiveTextColor,
-            textAlign = TextAlign.Start,
-            onTextLayout = { textLayoutResult = it },
-            modifier = Modifier.fillMaxWidth()
-        )
-
-        // LAYER 2: Active Karaoke Overlay Text (Only for active line)
-        if (isActive) {
-            Text(
-                text = line.text,
-                fontSize = fontSize,
-                fontWeight = fontWeight,
-                lineHeight = lineHeight,
-                color = activeTextColor,
-                textAlign = TextAlign.Start,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .drawWithContent {
-                        // Read localFrameTick inside drawWithContent to invalidate ONLY the Draw phase!
-                        @Suppress("UNUSED_VARIABLE")
-                        val tick = localFrameTick
-
-                        val layout = textLayoutResult ?: return@drawWithContent
-                        val currentPos = currentPositionProvider()
-
-                        renderKaraokeDraw(
-                            layout = layout,
-                            line = line,
-                            nextLine = nextLine,
-                            measuredWords = measuredWords,
-                            currentPos = currentPos
-                        )
-                    }
-            )
+    return words.flatMap { measured ->
+        val word = measured.word
+        val syllables = word.syllables.takeIf { parts ->
+            parts.isNotEmpty() && parts.all { it.isReliableTiming && it.durationMs > 0 } &&
+                parts.joinToString("") { it.text } == word.text
+        }
+        if (syllables == null) listOf(RevealUnit(word.timestampMs, word.endTimeMs, regions(measured.charStart, measured.charEnd)))
+        else {
+            var cursor = measured.charStart
+            syllables.map { part ->
+                val end = (cursor + part.text.length).coerceAtMost(measured.charEnd)
+                RevealUnit(part.timestampMs, part.endTimeMs, regions(cursor, end)).also { cursor = end }
+            }
         }
     }
 }
 
-/**
- * Canvas drawing phase for continuous karaoke text overlay reveal.
- * Operates with zero Compose node allocations or string modifications.
- */
-private fun ContentDrawScope.renderKaraokeDraw(
-    layout: TextLayoutResult,
-    line: LyricLine,
-    nextLine: LyricLine?,
-    measuredWords: List<MeasuredWord>,
-    currentPos: Long
+private fun ContentDrawScope.drawReveal(
+    layout: TextLayoutResult, regions: List<RevealRegion>, progress: Float, color: Color,
+    feather: Float, glowRadius: Float, completed: Path, glow: Float
 ) {
-    if (currentPos < line.timestampMs) {
-        // Line has not started singing yet
-        return
-    }
-
-    // =========================================================================
-    // CASE A: WORD-LEVEL (AND SYLLABLE-LEVEL) TIMING AVAILABLE
-    // =========================================================================
-    if (measuredWords.isNotEmpty()) {
-        val lastWordEnd = measuredWords.last().word.endTimeMs
-        if (currentPos >= lastWordEnd) {
-            // Line vocals finished: hold completed throughout silence
-            drawContent()
-            return
-        }
-
-        for (mw in measuredWords) {
-            val word = mw.word
-            val wordStart = word.timestampMs
-            val wordEnd = word.endTimeMs
-
-            if (currentPos < wordStart) {
-                // Future word: not sung yet
-                continue
+    if (progress <= 0f) return
+    var remaining = regions.sumOf { it.bounds.width.toDouble() }.toFloat() * progress
+    for (region in regions) {
+        if (remaining <= 0f) break
+        val bounds = region.bounds
+        val amount = minOf(remaining, bounds.width)
+        val complete = amount >= bounds.width
+        val edge = if (region.rtl) bounds.right - amount else bounds.left + amount
+        val softWidth = minOf(feather, amount, (bounds.width - amount).coerceAtLeast(0f))
+        val solid = if (region.rtl) Rect(edge + softWidth, bounds.top, bounds.right, bounds.bottom)
+            else Rect(bounds.left, bounds.top, edge - softWidth, bounds.bottom)
+        if (solid.width > 0f) completed.addRect(solid)
+        if (glow > 0f || !complete) {
+            val brush = if (complete || softWidth <= 0f) Brush.linearGradient(listOf(color, color)) else {
+                val colors = if (region.rtl) listOf(Color.Transparent, color) else listOf(color, Color.Transparent)
+                Brush.linearGradient(colors, Offset(edge - softWidth, 0f), Offset(edge + softWidth, 0f))
             }
-
-            val isWordCompleted = currentPos >= wordEnd
-
-            if (mw.isNonEnglish || word.syllables.size <= 1 || !word.isReliableTiming) {
-                // Non-English (Hindi, Punjabi, Romanized Indic, etc.) or single-syllable word:
-                // Whole word is the timing unit. Preserves script shaping and conjuncts.
-                val wordDur = (wordEnd - wordStart).coerceAtLeast(1L)
-                val wordProgress = if (isWordCompleted) 1f else {
-                    ((currentPos - wordStart).toFloat() / wordDur.toFloat()).coerceIn(0f, 1f)
-                }
-
-                clipWordRegion(layout, mw.charStart, mw.charEnd, wordProgress)
-            } else {
-                // English word with reliable multiple syllables:
-                // Reveal syllable by syllable during each syllable's sung interval
-                var sylCharOffset = mw.charStart
-                for (syllable in word.syllables) {
-                    val sylLen = syllable.text.length
-                    val sStart = syllable.timestampMs
-                    val sEnd = syllable.endTimeMs
-                    val sCharStart = sylCharOffset
-                    val sCharEnd = (sCharStart + sylLen).coerceAtMost(mw.charEnd)
-                    sylCharOffset = sCharEnd
-
-                    if (currentPos < sStart) {
-                        continue
-                    }
-
-                    val isSylCompleted = currentPos >= sEnd
-                    val sDur = (sEnd - sStart).coerceAtLeast(1L)
-                    val sProgress = if (isSylCompleted) 1f else {
-                        ((currentPos - sStart).toFloat() / sDur.toFloat()).coerceIn(0f, 1f)
-                    }
-
-                    clipWordRegion(layout, sCharStart, sCharEnd, sProgress)
-                }
+            // The shadow must not illuminate letters ahead of the vocal reveal.
+            val clipLeft = if (region.rtl && !complete) maxOf(bounds.left, edge - softWidth) else bounds.left
+            val clipRight = if (!region.rtl && !complete) minOf(bounds.right, edge + softWidth) else bounds.right
+            clipRect(clipLeft, bounds.top, clipRight, bounds.bottom) {
+                drawText(layout, brush = brush,
+                    shadow = if (glow > 0f) Shadow(color.copy(alpha = glow), Offset.Zero, glowRadius) else null)
             }
         }
-        return
-    }
-
-    // =========================================================================
-    // CASE B: LINE-SYNC FALLBACK (e.g. Standard LRC without word timestamps)
-    // =========================================================================
-    val lineStart = line.timestampMs
-    val vocalEnd = line.endTimeMs.takeIf { it > lineStart }
-        ?: nextLine?.timestampMs?.takeIf { it > lineStart }
-        ?: (lineStart + 3_000L)
-    val duration = (vocalEnd - lineStart).coerceAtLeast(500L)
-
-    val lineProgress = if (currentPos >= vocalEnd) 1f else {
-        ((currentPos - lineStart).toFloat() / duration.toFloat()).coerceIn(0f, 1f)
-    }
-
-    if (lineProgress <= 0f) return
-    if (lineProgress >= 1f) {
-        // Line vocals finished: hold completed throughout silence
-        drawContent()
-        return
-    }
-
-    // Smooth reveal across wrapped visual lines sequentially
-    val lineCount = layout.lineCount
-    val totalWidth = (0 until lineCount).sumOf { l ->
-        (layout.getLineRight(l) - layout.getLineLeft(l)).toDouble().coerceAtLeast(1.0)
-    }.toFloat().coerceAtLeast(1f)
-
-    var remainingTargetPx = totalWidth * lineProgress
-
-    for (l in 0 until lineCount) {
-        val lineLeft = layout.getLineLeft(l)
-        val lineRight = layout.getLineRight(l)
-        val lineWidth = (lineRight - lineLeft).coerceAtLeast(1f)
-        val top = layout.getLineTop(l)
-        val bottom = layout.getLineBottom(l)
-
-        if (remainingTargetPx <= 0f) break
-
-        if (remainingTargetPx >= lineWidth) {
-            // Entire visual line is completed
-            clipRect(left = lineLeft, top = top, right = lineRight, bottom = bottom) {
-                this@renderKaraokeDraw.drawContent()
-            }
-            remainingTargetPx -= lineWidth
-        } else {
-            // Actively revealing visual line
-            val activeX = lineLeft + remainingTargetPx
-            clipRect(left = lineLeft, top = top, right = activeX, bottom = bottom) {
-                this@renderKaraokeDraw.drawContent()
-            }
-            remainingTargetPx = 0f
-        }
-    }
-}
-
-/**
- * Clips a specific character span [charStart, charEnd] on the text layout with horizontal progress 0f..1f.
- * Handles wrapped visual lines safely.
- */
-private fun ContentDrawScope.clipWordRegion(
-    layout: TextLayoutResult,
-    charStart: Int,
-    charEnd: Int,
-    progress: Float
-) {
-    if (progress <= 0f || charStart >= charEnd || charStart >= layout.layoutInput.text.length) return
-
-    val startLine = layout.getLineForOffset(charStart)
-    val endCharClamped = (charEnd - 1).coerceIn(charStart, layout.layoutInput.text.length - 1)
-    val endLine = layout.getLineForOffset(endCharClamped)
-
-    // Divide progress over the complete span width, then reveal visual rows in order.
-    // Applying the same fraction to only the first row made wrapped words jump at the end.
-    var totalWidth = 0f
-    for (visualLine in startLine..endLine) {
-        val firstChar = if (visualLine == startLine) charStart else layout.getLineStart(visualLine)
-        val lastChar = if (visualLine == endLine) endCharClamped
-            else (layout.getLineEnd(visualLine, visibleEnd = true) - 1).coerceAtLeast(firstChar)
-        val firstBounds = layout.getBoundingBox(firstChar)
-        val lastBounds = layout.getBoundingBox(lastChar)
-        totalWidth += (maxOf(firstBounds.right, lastBounds.right) -
-            minOf(firstBounds.left, lastBounds.left)).coerceAtLeast(0f)
-    }
-    var remainingWidth = totalWidth * progress.coerceIn(0f, 1f)
-    for (visualLine in startLine..endLine) {
-        if (remainingWidth <= 0f) break
-        val firstChar = if (visualLine == startLine) charStart else layout.getLineStart(visualLine)
-        val lastChar = if (visualLine == endLine) endCharClamped
-            else (layout.getLineEnd(visualLine, visibleEnd = true) - 1).coerceAtLeast(firstChar)
-        val firstBounds = layout.getBoundingBox(firstChar)
-        val lastBounds = layout.getBoundingBox(lastChar)
-        val left = minOf(firstBounds.left, lastBounds.left)
-        val right = maxOf(firstBounds.right, lastBounds.right)
-        val width = (right - left).coerceAtLeast(0f)
-        val revealedWidth = minOf(width, remainingWidth)
-        clipRect(
-            left = left,
-            top = layout.getLineTop(visualLine),
-            right = left + revealedWidth,
-            bottom = layout.getLineBottom(visualLine)
-        ) {
-            this@clipWordRegion.drawContent()
-        }
-        remainingWidth -= width
+        remaining -= bounds.width
     }
 }

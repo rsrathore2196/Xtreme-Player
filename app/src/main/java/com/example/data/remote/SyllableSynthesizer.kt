@@ -221,7 +221,7 @@ object SyllableSynthesizer {
      * Enriches TrackLyrics:
      * - Preserves genuine word and syllable timings from TTML/BiniLyrics.
      * - Marks hasSyllableTiming = true only when real multi-syllable timings exist.
-     * - Preserves non-English words as whole intact units.
+     * - Retains provider timing across languages without inventing syllable boundaries.
      */
     fun enrichLyrics(lyrics: TrackLyrics): TrackLyrics {
         if (!lyrics.isSynced || lyrics.lines.isEmpty()) return lyrics
@@ -231,38 +231,13 @@ object SyllableSynthesizer {
         val enrichedLines = lyrics.lines.map { line ->
             if (line.words.isNotEmpty()) {
                 val enrichedWords = line.words.map { word ->
-                    val isNonEng = isNonEnglish(word.text, lyrics.language, lyrics.artist)
-                    if (isNonEng) {
-                        // Ensure non-English word has single whole-word syllable
-                        word.copy(
-                            language = "non-english",
-                            syllables = listOf(
-                                LyricSyllable(
-                                    timestampMs = word.timestampMs,
-                                    durationMs = word.durationMs,
-                                    text = word.text,
-                                    isReliableTiming = word.isReliableTiming
-                                )
-                            )
-                        )
-                    } else if (word.syllables.isNotEmpty()) {
-                        if (word.syllables.size > 1) {
-                            hasMultiSyllableTiming = true
-                        }
-                        word.copy(language = "english")
+                    val genuine = word.syllables.filter { it.isReliableTiming && it.durationMs > 0 }
+                    if (genuine.size > 1 && genuine.joinToString("") { it.text } == word.text) {
+                        hasMultiSyllableTiming = true
+                        word.copy(syllables = genuine)
                     } else {
-                        // English word without pre-parsed syllables: synthesize approximate syllables
-                        val synth = synthesizeSyllablesForWord(
-                            word.text,
-                            word.timestampMs,
-                            word.durationMs,
-                            lyrics.language,
-                            lyrics.artist
-                        )
-                        word.copy(
-                            language = "english",
-                            syllables = synth
-                        )
+                        // A continuous sweep within a timed word needs no invented syllable timestamps.
+                        word.copy(syllables = emptyList())
                     }
                 }
                 line.copy(words = enrichedWords)

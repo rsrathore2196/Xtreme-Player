@@ -1,203 +1,130 @@
 package com.example.data.remote
 
-import android.util.Log
+import android.util.Xml
 import com.example.data.model.LyricLine
 import com.example.data.model.LyricSyllable
 import com.example.data.model.LyricWord
 import com.example.data.model.SongIdentity
 import com.example.data.model.TrackLyrics
-import java.util.regex.Pattern
+import org.xmlpull.v1.XmlPullParser
+import java.io.StringReader
 
+/** Parse XML structure, not tag-order-dependent regexes: adjacent spans may be syllables of one word. */
 object BetterLyricsParser {
-    private const val TAG = "BetterLyricsParser"
+    private data class Node(val name: String, val attributes: Map<String, String>, val children: MutableList<Any> = mutableListOf())
+    private data class Fragment(val text: String, val start: Long, val end: Long, val reliable: Boolean)
 
     fun parseTtmlTimestamp(raw: String): Long {
-        val s = raw.trim().removeSuffix("s")
-        return try {
-            if (s.contains(':')) {
-                val parts = s.split(':')
-                if (parts.size == 3) {
-                    val hours = parts[0].toDoubleOrNull() ?: 0.0
-                    val minutes = parts[1].toDoubleOrNull() ?: 0.0
-                    val seconds = parts[2].toDoubleOrNull() ?: 0.0
-                    ((hours * 3600 + minutes * 60 + seconds) * 1000).toLong()
-                } else if (parts.size == 2) {
-                    val minutes = parts[0].toDoubleOrNull() ?: 0.0
-                    val seconds = parts[1].toDoubleOrNull() ?: 0.0
-                    ((minutes * 60 + seconds) * 1000).toLong()
-                } else 0L
-            } else {
-                val seconds = s.toDoubleOrNull() ?: 0.0
-                (seconds * 1000).toLong()
-            }
-        } catch (_: Exception) {
-            0L
+        val value = raw.trim()
+        val multiplier = when {
+            value.endsWith("ms") -> 1.0
+            value.endsWith("h") -> 3_600_000.0
+            value.endsWith("m") -> 60_000.0
+            else -> 1_000.0
         }
+        val numeric = value.removeSuffix("ms").removeSuffix("s").removeSuffix("h").removeSuffix("m")
+        val parts = numeric.split(':')
+        val millis = if (parts.size > 1) parts.fold(0.0) { time, part -> time * 60 + (part.toDoubleOrNull() ?: return 0L) } * 1000
+            else (numeric.toDoubleOrNull() ?: return 0L) * multiplier
+        return if (millis.isFinite()) millis.toLong().coerceAtLeast(0L) else 0L
     }
 
     fun parseTtml(identity: SongIdentity, ttml: String): TrackLyrics? {
-        val lines = mutableListOf<LyricLine>()
-        val pRegex = Pattern.compile("<p\\s+[^>]*begin=\"([^\"]+)\"[^>]*(?:end=\"([^\"]+)\")?[^>]*>(.*?)</p>", Pattern.DOTALL or Pattern.CASE_INSENSITIVE)
-        val pMatcher = pRegex.matcher(ttml)
-
-        val spanRegex = Pattern.compile("<span\\s+[^>]*begin=\"([^\"]+)\"[^>]*(?:end=\"([^\"]+)\")?[^>]*>(.*?)</span>", Pattern.DOTALL or Pattern.CASE_INSENSITIVE)
-
-        var bodyDurSec = 0
-        val durMatcher = Pattern.compile("<body\\s+[^>]*dur=\"([^\"]+)\"", Pattern.CASE_INSENSITIVE).matcher(ttml)
-        if (durMatcher.find()) {
-            val durStr = durMatcher.group(1) ?: ""
-            val durMs = parseTtmlTimestamp(durStr)
-            bodyDurSec = (durMs / 1000L).toInt()
-        }
-
-        val songWriters = mutableListOf<String>()
-        val swMatcher = Pattern.compile("<songwriter>(.*?)</songwriter>", Pattern.CASE_INSENSITIVE).matcher(ttml)
-        while (swMatcher.find()) {
-            val sw = swMatcher.group(1)?.trim() ?: ""
-            if (sw.isNotBlank() && !songWriters.contains(sw)) {
-                songWriters.add(sw)
+        return try {
+            val parser = Xml.newPullParser().apply {
+                setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, true)
+                setInput(StringReader(ttml))
             }
-        }
-
-        var language: String? = null
-        val langMatcher = Pattern.compile("xml:lang=\"([^\"]+)\"", Pattern.CASE_INSENSITIVE).matcher(ttml)
-        if (langMatcher.find()) {
-            language = langMatcher.group(1)?.trim()
-        }
-
-        var hasWordTiming = false
-        var hasRomanization = false
-        var hasTranslation = false
-
-        while (pMatcher.find()) {
-            val beginStr = pMatcher.group(1) ?: continue
-            val endStr = pMatcher.group(2)
-            val pContent = pMatcher.group(3) ?: ""
-
-            val beginMs = parseTtmlTimestamp(beginStr)
-            val endMs = if (!endStr.isNullOrBlank()) parseTtmlTimestamp(endStr) else beginMs + 3000L
-            val durMs = (endMs - beginMs).coerceAtLeast(500L)
-
-            val words = mutableListOf<LyricWord>()
-            val currentWordSyllables = mutableListOf<LyricSyllable>()
-            val currentWordText = StringBuilder()
-            var currentWordStartMs = 0L
-            var currentWordEndMs = 0L
-            var lastSpanEndPos = 0
-
-            val spanMatcher = spanRegex.matcher(pContent)
-            while (spanMatcher.find()) {
-                val spanStartInP = spanMatcher.start()
-                val gapText = pContent.substring(lastSpanEndPos, spanStartInP)
-                val isNewWord = gapText.contains(" ") || gapText.contains("\n") || gapText.contains("\t")
-
-                val sBeginStr = spanMatcher.group(1) ?: continue
-                val sEndStr = spanMatcher.group(2)
-                val sText = spanMatcher.group(3)?.replace(Regex("<[^>]+>"), "")?.trim() ?: ""
-
-                val sBeginMs = parseTtmlTimestamp(sBeginStr)
-                val sEndMs = if (!sEndStr.isNullOrBlank()) parseTtmlTimestamp(sEndStr) else sBeginMs + 250L
-                val sDur = (sEndMs - sBeginMs).coerceAtLeast(40L)
-
-                if (sText.isNotBlank()) {
-                    if (isNewWord && currentWordSyllables.isNotEmpty()) {
-                        words.add(
-                            LyricWord(
-                                timestampMs = currentWordStartMs,
-                                durationMs = (currentWordEndMs - currentWordStartMs).coerceAtLeast(50L),
-                                text = currentWordText.toString(),
-                                syllables = currentWordSyllables.toList()
-                            )
-                        )
-                        currentWordSyllables.clear()
-                        currentWordText.clear()
+            val root = Node("root", emptyMap())
+            val stack = mutableListOf(root)
+            while (parser.eventType != XmlPullParser.END_DOCUMENT) {
+                when (parser.eventType) {
+                    XmlPullParser.DOCDECL -> return null
+                    XmlPullParser.START_TAG -> {
+                        if (stack.size > 64) return null
+                        val node = Node(parser.name, (0 until parser.attributeCount).associate { parser.getAttributeName(it) to parser.getAttributeValue(it) })
+                        stack.last().children.add(node)
+                        stack.add(node)
                     }
-                    if (currentWordSyllables.isEmpty()) {
-                        currentWordStartMs = sBeginMs
-                    }
-                    currentWordEndMs = sEndMs
-                    currentWordText.append(sText)
-                    currentWordSyllables.add(LyricSyllable(sBeginMs, sDur, sText))
+                    XmlPullParser.TEXT, XmlPullParser.CDSECT, XmlPullParser.ENTITY_REF -> parser.text?.let { stack.last().children.add(it) }
+                    XmlPullParser.END_TAG -> if (stack.size > 1) stack.removeAt(stack.lastIndex)
                 }
-                lastSpanEndPos = spanMatcher.end()
+                parser.nextToken()
             }
-
-            if (currentWordSyllables.isNotEmpty()) {
-                words.add(
-                    LyricWord(
-                        timestampMs = currentWordStartMs,
-                        durationMs = (currentWordEndMs - currentWordStartMs).coerceAtLeast(50L),
-                        text = currentWordText.toString(),
-                        syllables = currentWordSyllables.toList()
-                    )
-                )
+            fun nodes(node: Node): List<Node> = listOf(node) + node.children.filterIsInstance<Node>().flatMap(::nodes)
+            fun plain(node: Node): String = node.children.joinToString("") { if (it is Node) plain(it) else it.toString() }
+            val all = nodes(root)
+            // Only compare an explicit song duration; the last vocal may precede a long outro.
+            val bodyDuration = all.firstOrNull { it.name == "body" }?.attributes?.get("dur")?.let(::parseTtmlTimestamp)
+            val targetDuration = identity.durationMs ?: 0L
+            if (bodyDuration != null && bodyDuration > 30_000 && targetDuration > 30_000) {
+                val difference = kotlin.math.abs(bodyDuration - targetDuration)
+                if (difference > 45_000 && difference.toDouble() / targetDuration > 0.25) return null
             }
-
-            if (words.isNotEmpty()) {
-                hasWordTiming = true
-            }
-
-            // Extract romanization from ruby tag if present
-            var lineRomanization: String? = null
-            val rubyMatcher = Pattern.compile("<ruby>.*?<rt>(.*?)</rt>.*?</ruby>", Pattern.DOTALL or Pattern.CASE_INSENSITIVE).matcher(pContent)
-            if (rubyMatcher.find()) {
-                lineRomanization = rubyMatcher.group(1)?.replace(Regex("<[^>]+>"), "")?.trim()
-                if (!lineRomanization.isNullOrBlank()) hasRomanization = true
-            }
-
-            val cleanText = pContent.replace(Regex("<rt>.*?</rt>"), "")
-                .replace(Regex("<[^>]+>"), " ")
-                .replace("&amp;", "&")
-                .replace("&quot;", "\"")
-                .replace("&apos;", "'")
-                .replace("&lt;", "<")
-                .replace("&gt;", ">")
-                .replace(Regex("\\s+"), " ")
-                .trim()
-
-            if (cleanText.isNotBlank()) {
-                val effectiveDur = if (words.isNotEmpty()) {
-                    (words.last().endTimeMs - beginMs).coerceAtLeast(100L)
-                } else durMs
-
-                lines.add(
-                    LyricLine(
-                        timestampMs = beginMs,
-                        text = cleanText,
-                        durationMs = effectiveDur,
-                        words = words,
-                        romanization = lineRomanization,
-                        isReliableDuration = !endStr.isNullOrBlank() || words.isNotEmpty()
-                    )
-                )
-            }
-        }
-
-        if (lines.isEmpty()) return null
-
-        val targetDurSec = ((identity.durationMs ?: 0L) / 1000L).toInt()
-        val effectiveDurSec = if (bodyDurSec > 0) bodyDurSec else ((lines.last().timestampMs + lines.last().durationMs) / 1000L).toInt()
-        if (targetDurSec > 30 && effectiveDurSec > 30) {
-            val diff = kotlin.math.abs(targetDurSec - effectiveDurSec)
-            if (diff > 45 && (diff.toDouble() / targetDurSec) > 0.25) {
-                Log.d(TAG, "BetterLyrics duration check rejected: ${diff}s diff")
-                return null
-            }
-        }
-
-        val rawLyrics = TrackLyrics(
-            trackId = identity.trackId ?: "",
-            title = identity.title,
-            artist = identity.artist ?: "",
-            isSynced = true,
-            lines = lines,
-            provider = "BetterLyrics",
-            language = language,
-            hasWordTiming = hasWordTiming,
-            hasTranslation = hasTranslation,
-            hasRomanization = hasRomanization,
-            songWriters = songWriters
-        )
-        return SyllableSynthesizer.enrichLyrics(rawLyrics)
+            val language = all.firstNotNullOfOrNull { it.attributes["lang"] }
+            val lines = all.filter { it.name == "p" && it.attributes.containsKey("begin") }.mapNotNull { paragraph ->
+                val start = parseTtmlTimestamp(paragraph.attributes.getValue("begin"))
+                val explicitEnd = paragraph.attributes["end"]?.let(::parseTtmlTimestamp)
+                    ?: paragraph.attributes["dur"]?.let { start + parseTtmlTimestamp(it) }
+                val fragments = mutableListOf<Fragment>()
+                var translation: String? = null
+                var romanization: String? = null
+                fun collect(node: Node, inheritedStart: Long, inheritedEnd: Long?, timed: Boolean) {
+                    val role = node.attributes["role"].orEmpty()
+                    if (role.contains("translation")) { translation = plain(node).trim(); return }
+                    if (role.contains("roman") || node.name == "rt") { romanization = plain(node).trim(); return }
+                    if (role.contains("bg")) return // Background voices must not advance the lead vocal's highlight.
+                    val begin = node.attributes["begin"]?.let(::parseTtmlTimestamp) ?: inheritedStart
+                    val end = node.attributes["end"]?.let(::parseTtmlTimestamp)
+                        ?: node.attributes["dur"]?.let { begin + parseTtmlTimestamp(it) } ?: inheritedEnd
+                    val hasTiming = timed || (node.name == "span" && node.attributes.containsKey("begin") && end != null && end > begin)
+                    node.children.forEach { child ->
+                        if (child is Node) {
+                            if (child.name == "br") fragments.add(Fragment(" ", begin, end ?: begin, false))
+                            else collect(child, begin, end, hasTiming)
+                        } else fragments.add(Fragment(child.toString(), begin, end ?: begin, hasTiming))
+                    }
+                }
+                collect(paragraph, start, explicitEnd, false)
+                val text = fragments.joinToString("") { it.text }.replace(Regex("\\s+"), " ").trim()
+                if (text.isEmpty()) return@mapNotNull null
+                val words = mutableListOf<LyricWord>()
+                val pieces = mutableListOf<LyricSyllable>()
+                val wordText = StringBuilder()
+                fun finishWord() {
+                    if (wordText.isEmpty()) return
+                    val begin = pieces.minOf { it.timestampMs }
+                    val end = pieces.maxOf { it.endTimeMs }
+                    words.add(LyricWord(begin, (end - begin).coerceAtLeast(0), wordText.toString(), pieces.toList(),
+                        isReliableTiming = pieces.all { it.isReliableTiming } && end > begin))
+                    pieces.clear(); wordText.clear()
+                }
+                fragments.forEach { fragment ->
+                    val tokens = Regex("\\s+|\\S+").findAll(fragment.text).toList()
+                    val multipleWords = tokens.count { !it.value.isBlank() } > 1
+                    tokens.forEach { token ->
+                        if (token.value.isBlank()) finishWord() else {
+                            wordText.append(token.value)
+                            pieces.add(LyricSyllable(fragment.start, (fragment.end - fragment.start).coerceAtLeast(0),
+                                token.value, fragment.reliable && !multipleWords))
+                        }
+                    }
+                }
+                finishWord()
+                // Partial/missing word timing cannot be presented as accurate vocal alignment.
+                val reliableWords = words.takeIf { it.isNotEmpty() && it.all(LyricWord::isReliableTiming) }.orEmpty()
+                val end = explicitEnd ?: reliableWords.maxOfOrNull { it.endTimeMs } ?: start
+                LyricLine(start, text, (end - start).coerceAtLeast(0), reliableWords, translation, romanization,
+                    agent = paragraph.attributes["agent"], isReliableDuration = end > start)
+            }.sortedBy { it.timestampMs }
+            if (lines.isEmpty()) null else SyllableSynthesizer.enrichLyrics(TrackLyrics(
+                trackId = identity.trackId.orEmpty(), title = identity.title, artist = identity.artist.orEmpty(),
+                isSynced = true, lines = lines, provider = "BetterLyrics", language = language,
+                hasWordTiming = lines.any { it.words.isNotEmpty() },
+                hasTranslation = lines.any { !it.translation.isNullOrBlank() },
+                hasRomanization = lines.any { !it.romanization.isNullOrBlank() },
+                songWriters = all.filter { it.name == "songwriter" }.map { plain(it).trim() }.distinct()
+            ))
+        } catch (_: Exception) { null }
     }
 }
