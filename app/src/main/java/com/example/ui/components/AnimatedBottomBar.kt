@@ -97,10 +97,10 @@ fun AnimatedBottomBar(
                 .matchParentSize()
                 .xtremeLiquidGlassBackground(
                     shape = CircleShape,
-                    blurRadius = 8.dp,
-                    surfaceTintAlpha = 0f,
-                    tintColor = Color.Transparent,
-                    borderWidth = 0.5.dp,
+                    blurRadius = 20.dp,
+                    surfaceTintAlpha = 0.10f,
+                    tintColor = ambientGlowColor,
+                    borderWidth = 0.8.dp,
                     elevation = 16.dp,
                     appColors = appColors
                 )
@@ -137,34 +137,11 @@ fun AnimatedBottomBar(
                         label = "tab_bounce_y_${item.index}"
                     )
 
-                    val activePillBrush = if (appColors.isDark) {
-                        Brush.verticalGradient(
-                            listOf(
-                                appColors.primaryAccent.copy(alpha = 0.88f),
-                                appColors.primaryAccent.copy(alpha = 0.72f),
-                                appColors.secondaryAccent.copy(alpha = 0.80f)
-                            )
-                        )
-                    } else {
-                        Brush.verticalGradient(
-                            listOf(
-                                appColors.primaryAccent.copy(alpha = 0.92f),
-                                appColors.primaryAccent.copy(alpha = 0.82f),
-                                appColors.secondaryAccent.copy(alpha = 0.88f)
-                            )
-                        )
-                    }
-
-                    val activeBorderStroke = BorderStroke(
-                        1.3.dp,
-                        Brush.verticalGradient(
-                            listOf(
-                                Color.White.copy(alpha = 0.85f),
-                                appColors.primaryAccent.copy(alpha = 0.60f),
-                                Color.White.copy(alpha = 0.30f)
-                            )
-                        )
-                    )
+                    val activePillBrush = Brush.verticalGradient(listOf(
+                        appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.24f else 0.20f),
+                        appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.14f else 0.12f)
+                    ))
+                    val activeBorderStroke = BorderStroke(0.6.dp, Color.White.copy(alpha = if (appColors.isDark) 0.10f else 0.40f))
 
                     // Individual tab item container: Active pill with 3D liquid glass capsule and theme accent blur
                     Box(
@@ -211,7 +188,7 @@ fun AnimatedBottomBar(
                                     .background(
                                         Brush.verticalGradient(
                                             listOf(
-                                                Color.White.copy(alpha = if (appColors.isDark) 0.35f else 0.48f),
+                                                Color.White.copy(alpha = if (appColors.isDark) 0.10f else 0.26f),
                                                 Color.Transparent
                                             ),
                                             startY = 0f,
@@ -221,8 +198,7 @@ fun AnimatedBottomBar(
                             )
                         }
                         
-                        val isPillLight = appColors.isAmoled && (appColors.primaryAccent == Color.White || (0.299 * appColors.primaryAccent.red + 0.587 * appColors.primaryAccent.green + 0.114 * appColors.primaryAccent.blue) > 0.65f) || (!appColors.isDark && (0.299 * appColors.primaryAccent.red + 0.587 * appColors.primaryAccent.green + 0.114 * appColors.primaryAccent.blue) > 0.65f)
-                        val selectedTabContentColor = if (isPillLight) Color(0xFF0A0A0A) else Color.White
+                        val selectedTabContentColor = appColors.textPrimary
 
                         Row(
                             verticalAlignment = Alignment.CenterVertically,

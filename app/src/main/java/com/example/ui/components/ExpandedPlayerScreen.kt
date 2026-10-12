@@ -144,8 +144,8 @@ import com.example.playback.RepeatMode
 import com.example.ui.theme.LocalAppColors
 import com.example.ui.theme.LiquidGlass
 import com.example.ui.theme.bouncyClickable
-import com.example.ui.theme.liquidGlassButton
-import com.example.ui.theme.primaryLiquidGlassButton
+import com.example.ui.components.playerLiquidGlassButton as liquidGlassButton
+import com.example.ui.components.playerPrimaryLiquidGlassButton as primaryLiquidGlassButton
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
@@ -398,6 +398,8 @@ fun ExpandedPlayerScreen(
         label = "queue_button_scale"
     )
 
+    val playerBackdrop = rememberLiquidGlassBackdrop()
+    CompositionLocalProvider(LocalLiquidGlassBackdrop provides playerBackdrop) {
     Surface(
         modifier = modifier
             .fillMaxSize()
@@ -416,8 +418,9 @@ fun ExpandedPlayerScreen(
             modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.TopCenter
         ) {
-            // Animated Bokeh Mode Background Layer with High-Depth Frosted Glass
-            PlayerBokehBackground(
+            // Album-adaptive glossy backdrop; separate from sharp artwork and controls.
+            PlayerGlassBackground(
+                artworkUrl = highResCoverUrl,
                 dominantColor = animatedDominantColor,
                 accentColor = animatedAccentColor,
                 vibrantColor = animatedVibrantColor,
@@ -932,29 +935,8 @@ fun ExpandedPlayerScreen(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            val landscapeBottomPillInnerBlur = if (appColors.isDark) {
-                                Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.12f), Color.White.copy(alpha = 0.03f)))
-                            } else {
-                                Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.45f), Color.White.copy(alpha = 0.15f)))
-                            }
-
                             // 1. Synced Lyrics Toggle Button (Pill shape on bottom-left, Frosted Liquid Glass UI)
-                            val landscapeLyricsBorder = BorderStroke(
-                                1.2.dp,
-                                if (showLyrics) Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.50f), appColors.primaryAccent.copy(alpha = 0.45f)))
-                                else LiquidGlass.specularBorderBrush(appColors, highlightAlpha = if (appColors.isDark) 0.38f else 0.45f)
-                            )
-                            val landscapeLyricsBg = if (showLyrics) {
-                                Brush.verticalGradient(
-                                    listOf(
-                                        appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.88f else 0.92f),
-                                        appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.70f else 0.78f)
-                                    )
-                                )
-                            } else {
-                                LiquidGlass.miniPlayerAndBottomBarBrush(appColors)
-                            }
-                            val landscapeLyricsContentColor = if (showLyrics) Color.White else if (appColors.isDark) Color.White else appColors.textPrimary
+                            val landscapeLyricsContentColor = appColors.textPrimary
 
                             Surface(
                                 onClick = {
@@ -964,7 +946,6 @@ fun ExpandedPlayerScreen(
                                 interactionSource = lyricsInteractionSource,
                                 shape = RoundedCornerShape(22.dp),
                                 color = Color.Transparent,
-                                border = landscapeLyricsBorder,
                                 modifier = Modifier
                                     .size(44.dp)
                                     .shadow(
@@ -974,7 +955,7 @@ fun ExpandedPlayerScreen(
                                         ambientColor = Color.Transparent
                                     )
                                     .clip(RoundedCornerShape(22.dp))
-                                    .background(landscapeLyricsBg)
+                                    .liquidGlassButton(appColors, shape = RoundedCornerShape(22.dp), elevation = 0.dp, isActive = showLyrics)
                                     .graphicsLayer {
                                         scaleX = lyricsButtonScale
                                         scaleY = lyricsButtonScale
@@ -982,28 +963,6 @@ fun ExpandedPlayerScreen(
                                     .testTag("player_lyrics_button")
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
-                                    Box(
-                                        modifier = Modifier
-                                            .matchParentSize()
-                                            .clip(RoundedCornerShape(22.dp))
-                                            .background(landscapeBottomPillInnerBlur)
-                                            .blur(16.dp)
-                                    )
-                                    Box(
-                                        modifier = Modifier
-                                            .matchParentSize()
-                                            .clip(RoundedCornerShape(22.dp))
-                                            .background(
-                                                Brush.verticalGradient(
-                                                    listOf(
-                                                        Color.White.copy(alpha = if (showLyrics) 0.28f else if (appColors.isDark) 0.18f else 0.30f),
-                                                        Color.Transparent
-                                                    ),
-                                                    startY = 0f,
-                                                    endY = 20f
-                                                )
-                                            )
-                                    )
                                     Icon(
                                         imageVector = Icons.Default.FormatQuote,
                                         contentDescription = "Toggle Lyrics",
@@ -1015,22 +974,7 @@ fun ExpandedPlayerScreen(
 
                             // 2. Output Devices Button (Pill shape in bottom-centre, Frosted Liquid Glass UI)
                             val isLandscapeOutputActive = activeOutputDevice?.isBluetooth == true
-                            val landscapeOutputBorder = BorderStroke(
-                                1.2.dp,
-                                if (isLandscapeOutputActive) Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.50f), appColors.primaryAccent.copy(alpha = 0.45f)))
-                                else LiquidGlass.specularBorderBrush(appColors, highlightAlpha = if (appColors.isDark) 0.38f else 0.45f)
-                            )
-                            val landscapeOutputBg = if (isLandscapeOutputActive) {
-                                Brush.verticalGradient(
-                                    listOf(
-                                        appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.88f else 0.92f),
-                                        appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.70f else 0.78f)
-                                    )
-                                )
-                            } else {
-                                LiquidGlass.miniPlayerAndBottomBarBrush(appColors)
-                            }
-                            val landscapeOutputContentColor = if (isLandscapeOutputActive) Color.White else if (appColors.isDark) Color.White else appColors.textPrimary
+                            val landscapeOutputContentColor = appColors.textPrimary
 
                             Surface(
                                 onClick = {
@@ -1040,7 +984,6 @@ fun ExpandedPlayerScreen(
                                 interactionSource = outputInteractionSource,
                                 shape = RoundedCornerShape(22.dp),
                                 color = Color.Transparent,
-                                border = landscapeOutputBorder,
                                 modifier = Modifier
                                     .height(44.dp)
                                     .padding(horizontal = 8.dp)
@@ -1051,7 +994,7 @@ fun ExpandedPlayerScreen(
                                         ambientColor = Color.Transparent
                                     )
                                     .clip(RoundedCornerShape(22.dp))
-                                    .background(landscapeOutputBg)
+                                    .liquidGlassButton(appColors, shape = RoundedCornerShape(22.dp), elevation = 0.dp, isActive = isLandscapeOutputActive)
                                     .graphicsLayer {
                                         scaleX = outputButtonScale
                                         scaleY = outputButtonScale
@@ -1059,28 +1002,6 @@ fun ExpandedPlayerScreen(
                                     .testTag("sound_output_device_button")
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
-                                    Box(
-                                        modifier = Modifier
-                                            .matchParentSize()
-                                            .clip(RoundedCornerShape(22.dp))
-                                            .background(landscapeBottomPillInnerBlur)
-                                            .blur(16.dp)
-                                    )
-                                    Box(
-                                        modifier = Modifier
-                                            .matchParentSize()
-                                            .clip(RoundedCornerShape(22.dp))
-                                            .background(
-                                                Brush.verticalGradient(
-                                                    listOf(
-                                                        Color.White.copy(alpha = if (isLandscapeOutputActive) 0.28f else if (appColors.isDark) 0.18f else 0.30f),
-                                                        Color.Transparent
-                                                    ),
-                                                    startY = 0f,
-                                                    endY = 20f
-                                                )
-                                            )
-                                    )
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.Center,
@@ -1113,11 +1034,6 @@ fun ExpandedPlayerScreen(
                             }
 
                             // 3. Queue / Library Button (Pill shape on bottom-right, Frosted Liquid Glass UI)
-                            val landscapeQueueBorder = BorderStroke(
-                                1.3.dp,
-                                LiquidGlass.specularBorderBrush(appColors, highlightAlpha = if (appColors.isDark) 0.38f else 0.55f)
-                            )
-                            val landscapeQueueBg = LiquidGlass.miniPlayerAndBottomBarBrush(appColors)
                             val landscapeQueueContentColor = if (appColors.isDark) Color.White else appColors.textPrimary
 
                             Surface(
@@ -1128,7 +1044,6 @@ fun ExpandedPlayerScreen(
                                 interactionSource = queueInteractionSource,
                                 shape = RoundedCornerShape(22.dp),
                                 color = Color.Transparent,
-                                border = landscapeQueueBorder,
                                 modifier = Modifier
                                     .size(44.dp)
                                     .shadow(
@@ -1138,7 +1053,7 @@ fun ExpandedPlayerScreen(
                                         ambientColor = if (appColors.isDark) Color.Transparent else Color.Black.copy(alpha = 0.05f)
                                     )
                                     .clip(RoundedCornerShape(22.dp))
-                                    .background(landscapeQueueBg)
+                                    .liquidGlassButton(appColors, shape = RoundedCornerShape(22.dp), elevation = 0.dp, isActive = false)
                                     .graphicsLayer {
                                         scaleX = queueButtonScale
                                         scaleY = queueButtonScale
@@ -1146,28 +1061,6 @@ fun ExpandedPlayerScreen(
                                     .testTag("player_queue_button")
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
-                                    Box(
-                                        modifier = Modifier
-                                            .matchParentSize()
-                                            .clip(RoundedCornerShape(22.dp))
-                                            .background(landscapeBottomPillInnerBlur)
-                                            .blur(16.dp)
-                                    )
-                                    Box(
-                                        modifier = Modifier
-                                            .matchParentSize()
-                                            .clip(RoundedCornerShape(22.dp))
-                                            .background(
-                                                Brush.verticalGradient(
-                                                    listOf(
-                                                        Color.White.copy(alpha = if (appColors.isDark) 0.18f else 0.30f),
-                                                        Color.Transparent
-                                                    ),
-                                                    startY = 0f,
-                                                    endY = 20f
-                                                )
-                                            )
-                                    )
                                     Icon(
                                         imageVector = Icons.AutoMirrored.Filled.QueueMusic,
                                         contentDescription = "Up-Next Queue",
@@ -1735,29 +1628,8 @@ fun ExpandedPlayerScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                val bottomPillInnerBlur = if (appColors.isDark) {
-                    Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.12f), Color.White.copy(alpha = 0.03f)))
-                } else {
-                    Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.45f), Color.White.copy(alpha = 0.15f)))
-                }
-
                 // 1. Synced Lyrics Toggle Button (Pill shape on bottom-left, Frosted Liquid Glass UI)
-                val lyricsBorder = BorderStroke(
-                    1.2.dp,
-                    if (showLyrics) Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.50f), appColors.primaryAccent.copy(alpha = 0.45f)))
-                    else LiquidGlass.specularBorderBrush(appColors, highlightAlpha = if (appColors.isDark) 0.38f else 0.45f)
-                )
-                val lyricsBg = if (showLyrics) {
-                    Brush.verticalGradient(
-                        listOf(
-                            appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.88f else 0.92f),
-                            appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.70f else 0.78f)
-                        )
-                    )
-                } else {
-                    LiquidGlass.miniPlayerAndBottomBarBrush(appColors)
-                }
-                val lyricsContentColor = if (showLyrics) Color.White else if (appColors.isDark) Color.White else appColors.textPrimary
+                val lyricsContentColor = appColors.textPrimary
 
                 Surface(
                     onClick = {
@@ -1767,7 +1639,6 @@ fun ExpandedPlayerScreen(
                     interactionSource = lyricsInteractionSource,
                     shape = RoundedCornerShape(22.dp),
                     color = Color.Transparent,
-                    border = lyricsBorder,
                     modifier = Modifier
                         .size(44.dp)
                         .shadow(
@@ -1777,7 +1648,7 @@ fun ExpandedPlayerScreen(
                             ambientColor = if (appColors.isDark) Color.Transparent else Color.Black.copy(alpha = 0.05f)
                         )
                         .clip(RoundedCornerShape(22.dp))
-                        .background(lyricsBg)
+                        .liquidGlassButton(appColors, shape = RoundedCornerShape(22.dp), elevation = 0.dp, isActive = showLyrics)
                         .graphicsLayer {
                             scaleX = lyricsButtonScale
                             scaleY = lyricsButtonScale
@@ -1785,30 +1656,7 @@ fun ExpandedPlayerScreen(
                         .testTag("player_lyrics_button")
                 ) {
                     Box(contentAlignment = Alignment.Center) {
-                        // Inner Gaussian blur layer inside the button pill
-                        Box(
-                            modifier = Modifier
-                                .matchParentSize()
-                                .clip(RoundedCornerShape(22.dp))
-                                .background(bottomPillInnerBlur)
-                                .blur(16.dp)
-                        )
-                        // Top specular sheen
-                        Box(
-                            modifier = Modifier
-                                .matchParentSize()
-                                .clip(RoundedCornerShape(22.dp))
-                                .background(
-                                    Brush.verticalGradient(
-                                        listOf(
-                                            Color.White.copy(alpha = if (showLyrics) 0.28f else if (appColors.isDark) 0.18f else 0.30f),
-                                            Color.Transparent
-                                        ),
-                                        startY = 0f,
-                                        endY = 20f
-                                    )
-                                )
-                        )
+
                         Icon(
                             imageVector = Icons.Default.FormatQuote,
                             contentDescription = "Toggle Lyrics",
@@ -1820,22 +1668,7 @@ fun ExpandedPlayerScreen(
 
                 // 2. Output Devices Button (Pill shape in bottom-centre, Frosted Liquid Glass UI)
                 val isOutputActive = activeOutputDevice?.isBluetooth == true
-                val outputBorder = BorderStroke(
-                    1.3.dp,
-                    if (isOutputActive) Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.50f), appColors.primaryAccent.copy(alpha = 0.45f)))
-                    else LiquidGlass.specularBorderBrush(appColors, highlightAlpha = if (appColors.isDark) 0.38f else 0.55f)
-                )
-                val outputBg = if (isOutputActive) {
-                    Brush.verticalGradient(
-                        listOf(
-                            appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.88f else 0.92f),
-                            appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.70f else 0.78f)
-                        )
-                    )
-                } else {
-                    LiquidGlass.miniPlayerAndBottomBarBrush(appColors)
-                }
-                val outputContentColor = if (isOutputActive) Color.White else if (appColors.isDark) Color.White else appColors.textPrimary
+                val outputContentColor = appColors.textPrimary
 
                 Surface(
                     onClick = {
@@ -1845,7 +1678,6 @@ fun ExpandedPlayerScreen(
                     interactionSource = outputInteractionSource,
                     shape = RoundedCornerShape(22.dp),
                     color = Color.Transparent,
-                    border = outputBorder,
                     modifier = Modifier
                         .height(44.dp)
                         .weight(1f)
@@ -1857,7 +1689,7 @@ fun ExpandedPlayerScreen(
                             ambientColor = if (appColors.isDark) Color.Transparent else Color.Black.copy(alpha = 0.05f)
                         )
                         .clip(RoundedCornerShape(22.dp))
-                        .background(outputBg)
+                        .liquidGlassButton(appColors, shape = RoundedCornerShape(22.dp), elevation = 0.dp, isActive = isOutputActive)
                         .graphicsLayer {
                             scaleX = outputButtonScale
                             scaleY = outputButtonScale
@@ -1865,30 +1697,7 @@ fun ExpandedPlayerScreen(
                         .testTag("sound_output_device_button")
                 ) {
                     Box(contentAlignment = Alignment.Center) {
-                        // Inner Gaussian blur layer inside the button pill
-                        Box(
-                            modifier = Modifier
-                                .matchParentSize()
-                                .clip(RoundedCornerShape(22.dp))
-                                .background(bottomPillInnerBlur)
-                                .blur(16.dp)
-                        )
-                        // Top specular sheen
-                        Box(
-                            modifier = Modifier
-                                .matchParentSize()
-                                .clip(RoundedCornerShape(22.dp))
-                                .background(
-                                    Brush.verticalGradient(
-                                        listOf(
-                                            Color.White.copy(alpha = if (isOutputActive) 0.28f else if (appColors.isDark) 0.18f else 0.30f),
-                                            Color.Transparent
-                                        ),
-                                        startY = 0f,
-                                        endY = 20f
-                                    )
-                                )
-                        )
+
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.Center,
@@ -1921,11 +1730,6 @@ fun ExpandedPlayerScreen(
                 }
 
                 // 3. Queue / Library Button (Pill shape on bottom-right, Frosted Liquid Glass UI)
-                val queueBorder = BorderStroke(
-                    1.3.dp,
-                    LiquidGlass.specularBorderBrush(appColors, highlightAlpha = if (appColors.isDark) 0.38f else 0.55f)
-                )
-                val queueBg = LiquidGlass.miniPlayerAndBottomBarBrush(appColors)
                 val queueContentColor = if (appColors.isDark) Color.White else appColors.textPrimary
 
                 Surface(
@@ -1936,7 +1740,6 @@ fun ExpandedPlayerScreen(
                     interactionSource = queueInteractionSource,
                     shape = RoundedCornerShape(22.dp),
                     color = Color.Transparent,
-                    border = queueBorder,
                     modifier = Modifier
                         .size(44.dp)
                         .shadow(
@@ -1946,7 +1749,7 @@ fun ExpandedPlayerScreen(
                             ambientColor = if (appColors.isDark) Color.Transparent else Color.Black.copy(alpha = 0.05f)
                         )
                         .clip(RoundedCornerShape(22.dp))
-                        .background(queueBg)
+                        .liquidGlassButton(appColors, shape = RoundedCornerShape(22.dp), elevation = 0.dp, isActive = false)
                         .graphicsLayer {
                             scaleX = queueButtonScale
                             scaleY = queueButtonScale
@@ -1954,30 +1757,7 @@ fun ExpandedPlayerScreen(
                         .testTag("player_queue_button")
                 ) {
                     Box(contentAlignment = Alignment.Center) {
-                        // Inner Gaussian blur layer inside the button pill
-                        Box(
-                            modifier = Modifier
-                                .matchParentSize()
-                                .clip(RoundedCornerShape(22.dp))
-                                .background(bottomPillInnerBlur)
-                                .blur(16.dp)
-                        )
-                        // Top specular sheen
-                        Box(
-                            modifier = Modifier
-                                .matchParentSize()
-                                .clip(RoundedCornerShape(22.dp))
-                                .background(
-                                    Brush.verticalGradient(
-                                        listOf(
-                                            Color.White.copy(alpha = if (appColors.isDark) 0.18f else 0.30f),
-                                            Color.Transparent
-                                        ),
-                                        startY = 0f,
-                                        endY = 20f
-                                    )
-                                )
-                        )
+
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.QueueMusic,
                             contentDescription = "Up-Next Queue",
@@ -2004,6 +1784,8 @@ fun ExpandedPlayerScreen(
     }
         }
     }
+}
+
 }
 
 private fun formatTime(timeMs: Long): String {
@@ -2054,7 +1836,8 @@ private fun CreditDetailRow(label: String, value: String, isDark: Boolean = true
 }
 
 @Composable
-private fun PlayerBokehBackground(
+private fun PlayerGlassBackground(
+    artworkUrl: String,
     dominantColor: Color,
     accentColor: Color,
     vibrantColor: Color = accentColor,
@@ -2062,406 +1845,42 @@ private fun PlayerBokehBackground(
     modifier: Modifier = Modifier
 ) {
     val appColors = LocalAppColors.current
-    val infiniteTransition = rememberInfiniteTransition(label = "bokeh_transition")
-
-    val floatAnim1 by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(10000, easing = LinearEasing),
-            repeatMode = AnimationRepeatMode.Reverse
-        ),
-        label = "bokeh_float_1"
-    )
-
-    val floatAnim2 by infiniteTransition.animateFloat(
-        initialValue = 1f,
-        targetValue = 0f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(13000, easing = LinearEasing),
-            repeatMode = AnimationRepeatMode.Reverse
-        ),
-        label = "bokeh_float_2"
-    )
-
-    val pulseAnim by infiniteTransition.animateFloat(
-        initialValue = 0.75f,
-        targetValue = 1.0f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(5500, easing = FastOutSlowInEasing),
-            repeatMode = AnimationRepeatMode.Reverse
-        ),
-        label = "bokeh_pulse"
-    )
-
-    val isAmoled = appColors.isAmoled
-
-    Box(modifier = modifier.fillMaxSize()) {
-        // 1. Root theme canvas base fill:
-        // - AMOLED: Solid black #000000 at the foundation
-        // - Dark: theme scaffoldBackground
-        // - Light: theme scaffoldBackground or pristine #F8FAFC
-        val baseColor = if (isAmoled) {
-            Color(0xFF000000)
-        } else if (isDark) {
-            appColors.scaffoldBackground
-        } else {
-            appColors.scaffoldBackground
+    val dynamicGlass = LocalDynamicGlassEnabled.current
+    val context = LocalContext.current
+    // This small derivative is only for diffusion. The main album artwork stays full resolution.
+    val backdropRequest = remember(artworkUrl, context) {
+        ImageRequest.Builder(context).data(artworkUrl).size(256).crossfade(650).build()
+    }
+    val base = appColors.scaffoldBackground
+    Box(modifier.fillMaxSize().xtremeSharedBackdropSource(enabled = dynamicGlass).background(base)) {
+        // Broad color fields provide the same soft finish on devices without RenderEffect.
+        Canvas(Modifier.fillMaxSize()) {
+            drawRect(Brush.linearGradient(listOf(dominantColor, base, vibrantColor.copy(alpha = 0.55f)),
+                Offset.Zero, Offset(size.width, size.height)))
+            drawRect(Brush.radialGradient(listOf(vibrantColor.copy(alpha = if (isDark) 0.50f else 0.25f), Color.Transparent),
+                center = Offset(size.width * 0.82f, size.height * 0.48f), radius = size.maxDimension * 0.7f))
+            drawRect(Brush.radialGradient(listOf(accentColor.copy(alpha = if (isDark) 0.22f else 0.16f), Color.Transparent),
+                center = Offset(0f, size.height * 0.85f), radius = size.maxDimension * 0.6f))
         }
-
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(baseColor)
-        )
-
-        // 2. Multi-layered Gaussian blur diffusion (32dp - 48dp) blending dynamic album art palette colors
-        // Layer A: Deeper Ambient Diffusion (blur 48.dp)
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .blur(48.dp)
-                .graphicsLayer { alpha = 0.88f }
-        ) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val w = size.width
-                val h = size.height
-
-                val bgCenter = Offset(
-                    x = w * (0.50f + 0.05f * (floatAnim1 - 0.5f)),
-                    y = h * (0.38f + 0.05f * (floatAnim2 - 0.5f))
-                )
-                val bgRadius = w * 0.95f
-
-                if (isAmoled) {
-                    // AMOLED Dark Mode Adaptation:
-                    // Subtle, dark-tinted dynamic radial glow derived directly from album art palette
-                    // fading into deep pure AMOLED black at the edges to preserve battery savings while looking rich.
-                    drawCircle(
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                dominantColor.copy(alpha = 0.42f * pulseAnim),
-                                vibrantColor.copy(alpha = 0.25f * pulseAnim),
-                                Color(0xFF000000).copy(alpha = 0.85f),
-                                Color(0xFF000000)
-                            ),
-                            center = bgCenter,
-                            radius = bgRadius
-                        ),
-                        center = bgCenter,
-                        radius = bgRadius
-                    )
-                } else if (!isDark) {
-                    // Light Mode Adaptation:
-                    // Soft, pastel/translucent ambient foundation derived from album art palette
-                    drawCircle(
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                dominantColor.copy(alpha = 0.28f * pulseAnim),
-                                vibrantColor.copy(alpha = 0.18f * pulseAnim),
-                                Color.Transparent
-                            ),
-                            center = bgCenter,
-                            radius = bgRadius
-                        ),
-                        center = bgCenter,
-                        radius = bgRadius
-                    )
-                } else {
-                    // Standard Dark Mode
-                    drawCircle(
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                dominantColor.copy(alpha = 0.70f * pulseAnim),
-                                vibrantColor.copy(alpha = 0.50f * pulseAnim),
-                                Color.Transparent
-                            ),
-                            center = bgCenter,
-                            radius = bgRadius
-                        ),
-                        center = bgCenter,
-                        radius = bgRadius
-                    )
-                }
-            }
-        }
-
-        // Layer B: Vibrant Liquid Foreground Orbs (blur 32.dp)
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .blur(32.dp)
-                .graphicsLayer { alpha = 0.95f }
-        ) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val w = size.width
-                val h = size.height
-
-                val effectiveAccent = accentColor
-                val effectiveVibrant = vibrantColor
-                val effectiveDominant = dominantColor
-
-                if (isAmoled) {
-                    // AMOLED mode: Dark-tinted dynamic glowing aura behind artwork
-                    // Radial gradient concentrates glow centrally and gracefully fades to true black (#000000)
-                    val auraCenter = Offset(
-                        x = w * (0.50f + 0.06f * (floatAnim1 - 0.5f)),
-                        y = h * (0.35f + 0.05f * (floatAnim2 - 0.5f))
-                    )
-                    val auraRadius = w * 0.82f
-                    drawCircle(
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                effectiveVibrant.copy(alpha = 0.38f * pulseAnim),
-                                effectiveAccent.copy(alpha = 0.26f * pulseAnim),
-                                effectiveDominant.copy(alpha = 0.14f * pulseAnim),
-                                Color.Transparent
-                            ),
-                            center = auraCenter,
-                            radius = auraRadius
-                        ),
-                        center = auraCenter,
-                        radius = auraRadius
-                    )
-
-                    // Secondary subtle ambient highlight
-                    val orb1Center = Offset(
-                        x = w * (0.28f + 0.08f * (floatAnim2 - 0.5f)),
-                        y = h * (0.24f + 0.06f * (floatAnim1 - 0.5f))
-                    )
-                    val orb1Radius = w * 0.60f
-                    drawCircle(
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                effectiveDominant.copy(alpha = 0.24f * pulseAnim),
-                                effectiveAccent.copy(alpha = 0.12f * pulseAnim),
-                                Color.Transparent
-                            ),
-                            center = orb1Center,
-                            radius = orb1Radius
-                        ),
-                        center = orb1Center,
-                        radius = orb1Radius
-                    )
-                } else if (!isDark) {
-                    // Light Mode Adaptation:
-                    // Blend soft, pastel/translucent gradient derived from album art palette
-                    // with high text/icon legibility
-                    val dominantAlpha = 0.26f
-                    val accentAlpha = 0.30f
-                    val vibrantAlpha = 0.24f
-
-                    // Primary ambient radial pastel aura behind artwork
-                    val auraCenter = Offset(
-                        x = w * (0.50f + 0.08f * (floatAnim1 - 0.5f)),
-                        y = h * (0.36f + 0.06f * (floatAnim2 - 0.5f))
-                    )
-                    val auraRadius = w * 0.88f
-                    drawCircle(
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                effectiveAccent.copy(alpha = accentAlpha * pulseAnim),
-                                effectiveVibrant.copy(alpha = vibrantAlpha * pulseAnim),
-                                effectiveDominant.copy(alpha = dominantAlpha * pulseAnim),
-                                Color.Transparent
-                            ),
-                            center = auraCenter,
-                            radius = auraRadius
-                        ),
-                        center = auraCenter,
-                        radius = auraRadius
-                    )
-
-                    // Secondary pastel orb floating upper-left
-                    val orb1Center = Offset(
-                        x = w * (0.24f + 0.10f * (floatAnim1 - 0.5f)),
-                        y = h * (0.22f + 0.08f * (floatAnim2 - 0.5f))
-                    )
-                    val orb1Radius = w * 0.72f
-                    drawCircle(
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                effectiveDominant.copy(alpha = (dominantAlpha * 0.8f) * pulseAnim),
-                                effectiveAccent.copy(alpha = (accentAlpha * 0.5f) * pulseAnim),
-                                Color.Transparent
-                            ),
-                            center = orb1Center,
-                            radius = orb1Radius
-                        ),
-                        center = orb1Center,
-                        radius = orb1Radius
-                    )
-
-                    // Floating pastel orb mid-right
-                    val orb2Center = Offset(
-                        x = w * (0.78f - 0.12f * (floatAnim2 - 0.5f)),
-                        y = h * (0.48f + 0.10f * (floatAnim1 - 0.5f))
-                    )
-                    val orb2Radius = w * 0.70f
-                    drawCircle(
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                effectiveVibrant.copy(alpha = (vibrantAlpha * 0.8f) * pulseAnim),
-                                effectiveAccent.copy(alpha = (accentAlpha * 0.4f) * pulseAnim),
-                                Color.Transparent
-                            ),
-                            center = orb2Center,
-                            radius = orb2Radius
-                        ),
-                        center = orb2Center,
-                        radius = orb2Radius
-                    )
-                } else {
-                    // Standard Dark Mode
-                    val dominantAlpha = 0.85f
-                    val accentAlpha = 0.90f
-                    val vibrantAlpha = 0.75f
-
-                    // Dynamic primary ambient radial glass aura centered behind artwork
-                    val auraCenter = Offset(
-                        x = w * (0.50f + 0.08f * (floatAnim1 - 0.5f)),
-                        y = h * (0.36f + 0.06f * (floatAnim2 - 0.5f))
-                    )
-                    val auraRadius = w * 0.88f
-                    drawCircle(
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                effectiveAccent.copy(alpha = accentAlpha * pulseAnim),
-                                effectiveVibrant.copy(alpha = (vibrantAlpha * 0.75f) * pulseAnim),
-                                effectiveDominant.copy(alpha = (dominantAlpha * 0.50f) * pulseAnim),
-                                Color.Transparent
-                            ),
-                            center = auraCenter,
-                            radius = auraRadius
-                        ),
-                        center = auraCenter,
-                        radius = auraRadius
-                    )
-
-                    // Secondary ambient glow floating upper-left
-                    val orb1Center = Offset(
-                        x = w * (0.24f + 0.10f * (floatAnim1 - 0.5f)),
-                        y = h * (0.22f + 0.08f * (floatAnim2 - 0.5f))
-                    )
-                    val orb1Radius = w * 0.72f
-                    drawCircle(
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                effectiveDominant.copy(alpha = dominantAlpha * pulseAnim),
-                                effectiveAccent.copy(alpha = (dominantAlpha * 0.40f) * pulseAnim),
-                                Color.Transparent
-                            ),
-                            center = orb1Center,
-                            radius = orb1Radius
-                        ),
-                        center = orb1Center,
-                        radius = orb1Radius
-                    )
-
-                    // Vibrant bokeh orb floating mid-right
-                    val orb2Center = Offset(
-                        x = w * (0.78f - 0.12f * (floatAnim2 - 0.5f)),
-                        y = h * (0.48f + 0.10f * (floatAnim1 - 0.5f))
-                    )
-                    val orb2Radius = w * 0.70f
-                    drawCircle(
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                effectiveVibrant.copy(alpha = vibrantAlpha * pulseAnim),
-                                effectiveAccent.copy(alpha = (accentAlpha * 0.50f) * pulseAnim),
-                                Color.Transparent
-                            ),
-                            center = orb2Center,
-                            radius = orb2Radius
-                        ),
-                        center = orb2Center,
-                        radius = orb2Radius
-                    )
-
-                    // Lower aura floating bottom-left
-                    val orb3Center = Offset(
-                        x = w * (0.30f + 0.14f * (floatAnim2 - 0.5f)),
-                        y = h * (0.78f - 0.08f * (floatAnim1 - 0.5f))
-                    )
-                    val orb3Radius = w * 0.74f
-                    drawCircle(
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                effectiveAccent.copy(alpha = 0.55f * pulseAnim),
-                                effectiveDominant.copy(alpha = 0.25f),
-                                Color.Transparent
-                            ),
-                            center = orb3Center,
-                            radius = orb3Radius
-                        ),
-                        center = orb3Center,
-                        radius = orb3Radius
-                    )
-                }
-            }
-        }
-
-        // 3. Subtle Frosted Glass Micro-Texture Noise Overlay
-        Canvas(modifier = Modifier.fillMaxSize().graphicsLayer { alpha = 0.040f }) {
-            val step = 4f
-            var y = 0f
-            while (y < size.height) {
-                var x = (y.toInt() % 3) * 1.5f
-                while (x < size.width) {
-                    drawRect(
-                        color = if (isDark) Color.White else Color(0xFF1E293B),
-                        topLeft = Offset(x, y),
-                        size = androidx.compose.ui.geometry.Size(1.5f, 1.5f)
-                    )
-                    x += step * 3f
-                }
-                y += step * 2f
-            }
-        }
-
-        // 4. Crystal-clear 3D liquid glass specular overlays & caustic curvature sheen
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val w = size.width
-            val h = size.height
-
-            // Top specular caustic sheen across upper glass curvature
-            val glassCausticBrush = Brush.verticalGradient(
-                colors = listOf(
-                    Color.White.copy(alpha = if (isDark) 0.14f else 0.25f),
-                    Color.White.copy(alpha = if (isDark) 0.03f else 0.06f),
-                    Color.Transparent
-                ),
-                startY = 0f,
-                endY = h * 0.45f
+        if (dynamicGlass && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            AsyncImage(
+                model = backdropRequest, contentDescription = null, contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+                    .graphicsLayer { scaleX = 1.18f; scaleY = 1.18f; alpha = if (isDark) 0.58f else 0.32f }
+                    .blur(56.dp)
             )
-            drawRect(glassCausticBrush)
-
-            // Dynamic vignette overlay to guarantee controls and text legibility across all themes
-            val vignetteColors = if (isAmoled) {
-                listOf(
-                    Color(0xFF000000).copy(alpha = 0.40f),
-                    Color.Transparent,
-                    Color(0xFF000000).copy(alpha = 0.65f),
-                    Color(0xFF000000).copy(alpha = 0.95f)
-                )
-            } else if (isDark) {
-                val darkBase = appColors.scaffoldBackground
-                listOf(
-                    darkBase.copy(alpha = 0.30f),
-                    Color.Transparent,
-                    darkBase.copy(alpha = 0.55f),
-                    darkBase.copy(alpha = 0.90f)
-                )
-            } else {
-                val lightBase = appColors.scaffoldBackground
-                listOf(
-                    lightBase.copy(alpha = 0.20f),
-                    Color.Transparent,
-                    lightBase.copy(alpha = 0.35f),
-                    lightBase.copy(alpha = 0.88f)
-                )
-            }
-            drawRect(brush = Brush.verticalGradient(colors = vignetteColors))
+        }
+        // A broad reflection and neutral veil give gloss without obscuring controls or cover art.
+        Canvas(Modifier.fillMaxSize()) {
+            val veil = if (isDark) Color.Black else base
+            drawRect(Brush.verticalGradient(
+                0f to veil.copy(alpha = if (isDark) 0.42f else 0.40f),
+                0.35f to veil.copy(alpha = if (isDark) 0.16f else 0.28f),
+                0.65f to veil.copy(alpha = if (isDark) 0.40f else 0.58f),
+                1f to veil.copy(alpha = if (isDark) 0.66f else 0.76f)
+            ))
+            drawRect(Brush.linearGradient(listOf(Color.White.copy(alpha = if (isDark) 0.08f else 0.25f),
+                Color.Transparent, Color.Transparent), Offset.Zero, Offset(size.width, size.height * 0.7f)))
         }
     }
 }

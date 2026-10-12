@@ -33,6 +33,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Equalizer
+import com.example.ui.components.xtremeLiquidGlassBackground
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -318,9 +319,7 @@ fun HomeScreenContent(
                         Box(
                             modifier = Modifier
                                 .size(38.dp)
-                                .clip(CircleShape)
-                                .background(cardBg)
-                                .border(BorderStroke(1.dp, cardBorderColor), CircleShape)
+                                .xtremeLiquidGlassBackground(shape = CircleShape, elevation = 3.dp, backdrop = null)
                                 .clickable { onOpenSettings?.invoke() }
                                 .testTag("top_settings_button"),
                             contentAlignment = Alignment.Center

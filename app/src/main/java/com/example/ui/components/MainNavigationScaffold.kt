@@ -185,6 +185,7 @@ fun MainNavigationScaffold(
     val platformOverscroll = LocalOverscrollConfiguration.current
     CompositionLocalProvider(
         LocalDynamicGlassEnabled provides isDynamicGlassEnabled,
+        LocalLiquidGlassBackdrop provides rememberLiquidGlassBackdrop(),
         LocalOverscrollConfiguration provides
             if (selectedTabIndex == 3 && selectedPlaylistWithTracks == null) platformOverscroll else null
     ) {
@@ -194,6 +195,7 @@ fun MainNavigationScaffold(
                 containerColor = appColors.scaffoldBackground
             ) { _ ->
             Box(modifier = Modifier.fillMaxSize()) {
+                Box(Modifier.fillMaxSize().xtremeSharedBackdropSource(enabled = isDynamicGlassEnabled)) {
                 // If playlist detail is open, show it with a smooth animated transition
                 val currentPlaylist = selectedPlaylistWithTracks
                 AnimatedVisibility(
@@ -296,7 +298,6 @@ fun MainNavigationScaffold(
                         label = "tab_navigation_transition",
                         modifier = Modifier
                             .fillMaxSize()
-                            .xtremeSharedBackdropSource(enabled = isDynamicGlassEnabled)
                     ) { tabIndex ->
                         when (tabIndex) {
                             0 -> HomeScreen(
@@ -360,6 +361,8 @@ fun MainNavigationScaffold(
                         }
                     }
                 }
+
+                } // Only page content belongs to the shared backdrop; overlays never sample themselves.
 
                 // Floating Overlaid Container (MiniPlayer + Floating Pill Bottom Bar)
                 // Merges with the tab screen seamlessly and floats elevated above the content
