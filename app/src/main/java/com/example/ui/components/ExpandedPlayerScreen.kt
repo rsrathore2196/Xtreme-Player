@@ -1,5 +1,7 @@
 package com.example.ui.components
 
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+
 import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.drawable.BitmapDrawable
@@ -80,7 +82,6 @@ import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.BluetoothAudio
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Usb
-import androidx.compose.runtime.collectAsState
 import com.example.playback.AudioDeviceManager
 import com.example.playback.AudioQuality
 import com.example.playback.SoundOutputDevice
@@ -101,6 +102,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -243,7 +248,7 @@ fun ExpandedPlayerScreen(
     var showLyrics by remember(track.id) { mutableStateOf(false) }
     var showSoundOutputDialog by remember { mutableStateOf(false) }
 
-    val fallbackDevices by AudioDeviceManager.availableDevices.collectAsState()
+    val fallbackDevices by AudioDeviceManager.availableDevices.collectAsStateWithLifecycle()
     val effectiveDevices = if (availableAudioDevices.isNotEmpty()) availableAudioDevices else fallbackDevices
     val activeOutputDevice = effectiveDevices.find { it.isSelected }
 
@@ -2079,17 +2084,16 @@ private fun PlayerTimelineSection(
     // Dynamic real-time playback position state
     var livePosition by remember { mutableLongStateOf(currentPositionProvider()) }
 
-    // Synchronize smoothly in real-time while playing (every 150ms)
-    LaunchedEffect(isPlaying) {
-        if (!isPlaying) {
-            livePosition = currentPositionProvider()
-            return@LaunchedEffect
-        }
-        while (isActive) {
-            if (!isUserScrubbing) {
-                livePosition = currentPositionProvider()
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val latestPositionProvider by rememberUpdatedState(currentPositionProvider)
+    // Same visible cadence, suspended while the activity is not resumed.
+    LaunchedEffect(isPlaying, lifecycle) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            livePosition = latestPositionProvider()
+            if (isPlaying) while (isActive) {
+                if (!isUserScrubbing) livePosition = latestPositionProvider()
+                delay(150)
             }
-            delay(150)
         }
     }
 

@@ -64,7 +64,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.runtime.getValue
@@ -115,26 +114,22 @@ fun MainNavigationScaffold(
     viewModel: PlayerViewModel,
     modifier: Modifier = Modifier
 ) {
-    val playerUiState by viewModel.playerUiState.collectAsState()
-    val selectedQuality by viewModel.selectedQuality.collectAsState()
-    val currentPlayingTrackId by viewModel.currentPlayingTrackId.collectAsState()
-    val catalogTracks by viewModel.catalogTracks.collectAsState()
-    val favoriteTracks by viewModel.favoriteTracks.collectAsState()
-    val recentlyPlayed by viewModel.recentlyPlayed.collectAsState()
-    val playlists by viewModel.playlists.collectAsState()
-    val searchState by viewModel.searchState.collectAsState()
+    val playerUiState by viewModel.navigationPlayerUiState.collectAsStateWithLifecycle()
+    val selectedQuality by viewModel.selectedQuality.collectAsStateWithLifecycle()
+    val currentPlayingTrackId by viewModel.currentPlayingTrackId.collectAsStateWithLifecycle()
+    val favoriteTracks by viewModel.favoriteTracks.collectAsStateWithLifecycle()
+    val playlists by viewModel.playlists.collectAsStateWithLifecycle()
+    val searchState by viewModel.searchState.collectAsStateWithLifecycle()
     val catalogSearch by viewModel.catalogBrowser.search.collectAsStateWithLifecycle()
     val catalogDetail by viewModel.catalogBrowser.detail.collectAsStateWithLifecycle()
-    val selectedPlaylistWithTracks by viewModel.selectedPlaylistTracks.collectAsState()
-    val effectsState by viewModel.effectsState.collectAsState()
-    val isDarkMode by viewModel.isDarkMode.collectAsState()
-    val themeMode by viewModel.themeMode.collectAsState()
-    val customThemeState by viewModel.customThemeState.collectAsState()
-    val currentLyrics by viewModel.currentLyrics.collectAsState()
-    val availableAudioDevices by viewModel.availableAudioDevices.collectAsState()
-    val importState by viewModel.importState.collectAsState()
-    val userProfile by viewModel.userProfile.collectAsState()
-    val isDynamicGlassEnabled by viewModel.isDynamicGlassEnabled.collectAsState()
+    val selectedPlaylistWithTracks by viewModel.selectedPlaylistTracks.collectAsStateWithLifecycle()
+    val effectsState by viewModel.effectsState.collectAsStateWithLifecycle()
+    val isDarkMode by viewModel.isDarkMode.collectAsStateWithLifecycle()
+    val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
+    val customThemeState by viewModel.customThemeState.collectAsStateWithLifecycle()
+    val importState by viewModel.importState.collectAsStateWithLifecycle()
+    val userProfile by viewModel.userProfile.collectAsStateWithLifecycle()
+    val isDynamicGlassEnabled by viewModel.isDynamicGlassEnabled.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
     val app = context.applicationContext as XtremeMusicApp
@@ -185,6 +180,10 @@ fun MainNavigationScaffold(
         }
     }
 
+    val playerVisibility = remember { androidx.compose.animation.core.MutableTransitionState(false) }
+    playerVisibility.targetState = isPlayerExpanded && playerUiState.currentTrack != null
+    val playerCoversContent = playerVisibility.isIdle && playerVisibility.currentState && playerVisibility.targetState
+
     val appColors = LocalAppColors.current
 
     // These screens own their edge spring; disable Android's competing stretch effect.
@@ -202,6 +201,7 @@ fun MainNavigationScaffold(
             ) { _ ->
             Box(modifier = Modifier.fillMaxSize()) {
                 Box(Modifier.fillMaxSize().xtremeSharedBackdropSource(enabled = isDynamicGlassEnabled)) {
+                CompositionLocalProvider(LocalVisualEffectsActive provides (!playerCoversContent && catalogDetail == null)) {
                 // If playlist detail is open, show it with a smooth animated transition
                 val currentPlaylist = selectedPlaylistWithTracks
                 AnimatedVisibility(
@@ -374,6 +374,8 @@ fun MainNavigationScaffold(
                     }
                 }
 
+                }
+                CompositionLocalProvider(LocalVisualEffectsActive provides !playerCoversContent) {
                 catalogDetail?.let { detail ->
                     androidx.compose.runtime.key(detail.destination.key) {
                         com.example.ui.screens.CatalogDetailScreen(
@@ -388,6 +390,7 @@ fun MainNavigationScaffold(
                     }
                 }
 
+                }
                 } // Only page content belongs to the shared backdrop; overlays never sample themselves.
 
                 // Floating Overlaid Container (MiniPlayer + Floating Pill Bottom Bar)
@@ -461,7 +464,7 @@ fun MainNavigationScaffold(
 
         // FULL SCREEN EXPANDED PLAYER (Smooth, responsive push/pop spring transitions)
         AnimatedVisibility(
-            visible = isPlayerExpanded && playerUiState.currentTrack != null,
+            visibleState = playerVisibility,
             enter = slideInVertically(
                 initialOffsetY = { it },
                 animationSpec = LiquidGlass.PushPopIntOffsetSpring
@@ -478,6 +481,8 @@ fun MainNavigationScaffold(
             ) + fadeOut(animationSpec = tween(140)),
             modifier = Modifier.fillMaxSize()
         ) {
+            val currentLyrics by viewModel.currentLyrics.collectAsStateWithLifecycle()
+            val availableAudioDevices by viewModel.availableAudioDevices.collectAsStateWithLifecycle()
             ExpandedPlayerScreen(
                 uiState = playerUiState,
                 onMinimize = { isPlayerExpanded = false },

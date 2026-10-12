@@ -78,6 +78,12 @@ class PlayerViewModel(
 ) : ViewModel() {
 
     val playerUiState: StateFlow<PlayerUiState> = playbackManager.uiState
+    // Progress has dedicated flows/providers. It must not invalidate the entire navigation tree.
+    // Paused positions remain observable so external seeks still update the stationary player.
+    val navigationPlayerUiState = playerUiState.map { state ->
+        state.copy(currentPositionMs = if (state.isPlaying) 0L else state.currentPositionMs, bufferedPositionMs = 0L)
+    }.distinctUntilChanged().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), playerUiState.value)
+
     val playbackPosition: StateFlow<Long> = playbackManager.playbackPosition
     val bufferedPosition: StateFlow<Long> = playbackManager.bufferedPosition
     val trackDuration: StateFlow<Long> = playbackManager.trackDuration

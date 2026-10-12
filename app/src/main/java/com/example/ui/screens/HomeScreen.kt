@@ -1,10 +1,11 @@
 package com.example.ui.screens
 
+import com.example.ui.components.rememberVisibleInfiniteFloat
+
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -75,8 +76,7 @@ import java.util.Calendar
 
 @Composable
 fun rememberShimmerBrush(): Brush {
-    val transition = rememberInfiniteTransition(label = "shimmer_transition")
-    val translateAnim by transition.animateFloat(
+    val translateAnim by rememberVisibleInfiniteFloat(
         initialValue = -800f,
         targetValue = 1200f,
         animationSpec = infiniteRepeatable(

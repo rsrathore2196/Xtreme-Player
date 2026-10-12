@@ -1,5 +1,7 @@
 package com.example.ui.components
 
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.fadeIn
@@ -33,7 +35,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -62,9 +63,9 @@ fun UpdateNotificationBar(
 ) {
     val context = LocalContext.current
     val appColors = LocalAppColors.current
-    val updateStatus by AppUpdateManager.updateStatus.collectAsState()
-    val isDismissed by AppUpdateManager.isDismissedForSession.collectAsState()
-    val downloadProgress by AppUpdateManager.downloadProgress.collectAsState()
+    val updateStatus by AppUpdateManager.updateStatus.collectAsStateWithLifecycle()
+    val isDismissed by AppUpdateManager.isDismissedForSession.collectAsStateWithLifecycle()
+    val downloadProgress by AppUpdateManager.downloadProgress.collectAsStateWithLifecycle()
 
     val isVisible = !isDismissed && (
         updateStatus is UpdateStatus.UpdateAvailable ||

@@ -1,5 +1,7 @@
 package com.example.ui.screens.settings
 
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -76,7 +78,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.collectAsState
 import com.example.data.cache.SmartCacheManager
 import com.example.data.local.OtherSettingsPreferences
 import kotlinx.coroutines.launch
@@ -115,7 +116,7 @@ fun OtherSettingsPage(
 
     // Cache state backed by SmartCacheManager
     val coroutineScope = rememberCoroutineScope()
-    val cacheStats by SmartCacheManager.stats.collectAsState()
+    val cacheStats by SmartCacheManager.stats.collectAsStateWithLifecycle()
     var showClearCacheDialog by remember { mutableStateOf(false) }
     var cacheClearedMessage by remember { mutableStateOf(false) }
     var cacheFeedbackText by remember { mutableStateOf("") }

@@ -5,7 +5,6 @@ import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
@@ -61,24 +60,24 @@ fun WavyScrubberBar(
 
     val currentFraction = if (isDragging) dragFraction else progress.coerceIn(0f, 1f)
 
-    // Dynamic wave phase running infinitely during playback
-    val infiniteTransition = rememberInfiniteTransition(label = "wavy_scrubber_phase")
-    val wavePhase by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = (2 * PI).toFloat(),
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1400, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "wave_phase"
-    )
-
     // Wave amplitude: Flattens gracefully to 0 when paused or scrubbing
     val targetWaveAmplitude = if (isPlaying && !isDragging) 4.2f else 0f
     val animatedAmplitude by animateFloatAsState(
         targetValue = targetWaveAmplitude,
         animationSpec = spring(dampingRatio = 0.70f, stiffness = 380f),
         label = "wave_amplitude"
+    )
+
+    // Dynamic wave phase running infinitely during playback
+    val wavePhase by rememberVisibleInfiniteFloat(
+        initialValue = 0f,
+        targetValue = (2 * PI).toFloat(),
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1400, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "wave_phase",
+        active = isPlaying || animatedAmplitude != 0f
     )
 
     // Thumb bounce & expansion on touch/scrub

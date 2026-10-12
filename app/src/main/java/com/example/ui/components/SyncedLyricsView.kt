@@ -4,6 +4,9 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.withFrameMillis
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -137,18 +140,23 @@ fun SyncedLyricsView(
     var currentPlayheadMs by remember(lyrics?.trackId) { mutableLongStateOf(latestPositionProvider()) }
     // One display-frame clock feeds both centering and the draw phase. Never tween the playhead:
     // easing a timestamp introduces vocal lag and can keep highlighting after a pause or seek.
-    LaunchedEffect(isSynced, isPlaying, lyrics?.trackId) {
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(isSynced, isPlaying, lyrics?.trackId, lifecycle) {
         if (!isSynced) return@LaunchedEffect
-        currentPlayheadMs = latestPositionProvider()
-        if (isPlaying) while (isActive) {
-            withFrameMillis { currentPlayheadMs = latestPositionProvider() }
+        lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            currentPlayheadMs = latestPositionProvider()
+            if (isPlaying) while (isActive) {
+                withFrameMillis { currentPlayheadMs = latestPositionProvider() }
+            }
         }
     }
     LaunchedEffect(currentPositionMs, isPlaying, lyrics?.trackId) {
         currentPlayheadMs = latestPositionProvider()
     }
-    LaunchedEffect(playbackPositionFlow, isPlaying, lyrics?.trackId) {
-        if (!isPlaying) playbackPositionFlow?.collect { currentPlayheadMs = latestPositionProvider() }
+    LaunchedEffect(playbackPositionFlow, isPlaying, lyrics?.trackId, lifecycle) {
+        if (!isPlaying) lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            playbackPositionFlow?.collect { currentPlayheadMs = latestPositionProvider() }
+        }
     }
 
     val activeLineIndex by remember(lyrics?.trackId, lines, isSynced) {

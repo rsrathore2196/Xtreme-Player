@@ -17,7 +17,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
@@ -56,14 +56,15 @@ fun MotionAlbumArtPlayer(
     var isVideoReady by remember(videoUrl) { mutableStateOf(false) }
     var hasVideoError by remember(videoUrl) { mutableStateOf(false) }
 
+    val visualActive = LocalVisualEffectsActive.current
     val shouldPlayVideo = !videoUrl.isNullOrBlank() && !hasVideoError
 
-    val exoPlayer = remember(videoUrl) {
-        if (!videoUrl.isNullOrBlank()) {
+    val exoPlayer = remember(videoUrl, hasVideoError) {
+        if (!videoUrl.isNullOrBlank() && !hasVideoError) {
             ExoPlayer.Builder(context).build().apply {
                 volume = 0f // MUTED - Zero audio interference with music playback
                 repeatMode = Player.REPEAT_MODE_ALL
-                playWhenReady = true
+                playWhenReady = false
                 addListener(object : Player.Listener {
                     override fun onPlaybackStateChanged(playbackState: Int) {
                         if (playbackState == Player.STATE_READY) {
@@ -84,26 +85,27 @@ fun MotionAlbumArtPlayer(
         }
     }
 
-    // Lifecycle Observer: Pause and resume motion video with app foreground/background
-    DisposableEffect(exoPlayer, lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            when (event) {
-                Lifecycle.Event.ON_PAUSE, Lifecycle.Event.ON_STOP -> {
-                    exoPlayer?.pause()
-                }
-                Lifecycle.Event.ON_RESUME -> {
-                    if (shouldPlayVideo) {
-                        exoPlayer?.play()
-                    }
-                }
-                else -> {}
-            }
+    // Ownership and visibility are independent: replacing a lifecycle owner must not
+    // release a remembered player that is still in use by the same composition.
+    DisposableEffect(exoPlayer) {
+        onDispose { exoPlayer?.release() }
+    }
+    DisposableEffect(exoPlayer, lifecycleOwner, shouldPlayVideo, visualActive) {
+        fun updatePlayback() {
+            if (visualActive && shouldPlayVideo && lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                exoPlayer?.play()
+            } else exoPlayer?.pause()
         }
+        val observer = LifecycleEventObserver { _, _ -> updatePlayback() }
         lifecycleOwner.lifecycle.addObserver(observer)
+        updatePlayback()
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
-            exoPlayer?.release()
+            exoPlayer?.pause()
         }
+    }
+    val artworkRequest = remember(context, staticCoverUrl) {
+        ImageRequest.Builder(context).data(staticCoverUrl).crossfade(180).build()
     }
 
     Box(
@@ -113,10 +115,7 @@ fun MotionAlbumArtPlayer(
     ) {
         // Fallback or underlying base: High-Res Static Album Art
         AsyncImage(
-            model = ImageRequest.Builder(context)
-                .data(staticCoverUrl)
-                .crossfade(180)
-                .build(),
+            model = artworkRequest,
             contentDescription = contentDescription,
             contentScale = contentScale,
             modifier = Modifier.fillMaxSize()

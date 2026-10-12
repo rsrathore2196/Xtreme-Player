@@ -7,7 +7,6 @@ import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode as AnimationRepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -57,8 +56,7 @@ fun AmbientBlurredBackground(
         label = "ambient_vibrant"
     )
 
-    val infiniteTransition = rememberInfiniteTransition(label = "ambient_bokeh_anim")
-    val floatAnim1 by infiniteTransition.animateFloat(
+    val floatAnim1 by rememberVisibleInfiniteFloat(
         initialValue = 0f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
@@ -67,7 +65,7 @@ fun AmbientBlurredBackground(
         ),
         label = "ambient_float_1"
     )
-    val floatAnim2 by infiniteTransition.animateFloat(
+    val floatAnim2 by rememberVisibleInfiniteFloat(
         initialValue = 1f,
         targetValue = 0f,
         animationSpec = infiniteRepeatable(
@@ -76,7 +74,7 @@ fun AmbientBlurredBackground(
         ),
         label = "ambient_float_2"
     )
-    val pulseAnim by infiniteTransition.animateFloat(
+    val pulseAnim by rememberVisibleInfiniteFloat(
         initialValue = 0.72f,
         targetValue = 1.0f,
         animationSpec = infiniteRepeatable(

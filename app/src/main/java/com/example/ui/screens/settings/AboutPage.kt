@@ -1,5 +1,7 @@
 package com.example.ui.screens.settings
 
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
@@ -48,7 +50,6 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -243,8 +244,8 @@ fun AboutPage(
 
                 // Check for Update Action Row / Button
                 val context = LocalContext.current
-                val updateStatus by com.example.updater.AppUpdateManager.updateStatus.collectAsState()
-                val downloadProgress by com.example.updater.AppUpdateManager.downloadProgress.collectAsState()
+                val updateStatus by com.example.updater.AppUpdateManager.updateStatus.collectAsStateWithLifecycle()
+                val downloadProgress by com.example.updater.AppUpdateManager.downloadProgress.collectAsStateWithLifecycle()
                 var showReleaseNotesDialog by remember { mutableStateOf(false) }
 
                 val isChecking = updateStatus is com.example.updater.UpdateStatus.Checking

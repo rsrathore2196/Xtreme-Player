@@ -4,7 +4,6 @@ import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import com.example.ui.theme.contrastingContentColor
@@ -449,9 +448,8 @@ fun MiniPlayer(
 
 @Composable
 fun MiniAnimatedEqualizerBars() {
-    val transition = rememberInfiniteTransition(label = "mini_eq_transition")
 
-    val fraction1 by transition.animateFloat(
+    val fraction1 by rememberVisibleInfiniteFloat(
         initialValue = 0.25f,
         targetValue = 1.0f,
         animationSpec = infiniteRepeatable(
@@ -461,7 +459,7 @@ fun MiniAnimatedEqualizerBars() {
         label = "eq_bar_1"
     )
 
-    val fraction2 by transition.animateFloat(
+    val fraction2 by rememberVisibleInfiniteFloat(
         initialValue = 0.85f,
         targetValue = 0.35f,
         animationSpec = infiniteRepeatable(
@@ -471,7 +469,7 @@ fun MiniAnimatedEqualizerBars() {
         label = "eq_bar_2"
     )
 
-    val fraction3 by transition.animateFloat(
+    val fraction3 by rememberVisibleInfiniteFloat(
         initialValue = 0.40f,
         targetValue = 0.95f,
         animationSpec = infiniteRepeatable(
