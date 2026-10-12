@@ -19,8 +19,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlin.math.abs
+import kotlin.math.sign
+import kotlin.math.sqrt
 
-/** One synchronous drag position and one spring own each boundary gesture. */
+/** Rubber-band translation: artwork and layout stay rigid; only the list's graphics layer moves. */
 internal class ElasticBoundaryState(
     private val scope: CoroutineScope,
     private val maxTop: Float,
@@ -37,56 +39,91 @@ internal class ElasticBoundaryState(
         private set
     private var animation: Job? = null
     private var edgeDirection = 0f
+    private var dragDistance = 0f
+    private var animationVelocity = 0f
 
-    private fun settle(velocity: Float = 0f) {
+    // An asymptote slows longer pulls continuously, instead of hitting a hard position clamp.
+    private fun rubberBand(distance: Float): Float {
+        val limit = (if (distance >= 0f) maxTop else maxBottom).coerceAtLeast(1f)
+        val resisted = abs(distance) * 0.55f
+        return sign(distance) * limit * resisted / (limit + resisted)
+    }
+
+    private fun catchAnimation() {
+        if (animation?.isActive == true) {
+            animation?.cancel()
+            animationVelocity = 0f
+            // Reconstruct drag distance so touching a returning list cannot make it jump.
+            val limit = (if (offset >= 0f) maxTop else maxBottom).coerceAtLeast(1f)
+            val distance = abs(offset).coerceAtMost(limit * 0.99f)
+            dragDistance = sign(offset) * distance * limit / (0.55f * (limit - distance))
+        }
+    }
+
+    private fun settle(velocity: Float = 0f, target: Float = if (refreshing) refreshRest else 0f) {
         animation?.cancel()
-        val target = if (refreshing) refreshRest else 0f
+        if (abs(offset - target) < 0.25f && abs(velocity) < 1f) {
+            offset = target
+            dragDistance = 0f
+            animationVelocity = 0f
+            return
+        }
+        // A critically damped spring has one rounded excursion and no oscillating/jittery tail.
+        // Bound energy up front, not position on each frame (which would flatten the bounce peak).
+        val limit = if (velocity >= 0f) maxTop else maxBottom
+        val velocityLimit = (limit - abs(offset - target)).coerceAtLeast(0f) * sqrt(260f) * 2f
         animation = scope.launch {
             animate(
                 initialValue = offset,
                 targetValue = target,
-                initialVelocity = velocity.coerceIn(-maxBottom * 18f, maxTop * 18f),
-                animationSpec = spring(dampingRatio = 0.82f, stiffness = 420f)
-            ) { value, _ -> offset = value.coerceIn(-maxBottom, maxTop) }
+                initialVelocity = velocity.coerceIn(-velocityLimit, velocityLimit),
+                animationSpec = spring(dampingRatio = 1f, stiffness = 260f, visibilityThreshold = 0.25f)
+            ) { value, speed ->
+                offset = value
+                animationVelocity = speed
+            }
             offset = target
+            dragDistance = 0f
+            animationVelocity = 0f
+            // A refresh already in flight may decline a new request. Never leave its header held open.
+            if (target != 0f && !refreshing && !dragging) settle()
         }
     }
 
     fun updateRefreshing(value: Boolean) {
         if (refreshing == value) return
         refreshing = value
-        if (!dragging) settle()
+        if (!dragging) settle(animationVelocity)
     }
 
     val connection = object : NestedScrollConnection {
         override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
             if (source != NestedScrollSource.UserInput || available.y == 0f) return Offset.Zero
-            animation?.cancel()
+            catchAnimation()
             dragging = true
             edgeDirection = 0f
-            if (offset * available.y < 0f) {
-                val consumed = if (offset > 0f) available.y.coerceAtLeast(-offset)
-                    else available.y.coerceAtMost(-offset)
-                offset += consumed
+            if (offset * available.y < 0f && !refreshing) {
+                val consumed = if (dragDistance > 0f) available.y.coerceAtLeast(-dragDistance)
+                    else available.y.coerceAtMost(-dragDistance)
+                dragDistance += consumed
+                offset = rubberBand(dragDistance)
                 return Offset(0f, consumed)
             }
             return Offset.Zero
         }
 
         override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
-            if (available.y == 0f) return Offset.Zero
+            if (available.y == 0f || refreshing) return Offset.Zero
             if (source != NestedScrollSource.UserInput) {
-                // Leave fling distance unconsumed so the child stops at the boundary.
-                // onPostFling receives its residual velocity and starts exactly one bounce.
-                edgeDirection = if (available.y > 0f) 1f else -1f
+                // Let the child finish its fling and deliver the actual residual edge velocity.
+                // Starting springs here would restart them on every animation frame.
+                edgeDirection = sign(available.y)
                 return Offset.Zero
             }
-            if (refreshing) return Offset.Zero
+            catchAnimation()
             dragging = true
-            animation?.cancel()
-            val max = if (available.y > 0f) maxTop else maxBottom
-            val resistance = 0.5f / (1f + abs(offset) / max * 2f)
-            offset = (offset + available.y * resistance).coerceIn(-maxBottom, maxTop)
+            dragDistance += available.y
+            offset = rubberBand(dragDistance)
             return Offset(0f, available.y)
         }
 
@@ -94,11 +131,13 @@ internal class ElasticBoundaryState(
             val shouldRefresh = dragging && offset >= refreshThreshold && !refreshing
             dragging = false
             if (shouldRefresh) {
-                // Parent owns refresh state; the pull cannot fire twice on this release.
+                // Start towards the refresh position immediately, without first springing to zero.
+                settle(target = refreshRest)
                 onRefresh()
+                return Velocity(0f, available.y)
             }
             if (offset != 0f) {
-                settle(if (shouldRefresh || offset > 0f) 0f else available.y * 0.25f)
+                settle()
                 return Velocity(0f, available.y)
             }
             return Velocity.Zero
@@ -107,8 +146,9 @@ internal class ElasticBoundaryState(
         override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
             dragging = false
             if (animation?.isActive != true) {
-                if (!refreshing && edgeDirection != 0f && abs(available.y) > 1f) {
-                    settle(available.y * 0.25f)
+                if (!refreshing && edgeDirection != 0f && available.y * edgeDirection > 1f) {
+                    // Keep the incoming momentum: a fast fling produces a deeper, rounded bounce.
+                    settle(available.y * 0.45f)
                 } else if (offset != 0f) settle()
             }
             edgeDirection = 0f
