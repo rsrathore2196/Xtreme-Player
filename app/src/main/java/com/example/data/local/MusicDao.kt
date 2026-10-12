@@ -114,4 +114,10 @@ interface MusicDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertPlaylistTrackRefs(refs: List<PlaylistTrackCrossRef>)
+
+    @Query("DELETE FROM playlists")
+    suspend fun deleteAllPlaylists()
+
+    @Query("DELETE FROM playlist_track_cross_ref")
+    suspend fun deleteAllPlaylistCrossRefs()
 }

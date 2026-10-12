@@ -42,6 +42,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -113,6 +115,8 @@ fun BackupRestorePage(
     var isRestoringBackup by remember { mutableStateOf(false) }
     var statusNotification by remember { mutableStateOf<String?>(null) }
     var selectedBackupToRestore by remember { mutableStateOf<BackupRestoreManager.BackupInfo?>(null) }
+    var selectedRestoreMode by remember { mutableStateOf(BackupRestoreManager.RestoreMode.MERGE) }
+    var backupToConfirmReplace by remember { mutableStateOf<BackupRestoreManager.BackupInfo?>(null) }
 
     // Storage permission state & flow
     var showPermissionRationaleDialog by remember { mutableStateOf(false) }
@@ -820,8 +824,118 @@ fun BackupRestorePage(
                 )
             },
             text = {
+                Column {
+                    Text(
+                        text = "Restore '${backup.fileName}' (${backup.playlistsCount} playlists, ${backup.tracksCount} tracks).",
+                        fontSize = 13.sp,
+                        color = appColors.textPrimary,
+                        lineHeight = 18.sp
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "Choose Restore Mode:",
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 13.sp,
+                        color = appColors.textPrimary
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { selectedRestoreMode = BackupRestoreManager.RestoreMode.MERGE },
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = selectedRestoreMode == BackupRestoreManager.RestoreMode.MERGE,
+                            onClick = { selectedRestoreMode = BackupRestoreManager.RestoreMode.MERGE }
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Column {
+                            Text("Merge with Library (Default)", fontWeight = FontWeight.Medium, fontSize = 13.sp, color = appColors.textPrimary)
+                            Text("Preserves existing playlists, favorites, and history without overwriting.", fontSize = 11.sp, color = appColors.textMuted)
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { selectedRestoreMode = BackupRestoreManager.RestoreMode.REPLACE },
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = selectedRestoreMode == BackupRestoreManager.RestoreMode.REPLACE,
+                            onClick = { selectedRestoreMode = BackupRestoreManager.RestoreMode.REPLACE }
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Column {
+                            Text("Replace Library", fontWeight = FontWeight.Medium, fontSize = 13.sp, color = appColors.textPrimary)
+                            Text("Replaces current playlists with the backup (requires explicit confirmation).", fontSize = 11.sp, color = appColors.textMuted)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val fileToRestore = File(backup.filePath)
+                        val uriStr = backup.contentUri
+                        val modeToUse = selectedRestoreMode
+                        selectedBackupToRestore = null
+                        if (modeToUse == BackupRestoreManager.RestoreMode.REPLACE) {
+                            backupToConfirmReplace = backup
+                        } else {
+                            isRestoringBackup = true
+                            statusNotification = null
+                            coroutineScope.launch {
+                                val summary = BackupRestoreManager.restoreBackup(
+                                    context,
+                                    database,
+                                    backupFile = fileToRestore,
+                                    uriString = uriStr,
+                                    mode = BackupRestoreManager.RestoreMode.MERGE
+                                )
+                                isRestoringBackup = false
+                                statusNotification = summary.message
+                                refreshBackups()
+                            }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = btnContainerColor,
+                        contentColor = btnContentColor
+                    )
+                ) {
+                    Text(
+                        if (selectedRestoreMode == BackupRestoreManager.RestoreMode.MERGE) "Merge Library" else "Continue to Replace...",
+                        fontWeight = FontWeight.Bold,
+                        color = btnContentColor
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { selectedBackupToRestore = null }) {
+                    Text("Cancel", color = appColors.textSecondary)
+                }
+            }
+        )
+    }
+
+    // Explicit Replace Confirmation Dialog
+    backupToConfirmReplace?.let { backup ->
+        AlertDialog(
+            onDismissRequest = { backupToConfirmReplace = null },
+            containerColor = appColors.cardBackground,
+            title = {
                 Text(
-                    text = "Are you sure you want to restore from '${backup.fileName}'?\n\nThis will restore ${backup.playlistsCount} playlists and ${backup.tracksCount} tracks directly into your music library.",
+                    text = "Confirm Library Replacement",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp,
+                    color = MaterialTheme.colorScheme.error
+                )
+            },
+            text = {
+                Text(
+                    text = "WARNING: Replacing your library will delete your current playlists and overwrite existing library entries with '${backup.fileName}'.\n\nThis operation cannot be undone. Are you completely sure?",
                     fontSize = 13.sp,
                     color = appColors.textMuted,
                     lineHeight = 18.sp
@@ -832,7 +946,7 @@ fun BackupRestorePage(
                     onClick = {
                         val fileToRestore = File(backup.filePath)
                         val uriStr = backup.contentUri
-                        selectedBackupToRestore = null
+                        backupToConfirmReplace = null
                         isRestoringBackup = true
                         statusNotification = null
                         coroutineScope.launch {
@@ -840,7 +954,9 @@ fun BackupRestorePage(
                                 context,
                                 database,
                                 backupFile = fileToRestore,
-                                uriString = uriStr
+                                uriString = uriStr,
+                                mode = BackupRestoreManager.RestoreMode.REPLACE,
+                                confirmReplace = true
                             )
                             isRestoringBackup = false
                             statusNotification = summary.message
@@ -848,15 +964,15 @@ fun BackupRestorePage(
                         }
                     },
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = btnContainerColor,
-                        contentColor = btnContentColor
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
                     )
                 ) {
-                    Text("Restore Now", fontWeight = FontWeight.Bold, color = btnContentColor)
+                    Text("Permanently Replace", fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { selectedBackupToRestore = null }) {
+                TextButton(onClick = { backupToConfirmReplace = null }) {
                     Text("Cancel", color = appColors.textSecondary)
                 }
             }

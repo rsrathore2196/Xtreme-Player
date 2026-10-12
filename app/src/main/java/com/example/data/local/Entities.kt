@@ -48,7 +48,7 @@ data class TrackEntity(
         isCached = isCached,
         singers = singers,
         writer = writer,
-        language = if (language.isNotBlank()) language else "Hindi",
+        language = language,
         year = year,
         source = when {
             source.equals("YouTube Music", ignoreCase = true) || id.startsWith("yt_") -> "Extended Stream"
