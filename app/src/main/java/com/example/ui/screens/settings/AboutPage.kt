@@ -254,6 +254,12 @@ fun AboutPage(
                 val isReadyToInstall = updateStatus is com.example.updater.UpdateStatus.ReadyToInstall
                 val availableInfo = (updateStatus as? com.example.updater.UpdateStatus.UpdateAvailable)?.updateInfo
 
+                val releaseNotes = availableInfo?.let {
+                    it.releaseNotes + if (it.sha256 == null)
+                        "\n\nNo trusted SHA-256 checksum is published. Package and signing compatibility will still be checked."
+                    else "\n\nThe published SHA-256 checksum will be verified."
+                }.orEmpty()
+
                 Surface(
                     onClick = {
                         when (val status = updateStatus) {
@@ -332,7 +338,9 @@ fun AboutPage(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
-                                        text = "Downloading Update...",
+                                        text = (updateStatus as? com.example.updater.UpdateStatus.Downloading)?.message ?: "Downloading Update",
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                                         fontSize = 12.5.sp,
                                         fontWeight = FontWeight.SemiBold,
                                         color = appColors.textPrimary
@@ -397,7 +405,9 @@ fun AboutPage(
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(
-                                    text = "Check for Update",
+                                    text = (updateStatus as? com.example.updater.UpdateStatus.Error)?.message ?: "Check for Update",
+                                    maxLines = 1,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.SemiBold,
                                     color = appColors.textPrimary
@@ -436,7 +446,7 @@ fun AboutPage(
                                     .padding(vertical = 4.dp)
                             ) {
                                 Text(
-                                    text = "Version v${availableInfo.versionName} is ready to install.",
+                                    text = "Version v${availableInfo.versionName} is available to download.",
                                     fontSize = 14.sp,
                                     fontWeight = FontWeight.SemiBold,
                                     color = appColors.textPrimary
@@ -450,7 +460,7 @@ fun AboutPage(
                                         color = accentColor
                                     )
                                 }
-                                if (availableInfo.releaseNotes.isNotBlank()) {
+                                if (releaseNotes.isNotBlank()) {
                                     Spacer(modifier = Modifier.height(10.dp))
                                     Text(
                                         text = "Release Notes:",
@@ -469,7 +479,7 @@ fun AboutPage(
                                             .verticalScroll(rememberScrollState())
                                     ) {
                                         Text(
-                                            text = availableInfo.releaseNotes,
+                                            text = releaseNotes,
                                             fontSize = 12.sp,
                                             lineHeight = 16.sp,
                                             color = appColors.textSecondary

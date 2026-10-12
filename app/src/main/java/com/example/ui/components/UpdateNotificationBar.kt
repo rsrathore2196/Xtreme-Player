@@ -70,7 +70,8 @@ fun UpdateNotificationBar(
     val isVisible = !isDismissed && (
         updateStatus is UpdateStatus.UpdateAvailable ||
         updateStatus is UpdateStatus.Downloading ||
-        updateStatus is UpdateStatus.ReadyToInstall
+        updateStatus is UpdateStatus.ReadyToInstall ||
+        (updateStatus as? UpdateStatus.Error)?.showNotice == true
     )
 
     AnimatedVisibility(
@@ -142,6 +143,7 @@ fun UpdateNotificationBar(
                                 is UpdateStatus.ReadyToInstall -> {
                                     AppUpdateManager.installDownloadedApk(context, status.apkFile)
                                 }
+                                is UpdateStatus.Error -> AppUpdateManager.checkForUpdate(context, isManual = true)
                                 else -> {}
                             }
                         }
@@ -220,7 +222,7 @@ fun UpdateNotificationBar(
                             }
                             is UpdateStatus.Downloading -> {
                                 Text(
-                                    text = "Downloading Update... $downloadProgress%",
+                                    text = "${status.message}... $downloadProgress%",
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 13.5.sp,
                                     color = appColors.textPrimary,
@@ -247,12 +249,19 @@ fun UpdateNotificationBar(
                                 )
                                 Spacer(modifier = Modifier.height(2.dp))
                                 Text(
-                                    text = "Tap to complete installation",
+                                    text = status.message,
                                     fontSize = 11.5.sp,
                                     fontWeight = FontWeight.SemiBold,
                                     color = appColors.primaryAccent,
                                     maxLines = 1
                                 )
+                            }
+                            is UpdateStatus.Error -> {
+                                Text(text = "Update failed", fontWeight = FontWeight.Bold, fontSize = 13.5.sp,
+                                    color = appColors.textPrimary, maxLines = 1)
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(text = status.message, fontSize = 11.5.sp, color = appColors.primaryAccent,
+                                    maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
                             else -> {}
                         }

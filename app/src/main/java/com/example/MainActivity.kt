@@ -83,4 +83,14 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+    override fun onResume() {
+        super.onResume()
+        com.example.updater.AppUpdateManager.onForeground(this)
+    }
+
+    override fun onPause() {
+        com.example.updater.AppUpdateManager.onBackground()
+        super.onPause()
+    }
+
 }
