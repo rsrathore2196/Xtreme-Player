@@ -1,5 +1,7 @@
 package com.example.ui.components
 
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+
 import android.Manifest
 import android.os.Build
 import androidx.activity.compose.BackHandler
@@ -121,6 +123,8 @@ fun MainNavigationScaffold(
     val recentlyPlayed by viewModel.recentlyPlayed.collectAsState()
     val playlists by viewModel.playlists.collectAsState()
     val searchState by viewModel.searchState.collectAsState()
+    val catalogSearch by viewModel.catalogBrowser.search.collectAsStateWithLifecycle()
+    val catalogDetail by viewModel.catalogBrowser.detail.collectAsStateWithLifecycle()
     val selectedPlaylistWithTracks by viewModel.selectedPlaylistTracks.collectAsState()
     val effectsState by viewModel.effectsState.collectAsState()
     val isDarkMode by viewModel.isDarkMode.collectAsState()
@@ -164,9 +168,11 @@ fun MainNavigationScaffold(
 
     // Handle Back Press gracefully across the app
     val isSearchSubPage = selectedTabIndex == 1 && (searchState.selectedGenre != "All" || searchState.query.isNotBlank())
-    BackHandler(enabled = isPlayerExpanded || selectedPlaylistWithTracks != null || isSearchSubPage || selectedTabIndex != 0) {
+    BackHandler(enabled = catalogDetail != null || isPlayerExpanded || selectedPlaylistWithTracks != null || isSearchSubPage || selectedTabIndex != 0) {
         if (isPlayerExpanded) {
             isPlayerExpanded = false
+        } else if (catalogDetail != null) {
+            viewModel.catalogBrowser.close()
         } else if (selectedPlaylistWithTracks != null) {
             viewModel.closePlaylist()
         } else if (isSearchSubPage) {
@@ -302,6 +308,7 @@ fun MainNavigationScaffold(
                         when (tabIndex) {
                             0 -> HomeScreen(
                                 homeViewModel = homeViewModel,
+                                onOpenArtist = { viewModel.catalogBrowser.open(com.example.data.repository.CatalogDestination.Artist(it)) },
                                 currentPlayingTrackId = currentPlayingTrackId,
                                 isPlaying = playerUiState.isPlaying,
                                 isAutoplayEnabled = playerUiState.isAutoplayEnabled,
@@ -314,6 +321,11 @@ fun MainNavigationScaffold(
                             )
                             1 -> SearchScreen(
                                 searchState = searchState,
+                                catalogState = catalogSearch,
+                                onSelectType = viewModel.catalogBrowser::selectType,
+                                onLoadMore = viewModel.catalogBrowser::loadMoreSearch,
+                                onRetrySearch = { if (catalogSearch.page.nextPage != null && catalogSearch.error != null) viewModel.catalogBrowser.loadMoreSearch() else viewModel.catalogBrowser.retrySearch() },
+                                onOpenCatalog = viewModel.catalogBrowser::open,
                                 currentPlayingTrackId = currentPlayingTrackId,
                                 isPlaying = playerUiState.isPlaying,
                                 isLoading = playerUiState.isLoading,
@@ -359,6 +371,20 @@ fun MainNavigationScaffold(
                                 onUiScaleChanged = { index -> viewModel.setUiScaleIndex(index) }
                             )
                         }
+                    }
+                }
+
+                catalogDetail?.let { detail ->
+                    androidx.compose.runtime.key(detail.destination.key) {
+                        com.example.ui.screens.CatalogDetailScreen(
+                            state = detail, player = playerUiState,
+                            onBack = viewModel.catalogBrowser::close,
+                            onMore = viewModel.catalogBrowser::loadMoreDetail,
+                            onPlay = { track, queue -> viewModel.playTrack(track, queue) },
+                            onFavorite = { viewModel.toggleLike(it) },
+                            onScroll = viewModel.catalogBrowser::rememberScroll,
+                            handleBack = !isPlayerExpanded
+                        )
                     }
                 }
 
@@ -414,6 +440,7 @@ fun MainNavigationScaffold(
                                     isSettingsSubpageOpen = false
                                 }
                                 selectedTabIndex = index
+                                viewModel.catalogBrowser.close()
                                 viewModel.closePlaylist()
                             }
                         )

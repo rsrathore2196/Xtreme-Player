@@ -60,6 +60,8 @@ class MusicRepository(
     private val context: Context? = null
 ) {
 
+    val catalogBrowser = CatalogRepository()
+
     // LRU / in-memory cache to avoid duplicate network calls and prevent rate limiting
     private val searchCache = ConcurrentHashMap<String, SearchResultCategory>()
     private val streamResolver = StreamResolver()

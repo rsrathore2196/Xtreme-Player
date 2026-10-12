@@ -101,6 +101,8 @@ class PlayerViewModel(
     private val _catalogTracks = MutableStateFlow<List<MusicTrack>>(emptyList())
     val catalogTracks: StateFlow<List<MusicTrack>> = _catalogTracks.asStateFlow()
 
+    val catalogBrowser = CatalogBrowserState(repository.catalogBrowser, viewModelScope)
+
     private val _searchState = MutableStateFlow(SearchUiState())
     val searchState: StateFlow<SearchUiState> = _searchState.asStateFlow()
 
@@ -296,6 +298,9 @@ class PlayerViewModel(
     )
 
     init {
+        viewModelScope.launch {
+            favoriteTracks.collect { tracks -> catalogBrowser.updateFavorites(tracks.map { it.id }.toSet()) }
+        }
         loadCatalog()
         observeCurrentTrackForLyrics()
     }
@@ -503,13 +508,10 @@ class PlayerViewModel(
     }
 
     fun onSearchQueryChange(newQuery: String) {
-        _searchState.update { it.copy(query = newQuery, isSearching = newQuery.isNotBlank()) }
         searchJob?.cancel()
-        searchJob = viewModelScope.launch {
-            delay(300) // 300ms debouncing as specified in architectural requirements
-            val results = repository.search(newQuery, application)
-            _searchState.update { it.copy(result = results, isSearching = false) }
-        }
+        _searchState.update { it.copy(query = newQuery, isSearching = false) }
+        catalogBrowser.queryChanged(newQuery)
+        if (newQuery.isBlank()) selectGenre(_searchState.value.selectedGenre)
     }
 
     fun selectGenre(genre: String) {

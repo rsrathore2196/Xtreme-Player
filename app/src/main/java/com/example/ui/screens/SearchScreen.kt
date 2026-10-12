@@ -110,7 +110,12 @@ fun SearchScreen(
     onSelectSource: (String) -> Unit = {},
     onTrackClick: (MusicTrack, List<MusicTrack>) -> Unit,
     onToggleFavorite: (MusicTrack) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    catalogState: com.example.ui.viewmodel.CatalogSearchState = com.example.ui.viewmodel.CatalogSearchState(),
+    onSelectType: (String) -> Unit = {},
+    onLoadMore: () -> Unit = {},
+    onRetrySearch: () -> Unit = {},
+    onOpenCatalog: (com.example.data.repository.CatalogDestination) -> Unit = {}
 ) {
     val currentPlayingId = currentPlayingTrackId ?: playerUiState?.currentTrack?.id
     val isCurrentlyPlaying = isPlaying || (playerUiState?.isPlaying == true)
@@ -156,14 +161,15 @@ fun SearchScreen(
     val focusManager = LocalFocusManager.current
     val listState = rememberLazyListState()
 
-    var selectedTypeFilter by remember { mutableStateOf<String?>(null) }
+    val selectedTypeFilter: String? = catalogState.type.takeUnless { it == "All" }
+    LaunchedEffect(Unit) { onSelectType("All") }
 
     // Gracefully handle back press: Return to default "All" genres page rather than closing the app
     BackHandler(enabled = isGenreActive || hasQuery || selectedTypeFilter != null) {
         keyboardController?.hide()
         focusManager.clearFocus()
         if (selectedTypeFilter != null) {
-            selectedTypeFilter = null
+            onSelectType("All")
         } else if (isGenreActive) {
             onSelectGenre("All")
         } else if (hasQuery) {
@@ -253,7 +259,7 @@ fun SearchScreen(
                             horizontalArrangement = Arrangement.End,
                             modifier = Modifier.padding(end = 6.dp)
                         ) {
-                            if (searchState.isSearching) {
+                            if (searchState.isSearching || catalogState.loading) {
                                 CircularProgressIndicator(
                                     modifier = Modifier.size(16.dp),
                                     strokeWidth = 2.dp,
@@ -390,9 +396,9 @@ fun SearchScreen(
                         .horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    val filterCategories = listOf("Tracks", "Artists", "Albums", "Playlists")
+                    val filterCategories = listOf("All", "Tracks", "Albums", "Playlists", "Artists")
                     filterCategories.forEach { filterName ->
-                        val isSelected = selectedTypeFilter == filterName
+                        val isSelected = catalogState.type == filterName
                         Box(
                             modifier = Modifier
                                 .liquidGlassPill(
@@ -402,7 +408,7 @@ fun SearchScreen(
                                     elevation = if (isSelected) 6.dp else 2.dp
                                 )
                                 .bouncyClickable {
-                                    selectedTypeFilter = if (selectedTypeFilter == filterName) null else filterName
+                                    onSelectType(filterName)
                                 }
                                 .testTag("filter_pill_${filterName.lowercase()}")
                         ) {
@@ -569,7 +575,20 @@ fun SearchScreen(
         }
 
         // IF QUERY ACTIVE OR FILTER SELECTED -> SHOW CATEGORIZED RESULTS
-        if (hasQuery || searchState.selectedGenre != "All" || selectedTypeFilter != null) {
+        if (hasQuery || searchState.selectedGenre != "All") {
+            if (hasQuery) {
+                catalogSearchResults(catalogState, currentPlayingId, isCurrentlyPlaying, isCurrentlyLoading,
+                    onPlay = { song, queue ->
+                        keyboardController?.hide()
+                        focusManager.clearFocus()
+                        pendingLoadingTrackId = song.id
+                        onTrackClick(song, queue)
+                    }, onFavorite = onToggleFavorite, onOpen = { destination ->
+                        keyboardController?.hide()
+                        focusManager.clearFocus()
+                        onOpenCatalog(destination)
+                    }, onMore = onLoadMore, onRetry = onRetrySearch)
+            } else {
             val results = searchState.result
             val showTracks = selectedTypeFilter == null || selectedTypeFilter == "Tracks"
             val showArtists = selectedTypeFilter == null || selectedTypeFilter == "Artists"
@@ -1144,6 +1163,7 @@ fun SearchScreen(
                         }
                     }
                 }
+            }
             }
         }
     }

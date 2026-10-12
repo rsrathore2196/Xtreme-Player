@@ -123,7 +123,8 @@ fun HomeScreen(
     onOpenSettings: (() -> Unit)? = null,
     onPlayInfiniteRadio: ((MusicTrack?) -> Unit)? = null,
     onAddToQueue: ((MusicTrack) -> Unit)? = null,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onOpenArtist: (com.example.data.repository.CatalogArtist) -> Unit = {}
 ) {
     val heroSeedTrack by homeViewModel.heroSeedTrack.collectAsStateWithLifecycle()
     val ytmCard by homeViewModel.ytmCard.collectAsStateWithLifecycle()
@@ -150,6 +151,7 @@ fun HomeScreen(
             listeningHistoryCard = listeningHistoryCard,
             personalizedCard = personalizedCard,
             mostListenedArtists = mostListenedArtists,
+            onOpenArtist = onOpenArtist,
             isRadioSession = playerUiState?.isInfiniteRadio == true,
             isRadioLoading = playerUiState?.isLoading == true,
             userProfile = userProfile,
@@ -247,7 +249,8 @@ fun HomeScreenContent(
     refreshErrorMessage: String? = null,
     onRetryRefresh: (() -> Unit)? = null,
     onDismissRefreshError: (() -> Unit)? = null,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onOpenArtist: (com.example.data.repository.CatalogArtist) -> Unit = {}
 ) {
     val greeting = rememberGreeting()
     val resolvedCurrentTrack = currentTrack
@@ -526,14 +529,12 @@ fun HomeScreenContent(
                                     Modifier.width(140.dp).clip(RoundedCornerShape(18.dp))
                                         .background(cardBg)
                                         .clickable {
-                                            artist.tracks.firstOrNull()?.let { onTrackClick(it, artist.tracks) }
+                                            onOpenArtist(com.example.data.repository.CatalogArtist("", artist.name))
                                         }.padding(12.dp),
                                     horizontalAlignment = Alignment.CenterHorizontally
                                 ) {
-                                    AsyncImage(
-                                        model = artist.tracks.firstOrNull()?.coverUrl,
-                                        contentDescription = "Music by ${artist.name}",
-                                        contentScale = ContentScale.Crop,
+                                    com.example.ui.components.ArtistPortrait(
+                                        artist = com.example.data.repository.CatalogArtist("", artist.name),
                                         modifier = Modifier.size(104.dp).clip(CircleShape)
                                     )
                                     Spacer(Modifier.height(8.dp))

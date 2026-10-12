@@ -84,7 +84,10 @@ fun PlaylistDetailScreen(
     onDeletePlaylist: () -> Unit,
     onRemoveTrack: (String) -> Unit,
     onRenamePlaylist: (String) -> Unit = {},
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    readOnly: Boolean = false,
+    listState: androidx.compose.foundation.lazy.LazyListState = androidx.compose.foundation.lazy.rememberLazyListState(),
+    footer: (@Composable () -> Unit)? = null
 ) {
     val playlist = playlistWithTracks.playlist
     val tracks = playlistWithTracks.tracks.map { it.toMusicTrack() }
@@ -286,7 +289,7 @@ fun PlaylistDetailScreen(
                 )
             }
 
-            Row(
+            if (!readOnly) Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
@@ -328,6 +331,7 @@ fun PlaylistDetailScreen(
         }
 
         LazyColumn(
+            state = listState,
             modifier = Modifier
                 .fillMaxSize()
                 .bouncyOverscroll(),
@@ -464,7 +468,7 @@ fun PlaylistDetailScreen(
                             fontSize = 16.sp
                         )
                         Text(
-                            text = "Add tracks from the Home or Search screen using the 3-dot menu.",
+                            text = if (readOnly) "No playable tracks are available." else "Add tracks from the Home or Search screen using the 3-dot menu.",
                             color = appColors.textMuted,
                             fontSize = 13.sp,
                             modifier = Modifier.padding(top = 4.dp)
@@ -478,11 +482,12 @@ fun PlaylistDetailScreen(
                         isPlaying = track.id == currentPlayingId,
                         onClick = { onPlayTrack(track, tracks) },
                         onToggleFavorite = { onToggleFavorite(track) },
-                        onRemoveClick = { trackPendingRemoval = track },
+                        onRemoveClick = if (readOnly) null else ({ trackPendingRemoval = track }),
                         modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
                     )
                 }
             }
+            footer?.let { content -> item(key = "catalog_footer") { content() } }
         }
     }
 }
