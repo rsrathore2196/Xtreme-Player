@@ -4,6 +4,8 @@ import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.drawable.BitmapDrawable
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedContentTransitionScope
+import androidx.compose.animation.ContentTransform
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.fadeIn
@@ -11,7 +13,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
-import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.LinearOutSlowInEasing
@@ -450,10 +451,8 @@ fun ExpandedPlayerScreen(
                     ) {
                         AnimatedContent(
                             targetState = showLyrics,
-                            transitionSpec = {
-                                (fadeIn(animationSpec = tween(170, easing = LinearOutSlowInEasing)) + scaleIn(initialScale = 0.96f, animationSpec = tween(170, easing = FastOutSlowInEasing))) togetherWith
-                                (fadeOut(animationSpec = tween(130, easing = FastOutLinearInEasing)) + scaleOut(targetScale = 0.98f, animationSpec = tween(130, easing = FastOutLinearInEasing)))
-                            },
+                            transitionSpec = { lyricsArtworkTransition() },
+                            contentAlignment = Alignment.Center,
                             label = "lyrics_album_art_transition_landscape",
                             modifier = Modifier
                                 .fillMaxSize()
@@ -1182,10 +1181,8 @@ fun ExpandedPlayerScreen(
             // CENTER: SMOOTH ANIMATED REPLACEMENT OF ALBUM ART WITH SYNCED LYRICS
             AnimatedContent(
                 targetState = showLyrics,
-                transitionSpec = {
-                    (fadeIn(animationSpec = tween(170, easing = LinearOutSlowInEasing)) + scaleIn(initialScale = 0.96f, animationSpec = tween(170, easing = FastOutSlowInEasing))) togetherWith
-                    (fadeOut(animationSpec = tween(130, easing = FastOutLinearInEasing)) + scaleOut(targetScale = 0.98f, animationSpec = tween(130, easing = FastOutLinearInEasing)))
-                },
+                transitionSpec = { lyricsArtworkTransition() },
+                contentAlignment = Alignment.Center,
                 label = "lyrics_album_art_transition",
                 modifier = Modifier
                     .weight(1f)
@@ -2193,4 +2190,15 @@ private fun PlayerTimelineSection(
             )
         }
     }
+}
+
+/** Shared, reversible depth transition; the surrounding player keeps its existing bounds. */
+private fun AnimatedContentTransitionScope<Boolean>.lyricsArtworkTransition(): ContentTransform {
+    val motion = tween<Float>(durationMillis = 420, easing = FastOutSlowInEasing)
+    val enter = fadeIn(tween(320, delayMillis = 60, easing = FastOutSlowInEasing)) +
+        scaleIn(initialScale = if (targetState) 0.94f else 1.025f, animationSpec = motion)
+    val exit = fadeOut(tween(260, easing = FastOutSlowInEasing)) +
+        scaleOut(targetScale = if (targetState) 1.025f else 0.94f, animationSpec = motion)
+    // Layer-only transforms avoid resizing controls or clipping the artwork shadow during the swap.
+    return (enter togetherWith exit).using(null)
 }
