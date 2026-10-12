@@ -6,7 +6,7 @@
   </a>
 
   <!-- Project Title -->
-  <h1>🎵 Xtreme Player</h1>
+  <h1> Xtreme Player</h1>
 
   <!-- Short Overview -->
   <p>
@@ -139,3 +139,15 @@
 - Android Studio Ladybug (2024.2.1 or newer)
 - Android SDK 26+ (Android 8.0 Oreo or higher)
 - JDK 17+
+
+### Build & Run
+
+```bash
+# Clone the repository
+git clone [https://github.com/rsrathore2196/Xtreme-Player.git](https://github.com/rsrathore2196/Xtreme-Player.git)
+
+# Navigate to the project directory
+cd Xtreme-Player
+
+# Build the debug APK
+./gradlew assembleDebug
