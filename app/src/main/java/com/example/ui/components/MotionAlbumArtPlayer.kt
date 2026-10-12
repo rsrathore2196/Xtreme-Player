@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import android.view.LayoutInflater
 import androidx.annotation.OptIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -30,6 +31,7 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import com.example.R
 
 /**
  * Multi-tier Visual Artwork Component (Priority 1: Looped motion artwork, Priority 2: Static artwork):
@@ -66,10 +68,9 @@ fun MotionAlbumArtPlayer(
                 repeatMode = Player.REPEAT_MODE_ALL
                 playWhenReady = false
                 addListener(object : Player.Listener {
-                    override fun onPlaybackStateChanged(playbackState: Int) {
-                        if (playbackState == Player.STATE_READY) {
-                            isVideoReady = true
-                        }
+                    override fun onRenderedFirstFrame() {
+                        // Decoder readiness can precede an actual video frame; retain the cover until then.
+                        isVideoReady = true
                     }
 
                     override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
@@ -125,7 +126,8 @@ fun MotionAlbumArtPlayer(
         if (shouldPlayVideo && exoPlayer != null) {
             AndroidView(
                 factory = { ctx ->
-                    PlayerView(ctx).apply {
+                    // TextureView participates in Compose clipping, scaling and shared-element layers.
+                    (LayoutInflater.from(ctx).inflate(R.layout.motion_artwork_player, null, false) as PlayerView).apply {
                         player = exoPlayer
                         useController = false
                         resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
@@ -136,6 +138,7 @@ fun MotionAlbumArtPlayer(
                     view.player = exoPlayer
                     view.alpha = if (isVideoReady) 1f else 0f
                 },
+                onRelease = { view -> view.player = null },
                 modifier = Modifier.fillMaxSize()
             )
         }

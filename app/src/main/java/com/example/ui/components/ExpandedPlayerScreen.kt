@@ -790,7 +790,9 @@ fun ExpandedPlayerScreen(
                             AudioQuality.MEDIUM_96 -> "Data Saver"
                         }
                         PlayerTimelineSection(
+                            trackId = track.id,
                             currentPositionProvider = currentPositionProvider,
+                            playbackPositionFlow = playbackPositionFlow,
                             trackDurationProvider = trackDurationProvider,
                             qualityChipText = qualityChipText,
                             onSeekTo = onSeekTo,
@@ -1553,7 +1555,9 @@ fun ExpandedPlayerScreen(
                 AudioQuality.MEDIUM_96 -> "Data Saver"
             }
             PlayerTimelineSection(
+                trackId = track.id,
                 currentPositionProvider = currentPositionProvider,
+                playbackPositionFlow = playbackPositionFlow,
                 trackDurationProvider = trackDurationProvider,
                 qualityChipText = landscapeQualityChipText,
                 onSeekTo = onSeekTo,
@@ -2171,7 +2175,9 @@ private fun PlayerOptionsMenu(
 
 @Composable
 private fun PlayerTimelineSection(
+    trackId: String,
     currentPositionProvider: () -> Long,
+    playbackPositionFlow: StateFlow<Long>?,
     trackDurationProvider: () -> Long,
     qualityChipText: String = "",
     onSeekTo: (Long) -> Unit,
@@ -2184,26 +2190,23 @@ private fun PlayerTimelineSection(
     var scrubPosition by remember { mutableFloatStateOf(0f) }
 
     // Dynamic real-time playback position state
-    var livePosition by remember { mutableLongStateOf(currentPositionProvider()) }
+    var livePosition by remember(trackId) { mutableLongStateOf(currentPositionProvider()) }
 
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val latestPositionProvider by rememberUpdatedState(currentPositionProvider)
     // Same visible cadence, suspended while the activity is not resumed.
-    LaunchedEffect(isPlaying, lifecycle) {
+    LaunchedEffect(trackId, isPlaying, playbackPositionFlow, lifecycle) {
         lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
-            livePosition = latestPositionProvider()
+            if (!isUserScrubbing) livePosition = latestPositionProvider()
             if (isPlaying) while (isActive) {
                 if (!isUserScrubbing) livePosition = latestPositionProvider()
                 delay(150)
+            } else {
+                // Paused seeks still update immediately without a polling or composition loop.
+                playbackPositionFlow?.collect {
+                    if (!isUserScrubbing) livePosition = latestPositionProvider()
+                }
             }
-        }
-    }
-
-    // Keep updated on external position shifts (seeks, track changes, etc.)
-    val externalPos = currentPositionProvider()
-    LaunchedEffect(externalPos) {
-        if (!isUserScrubbing) {
-            livePosition = externalPos
         }
     }
 

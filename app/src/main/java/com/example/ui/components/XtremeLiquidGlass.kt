@@ -20,6 +20,7 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RenderEffect
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.drawscope.translate
@@ -47,6 +48,15 @@ class LiquidGlassBackdrop internal constructor(internal val layer: GraphicsLayer
 }
 
 val LocalLiquidGlassBackdrop = compositionLocalOf<LiquidGlassBackdrop?> { null }
+
+/** Draw-only bookkeeping: foreground changes must not invalidate an unchanged glass sample. */
+private class GlassSampleCache {
+    var source: GraphicsLayer? = null
+    var revision = -1
+    var offset = Offset.Unspecified
+    var size = IntSize.Zero
+    var effect: RenderEffect? = null
+}
 
 @Composable
 fun rememberLiquidGlassBackdrop(): LiquidGlassBackdrop {
@@ -105,6 +115,7 @@ fun Modifier.xtremeLiquidGlassBackground(
         ).asComposeRenderEffect() else null
     }
     val sample = rememberGraphicsLayer()
+    val sampleCache = remember(sample) { GlassSampleCache() }
     var position by remember { mutableStateOf(Offset.Zero) }
     val dark = appColors.isDark
     val rim = remember(dark) {
@@ -136,12 +147,22 @@ fun Modifier.xtremeLiquidGlassBackground(
             val bleed = ceil(radius * 2).toInt()
             val sampleSize = IntSize(ceil(size.width).toInt() + bleed * 2, ceil(size.height).toInt() + bleed * 2)
             onDrawWithContent {
-                val ready = blur != null && backdrop != null && backdrop.revision > 0 && !backdrop.layer.isReleased
+                val revision = backdrop?.revision ?: 0
+                val ready = blur != null && backdrop != null && revision > 0 && !backdrop.layer.isReleased
                 if (ready) {
                     val offset = backdrop!!.position - position
-                    sample.renderEffect = blur
-                    sample.record(size = sampleSize) {
-                        translate(offset.x + bleed, offset.y + bleed) { drawLayer(backdrop.layer) }
+                    if (sampleCache.source !== backdrop.layer || sampleCache.revision != revision ||
+                        sampleCache.offset != offset || sampleCache.size != sampleSize || sampleCache.effect !== blur) {
+                        sample.renderEffect = blur
+                        sample.record(size = sampleSize) {
+                            translate(offset.x + bleed, offset.y + bleed) { drawLayer(backdrop.layer) }
+                        }
+                        // Update only after recording succeeds. Keep these fields out of snapshot state.
+                        sampleCache.source = backdrop.layer
+                        sampleCache.revision = revision
+                        sampleCache.offset = offset
+                        sampleCache.size = sampleSize
+                        sampleCache.effect = blur
                     }
                     translate(-bleed.toFloat(), -bleed.toFloat()) { drawLayer(sample) }
                 }
