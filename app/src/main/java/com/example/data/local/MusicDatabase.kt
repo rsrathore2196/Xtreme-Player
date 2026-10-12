@@ -113,6 +113,9 @@ abstract class MusicDatabase : RoomDatabase() {
 
         val MIGRATION_7_8 = object : Migration(7, 8) {
             override fun migrate(db: SupportSQLiteDatabase) {
+                // Ensure both relationship and listening indices exist in legacy databases.
+                // CREATE INDEX leaves every record and playlist order unchanged.
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_playlist_track_cross_ref_trackId` ON `playlist_track_cross_ref` (`trackId`)")
                 db.execSQL("""
                     CREATE TABLE IF NOT EXISTS `listening_events` (
                         `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
@@ -174,6 +177,8 @@ abstract class MusicDatabase : RoomDatabase() {
                     "xtreme_music_db"
                 )
                     .addMigrations(*ALL_MIGRATIONS)
+                    // Missing upgrade/downgrade paths must fail and leave the existing
+                    // database intact. Never add destructive migration fallbacks here.
                     .build()
                 INSTANCE = instance
                 instance

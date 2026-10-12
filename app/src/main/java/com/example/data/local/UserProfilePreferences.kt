@@ -77,18 +77,27 @@ object UserProfilePreferences {
         }
     }
 
-    fun saveUserProfile(context: Context, profile: UserProfile) {
-        val prefs = getPrefs(context)
-        val languagesRaw = profile.languages.joinToString(",")
-        prefs.edit()
+    private fun profileEditor(context: Context, profile: UserProfile): SharedPreferences.Editor =
+        getPrefs(context).edit()
             .putString(KEY_NAME, profile.name.trim())
-            .putString(KEY_LANGUAGES, languagesRaw)
+            .putString(KEY_LANGUAGES, profile.languages.joinToString(","))
             .putString(KEY_COUNTRY, profile.country.trim())
             .putString(KEY_COUNTRY_CODE, profile.countryCode.trim())
             .putString(KEY_COUNTRY_FLAG, profile.flag.trim())
             .putString(KEY_APP_LANGUAGE, profile.appLanguage.trim())
             .putBoolean(KEY_ONBOARDING_COMPLETED, profile.isOnboardingCompleted)
-            .apply()
+
+    fun saveUserProfile(context: Context, profile: UserProfile) {
+        profileEditor(context, profile).apply()
+        publishUserProfile(profile)
+    }
+
+    // Restore needs a write result before committing its database transaction.
+    internal fun persistUserProfile(context: Context, profile: UserProfile): Boolean =
+        profileEditor(context, profile).commit()
+
+    // Publish only once restore's Room transaction has successfully committed.
+    internal fun publishUserProfile(profile: UserProfile) {
         synchronized(this) {
             val flow = _userProfileFlow
             if (flow == null) {

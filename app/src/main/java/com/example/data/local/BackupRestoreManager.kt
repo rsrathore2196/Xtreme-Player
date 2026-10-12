@@ -13,9 +13,10 @@ import android.provider.MediaStore
 import androidx.room.withTransaction
 import kotlinx.coroutines.CancellationException
 import androidx.core.content.ContextCompat
-import com.example.data.model.MusicTrack
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -282,10 +283,10 @@ object BackupRestoreManager {
     ): Result<BackupInfo> = withContext(Dispatchers.IO) {
         try {
             val dao = musicDatabase.musicDao()
-            val playlists = dao.getAllPlaylistsSync()
-            val allTracks = dao.getAllTracksSync()
-            val favoriteTracks = dao.getAllFavoriteTracksSync()
-            val crossRefs = dao.getAllPlaylistCrossRefsSync()
+            val (playlists, allTracks, crossRefs) = musicDatabase.withTransaction {
+                Triple(dao.getAllPlaylistsSync(), dao.getAllTracksSync(), dao.getAllPlaylistCrossRefsSync())
+            }
+            val favoriteTracks = allTracks.filter { it.isLiked }
             val userProfile = UserProfilePreferences.getUserProfile(context)
 
             val rootJson = JSONObject()
@@ -300,6 +301,8 @@ object BackupRestoreManager {
             profileJson.put("country", userProfile.country)
             profileJson.put("countryCode", userProfile.countryCode)
             profileJson.put("flag", userProfile.flag)
+            profileJson.put("appLanguage", userProfile.appLanguage)
+            profileJson.put("isOnboardingCompleted", userProfile.isOnboardingCompleted)
             val langsArray = JSONArray()
             userProfile.languages.forEach { langsArray.put(it) }
             profileJson.put("languages", langsArray)
@@ -455,40 +458,229 @@ object BackupRestoreManager {
         REPLACE
     }
 
-    private fun normalizeText(text: String): String {
-        return text.trim().lowercase().replace(Regex("[^a-z0-9]"), "")
+    private const val MAX_BACKUP_CHARS = 32 * 1024 * 1024
+    private const val MAX_BACKUP_ITEMS = 100_000
+    private val restoreMutex = kotlinx.coroutines.sync.Mutex()
+
+    private data class ParsedBackup(
+        val playlists: List<PlaylistEntity>,
+        val tracks: List<TrackEntity>,
+        val refs: List<PlaylistTrackCrossRef>,
+        val profile: JSONObject?,
+        val hasPlaylists: Boolean
+    )
+
+    private fun normalizeText(text: String): String =
+        java.text.Normalizer.normalize(text, java.text.Normalizer.Form.NFKC)
+            .lowercase(Locale.ROOT).replace(Regex("[^\\p{L}\\p{M}\\p{N}]+"), " ").trim()
+
+    private fun reliableIsrc(value: String): String? = value.uppercase(Locale.ROOT)
+        .replace(Regex("[\\s-]"), "").takeIf { it.matches(Regex("[A-Z]{2}[A-Z0-9]{3}[0-9]{7}")) }
+
+    private fun versionKey(track: TrackEntity): String = Regex(
+        "\\b(live|remix|remastered|remaster|acoustic|instrumental|karaoke|cover|sped|slowed|reverb|edit|extended|demo)\\b"
+    ).findAll(normalizeText("${track.title} ${track.album}")).map { it.value }.distinct().sorted().joinToString("|")
+
+    private fun providerKey(track: TrackEntity): String = when {
+        track.id.startsWith("yt_") -> "youtube"
+        track.source.equals("YouTube Music", true) || track.source.equals("Extended Stream", true) -> "youtube"
+        track.source.equals("JioSaavn", true) || track.source.equals("HD Stream", true) -> "saavn"
+        else -> normalizeText(track.source)
     }
 
-    /**
-     * Restores backup from a Content URI (e.g. from user-selected storage file via SAF)
-     */
+    private fun hasUsableTitleAndArtist(track: TrackEntity): Boolean =
+        normalizeText(track.title).let { it.isNotEmpty() && it != "unknown" && it != "unknown track" && it != "unknown title" && it != "untitled" } &&
+            normalizeText(track.artist).let { it.isNotEmpty() && it != "unknown" && it != "unknown artist" && it != "various artists" }
+
+    private fun sameRecording(first: TrackEntity, second: TrackEntity): Boolean {
+        if (versionKey(first) != versionKey(second)) return false
+        val firstIsrc = reliableIsrc(first.isrc)
+        val secondIsrc = reliableIsrc(second.isrc)
+        if (firstIsrc != null && secondIsrc != null) return firstIsrc == secondIsrc &&
+            (first.durationMs <= 0 || second.durationMs <= 0 ||
+                kotlin.math.abs(first.durationMs - second.durationMs) <= maxOf(5000L, first.durationMs / 10))
+        // Without a real recording identifier, unknown metadata or unknown duration is not proof.
+        return hasUsableTitleAndArtist(first) && hasUsableTitleAndArtist(second) &&
+            normalizeText(first.title) == normalizeText(second.title) &&
+            normalizeText(first.artist) == normalizeText(second.artist) &&
+            first.durationMs > 0 && second.durationMs > 0 &&
+            kotlin.math.abs(first.durationMs - second.durationMs) <= maxOf(2000L, first.durationMs / 50)
+    }
+
+    private fun conflictingTrackId(first: TrackEntity, second: TrackEntity): Boolean {
+        val firstIsrc = reliableIsrc(first.isrc)
+        val secondIsrc = reliableIsrc(second.isrc)
+        if (firstIsrc != null && secondIsrc != null) return firstIsrc != secondIsrc ||
+            versionKey(first) != versionKey(second)
+        if (providerKey(first).isNotEmpty() && providerKey(second).isNotEmpty() &&
+            providerKey(first) != providerKey(second)) return true
+        return hasUsableTitleAndArtist(first) && hasUsableTitleAndArtist(second) &&
+            ((normalizeText(first.title) != normalizeText(second.title) &&
+                normalizeText(first.artist) != normalizeText(second.artist)) ||
+                versionKey(first) != versionKey(second))
+    }
+
+    private fun stringField(obj: JSONObject, key: String, default: String = "", required: Boolean = false): String {
+        if (!obj.has(key)) {
+            require(!required) { "Missing required field: $key" }
+            return default
+        }
+        val value = obj.get(key)
+        require(value is String) { "Invalid text field: $key" }
+        require(!required || value.isNotBlank()) { "Empty required field: $key" }
+        return value
+    }
+
+    private fun longField(obj: JSONObject, key: String, default: Long = 0L, required: Boolean = false): Long {
+        if (!obj.has(key)) {
+            require(!required) { "Missing required field: $key" }
+            return default
+        }
+        val value = obj.get(key)
+        val number = if (value is Number) value.toString().toLongOrNull() else null
+        require(number != null && number >= 0L) { "Invalid non-negative integer field: $key" }
+        return number
+    }
+
+    private fun booleanField(obj: JSONObject, key: String, default: Boolean = false): Boolean {
+        if (!obj.has(key)) return default
+        val value = obj.get(key)
+        require(value is Boolean) { "Invalid boolean field: $key" }
+        return value
+    }
+
+    private fun arrayField(root: JSONObject, key: String): JSONArray {
+        val array = root.get(key)
+        require(array is JSONArray && array.length() <= MAX_BACKUP_ITEMS) { "Invalid or oversized $key section" }
+        return array
+    }
+
+    private fun parseBackup(text: String): ParsedBackup {
+        require(text.isNotBlank()) { "Backup file not found or empty" }
+        require(text.length <= MAX_BACKUP_CHARS) { "Backup file is too large" }
+        val root = JSONObject(text)
+        if (root.has("app")) require(stringField(root, "app").equals("Xtreme Player", true)) { "Not an Xtreme Player backup" }
+        val schema = longField(root, "schemaVersion", 1L)
+        require(schema in 1L..2L) { "Unsupported backup schema version: $schema" }
+        require(listOf("playlists", "libraryTracks", "tracks", "favoriteTracks", "userProfile").any(root::has)) {
+            "No backup data found"
+        }
+        val playlists = if (root.has("playlists")) arrayField(root, "playlists").let { array ->
+            (0 until array.length()).map { index ->
+                val item = array.getJSONObject(index)
+                val id = longField(item, "playlistId", required = true)
+                require(id > 0) { "Invalid playlist ID" }
+                PlaylistEntity(id, stringField(item, "title", "Restored Playlist"),
+                    stringField(item, "description"), stringField(item, "coverUrl"),
+                    longField(item, "createdAt", System.currentTimeMillis()))
+            }
+        } else emptyList()
+        require(playlists.map { it.playlistId }.distinct().size == playlists.size) { "Duplicate playlist IDs in backup" }
+        val trackKeys = listOf("libraryTracks", "tracks", "favoriteTracks").filter(root::has)
+        // Validate even compatibility sections that are not selected as the source of truth.
+        val parsedTracks = trackKeys.associateWith { key ->
+            val array = arrayField(root, key)
+            (0 until array.length()).map { index ->
+                val item = array.getJSONObject(index)
+                val bitrate = longField(item, "bitrateKbps", 320L)
+                require(bitrate <= Int.MAX_VALUE) { "Invalid track bitrate" }
+                TrackEntity(
+                    id = stringField(item, "id", required = true).trim(),
+                    title = stringField(item, "title", "Unknown Track"),
+                    artist = stringField(item, "artist", "Unknown Artist"),
+                    album = stringField(item, "album"),
+                    durationMs = longField(item, "durationMs"),
+                    coverUrl = stringField(item, "coverUrl"),
+                    audioUrl = stringField(item, "audioUrl"),
+                    bitrateKbps = bitrate.toInt(),
+                    qualityBadge = stringField(item, "qualityBadge", "HD • 320 kbps"),
+                    genre = stringField(item, "genre", "Unknown"),
+                    isLiked = booleanField(item, "isLiked", key == "favoriteTracks"),
+                    // This flag represents cached catalog metadata; existing local values remain untouched.
+                    isCached = booleanField(item, "isCached"),
+                    singers = stringField(item, "singers"), writer = stringField(item, "writer"),
+                    language = stringField(item, "language"), year = stringField(item, "year"),
+                    source = stringField(item, "source"),
+                    addedAt = longField(item, "addedAt", System.currentTimeMillis()),
+                    lastPlayedAt = longField(item, "lastPlayedAt"), isrc = stringField(item, "isrc")
+                )
+            }.also { list ->
+                require(list.map { it.id }.distinct().size == list.size) { "Duplicate track IDs in backup" }
+            }
+        }
+        val tracks = trackKeys.firstOrNull()?.let { parsedTracks.getValue(it) } ?: emptyList()
+        val refs = if (root.has("playlistTrackRefs")) arrayField(root, "playlistTrackRefs").let { array ->
+            val nextOrders = mutableMapOf<Long, Int>()
+            (0 until array.length()).map { index ->
+                val item = array.getJSONObject(index)
+                val playlistId = longField(item, "playlistId", required = true)
+                val order = longField(item, "orderIndex", nextOrders.getOrDefault(playlistId, 0).toLong())
+                require(playlistId > 0 && order < Int.MAX_VALUE) { "Invalid playlist track reference" }
+                nextOrders[playlistId] = order.toInt() + 1
+                PlaylistTrackCrossRef(playlistId, stringField(item, "trackId", required = true).trim(), order.toInt())
+            }
+        } else emptyList()
+        val playlistIds = playlists.map { it.playlistId }.toSet()
+        val trackIds = tracks.map { it.id }.toSet()
+        // Backup references cannot silently target unrelated local entities with matching IDs.
+        require(refs.all { it.playlistId in playlistIds && it.trackId in trackIds }) {
+            "Backup contains invalid playlist relationships"
+        }
+        val profile = if (root.has("userProfile")) root.get("userProfile").also {
+            require(it is JSONObject) { "Invalid user profile section" }
+        } as JSONObject else null
+        profile?.let { value ->
+            listOf("name", "country", "countryCode", "flag", "appLanguage").forEach { stringField(value, it) }
+            booleanField(value, "isOnboardingCompleted")
+            if (value.has("languages")) arrayField(value, "languages").let { languages ->
+                require(languages.length() <= 100) { "Too many profile languages" }
+                for (i in 0 until languages.length()) require(languages.get(i) is String && languages.getString(i).isNotBlank()) {
+                    "Invalid profile language"
+                }
+            }
+            require(listOf("name", "country", "countryCode", "flag", "appLanguage", "languages", "isOnboardingCompleted").any(value::has)) {
+                "Empty user profile section"
+            }
+        }
+        require(playlists.isNotEmpty() || tracks.isNotEmpty() || profile != null) { "Backup file is empty" }
+        return ParsedBackup(playlists, tracks, refs, profile, root.has("playlists"))
+    }
+
+    private fun restoredProfile(json: JSONObject, previous: UserProfile): UserProfile = previous.copy(
+        name = stringField(json, "name", previous.name),
+        country = stringField(json, "country", previous.country),
+        countryCode = stringField(json, "countryCode", previous.countryCode),
+        flag = stringField(json, "flag", previous.flag),
+        languages = if (json.has("languages")) arrayField(json, "languages").let { array ->
+            (0 until array.length()).map { array.getString(it) }.ifEmpty { previous.languages }
+        } else previous.languages,
+        appLanguage = stringField(json, "appLanguage", previous.appLanguage),
+        isOnboardingCompleted = booleanField(json, "isOnboardingCompleted", previous.isOnboardingCompleted)
+    )
+
+    private fun readBackupText(input: java.io.InputStream): String = input.bufferedReader().use { reader ->
+        val result = StringBuilder()
+        val buffer = CharArray(8192)
+        while (true) {
+            val count = reader.read(buffer)
+            if (count < 0) break
+            require(result.length + count <= MAX_BACKUP_CHARS) { "Backup file is too large" }
+            result.append(buffer, 0, count)
+        }
+        result.toString()
+    }
+
+    /** Restores a user-selected backup; merge is always the safe default. */
     suspend fun restoreFromUri(
         context: Context,
         musicDatabase: MusicDatabase,
         uri: Uri,
         mode: RestoreMode = RestoreMode.MERGE,
         confirmReplace: Boolean = false
-    ): RestoreSummary = withContext(Dispatchers.IO) {
-        try {
-            val content = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
-                ?: return@withContext RestoreSummary(
-                    success = false,
-                    message = "Could not read backup file from selected storage location."
-                )
-            restoreBackup(context, musicDatabase, rawJson = content, mode = mode, confirmReplace = confirmReplace)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            RestoreSummary(
-                success = false,
-                message = "Failed to read backup: ${e.localizedMessage ?: "Invalid file"}"
-            )
-        }
-    }
+    ): RestoreSummary = restoreBackup(context, musicDatabase, uriString = uri.toString(),
+        mode = mode, confirmReplace = confirmReplace)
 
-    /**
-     * Restores backup from a JSON file, content Uri string, or raw string content
-     */
+    /** Parse and validate the complete backup before changing any persisted user record. */
     suspend fun restoreBackup(
         context: Context,
         musicDatabase: MusicDatabase,
@@ -498,323 +690,135 @@ object BackupRestoreManager {
         mode: RestoreMode = RestoreMode.MERGE,
         confirmReplace: Boolean = false
     ): RestoreSummary = withContext(Dispatchers.IO) {
-        try {
-            val jsonString = rawJson
-                ?: if (uriString != null && uriString.startsWith("content://")) {
-                    context.contentResolver.openInputStream(Uri.parse(uriString))?.bufferedReader()?.use { it.readText() }
-                } else null
-                ?: backupFile?.let { if (it.exists()) it.readText() else null }
-
-            if (jsonString.isNullOrBlank()) {
-                return@withContext RestoreSummary(
-                    success = false,
-                    message = "Backup file not found or empty."
-                )
-            }
-
-            val root = try {
-                JSONObject(jsonString)
-            } catch (e: Exception) {
-                return@withContext RestoreSummary(
-                    success = false,
-                    message = "Invalid backup file: corrupted JSON format."
-                )
-            }
-
-            if (root.has("app") && !root.getString("app").equals("Xtreme Player", ignoreCase = true)) {
-                return@withContext RestoreSummary(
-                    success = false,
-                    message = "Not an Xtreme Player backup"
-                )
-            }
-
-            val schemaVer = root.optInt("schemaVersion", 1)
-            if (schemaVer !in 1..10) {
-                return@withContext RestoreSummary(
-                    success = false,
-                    message = "Unsupported backup schema version: $schemaVer"
-                )
-            }
-
-            val validSectionKeys = listOf("playlists", "libraryTracks", "tracks", "favoriteTracks", "userProfile")
-            if (validSectionKeys.none(root::has)) {
-                return@withContext RestoreSummary(
-                    success = false,
-                    message = "No backup data found"
-                )
-            }
-
-            if (mode == RestoreMode.REPLACE && !confirmReplace) {
-                return@withContext RestoreSummary(
-                    success = false,
-                    message = "Explicit confirmation required before replacing existing library data."
-                )
-            }
-
-            val playlistsToRestore = mutableListOf<PlaylistEntity>()
-            val tracksToRestore = mutableListOf<TrackEntity>()
-            val refsToRestore = mutableListOf<PlaylistTrackCrossRef>()
-            var profileToRestore: UserProfile? = null
-            val dao = musicDatabase.musicDao()
-
-            var restoredPlaylists = 0
-            var restoredTracks = 0
-            var profileRestored = false
-
-            // 1. Validate & Parse Profile if present
-            if (root.has("userProfile")) {
-                val profObj = root.optJSONObject("userProfile")
-                if (profObj != null) {
-                    val name = profObj.optString("name", "").trim()
-                    val country = profObj.optString("country", "").trim()
-                    val countryCode = profObj.optString("countryCode", "").trim()
-                    val flag = profObj.optString("flag", "").trim()
-                    val langs = mutableListOf<String>()
-                    if (profObj.has("languages")) {
-                        val langsArr = profObj.optJSONArray("languages")
-                        if (langsArr != null) {
-                            for (i in 0 until langsArr.length()) {
-                                langs.add(langsArr.getString(i))
+        restoreMutex.withLock {
+            var previousProfile: UserProfile? = null
+            var profileWriteAttempted = false
+            var databaseCommitted = false
+            try {
+                require(mode != RestoreMode.REPLACE || confirmReplace) {
+                    "Explicit confirmation required before replacing existing playlists."
+                }
+                val text = rawJson ?: uriString?.takeIf { it.startsWith("content://") }?.let {
+                    context.contentResolver.openInputStream(Uri.parse(it))?.let(::readBackupText)
+                } ?: backupFile?.takeIf { it.isFile }?.inputStream()?.let(::readBackupText)
+                    ?: throw IllegalArgumentException("Backup file not found or empty")
+                val backup = parseBackup(text)
+                val beforeProfile = UserProfilePreferences.getUserProfile(context)
+                previousProfile = beforeProfile
+                val profile = backup.profile?.let { restoredProfile(it, beforeProfile) }
+                val dao = musicDatabase.musicDao()
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                // Once validated restoration starts, cancellation must not separate Room's commit
+                // from profile publication or mistake an already committed transaction for failure.
+                val restoredTrackCount = withContext(kotlinx.coroutines.NonCancellable) {
+                    val restoredCount = musicDatabase.withTransaction {
+                        val existingPlaylists = dao.getAllPlaylistsSync()
+                        val existingTracks = dao.getAllTracksSync()
+                        val existingIds = existingTracks.map { it.id }.toSet()
+                        val tracksById = existingTracks.associateBy { it.id }.toMutableMap()
+                        val byIsrc = mutableMapOf<String, MutableList<String>>()
+                        val byMetadata = mutableMapOf<Pair<String, String>, MutableList<String>>()
+                        fun indexTrack(track: TrackEntity) {
+                            reliableIsrc(track.isrc)?.let { byIsrc.getOrPut(it) { mutableListOf() }.add(track.id) }
+                            if (hasUsableTitleAndArtist(track)) {
+                                val key = normalizeText(track.title) to normalizeText(track.artist)
+                                byMetadata.getOrPut(key) { mutableListOf() }.add(track.id)
                             }
                         }
-                    }
-                    if (name.isNotBlank() || country.isNotBlank()) {
-                        profileToRestore = UserProfile(
-                            name = name,
-                            languages = if (langs.isNotEmpty()) langs else listOf("Hindi", "English"),
-                            country = country,
-                            countryCode = countryCode,
-                            flag = flag
-                        )
-                    }
-                }
-            }
-
-            // 2. Validate & Parse Playlists
-            if (root.has("playlists")) {
-                val playlistsArr = root.optJSONArray("playlists")
-                    ?: return@withContext RestoreSummary(false, "Invalid playlists format")
-                val list = mutableListOf<PlaylistEntity>()
-                for (i in 0 until playlistsArr.length()) {
-                    val p = playlistsArr.getJSONObject(i)
-                    val pId = p.optLong("playlistId", -1L)
-                    if (pId <= 0L) {
-                        return@withContext RestoreSummary(false, "Invalid playlist ID")
-                    }
-                    list.add(
-                        PlaylistEntity(
-                            playlistId = pId,
-                            title = p.optString("title", "Restored Playlist"),
-                            description = p.optString("description", ""),
-                            coverUrl = p.optString("coverUrl", ""),
-                            createdAt = p.optLong("createdAt", System.currentTimeMillis())
-                        )
-                    )
-                }
-                if (list.distinctBy { it.playlistId }.size != list.size) {
-                    return@withContext RestoreSummary(false, "Duplicate playlist IDs in backup")
-                }
-                playlistsToRestore.addAll(list)
-            }
-
-            // 3. Validate & Parse Library / Favorite Tracks
-            val trackKey = listOf("libraryTracks", "tracks", "favoriteTracks").firstOrNull(root::has)
-            if (trackKey != null) {
-                val tracksArr = root.optJSONArray(trackKey)
-                    ?: return@withContext RestoreSummary(false, "Invalid tracks format")
-                val trackList = mutableListOf<TrackEntity>()
-                for (i in 0 until tracksArr.length()) {
-                    val t = tracksArr.getJSONObject(i)
-                    val tId = t.optString("id", "").trim()
-                    if (tId.isBlank()) {
-                        return@withContext RestoreSummary(false, "Empty track ID in backup")
-                    }
-                    trackList.add(
-                        TrackEntity(
-                            id = tId,
-                            title = t.optString("title", "Unknown Track"),
-                            artist = t.optString("artist", "Unknown Artist"),
-                            album = t.optString("album", ""),
-                            durationMs = t.optLong("durationMs", 0L),
-                            coverUrl = t.optString("coverUrl", ""),
-                            audioUrl = t.optString("audioUrl", ""),
-                            bitrateKbps = t.optInt("bitrateKbps", 320),
-                            qualityBadge = t.optString("qualityBadge", "HD • 320 kbps"),
-                            genre = t.optString("genre", "Pop"),
-                            isLiked = t.optBoolean("isLiked", true),
-                            isCached = t.optBoolean("isCached", false),
-                            singers = t.optString("singers", ""),
-                            writer = t.optString("writer", ""),
-                            language = t.optString("language", ""),
-                            year = t.optString("year", ""),
-                            source = t.optString("source", "HD Stream"),
-                            addedAt = t.optLong("addedAt", System.currentTimeMillis()),
-                            lastPlayedAt = t.optLong("lastPlayedAt", 0L),
-                            isrc = t.optString("isrc", "")
-                        )
-                    )
-                }
-                if (trackList.distinctBy { it.id }.size != trackList.size) {
-                    return@withContext RestoreSummary(false, "Duplicate track IDs in backup")
-                }
-                tracksToRestore.addAll(trackList)
-            }
-
-            // 4. Validate & Parse Cross Refs
-            if (root.has("playlistTrackRefs")) {
-                val refsArr = root.optJSONArray("playlistTrackRefs")
-                    ?: return@withContext RestoreSummary(false, "Invalid playlist references format")
-                val refList = mutableListOf<PlaylistTrackCrossRef>()
-                for (i in 0 until refsArr.length()) {
-                    val r = refsArr.getJSONObject(i)
-                    val pId = r.optLong("playlistId", -1L)
-                    val tId = r.optString("trackId", "").trim()
-                    val oIdx = r.optInt("orderIndex", 0)
-                    if (pId <= 0L || tId.isBlank() || oIdx < 0) {
-                        return@withContext RestoreSummary(false, "Invalid playlist track reference format")
-                    }
-                    refList.add(
-                        PlaylistTrackCrossRef(
-                            playlistId = pId,
-                            trackId = tId,
-                            orderIndex = oIdx
-                        )
-                    )
-                }
-                refsToRestore.addAll(refList)
-            }
-
-            // 5. Check if entire backup contains 0 items
-            if (playlistsToRestore.isEmpty() && tracksToRestore.isEmpty() && profileToRestore == null) {
-                return@withContext RestoreSummary(false, "Backup file is empty")
-            }
-
-            // 6. Validate relationship consistency against combined backup and database universe
-            val existingPlaylists = dao.getAllPlaylistsSync()
-            val existingTracks = dao.getAllTracksSync()
-            val allKnownPlaylistIds = (existingPlaylists.map { it.playlistId } + playlistsToRestore.map { it.playlistId }).toSet()
-            val allKnownTrackIds = (existingTracks.map { it.id } + tracksToRestore.map { it.id }).toSet()
-
-            if (refsToRestore.any { it.playlistId !in allKnownPlaylistIds || it.trackId !in allKnownTrackIds }) {
-                return@withContext RestoreSummary(
-                    success = false,
-                    message = "Backup contains invalid playlist relationships"
-                )
-            }
-
-            // 7. Transactional restoration
-            if (mode == RestoreMode.REPLACE) {
-                musicDatabase.withTransaction {
-                    dao.deleteAllPlaylistCrossRefs()
-                    dao.deleteAllPlaylists()
-                    dao.insertPlaylists(playlistsToRestore)
-                    dao.insertOrUpdateTracks(tracksToRestore)
-                    dao.insertPlaylistTrackRefs(refsToRestore)
-                }
-                restoredPlaylists = playlistsToRestore.size
-                restoredTracks = tracksToRestore.size
-            } else {
-                // Safe MERGE Mode (Default)
-                // a) Reconcile playlist ID collisions: assign new local playlist IDs where collisions occur
-                val existingPlaylistIds = existingPlaylists.map { it.playlistId }.toSet()
-                var nextAvailablePlaylistId = (existingPlaylists.maxOfOrNull { it.playlistId } ?: 0L) + 1L
-                val playlistIdMap = mutableMapOf<Long, Long>()
-                val finalPlaylists = mutableListOf<PlaylistEntity>()
-
-                for (p in playlistsToRestore) {
-                    if (p.playlistId in existingPlaylistIds) {
-                        while (nextAvailablePlaylistId in existingPlaylistIds || nextAvailablePlaylistId in playlistIdMap.values) {
-                            nextAvailablePlaylistId++
+                        existingTracks.forEach(::indexTrack)
+                        val importedTracks = linkedMapOf<String, TrackEntity>()
+                        val trackIdMap = mutableMapOf<String, String>()
+                        for (track in backup.tracks) {
+                            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                            val sameId = tracksById[track.id]
+                            require(sameId == null || !conflictingTrackId(sameId, track)) {
+                                "Track ID ${track.id} belongs to a different recording; backup was not restored."
+                            }
+                            val candidates = reliableIsrc(track.isrc)?.let { byIsrc[it] }.orEmpty() +
+                                byMetadata[normalizeText(track.title) to normalizeText(track.artist)].orEmpty()
+                            val match = sameId ?: candidates.asSequence().distinct().mapNotNull(tracksById::get)
+                                .firstOrNull { sameRecording(it, track) }
+                            if (match == null) {
+                                trackIdMap[track.id] = track.id
+                                tracksById[track.id] = track
+                                indexTrack(track)
+                                importedTracks[track.id] = track
+                            } else {
+                                trackIdMap[track.id] = match.id
+                                if (match.id !in existingIds) {
+                                    val reconciled = match.copy(isLiked = match.isLiked || track.isLiked,
+                                        isCached = match.isCached || track.isCached,
+                                        lastPlayedAt = maxOf(match.lastPlayedAt, track.lastPlayedAt),
+                                        addedAt = minOf(match.addedAt, track.addedAt))
+                                    tracksById[match.id] = reconciled
+                                    importedTracks[match.id] = reconciled
+                                }
+                                // Existing rows remain byte-for-byte intact, including edited metadata,
+                                // favorite choices, cached-file state, and actual playback history.
+                            }
                         }
-                        val assignedId = nextAvailablePlaylistId++
-                        playlistIdMap[p.playlistId] = assignedId
-                        finalPlaylists.add(p.copy(playlistId = assignedId))
-                    } else {
-                        playlistIdMap[p.playlistId] = p.playlistId
-                        finalPlaylists.add(p)
+                        // Legacy playlist deletion could leave junction rows; never attach a new
+                        // imported playlist to those unrelated relationships by reusing their ID.
+                        val localPlaylistIds = (existingPlaylists.map { it.playlistId } +
+                            dao.getAllPlaylistCrossRefsSync().map { it.playlistId }).toSet()
+                        val usedPlaylistIds = (localPlaylistIds + backup.playlists.map { it.playlistId }).toMutableSet()
+                        val playlistIdMap = mutableMapOf<Long, Long>()
+                        var nextId = 1L
+                        val playlists = backup.playlists.map { playlist ->
+                            val targetId = if (mode == RestoreMode.MERGE && playlist.playlistId in localPlaylistIds) {
+                                while (nextId in usedPlaylistIds) {
+                                    require(nextId < Long.MAX_VALUE) { "No available playlist IDs" }
+                                    nextId++
+                                }
+                                nextId.also { usedPlaylistIds.add(it) }
+                            } else playlist.playlistId
+                            playlistIdMap[playlist.playlistId] = targetId
+                            playlist.copy(playlistId = targetId)
+                        }
+                        val refs = backup.refs.sortedBy { it.orderIndex }.map { ref ->
+                            ref.copy(playlistId = playlistIdMap.getValue(ref.playlistId),
+                                trackId = trackIdMap.getValue(ref.trackId))
+                        }.distinctBy { it.playlistId to it.trackId }
+                        if (mode == RestoreMode.REPLACE && backup.hasPlaylists) {
+                            // The existing confirmation promises replacement of playlists, not history or downloads.
+                            dao.deleteAllPlaylistCrossRefs()
+                            dao.deleteAllPlaylists()
+                        }
+                        dao.insertRestoredPlaylists(playlists)
+                        dao.insertRestoredTracks(importedTracks.values.toList())
+                        dao.insertRestoredPlaylistTrackRefs(refs)
+                        profile?.let {
+                            profileWriteAttempted = true
+                            check(UserProfilePreferences.persistUserProfile(context, it)) { "Could not save restored user profile" }
+                        }
+                        importedTracks.size
+                    }
+                    databaseCommitted = true
+                    profile?.let { UserProfilePreferences.publishUserProfile(it) }
+                    restoredCount
+                }
+                RestoreSummary(true,
+                    "Backup successfully restored! Recovered ${backup.playlists.size} playlists and $restoredTrackCount new tracks into your library.",
+                    backup.playlists.size, restoredTrackCount, profile != null)
+            } catch (error: Exception) {
+                var profileRollbackFailed = false
+                if (profileWriteAttempted && !databaseCommitted) previousProfile?.let { previous ->
+                    withContext(kotlinx.coroutines.NonCancellable) {
+                        try {
+                            profileRollbackFailed = !UserProfilePreferences.persistUserProfile(context, previous)
+                        } catch (rollbackError: Exception) {
+                            profileRollbackFailed = true
+                            error.addSuppressed(rollbackError)
+                        }
+                        if (profileRollbackFailed) {
+                            android.util.Log.e("BackupRestoreManager", "Could not roll back user profile after restore failure", error)
+                        }
                     }
                 }
-
-                // b) Reconcile duplicate songs using reliable track identifiers (ID, ISRC, normalized title + artist)
-                val existingById = existingTracks.associateBy { it.id }
-                val existingByIsrc = existingTracks.filter { it.isrc.isNotBlank() }.associateBy { it.isrc.trim().lowercase() }
-                val existingByTitleArtist = existingTracks.filter { it.title.isNotBlank() && it.artist.isNotBlank() }
-                    .associateBy { "${normalizeText(it.title)}|${normalizeText(it.artist)}" }
-
-                val trackIdMap = mutableMapOf<String, String>()
-                val finalTracks = mutableListOf<TrackEntity>()
-
-                for (imported in tracksToRestore) {
-                    val existingMatch = existingById[imported.id]
-                        ?: (if (imported.isrc.isNotBlank()) existingByIsrc[imported.isrc.trim().lowercase()] else null)
-                        ?: (if (imported.title.isNotBlank() && imported.artist.isNotBlank()) existingByTitleArtist["${normalizeText(imported.title)}|${normalizeText(imported.artist)}"] else null)
-
-                    if (existingMatch != null) {
-                        trackIdMap[imported.id] = existingMatch.id
-                        // Reconcile and preserve local favorites, listening history, and user-edited metadata
-                        val reconciled = existingMatch.copy(
-                            isLiked = existingMatch.isLiked, // Preserve local user favorite status
-                            lastPlayedAt = if (existingMatch.lastPlayedAt > 0L) existingMatch.lastPlayedAt else imported.lastPlayedAt,
-                            isCached = existingMatch.isCached || imported.isCached,
-                            addedAt = if (existingMatch.addedAt > 0L) existingMatch.addedAt else imported.addedAt,
-                            title = if (existingMatch.title.isNotBlank()) existingMatch.title else imported.title,
-                            artist = if (existingMatch.artist.isNotBlank()) existingMatch.artist else imported.artist,
-                            album = if (existingMatch.album.isNotBlank()) existingMatch.album else imported.album,
-                            coverUrl = if (existingMatch.coverUrl.isNotBlank()) existingMatch.coverUrl else imported.coverUrl,
-                            audioUrl = if (existingMatch.audioUrl.isNotBlank()) existingMatch.audioUrl else imported.audioUrl,
-                            singers = if (existingMatch.singers.isNotBlank()) existingMatch.singers else imported.singers,
-                            writer = if (existingMatch.writer.isNotBlank()) existingMatch.writer else imported.writer,
-                            language = if (existingMatch.language.isNotBlank()) existingMatch.language else imported.language,
-                            year = if (existingMatch.year.isNotBlank()) existingMatch.year else imported.year,
-                            source = if (existingMatch.source.isNotBlank()) existingMatch.source else imported.source,
-                            isrc = if (existingMatch.isrc.isNotBlank()) existingMatch.isrc else imported.isrc
-                        )
-                        finalTracks.add(reconciled)
-                    } else {
-                        trackIdMap[imported.id] = imported.id
-                        finalTracks.add(imported)
-                    }
-                }
-
-                // c) Remap playlist-track relationships preserving original playlist order
-                val remappedRefs = refsToRestore.map { ref ->
-                    val targetPId = playlistIdMap[ref.playlistId] ?: ref.playlistId
-                    val targetTId = trackIdMap[ref.trackId] ?: ref.trackId
-                    PlaylistTrackCrossRef(
-                        playlistId = targetPId,
-                        trackId = targetTId,
-                        orderIndex = ref.orderIndex
-                    )
-                }.distinctBy { Pair(it.playlistId, it.trackId) }
-
-                musicDatabase.withTransaction {
-                    dao.insertPlaylists(finalPlaylists)
-                    dao.insertOrUpdateTracks(finalTracks)
-                    dao.insertPlaylistTrackRefs(remappedRefs)
-                }
-                restoredPlaylists = finalPlaylists.size
-                restoredTracks = finalTracks.size
+                if (error is CancellationException) throw error
+                val profileWarning = if (profileRollbackFailed) " Library changes were rolled back, but the user profile could not be recovered." else ""
+                RestoreSummary(false, "Failed to restore backup: ${error.localizedMessage ?: "Invalid file format"}$profileWarning")
             }
-
-            profileToRestore?.let {
-                UserProfilePreferences.saveUserProfile(context, it)
-                profileRestored = true
-            }
-
-            RestoreSummary(
-                success = true,
-                message = "Backup successfully restored! Recovered $restoredPlaylists playlists and $restoredTracks tracks into your library.",
-                restoredPlaylistsCount = restoredPlaylists,
-                restoredTracksCount = restoredTracks,
-                profileRestored = profileRestored
-            )
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            RestoreSummary(
-                success = false,
-                message = "Failed to restore backup: ${e.localizedMessage ?: "Invalid file format"}"
-            )
         }
     }
 }

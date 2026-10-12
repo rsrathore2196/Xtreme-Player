@@ -2,15 +2,17 @@ package com.example
 
 import android.app.Application
 import android.content.Context
+import android.database.Cursor
 import androidx.room.Room
 import androidx.sqlite.db.SupportSQLiteDatabase
-import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import androidx.sqlite.db.SupportSQLiteOpenHelper
+import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.local.ListeningEventEntity
 import com.example.data.local.MusicDatabase
-import com.example.data.local.TrackEntity
+import com.example.data.local.PlaylistEntity
 import kotlinx.coroutines.runBlocking
+import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -18,12 +20,10 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
-import java.io.File
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = Application::class)
 class MusicDatabaseMigrationTest {
-
     private lateinit var context: Context
     private val testDbName = "migration_test.db"
 
@@ -38,320 +38,259 @@ class MusicDatabaseMigrationTest {
         context.deleteDatabase(testDbName)
     }
 
-    private fun createOldDatabase(version: Int, initSchemaAndData: (SupportSQLiteDatabase) -> Unit) {
-        val config = SupportSQLiteOpenHelper.Configuration.builder(context)
-            .name(testDbName)
-            .callback(object : SupportSQLiteOpenHelper.Callback(version) {
-                override fun onCreate(db: SupportSQLiteDatabase) {
-                    initSchemaAndData(db)
+    private fun schema(version: Int): JSONObject = context.assets.open(
+        "com.example.data.local.MusicDatabase/$version.json"
+    ).bufferedReader().use { JSONObject(it.readText()).getJSONObject("database") }
+
+    private fun helper(version: Int, onCreate: (SupportSQLiteDatabase) -> Unit = {}): SupportSQLiteOpenHelper =
+        FrameworkSQLiteOpenHelperFactory().create(
+            SupportSQLiteOpenHelper.Configuration.builder(context)
+                .name(testDbName)
+                .callback(object : SupportSQLiteOpenHelper.Callback(version) {
+                    override fun onCreate(db: SupportSQLiteDatabase) = onCreate(db)
+                    override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) {
+                        error("Fixture version changed unexpectedly")
+                    }
+                }).build()
+        )
+
+    private fun createOldDatabase(
+        version: Int,
+        schemaVersion: Int = version,
+        customize: (SupportSQLiteDatabase) -> Unit = {}
+    ): Map<String, List<Map<String, Any?>>> {
+        val fixtureSchema = schema(schemaVersion)
+        return helper(version) { db ->
+            val entities = fixtureSchema.getJSONArray("entities")
+            for (i in 0 until entities.length()) {
+                val entity = entities.getJSONObject(i)
+                val table = entity.getString("tableName")
+                db.execSQL(entity.getString("createSql").replace("\${TABLE_NAME}", table))
+                val indices = entity.optJSONArray("indices")
+                if (indices != null) {
+                    for (j in 0 until indices.length()) {
+                        db.execSQL(indices.getJSONObject(j).getString("createSql").replace("\${TABLE_NAME}", table))
+                    }
                 }
-                override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) {}
-            })
-            .build()
-        val helper = FrameworkSQLiteOpenHelperFactory().create(config)
-        val db = helper.writableDatabase
-        db.close()
-        helper.close()
+            }
+            // Historical exports were reconstructed from source. Install the correct
+            // identity, so an already-current database also exercises Room's identity check.
+            db.execSQL("CREATE TABLE room_master_table (id INTEGER PRIMARY KEY, identity_hash TEXT)")
+            db.execSQL("INSERT INTO room_master_table (id, identity_hash) VALUES (42, ?)", arrayOf(fixtureSchema.getString("identityHash")))
+            seedRecords(db, schemaVersion)
+            customize(db)
+        }.use { old -> snapshot(old.writableDatabase) }
     }
 
-    @Test
-    fun testMigrateFromV1ToV8PreservesAllDataAndRelationships() = runBlocking {
-        // Create V1 database
-        createOldDatabase(1) { db ->
-            db.execSQL("""
-                CREATE TABLE IF NOT EXISTS `tracks` (
-                    `id` TEXT NOT NULL,
-                    `title` TEXT NOT NULL,
-                    `artist` TEXT NOT NULL,
-                    `album` TEXT NOT NULL,
-                    `durationMs` INTEGER NOT NULL,
-                    `coverUrl` TEXT NOT NULL,
-                    `audioUrl` TEXT NOT NULL,
-                    `bitrateKbps` INTEGER NOT NULL,
-                    `qualityBadge` TEXT NOT NULL,
-                    `genre` TEXT NOT NULL,
-                    `isLiked` INTEGER NOT NULL,
-                    `isCached` INTEGER NOT NULL,
-                    `lastPlayedAt` INTEGER NOT NULL,
-                    `addedAt` INTEGER NOT NULL,
-                    PRIMARY KEY(`id`)
-                )
-            """.trimIndent())
-
-            db.execSQL("""
-                CREATE TABLE IF NOT EXISTS `playlists` (
-                    `playlistId` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
-                    `title` TEXT NOT NULL,
-                    `description` TEXT NOT NULL,
-                    `coverUrl` TEXT NOT NULL,
-                    `createdAt` INTEGER NOT NULL
-                )
-            """.trimIndent())
-
-            db.execSQL("""
-                CREATE TABLE IF NOT EXISTS `playlist_track_cross_ref` (
-                    `playlistId` INTEGER NOT NULL,
-                    `trackId` TEXT NOT NULL,
-                    `orderIndex` INTEGER NOT NULL,
-                    PRIMARY KEY(`playlistId`, `trackId`)
-                )
-            """.trimIndent())
-
-            // Insert representative records into V1
-            db.execSQL("INSERT INTO tracks (id, title, artist, album, durationMs, coverUrl, audioUrl, bitrateKbps, qualityBadge, genre, isLiked, isCached, lastPlayedAt, addedAt) " +
-                    "VALUES ('v1_song_1', 'Old Hit', 'Legend Artist', 'Classic Album', 210000, 'cover1.jpg', 'audio1.mp3', 320, 'HD • 320 kbps', 'Pop', 1, 1, 1700000000000, 1690000000000)")
-            db.execSQL("INSERT INTO tracks (id, title, artist, album, durationMs, coverUrl, audioUrl, bitrateKbps, qualityBadge, genre, isLiked, isCached, lastPlayedAt, addedAt) " +
-                    "VALUES ('v1_song_2', 'Second Hit', 'Artist 2', 'Album 2', 180000, 'cover2.jpg', 'audio2.mp3', 320, 'HD • 320 kbps', 'Rock', 0, 0, 0, 1690000001000)")
-
-            db.execSQL("INSERT INTO playlists (playlistId, title, description, coverUrl, createdAt) " +
-                    "VALUES (101, 'My V1 Playlist', 'Created in version 1', 'pl_cover.jpg', 1690000000000)")
-
-            db.execSQL("INSERT INTO playlist_track_cross_ref (playlistId, trackId, orderIndex) " +
-                    "VALUES (101, 'v1_song_1', 0)")
-            db.execSQL("INSERT INTO playlist_track_cross_ref (playlistId, trackId, orderIndex) " +
-                    "VALUES (101, 'v1_song_2', 1)")
-        }
-
-        // Open via Room with ALL_MIGRATIONS; Room validates the schema on open
-        val db = Room.databaseBuilder(context, MusicDatabase::class.java, testDbName)
-            .addMigrations(*MusicDatabase.ALL_MIGRATIONS)
-            .build()
-
-        val dao = db.musicDao()
-        val tracks = dao.getAllTracksSync()
-        assertEquals(2, tracks.size)
-
-        val track1 = dao.getTrackById("v1_song_1")
-        assertNotNull(track1)
-        assertEquals("Old Hit", track1!!.title)
-        assertTrue(track1.isLiked)
-        assertTrue(track1.isCached)
-        assertEquals(1700000000000L, track1.lastPlayedAt)
-        // Check new default column values added across migrations
-        assertEquals("", track1.singers)
-        assertEquals("", track1.writer)
-        assertEquals("", track1.language)
-        assertEquals("", track1.year)
-        assertEquals("HD Stream", track1.source)
-        assertEquals("", track1.isrc)
-
-        val playlists = dao.getAllPlaylistsSync()
-        assertEquals(1, playlists.size)
-        assertEquals(101L, playlists[0].playlistId)
-        assertEquals("My V1 Playlist", playlists[0].title)
-
-        val crossRefs = dao.getAllPlaylistCrossRefsSync()
-        assertEquals(2, crossRefs.size)
-        assertEquals(101L, crossRefs[0].playlistId)
-        assertEquals("v1_song_1", crossRefs[0].trackId)
-        assertEquals(0, crossRefs[0].orderIndex)
-
-        // Verify newly added tables are fully functional
-        val eventsDao = db.listeningEventDao()
-        eventsDao.insertListeningEvent(
-            ListeningEventEntity(
-                trackId = "v1_song_1",
-                artistName = "Legend Artist",
-                timestamp = System.currentTimeMillis()
+    private fun seedRecords(db: SupportSQLiteDatabase, version: Int) {
+        val tracks = listOf(
+            linkedMapOf<String, Any>(
+                "id" to "old_favorite", "title" to "User-edited title", "artist" to "Original Artist",
+                "album" to "Official Album", "durationMs" to 210000L, "coverUrl" to "file:///cover.jpg",
+                "audioUrl" to "file:///downloaded.mp3", "bitrateKbps" to 320, "qualityBadge" to "HD",
+                "genre" to "Rock", "isLiked" to 1, "isCached" to 1,
+                "lastPlayedAt" to 1700000000000L, "addedAt" to 1690000000000L
+            ),
+            linkedMapOf<String, Any>(
+                "id" to "old_second", "title" to "Other Track", "artist" to "Another Artist",
+                "album" to "Another Album", "durationMs" to 180000L, "coverUrl" to "https://example.com/cover.jpg",
+                "audioUrl" to "https://example.com/track", "bitrateKbps" to 192, "qualityBadge" to "High",
+                "genre" to "Jazz", "isLiked" to 0, "isCached" to 0, "lastPlayedAt" to 1700000000100L,
+                "addedAt" to 1690000000100L
             )
         )
-        val events = eventsDao.getRecentEvents(10)
-        assertEquals(1, events.size)
-
-        db.close()
-    }
-
-    @Test
-    fun testMigrateFromV5ToV8CreatesListeningEventsAndArtworkCache() = runBlocking {
-        createOldDatabase(5) { db ->
-            db.execSQL("""
-                CREATE TABLE IF NOT EXISTS `tracks` (
-                    `id` TEXT NOT NULL,
-                    `title` TEXT NOT NULL,
-                    `artist` TEXT NOT NULL,
-                    `album` TEXT NOT NULL,
-                    `durationMs` INTEGER NOT NULL,
-                    `coverUrl` TEXT NOT NULL,
-                    `audioUrl` TEXT NOT NULL,
-                    `bitrateKbps` INTEGER NOT NULL,
-                    `qualityBadge` TEXT NOT NULL,
-                    `genre` TEXT NOT NULL,
-                    `isLiked` INTEGER NOT NULL,
-                    `isCached` INTEGER NOT NULL,
-                    `lastPlayedAt` INTEGER NOT NULL,
-                    `addedAt` INTEGER NOT NULL,
-                    `singers` TEXT NOT NULL,
-                    `writer` TEXT NOT NULL,
-                    `language` TEXT NOT NULL,
-                    `year` TEXT NOT NULL,
-                    `source` TEXT NOT NULL,
-                    `isrc` TEXT NOT NULL,
-                    PRIMARY KEY(`id`)
-                )
-            """.trimIndent())
-
-            db.execSQL("""
-                CREATE TABLE IF NOT EXISTS `playlists` (
-                    `playlistId` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
-                    `title` TEXT NOT NULL,
-                    `description` TEXT NOT NULL,
-                    `coverUrl` TEXT NOT NULL,
-                    `createdAt` INTEGER NOT NULL
-                )
-            """.trimIndent())
-
-            db.execSQL("""
-                CREATE TABLE IF NOT EXISTS `playlist_track_cross_ref` (
-                    `playlistId` INTEGER NOT NULL,
-                    `trackId` TEXT NOT NULL,
-                    `orderIndex` INTEGER NOT NULL,
-                    PRIMARY KEY(`playlistId`, `trackId`)
-                )
-            """.trimIndent())
-            db.execSQL("CREATE INDEX IF NOT EXISTS `index_playlist_track_cross_ref_trackId` ON `playlist_track_cross_ref` (`trackId`)")
-
-            db.execSQL("INSERT INTO tracks VALUES ('track_5', 'V5 Title', 'Artist 5', 'Album 5', 200000, 'cover', 'url', 320, 'badge', 'Pop', 1, 0, 5000, 1000, 'Singer', 'Writer', 'Hindi', '2023', 'HD Stream', 'ISRC123')")
-            db.execSQL("INSERT INTO playlists VALUES (50, 'V5 Playlist', 'desc', 'cover', 2000)")
-            db.execSQL("INSERT INTO playlist_track_cross_ref VALUES (50, 'track_5', 0)")
+        tracks.forEach { row ->
+            if (version >= 3) row.putAll(mapOf("singers" to "Singer", "writer" to "Writer", "language" to "Tamil", "year" to "2005"))
+            if (version >= 4) row["source"] = "JioSaavn"
+            if (version >= 5) row["isrc"] = if (row["id"] == "old_favorite") "GBAYE0500001" else "GBAYE0500002"
+            insert(db, "tracks", row)
         }
-
-        val db = Room.databaseBuilder(context, MusicDatabase::class.java, testDbName)
-            .addMigrations(*MusicDatabase.ALL_MIGRATIONS)
-            .build()
-
-        val track = db.musicDao().getTrackById("track_5")
-        assertNotNull(track)
-        assertEquals("ISRC123", track!!.isrc)
-        assertEquals("Singer", track.singers)
-
-        // Verify tables created in v6 and v7 work without errors
-        db.listeningEventDao().insertListeningEvent(
-            ListeningEventEntity(trackId = "track_5", artistName = "Artist 5")
-        )
-        assertEquals(1, db.listeningEventDao().getRecentEvents(10).size)
-
-        db.artworkCacheDao().insert(
-            com.example.data.local.ArtworkCacheEntity(cacheKey = "key1", rawArtworkUrl = "http://art.com")
-        )
-        assertEquals("http://art.com", db.artworkCacheDao().getUrl("key1"))
-
-        db.close()
-    }
-
-    @Test
-    fun testMigrateFromV7ToV8PreservesData() = runBlocking {
-        createOldDatabase(7) { db ->
+        db.execSQL("INSERT INTO playlists VALUES (101, 'Personal Playlist', 'User notes', 'file:///playlist.jpg', 1690000000010)")
+        db.execSQL("INSERT INTO playlists VALUES (110, 'Second Playlist', '', '', 1690000000020)")
+        db.execSQL("INSERT INTO playlist_track_cross_ref VALUES (101, 'old_favorite', 7)")
+        db.execSQL("INSERT INTO playlist_track_cross_ref VALUES (101, 'old_second', 2)")
+        db.execSQL("INSERT INTO playlist_track_cross_ref VALUES (110, 'old_favorite', 9)")
+        if (version >= 6) {
             db.execSQL("""
-                CREATE TABLE IF NOT EXISTS `tracks` (
-                    `id` TEXT NOT NULL,
-                    `title` TEXT NOT NULL,
-                    `artist` TEXT NOT NULL,
-                    `album` TEXT NOT NULL,
-                    `durationMs` INTEGER NOT NULL,
-                    `coverUrl` TEXT NOT NULL,
-                    `audioUrl` TEXT NOT NULL,
-                    `bitrateKbps` INTEGER NOT NULL,
-                    `qualityBadge` TEXT NOT NULL,
-                    `genre` TEXT NOT NULL,
-                    `isLiked` INTEGER NOT NULL,
-                    `isCached` INTEGER NOT NULL,
-                    `lastPlayedAt` INTEGER NOT NULL,
-                    `addedAt` INTEGER NOT NULL,
-                    `singers` TEXT NOT NULL,
-                    `writer` TEXT NOT NULL,
-                    `language` TEXT NOT NULL,
-                    `year` TEXT NOT NULL,
-                    `source` TEXT NOT NULL,
-                    `isrc` TEXT NOT NULL,
-                    PRIMARY KEY(`id`)
-                )
+                INSERT INTO listening_events VALUES
+                (701, 'old_favorite', 'artist-id', 'Original Artist', 'Official Album', 'Rock', 'Tamil',
+                1700000000000, 'old-session', 125000, 210000, 0.595, 0, 0, 1, 'JIOSAAVN', 'ACTUAL_PLAY')
             """.trimIndent())
-            db.execSQL("CREATE TABLE IF NOT EXISTS `playlists` (`playlistId` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `title` TEXT NOT NULL, `description` TEXT NOT NULL, `coverUrl` TEXT NOT NULL, `createdAt` INTEGER NOT NULL)")
-            db.execSQL("CREATE TABLE IF NOT EXISTS `playlist_track_cross_ref` (`playlistId` INTEGER NOT NULL, `trackId` TEXT NOT NULL, `orderIndex` INTEGER NOT NULL, PRIMARY KEY(`playlistId`, `trackId`))")
-            db.execSQL("CREATE INDEX IF NOT EXISTS `index_playlist_track_cross_ref_trackId` ON `playlist_track_cross_ref` (`trackId`)")
-            db.execSQL("""
-                CREATE TABLE IF NOT EXISTS `listening_events` (
-                    `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
-                    `trackId` TEXT NOT NULL,
-                    `artistId` TEXT NOT NULL,
-                    `artistName` TEXT NOT NULL,
-                    `album` TEXT NOT NULL,
-                    `genre` TEXT NOT NULL,
-                    `language` TEXT NOT NULL,
-                    `timestamp` INTEGER NOT NULL,
-                    `sessionId` TEXT NOT NULL,
-                    `playedDurationMs` INTEGER NOT NULL,
-                    `trackDurationMs` INTEGER NOT NULL,
-                    `completionRatio` REAL NOT NULL,
-                    `completed` INTEGER NOT NULL,
-                    `skipped` INTEGER NOT NULL,
-                    `liked` INTEGER NOT NULL,
-                    `source` TEXT NOT NULL,
-                    `eventType` TEXT NOT NULL
-                )
-            """.trimIndent())
-            db.execSQL("CREATE TABLE IF NOT EXISTS `artwork_cache` (`cacheKey` TEXT NOT NULL, `rawArtworkUrl` TEXT NOT NULL, `timestamp` INTEGER NOT NULL, PRIMARY KEY(`cacheKey`))")
-
-            db.execSQL("INSERT INTO tracks VALUES ('track_7', 'V7 Song', 'Artist 7', 'Album 7', 150000, 'cover', 'url', 320, 'badge', 'Pop', 1, 1, 9999, 1000, 's', 'w', 'Hindi', '2024', 'HD Stream', 'ISRC7')")
         }
+        if (version >= 7) {
+            db.execSQL("INSERT INTO artwork_cache VALUES ('artist-original', 'https://example.com/artist.jpg', 1700000000000)")
+        }
+    }
 
-        val db = Room.databaseBuilder(context, MusicDatabase::class.java, testDbName)
-            .addMigrations(*MusicDatabase.ALL_MIGRATIONS)
-            .build()
+    private fun insert(db: SupportSQLiteDatabase, table: String, values: Map<String, Any>) {
+        val columns = values.keys.joinToString(",") { "`$it`" }
+        val placeholders = values.keys.joinToString(",") { "?" }
+        db.execSQL("INSERT INTO `$table` ($columns) VALUES ($placeholders)", values.values.toTypedArray())
+    }
 
-        val track = db.musicDao().getTrackById("track_7")
-        assertNotNull(track)
-        assertEquals("V7 Song", track!!.title)
-        assertTrue(track.isLiked)
-        assertTrue(track.isCached)
-        db.close()
+    private fun snapshot(db: SupportSQLiteDatabase): Map<String, List<Map<String, Any?>>> {
+        val tables = mutableListOf<String>()
+        db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('tracks', 'playlists', 'playlist_track_cross_ref', 'listening_events', 'artwork_cache') ORDER BY name").use { cursor ->
+            while (cursor.moveToNext()) tables += cursor.getString(0)
+        }
+        return tables.associateWith { table ->
+            db.query("SELECT * FROM `$table` ORDER BY rowid").use { cursor ->
+                buildList {
+                    while (cursor.moveToNext()) {
+                        add(cursor.columnNames.withIndex().associate { (index, name) ->
+                            name to when (cursor.getType(index)) {
+                                Cursor.FIELD_TYPE_NULL -> null
+                                Cursor.FIELD_TYPE_INTEGER -> cursor.getLong(index)
+                                Cursor.FIELD_TYPE_FLOAT -> cursor.getDouble(index)
+                                Cursor.FIELD_TYPE_BLOB -> cursor.getBlob(index).toList()
+                                else -> cursor.getString(index)
+                            }
+                        })
+                    }
+                }
+            }
+        }
+    }
+
+    private fun assertPreserved(
+        before: Map<String, List<Map<String, Any?>>>,
+        after: Map<String, List<Map<String, Any?>>>
+    ) {
+        before.forEach { (table, originalRows) ->
+            val migratedRows = requireNotNull(after[table])
+            assertEquals("$table record count", originalRows.size, migratedRows.size)
+            originalRows.zip(migratedRows).forEach { (original, migrated) ->
+                original.forEach { (column, value) ->
+                    assertEquals("$table.$column must survive unchanged", value, migrated[column])
+                }
+            }
+        }
+    }
+
+    private fun openCurrentDatabase() = Room.databaseBuilder(context, MusicDatabase::class.java, testDbName)
+        .addMigrations(*MusicDatabase.ALL_MIGRATIONS)
+        .allowMainThreadQueries()
+        .build()
+
+    private inline fun <T> MusicDatabase.withClose(block: (MusicDatabase) -> T): T =
+        try { block(this) } finally { close() }
+
+    @Test
+    fun everySupportedVersionPreservesAllExistingRecordsAndOrder() = runBlocking {
+        for (version in 1..8) {
+            context.deleteDatabase(testDbName)
+            val before = createOldDatabase(version)
+            openCurrentDatabase().withClose { db ->
+                val sqlite = db.openHelper.writableDatabase // Force the real Room migration and validation.
+                assertEquals(8, sqlite.version)
+                assertPreserved(before, snapshot(sqlite))
+                val oldTrack = requireNotNull(db.musicDao().getTrackById("old_favorite"))
+                assertTrue(oldTrack.isLiked)
+                assertTrue(oldTrack.isCached)
+                if (version < 3) {
+                    assertEquals("", oldTrack.singers)
+                    assertEquals("", oldTrack.writer)
+                    assertEquals("", oldTrack.language)
+                    assertEquals("", oldTrack.year)
+                }
+                if (version < 4) assertEquals("HD Stream", oldTrack.source)
+                if (version < 5) assertEquals("", oldTrack.isrc)
+                val playlistId = db.musicDao().insertPlaylist(PlaylistEntity(title = "After migration"))
+                assertTrue("Playlist autoincrement must not reuse an existing ID", playlistId > 110)
+                val eventId = db.listeningEventDao().insertListeningEvent(ListeningEventEntity(trackId = "old_favorite"))
+                assertTrue("Listening-event IDs must remain monotonic", eventId > if (version >= 6) 701 else 0)
+            }
+        }
     }
 
     @Test
-    fun testSafeDowngradeFromV8ToV7DoesNotWipeData() = runBlocking {
-        // Create V8 database
-        val dbV8 = Room.databaseBuilder(context, MusicDatabase::class.java, testDbName)
-            .addMigrations(*MusicDatabase.ALL_MIGRATIONS)
-            .build()
+    fun legacyMissingIndicesAreRepairedWithoutReplacingTables() {
+        val before = createOldDatabase(7) { db ->
+            db.execSQL("DROP INDEX index_playlist_track_cross_ref_trackId")
+            db.execSQL("DROP INDEX index_listening_events_trackId")
+            db.execSQL("DROP INDEX index_listening_events_artistName")
+            db.execSQL("DROP INDEX index_listening_events_timestamp")
+            db.execSQL("DROP INDEX index_listening_events_sessionId")
+        }
+        openCurrentDatabase().withClose { db ->
+            assertPreserved(before, snapshot(db.openHelper.writableDatabase))
+        }
+    }
 
-        dbV8.musicDao().insertOrUpdateTrack(
-            TrackEntity(
-                id = "downgrade_track",
-                title = "Safe Track",
-                artist = "Safe Artist",
-                album = "Album",
-                durationMs = 120000,
-                coverUrl = "",
-                audioUrl = "",
-                isLiked = true
-            )
-        )
-        dbV8.close()
+    @Test
+    fun legacyMigrationColumnDefaultsDoNotCauseRecordsToBeLost() {
+        // Old ALTER TABLE migrations added SQL defaults although entity fields did not
+        // declare @ColumnInfo defaults. Room must accept both fresh and migrated variants.
+        val before = createOldDatabase(2)
+        helper(2).use { old ->
+            val sqlite = old.writableDatabase
+            MusicDatabase.MIGRATION_2_3.migrate(sqlite)
+            MusicDatabase.MIGRATION_3_4.migrate(sqlite)
+            MusicDatabase.MIGRATION_4_5.migrate(sqlite)
+            sqlite.version = 5
+        }
+        openCurrentDatabase().withClose { db ->
+            assertPreserved(before, snapshot(db.openHelper.writableDatabase))
+        }
+    }
 
-        // Apply downgrade migration 8->7 directly
+    @Test
+    fun unsupportedFutureDowngradeFailsWithoutDeletingAnyRecords() {
+        val before = createOldDatabase(version = 9, schemaVersion = 8)
+        val room = openCurrentDatabase()
+        try {
+            room.openHelper.writableDatabase
+            fail("A future-version database must never be silently downgraded or recreated")
+        } catch (expected: IllegalStateException) {
+            assertTrue(expected.message.orEmpty().contains("migration", ignoreCase = true))
+        } finally {
+            room.close()
+        }
+        helper(9).use { original ->
+            assertEquals(9, original.writableDatabase.version)
+            assertPreserved(before, snapshot(original.writableDatabase))
+        }
+    }
+
+    @Test
+    fun failedSchemaValidationRollsBackTheCompleteUpgrade() {
+        val before = createOldDatabase(5) { db -> db.execSQL("ALTER TABLE tracks ADD COLUMN unexpected TEXT") }
+        val room = openCurrentDatabase()
+        try {
+            room.openHelper.writableDatabase
+            fail("An incompatible schema must fail validation without destructive recovery")
+        } catch (expected: IllegalStateException) {
+            assertTrue(expected.message.orEmpty().contains("migration", ignoreCase = true))
+        } finally {
+            room.close()
+        }
+        helper(5).use { original ->
+            val sqlite = original.writableDatabase
+            assertEquals(5, sqlite.version)
+            assertPreserved(before, snapshot(sqlite))
+            sqlite.query("SELECT COUNT(*) FROM sqlite_master WHERE name IN ('listening_events', 'artwork_cache')").use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertEquals("Failed migrations must roll back newly created tables", 0, cursor.getInt(0))
+            }
+        }
+    }
+
+    @Test
+    fun supportedEightToSevenDowngradePreservesEveryTable() {
+        val before = createOldDatabase(8)
         val config = SupportSQLiteOpenHelper.Configuration.builder(context)
             .name(testDbName)
             .callback(object : SupportSQLiteOpenHelper.Callback(7) {
-                override fun onCreate(db: SupportSQLiteDatabase) {}
-                override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) {}
+                override fun onCreate(db: SupportSQLiteDatabase) = error("Existing database required")
+                override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) = error("Unexpected upgrade")
                 override fun onDowngrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) {
-                    if (oldVersion == 8 && newVersion == 7) {
-                        MusicDatabase.MIGRATION_8_7.migrate(db)
-                    }
+                    check(oldVersion == 8 && newVersion == 7)
+                    MusicDatabase.MIGRATION_8_7.migrate(db)
                 }
-            })
-            .build()
-
-        val helper = FrameworkSQLiteOpenHelperFactory().create(config)
-        val sdb = helper.writableDatabase
-
-        // Verify data was NOT wiped
-        val cursor = sdb.query("SELECT title, isLiked FROM tracks WHERE id = 'downgrade_track'")
-        assertTrue("Track record must exist after downgrade", cursor.moveToFirst())
-        assertEquals("Safe Track", cursor.getString(0))
-        assertEquals(1, cursor.getInt(1))
-        cursor.close()
-        sdb.close()
-        helper.close()
+            }).build()
+        FrameworkSQLiteOpenHelperFactory().create(config).use { downgraded ->
+            assertEquals(7, downgraded.writableDatabase.version)
+            assertPreserved(before, snapshot(downgraded.writableDatabase))
+        }
     }
 }

@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 6,
-    "identityHash": "72ccb8b9906c5996e1cb83960374af93",
+    "identityHash": "a05d34f6fd927b4b67228a639244ce12",
     "entities": [
       {
         "tableName": "tracks",
@@ -134,7 +134,9 @@
           "columnNames": [
             "id"
           ]
-        }
+        },
+        "indices": [],
+        "foreignKeys": []
       },
       {
         "tableName": "playlists",
@@ -176,7 +178,9 @@
           "columnNames": [
             "playlistId"
           ]
-        }
+        },
+        "indices": [],
+        "foreignKeys": []
       },
       {
         "tableName": "playlist_track_cross_ref",
@@ -218,7 +222,8 @@
             "orders": [],
             "createSql": "CREATE INDEX IF NOT EXISTS `index_playlist_track_cross_ref_trackId` ON `${TABLE_NAME}` (`trackId`)"
           }
-        ]
+        ],
+        "foreignKeys": []
       },
       {
         "tableName": "listening_events",
@@ -370,12 +375,14 @@
             "orders": [],
             "createSql": "CREATE INDEX IF NOT EXISTS `index_listening_events_sessionId` ON `${TABLE_NAME}` (`sessionId`)"
           }
-        ]
+        ],
+        "foreignKeys": []
       }
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '72ccb8b9906c5996e1cb83960374af93')"
-    ]
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'a05d34f6fd927b4b67228a639244ce12')"
+    ],
+    "views": []
   }
 }

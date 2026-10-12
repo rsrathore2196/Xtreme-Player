@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 2,
-    "identityHash": "72ccb8b9906c5996e1cb83960374af93",
+    "identityHash": "9ddf17caf8950d2722f08d3566dedb37",
     "entities": [
       {
         "tableName": "tracks",
@@ -98,7 +98,9 @@
           "columnNames": [
             "id"
           ]
-        }
+        },
+        "indices": [],
+        "foreignKeys": []
       },
       {
         "tableName": "playlists",
@@ -140,7 +142,9 @@
           "columnNames": [
             "playlistId"
           ]
-        }
+        },
+        "indices": [],
+        "foreignKeys": []
       },
       {
         "tableName": "playlist_track_cross_ref",
@@ -182,12 +186,14 @@
             "orders": [],
             "createSql": "CREATE INDEX IF NOT EXISTS `index_playlist_track_cross_ref_trackId` ON `${TABLE_NAME}` (`trackId`)"
           }
-        ]
+        ],
+        "foreignKeys": []
       }
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '72ccb8b9906c5996e1cb83960374af93')"
-    ]
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '9ddf17caf8950d2722f08d3566dedb37')"
+    ],
+    "views": []
   }
 }

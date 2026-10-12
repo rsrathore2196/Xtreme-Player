@@ -115,6 +115,16 @@ interface MusicDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertPlaylistTrackRefs(refs: List<PlaylistTrackCrossRef>)
 
+    // Backup import must fail atomically on unexpected collisions, never delete and replace rows.
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertRestoredPlaylists(playlists: List<PlaylistEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertRestoredTracks(tracks: List<TrackEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertRestoredPlaylistTrackRefs(refs: List<PlaylistTrackCrossRef>)
+
     @Query("DELETE FROM playlists")
     suspend fun deleteAllPlaylists()
 

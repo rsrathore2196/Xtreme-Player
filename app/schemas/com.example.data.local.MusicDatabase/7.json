@@ -134,7 +134,9 @@
           "columnNames": [
             "id"
           ]
-        }
+        },
+        "indices": [],
+        "foreignKeys": []
       },
       {
         "tableName": "playlists",
@@ -176,7 +178,9 @@
           "columnNames": [
             "playlistId"
           ]
-        }
+        },
+        "indices": [],
+        "foreignKeys": []
       },
       {
         "tableName": "playlist_track_cross_ref",
@@ -218,7 +222,8 @@
             "orders": [],
             "createSql": "CREATE INDEX IF NOT EXISTS `index_playlist_track_cross_ref_trackId` ON `${TABLE_NAME}` (`trackId`)"
           }
-        ]
+        ],
+        "foreignKeys": []
       },
       {
         "tableName": "listening_events",
@@ -370,7 +375,8 @@
             "orders": [],
             "createSql": "CREATE INDEX IF NOT EXISTS `index_listening_events_sessionId` ON `${TABLE_NAME}` (`sessionId`)"
           }
-        ]
+        ],
+        "foreignKeys": []
       },
       {
         "tableName": "artwork_cache",
@@ -400,12 +406,15 @@
           "columnNames": [
             "cacheKey"
           ]
-        }
+        },
+        "indices": [],
+        "foreignKeys": []
       }
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
       "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '72ccb8b9906c5996e1cb83960374af93')"
-    ]
+    ],
+    "views": []
   }
 }
