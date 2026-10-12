@@ -117,7 +117,7 @@ class HomeViewModel(
         if (taste.isColdStart) emptyList() else {
             val byId = metadata.associateBy { it.id }
             val seen = HomeRecommendationPolicy.Recordings()
-            events.filter(UserTasteProfile::meaningful).sortedByDescending { it.timestamp }
+            events.filter(UserTasteProfile::played).sortedByDescending { it.timestamp }
                 .mapNotNull { byId[it.trackId] }.filter { seen.add(it) }.take(30)
         }
     }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
@@ -216,14 +216,17 @@ class HomeViewModel(
             (taste.skipCounts[taste.keyFor(it)] ?: 0) < 2 || taste.keyFor(it) in taste.favoriteRecordings
         }.sortedBy { HomeRecommendationPolicy.metadataKey(it) in previousExposure }
         val era = HomeRecommendationPolicy.diversify(fresh(pool.era), 15, seen)
-        val meaningful = actualPlays.value.filter(UserTasteProfile::meaningful)
-        val artistCounts = if (taste.isColdStart) emptyMap() else meaningful.flatMap { event ->
+        val plays = actualPlays.value.filter(UserTasteProfile::played).distinctBy { it.sessionId to it.trackId }
+        val artistCounts = if (taste.isColdStart) emptyMap() else plays.flatMap { event ->
             val track = historyMetadata.value.find { it.id == event.trackId }
             track?.let(HomeRecommendationPolicy::artists).orEmpty()
         }.groupingBy { it }.eachCount()
         val artists = artistCounts.entries.sortedByDescending { it.value }.take(10).mapNotNull { (artist, count) ->
             val matches = catalog.filter { artist in HomeRecommendationPolicy.artists(it) }
-            val tracks = HomeRecommendationPolicy.diversify(fresh(matches), 3, seen)
+            val tracks = HomeRecommendationPolicy.diversify(fresh(matches), 3, seen).ifEmpty {
+                // An artist history card can use its actual played song even when it is in a chart.
+                recentlyPlayed.value.filter { artist in HomeRecommendationPolicy.artists(it) }.take(1)
+            }
             if (tracks.isEmpty()) null else MostListenedArtist(
                 matches.firstOrNull()?.let { track -> (track.artist + "," + track.singers).split(',')
                     .firstOrNull { HomeRecommendationPolicy.normalize(it) == artist }?.trim() } ?: artist,
@@ -240,8 +243,8 @@ class HomeViewModel(
         _eraCard.value = _eraCard.value.copy(tracks = era, isLoading = false, isLoaded = era.isNotEmpty())
         _ytmCard.value = _ytmCard.value.copy(tracks = quick, isLoading = false, isLoaded = quick.isNotEmpty())
         _mostListenedArtists.value = artists
-        _personalizedCard.value = _personalizedCard.value.copy(tracks = personalized.takeIf { it.size >= 3 }.orEmpty(),
-            isLoading = false, isLoaded = personalized.size >= 3)
+        _personalizedCard.value = _personalizedCard.value.copy(tracks = personalized,
+            isLoading = false, isLoaded = personalized.isNotEmpty())
         // The small Recently Played card consumes this existing history flow without recommendation filtering.
         _listeningHistoryCard.value = _listeningHistoryCard.value.copy(tracks = recentlyPlayed.value,
             isLoading = false, isLoaded = recentlyPlayed.value.isNotEmpty())

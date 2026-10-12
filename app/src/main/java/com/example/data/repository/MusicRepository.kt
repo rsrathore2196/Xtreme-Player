@@ -95,9 +95,9 @@ class MusicRepository(
 
     private suspend fun discoveryQueries(profile: UserProfile, era: Boolean = false): List<String> {
         val favoriteTracks = musicDao.getFavoriteTracks().first().map { it.toMusicTrack() }
-        val meaningfulIds = context?.let { MusicDatabase.getDatabase(it).listeningEventDao().getActualPlays() }
-            .orEmpty().filter(UserTasteProfile::meaningful).map { it.trackId }.distinct().take(20)
-        val listened = musicDao.getTracksByIds(meaningfulIds).map { it.toMusicTrack() }
+        val playedIds = context?.let { MusicDatabase.getDatabase(it).listeningEventDao().getActualPlays() }
+            .orEmpty().filter(UserTasteProfile::played).map { it.trackId }.distinct().take(20)
+        val listened = musicDao.getTracksByIds(playedIds).map { it.toMusicTrack() }
         val seeds = (favoriteTracks + listened).filter { HomeRecommendationPolicy.known(it.artist) }
         val artists = seeds.flatMap(HomeRecommendationPolicy::artists).distinct().shuffled().take(2)
         val languages = (profile.languages + seeds.map { it.language }).filter(HomeRecommendationPolicy::known).distinct().shuffled().take(2)

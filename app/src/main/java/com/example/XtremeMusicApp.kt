@@ -22,7 +22,7 @@ class XtremeMusicApp : Application(), ImageLoaderFactory {
 
     val playbackManager: PlaybackManager by lazy {
         PlaybackManager(this, repository).also {
-            com.example.recommendation.RecommendationListeningObserver(database.listeningEventDao()).start(it)
+            com.example.recommendation.RecommendationListeningObserver(database.listeningEventDao(), database.musicDao()).start(it)
         }
     }
 

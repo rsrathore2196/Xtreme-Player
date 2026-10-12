@@ -38,7 +38,7 @@ class PersonalizedHomeRecommendationEngine(private val listeningEventDao: Listen
             val pool = HomeRecommendationPolicy.originals(catalogTracks)
             val shelves = mutableListOf<HomeShelf>()
             fun shelf(id: String, title: String, subtitle: String, candidates: List<MusicTrack>) {
-                if (candidates.size >= 3) shelves.add(HomeShelf(id, title, subtitle, candidates))
+                if (candidates.isNotEmpty()) shelves.add(HomeShelf(id, title, subtitle, candidates))
             }
             if (!profile.isColdStart) {
                 val familiar = pool.filter { track ->
@@ -53,8 +53,8 @@ class PersonalizedHomeRecommendationEngine(private val listeningEventDao: Listen
                     shelf("shelf_top_artist", "Because You Listened to ${topArtist.replaceFirstChar { it.uppercase() }}",
                         "Original songs and collaborations", scoreAndRankCandidates(related, profile, limit = 24))
                 }
-                // Broader discovery needs richer history and an actual language/genre connection.
-                if (profile.meaningfulPlaysCount >= 4) {
+                // First playback can seed discovery when metadata provides a real connection.
+                run {
                     val discoveries = pool.filter { track ->
                         val keyName = profile.keyFor(track)
                         keyName !in profile.recentRecordings && (

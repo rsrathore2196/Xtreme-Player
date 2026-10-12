@@ -197,14 +197,14 @@ fun HomeScreen(
 
     HomeScreenContent(
         heroSeedTrack = recentlyPlayed.firstOrNull() ?: catalogTracks.firstOrNull(),
-        pillsCardTracks = recentlyPlayed.takeIf { meaningfulUniqueTracks >= 3 }.orEmpty().take(6),
+        pillsCardTracks = recentlyPlayed.take(6),
         ytmCard = SectionState(title = "Quick Picks", tracks = com.example.recommendation.HomeRecommendationPolicy.diversify(catalogTracks, 15)),
         eraCard = SectionState(title = "Era-Specific Hits", tracks = shelves.firstOrNull { it.id == "shelf_era_classics" }?.tracks.orEmpty()),
         countryLanguageCard = SectionState(title = trendingTitle, tracks = shelves.firstOrNull { it.id == "shelf_country_trending" }?.tracks.orEmpty()),
-        listeningHistoryCard = SectionState(title = "Jump Back In", tracks = recentlyPlayed.takeIf { meaningfulUniqueTracks >= 3 }.orEmpty()),
+        listeningHistoryCard = SectionState(title = "Jump Back In", tracks = recentlyPlayed),
         personalizedCard = SectionState(title = "Recommended for You", tracks =
             shelves.filter { it.id in setOf("shelf_quick_picks", "shelf_top_artist", "shelf_mood_vibe") }
-                .takeIf { meaningfulUniqueTracks >= 3 }?.let { com.example.recommendation.HomeRecommendationPolicy.interleave(it.map { shelf -> shelf.tracks }) }.orEmpty()),
+                .takeIf { recentlyPlayed.isNotEmpty() || meaningfulUniqueTracks >= 1 }?.let { com.example.recommendation.HomeRecommendationPolicy.interleave(it.map { shelf -> shelf.tracks }) }.orEmpty()),
         isRadioSession = playerUiState?.isInfiniteRadio == true,
         isRadioLoading = playerUiState?.isLoading == true,
         userProfile = userProfile,

@@ -3,6 +3,8 @@ package com.example.recommendation
 import android.os.SystemClock
 import com.example.data.local.ListeningEventDao
 import com.example.data.local.ListeningEventEntity
+import com.example.data.local.MusicDao
+import com.example.data.local.TrackEntity
 import com.example.data.model.MusicTrack
 import com.example.playback.PlaybackManager
 import kotlinx.coroutines.CancellationException
@@ -15,7 +17,7 @@ import kotlinx.coroutines.withContext
 import java.util.UUID
 
 /** Observes existing player flows; never controls playback. One updatable row per actual play. */
-class RecommendationListeningObserver(private val dao: ListeningEventDao) {
+class RecommendationListeningObserver(private val dao: ListeningEventDao, private val musicDao: MusicDao) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     fun start(player: PlaybackManager) {
         scope.launch {
@@ -30,12 +32,16 @@ class RecommendationListeningObserver(private val dao: ListeningEventDao) {
             var playId = UUID.randomUUID().toString()
             suspend fun save(finished: Boolean = false) {
                 val current = track ?: return
-                if (listened == 0L && !finished) return
+                if (listened <= 0L) return
                 val event = ListeningEventEntity.fromTrack(current, playId, listened, duration,
                     "ACTUAL_PLAY", completed = duration > 0 && listened >= duration * 0.9,
                     skipped = finished && listened < 15_000L, liked = current.isLiked).copy(id = rowId)
                 try {
-                    rowId = withContext(Dispatchers.IO) { dao.insertListeningEvent(event) }
+                    rowId = withContext(Dispatchers.IO) {
+                        // Publish metadata first so Home can resolve the very first history event.
+                        if (rowId == 0L) musicDao.mergeTrackMetadata(TrackEntity.fromMusicTrack(current))
+                        dao.insertListeningEvent(event)
+                    }
                     savedDuration = listened
                 } catch (e: CancellationException) { throw e } catch (_: Exception) {
                     // Recommendation persistence must never interrupt the player's application scope.
@@ -59,7 +65,7 @@ class RecommendationListeningObserver(private val dao: ListeningEventDao) {
                     }
                     duration = state.durationMs.takeIf { it > 0 } ?: (track?.durationMs ?: 0)
                     val meaningful = listened >= 30_000 || (duration > 0 && listened >= (duration + 1) / 2)
-                    if ((meaningful && savedDuration < 30_000 && (duration <= 0 || savedDuration < (duration + 1) / 2)) || listened - savedDuration >= 30_000 ||
+                    if ((rowId == 0L && listened > 0L) || (meaningful && savedDuration < 30_000 && (duration <= 0 || savedDuration < (duration + 1) / 2)) || listened - savedDuration >= 30_000 ||
                         (wasPlaying && !state.isPlaying && listened > savedDuration)) save()
                     previousPosition = position
                     previousTime = now

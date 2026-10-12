@@ -27,6 +27,10 @@ data class UserTasteProfile(
 
     companion object {
         val COLD_START_PROFILE = UserTasteProfile(lastUpdatedMs = 0)
+        // Visibility follows actual playback, independently of stronger ranking signals.
+        fun played(event: ListeningEventEntity): Boolean =
+            event.eventType == "ACTUAL_PLAY" && event.playedDurationMs > 0
+
         fun meaningful(event: ListeningEventEntity): Boolean = event.eventType == "ACTUAL_PLAY" &&
             (event.playedDurationMs >= 30_000 || (event.trackDurationMs > 0 && event.playedDurationMs >= (event.trackDurationMs + 1) / 2))
 
@@ -58,24 +62,24 @@ data class UserTasteProfile(
             fun add(map: MutableMap<String, Float>, value: String, weight: Float) {
                 if (HomeRecommendationPolicy.known(value)) map.merge(HomeRecommendationPolicy.normalize(value), weight, Float::plus)
             }
-            for (event in events.distinctBy { it.sessionId to it.trackId }.sortedByDescending { it.timestamp }) {
+            for (event in events.sortedByDescending { it.timestamp }.distinctBy { it.sessionId to it.trackId }) {
+                if (!played(event)) continue
                 val track = byId[event.trackId]
                 val key = track?.let(::keyFor) ?: event.trackId
                 val isMeaningful = meaningful(event)
                 if (isMeaningful) {
                     if (track != null) { if (unique.add(track)) uniqueCount++ }
                     // Unresolved metadata cannot prove that two provider IDs are different recordings.
-                    recent.add(event.trackId)
-                    if (nowMs - event.timestamp < 7 * 86_400_000L) recentKeys.add(key)
-                    plays.merge(key, 1, Int::plus)
                 }
+                recent.add(event.trackId)
+                if (nowMs - event.timestamp < 7 * 86_400_000L) recentKeys.add(key)
+                plays.merge(key, 1, Int::plus)
                 if (event.skipped) skips.merge(key, 1, Int::plus)
-                if (!isMeaningful && !event.skipped) continue
                 val days = (nowMs - event.timestamp).coerceAtLeast(0) / 86_400_000.0
                 // Recent taste leads, while a slower component retains long-term preferences.
                 val decay = (0.75 * exp(-ln(2.0) * days / 14) + 0.25 * exp(-ln(2.0) * days / 120)).toFloat()
                 val completion = if (event.trackDurationMs > 0) (event.playedDurationMs.toFloat() / event.trackDurationMs).coerceIn(0f, 1f) else 0f
-                val weight = decay * (if (event.skipped) -1.5f else 0.5f + completion * 2f)
+                val weight = decay * (if (event.skipped) -1.5f else (if (isMeaningful) 0.5f else 0.15f) + completion * 2f)
                 val names = track?.let(HomeRecommendationPolicy::artists) ?: event.artistName.split(',')
                 names.forEach { add(artists, it, weight / names.size.coerceAtLeast(1)) }
                 add(genres, track?.genre ?: event.genre, weight)
@@ -93,7 +97,7 @@ data class UserTasteProfile(
             }
             return UserTasteProfile(normalized(artists), normalized(genres), normalized(languages), moodAffinities = normalized(moods),
                 topRecentTrackIds = recent.take(30), meaningfulPlaysCount = uniqueCount,
-                isColdStart = uniqueCount < 3, lastUpdatedMs = nowMs, playCounts = plays,
+                isColdStart = recent.isEmpty(), lastUpdatedMs = nowMs, playCounts = plays,
                 skipCounts = skips, recentRecordings = recentKeys,
                 favoriteRecordings = favorites.map(::keyFor).toSet(), recordingAliases = aliases)
         }
