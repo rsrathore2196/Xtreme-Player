@@ -13,7 +13,7 @@
     <b>Xtreme Player</b> is a lightweight, modern, open-source online music streaming application for Android. Built with a clean Material You (Material 3) interface, it delivers an ad-free, high-fidelity audio experience with zero subscription paywalls.
   </p>
   <p>
-    Stream millions of online tracks in studio-grade <b>320 kbps high-res audio</b>, manage custom libraries, and enjoy seamless playback without interruptions.
+    Stream millions of online tracks in studio-grade <b> Lossless and FLAC high-res audio</b>, manage custom libraries, and enjoy seamless playback without interruptions.
   </p>
 
   <!-- Badges -->
@@ -92,7 +92,7 @@
 ## ✨ Key Features
 
 ### 🎧 High-Fidelity Audio Streaming
-- **True 320 kbps HQ Audio:** Stream crystal-clear, high-bitrate music (MP3, AAC, FLAC) with minimal compression.
+- **True Lossless and 320 kbps HQ Audio:** Stream crystal-clear, high-bitrate music (WAV, AAC, FLAC) with minimal compression.
 - **Smart Caching & Zero Buffering:** Intelligent pre-caching ensures uninterrupted playback even on unstable connections.
 - **Background Playback & Media Controls:** Persistent Android 13+ lock screen and notification controls powered by AndroidX Media3.
 - **Music & Playlists:** Import playlists from Spotify, Apple Music, Amazon Music, or custom local files.
