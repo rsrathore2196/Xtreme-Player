@@ -239,9 +239,10 @@ class HomeViewModel(
         val personalized = HomeRecommendationPolicy.diversify(fresh(HomeRecommendationPolicy.interleave(personalizedGroups)), 15, seen)
         val quickRanked = personalizedEngine.scoreAndRankCandidates(pool.quick, taste, limit = pool.quick.size)
         val quick = HomeRecommendationPolicy.diversify(fresh(quickRanked), 15, seen)
-        _countryLanguageCard.value = _countryLanguageCard.value.copy(tracks = chart)
-        _eraCard.value = _eraCard.value.copy(tracks = era, isLoading = false, isLoaded = era.isNotEmpty())
-        _ytmCard.value = _ytmCard.value.copy(tracks = quick, isLoading = false, isLoaded = quick.isNotEmpty())
+        // Reranking must retain error/loading updates arriving from the refresh requests.
+        _countryLanguageCard.update { it.copy(tracks = chart) }
+        _eraCard.update { it.copy(tracks = era, isLoading = false, isLoaded = era.isNotEmpty()) }
+        _ytmCard.update { it.copy(tracks = quick, isLoading = false, isLoaded = quick.isNotEmpty()) }
         _mostListenedArtists.value = artists
         _personalizedCard.value = _personalizedCard.value.copy(tracks = personalized,
             isLoading = false, isLoaded = personalized.isNotEmpty())
@@ -274,17 +275,22 @@ class HomeViewModel(
         val title = getAuthoritativeTrendingTitle(name)
         val sameCountry = _countryLanguageCard.value.title == title
         if (!sameCountry) candidates.value = candidates.value.copy(chart = emptyList())
-        _countryLanguageCard.value = _countryLanguageCard.value.copy(title = title,
-            tracks = if (sameCountry) _countryLanguageCard.value.tracks else emptyList(), isLoading = true)
+        _countryLanguageCard.update { it.copy(title = title,
+            tracks = if (sameCountry) it.tracks else emptyList(),
+            isLoading = true, isError = false, errorMessage = "") }
         regionalTrendingJob = viewModelScope.launch(Dispatchers.IO) {
             try {
                 val songs = repository.getRegionalTrending(name, item?.code ?: countryCode, limit = 20, forceRefresh = forceRefresh)
+                if (_countryLanguageCard.value.title != title) return@launch
                 if (songs.isNotEmpty()) candidates.update { it.copy(chart = songs) }
-                _countryLanguageCard.value = _countryLanguageCard.value.copy(isLoading = false,
+                _countryLanguageCard.update { if (it.title != title) it else it.copy(isLoading = false,
                     isLoaded = candidates.value.chart.isNotEmpty(), isError = songs.isEmpty(),
-                    errorMessage = if (songs.isEmpty()) "Regional charts are temporarily unavailable." else "")
+                    errorMessage = if (songs.isEmpty()) "Regional charts are temporarily unavailable." else "") }
             } catch (e: CancellationException) { throw e } catch (_: Exception) {
-                _countryLanguageCard.value = _countryLanguageCard.value.copy(isLoading = false, isError = true)
+                if (_countryLanguageCard.value.title == title) {
+                    _countryLanguageCard.update { if (it.title != title) it else it.copy(isLoading = false, isError = true,
+                        errorMessage = "Regional charts are temporarily unavailable.") }
+                }
             }
         }
     }
@@ -298,9 +304,21 @@ class HomeViewModel(
     }
 
     private var homeRefreshJob: Job? = null
+    private var pendingExplicitRefresh = false
+    private var activeRefreshIsExplicit = false
+    private var refreshGeneration = 0L
     private var lastDiscoveryRefresh = 0L
 
     init {
+        viewModelScope.launch {
+            combine(_ytmCard, _eraCard, _countryLanguageCard) { quick, era, chart ->
+                listOf(quick, era, chart).filter { it.isError && !it.isLoading }.map { it.title }
+            }.distinctUntilChanged().collect { failed ->
+                _refreshErrorMessage.value = failed.takeIf { it.isNotEmpty() }?.let {
+                    "${it.joinToString(", ")} couldn't load. Tap Retry to try again."
+                }
+            }
+        }
         viewModelScope.launch(Dispatchers.IO) {
             val initial = withContext(Dispatchers.IO) { repository.getInitialCatalog(_userProfile.value) }
             if (_catalogTracks.value.isEmpty()) {
@@ -339,37 +357,89 @@ class HomeViewModel(
     }
 
     fun refreshHome(isExplicitPull: Boolean = true) {
-        if (homeRefreshJob?.isActive == true) return
-        _isRefreshing.value = isExplicitPull
-        _refreshErrorMessage.value = null
-        homeRefreshJob = viewModelScope.launch(Dispatchers.Default) {
-            try {
-                val profile = _userProfile.value
-                loadRegionalTrending(resolveCountryDisplayName(profile), profile.countryCode, isExplicitPull)
-                coroutineScope {
-                    val quickJob = async { repository.getYtmQuickPicks(limit = 100, forceRefresh = isExplicitPull) }
-                    val eraJob = async { repository.getEraHits(limit = 60, forceRefresh = isExplicitPull) }
-                    val quick = quickJob.await()
-                    val era = eraJob.await()
-                    if (_userProfile.value != profile) return@coroutineScope
-                    candidates.update { old -> old.copy(quick = quick.ifEmpty { old.quick }, era = era.ifEmpty { old.era },
-                        generation = old.generation + 1) }
-                    val catalog = HomeRecommendationPolicy.originals(quick + era + _catalogTracks.value).take(300)
-                    if (catalog.isNotEmpty()) {
-                        _catalogTracks.value = catalog
-                        withContext(Dispatchers.Main.immediate) { playbackManager.setCandidatePool(catalog) }
-                    }
-                    lastDiscoveryRefresh = System.currentTimeMillis()
-                    regionalTrendingJob?.join()
+        // Request/job ownership stays on Main; catalog and ranking work stays off Main.
+        viewModelScope.launch(Dispatchers.Main.immediate) {
+            if (homeRefreshJob?.isActive == true) {
+                if (isExplicitPull) {
+                    _isRefreshing.value = true
+                    _refreshErrorMessage.value = null
+                    // Coalesce pulls into one forced pass after a silent request, never parallel requests.
+                    if (!activeRefreshIsExplicit) pendingExplicitRefresh = true
                 }
-            } catch (e: CancellationException) { throw e } catch (_: Exception) {
-                if (isExplicitPull) _refreshErrorMessage.value = "Couldn't refresh recommendations. Your saved suggestions are still available."
-            } finally {
-                _isRefreshing.value = false
-                _ytmCard.value = _ytmCard.value.copy(isLoading = false)
-                _eraCard.value = _eraCard.value.copy(isLoading = false)
+                return@launch
+            }
+            val generation = ++refreshGeneration
+            val initialExplicit = isExplicitPull || pendingExplicitRefresh || _isRefreshing.value
+            pendingExplicitRefresh = false
+            homeRefreshJob = viewModelScope.launch {
+                var explicit = initialExplicit
+                try {
+                    while (true) {
+                        activeRefreshIsExplicit = explicit
+                        _isRefreshing.value = explicit
+                        _refreshErrorMessage.value = null
+                        _ytmCard.update { it.copy(isError = false, errorMessage = "") }
+                        _eraCard.update { it.copy(isError = false, errorMessage = "") }
+                        try {
+                            refreshSuggestions(explicit)
+                        } catch (e: CancellationException) { throw e }
+                        catch (_: Exception) {
+                            _ytmCard.update { it.copy(isLoading = false, isError = true,
+                                errorMessage = "Quick Picks are temporarily unavailable.") }
+                            _eraCard.update { it.copy(isLoading = false, isError = true,
+                                errorMessage = "Era hits are temporarily unavailable.") }
+                        }
+                        if (!pendingExplicitRefresh) break
+                        pendingExplicitRefresh = false
+                        explicit = true
+                    }
+                } finally {
+                    // A canceled request must not hide the spinner or clear ownership of its replacement.
+                    if (generation == refreshGeneration) {
+                        _isRefreshing.value = false
+                        _ytmCard.update { it.copy(isLoading = false) }
+                        _eraCard.update { it.copy(isLoading = false) }
+                        activeRefreshIsExplicit = false
+                        homeRefreshJob = null
+                    }
+                }
             }
         }
+    }
+
+    private suspend fun refreshSuggestions(force: Boolean) {
+        val profile = _userProfile.value
+        loadRegionalTrending(resolveCountryDisplayName(profile), profile.countryCode, force)
+        val chartRequest = regionalTrendingJob
+        val (quick, era) = withContext(Dispatchers.Default) {
+            coroutineScope {
+                val quickJob = async {
+                    try { repository.getYtmQuickPicks(limit = 100, forceRefresh = force) }
+                    catch (e: CancellationException) { throw e } catch (_: Exception) { emptyList() }
+                }
+                val eraJob = async {
+                    try { repository.getEraHits(limit = 60, forceRefresh = force) }
+                    catch (e: CancellationException) { throw e } catch (_: Exception) { emptyList() }
+                }
+                quickJob.await() to eraJob.await()
+            }
+        }
+        if (_userProfile.value != profile) return
+        candidates.update { old -> old.copy(quick = quick.ifEmpty { old.quick }, era = era.ifEmpty { old.era },
+            generation = old.generation + 1) }
+        _ytmCard.update { it.copy(isLoading = false, isError = quick.isEmpty(),
+            errorMessage = if (quick.isEmpty()) "Quick Picks are temporarily unavailable." else "") }
+        _eraCard.update { it.copy(isLoading = false, isError = era.isEmpty(),
+            errorMessage = if (era.isEmpty()) "Era hits are temporarily unavailable." else "") }
+        val catalog = withContext(Dispatchers.Default) {
+            HomeRecommendationPolicy.originals(quick + era + _catalogTracks.value).take(300)
+        }
+        if (catalog.isNotEmpty()) {
+            _catalogTracks.value = catalog
+            playbackManager.setCandidatePool(catalog)
+        }
+        lastDiscoveryRefresh = System.currentTimeMillis()
+        chartRequest?.join()
     }
 
     fun loadEraSectionIfNeeded() {

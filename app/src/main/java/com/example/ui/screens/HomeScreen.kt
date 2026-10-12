@@ -48,9 +48,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.LinearGradientShader
+import androidx.compose.ui.graphics.Paint
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
@@ -76,8 +81,9 @@ import com.example.ui.viewmodel.SectionState
 import java.util.Calendar
 
 @Composable
-fun rememberShimmerBrush(): Brush {
-    val translateAnim by rememberVisibleInfiniteFloat(
+private fun rememberShimmerBackground(): Modifier {
+    // Keep the same phase, colors and gradient geometry; only drawing observes each frame.
+    val translation = rememberVisibleInfiniteFloat(
         initialValue = -800f,
         targetValue = 1200f,
         animationSpec = infiniteRepeatable(
@@ -86,16 +92,25 @@ fun rememberShimmerBrush(): Brush {
         ),
         label = "shimmer_float"
     )
-    val appColors = LocalAppColors.current
-    val isDark = appColors.isDark
-    val baseColor = if (isDark) Color(0xFF142033) else Color(0xFFE2E8F0)
-    val highlightColor = if (isDark) Color(0xFF20324E) else Color(0xFFF1F5F9)
-
-    return Brush.linearGradient(
-        colors = listOf(baseColor, highlightColor, baseColor),
-        start = Offset(translateAnim, 0f),
-        end = Offset(translateAnim + 400f, 400f)
-    )
+    val isDark = LocalAppColors.current.isDark
+    val colors = remember(isDark) {
+        val base = if (isDark) Color(0xFF142033) else Color(0xFFE2E8F0)
+        val highlight = if (isDark) Color(0xFF20324E) else Color(0xFFF1F5F9)
+        listOf(base, highlight, base)
+    }
+    return remember(translation, colors) {
+        Modifier.drawWithCache {
+            val shader = LinearGradientShader(Offset.Zero, Offset(400f, 400f), colors)
+            val matrix = android.graphics.Matrix()
+            val paint = Paint().apply { this.shader = shader }
+            val bounds = Rect(Offset.Zero, size)
+            onDrawBehind {
+                matrix.setTranslate(translation.value, 0f)
+                shader.setLocalMatrix(matrix)
+                drawIntoCanvas { it.drawRect(bounds, paint) }
+            }
+        }
+    }
 }
 
 /**
@@ -750,7 +765,7 @@ fun HabitPillItem(
 
 @Composable
 fun SectionShimmerRow(shimmerBrush: Brush? = null) {
-    val brush = shimmerBrush ?: rememberShimmerBrush()
+    val background = if (shimmerBrush != null) Modifier.background(shimmerBrush) else rememberShimmerBackground()
     LazyRow(
         contentPadding = PaddingValues(horizontal = 20.dp),
         horizontalArrangement = Arrangement.spacedBy(14.dp),
@@ -762,7 +777,7 @@ fun SectionShimmerRow(shimmerBrush: Brush? = null) {
                     modifier = Modifier
                         .size(136.dp)
                         .clip(RoundedCornerShape(14.dp))
-                        .background(brush)
+                        .then(background)
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 Box(
@@ -770,7 +785,7 @@ fun SectionShimmerRow(shimmerBrush: Brush? = null) {
                         .width(100.dp)
                         .height(14.dp)
                         .clip(RoundedCornerShape(4.dp))
-                        .background(brush)
+                        .then(background)
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Box(
@@ -778,7 +793,7 @@ fun SectionShimmerRow(shimmerBrush: Brush? = null) {
                         .width(70.dp)
                         .height(10.dp)
                         .clip(RoundedCornerShape(4.dp))
-                        .background(brush)
+                        .then(background)
                 )
             }
         }
