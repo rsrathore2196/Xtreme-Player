@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.data.model.MusicTrack
+import com.example.ui.theme.LocalAppColors
 import com.example.ui.util.ImageConfig
 import com.example.ui.util.rememberOptimizedImageRequest
 
@@ -47,19 +48,28 @@ fun InfiniteRadioHeroCard(
     modifier: Modifier = Modifier,
     isRadioSession: Boolean = false
 ) {
+    val isDark = LocalAppColors.current.isDark
+    val glassTint = if (isDark) Color(0xFF080D18) else Color(0xFFF5F8FF)
+    val foreground = if (isDark) Color.White else Color(0xFF122037)
     val playbackActive = isPlaying
     val radioLoading = isRadioSession && isLoading && !playbackActive
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val scale by animateFloatAsState(if (pressed) 0.96f else 1f, spring(), label = "radio_press")
     val shape = RoundedCornerShape(26.dp)
-    val textShadow = Shadow(Color.Black.copy(alpha = 0.85f), Offset(0f, 2f), 10f)
+    val textShadow = Shadow(
+        if (isDark) Color.Black.copy(alpha = 0.85f) else Color.White.copy(alpha = 0.8f),
+        Offset(0f, 1f), 6f
+    )
 
     Box(
         modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 12.dp)
-            .height(230.dp).shadow(12.dp, shape).clip(shape)
-            .background(Color(0xFF172030))
-            .border(1.dp, Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.4f), Color.White.copy(alpha = 0.1f))), shape)
+            .height(200.dp).shadow(14.dp, shape).clip(shape)
+            .background(glassTint)
+            .border(1.5.dp, Brush.linearGradient(listOf(
+                Color.White.copy(alpha = 0.85f), Color.White.copy(alpha = 0.12f),
+                Color.Black.copy(alpha = if (isDark) 0.35f else 0.18f), Color.White.copy(alpha = 0.6f)
+            )), shape)
             .testTag("infinite_radio_hero_card")
     ) {
         if (seedTrack != null) {
@@ -76,7 +86,14 @@ fun InfiniteRadioHeroCard(
                 modifier = Modifier.fillMaxSize()
             )
         }
-        // A clear lens reflection adds gloss without blurring or dimming the artwork.
+        // A continuous, theme-aware tint supports the lower content without a separate text panel.
+        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(
+            0f to Color.Transparent,
+            0.22f to glassTint.copy(alpha = 0.15f),
+            0.48f to glassTint.copy(alpha = if (isDark) 0.72f else 0.80f),
+            1f to glassTint.copy(alpha = if (isDark) 0.92f else 0.96f)
+        )))
+        // A clear lens reflection keeps the artwork sharp beneath the glass.
         Box(Modifier.fillMaxSize().background(Brush.linearGradient(
             0f to Color.White.copy(alpha = 0.20f),
             0.28f to Color.White.copy(alpha = 0.035f),
@@ -85,37 +102,19 @@ fun InfiniteRadioHeroCard(
             1f to Color.White.copy(alpha = 0.08f)
         )))
         Column(
-            Modifier.fillMaxSize().padding(20.dp),
+            Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.Bottom,
             horizontalAlignment = Alignment.Start
         ) {
-            // Local smoked glass protects text contrast even over white artwork,
-            // while the rest of the cover stays sharp and fully visible.
-            val textGlassShape = RoundedCornerShape(18.dp)
-            Column(
-                Modifier.fillMaxWidth()
-                    .clip(textGlassShape)
-                    .background(Brush.verticalGradient(listOf(
-                        Color(0xB30A101C), Color(0xA30A101C)
-                    )))
-                    .background(Brush.linearGradient(listOf(
-                        Color.White.copy(alpha = 0.06f), Color.Transparent,
-                        Color.White.copy(alpha = 0.015f)
-                    )))
-                    .border(1.dp, Brush.verticalGradient(listOf(
-                        Color.White.copy(alpha = 0.35f), Color.White.copy(alpha = 0.07f)
-                    )), textGlassShape)
-                    .padding(horizontal = 14.dp, vertical = 10.dp)
-            ) {
-                Text("Infinite Radio", style = MaterialTheme.typography.headlineMedium.copy(
-                    color = Color.White, fontWeight = FontWeight.Black, fontSize = 26.sp, shadow = textShadow
-                ))
-                Spacer(Modifier.height(4.dp))
-                Text("A fresh random mix · Endless discoveries", style = MaterialTheme.typography.bodyMedium.copy(
-                    color = Color.White, fontWeight = FontWeight.Medium, shadow = textShadow
-                ))
-            }
-            Spacer(Modifier.height(14.dp))
+            Text("Infinite Radio", style = MaterialTheme.typography.headlineMedium.copy(
+                color = foreground, fontWeight = FontWeight.Black, fontSize = 26.sp, shadow = textShadow
+            ))
+            Spacer(Modifier.height(3.dp))
+            Text("A fresh random mix · Endless discoveries", style = MaterialTheme.typography.bodyMedium.copy(
+                color = foreground, fontWeight = FontWeight.Medium,
+                fontSize = 13.sp, lineHeight = 18.sp, shadow = textShadow
+            ))
+            Spacer(Modifier.height(12.dp))
             val buttonShape = RoundedCornerShape(24.dp)
             Row(
                 Modifier.graphicsLayer { scaleX = scale; scaleY = scale }
@@ -142,17 +141,26 @@ fun InfiniteRadioHeroCard(
                 horizontalArrangement = Arrangement.Center
             ) {
                 if (radioLoading) {
-                    CircularProgressIndicator(Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
+                    CircularProgressIndicator(Modifier.size(18.dp), color = foreground, strokeWidth = 2.dp)
                     Spacer(Modifier.width(8.dp))
                 } else if (!playbackActive) {
-                    Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
+                    Icon(Icons.Default.PlayArrow, contentDescription = null, tint = foreground, modifier = Modifier.size(20.dp))
                     Spacer(Modifier.width(8.dp))
                 }
                 Text(
                     if (playbackActive) "Playing" else if (radioLoading) "Starting radio…" else "Play",
-                    style = MaterialTheme.typography.labelLarge.copy(color = Color.White, fontWeight = FontWeight.Bold, shadow = textShadow)
+                    style = MaterialTheme.typography.labelLarge.copy(color = foreground, fontWeight = FontWeight.Bold, shadow = textShadow)
                 )
             }
         }
+        // Inset reflection plus the outer rim form a beveled glass edge around the cover.
+        Box(Modifier.matchParentSize().padding(3.dp).border(
+            0.75.dp,
+            Brush.linearGradient(listOf(
+                Color.White.copy(alpha = 0.42f), Color.Transparent,
+                Color.White.copy(alpha = 0.08f), Color.White.copy(alpha = 0.32f)
+            )),
+            RoundedCornerShape(23.dp)
+        ))
     }
 }
