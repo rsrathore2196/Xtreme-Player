@@ -6,14 +6,14 @@
   </a>
 
   <!-- Project Title -->
-  <h1> Xtreme Player</h1>
+  <h1>🎵 Xtreme Player</h1>
 
   <!-- Short Overview -->
   <p>
-    <b>Xtreme Player</b> is a lightweight, modern, open-source online music streaming application for Android. Built with a clean Material You (Material 3) interface and Liquid glass design, it delivers an ad-free, high-fidelity audio experience with zero subscription paywalls.
+    <b>Xtreme Player</b> is a lightweight, modern, open-source online music streaming application for Android. Built with a clean Material You (Material 3) interface, it delivers an ad-free, high-fidelity audio experience with zero subscription paywalls.
   </p>
   <p>
-    Stream millions of online tracks in studio-grade <b>High-Res Audio</b>, manage custom libraries, and enjoy seamless playback without interruptions.
+    Stream millions of online tracks in studio-grade <b>320 kbps high-res audio</b>, manage custom libraries, and enjoy seamless playback without interruptions.
   </p>
 
   <!-- Badges -->
@@ -21,6 +21,15 @@
     <a href="https://github.com/rsrathore2196/Xtreme-Player/releases"><img src="https://img.shields.io/github/v/release/rsrathore2196/Xtreme-Player?style=flat-square&logo=github&label=Release&color=orange" alt="Release Version"></a>
     <a href="https://github.com/rsrathore2196/Xtreme-Player/releases/latest"><img src="https://img.shields.io/github/v/release/rsrathore2196/Xtreme-Player?style=flat-square&logo=android&label=Download%20APK&color=brightgreen" alt="Download Latest APK"></a>
     <a href="#"><img src="https://img.shields.io/badge/Android-8.0%2B-blue?style=flat-square&logo=android" alt="Android Version"></a>
+  </p>
+
+  <p>
+    <a href="https://t.me/XtremePlayerOfficiaI"><img src="https://img.shields.io/badge/Telegram-Updates%20%26%20Support-26A5E4?style=flat-square&logo=telegram&logoColor=white" alt="Telegram Updates & Support"></a>
+    <a href="https://t.me/xtremeplayerofficial"><img src="https://img.shields.io/badge/Telegram-Discussion-26A5E4?style=flat-square&logo=telegram&logoColor=white" alt="Telegram Discussion"></a>
+  </p>
+
+  <p>
+    <a href="https://buymeachai.ezee.li/RSRathore"><img src="https://buymeachai.ezee.li/assets/images/buymeachai-button.png" alt="Buy Me A Chai" height="40"></a>
   </p>
 
   <!-- Quick Navigation -->
@@ -130,4 +139,3 @@
 - Android Studio Ladybug (2024.2.1 or newer)
 - Android SDK 26+ (Android 8.0 Oreo or higher)
 - JDK 17+
-
