@@ -26,7 +26,7 @@ fun HomePullRefreshOverscrollLayout(
     maxTopStretchDp: Dp = 135.dp,
     maxBottomStretchDp: Dp = 80.dp,
     refreshRestingHeightDp: Dp = 60.dp,
-    content: @Composable BoxScope.(contentOffset: Float) -> Unit
+    content: @Composable BoxScope.(contentOffset: () -> Float) -> Unit
 ) {
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
@@ -39,15 +39,17 @@ fun HomePullRefreshOverscrollLayout(
         ElasticBoundaryState(scope, maxTop, maxBottom, threshold, rest) { latestRefresh() }
     }
     LaunchedEffect(isRefreshing) { state.updateRefreshing(isRefreshing) }
-    val armed = state.dragging && state.offset >= threshold
+    val armed by remember(state, threshold) { derivedStateOf { state.dragging && state.offset >= threshold } }
+    val showIndicator by remember(state, threshold) { derivedStateOf { state.dragging && state.offset >= threshold * 0.55f } }
+    val contentOffset = remember(state) { { state.offset } }
     val haptic = LocalHapticFeedback.current
     LaunchedEffect(armed) {
         if (armed) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
     }
     Box(modifier.fillMaxSize().nestedScroll(state.connection)) {
-        content(state.offset)
+        content(contentOffset)
         // Tiny pulls and edge flings never reveal refresh UI. Hide it immediately on release.
-        if (isRefreshing || (state.dragging && state.offset >= threshold * 0.55f)) {
+        if (isRefreshing || showIndicator) {
             Surface(
                 modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 12.dp),
                 shape = RoundedCornerShape(24.dp),

@@ -15,6 +15,7 @@ import com.example.data.model.CountryData
 import com.example.data.model.MusicTrack
 import com.example.recommendation.HomeRecommendationPolicy
 import com.example.recommendation.UserTasteProfile
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.debounce
@@ -107,11 +108,11 @@ class HomeViewModel(
         withContext(Dispatchers.IO) {
             ids.chunked(900).flatMap { database.musicDao().getTracksByIds(it) }.map { it.toMusicTrack() }
         }
-    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
     private val tasteProfile = combine(actualPlays, historyMetadata, favoriteTracks, _userProfile) { events, tracks, favorites, preferences ->
         val taste = UserTasteProfile.fromEvents(events, tracks, favorites)
         taste.copy(languageAffinities = preferences.languages.associate { HomeRecommendationPolicy.normalize(it) to 0.35f } + taste.languageAffinities)
-    }.stateIn(viewModelScope, SharingStarted.Eagerly, UserTasteProfile.COLD_START_PROFILE)
+    }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.Eagerly, UserTasteProfile.COLD_START_PROFILE)
     val recentlyPlayed: StateFlow<List<MusicTrack>> = combine(actualPlays, historyMetadata, tasteProfile) { events, metadata, taste ->
         if (taste.isColdStart) emptyList() else {
             val byId = metadata.associateBy { it.id }
@@ -119,10 +120,11 @@ class HomeViewModel(
             events.filter(UserTasteProfile::meaningful).sortedByDescending { it.timestamp }
                 .mapNotNull { byId[it.trackId] }.filter { seen.add(it) }.take(30)
         }
-    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
     val heroSeedTrack: StateFlow<MusicTrack?> = combine(recentlyPlayed, favoriteTracks, _catalogTracks) { recent, favorites, catalog ->
-        HomeRecommendationPolicy.originals(recent + favorites + catalog).firstOrNull()
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), null)
+        (recent.asSequence() + favorites.asSequence() + catalog.asSequence())
+            .firstOrNull(com.example.recommendation.OriginalMusicFilter::isHomeRecommendation)
+    }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), null)
 
     // Helper to compute authoritative trending title
     fun getAuthoritativeTrendingTitle(countryDisplayName: String): String {
@@ -297,12 +299,12 @@ class HomeViewModel(
 
     init {
         viewModelScope.launch(Dispatchers.IO) {
-            val initial = repository.getInitialCatalog(_userProfile.value)
+            val initial = withContext(Dispatchers.IO) { repository.getInitialCatalog(_userProfile.value) }
             if (_catalogTracks.value.isEmpty()) {
                 _catalogTracks.value = initial
                 candidates.value = candidates.value.copy(quick = initial,
                     era = initial.filter { (it.year.toIntOrNull() ?: 0) in 1990..2009 })
-                playbackManager.setCandidatePool(initial)
+                withContext(Dispatchers.Main.immediate) { playbackManager.setCandidatePool(initial) }
             }
         }
         viewModelScope.launch {
@@ -337,7 +339,7 @@ class HomeViewModel(
         if (homeRefreshJob?.isActive == true) return
         _isRefreshing.value = isExplicitPull
         _refreshErrorMessage.value = null
-        homeRefreshJob = viewModelScope.launch(Dispatchers.IO) {
+        homeRefreshJob = viewModelScope.launch(Dispatchers.Default) {
             try {
                 val profile = _userProfile.value
                 loadRegionalTrending(resolveCountryDisplayName(profile), profile.countryCode, isExplicitPull)
@@ -352,7 +354,7 @@ class HomeViewModel(
                     val catalog = HomeRecommendationPolicy.originals(quick + era + _catalogTracks.value).take(300)
                     if (catalog.isNotEmpty()) {
                         _catalogTracks.value = catalog
-                        playbackManager.setCandidatePool(catalog)
+                        withContext(Dispatchers.Main.immediate) { playbackManager.setCandidatePool(catalog) }
                     }
                     lastDiscoveryRefresh = System.currentTimeMillis()
                     regionalTrendingJob?.join()

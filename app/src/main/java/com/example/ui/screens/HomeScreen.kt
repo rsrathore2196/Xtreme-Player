@@ -242,7 +242,7 @@ fun HomeScreenContent(
     mostListenedArtists: List<MostListenedArtist> = emptyList(),
     isRadioSession: Boolean = false,
     isRadioLoading: Boolean = false,
-    boundaryOffset: Float = 0f,
+    boundaryOffset: () -> Float = { 0f },
     refreshErrorMessage: String? = null,
     onRetryRefresh: (() -> Unit)? = null,
     onDismissRefreshError: (() -> Unit)? = null,
@@ -274,7 +274,7 @@ fun HomeScreenContent(
                 .fillMaxWidth()
                 .widthIn(max = 640.dp)
                 .graphicsLayer {
-                    translationY = boundaryOffset
+                    translationY = boundaryOffset()
                 }
                 .statusBarsPadding()
                 .testTag("home_screen"),
@@ -609,6 +609,7 @@ fun SectionCardLayout(
         return
     }
 
+    val safeTracks = remember(state.tracks) { state.tracks.distinctBy { it.id } }
     Column(modifier = Modifier.padding(top = 22.dp)) {
         Column(modifier = Modifier.padding(horizontal = 20.dp)) {
             Text(
@@ -639,8 +640,7 @@ fun SectionCardLayout(
                 contentPadding = PaddingValues(horizontal = 20.dp),
                 horizontalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                val safeTracks = state.tracks.distinctBy { it.id }
-                itemsIndexed(safeTracks, key = { index, track -> "${state.title}_${track.id}_$index" }) { _, track ->
+                itemsIndexed(safeTracks, key = { _, track -> track.id }, contentType = { _, _ -> "home_track" }) { _, track ->
                     ShelfTrackCard(
                         track = track,
                         isPlaying = track.id == currentPlayingId,
@@ -726,7 +726,7 @@ fun HabitPillItem(
             verticalArrangement = Arrangement.Center
         ) {
             Text(
-                text = track.cleanTitle,
+                text = remember(track.title) { track.cleanTitle },
                 fontWeight = FontWeight.Bold,
                 fontSize = 13.sp,
                 color = if (isPlaying) appColors.primaryAccent else textPrimaryColor,
@@ -840,7 +840,7 @@ fun ShelfTrackCard(
         Spacer(modifier = Modifier.height(8.dp))
 
         Text(
-            text = track.cleanTitle,
+            text = remember(track.title) { track.cleanTitle },
             fontSize = 13.sp,
             fontWeight = FontWeight.Bold,
             color = if (isPlaying) appColors.primaryAccent else textPrimaryColor,

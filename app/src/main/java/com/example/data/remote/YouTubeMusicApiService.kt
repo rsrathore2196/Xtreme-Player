@@ -68,6 +68,41 @@ object YouTubeMusicApiService {
         }
     }
 
+    /** Provider radio candidates, preserving its related-song ordering without resolving streams. */
+    suspend fun getRadioRecommendations(videoId: String, limit: Int = 40): List<MusicTrack> = withContext(Dispatchers.IO) {
+        if (!videoId.matches(Regex("[A-Za-z0-9_-]{11}"))) return@withContext emptyList()
+        try {
+            val payload = JSONObject().apply {
+                put("context", JSONObject().put("client", JSONObject()
+                    .put("clientName", "WEB_REMIX").put("clientVersion", "1.20231204.01.00").put("hl", "en")))
+                put("videoId", videoId)
+                put("playlistId", "RDAMVM$videoId")
+                put("isAudioOnly", true)
+            }
+            val request = Request.Builder().url("https://music.youtube.com/youtubei/v1/next")
+                .post(payload.toString().toRequestBody(jsonMediaType))
+                .header("User-Agent", "Mozilla/5.0").header("Referer", "https://music.youtube.com/").build()
+            val body = httpClient.newCall(request).execute().use { response ->
+                if (response.isSuccessful) response.body?.string() else null
+            } ?: return@withContext emptyList()
+            withContext(Dispatchers.Default) {
+                val tracks = mutableListOf<MusicTrack>()
+                fun visit(value: Any?, depth: Int = 0) {
+                    if (depth > 24 || tracks.size >= limit) return
+                    when (value) {
+                        is JSONObject -> {
+                            if (value.has("playlistPanelVideoRenderer")) parseAnyRenderer(value)?.let(tracks::add)
+                            else value.keys().forEach { visit(value.opt(it), depth + 1) }
+                        }
+                        is JSONArray -> for (index in 0 until value.length()) visit(value.opt(index), depth + 1)
+                    }
+                }
+                visit(JSONObject(body))
+                tracks.distinctBy { it.id }.take(limit)
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { emptyList() }
+    }
+
     private fun parseSearchResults(jsonString: String, limit: Int): List<MusicTrack> {
         val tracks = mutableListOf<MusicTrack>()
         try {
@@ -526,12 +561,13 @@ object YouTubeMusicApiService {
         val r = item.optJSONObject("musicResponsiveListItemRenderer")
         if (r != null) return parseListItemRenderer(r)
 
-        val pvr = item.optJSONObject("playlistVideoRenderer")
+        val pvr = item.optJSONObject("playlistVideoRenderer") ?: item.optJSONObject("playlistPanelVideoRenderer")
         if (pvr != null) {
             val vid = pvr.optString("videoId", "")
             val rawTitle = pvr.optJSONObject("title")?.optJSONArray("runs")?.optJSONObject(0)?.optString("text", "")
                 ?: pvr.optJSONObject("title")?.optString("simpleText", "").orEmpty()
-            val rawArtist = pvr.optJSONObject("shortBylineText")?.optJSONArray("runs")?.optJSONObject(0)?.optString("text", "YouTube Artist").orEmpty()
+            val rawArtist = (pvr.optJSONObject("shortBylineText") ?: pvr.optJSONObject("longBylineText"))
+                ?.optJSONArray("runs")?.optJSONObject(0)?.optString("text", "Unknown").orEmpty()
             val durSec = pvr.optString("lengthSeconds", "0").toLongOrNull() ?: 0L
             val thumbs = pvr.optJSONObject("thumbnail")?.optJSONArray("thumbnails")
             val thumbUrl = if (thumbs != null && thumbs.length() > 0) thumbs.getJSONObject(thumbs.length() - 1).optString("url", "") else ""
@@ -543,8 +579,8 @@ object YouTubeMusicApiService {
                     id = "yt_$vid",
                     title = cleanTitle,
                     artist = cleanArtist,
-                    album = "YouTube Playlist",
-                    durationMs = if (durSec > 0) durSec * 1000L else 0L,
+                    album = if (item.has("playlistPanelVideoRenderer")) "Unknown" else "YouTube Playlist",
+                    durationMs = if (durSec > 0) durSec * 1000L else parseDurationText(pvr.optJSONObject("lengthText")?.optString("simpleText").orEmpty()),
                     coverUrl = thumbUrl.ifBlank { "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=800&q=80" },
                     audioUrl = "",
                     bitrateKbps = 256,

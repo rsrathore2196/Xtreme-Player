@@ -19,6 +19,8 @@ import com.example.data.local.TrackEntity
 import com.example.data.model.toMediaItem
 import com.example.data.remote.MusicDataSource
 import com.example.recommendation.CustomRecommendationQueryWrapper
+import com.example.recommendation.HomeRecommendationPolicy
+import com.example.recommendation.UserTasteProfile
 import com.example.recommendation.RecommendationEngine
 import com.example.service.MusicService
 import com.google.common.util.concurrent.ListenableFuture
@@ -30,6 +32,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.cancel
 import com.example.data.repository.TrackUnavailableException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -674,8 +679,9 @@ class PlaybackManager(
     }
 
     private fun rememberQueueCandidates(tracks: List<MusicTrack>) {
-        val knownIds = candidateCatalogPool.mapTo(mutableSetOf()) { it.id }
-        candidateCatalogPool.addAll(tracks.filter { knownIds.add(it.id) })
+        val merged = (candidateCatalogPool.toList() + tracks).distinctBy { it.id }.takeLast(600)
+        candidateCatalogPool.clear()
+        candidateCatalogPool.addAll(merged)
     }
 
     private fun cancelQueueRefill() {
@@ -712,19 +718,29 @@ class PlaybackManager(
         recommendationFetchJob = scope.launch {
             val attemptedIds = mutableSetOf<String>()
             try {
-                suspend fun appendCandidates(pool: List<MusicTrack>) {
+                val taste = withContext(Dispatchers.IO) {
+                    val events = listeningEventDao.getActualPlays()
+                    val metadata = events.map { it.trackId }.distinct().chunked(900)
+                        .flatMap { database.musicDao().getTracksByIds(it) }.map { it.toMusicTrack() }
+                    val favorites = repository?.getFavoriteTracks()?.first().orEmpty()
+                    withContext(Dispatchers.Default) { UserTasteProfile.fromEvents(events, metadata, favorites) }
+                }
+                suspend fun appendCandidates(pool: List<MusicTrack>, targetSize: Int = upcomingQueueTarget) {
                     val excludedIds = activeQueue.mapTo(mutableSetOf()) { it.id } + attemptedIds
+                    val queuedSnapshot = activeQueue.toList()
                     val ranked = withContext(Dispatchers.Default) {
                         recommendationEngine.buildInfiniteAutoplayRecommendations(
                             currentTrack = track,
                             candidatePool = pool.filterNot { it.audioUrl.contains("soundhelix.com", ignoreCase = true) },
                             limit = 40,
-                            alreadyQueuedIds = excludedIds
+                            alreadyQueuedIds = excludedIds,
+                            alreadyQueuedTracks = queuedSnapshot,
+                            tasteProfile = taste
                         )
                     }
                     for (candidate in ranked) {
                         if (!isActive || queueGeneration != generation || !_uiState.value.isAutoplayEnabled) return
-                        if (activeQueue.size - player.currentMediaItemIndex - 1 >= upcomingQueueTarget) return
+                        if (activeQueue.size - player.currentMediaItemIndex - 1 >= targetSize) return
                         if (!attemptedIds.add(candidate.id) || activeQueue.any { it.id == candidate.id }) continue
                         val resolved = try {
                             withContext(Dispatchers.IO) {
@@ -739,7 +755,14 @@ class PlaybackManager(
                         } ?: continue
                         if (resolved.audioUrl.isBlank()) continue
                         if (!isActive || queueGeneration != generation || !_uiState.value.isAutoplayEnabled) return
-                        if (activeQueue.any { it.id == resolved.id }) continue
+                        val currentQueue = activeQueue.toList()
+                        val duplicate = withContext(Dispatchers.Default) {
+                            val queued = HomeRecommendationPolicy.Recordings()
+                            currentQueue.forEach { queued.add(it) }
+                            queued.contains(resolved)
+                        }
+                        if (!isActive || queueGeneration != generation || !_uiState.value.isAutoplayEnabled) return
+                        if (duplicate || activeQueue.any { it.id == resolved.id }) continue
 
                         // Set the backing list before adding: player callbacks may run synchronously.
                         activeQueue.add(resolved)
@@ -759,16 +782,19 @@ class PlaybackManager(
                     }
                 }
 
-                // Preserve unresolved context tracks as candidates instead of dropping them.
-                appendCandidates(candidateCatalogPool.toList().distinctBy { it.id })
-                if (activeQueue.size - player.currentMediaItemIndex - 1 < upcomingQueueTarget) {
-                    val seed = _uiState.value.currentTrack ?: track
-                    val targeted = withContext(Dispatchers.IO) {
-                        CustomRecommendationQueryWrapper.fetchTargetedRecommendations(seed, limit = 40)
-                    }
-                    rememberQueueCandidates(targeted)
-                    appendCandidates(targeted)
+                val seed = _uiState.value.currentTrack ?: track
+                val local = candidateCatalogPool.toList()
+                val discovery = async(Dispatchers.IO) {
+                    withTimeoutOrNull(15_000) {
+                        CustomRecommendationQueryWrapper.fetchTargetedRecommendations(seed, limit = 60)
+                    }.orEmpty()
                 }
+                // Keep an exhausted queue moving while discovery runs; do not fill all slots with generic catalog tracks.
+                if (activeQueue.size - player.currentMediaItemIndex - 1 == 0) appendCandidates(local, targetSize = 1)
+                val targeted = discovery.await()
+                rememberQueueCandidates(targeted)
+                appendCandidates(targeted)
+                if (activeQueue.size - player.currentMediaItemIndex - 1 < upcomingQueueTarget) appendCandidates(local)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {

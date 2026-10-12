@@ -451,76 +451,47 @@ class RecommendationEngine {
      * era, mood/vibe, tempo, and acoustic affinity.
      * Strictly eliminates duplicate song titles, alternate versions, and songs already in session.
      */
-    @Synchronized
     fun buildInfiniteAutoplayRecommendations(
         currentTrack: MusicTrack,
         candidatePool: List<MusicTrack>,
         limit: Int = 15,
-        alreadyQueuedIds: Set<String> = emptySet()
+        alreadyQueuedIds: Set<String> = emptySet(),
+        alreadyQueuedTracks: List<MusicTrack> = emptyList(),
+        tasteProfile: UserTasteProfile = UserTasteProfile.COLD_START_PROFILE
     ): List<MusicTrack> {
-        val excluded = alreadyQueuedIds.toMutableSet()
-        excluded.add(currentTrack.id)
-
-        val scored = evaluateAndScoreCandidates(
-            currentTrack = currentTrack,
-            candidatePool = candidatePool,
-            excludedIds = excluded
-        )
-
-        val result = mutableListOf<MusicTrack>()
-        val seenRoots = mutableSetOf<String>()
-        val currentRoot = extractRootTitle(currentTrack.title)
-        if (currentRoot.isNotBlank()) seenRoots.add(currentRoot)
-        val sessionList = sessionBuffer.toList()
-
-        for (item in scored) {
-            if (item.totalScore <= -50.0) continue
-            val track = item.track
-            if (excluded.contains(track.id)) continue
-
-            val root = extractRootTitle(track.title)
-            val isDuplicateTitle = root.isNotBlank() && (seenRoots.contains(root) || seenRoots.any { isSameSongOrVariant(it, root) })
-            val isVariant = isSameSongOrVariant(currentTrack.title, track.title) ||
-                    result.any { isSameSongOrVariant(it.title, track.title) } ||
-                    sessionList.any { isSameSongOrVariant(it.title, track.title) || it.id == track.id }
-
-            if (!isDuplicateTitle && !isVariant) {
-                if (root.isNotBlank()) seenRoots.add(root)
-                result.add(track)
-                excluded.add(track.id)
-                if (result.size >= limit) break
-            }
-        }
-
-        // Fallback: fill remaining slots with unplayed matching candidates from candidatePool
-        if (result.size < limit) {
-            val fallbackCandidates = candidatePool.filter { cand ->
-                val candRoot = extractRootTitle(cand.title)
-                !excluded.contains(cand.id) &&
-                        !isSameSongOrVariant(currentTrack.title, cand.title) &&
-                        result.none { isSameSongOrVariant(it.title, cand.title) } &&
-                        sessionList.none { isSameSongOrVariant(it.title, cand.title) || it.id == cand.id } &&
-                        !seenRoots.contains(candRoot)
-            }.sortedByDescending { cand ->
-                var s = 0
-                if (cand.language.equals(currentTrack.language, ignoreCase = true)) s += 25
-                if (cand.artist.equals(currentTrack.artist, ignoreCase = true)) s += 35
-                if (cand.genre.equals(currentTrack.genre, ignoreCase = true)) s += 15
-                s
-            }
-
-            for (cand in fallbackCandidates) {
-                val root = extractRootTitle(cand.title)
-                if (root.isNotBlank() && !seenRoots.contains(root) && !seenRoots.any { isSameSongOrVariant(it, root) }) {
-                    seenRoots.add(root)
-                    result.add(cand)
-                    excluded.add(cand.id)
-                    if (result.size >= limit) break
-                }
-            }
-        }
-
-        return result
+        // Only the session snapshot takes the lock: expensive ranking never blocks Main's player callbacks.
+        val session = getSessionTracks()
+        val seen = HomeRecommendationPolicy.Recordings()
+        (session + alreadyQueuedTracks + currentTrack).forEach { seen.add(it) }
+        val seedArtists = HomeRecommendationPolicy.artists(currentTrack).toSet()
+        val seedLanguage = HomeRecommendationPolicy.normalize(currentTrack.language)
+        val seedGenre = HomeRecommendationPolicy.normalize(currentTrack.genre)
+        val seedYear = currentTrack.year.toIntOrNull()
+        val seedMood = HomeRecommendationPolicy.moodForGenre(currentTrack.genre)
+        val ranked = HomeRecommendationPolicy.originals(candidatePool).filter {
+            it.id !in alreadyQueuedIds && !seen.contains(it) &&
+                ((tasteProfile.skipCounts[tasteProfile.keyFor(it)] ?: 0) < 2 || tasteProfile.keyFor(it) in tasteProfile.favoriteRecordings)
+        }.shuffled().map { track ->
+            val artists = HomeRecommendationPolicy.artists(track)
+            val language = HomeRecommendationPolicy.normalize(track.language)
+            val genre = HomeRecommendationPolicy.normalize(track.genre)
+            val year = track.year.toIntOrNull()
+            val key = tasteProfile.keyFor(track)
+            val continuity = (if (artists.any { it in seedArtists }) 22f else 0f) +
+                (if (HomeRecommendationPolicy.known(currentTrack.language) && HomeRecommendationPolicy.known(track.language)) {
+                    if (seedLanguage == language) 18f else -18f
+                } else 0f) +
+                (if (HomeRecommendationPolicy.known(currentTrack.genre) && genre == seedGenre) 16f else 0f) +
+                (if (seedYear != null && year != null && abs(seedYear - year) <= 5) 4f else 0f) +
+                (if (seedMood != null && seedMood == HomeRecommendationPolicy.moodForGenre(track.genre)) 4f else 0f)
+            val taste = (artists.maxOfOrNull { tasteProfile.artistAffinities[it] ?: 0f } ?: 0f) * 12 +
+                (tasteProfile.genreAffinities[genre] ?: 0f) * 8 + (tasteProfile.languageAffinities[language] ?: 0f) * 8
+            val feedback = (if (track.isLiked || key in tasteProfile.favoriteRecordings) 5f else 0f) -
+                (tasteProfile.skipCounts[key] ?: 0) * 18 - minOf(tasteProfile.playCounts[key] ?: 0, 10) * 2 -
+                (if (key in tasteProfile.recentRecordings) 12 else 0)
+            track to (continuity + taste + feedback)
+        }.sortedByDescending { it.second }.map { it.first }
+        return HomeRecommendationPolicy.diversify(ranked, limit, seen)
     }
 
     companion object {
