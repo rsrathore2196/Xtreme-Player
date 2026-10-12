@@ -437,11 +437,13 @@ private fun KaraokeLineItem(
         var cursor = 0
         for (word in line.words) {
             val match = line.text.indexOf(word.text, startIndex = cursor)
-            if (word.text.isBlank() || !word.isReliableTiming || word.durationMs <= 0 || match < 0) break
-            result.add(MeasuredWord(word, match, match + word.text.length))
+            if (word.text.isBlank() || match < 0) continue
             cursor = match + word.text.length
+            if (word.isReliableTiming && word.durationMs > 0) {
+                result.add(MeasuredWord(word, match, cursor))
+            }
         }
-        if (result.size == line.words.size) result else emptyList()
+        result
     }
     var textLayoutResult by remember(line.text) { mutableStateOf<TextLayoutResult?>(null) }
     val latestPosition by rememberUpdatedState(currentPositionProvider)

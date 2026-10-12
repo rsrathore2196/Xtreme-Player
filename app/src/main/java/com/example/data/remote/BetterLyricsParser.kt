@@ -77,7 +77,10 @@ object BetterLyricsParser {
                     val begin = node.attributes["begin"]?.let(::parseTtmlTimestamp) ?: inheritedStart
                     val end = node.attributes["end"]?.let(::parseTtmlTimestamp)
                         ?: node.attributes["dur"]?.let { begin + parseTtmlTimestamp(it) } ?: inheritedEnd
-                    val hasTiming = timed || (node.name == "span" && node.attributes.containsKey("begin") && end != null && end > begin)
+                    val startsOwnInterval = node.name == "span" && node.attributes.containsKey("begin")
+                    val ownsEnd = node.attributes.containsKey("end") || node.attributes.containsKey("dur")
+                    // A span's start alone must not borrow the paragraph/word's entire duration.
+                    val hasTiming = if (startsOwnInterval) ownsEnd && end != null && end > begin else timed
                     node.children.forEach { child ->
                         if (child is Node) {
                             if (child.name == "br") fragments.add(Fragment(" ", begin, end ?: begin, false))
@@ -111,8 +114,9 @@ object BetterLyricsParser {
                     }
                 }
                 finishWord()
-                // Partial/missing word timing cannot be presented as accurate vocal alignment.
-                val reliableWords = words.takeIf { it.isNotEmpty() && it.all(LyricWord::isReliableTiming) }.orEmpty()
+                // Keep genuinely timed fragments even if punctuation or one word is untimed.
+                // Each word carries its own reliability; the renderer skips only that fragment.
+                val reliableWords = words.takeIf { it.any(LyricWord::isReliableTiming) }.orEmpty()
                 val end = explicitEnd ?: reliableWords.maxOfOrNull { it.endTimeMs } ?: start
                 LyricLine(start, text, (end - start).coerceAtLeast(0), reliableWords, translation, romanization,
                     agent = paragraph.attributes["agent"], isReliableDuration = end > start)

@@ -331,12 +331,18 @@ class PlayerViewModel(
         }
         lyricsJob = viewModelScope.launch(Dispatchers.IO) {
             try {
-                val lyrics = LyricsProvider.getLyricsForTrack(track)
+                val lyrics = LyricsProvider.getLyricsForTrack(track, forceRefresh = forceRefresh) { improved ->
+                    if (playbackManager.uiState.value.currentTrack?.id == track.id && coroutineContext[kotlinx.coroutines.Job]?.isActive == true) {
+                        _currentLyrics.value = improved
+                    }
+                }
                 if (playbackManager.uiState.value.currentTrack?.id == track.id) {
                     _currentLyrics.value = lyrics
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
-                if (playbackManager.uiState.value.currentTrack?.id == track.id) {
+                if (playbackManager.uiState.value.currentTrack?.id == track.id && _currentLyrics.value == null) {
                     _currentLyrics.value = TrackLyrics(
                         trackId = track.id,
                         title = track.title,

@@ -20,6 +20,12 @@ android {
     versionCode = 8
     versionName = "1.8.0"
 
+    // Optional authenticated lyrics routes; public providers work without these values.
+    for (keyName in listOf("PAXSENIX_API_KEY", "MUSIXMATCH_API_KEY")) {
+      val value = providers.gradleProperty(keyName).orElse(providers.environmentVariable(keyName)).orElse("").get()
+      buildConfigField("String", keyName, "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\"")
+    }
+
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
 

@@ -9,6 +9,9 @@ import com.example.data.model.LyricWord
 import com.example.data.model.MusicTrack
 import com.example.data.model.SongIdentity
 import com.example.data.model.TrackLyrics
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -37,6 +40,9 @@ object LyricsProvider {
 
     // In-memory cache for parsed lyrics (0ms instant access)
     private val lyricsCache = ConcurrentHashMap<String, TrackLyrics>()
+    private val cachedAt = ConcurrentHashMap<String, Long>()
+    private const val CACHE_VERSION = 3
+    private const val CACHE_TTL_MS = 30 * 60 * 1000L
 
     private fun getDiskCacheDir(): File? {
         return try {
@@ -65,12 +71,13 @@ object LyricsProvider {
         return normalizeForSimilarity(text).replace(" ", "_")
     }
 
-    private fun loadFromDisk(file: File): TrackLyrics? {
+    private fun loadFromDisk(file: File, allowStale: Boolean = false): TrackLyrics? {
         if (!file.exists() || !file.canRead() || file.length() <= 0) return null
         return try {
             val content = file.readText(Charsets.UTF_8)
             val json = JSONObject(content)
-            if (json.optInt("timingVersion", 0) != 2) return null
+            if (json.optInt("timingVersion", 0) != CACHE_VERSION) return null
+            if (!allowStale && System.currentTimeMillis() - json.optLong("cachedAt", 0L) > CACHE_TTL_MS) return null
             val trackId = json.optString("trackId", "")
             val title = json.optString("title", "")
             val artist = json.optString("artist", "")
@@ -148,11 +155,11 @@ object LyricsProvider {
         }
     }
 
-    private fun getCachedLyrics(identity: SongIdentity, cleanTitle: String, primaryArtist: String): TrackLyrics? {
+    private fun getCachedLyrics(identity: SongIdentity, cleanTitle: String, primaryArtist: String, allowStale: Boolean = false): TrackLyrics? {
         val trackId = identity.trackId ?: ""
         if (trackId.isNotBlank()) {
             lyricsCache[trackId]?.let {
-                if (it.lines.isNotEmpty()) return it
+                if (it.lines.isNotEmpty() && (allowStale || System.currentTimeMillis() - (cachedAt[trackId] ?: 0L) < CACHE_TTL_MS)) return it
             }
         }
 
@@ -160,8 +167,11 @@ object LyricsProvider {
 
         if (trackId.isNotBlank()) {
             val trackFile = File(dir, "trk_${safeHash(trackId)}.json")
-            loadFromDisk(trackFile)?.let {
-                lyricsCache[trackId] = it
+            loadFromDisk(trackFile, allowStale)?.let {
+                if (!allowStale) {
+                    lyricsCache[trackId] = it
+                    cachedAt[trackId] = System.currentTimeMillis()
+                }
                 Log.i(TAG, "Hit disk lyrics cache for '${identity.title}' (track ID)")
                 return it
             }
@@ -170,20 +180,20 @@ object LyricsProvider {
         val isrcKey = identity.isrc?.trim()?.uppercase() ?: ""
         if (isrcKey.isNotBlank()) {
             val isrcFile = File(dir, "isrc_${safeHash(isrcKey)}.json")
-            loadFromDisk(isrcFile)?.let {
+            loadFromDisk(isrcFile, allowStale)?.let {
                 val mapped = if (trackId.isNotBlank()) it.copy(trackId = trackId) else it
-                if (trackId.isNotBlank()) lyricsCache[trackId] = mapped
+                if (trackId.isNotBlank() && !allowStale) { lyricsCache[trackId] = mapped; cachedAt[trackId] = System.currentTimeMillis() }
                 Log.i(TAG, "Hit disk lyrics cache for '${identity.title}' (ISRC $isrcKey)")
                 return mapped
             }
         }
 
-        val metaKey = "${normalizeForLookup(cleanTitle)}_${normalizeForLookup(primaryArtist)}"
+        val metaKey = "${normalizeForLookup(identity.title)}_${normalizeForLookup(primaryArtist)}_${(identity.durationMs ?: 0L) / 1000}"
         if (metaKey.length > 2) {
             val metaFile = File(dir, "meta_${safeHash(metaKey)}.json")
-            loadFromDisk(metaFile)?.let {
+            loadFromDisk(metaFile, allowStale)?.let {
                 val mapped = if (trackId.isNotBlank()) it.copy(trackId = trackId) else it
-                if (trackId.isNotBlank()) lyricsCache[trackId] = mapped
+                if (trackId.isNotBlank() && !allowStale) { lyricsCache[trackId] = mapped; cachedAt[trackId] = System.currentTimeMillis() }
                 Log.i(TAG, "Hit disk lyrics cache for '${identity.title}' (metadata)")
                 return mapped
             }
@@ -202,13 +212,14 @@ object LyricsProvider {
         val trackId = identity.trackId ?: lyrics.trackId
         if (trackId.isNotBlank()) {
             lyricsCache[trackId] = lyrics
+            cachedAt[trackId] = System.currentTimeMillis()
         }
         if (lyrics.lines.isEmpty()) return
 
         val dir = getDiskCacheDir() ?: return
         try {
             val json = JSONObject()
-            json.put("timingVersion", 2)
+            json.put("timingVersion", CACHE_VERSION)
             json.put("trackId", trackId)
             json.put("title", lyrics.title)
             json.put("artist", lyrics.artist)
@@ -272,7 +283,7 @@ object LyricsProvider {
                 isrcFile.writeText(content, Charsets.UTF_8)
             }
 
-            val metaKey = "${normalizeForLookup(cleanTitle)}_${normalizeForLookup(primaryArtist)}"
+            val metaKey = "${normalizeForLookup(identity.title)}_${normalizeForLookup(primaryArtist)}_${(identity.durationMs ?: 0L) / 1000}"
             if (metaKey.length > 2) {
                 val metaFile = File(dir, "meta_${safeHash(metaKey)}.json")
                 metaFile.writeText(content, Charsets.UTF_8)
@@ -285,6 +296,7 @@ object LyricsProvider {
     @Synchronized
     fun clearCache() {
         lyricsCache.clear()
+        cachedAt.clear()
         try {
             val dir = getDiskCacheDir()
             dir?.listFiles()?.forEach { it.delete() }
@@ -295,6 +307,7 @@ object LyricsProvider {
     @Synchronized
     fun clearCacheForTrack(trackId: String) {
         lyricsCache.remove(trackId)
+        cachedAt.remove(trackId)
         try {
             val dir = getDiskCacheDir()
             val file = File(dir, "trk_${safeHash(trackId)}.json")
@@ -343,120 +356,48 @@ object LyricsProvider {
         val score: Int = 0
     )
 
-    suspend fun getLyricsForTrack(track: MusicTrack): TrackLyrics = withContext(Dispatchers.IO) {
-        getLyricsForIdentity(SongIdentity.from(track), track)
-    }
+    suspend fun getLyricsForTrack(
+        track: MusicTrack,
+        forceRefresh: Boolean = false,
+        onUpdate: (TrackLyrics) -> Unit = {}
+    ): TrackLyrics = getLyricsForIdentity(SongIdentity.from(track), track, forceRefresh, onUpdate)
 
-    suspend fun getLyricsForIdentity(identity: SongIdentity, rawTrack: MusicTrack? = null): TrackLyrics = withContext(Dispatchers.IO) {
-        val (cleanTitle, coreTitle) = sanitizeTitle(identity.title)
-        val (primaryArtist, allArtists) = sanitizeArtist(identity.artist ?: "", rawTrack?.singers ?: "", rawTrack?.writer ?: "")
-        val targetDurationSec = ((identity.durationMs ?: rawTrack?.durationMs ?: 0L) / 1000L).toInt()
-        val trackId = identity.trackId ?: ""
-
-        // 1. Check local persistent cache (in-memory + disk, 0ms fast)
-        getCachedLyrics(identity, cleanTitle, primaryArtist)?.let {
-            if (it.lines.isNotEmpty()) return@withContext it
-        }
-
-        Log.d(TAG, "Fetching lyrics for '${identity.title}' (clean='$cleanTitle', core='$coreTitle', artists=$allArtists, dur=${targetDurationSec}s)")
-
-        // =========================================================================
-        // STRICT 3-TIER MULTI-PROVIDER HIERARCHY WITH WRONG-SONG PROTECTION:
-        // 1 — Better Lyrics (PRIMARY rich-lyrics source: TTML, word/syllable/char timing)
-        // 2 — BiniLyrics (SECONDARY fallback: Apple Music / Musixmatch rich word sync)
-        // 3 — LRCLIB (THIRD fallback: verified line/synced lyrics)
-        // =========================================================================
-
-        // 1 — Better Lyrics (PRIMARY)
-        try {
-            val betterLyrics = fetchBetterLyrics(
-                identity = identity,
-                cleanTitle = cleanTitle,
-                coreTitle = coreTitle,
-                primaryArtist = primaryArtist,
-                allArtists = allArtists,
-                targetDurationSec = targetDurationSec
-            )
-            if (betterLyrics != null && betterLyrics.lines.isNotEmpty()) {
-                Log.i(TAG, "1st Preference (BetterLyrics) verified and matched for '${identity.title}'")
-                persistLyrics(identity, cleanTitle, primaryArtist, betterLyrics, identity.isrc ?: "")
-                return@withContext betterLyrics
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "1st preference BetterLyrics attempt failed: ${e.message}, falling back to BiniLyrics")
-        }
-
-        // 2 — BiniLyrics (SECONDARY FALLBACK)
-        try {
-            val biniLyrics = fetchBiniLyrics(
-                identity = identity,
-                cleanTitle = cleanTitle,
-                coreTitle = coreTitle,
-                primaryArtist = primaryArtist,
-                allArtists = allArtists,
-                targetDurationSec = targetDurationSec
-            )
-            if (biniLyrics != null && biniLyrics.lines.isNotEmpty()) {
-                Log.i(TAG, "2nd Preference (BiniLyrics) verified and matched for '${identity.title}'")
-                persistLyrics(identity, cleanTitle, primaryArtist, biniLyrics, identity.isrc ?: "")
-                return@withContext biniLyrics
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "2nd preference BiniLyrics attempt failed: ${e.message}, falling back to LRCLIB")
-        }
-
-        // 3 — LRCLIB (THIRD FALLBACK)
-        try {
-            val lrclibLyrics = fetchLrcLibFast(
-                identity = identity,
-                cleanTitle = cleanTitle,
-                coreTitle = coreTitle,
-                primaryArtist = primaryArtist,
-                allArtists = allArtists,
-                targetDurationSec = targetDurationSec,
-                rawTrack = rawTrack
-            )
-            if (lrclibLyrics != null && lrclibLyrics.lines.isNotEmpty()) {
-                Log.i(TAG, "3rd Preference (LRCLIB) verified and matched for '${identity.title}'")
-                persistLyrics(identity, cleanTitle, primaryArtist, lrclibLyrics, identity.isrc ?: "")
-                return@withContext lrclibLyrics
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "3rd preference LRCLIB fast lyrics fetch failed: ${e.message}")
-        }
-
-        // 3.b ISRC Query fallback on LRCLIB
-        var effectiveIsrc = identity.isrc?.trim() ?: ""
-        if (effectiveIsrc.isBlank() && trackId.startsWith("online_")) {
-            val rawId = trackId.removePrefix("online_")
-            effectiveIsrc = OnlineMusicApiService.fetchSongIsrc(rawId)?.trim() ?: ""
-        }
-        if (effectiveIsrc.isNotBlank()) {
-            try {
-                val isrcLyrics = fetchLrcLibByIsrc(identity, effectiveIsrc, cleanTitle, coreTitle, primaryArtist, allArtists, targetDurationSec)
-                if (isrcLyrics != null && isrcLyrics.lines.isNotEmpty()) {
-                    Log.i(TAG, "3rd Preference LRCLIB (ISRC $effectiveIsrc) matched for '${identity.title}'")
-                    persistLyrics(identity, cleanTitle, primaryArtist, isrcLyrics, effectiveIsrc)
-                    return@withContext isrcLyrics
+    suspend fun getLyricsForIdentity(
+        identity: SongIdentity,
+        rawTrack: MusicTrack? = null,
+        forceRefresh: Boolean = false,
+        onUpdate: (TrackLyrics) -> Unit = {}
+    ): TrackLyrics = withContext(Dispatchers.IO) {
+        val (cleanTitle, _) = sanitizeTitle(identity.title)
+        val (primaryArtist, _) = sanitizeArtist(identity.artist.orEmpty(), rawTrack?.singers.orEmpty())
+        val fresh = getCachedLyrics(identity, cleanTitle, primaryArtist)
+        if (fresh != null && !forceRefresh) return@withContext fresh
+        val cached = fresh ?: getCachedLyrics(identity, cleanTitle, primaryArtist, allowStale = true)
+        val sources = LyricsSources(identity)
+        val candidates = mutableListOf<TrackLyrics>()
+        val updateLock = Any()
+        var provisional = cached
+        cached?.let(onUpdate)
+        // Publish useful word timing while slower sources are queried, but never downgrade it.
+        candidates += sources.rich { candidate ->
+            if (LyricsDocuments.quality(candidate) >= 2) synchronized(updateLock) {
+                if (provisional == null || LyricsDocuments.comparator.compare(candidate, provisional!!) > 0) {
+                    provisional = candidate
+                    onUpdate(candidate)
                 }
-            } catch (e: Exception) {
-                Log.w(TAG, "LRCLIB ISRC query failed: ${e.message}")
             }
         }
-
-        // 4. Final Protection: If no sufficiently confident result exists -> Lyrics unavailable
-        // (Correctness is more important than availability. Never show wrong-song lyrics!)
-        val notAvailable = TrackLyrics(
-            trackId = trackId,
-            title = identity.title,
-            artist = identity.artist ?: "",
-            isSynced = false,
-            lines = emptyList()
-        )
-        if (trackId.isNotBlank()) {
-            lyricsCache[trackId] = notAvailable
+        currentCoroutineContext().ensureActive()
+        // All potentially rich sources finish before falling back to whole lines/plain text.
+        if (candidates.none { LyricsDocuments.quality(it) >= 2 }) candidates += sources.fallback()
+        currentCoroutineContext().ensureActive()
+        val best = (candidates + listOfNotNull(cached)).maxWithOrNull(LyricsDocuments.comparator)
+        if (best != null) {
+            persistLyrics(identity, cleanTitle, primaryArtist, best, identity.isrc.orEmpty())
+            return@withContext best
         }
-        return@withContext notAvailable
+        // An outage/miss is not written over valid disk lyrics or permanently negative-cached.
+        TrackLyrics(identity.trackId.orEmpty(), identity.title, identity.artist.orEmpty(), false, emptyList())
     }
 
     /**
@@ -538,65 +479,9 @@ object LyricsProvider {
         return Pair(primary, candidates)
     }
 
-    fun parseLrc(trackId: String, title: String, artist: String, lrcText: String, provider: String = "LRCLIB"): TrackLyrics {
-        val lines = mutableListOf<LyricLine>()
-        val rawLines = lrcText.lines()
-
-        for (line in rawLines) {
-            val matcher = LRC_REGEX.matcher(line.trim())
-            if (matcher.find()) {
-                val min = matcher.group(1)?.toLongOrNull() ?: 0L
-                val secStr = matcher.group(2) ?: "0"
-                val secParts = secStr.split(".")
-                val sec = secParts[0].toLongOrNull() ?: 0L
-                val ms = if (secParts.size > 1) {
-                    val frac = secParts[1].padEnd(3, '0').take(3)
-                    frac.toLongOrNull() ?: 0L
-                } else 0L
-
-                val totalMs = (min * 60 * 1000L) + (sec * 1000L) + ms
-                val text = matcher.group(3)?.trim() ?: ""
-                if (text.isNotBlank()) {
-                    lines.add(LyricLine(timestampMs = totalMs, text = text))
-                }
-            }
-        }
-
-        lines.sortBy { it.timestampMs }
-
-        // Approximate line vocal duration for standard .lrc lines (where only line start exists)
-        // Never stretch line vocals to the next line's start; leave a silent gap before next line.
-        val timedLines = lines.mapIndexed { index, item ->
-            val wordCount = item.text.trim().split(Regex("\\s+")).filter { it.isNotBlank() }.size.coerceAtLeast(1)
-            val duration = if (index < lines.lastIndex) {
-                val gapToNext = lines[index + 1].timestampMs - item.timestampMs
-                val estimatedSinging = (wordCount * 380L).coerceAtLeast(1000L)
-                if (gapToNext > estimatedSinging + 600L) {
-                    estimatedSinging
-                } else {
-                    (gapToNext - 400L).coerceIn(minOf(600L, gapToNext.coerceAtLeast(0L)), gapToNext.coerceAtLeast(0L))
-                }
-            } else {
-                (wordCount * 450L).coerceIn(2000L, 5000L)
-            }
-            item.copy(
-                durationMs = duration,
-                words = emptyList(), // Never silently fabricate word timestamps for pure LRC
-                isReliableDuration = false // Explicitly approximate fallback
-            )
-        }
-
-        return TrackLyrics(
-            trackId = trackId,
-            title = title,
-            artist = artist,
-            isSynced = timedLines.isNotEmpty(),
-            lines = timedLines,
-            provider = provider,
-            hasWordTiming = false,
-            hasSyllableTiming = false
-        )
-    }
+    fun parseLrc(trackId: String, title: String, artist: String, lrcText: String, provider: String = "LRCLIB"): TrackLyrics =
+        LyricsDocuments.timedText(SongIdentity(trackId, title, artist), lrcText, provider)
+            ?: TrackLyrics(trackId, title, artist, false, emptyList(), provider = provider)
 
     fun parseTtmlTimestamp(raw: String): Long = BetterLyricsParser.parseTtmlTimestamp(raw)
 
@@ -606,251 +491,7 @@ object LyricsProvider {
     }
 
     /**
-     * Primary Provider: BetterLyrics API (Rich TTML with line, word, syllable, char timing)
-     */
-    private suspend fun fetchBetterLyrics(
-        identity: SongIdentity,
-        cleanTitle: String,
-        coreTitle: String,
-        primaryArtist: String,
-        allArtists: List<String>,
-        targetDurationSec: Int
-    ): TrackLyrics? = withContext(Dispatchers.IO) {
-        val baseUrls = listOf(
-            "https://lyrics-api.boidu.dev/getLyrics",
-            "https://api.betterlyrics.org/getLyrics"
-        )
-        val queries = mutableListOf<Pair<String, String>>()
-        queries.add(Pair(cleanTitle, primaryArtist))
-        if (coreTitle != cleanTitle && coreTitle.length >= 2) {
-            queries.add(Pair(coreTitle, primaryArtist))
-        }
-
-        for (baseUrl in baseUrls) {
-            for ((title, artist) in queries) {
-                try {
-                    val encodedTitle = URLEncoder.encode(title, "UTF-8")
-                    val encodedArtist = URLEncoder.encode(artist, "UTF-8")
-                    val url = "$baseUrl?s=$encodedTitle&a=$encodedArtist"
-
-                    val request = Request.Builder()
-                        .url(url)
-                        .header("User-Agent", "Mozilla/5.0 (Linux; Android 14; Mobile)")
-                        .header("Accept", "application/json")
-                        .build()
-
-                    httpClient.newCall(request).execute().use { response ->
-                        if (!response.isSuccessful) return@use null
-                        val body = response.body?.string() ?: return@use null
-                        val json = JSONObject(body)
-                        val ttml = json.optString("ttml", "")
-                        if (ttml.isNotBlank()) {
-                            val parsed = BetterLyricsParser.parseTtml(identity, ttml)
-                            if (parsed != null && parsed.lines.isNotEmpty()) {
-                                Log.i(TAG, "Fetched ${parsed.lines.size} lines from BetterLyrics (TTML) for '${identity.title}'")
-                                return@withContext parsed
-                            }
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.d(TAG, "BetterLyrics attempt failed ($baseUrl): ${e.message}")
-                }
-            }
-        }
-        null
-    }
-
-    /**
-     * Secondary Provider (Fallback 1): BiniLyrics API (LyricsPlus / Apple Music & Musixmatch rich word sync)
-     */
-    private suspend fun fetchBiniLyrics(
-        identity: SongIdentity,
-        cleanTitle: String,
-        coreTitle: String,
-        primaryArtist: String,
-        allArtists: List<String>,
-        targetDurationSec: Int
-    ): TrackLyrics? = withContext(Dispatchers.IO) {
-        val baseUrls = listOf(
-            "https://lyricsplus.binimum.org/v2/lyrics/get",
-            "https://lyricsplus.atomix.one/v2/lyrics/get",
-            "https://lyricsplus-seven.vercel.app/v2/lyrics/get",
-            "https://lyricsplus.prjktla.workers.dev/v2/lyrics/get"
-        )
-        val queries = mutableListOf<Pair<String, String>>()
-        queries.add(Pair(cleanTitle, primaryArtist))
-        if (coreTitle != cleanTitle && coreTitle.length >= 2) {
-            queries.add(Pair(coreTitle, primaryArtist))
-        }
-
-        for (baseUrl in baseUrls) {
-            for ((title, artist) in queries) {
-                try {
-                    val encodedTitle = URLEncoder.encode(title, "UTF-8")
-                    val encodedArtist = URLEncoder.encode(artist, "UTF-8")
-                    val durParam = if ((identity.durationMs ?: 0L) > 0) "&duration=${identity.durationMs}" else ""
-                    val url = "$baseUrl?title=$encodedTitle&artist=$encodedArtist$durParam&source=apple,lyricsplus,musixmatch,spotify,musixmatch-word"
-
-                    val request = Request.Builder()
-                        .url(url)
-                        .header("User-Agent", "Mozilla/5.0 (Linux; Android 14; Mobile)")
-                        .header("Accept", "application/json")
-                        .build()
-
-                    httpClient.newCall(request).execute().use { response ->
-                        if (!response.isSuccessful) return@use null
-                        val body = response.body?.string() ?: return@use null
-                        val json = JSONObject(body)
-
-                        // 1. Candidate validation from metadata
-                        val metadata = json.optJSONObject("metadata")
-                        if (metadata != null) {
-                            val candTitle = metadata.optString("title", "").trim()
-                            val candArtist = metadata.optString("artist", "").trim()
-                            val totalDurStr = metadata.optString("totalDuration", "").trim()
-                            val candDurSec = if (totalDurStr.isNotBlank()) (BetterLyricsParser.parseTtmlTimestamp(totalDurStr) / 1000L).toInt() else 0
-
-                            if (candTitle.isNotBlank()) {
-                                val valid = LyricsValidation.validateCandidate(
-                                    candidateTitle = candTitle,
-                                    candidateArtist = candArtist,
-                                    candidateDurationSec = candDurSec,
-                                    identity = identity,
-                                    cleanTitle = cleanTitle,
-                                    coreTitle = coreTitle,
-                                    primaryArtist = primaryArtist,
-                                    allArtists = allArtists
-                                )
-                                if (!valid) {
-                                    Log.d(TAG, "BiniLyrics candidate '$candTitle' rejected for '${identity.title}'")
-                                    return@use null
-                                }
-                            }
-                        }
-
-                        val lyricsArray = json.optJSONArray("lyrics") ?: return@use null
-                        if (lyricsArray.length() == 0) return@use null
-
-                        val lines = mutableListOf<LyricLine>()
-                        var hasWordTiming = false
-                        var hasTranslation = false
-                        var hasRomanization = false
-
-                        for (i in 0 until lyricsArray.length()) {
-                            val lineObj = lyricsArray.getJSONObject(i)
-                            val timeMs = lineObj.optLong("time", 0L)
-                            val durMs = lineObj.optLong("duration", 0L)
-                            val text = lineObj.optString("text", "").trim()
-                            if (text.isBlank()) continue
-
-                            val translation = lineObj.optString("translation", "").ifBlank { null }
-                            val romanization = lineObj.optString("romanization", "").ifBlank { null }
-                            if (translation != null) hasTranslation = true
-                            if (romanization != null) hasRomanization = true
-
-                            val words = mutableListOf<LyricWord>()
-                            val syllabusArray = lineObj.optJSONArray("syllabus")
-                            if (syllabusArray != null && syllabusArray.length() > 0) {
-                                val currentSyllables = mutableListOf<LyricSyllable>()
-                                val wordText = StringBuilder()
-                                var wordStartMs = 0L
-                                var wordEndMs = 0L
-
-                                for (j in 0 until syllabusArray.length()) {
-                                    val sObj = syllabusArray.getJSONObject(j)
-                                    val sTime = sObj.optLong("time", 0L)
-                                    val sDur = sObj.optLong("duration", 0L)
-                                    val rawText = sObj.optString("text", "")
-                                    val endsWithSpace = rawText.endsWith(" ")
-                                    val cleanS = rawText.trim()
-                                    if (cleanS.isEmpty()) continue
-
-                                    if (currentSyllables.isEmpty()) {
-                                        wordStartMs = sTime
-                                    }
-                                    wordEndMs = sTime + sDur
-                                    wordText.append(cleanS)
-                                    currentSyllables.add(LyricSyllable(sTime, sDur.coerceAtLeast(0L), cleanS, isReliableTiming = sObj.has("time") && sDur > 0L))
-
-                                    if (endsWithSpace) {
-                                        words.add(
-                                            LyricWord(
-                                                timestampMs = wordStartMs,
-                                                durationMs = (wordEndMs - wordStartMs).coerceAtLeast(0L),
-                                                text = wordText.toString(),
-                                                syllables = currentSyllables.toList(),
-                                            isReliableTiming = currentSyllables.all { it.isReliableTiming }
-                                            )
-                                        )
-                                        currentSyllables.clear()
-                                        wordText.clear()
-                                    }
-                                }
-
-                                if (currentSyllables.isNotEmpty()) {
-                                    words.add(
-                                        LyricWord(
-                                            timestampMs = wordStartMs,
-                                            durationMs = (wordEndMs - wordStartMs).coerceAtLeast(0L),
-                                            text = wordText.toString(),
-                                            syllables = currentSyllables.toList(),
-                                            isReliableTiming = currentSyllables.all { it.isReliableTiming }
-                                        )
-                                    )
-                                }
-                            }
-
-                            if (words.isNotEmpty()) {
-                                hasWordTiming = true
-                            }
-
-                            lines.add(
-                                LyricLine(
-                                    timestampMs = timeMs,
-                                    text = text,
-                                    durationMs = if (durMs > 0) durMs else 3000L,
-                                    words = words,
-                                    translation = translation,
-                                    romanization = romanization,
-                                    isReliableDuration = durMs > 0L
-                                )
-                            )
-                        }
-
-                        if (lines.isNotEmpty()) {
-                            Log.i(TAG, "Fetched ${lines.size} lines from BiniLyrics for '${identity.title}'")
-                            val rawLyrics = TrackLyrics(
-                                trackId = identity.trackId ?: "",
-                                title = identity.title,
-                                artist = identity.artist ?: "",
-                                isSynced = true,
-                                lines = lines,
-                                provider = "BiniLyrics",
-                                language = metadata?.optString("language", "")?.ifBlank { null },
-                                hasWordTiming = hasWordTiming,
-                                hasTranslation = hasTranslation,
-                                hasRomanization = hasRomanization
-                            )
-                            return@withContext SyllableSynthesizer.enrichLyrics(rawLyrics)
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.d(TAG, "BiniLyrics attempt failed ($baseUrl): ${e.message}")
-                }
-            }
-        }
-        null
-    }
-
-    /**
-     * High-speed parallel LRCLIB engine:
-     * Dispatches concurrent asynchronous network requests across LRCLIB endpoints:
-     * 1. Full-text search (q=...) - Exact mechanism used by lrclib.net web interface
-     * 2. Direct exact GET (/api/get?track_name=...&artist_name=...)
-     * 3. Dedicated field search (/api/search?track_name=...&artist_name=...)
-     * 4. Core title search (when title contains subtitles or featured artist noise)
-     * 5. ISRC query (if available on track)
-     * Collects and evaluates all candidates concurrently, prioritizing verified synchronized lyrics.
+     * Legacy LRCLIB candidate helpers retained for compatibility; selection uses LyricsSources.
      */
     private suspend fun fetchLrcLibFast(
         identity: SongIdentity,
