@@ -9,10 +9,16 @@ import com.example.data.model.MusicTrack
 data class CatalogArtist(val id: String, val name: String, val musicBrainzId: String = "", val aliases: List<String> = emptyList(), val image: String = "")
 data class CatalogAlbum(val id: String, val title: String, val artists: List<CatalogArtist>, val image: String, val year: String)
 data class CatalogPlaylist(val id: String, val title: String, val image: String)
+/** Independent provider cursors and verified collection tracks waiting for the next ten rows. */
+data class LosslessCatalogContinuation(
+    val query: String, val standardPage: Int? = null, val archivePage: Int? = null,
+    val pendingTracks: List<MusicTrack> = emptyList()
+)
 data class CatalogPage(
     val tracks: List<MusicTrack> = emptyList(), val albums: List<CatalogAlbum> = emptyList(),
     val artists: List<CatalogArtist> = emptyList(), val playlists: List<CatalogPlaylist> = emptyList(),
-    val nextPage: Int? = null, val warning: String? = null
+    val nextPage: Int? = null, val warning: String? = null,
+    val losslessContinuation: LosslessCatalogContinuation? = null
 )
 sealed interface CatalogDestination {
     val key: String

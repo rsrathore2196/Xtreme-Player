@@ -109,7 +109,8 @@ class PlayerViewModel(
     private val _catalogTracks = MutableStateFlow<List<MusicTrack>>(emptyList())
     val catalogTracks: StateFlow<List<MusicTrack>> = _catalogTracks.asStateFlow()
 
-    val catalogBrowser = CatalogBrowserState(repository.catalogBrowser, viewModelScope)
+    val catalogBrowser = CatalogBrowserState(repository.catalogBrowser, viewModelScope,
+        initialQuality = playbackManager.uiState.value.selectedQuality)
 
     private val _searchState = MutableStateFlow(SearchUiState())
     val searchState: StateFlow<SearchUiState> = _searchState.asStateFlow()
@@ -308,6 +309,10 @@ class PlayerViewModel(
     )
 
     init {
+        viewModelScope.launch {
+            playbackManager.uiState.map { it.selectedQuality }.distinctUntilChanged()
+                .collect(catalogBrowser::setAudioQuality)
+        }
         viewModelScope.launch {
             favoriteTracks.map { tracks -> tracks.map { it.id }.toSet() }
                 .distinctUntilChanged().flowOn(Dispatchers.Default)
@@ -641,10 +646,7 @@ class PlayerViewModel(
 
     fun setAudioQuality(quality: com.example.playback.AudioQuality) {
         playbackManager.setAudioQuality(quality)
-        val currentQuery = _searchState.value.query
-        if (currentQuery.isNotBlank()) {
-            onSearchQueryChange(currentQuery)
-        }
+        catalogBrowser.setAudioQuality(quality)
     }
 
     fun setCrystalClarityEnabled(enabled: Boolean) {

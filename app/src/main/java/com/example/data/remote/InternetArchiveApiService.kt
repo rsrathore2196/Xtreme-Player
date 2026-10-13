@@ -1,7 +1,10 @@
 package com.example.data.remote
 
+import android.os.SystemClock
 import android.util.Log
+import android.util.LruCache
 import com.example.data.model.MusicTrack
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.async
@@ -9,10 +12,15 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
-import java.net.URLEncoder
+import java.text.Normalizer
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 /**
@@ -26,12 +34,33 @@ import java.util.concurrent.TimeUnit
  * - WavPack (.wv)
  * - DSD / Direct Stream Digital (.dsf / .dff)
  *
- * Enforces strict Lossless file verification and a tight 3500ms timeout.
+ * Enforces file-specific lossless verification with cancellable, bounded requests.
  * Rejects items that only contain lossy formats (MP3/OGG/VBR/Opus/AAC).
  */
 object InternetArchiveApiService {
     private const val TAG = "InternetArchiveApi"
     private const val TIMEOUT_MS = 3500L
+    private const val PAGE_TIMEOUT_MS = 8_000L
+    private const val PAGE_TTL_MS = 10 * 60_000L
+    private const val ITEM_TTL_MS = 30 * 60_000L
+    private val metadataRequests = Semaphore(4)
+    private val pageLocks = Array(16) { Mutex() }
+    private val itemLocks = Array(16) { Mutex() }
+    private val pageCache = object : LruCache<String, Pair<Long, LosslessSearchPage>>(640) {
+        override fun sizeOf(key: String, value: Pair<Long, LosslessSearchPage>): Int =
+            value.second.tracks.size.coerceAtLeast(1)
+    }
+    private val itemCache = object : LruCache<String, Pair<Long, List<MusicTrack>>>(1280) {
+        override fun sizeOf(key: String, value: Pair<Long, List<MusicTrack>>): Int =
+            value.second.size.coerceAtLeast(1)
+    }
+
+    /** [page] refers to Archive item pages; a collection may contain several recordings. */
+    data class LosslessSearchPage(
+        val tracks: List<MusicTrack> = emptyList(),
+        val nextPage: Int? = null,
+        val isSuccessful: Boolean = true
+    )
 
     private val httpClient by lazy {
         OkHttpClient.Builder()
@@ -105,60 +134,130 @@ object InternetArchiveApiService {
     }
 
     /**
-     * Searches Internet Archive for Lossless audio tracks matching [query].
-     * Strictly verifies that each item contains a direct streamable lossless file
-     * (FLAC, WAV, AIFF, ALAC, APE, WavPack, or DSD).
-     * Rejects items that only contain lossy formats.
-     * Times out after 3500ms.
+     * Search a real Archive item page, retaining every matching individual audio file.
+     * Do not infer hi-res from bitrate or losslessness alone. Successful pages and parsed
+     * items are cached separately so paging does not decode/fetch the same collection again.
      */
-    suspend fun searchLosslessTracks(query: String, maxResults: Int = 10): List<MusicTrack> = withContext(Dispatchers.IO) {
-        val trimmed = query.trim()
-        if (trimmed.isBlank()) return@withContext emptyList()
-
-        withTimeoutOrNull(TIMEOUT_MS) {
-            try {
-                // Step 1: Advanced Search Request targeting audio items with lossless formats
-                val formattedQuery = "($trimmed) AND mediatype:(audio) AND (format:(\"FLAC\" OR \"24bit Flac\" OR \"WAV\" OR \"AIFF\" OR \"ALAC\" OR \"Monkey's Audio\" OR \"WavPack\" OR \"DSD\") OR format:(\"Flac\" OR \"Waveform Audio\" OR \"APE\"))"
-                val encodedQuery = URLEncoder.encode(formattedQuery, "UTF-8")
-                val searchUrl = "https://archive.org/advancedsearch.php" +
-                        "?q=$encodedQuery" +
-                        "&fl[]=identifier&fl[]=title&fl[]=creator&fl[]=album&fl[]=year" +
-                        "&rows=$maxResults" +
-                        "&output=json"
-
-                val request = Request.Builder()
-                    .url(searchUrl)
-                    .addHeader("User-Agent", "XtremePlayer/2.5.0 (Android; Hi-Res Audio Streamer)")
-                    .addHeader("Accept", "application/json")
-                    .build()
-
-                val responseBody = httpClient.catalogRequest(request)
-                val json = JSONObject(responseBody)
-                val responseObj = json.optJSONObject("response") ?: return@withTimeoutOrNull emptyList()
-                val docs = responseObj.optJSONArray("docs") ?: return@withTimeoutOrNull emptyList()
-
-                if (docs.length() == 0) return@withTimeoutOrNull emptyList()
-
-                // Step 2: Strict File Format Verification & Metadata Extraction
-                coroutineScope {
-                    val deferredList = (0 until docs.length()).map { idx ->
-                        val doc = docs.getJSONObject(idx)
-                        async {
-                            verifyAndParseLosslessItem(doc)
-                        }
-                    }
-                    deferredList.awaitAll().flatten().distinctBy { it.id }
-                        .sortedByDescending { track ->
-                            trimmed.lowercase().split(Regex("\\s+")).count { word ->
-                                word in (track.title + " " + track.artist).lowercase()
-                            }
-                        }.take(maxResults)
-                }
-            } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
-                Log.w(TAG, "Internet Archive search encountered error/timeout: ${e.message}")
-                emptyList()
+    suspend fun searchLosslessPage(
+        query: String,
+        page: Int = 1,
+        pageSize: Int = 10,
+        playableOnly: Boolean = true
+    ): LosslessSearchPage = withContext(Dispatchers.IO) {
+        val terms = normalized(query).split(' ').filter(String::isNotBlank).take(12)
+        if (terms.isEmpty()) return@withContext LosslessSearchPage()
+        val requestedPage = page.coerceAtLeast(1)
+        val rows = pageSize.coerceIn(1, 20)
+        val key = "${terms.joinToString(" ")}|$requestedPage|$rows|$playableOnly"
+        pageLocks[(key.hashCode() and Int.MAX_VALUE) % pageLocks.size].withLock {
+            val cached = pageCache.get(key)
+            if (cached != null && SystemClock.elapsedRealtime() - cached.first < PAGE_TTL_MS) {
+                return@withLock cached.second
             }
+            val result = withTimeoutOrNull(PAGE_TIMEOUT_MS) {
+                try {
+                    // Quote normalized terms: user input must not become Lucene operators.
+                    val expression = terms.joinToString(" AND ") { "\"$it\"" }
+                    val formattedQuery = "($expression) AND mediatype:(audio) AND " +
+                        "(format:(\"FLAC\" OR \"24bit Flac\" OR \"Flac\" OR \"WAV\" OR " +
+                        "\"Waveform Audio\" OR \"AIFF\" OR \"ALAC\" OR \"Monkey's Audio\" OR " +
+                        "\"APE\" OR \"WavPack\" OR \"DSD\"))"
+                    val searchUrl = okhttp3.HttpUrl.Builder().scheme("https").host("archive.org")
+                        .addPathSegment("advancedsearch.php").addQueryParameter("q", formattedQuery)
+                        .addQueryParameter("fl[]", "identifier").addQueryParameter("fl[]", "title")
+                        .addQueryParameter("fl[]", "creator").addQueryParameter("fl[]", "album")
+                        .addQueryParameter("fl[]", "year").addQueryParameter("rows", rows.toString())
+                        .addQueryParameter("page", requestedPage.toString())
+                        .addQueryParameter("output", "json").build()
+                    val request = Request.Builder().url(searchUrl)
+                        .header("User-Agent", "XtremePlayer/2.5.0 (Android; Lossless Audio Search)")
+                        .header("Accept", "application/json").build()
+                    val response = JSONObject(httpClient.catalogRequest(request)).optJSONObject("response")
+                        ?: throw java.io.IOException("Invalid Archive search response")
+                    val docs = response.optJSONArray("docs")
+                        ?: throw java.io.IOException("Missing Archive search results")
+                    val parsed = coroutineScope {
+                        (0 until docs.length()).mapNotNull { docs.optJSONObject(it) }.map { doc ->
+                            async { cachedLosslessItem(doc) }
+                        }.awaitAll()
+                    }
+                    val tracks = parsed.filterNotNull().flatten().distinctBy { it.id }
+                        .filter { relevant(terms, it) && (!playableOnly || supportedSearchAudio(it)) }
+                        .sortedWith(compareByDescending<MusicTrack> { relevance(terms, it) }
+                            .thenByDescending { it.qualityBadge.startsWith("Hi-Res") }
+                            .thenByDescending { it.bitrateKbps })
+                    val total = response.optLong("numFound", -1L)
+                    val hasMore = docs.length() > 0 && if (total >= 0L) {
+                        requestedPage.toLong() * rows < total
+                    } else docs.length() >= rows
+                    val value = LosslessSearchPage(tracks,
+                        nextPage = if (hasMore) requestedPage + 1 else null,
+                        isSuccessful = parsed.none { it == null })
+                    // Partial failures must be retried instead of being cached as exhausted.
+                    if (parsed.none { it == null }) pageCache.put(key, SystemClock.elapsedRealtime() to value)
+                    value
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "Internet Archive search failed: ${e.message}")
+                    cached?.second?.copy(isSuccessful = false) ?: LosslessSearchPage(isSuccessful = false)
+                }
+            }
+            result ?: cached?.second?.copy(isSuccessful = false) ?: LosslessSearchPage(isSuccessful = false)
+        }
+    }
+
+    /** Playback resolver compatibility: keep its bounded first-page result contract. */
+    suspend fun searchLosslessTracks(query: String, maxResults: Int = 10): List<MusicTrack> {
+        if (maxResults <= 0 || query.isBlank()) return emptyList()
+        return withTimeoutOrNull(TIMEOUT_MS) {
+            searchLosslessPage(query, pageSize = maxResults.coerceAtMost(20), playableOnly = false)
+                .tracks.take(maxResults)
         } ?: emptyList()
+    }
+
+    // The existing Media3 stack has no AIFF/APE/WavPack/DSD extractor or native extension.
+    // Keep those legacy resolver formats untouched while exposing playable search containers.
+    private fun supportedSearchAudio(track: MusicTrack): Boolean {
+        val file = java.net.URI(track.audioUrl).path.substringAfterLast('/').lowercase(Locale.ROOT)
+        return file.endsWith(".flac") || file.endsWith(".wav") || file.endsWith(".m4a")
+    }
+
+    private fun normalized(value: String): String = Normalizer.normalize(value, Normalizer.Form.NFKC)
+        .lowercase(Locale.ROOT).replace(Regex("[^\\p{L}\\p{M}\\p{N}]+"), " ").trim()
+
+    private fun relevant(terms: List<String>, track: MusicTrack): Boolean {
+        val metadata = normalized("${track.title} ${track.artist} ${track.album}")
+        return terms.all { it in metadata }
+    }
+
+    private fun relevance(terms: List<String>, track: MusicTrack): Int {
+        val phrase = terms.joinToString(" ")
+        val title = normalized(track.title)
+        val artist = normalized(track.artist)
+        return when {
+            title == phrase -> 5
+            artist == phrase -> 4
+            phrase in title -> 3
+            phrase in artist -> 2
+            else -> 1
+        }
+    }
+
+    private suspend fun cachedLosslessItem(doc: JSONObject): List<MusicTrack>? {
+        val identifier = text(doc, "identifier")
+        if (identifier.isBlank()) return emptyList()
+        return itemLocks[(identifier.hashCode() and Int.MAX_VALUE) % itemLocks.size].withLock {
+            val cached = itemCache.get(identifier)
+            if (cached != null && SystemClock.elapsedRealtime() - cached.first < ITEM_TTL_MS) {
+                return@withLock cached.second
+            }
+            metadataRequests.withPermit {
+                verifyAndParseLosslessItem(doc)?.also { tracks ->
+                    itemCache.put(identifier, SystemClock.elapsedRealtime() to tracks)
+                } ?: cached?.second
+            }
+        }
     }
 
     /**
@@ -187,7 +286,7 @@ object InternetArchiveApiService {
     }
 
     /** Bind each recording to its own file tags and stable item-plus-file identity. */
-    private suspend fun verifyAndParseLosslessItem(doc: JSONObject): List<MusicTrack> {
+    private suspend fun verifyAndParseLosslessItem(doc: JSONObject): List<MusicTrack>? {
         val identifier = text(doc, "identifier")
         if (identifier.isBlank()) return emptyList()
         try {
@@ -198,7 +297,7 @@ object InternetArchiveApiService {
             val root = JSONObject(httpClient.catalogRequest(request))
             if (root.optBoolean("is_dark", false)) return emptyList()
             val metadata = root.optJSONObject("metadata")
-            val files = root.optJSONArray("files") ?: return emptyList()
+            val files = root.optJSONArray("files") ?: throw java.io.IOException("Missing Archive file metadata")
             val lossless = (0 until files.length()).mapNotNull { files.optJSONObject(it) }.filter {
                 isLosslessAudioFile(text(it, "name"), text(it, "format")) &&
                     !it.optBoolean("private", false) && text(it, "size").toLongOrNull()?.let { size -> size > 0 } != false
@@ -236,7 +335,7 @@ object InternetArchiveApiService {
                 val title = if (isConcert && !Regex("(?i)\\blive\\b").containsMatchIn(fileTitle)) "$fileTitle (Live)" else fileTitle
                 MusicTrack(id = "ia_$identifier:$name", title = title, artist = artist, album = album,
                     durationMs = duration, coverUrl = "https://archive.org/services/img/$identifier",
-                    audioUrl = streamUrl, bitrateKbps = bitrate, qualityBadge = "Lossless",
+                    audioUrl = streamUrl, bitrateKbps = bitrate, qualityBadge = losslessQuality(file),
                     genre = text(file, "genre").ifBlank { "Unknown" },
                     year = text(file, "year").ifBlank { text(metadata, "year") }.ifBlank { text(doc, "year") },
                     isrc = text(file, "isrc"), source = "INTERNET_ARCHIVE", isLossless = true)
@@ -244,7 +343,21 @@ object InternetArchiveApiService {
         } catch (e: kotlinx.coroutines.CancellationException) { throw e }
         catch (e: Exception) {
             Log.w(TAG, "Failed to verify metadata for $identifier: ${e.message}")
-            return emptyList()
+            return null
         }
+    }
+
+    private fun losslessQuality(file: JSONObject): String {
+        val bits = listOf("bits", "bitdepth", "bit_depth", "bits_per_sample")
+            .firstNotNullOfOrNull { text(file, it).toIntOrNull()?.takeIf { value -> value in 8..64 } }
+            ?: Regex("(?i)(16|24|32)[ -]?bit").find(text(file, "format"))?.groupValues?.get(1)?.toIntOrNull()
+        val rate = listOf("samplerate", "sample_rate", "sampling_rate")
+            .firstNotNullOfOrNull { key ->
+                val value = text(file, key).lowercase(Locale.ROOT)
+                val number = Regex("[0-9]+(?:[.][0-9]+)?").find(value)?.value?.toDoubleOrNull()
+                number?.let { if (value.contains("khz")) it * 1000 else it }
+                    ?.takeIf { it.isFinite() && it in 8000.0..768000.0 }
+            }
+        return if (bits != null && rate != null && (bits > 16 || rate > 48000)) "Hi-Res • Lossless" else "Lossless"
     }
 }

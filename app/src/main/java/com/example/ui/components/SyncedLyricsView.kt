@@ -426,7 +426,8 @@ fun SyncedLyricsView(
                             trackLanguage = lyrics.language,
                             trackArtist = lyrics.artist,
                             activeTextColor = activeTextColor,
-                            inactiveTextColor = inactiveTextColor,
+                            inactiveTextColor = if (isActive) inactiveTextColor else
+                                if (isDark) Color.White.copy(alpha = 0.40f) else Color.Black.copy(alpha = 0.38f),
                             glowColor = lerp(activeTextColor, accentColor.takeIf { it.alpha > 0f } ?: activeTextColor, 0.25f),
                             currentPositionProvider = {
                                 currentPlayheadMs
@@ -530,7 +531,8 @@ private fun KaraokeLineItem(
         fontWeight = fontWeight,
         fontFamily = FontFamily.SansSerif,
         lineHeight = lineHeight,
-        color = if (isPast) activeTextColor else inactiveTextColor,
+        // Sung and upcoming inactive lines share a fainter color; the live reveal stays unchanged.
+        color = inactiveTextColor,
         textAlign = TextAlign.Start,
         onTextLayout = { textLayoutResult = it },
         modifier = Modifier.fillMaxWidth().drawWithCache {
