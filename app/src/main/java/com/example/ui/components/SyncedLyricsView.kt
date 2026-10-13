@@ -77,6 +77,7 @@ import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -189,8 +190,8 @@ fun SyncedLyricsView(
     val viewportSize by remember { derivedStateOf { listState.layoutInfo.viewportSize } }
     val density = LocalDensity.current
     val textMeasurer = rememberTextMeasurer()
-    val lyricStyle = LocalTextStyle.current.copy(fontSize = 24.sp, lineHeight = 34.sp,
-        fontWeight = FontWeight.Bold, textAlign = TextAlign.Start)
+    val lyricStyle = LocalTextStyle.current.copy(fontSize = 28.sp, lineHeight = 40.sp,
+        fontWeight = FontWeight.ExtraBold, fontFamily = FontFamily.SansSerif, textAlign = TextAlign.Start)
     val romanizationStyle = LocalTextStyle.current.copy(fontSize = 14.sp, lineHeight = 18.sp,
         fontWeight = FontWeight.Medium, textAlign = TextAlign.Start)
     val rowHeights = remember(lyrics?.trackId, lines, viewportSize.width, density, lyricStyle, romanizationStyle) { mutableMapOf<Int, Int>() }
@@ -444,16 +445,17 @@ private fun KaraokeLineItem(
 ) {
     // Keep line wrapping and row height fixed as activity changes. Emphasis is a
     // top-anchored graphics transform, so it cannot invalidate the centering target.
-    val fontSize = 24.sp
-    val fontWeight = FontWeight.Bold
-    val lineHeight = 34.sp
+    val fontSize = 28.sp
+    val fontWeight = FontWeight.ExtraBold
+    val lineHeight = 40.sp
 
     if (!isSynced) {
         Text(
             text = line.text,
-            fontSize = 20.sp,
-            fontWeight = FontWeight.SemiBold,
-            lineHeight = 29.sp,
+            fontSize = fontSize,
+            fontWeight = fontWeight,
+            fontFamily = FontFamily.SansSerif,
+            lineHeight = lineHeight,
             color = activeTextColor,
             textAlign = TextAlign.Start,
             modifier = Modifier.fillMaxWidth()
@@ -481,6 +483,7 @@ private fun KaraokeLineItem(
         text = line.text,
         fontSize = fontSize,
         fontWeight = fontWeight,
+        fontFamily = FontFamily.SansSerif,
         lineHeight = lineHeight,
         color = if (isPast) activeTextColor else inactiveTextColor,
         textAlign = TextAlign.Start,
