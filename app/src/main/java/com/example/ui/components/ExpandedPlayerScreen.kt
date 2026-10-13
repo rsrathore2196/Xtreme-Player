@@ -104,6 +104,7 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.lifecycle.Lifecycle
@@ -123,6 +124,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -130,6 +132,7 @@ import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -165,8 +168,10 @@ import com.example.ui.theme.XtremeGreen
 import com.example.ui.theme.XtremeLightBlue
 import com.example.ui.theme.XtremeRose
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
@@ -236,8 +241,10 @@ fun ExpandedPlayerScreen(
             if (resolved.isNotBlank() && resolved != track.coverUrl && resolved != highResCoverUrl) {
                 // Finish decoding the upgrade before switching URLs. A metadata lookup must
                 // not cancel the source artwork download and leave the player blank again.
-                val result = artworkLoader.execute(ImageRequest.Builder(context).data(resolved)
-                    .size(coil.size.Size.ORIGINAL).scale(coil.size.Scale.FILL).allowHardware(true).build())
+                val result = withContext(Dispatchers.IO) {
+                    artworkLoader.execute(ImageRequest.Builder(context).data(resolved)
+                        .size(coil.size.Size.ORIGINAL).scale(coil.size.Scale.FILL).allowHardware(true).build())
+                }
                 if (result is SuccessResult) highResCoverUrl = resolved
             }
         }
@@ -302,7 +309,8 @@ fun ExpandedPlayerScreen(
     var accentColor by remember(track.id, appColors.primaryAccent) { mutableStateOf(cachedColors?.accentColor ?: appColors.primaryAccent) }
     var vibrantColor by remember(track.id, appColors.primaryAccent) { mutableStateOf(cachedColors?.vibrantColor ?: appColors.primaryAccent) }
 
-    LaunchedEffect(track.id, track.coverUrl, appColors.primaryAccent) {
+    LaunchedEffect(track.id, track.coverUrl, appColors.primaryAccent, isScreenVisible) {
+        if (!isScreenVisible) return@LaunchedEffect
         // Fast-path: If already in memory cache, avoid all processing
         val inMem = TrackPaletteCache.get(track.id)
         if (inMem != null) {
@@ -374,28 +382,30 @@ fun ExpandedPlayerScreen(
                             vibrantColor = extracted.vibrantColor
                         }
                     }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
                 } catch (_: Exception) {}
             }
         }
     }
 
-    val animatedDominantColor by animateColorAsState(
+    val animatedDominantColor = animateColorAsState(
         targetValue = dominantColor,
         animationSpec = tween(650, easing = LinearOutSlowInEasing),
         label = "dominant_color"
     )
-    val animatedAccentColor by animateColorAsState(
+    val animatedAccentColor = animateColorAsState(
         targetValue = accentColor,
         animationSpec = tween(650, easing = LinearOutSlowInEasing),
         label = "accent_color"
     )
-    val animatedVibrantColor by animateColorAsState(
+    val animatedVibrantColor = animateColorAsState(
         targetValue = vibrantColor,
         animationSpec = tween(650, easing = LinearOutSlowInEasing),
         label = "vibrant_color"
     )
 
-    val albumArtScale by animateFloatAsState(
+    val albumArtScale = animateFloatAsState(
         targetValue = if (uiState.isPlaying) 1.0f else 0.88f,
         animationSpec = spring(dampingRatio = 0.72f, stiffness = 550f),
         label = "album_art_scale"
@@ -527,7 +537,7 @@ fun ExpandedPlayerScreen(
                                                 tint = if (uiState.isFavorite) Color(0xFFF43F5E) else appColors.textMuted)
                                         }
                                     }
-                                SyncedLyricsView(
+                                PlayerSyncedLyrics(
                                     lyrics = lyrics,
                                     currentPositionMs = currentPositionProvider(),
                                     playbackPositionFlow = playbackPositionFlow,
@@ -552,15 +562,16 @@ fun ExpandedPlayerScreen(
                                             .size(240.dp)
                                             .graphicsLayer()
                                             .clip(RoundedCornerShape(32.dp))
-                                            .background(
-                                                Brush.radialGradient(
+                                            .drawWithCache {
+                                                val brush = Brush.radialGradient(
                                                     colors = listOf(
-                                                        animatedAccentColor.copy(alpha = 0.45f),
-                                                        animatedDominantColor.copy(alpha = 0.25f),
+                                                        animatedAccentColor.value.copy(alpha = 0.45f),
+                                                        animatedDominantColor.value.copy(alpha = 0.25f),
                                                         Color.Transparent
                                                     )
                                                 )
-                                            )
+                                                onDrawBehind { drawRect(brush) }
+                                            }
                                     )
 
                                     // 3D Flippable Album Art Card - Strictly Guaranteed Square
@@ -575,12 +586,7 @@ fun ExpandedPlayerScreen(
                                                 rotationY = flipRotation
                                                 cameraDistance = 14f * density
                                             }
-                                            .shadow(
-                                                elevation = 28.dp,
-                                                shape = RoundedCornerShape(22.dp),
-                                                spotColor = animatedAccentColor.copy(alpha = 0.5f),
-                                                ambientColor = Color.Black
-                                            )
+                                            .animatedArtworkShadow(animatedAccentColor, RoundedCornerShape(22.dp))
                                             .clip(RoundedCornerShape(22.dp))
                                             .clickable {
                                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -595,7 +601,8 @@ fun ExpandedPlayerScreen(
                                                 staticCoverUrl = highResCoverUrl,
                                                 contentDescription = "Cover Art - Tap to flip",
                                                 shape = RoundedCornerShape(22.dp),
-                                                modifier = Modifier.fillMaxSize()
+                                                modifier = Modifier.fillMaxSize(),
+                                                placeholderMemoryCacheKey = cachedArtworkKey
                                             )
                                         } else {
                                             // BACK SIDE: Song credits
@@ -607,7 +614,7 @@ fun ExpandedPlayerScreen(
                                                     .border(
                                                         BorderStroke(
                                                             1.5.dp,
-                                                            if (isDark) animatedAccentColor.copy(alpha = 0.65f) else appColors.cardBorder
+                                                            if (isDark) animatedAccentColor.value.copy(alpha = 0.65f) else appColors.cardBorder
                                                         ),
                                                         RoundedCornerShape(22.dp)
                                                     )
@@ -1343,7 +1350,7 @@ fun ExpandedPlayerScreen(
                                 }
                             }
                             Spacer(Modifier.height(8.dp))
-                            SyncedLyricsView(
+                            PlayerSyncedLyrics(
                                 lyrics = lyrics,
                                 currentPositionMs = currentPositionProvider(),
                                 playbackPositionFlow = playbackPositionFlow,
@@ -1368,22 +1375,23 @@ fun ExpandedPlayerScreen(
                                     .size(if (isLandscape) 190.dp else 280.dp)
                                     .graphicsLayer()
                                     .clip(RoundedCornerShape(36.dp))
-                                    .background(
-                                        Brush.radialGradient(
+                                    .drawWithCache {
+                                        val brush = Brush.radialGradient(
                                             colors = listOf(
-                                                animatedAccentColor.copy(alpha = 0.45f),
-                                                animatedDominantColor.copy(alpha = 0.25f),
+                                                animatedAccentColor.value.copy(alpha = 0.45f),
+                                                animatedDominantColor.value.copy(alpha = 0.25f),
                                                 Color.Transparent
                                             )
                                         )
-                                    )
+                                        onDrawBehind { drawRect(brush) }
+                                    }
                                 )
 
                                 // 3D Flippable Card
                                 Box(
                                     modifier = Modifier
                                     .fillMaxHeight(if (isLandscape) 0.88f else 1f)
-                                    .fillMaxWidth(albumArtScale)
+                                    .animatedFillMaxWidth(albumArtScale)
                                     .sizeIn(
                                         maxWidth = if (isLandscape) 210.dp else 330.dp,
                                         maxHeight = if (isLandscape) 210.dp else 330.dp
@@ -1398,12 +1406,7 @@ fun ExpandedPlayerScreen(
                                         rotationY = flipRotation
                                         cameraDistance = 14f * density
                                     }
-                                    .shadow(
-                                        elevation = 28.dp,
-                                        shape = RoundedCornerShape(24.dp),
-                                        spotColor = animatedAccentColor.copy(alpha = 0.5f),
-                                        ambientColor = Color.Black
-                                    )
+                                    .animatedArtworkShadow(animatedAccentColor, RoundedCornerShape(24.dp))
                                     .clip(RoundedCornerShape(24.dp))
                                     .clickable {
                                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -1418,7 +1421,8 @@ fun ExpandedPlayerScreen(
                                             staticCoverUrl = highResCoverUrl,
                                             contentDescription = "Cover Art - Tap to flip",
                                             shape = RoundedCornerShape(24.dp),
-                                            modifier = Modifier.fillMaxSize()
+                                            modifier = Modifier.fillMaxSize(),
+                                            placeholderMemoryCacheKey = cachedArtworkKey
                                         )
                                     } else {
                                         // BACK SIDE: Song credits and information (Fully theme adaptive)
@@ -1430,7 +1434,7 @@ fun ExpandedPlayerScreen(
                                             .border(
                                                 BorderStroke(
                                                     1.5.dp,
-                                                    if (isDark) animatedAccentColor.copy(alpha = 0.65f) else appColors.cardBorder
+                                                    if (isDark) animatedAccentColor.value.copy(alpha = 0.65f) else appColors.cardBorder
                                                 ),
                                                 RoundedCornerShape(24.dp)
                                             )
@@ -1443,7 +1447,7 @@ fun ExpandedPlayerScreen(
                                                 verticalArrangement = Arrangement.Center
                                             ) {
                                                 Surface(
-                                                    color = animatedAccentColor.copy(alpha = 0.16f),
+                                                    color = animatedAccentColor.value.copy(alpha = 0.16f),
                                                     shape = RoundedCornerShape(8.dp)
                                                 ) {
                                                     Row(
@@ -1453,7 +1457,7 @@ fun ExpandedPlayerScreen(
                                                         Icon(
                                                             imageVector = Icons.Default.Info,
                                                             contentDescription = null,
-                                                            tint = animatedAccentColor,
+                                                            tint = animatedAccentColor.value,
                                                             modifier = Modifier.size(13.dp)
                                                         )
                                                         Spacer(modifier = Modifier.width(6.dp))
@@ -1461,7 +1465,7 @@ fun ExpandedPlayerScreen(
                                                             text = "TRACK CREDITS & DETAILS",
                                                             fontSize = 9.sp,
                                                             fontWeight = FontWeight.ExtraBold,
-                                                            color = animatedAccentColor,
+                                                            color = animatedAccentColor.value,
                                                             letterSpacing = 1.sp
                                                         )
                                                     }
@@ -2009,11 +2013,62 @@ private fun CreditDetailRow(label: String, value: String, isDark: Boolean = true
 }
 
 @Composable
+private fun PlayerSyncedLyrics(
+    lyrics: com.example.data.model.TrackLyrics?,
+    currentPositionMs: Long,
+    playbackPositionFlow: StateFlow<Long>?,
+    isPlaying: Boolean,
+    currentPositionProvider: () -> Long,
+    onSeekTo: (Long) -> Unit,
+    dominantColor: State<Color>,
+    accentColor: State<Color>,
+    isDark: Boolean,
+    onRetry: () -> Unit,
+    modifier: Modifier
+) {
+    // Palette fades only invalidate the lyrics subtree, never the complete player.
+    SyncedLyricsView(
+        lyrics = lyrics,
+        currentPositionMs = currentPositionMs,
+        playbackPositionFlow = playbackPositionFlow,
+        isPlaying = isPlaying,
+        currentPositionProvider = currentPositionProvider,
+        onSeekTo = onSeekTo,
+        dominantColor = dominantColor.value,
+        accentColor = accentColor.value,
+        isDark = isDark,
+        onRetry = onRetry,
+        modifier = modifier
+    )
+}
+
+private fun Modifier.animatedArtworkShadow(accent: State<Color>, shape: androidx.compose.ui.graphics.Shape): Modifier =
+    graphicsLayer {
+        shadowElevation = 28.dp.toPx()
+        this.shape = shape
+        clip = true
+        spotShadowColor = accent.value.copy(alpha = 0.5f)
+        ambientShadowColor = Color.Black
+    }
+
+private fun Modifier.animatedFillMaxWidth(fraction: State<Float>): Modifier = layout { measurable, constraints ->
+    // Match fillMaxWidth's constraints exactly, reading the spring during measurement
+    // instead of recomposing every control and shared-element target on each frame.
+    val widthConstraints = if (constraints.hasBoundedWidth) {
+        val width = (constraints.maxWidth * fraction.value).roundToInt()
+            .coerceIn(constraints.minWidth, constraints.maxWidth)
+        constraints.copy(minWidth = width, maxWidth = width)
+    } else constraints
+    val placeable = measurable.measure(widthConstraints)
+    layout(placeable.width, placeable.height) { placeable.placeRelative(0, 0) }
+}
+
+@Composable
 private fun PlayerGlassBackground(
     artworkUrl: String,
-    dominantColor: Color,
-    accentColor: Color,
-    vibrantColor: Color = accentColor,
+    dominantColor: State<Color>,
+    accentColor: State<Color>,
+    vibrantColor: State<Color> = accentColor,
     isDark: Boolean = true,
     modifier: Modifier = Modifier
 ) {
@@ -2027,14 +2082,19 @@ private fun PlayerGlassBackground(
     val base = appColors.scaffoldBackground
     Box(modifier.fillMaxSize().xtremeSharedBackdropSource(enabled = dynamicGlass).background(base)) {
         // Broad color fields provide the same soft finish on devices without RenderEffect.
-        Canvas(Modifier.fillMaxSize()) {
-            drawRect(Brush.linearGradient(listOf(dominantColor, base, vibrantColor.copy(alpha = 0.55f)),
-                Offset.Zero, Offset(size.width, size.height)))
-            drawRect(Brush.radialGradient(listOf(vibrantColor.copy(alpha = if (isDark) 0.50f else 0.25f), Color.Transparent),
-                center = Offset(size.width * 0.82f, size.height * 0.48f), radius = size.maxDimension * 0.7f))
-            drawRect(Brush.radialGradient(listOf(accentColor.copy(alpha = if (isDark) 0.22f else 0.16f), Color.Transparent),
-                center = Offset(0f, size.height * 0.85f), radius = size.maxDimension * 0.6f))
-        }
+        Box(Modifier.fillMaxSize().drawWithCache {
+            val field = Brush.linearGradient(listOf(dominantColor.value, base, vibrantColor.value.copy(alpha = 0.55f)),
+                Offset.Zero, Offset(size.width, size.height))
+            val vibrantField = Brush.radialGradient(listOf(vibrantColor.value.copy(alpha = if (isDark) 0.50f else 0.25f), Color.Transparent),
+                center = Offset(size.width * 0.82f, size.height * 0.48f), radius = size.maxDimension * 0.7f)
+            val accentField = Brush.radialGradient(listOf(accentColor.value.copy(alpha = if (isDark) 0.22f else 0.16f), Color.Transparent),
+                center = Offset(0f, size.height * 0.85f), radius = size.maxDimension * 0.6f)
+            onDrawBehind {
+                drawRect(field)
+                drawRect(vibrantField)
+                drawRect(accentField)
+            }
+        })
         if (dynamicGlass && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
             AsyncImage(
                 model = backdropRequest, contentDescription = null, contentScale = ContentScale.Crop,
@@ -2044,17 +2104,21 @@ private fun PlayerGlassBackground(
             )
         }
         // A broad reflection and neutral veil give gloss without obscuring controls or cover art.
-        Canvas(Modifier.fillMaxSize()) {
+        Box(Modifier.fillMaxSize().drawWithCache {
             val veil = if (isDark) Color.Black else base
-            drawRect(Brush.verticalGradient(
+            val veilBrush = Brush.verticalGradient(
                 0f to veil.copy(alpha = if (isDark) 0.42f else 0.40f),
                 0.35f to veil.copy(alpha = if (isDark) 0.16f else 0.28f),
                 0.65f to veil.copy(alpha = if (isDark) 0.40f else 0.58f),
                 1f to veil.copy(alpha = if (isDark) 0.66f else 0.76f)
-            ))
-            drawRect(Brush.linearGradient(listOf(Color.White.copy(alpha = if (isDark) 0.08f else 0.25f),
-                Color.Transparent, Color.Transparent), Offset.Zero, Offset(size.width, size.height * 0.7f)))
-        }
+            )
+            val reflection = Brush.linearGradient(listOf(Color.White.copy(alpha = if (isDark) 0.08f else 0.25f),
+                Color.Transparent, Color.Transparent), Offset.Zero, Offset(size.width, size.height * 0.7f))
+            onDrawBehind {
+                drawRect(veilBrush)
+                drawRect(reflection)
+            }
+        })
     }
 }
 
@@ -2301,7 +2365,7 @@ private fun PlayerTimelineSection(
     onSeekTo: (Long) -> Unit,
     isDark: Boolean,
     isPlaying: Boolean = false,
-    dominantColor: Color = Color.Unspecified,
+    dominantColor: State<Color>,
     modifier: Modifier = Modifier
 ) {
     val appColors = LocalAppColors.current
@@ -2338,20 +2402,21 @@ private fun PlayerTimelineSection(
     val sliderValue = if (isUserScrubbing) scrubPosition else (currentPosition.toFloat() / trackDuration.toFloat()).coerceIn(0f, 1f)
 
     // Contrast calculation according to theme and effective background
-    val isEffectivelyDark = remember(isDark, appColors.isDark, appColors.isAmoled, dominantColor, appColors.scaffoldBackground) {
+    val isEffectivelyDark by remember(isDark, appColors.isDark, appColors.isAmoled, dominantColor, appColors.scaffoldBackground) { derivedStateOf {
+        val color = dominantColor.value
         if (isDark || appColors.isDark || appColors.isAmoled) {
             true
-        } else if (dominantColor != Color.Unspecified) {
+        } else if (color != Color.Unspecified) {
             val base = appColors.scaffoldBackground
-            val blendedRed = dominantColor.red * 0.25f + base.red * 0.75f
-            val blendedGreen = dominantColor.green * 0.25f + base.green * 0.75f
-            val blendedBlue = dominantColor.blue * 0.25f + base.blue * 0.75f
+            val blendedRed = color.red * 0.25f + base.red * 0.75f
+            val blendedGreen = color.green * 0.25f + base.green * 0.75f
+            val blendedBlue = color.blue * 0.25f + base.blue * 0.75f
             val lum = 0.299f * blendedRed + 0.587f * blendedGreen + 0.114f * blendedBlue
             lum < 0.50f
         } else {
             false
         }
-    }
+    } }
 
     val liveProgressColor = if (isEffectivelyDark) Color.White else Color.Black
     val inactiveProgressColor = if (isEffectivelyDark) Color.White.copy(alpha = 0.22f) else Color.Black.copy(alpha = 0.16f)

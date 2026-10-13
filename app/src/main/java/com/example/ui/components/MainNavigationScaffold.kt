@@ -179,7 +179,9 @@ fun MainNavigationScaffold(
     playerVisibility.targetState = isPlayerExpanded && playerUiState.currentTrack != null
     val playerCoversContent = playerVisibility.isIdle && playerVisibility.currentState && playerVisibility.targetState
     val homeLifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
-    val homeIsVisible = selectedTabIndex == 0 && !playerCoversContent && catalogDetail == null && selectedPlaylistWithTracks == null
+    // Leave the rendered Home backdrop intact, but keep its data work out of both player transitions.
+    val homeIsVisible = selectedTabIndex == 0 && !isPlayerExpanded && playerVisibility.isIdle &&
+        !playerVisibility.currentState && catalogDetail == null && selectedPlaylistWithTracks == null
     LaunchedEffect(homeViewModel, homeLifecycle, homeIsVisible) {
         if (homeIsVisible) homeLifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.RESUMED) {
             homeViewModel.setHomeVisible(true)

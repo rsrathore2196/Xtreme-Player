@@ -59,10 +59,14 @@ import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.ShaderBrush
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.TransformOrigin
@@ -90,12 +94,17 @@ import com.example.data.model.LyricWord
 import com.example.data.model.TrackLyrics
 import com.example.ui.theme.LocalAppColors
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 import kotlin.math.PI
 import kotlin.math.sin
+import kotlin.math.ceil
+import kotlin.math.floor
 
 /**
  * Word metadata pre-mapped to character index ranges inside line.text.
@@ -491,6 +500,29 @@ private fun KaraokeLineItem(
     }
     var textLayoutResult by remember(line.text) { mutableStateOf<TextLayoutResult?>(null) }
     val latestPosition by rememberUpdatedState(currentPositionProvider)
+    val density = LocalDensity.current
+    val broadRadius = with(density) { 4.dp.toPx() }
+    val coreRadius = with(density) { 1.5.dp.toPx() }
+    val revealUnits = remember(textLayoutResult, measuredWords) {
+        textLayoutResult?.let { buildRevealUnits(it, measuredWords) } ?: emptyList()
+    }
+    val fallbackRegions = remember(textLayoutResult, revealUnits) {
+        val layout = textLayoutResult
+        if (layout == null || revealUnits.isNotEmpty()) emptyList() else
+            (0 until layout.lineCount).map { index ->
+                RevealRegion(Rect(layout.getLineLeft(index), layout.getLineTop(index), layout.getLineRight(index), layout.getLineBottom(index)),
+                    layout.getParagraphDirection(layout.getLineStart(index)) == ResolvedTextDirection.Rtl)
+            }
+    }
+    // Only active lines prepare halos. Keep the finished immutable masks through
+    // the outgoing fade; provider-frame updates never restart this preparation.
+    var glyphGlows by remember(line.text, measuredWords, density) { mutableStateOf<PreparedGlyphGlows?>(null) }
+    LaunchedEffect(textLayoutResult, isActive, broadRadius, coreRadius) {
+        val layout = textLayoutResult ?: return@LaunchedEffect
+        if (!isActive || glyphGlows?.matches(layout) == true) return@LaunchedEffect
+        val regions = if (revealUnits.isEmpty()) fallbackRegions else revealUnits.flatMap { it.regions }
+        glyphGlows = prepareGlyphGlows(layout, regions, broadRadius, coreRadius)
+    }
 
     Text(
         text = line.text,
@@ -504,15 +536,11 @@ private fun KaraokeLineItem(
         modifier = Modifier.fillMaxWidth().drawWithCache {
             val layout = textLayoutResult
             // Glyph bounds and wrapped/bidirectional runs are prepared once, not per frame.
-            val units = if (layout == null) emptyList() else buildRevealUnits(layout, measuredWords)
-            val fallbackRows = if (layout == null || units.isNotEmpty()) emptyList() else
-                (0 until layout.lineCount).map { index ->
-                    RevealRegion(Rect(layout.getLineLeft(index), layout.getLineTop(index), layout.getLineRight(index), layout.getLineBottom(index)),
-                        layout.getParagraphDirection(layout.getLineStart(index)) == ResolvedTextDirection.Rtl)
-                }
+            val units = revealUnits
+            val fallbackRows = fallbackRegions
             val completed = Path()
             val feather = 8.dp.toPx()
-            val revealPaint = RevealPaint(activeTextColor, glowColor, 12.dp.toPx(), 4.dp.toPx())
+            val revealPaint = RevealPaint(activeTextColor, glowColor, broadRadius, glyphGlows?.takeIf { layout != null && it.matches(layout) })
             onDrawWithContent {
                 drawContent()
                 // Read focus only while drawing, so the outgoing line's halo fades without relaying out text.
@@ -562,8 +590,10 @@ private fun vocalGlow(position: Long, start: Long, end: Long): Float {
     return attack * (0.82f + 0.18f * sin(PI * progress).toFloat())
 }
 
-/** Native feather shaders and both halo sizes are reused across display frames. */
-private class RevealPaint(color: Color, glowColor: Color, broadRadius: Float, coreRadius: Float) {
+/** Native feather shaders and isolated glyph masks are reused across display frames. */
+private class RevealPaint(
+    color: Color, glowColor: Color, val broadRadius: Float, val glyphs: PreparedGlyphGlows?
+) {
     private val forward = android.graphics.LinearGradient(-1f, 0f, 1f, 0f,
         intArrayOf(color.toArgb(), android.graphics.Color.TRANSPARENT), null, android.graphics.Shader.TileMode.CLAMP)
     private val reverse = android.graphics.LinearGradient(-1f, 0f, 1f, 0f,
@@ -571,14 +601,90 @@ private class RevealPaint(color: Color, glowColor: Color, broadRadius: Float, co
     private val forwardBrush = ShaderBrush(forward)
     private val reverseBrush = ShaderBrush(reverse)
     private val matrix = android.graphics.Matrix()
-    val broad = Array(65) { Shadow(glowColor.copy(alpha = it / 64f * 0.42f), Offset.Zero, broadRadius) }
-    val core = Array(65) { Shadow(glowColor.copy(alpha = it / 64f * 0.64f), Offset.Zero, coreRadius) }
+    val tint = ColorFilter.tint(glowColor)
+    val layerPaint = Paint()
 
     fun feather(edge: Float, width: Float, rtl: Boolean): Brush {
         matrix.setScale(width, 1f)
         matrix.postTranslate(edge, 0f)
         (if (rtl) reverse else forward).setLocalMatrix(matrix)
         return if (rtl) reverseBrush else forwardBrush
+    }
+}
+
+private data class GlyphHalo(val image: ImageBitmap, val origin: Offset)
+private data class GlyphGlow(val broad: GlyphHalo, val core: GlyphHalo)
+private data class PreparedGlyphGlows(val layout: TextLayoutResult, val masks: Map<Rect, GlyphGlow>) {
+    fun matches(other: TextLayoutResult): Boolean {
+        if (layout === other) return true
+        val original = layout.layoutInput
+        val candidate = other.layoutInput
+        return layout.size == other.size && original.text == candidate.text &&
+            original.style.hasSameLayoutAffectingAttributes(candidate.style) &&
+            original.constraints == candidate.constraints && original.density == candidate.density &&
+            original.layoutDirection == candidate.layoutDirection &&
+            original.fontFamilyResolver === candidate.fontFamilyResolver
+    }
+}
+
+/**
+ * Crop the shaped glyph alpha BEFORE blurring. Shadowing the whole paragraph and
+ * then clipping to a word rectangle pulls neighboring letters' shadows into that
+ * rectangle, which creates a flat luminous band instead of letter-shaped light.
+ * Android alpha masks work on every supported API, without a per-frame bitmap or
+ * RenderEffect allocation. CPU mask extraction runs on Default; only the one
+ * paragraph paint stays on Main because it shares Android's mutable text paint.
+ */
+private suspend fun prepareGlyphGlows(
+    layout: TextLayoutResult, regions: List<RevealRegion>, broad: Float, core: Float
+): PreparedGlyphGlows {
+    val source = withContext(Dispatchers.Default) {
+        android.graphics.Bitmap.createBitmap(
+            layout.size.width.coerceAtLeast(1), layout.size.height.coerceAtLeast(1),
+            android.graphics.Bitmap.Config.ALPHA_8
+        )
+    }
+    try {
+        layout.multiParagraph.paint(androidx.compose.ui.graphics.Canvas(source.asImageBitmap()), color = Color.White)
+        val masks = withContext(Dispatchers.Default) {
+            val broadPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                maskFilter = android.graphics.BlurMaskFilter(broad, android.graphics.BlurMaskFilter.Blur.NORMAL)
+            }
+            val corePaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                maskFilter = android.graphics.BlurMaskFilter(core, android.graphics.BlurMaskFilter.Blur.NORMAL)
+            }
+            val result = HashMap<Rect, GlyphGlow>()
+            for (region in regions) {
+                ensureActive()
+                val bounds = region.bounds
+                if (bounds.width <= 0f || bounds.height <= 0f || bounds in result) continue
+                val left = floor(bounds.left).toInt()
+                val top = floor(bounds.top).toInt()
+                val bitmap = android.graphics.Bitmap.createBitmap(
+                    (ceil(bounds.right).toInt() - left).coerceAtLeast(1),
+                    (ceil(bounds.bottom).toInt() - top).coerceAtLeast(1),
+                    android.graphics.Bitmap.Config.ALPHA_8
+                )
+                try {
+                    val canvas = android.graphics.Canvas(bitmap)
+                    canvas.translate(-left.toFloat(), -top.toFloat())
+                    canvas.clipRect(bounds.left, bounds.top, bounds.right, bounds.bottom)
+                    canvas.drawBitmap(source, 0f, 0f, null)
+                    fun halo(paint: android.graphics.Paint): GlyphHalo {
+                        val offset = IntArray(2)
+                        val alpha = bitmap.extractAlpha(paint, offset)
+                        return GlyphHalo(alpha.asImageBitmap(), Offset(left + offset[0].toFloat(), top + offset[1].toFloat()))
+                    }
+                    result[bounds] = GlyphGlow(halo(broadPaint), halo(corePaint))
+                } finally {
+                    bitmap.recycle()
+                }
+            }
+            result
+        }
+        return PreparedGlyphGlows(layout, masks)
+    } finally {
+        source.recycle()
     }
 }
 
@@ -639,20 +745,36 @@ private fun ContentDrawScope.drawReveal(
         if (solid.width > 0f) completed.addRect(solid)
         if (glow > 0f || !complete) {
             val brush = if (complete || softWidth <= 0f) null else paint.feather(edge, softWidth, region.rtl)
-            // The shadow must not illuminate letters ahead of the vocal reveal.
             val clipLeft = if (region.rtl && !complete) maxOf(bounds.left, edge - softWidth) else bounds.left
             val clipRight = if (!region.rtl && !complete) minOf(bounds.right, edge + softWidth) else bounds.right
-            clipRect(clipLeft, bounds.top, clipRight, bounds.bottom) {
-                val glowIndex = (glow.coerceIn(0f, 1f) * 64).roundToInt()
-                if (glowIndex > 0) {
-                    if (brush == null) {
-                        drawText(layout, color = color, shadow = paint.broad[glowIndex])
-                        drawText(layout, color = color, shadow = paint.core[glowIndex])
-                    } else {
-                        drawText(layout, brush = brush, shadow = paint.broad[glowIndex])
-                        drawText(layout, brush = brush, shadow = paint.core[glowIndex])
+            val glyphs = paint.glyphs?.masks?.get(bounds)
+            if (glow > 0f && glyphs != null) {
+                // Leave room for a true halo around the glyph outlines rather than
+                // cutting it into the word's rectangular top/bottom boundaries.
+                val bleed = paint.broadRadius * 3f
+                val glowBounds = Rect(
+                    if (region.rtl && !complete) clipLeft else bounds.left - bleed,
+                    bounds.top - bleed,
+                    if (!region.rtl && !complete) clipRight else bounds.right + bleed,
+                    bounds.bottom + bleed
+                )
+                clipRect(glowBounds.left, glowBounds.top, glowBounds.right, glowBounds.bottom) {
+                    // Feather only this isolated glow; the crisp text's original
+                    // reveal path, edge and timing remain exactly the same.
+                    if (brush != null) drawContext.canvas.saveLayer(glowBounds, paint.layerPaint)
+                    drawImage(glyphs.broad.image, topLeft = glyphs.broad.origin,
+                        alpha = glow.coerceIn(0f, 1f) * 0.42f, colorFilter = paint.tint)
+                    drawImage(glyphs.core.image, topLeft = glyphs.core.origin,
+                        alpha = glow.coerceIn(0f, 1f) * 0.64f, colorFilter = paint.tint)
+                    if (brush != null) {
+                        drawRect(brush, topLeft = glowBounds.topLeft, size = glowBounds.size,
+                            blendMode = BlendMode.DstIn)
+                        drawContext.canvas.restore()
                     }
-                } else if (brush == null) drawText(layout, color = color)
+                }
+            }
+            clipRect(clipLeft, bounds.top, clipRight, bounds.bottom) {
+                if (brush == null) drawText(layout, color = color)
                 else drawText(layout, brush = brush)
             }
         }

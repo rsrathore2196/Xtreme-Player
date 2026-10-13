@@ -21,6 +21,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -120,9 +121,11 @@ class PlayerViewModel(
     private var playlistTracksJob: Job? = null
 
     val favoriteTracks: StateFlow<List<MusicTrack>> = repository.getFavoriteTracks()
+        .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
 
     val recentlyPlayed: StateFlow<List<MusicTrack>> = repository.getRecentlyPlayedTracks()
+        .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
 
     val playlists: StateFlow<List<PlaylistEntity>> = repository.getAllPlaylists()
@@ -306,7 +309,9 @@ class PlayerViewModel(
 
     init {
         viewModelScope.launch {
-            favoriteTracks.collect { tracks -> catalogBrowser.updateFavorites(tracks.map { it.id }.toSet()) }
+            favoriteTracks.map { tracks -> tracks.map { it.id }.toSet() }
+                .distinctUntilChanged().flowOn(Dispatchers.Default)
+                .collect { ids -> catalogBrowser.updateFavorites(ids) }
         }
         loadCatalog()
         observeCurrentTrackForLyrics()
@@ -378,8 +383,8 @@ class PlayerViewModel(
 
     private fun loadCatalog() {
         viewModelScope.launch {
-            // Load instantly from cache/local database (<5ms)
-            val initial = repository.getInitialCatalog(_userProfile.value)
+            // Room/cache work must not compete with the player's first composition and transition.
+            val initial = withContext(Dispatchers.IO) { repository.getInitialCatalog(_userProfile.value) }
             _catalogTracks.value = initial
             playbackManager.setCandidatePool(initial)
 

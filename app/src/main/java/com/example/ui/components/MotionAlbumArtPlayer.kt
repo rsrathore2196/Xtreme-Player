@@ -30,6 +30,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
+import coil.memory.MemoryCache
 import coil.request.ImageRequest
 import com.example.R
 
@@ -50,7 +51,8 @@ fun MotionAlbumArtPlayer(
     contentDescription: String? = "Album Artwork",
     shape: Shape = RoundedCornerShape(24.dp),
     modifier: Modifier = Modifier,
-    contentScale: ContentScale = ContentScale.Crop
+    contentScale: ContentScale = ContentScale.Crop,
+    placeholderMemoryCacheKey: MemoryCache.Key? = null
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -105,8 +107,9 @@ fun MotionAlbumArtPlayer(
             exoPlayer?.pause()
         }
     }
-    val artworkRequest = remember(context, staticCoverUrl) {
-        ImageRequest.Builder(context).data(staticCoverUrl).crossfade(180).build()
+    val artworkRequest = remember(context, staticCoverUrl, placeholderMemoryCacheKey) {
+        ImageRequest.Builder(context).data(staticCoverUrl)
+            .placeholderMemoryCacheKey(placeholderMemoryCacheKey).crossfade(180).build()
     }
 
     Box(
