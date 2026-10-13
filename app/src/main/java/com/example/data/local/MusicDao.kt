@@ -81,8 +81,20 @@ interface MusicDao {
     @Query("SELECT * FROM playlists ORDER BY createdAt DESC")
     fun getAllPlaylists(): Flow<List<PlaylistEntity>>
 
+    @Transaction
+    suspend fun deletePlaylist(playlistId: Long) {
+        deletePlaylistTrackRefs(playlistId)
+        deletePlaylistRow(playlistId)
+    }
+
+    @Query("DELETE FROM playlist_track_cross_ref WHERE playlistId = :playlistId")
+    suspend fun deletePlaylistTrackRefs(playlistId: Long)
+
     @Query("DELETE FROM playlists WHERE playlistId = :playlistId")
-    suspend fun deletePlaylist(playlistId: Long)
+    suspend fun deletePlaylistRow(playlistId: Long)
+
+    @Query("DELETE FROM playlist_track_cross_ref WHERE NOT EXISTS (SELECT 1 FROM playlists p WHERE p.playlistId = playlist_track_cross_ref.playlistId) OR NOT EXISTS (SELECT 1 FROM tracks t WHERE t.id = playlist_track_cross_ref.trackId)")
+    suspend fun removeOrphanPlaylistTrackRefs()
 
     @Query("UPDATE playlists SET title = :newTitle WHERE playlistId = :playlistId")
     suspend fun updatePlaylistTitle(playlistId: Long, newTitle: String)
@@ -106,7 +118,7 @@ interface MusicDao {
     @Query("SELECT * FROM tracks")
     suspend fun getAllTracksSync(): List<TrackEntity>
 
-    @Query("SELECT * FROM playlist_track_cross_ref")
+    @Query("SELECT r.* FROM playlist_track_cross_ref r INNER JOIN playlists p ON p.playlistId = r.playlistId INNER JOIN tracks t ON t.id = r.trackId ORDER BY r.playlistId, r.orderIndex, r.trackId")
     suspend fun getAllPlaylistCrossRefsSync(): List<PlaylistTrackCrossRef>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -125,8 +137,14 @@ interface MusicDao {
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertRestoredPlaylistTrackRefs(refs: List<PlaylistTrackCrossRef>)
 
+    @Transaction
+    suspend fun deleteAllPlaylists() {
+        deleteAllPlaylistCrossRefs()
+        deleteAllPlaylistRows()
+    }
+
     @Query("DELETE FROM playlists")
-    suspend fun deleteAllPlaylists()
+    suspend fun deleteAllPlaylistRows()
 
     @Query("DELETE FROM playlist_track_cross_ref")
     suspend fun deleteAllPlaylistCrossRefs()

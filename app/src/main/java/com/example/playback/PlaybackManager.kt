@@ -169,6 +169,37 @@ class PlaybackManager(
         }
     }
 
+    private fun controllerTrack(item: MediaItem): MusicTrack {
+        val meta = item.mediaMetadata
+        val extras = meta.extras
+        val source = extras?.getString("media_source").orEmpty()
+        return MusicTrack(id = item.mediaId, title = meta.title?.toString().orEmpty(),
+            artist = meta.artist?.toString().orEmpty(), album = meta.albumTitle?.toString().orEmpty(),
+            durationMs = extras?.getLong("duration", 0L) ?: 0L,
+            coverUrl = meta.artworkUri?.toString().orEmpty(),
+            audioUrl = item.localConfiguration?.uri?.toString() ?: item.requestMetadata.mediaUri?.toString().orEmpty(),
+            bitrateKbps = extras?.getInt("bitrate", 0) ?: 0,
+            qualityBadge = extras?.getString("qualityBadge").orEmpty(),
+            genre = meta.genre?.toString() ?: extras?.getString("genre") ?: "Unknown",
+            isLiked = extras?.getBoolean("isLiked", false) ?: false,
+            singers = extras?.getString("singers").orEmpty(), writer = extras?.getString("writer").orEmpty(),
+            language = extras?.getString("language") ?: "Unknown", year = extras?.getString("year").orEmpty(),
+            isrc = extras?.getString("isrc").orEmpty(),
+            source = source.ifBlank { if (item.mediaId.startsWith("yt_")) "Extended Stream" else "HD Stream" },
+            isLossless = item.mediaId.startsWith("ia_") || extras?.getBoolean("isLossless", false) == true)
+    }
+
+    private fun synchronizeControllerQueue(player: MediaController) {
+        if (player.mediaItemCount == 0) return
+        val known = activeQueue.associateBy { it.id }
+        activeQueue = (0 until player.mediaItemCount).map { index ->
+            val item = player.getMediaItemAt(index)
+            known[item.mediaId] ?: controllerTrack(item)
+        }.toMutableList()
+        val index = player.currentMediaItemIndex.coerceIn(0, activeQueue.lastIndex)
+        _uiState.update { it.copy(queue = activeQueue.toList(), currentIndex = index) }
+    }
+
     private fun setupPlayerListener() {
         val player = controller
         if (player == null) {
@@ -176,6 +207,16 @@ class PlaybackManager(
             return
         }
 
+        synchronizeControllerQueue(player)
+        player.currentMediaItem?.let { item ->
+            val track = activeQueue.getOrNull(player.currentMediaItemIndex) ?: controllerTrack(item)
+            recoveryGuard.select(track.id)
+            _uiState.update { it.copy(currentTrack = track, isFavorite = track.isLiked,
+                isPlaying = player.isPlaying, isLoading = player.playbackState == Player.STATE_BUFFERING,
+                durationMs = player.duration.takeIf { duration -> duration > 0L } ?: track.durationMs) }
+            updateProgressValues()
+            if (player.isPlaying) startProgressTicker()
+        }
         player.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 _uiState.update { it.copy(isPlaying = isPlaying) }
@@ -268,17 +309,11 @@ class PlaybackManager(
                     val shouldRecordPlayback = player.isPlaying || player.playWhenReady
                     currentTrackStartTimeMs = System.currentTimeMillis()
                     hasRecordedMeaningfulPlay = false
-                    val matchedTrack = activeQueue.find { it.id == trackId }
-                        ?: MusicTrack(
-                            id = trackId,
-                            title = mediaItem.mediaMetadata.title?.toString() ?: "Unknown",
-                            artist = mediaItem.mediaMetadata.artist?.toString() ?: "Unknown",
-                            album = mediaItem.mediaMetadata.albumTitle?.toString() ?: "",
-                            durationMs = player.duration.coerceAtLeast(0L),
-                            coverUrl = mediaItem.mediaMetadata.artworkUri?.toString() ?: "",
-                            audioUrl = mediaItem.requestMetadata.mediaUri?.toString() ?: ""
-                        )
-                    val index = activeQueue.indexOfFirst { it.id == trackId }.coerceAtLeast(0)
+                    synchronizeControllerQueue(player)
+                    val matchedTrack = activeQueue.find { it.id == trackId } ?: controllerTrack(mediaItem)
+                    val index = player.currentMediaItemIndex.takeIf {
+                        it in activeQueue.indices && activeQueue[it].id == trackId
+                    } ?: activeQueue.indexOfFirst { it.id == trackId }.coerceAtLeast(0)
 
                     // The upcoming song in queue is the next recommended track
                     val nextTrackInQueue = activeQueue.getOrNull(index + 1)
@@ -387,7 +422,9 @@ class PlaybackManager(
                     return
                 }
                 recoveryJob?.cancel()
-                val failedUrl = player.currentMediaItem?.localConfiguration?.uri?.toString() ?: current.audioUrl
+                val failedUri = player.currentMediaItem?.localConfiguration?.uri
+                val failedUrl = if (failedUri?.scheme == "xtreme-youtube") current.audioUrl
+                    else failedUri?.toString() ?: current.audioUrl
                 val transientFailure = error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
                     error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ||
                     (error.cause as? androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException)
@@ -409,7 +446,8 @@ class PlaybackManager(
                         val position = player.currentPosition.coerceAtLeast(0L)
                         val resume = player.playWhenReady
                         val replacement = resolved.toMediaItem()
-                        if (!transientFailure && replacement.localConfiguration?.uri?.toString() == failedUrl) {
+                        if (!transientFailure && failedUri?.scheme != "xtreme-youtube" &&
+                            replacement.localConfiguration?.uri?.toString() == failedUrl) {
                             throw TrackUnavailableException(current.title)
                         }
                         if (index in activeQueue.indices) activeQueue[index] = resolved
@@ -524,6 +562,9 @@ class PlaybackManager(
         // If in loading state, reset loading state safely.
         if (isSameTrack && !isInfiniteRadio && now - lastPlayRequestTimeMs < 450L) {
             val player = controller
+            // UI selection can precede replacement of the controller's previous media item.
+            if (playResolutionJob?.isActive == true || activeSearchPlayJob?.isActive == true ||
+                player?.currentMediaItem?.mediaId != track.id) return
             if (player != null) {
                 if (!player.isPlaying) {
                     try {
@@ -560,7 +601,7 @@ class PlaybackManager(
         rememberQueueCandidates(queue)
 
         val repo = repository
-        if (track.audioUrl.isBlank() && repo != null) {
+        if (com.example.data.repository.StreamResolver.needsResolution(track) && repo != null) {
             try { controller?.stop() } catch (_: Exception) {}
             _uiState.update { it.copy(currentTrack = track, isLoading = true, errorMessage = null) }
             playResolutionJob = scope.launch(Dispatchers.IO) {
@@ -879,7 +920,7 @@ class PlaybackManager(
 
         // 4. Asynchronously resolve stream URL on Dispatchers.IO
         activeSearchPlayJob = scope.launch(Dispatchers.IO) {
-            val resolvedTrack = if (track.audioUrl.isBlank()) {
+            val resolvedTrack = if (com.example.data.repository.StreamResolver.needsResolution(track)) {
                 val repo = repository
                 if (repo != null) {
                     try {
@@ -1292,7 +1333,7 @@ class PlaybackManager(
 
         return MediaItem.Builder()
             .setMediaId(id)
-            .setUri(effectiveUrl)
+            .setUri(com.example.data.remote.YouTubeAudioStreamService.playbackUri(id, effectiveUrl))
             .setMediaMetadata(
                 MediaMetadata.Builder()
                     .setTitle(title)
@@ -1303,6 +1344,12 @@ class PlaybackManager(
                         putInt("bitrate", effectiveBitrate)
                         putString("qualityBadge", effectiveBadge)
                         putString("genre", genre)
+                        putString("media_source", source)
+                        putLong("duration", durationMs)
+                        putBoolean("isLiked", isLiked)
+                        putBoolean("isLossless", isLossless)
+                        putString("singers", singers); putString("writer", writer)
+                        putString("language", language); putString("year", year); putString("isrc", isrc)
                     })
                     .build()
             )

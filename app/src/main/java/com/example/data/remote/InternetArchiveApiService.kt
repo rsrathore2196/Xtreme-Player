@@ -3,6 +3,7 @@ package com.example.data.remote
 import android.util.Log
 import com.example.data.model.MusicTrack
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -117,7 +118,7 @@ object InternetArchiveApiService {
         withTimeoutOrNull(TIMEOUT_MS) {
             try {
                 // Step 1: Advanced Search Request targeting audio items with lossless formats
-                val formattedQuery = "$trimmed AND mediatype:(audio) AND (format:(\"FLAC\" OR \"24bit Flac\" OR \"WAV\" OR \"AIFF\" OR \"ALAC\" OR \"Monkey's Audio\" OR \"WavPack\" OR \"DSD\") OR format:(\"Flac\" OR \"Waveform Audio\" OR \"APE\"))"
+                val formattedQuery = "($trimmed) AND mediatype:(audio) AND (format:(\"FLAC\" OR \"24bit Flac\" OR \"WAV\" OR \"AIFF\" OR \"ALAC\" OR \"Monkey's Audio\" OR \"WavPack\" OR \"DSD\") OR format:(\"Flac\" OR \"Waveform Audio\" OR \"APE\"))"
                 val encodedQuery = URLEncoder.encode(formattedQuery, "UTF-8")
                 val searchUrl = "https://archive.org/advancedsearch.php" +
                         "?q=$encodedQuery" +
@@ -146,7 +147,12 @@ object InternetArchiveApiService {
                             verifyAndParseLosslessItem(doc)
                         }
                     }
-                    deferredList.awaitAll().filterNotNull()
+                    deferredList.awaitAll().flatten().distinctBy { it.id }
+                        .sortedByDescending { track ->
+                            trimmed.lowercase().split(Regex("\\s+")).count { word ->
+                                word in (track.title + " " + track.artist).lowercase()
+                            }
+                        }.take(maxResults)
                 }
             } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
                 Log.w(TAG, "Internet Archive search encountered error/timeout: ${e.message}")
@@ -165,85 +171,80 @@ object InternetArchiveApiService {
      * Retrieves metadata for an item and verifies that a true streamable lossless file exists.
      * Rejects items that only have lossy files.
      */
-    private suspend fun verifyAndParseLosslessItem(doc: JSONObject): MusicTrack? {
-        val identifier = doc.optString("identifier", "").trim()
-        if (identifier.isBlank()) return null
+    private fun text(objectValue: JSONObject?, key: String): String = when (val value = objectValue?.opt(key)) {
+        is String -> value.takeUnless { it == "null" }.orEmpty().trim()
+        is org.json.JSONArray -> if (value.length() == 1) value.optString(0).trim() else ""
+        is Number -> value.toString()
+        else -> ""
+    }
 
-        val title = doc.optString("title", "").ifBlank { identifier }
-        val creator = doc.optString("creator", "").ifBlank { "Internet Archive" }
-        val album = doc.optString("album", "").ifBlank { "Live & Archival Hi-Res" }
-        val year = doc.optString("year", "")
+    private fun durationMillis(value: String): Long {
+        val seconds = if (value.contains(':')) value.split(':').fold(0.0) { total, part ->
+            val amount = part.toDoubleOrNull() ?: return 0L
+            total * 60 + amount
+        } else value.toDoubleOrNull() ?: return 0L
+        return if (seconds.isFinite() && seconds > 0) (seconds * 1000).toLong() else 0L
+    }
 
+    /** Bind each recording to its own file tags and stable item-plus-file identity. */
+    private suspend fun verifyAndParseLosslessItem(doc: JSONObject): List<MusicTrack> {
+        val identifier = text(doc, "identifier")
+        if (identifier.isBlank()) return emptyList()
         try {
-            val metadataUrl = "https://archive.org/metadata/$identifier"
-            val request = Request.Builder()
-                .url(metadataUrl)
-                .addHeader("User-Agent", "XtremePlayer/2.5.0 (Android; Hi-Res Audio Streamer)")
-                .addHeader("Accept", "application/json")
-                .build()
-
-            val responseBody = httpClient.catalogRequest(request)
-            val metadataJson = JSONObject(responseBody)
-            val filesArray = metadataJson.optJSONArray("files") ?: return null
-
-            var verifiedFileName: String? = null
-            var verifiedDurationSec: Long = 0L
-            var verifiedBitrateKbps: Int = 1411 // Standard CD baseline (16-bit 44.1kHz)
-
-            for (i in 0 until filesArray.length()) {
-                val fileObj = filesArray.getJSONObject(i)
-                val fileName = fileObj.optString("name", "")
-                val format = fileObj.optString("format", "")
-
-                if (isLosslessAudioFile(fileName, format)) {
-                    verifiedFileName = fileName
-                    val lengthStr = fileObj.optString("length", "")
-                    val parsedDuration = lengthStr.toDoubleOrNull()?.toLong() ?: 0L
-                    if (parsedDuration > 0) {
-                        verifiedDurationSec = parsedDuration
-                    }
-                    if (format.contains("24bit", ignoreCase = true) || fileName.contains("24bit", ignoreCase = true)) {
-                        verifiedBitrateKbps = 4608 // 24-bit studio master
-                    } else if (fileName.endsWith(".dsf", ignoreCase = true) || fileName.endsWith(".dff", ignoreCase = true) || format.contains("dsd", ignoreCase = true)) {
-                        verifiedBitrateKbps = 5644 // DSD 2.8MHz
-                    } else if (fileName.endsWith(".wav", ignoreCase = true) || format.contains("wav", ignoreCase = true)) {
-                        verifiedBitrateKbps = 2116 // Uncompressed WAV
-                    }
-                    break
+            val metadataUrl = okhttp3.HttpUrl.Builder().scheme("https").host("archive.org")
+                .addPathSegment("metadata").addPathSegment(identifier).build()
+            val request = Request.Builder().url(metadataUrl)
+                .header("User-Agent", "XtremePlayer/2.5.0 (Android)").build()
+            val root = JSONObject(httpClient.catalogRequest(request))
+            if (root.optBoolean("is_dark", false)) return emptyList()
+            val metadata = root.optJSONObject("metadata")
+            val files = root.optJSONArray("files") ?: return emptyList()
+            val lossless = (0 until files.length()).mapNotNull { files.optJSONObject(it) }.filter {
+                isLosslessAudioFile(text(it, "name"), text(it, "format")) &&
+                    !it.optBoolean("private", false) && text(it, "size").toLongOrNull()?.let { size -> size > 0 } != false
+            }
+            val collections = when (val value = metadata?.opt("collection")) {
+                is org.json.JSONArray -> (0 until value.length()).map { value.optString(it) }
+                is String -> listOf(value)
+                else -> emptyList()
+            }
+            val isConcert = collections.any { it.equals("etree", true) }
+            return lossless.mapNotNull { file ->
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                val name = text(file, "name")
+                if (name.isBlank() || name.split('/').any { it == ".." }) return@mapNotNull null
+                // A filename is file-specific metadata; never substitute the album/concert title.
+                val fileTitle = text(file, "title").ifBlank {
+                    name.substringAfterLast('/').substringBeforeLast('.')
+                        .replace(Regex("^\\d{1,3}[._ -]+"), "").replace('_', ' ').trim()
                 }
+                if (fileTitle.isBlank()) return@mapNotNull null
+                val artist = text(file, "artist").ifBlank { text(file, "creator") }
+                    .ifBlank { text(metadata, "creator") }.ifBlank { text(doc, "creator") }.ifBlank { "Unknown Artist" }
+                val album = text(file, "album").ifBlank { text(metadata, "album") }
+                    .ifBlank { text(doc, "album") }
+                    .ifBlank { if (lossless.size > 1) text(metadata, "title") else "Unknown" }
+                val duration = durationMillis(text(file, "length"))
+                val reportedBitrate = text(file, "bitrate").toDoubleOrNull()?.takeIf { it.isFinite() && it > 0 }?.toInt()
+                val bitrate = reportedBitrate ?: if (duration > 0L) {
+                    ((text(file, "size").toLongOrNull() ?: 0L) * 8L / duration).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+                } else 0
+                val streamUrl = okhttp3.HttpUrl.Builder().scheme("https").host("archive.org")
+                    .addPathSegment("download").addPathSegment(identifier).apply {
+                        name.split('/').forEach { addPathSegment(it) }
+                    }.build().toString()
+                val title = if (isConcert && !Regex("(?i)\\blive\\b").containsMatchIn(fileTitle)) "$fileTitle (Live)" else fileTitle
+                MusicTrack(id = "ia_$identifier:$name", title = title, artist = artist, album = album,
+                    durationMs = duration, coverUrl = "https://archive.org/services/img/$identifier",
+                    audioUrl = streamUrl, bitrateKbps = bitrate, qualityBadge = "Lossless",
+                    genre = text(file, "genre").ifBlank { "Unknown" },
+                    year = text(file, "year").ifBlank { text(metadata, "year") }.ifBlank { text(doc, "year") },
+                    isrc = text(file, "isrc"), source = "INTERNET_ARCHIVE", isLossless = true)
             }
-
-            // If no streamable lossless file is found, reject this result completely
-            if (verifiedFileName == null) {
-                return null
-            }
-
-            // Construct direct stream URL: https://archive.org/download/<identifier>/<file_name>
-            val encodedFileName = URLEncoder.encode(verifiedFileName, "UTF-8").replace("+", "%20")
-            val streamUrl = "https://archive.org/download/$identifier/$encodedFileName"
-
-            // Thumbnail / Cover Art resolution
-            val coverUrl = "https://archive.org/services/img/$identifier"
-            val durationMs = if (verifiedDurationSec > 0) verifiedDurationSec * 1000L else 240000L
-
-            return MusicTrack(
-                id = "ia_$identifier",
-                title = title,
-                artist = creator,
-                album = album,
-                durationMs = durationMs,
-                coverUrl = coverUrl,
-                audioUrl = streamUrl,
-                bitrateKbps = verifiedBitrateKbps,
-                qualityBadge = "Hi-Res Lossless",
-                genre = "Hi-Res Audio",
-                year = year,
-                source = "INTERNET_ARCHIVE",
-                isLossless = true
-            )
-        } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: Exception) {
             Log.w(TAG, "Failed to verify metadata for $identifier: ${e.message}")
-            return null
+            return emptyList()
         }
     }
 }

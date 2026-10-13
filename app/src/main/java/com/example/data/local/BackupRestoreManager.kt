@@ -284,6 +284,7 @@ object BackupRestoreManager {
         try {
             val dao = musicDatabase.musicDao()
             val (playlists, allTracks, crossRefs) = musicDatabase.withTransaction {
+                dao.removeOrphanPlaylistTrackRefs()
                 Triple(dao.getAllPlaylistsSync(), dao.getAllTracksSync(), dao.getAllPlaylistCrossRefsSync())
             }
             val favoriteTracks = allTracks.filter { it.isLiked }
@@ -467,7 +468,8 @@ object BackupRestoreManager {
         val tracks: List<TrackEntity>,
         val refs: List<PlaylistTrackCrossRef>,
         val profile: JSONObject?,
-        val hasPlaylists: Boolean
+        val hasPlaylists: Boolean,
+        val ignoredOrphanRefs: Int = 0
     )
 
     private fun normalizeText(text: String): String =
@@ -623,7 +625,16 @@ object BackupRestoreManager {
         val playlistIds = playlists.map { it.playlistId }.toSet()
         val trackIds = tracks.map { it.id }.toSet()
         // Backup references cannot silently target unrelated local entities with matching IDs.
-        require(refs.all { it.playlistId in playlistIds && it.trackId in trackIds }) {
+        // Older app-generated backups could contain links left by deleted playlists.
+        // Ignore only absent-parent links; never bind them to local IDs or discard a
+        // broken reference belonging to a playlist that is actually being restored.
+        val validParentRefs = refs.filter { it.playlistId in playlistIds }
+        require(refs.isEmpty() || root.has("playlists")) { "Backup relationships require a playlists section" }
+        require(validParentRefs.size == refs.size ||
+            (root.optString("app").equals("Xtreme Player", true) && root.has("version"))) {
+            "Backup contains references to missing playlists"
+        }
+        require(validParentRefs.all { it.trackId in trackIds }) {
             "Backup contains invalid playlist relationships"
         }
         val profile = if (root.has("userProfile")) root.get("userProfile").also {
@@ -643,7 +654,7 @@ object BackupRestoreManager {
             }
         }
         require(playlists.isNotEmpty() || tracks.isNotEmpty() || profile != null) { "Backup file is empty" }
-        return ParsedBackup(playlists, tracks, refs, profile, root.has("playlists"))
+        return ParsedBackup(playlists, tracks, validParentRefs, profile, root.has("playlists"), refs.size - validParentRefs.size)
     }
 
     private fun restoredProfile(json: JSONObject, previous: UserProfile): UserProfile = previous.copy(
@@ -712,6 +723,7 @@ object BackupRestoreManager {
                 // from profile publication or mistake an already committed transaction for failure.
                 val restoredTrackCount = withContext(kotlinx.coroutines.NonCancellable) {
                     val restoredCount = musicDatabase.withTransaction {
+                        dao.removeOrphanPlaylistTrackRefs()
                         val existingPlaylists = dao.getAllPlaylistsSync()
                         val existingTracks = dao.getAllTracksSync()
                         val existingIds = existingTracks.map { it.id }.toSet()
@@ -798,7 +810,8 @@ object BackupRestoreManager {
                     restoredCount
                 }
                 RestoreSummary(true,
-                    "Backup successfully restored! Recovered ${backup.playlists.size} playlists and $restoredTrackCount new tracks into your library.",
+                    "Backup successfully restored! Recovered ${backup.playlists.size} playlists and $restoredTrackCount new tracks into your library." +
+                        if (backup.ignoredOrphanRefs > 0) " Ignored ${backup.ignoredOrphanRefs} links to deleted playlists." else "",
                     backup.playlists.size, restoredTrackCount, profile != null)
             } catch (error: Exception) {
                 var profileRollbackFailed = false

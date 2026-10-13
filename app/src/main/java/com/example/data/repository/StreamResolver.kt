@@ -26,6 +26,9 @@ internal class StreamResolver(
     },
     private val fetchById: suspend (String, Boolean) -> MusicTrack? = { id, refresh ->
         OnlineMusicApiService.fetchSongDetails(id, refresh)
+    },
+    private val resolveYouTube: suspend (MusicTrack, AudioQuality, Boolean) -> MusicTrack? = { track, quality, refresh ->
+        com.example.data.remote.YouTubeMusicApiService.resolveAudio(track, quality, refresh)
     }
 ) {
     private data class CachedStream(val track: MusicTrack, val expiresAt: Long)
@@ -52,14 +55,14 @@ internal class StreamResolver(
                 return@withContext withStream(track, it)
             }
             if (isValidStreamUrl(track.audioUrl) && track.audioUrl != failedUrl &&
-                !track.audioUrl.startsWith("yt_") && !track.audioUrl.contains("placeholder")
+                !needsResolution(track)
             ) {
                 return@withContext track
             }
         }
 
         val rejectedUrl = failedUrl ?: track.audioUrl.takeIf { forceRefresh }
-        val cleanTitle = extractCleanTitle(track.title)
+        val cleanTitle = extractCleanTitle(track.title, track.artist)
         val cleanArtist = extractCleanArtist(track.artist)
 
         suspend fun exactRecording(): MusicTrack? {
@@ -92,6 +95,11 @@ internal class StreamResolver(
         }
 
         val standard: suspend (String) -> List<MusicTrack> = { searchStandard(it, forceRefresh) }
+        suspend fun exactYouTube(): MusicTrack? {
+            if (!track.id.startsWith("yt_")) return null
+            return try { withTimeoutOrNull(15_000L) { resolveYouTube(track, quality, forceRefresh) } }
+                catch (e: CancellationException) { throw e } catch (_: Exception) { null }
+        }
 
         // Progressive targeted queries:
         // 1. Clean Title + Clean Artist (highest precision, stripped of video/audio tags)
@@ -106,6 +114,7 @@ internal class StreamResolver(
             ?: find(standard, primaryQuery)
             ?: (if (titleOnlyQuery != primaryQuery && titleOnlyQuery.isNotBlank()) find(standard, titleOnlyQuery) else null)
             ?: (if (artistFirstQuery.isNotBlank() && artistFirstQuery != primaryQuery) find(standard, artistFirstQuery) else null)
+            ?: exactYouTube()?.takeIf { it.id == track.id && isValidStreamUrl(it.audioUrl) && it.audioUrl != rejectedUrl }
             ?: throw TrackUnavailableException(track.title)
 
         coroutineContext.ensureActive()
@@ -124,31 +133,36 @@ internal class StreamResolver(
     )
 
     companion object {
+        internal fun needsResolution(track: MusicTrack): Boolean {
+            if (track.audioUrl.isBlank() || track.audioUrl.startsWith("yt_") || track.audioUrl.contains("placeholder")) return true
+            // Old cross-provider mappings cannot establish which recording a stored URL plays.
+            if (track.id.startsWith("yt_") && track.audioUrl.startsWith("http")) {
+                val host = android.net.Uri.parse(track.audioUrl).host.orEmpty()
+                return host != "googlevideo.com" && !host.endsWith(".googlevideo.com")
+            }
+            return false
+        }
         private fun isValidStreamUrl(url: String?): Boolean {
             if (url.isNullOrBlank()) return false
             if (url.startsWith("yt_") || url.contains("placeholder")) return false
             return url.startsWith("http://") || url.startsWith("https://")
         }
 
-        internal fun extractCleanTitle(title: String): String {
+        internal fun extractCleanTitle(title: String, artist: String = ""): String {
             var cleaned = title
-            // If title is in "Artist - Song Name" format, extract song name if feasible
+            // Strip an uploader's artist prefix only when it is the actual credited artist.
             if (cleaned.contains(" - ")) {
-                val parts = cleaned.split(" - ")
-                if (parts.size >= 2 && parts[1].isNotBlank()) {
-                    cleaned = parts[1]
+                val prefix = cleaned.substringBefore(" - ")
+                if (normalize(extractCleanArtist(prefix)) in artists(artist)) {
+                    cleaned = cleaned.substringAfter(" - ")
                 }
             }
             // Remove parenthetical noise common in YouTube Music and online sources
             cleaned = cleaned.replace(
-                Regex("(?i)\\s*[\\[(](?:official\\s+)?(?:music\\s+)?(?:video|audio|lyric\\s+video|visualizer|hd|4k|remaster(?:ed)?(?:\\s+\\d{4})?|live|single|radio\\s+edit)[)\\]]"),
+                Regex("(?i)\\s*[\\[(](?:official\\s+)?(?:music\\s+)?(?:video|audio|lyric\\s+video|lyrics|visualizer|hd|4k)[)\\]]"),
                 ""
             )
-            // Remove featured artists inside parentheses/brackets
-            cleaned = cleaned.replace(
-                Regex("(?i)\\s*[\\[(](?:feat\\.?|ft\\.?|with)\\s+[^)\\]]+[)\\]]"),
-                ""
-            )
+            // Live, edits, remasters, featured credits and other version text are identity.
             return cleaned.trim()
         }
 
@@ -159,61 +173,45 @@ internal class StreamResolver(
                 .trim()
         }
 
-        private fun normalize(value: String): String = value.lowercase(Locale.ROOT)
-            .replace(Regex("(?i)\\b(?:official\\s+)?(?:music\\s+)?(?:video|audio)\\b"), "")
-            .replace(Regex("[^\\p{L}\\p{N}]+"), " ").trim()
+        private fun normalize(value: String): String = java.text.Normalizer.normalize(value,
+            java.text.Normalizer.Form.NFKC).lowercase(Locale.ROOT)
+            .replace(Regex("[^\\p{L}\\p{M}\\p{N}]+"), " ").trim()
+
+        private fun artists(value: String): Set<String> = value
+            .split(Regex("(?i),|;|•|\\s+(?:&|and|feat\\.?|ft\\.?|featuring|with)\\s+"))
+            .map { normalize(extractCleanArtist(it)) }
+            .filter { it !in setOf("", "unknown", "unknown artist", "various artists", "online artist", "youtube artist") }.toSet()
+
+        private fun isrc(value: String): String? = value.uppercase(Locale.ROOT)
+            .replace(Regex("[-\\s]"), "").takeIf { it.matches(Regex("[A-Z]{2}[A-Z0-9]{3}[0-9]{7}")) }
 
         internal fun matches(requested: MusicTrack, candidate: MusicTrack): Boolean {
-            if (requested.isrc.isNotBlank() && candidate.isrc.isNotBlank()) {
-                return requested.isrc.equals(candidate.isrc, ignoreCase = true)
+            val requestedIsrc = isrc(requested.isrc)
+            val candidateIsrc = isrc(candidate.isrc)
+            val fingerprintMatches = requestedIsrc != null && candidateIsrc != null && requestedIsrc == candidateIsrc
+            if (requestedIsrc != null && candidateIsrc != null && !fingerprintMatches) return false
+            val reqArtists = artists(requested.artist)
+            val candArtists = artists(candidate.artist)
+            if (reqArtists.isNotEmpty() && candArtists.isNotEmpty() && reqArtists != candArtists) return false
+            val version = Regex("(?i)\\b(?:live|remix|remaster(?:ed)?|radio edit|acoustic|instrumental|karaoke|cover|slowed|reverb|extended|demo)\\b")
+            if (version.findAll(requested.title).map { it.value.lowercase(Locale.ROOT) }.toSet() !=
+                version.findAll(candidate.title).map { it.value.lowercase(Locale.ROOT) }.toSet()) return false
+            if (!fingerprintMatches) {
+                if (requested.durationMs <= 0 || candidate.durationMs <= 0) return false
+                val title = normalize(extractCleanTitle(requested.title, requested.artist))
+                if (title.isBlank() || title != normalize(extractCleanTitle(candidate.title, candidate.artist))) return false
+                val requestedArtists = artists(requested.artist)
+                val candidateArtists = artists(candidate.artist)
+                if (requestedArtists.isEmpty() || candidateArtists.isEmpty() || requestedArtists != candidateArtists) return false
+                val unknownAlbums = setOf("", "unknown", "single", "online stream", "hd stream")
+                val album = normalize(requested.album)
+                val candidateAlbum = normalize(candidate.album)
+                if (album !in unknownAlbums && candidateAlbum !in unknownAlbums && album != candidateAlbum) return false
             }
-
-            val reqClean = normalize(extractCleanTitle(requested.title))
-            val candClean = normalize(extractCleanTitle(candidate.title))
-
-            if (reqClean.isBlank() || candClean.isBlank()) return false
-
-            val reqWords = reqClean.split(" ").filter { it.length > 1 }
-            val candWords = candClean.split(" ").filter { it.length > 1 }
-
-            // Enhanced title verification: exact clean match, prefix match, or complete token coverage
-            val titleMatches = reqClean == candClean ||
-                candClean.startsWith(reqClean) ||
-                reqClean.startsWith(candClean) ||
-                (reqWords.isNotEmpty() && reqWords.all { candClean.contains(it) }) ||
-                (candWords.isNotEmpty() && candWords.all { reqClean.contains(it) })
-
-            if (!titleMatches) return false
-
-            // Artist verification
-            fun parseArtists(value: String): Set<String> = value
-                .split(Regex("(?i),|&|;|/|\\bfeat\\.?|\\bft\\.?|\\bwith\\b|•"))
-                .map { normalize(extractCleanArtist(it)) }
-                .filter { it.isNotBlank() && it != "various artists" && it != "online artist" }
-                .toSet()
-
-            val reqArtists = parseArtists(requested.artist)
-            val candArtists = parseArtists(candidate.artist)
-
-            val artistMatches = if (reqArtists.isEmpty() || candArtists.isEmpty()) {
-                true
-            } else {
-                reqArtists.intersect(candArtists).isNotEmpty() ||
-                    reqArtists.any { reqArt -> candArtists.any { candArt -> reqArt.contains(candArt) || candArt.contains(reqArt) } } ||
-                    candArtists.any { reqClean.contains(it) } ||
-                    reqArtists.any { candClean.contains(it) } ||
-                    (reqClean == candClean && (requested.durationMs <= 0 || candidate.durationMs <= 0 || abs(requested.durationMs - candidate.durationMs) < 30_000L))
-            }
-
-            if (!artistMatches) return false
-
-            // Duration check: only if valid non-placeholder durations exist on both sides
-            val isReqDurationPlaceholder = requested.durationMs <= 0 || requested.durationMs == 210000L
-            val isCandDurationPlaceholder = candidate.durationMs <= 0 || candidate.durationMs == 210000L
-
-            if (!isReqDurationPlaceholder && !isCandDurationPlaceholder) {
+            // Missing duration is not an artist match. Real 210-second songs are not placeholders.
+            if (requested.durationMs > 0 && candidate.durationMs > 0) {
                 val diff = abs(requested.durationMs - candidate.durationMs)
-                val tolerance = maxOf(60_000L, (requested.durationMs * 0.35).toLong())
+                val tolerance = (requested.durationMs * 0.025).toLong().coerceIn(2_000L, 8_000L)
                 if (diff > tolerance) return false
             }
 

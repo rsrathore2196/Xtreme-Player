@@ -24,7 +24,7 @@ fun MusicTrack.toMediaItem(): MediaItem {
 
     return MediaItem.Builder()
         .setMediaId(this.id)
-        .setUri(this.audioUrl)
+        .setUri(com.example.data.remote.YouTubeAudioStreamService.playbackUri(this.id, this.audioUrl))
         .setMediaMetadata(metadata)
         .build()
 }

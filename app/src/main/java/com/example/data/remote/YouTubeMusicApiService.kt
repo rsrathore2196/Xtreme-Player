@@ -27,6 +27,17 @@ object YouTubeMusicApiService {
             .build()
     }
 
+    /** Resolve the selected video itself, retaining its identity and metadata. */
+    suspend fun resolveAudio(track: MusicTrack, quality: com.example.playback.AudioQuality,
+        forceRefresh: Boolean = false): MusicTrack? {
+        val videoId = track.id.removePrefix("yt_")
+        if (!track.id.startsWith("yt_") || !YouTubeAudioStreamService.isVideoId(videoId)) return null
+        val audio = YouTubeAudioStreamService.resolve(videoId, quality, forceRefresh)
+        return track.copy(audioUrl = audio.url, bitrateKbps = audio.bitrateKbps,
+            qualityBadge = if (audio.bitrateKbps > 0) "HQ • ${audio.bitrateKbps} kbps" else "HQ Stream",
+            isLossless = false)
+    }
+
     /** Only an exact, unique artist entity can supply a portrait; song thumbnails are not portraits. */
     suspend fun artistPhoto(name: String): String? = withContext(Dispatchers.IO) {
         if (name.isBlank()) return@withContext null

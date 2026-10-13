@@ -23,15 +23,61 @@ import androidx.media3.exoplayer.Renderer
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.video.VideoRendererEventListener
 import com.example.MainActivity
-import com.example.data.remote.MusicDataSource
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
+import com.google.common.util.concurrent.SettableFuture
+import com.google.common.util.concurrent.MoreExecutors
+import com.example.XtremeMusicApp
+import com.example.data.model.MusicTrack
+import com.example.data.local.TrackEntity
+import com.example.data.repository.CatalogNames
+import com.example.data.remote.YouTubeAudioStreamService
+import kotlinx.coroutines.*
 
 class MusicService : MediaLibraryService() {
 
     private var mediaLibrarySession: MediaLibrarySession? = null
     private var exoPlayer: ExoPlayer? = null
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var checkpointJob: Job? = null
+    private var checkpointItems: List<MediaItem> = emptyList()
+    private val app: XtremeMusicApp get() = application as XtremeMusicApp
+
+    private fun checkpoint(rebuild: Boolean = false) {
+        val player = exoPlayer ?: return
+        if (player.mediaItemCount == 0) return
+        if (rebuild || checkpointItems.size != player.mediaItemCount) {
+            checkpointItems = (0 until player.mediaItemCount).map(player::getMediaItemAt)
+        }
+        PlaybackSessionStore.checkpoint(this, PlaybackSessionStore.Snapshot(checkpointItems,
+            player.currentMediaItemIndex.coerceIn(0, checkpointItems.lastIndex), player.currentPosition.coerceAtLeast(0L)))
+    }
+
+    private fun <T> future(block: suspend () -> T): ListenableFuture<T> {
+        val result = SettableFuture.create<T>()
+        val job = serviceScope.launch {
+            try { result.set(block()) }
+            catch (e: CancellationException) { result.cancel(false); throw e }
+            catch (e: Exception) { result.setException(e) }
+        }
+        result.addListener({ if (result.isCancelled) job.cancel() }, MoreExecutors.directExecutor())
+        return result
+    }
+
+    private fun realTrack(track: MusicTrack): Boolean {
+        val host = Uri.parse(track.audioUrl).host.orEmpty().lowercase(java.util.Locale.ROOT)
+        return host != "soundhelix.com" && !host.endsWith(".soundhelix.com") && track.id.isNotBlank() &&
+            (track.audioUrl.isNotBlank() || track.id.startsWith("online_") ||
+                (track.id.startsWith("yt_") && YouTubeAudioStreamService.isVideoId(track.id.removePrefix("yt_"))))
+    }
+
+    private fun paginate(items: List<MusicTrack>, index: Int, size: Int): List<MusicTrack> {
+        if (index < 0 || size <= 0) return emptyList()
+        val offset = index.toLong() * size
+        if (offset >= items.size) return emptyList()
+        return items.drop(offset.toInt()).take(size.coerceAtMost(100))
+    }
 
     @OptIn(UnstableApi::class)
     override fun onCreate() {
@@ -122,6 +168,22 @@ class MusicService : MediaLibraryService() {
         })
 
         player.addListener(object : Player.Listener {
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                checkpointJob?.cancel()
+                checkpoint()
+                if (isPlaying) checkpointJob = serviceScope.launch {
+                    while (isActive) { delay(15_000L); checkpoint() }
+                }
+            }
+
+            override fun onEvents(player: Player, events: Player.Events) {
+                val queueChanged = events.contains(Player.EVENT_TIMELINE_CHANGED)
+                if (queueChanged || events.contains(Player.EVENT_MEDIA_ITEM_TRANSITION) ||
+                    events.contains(Player.EVENT_POSITION_DISCONTINUITY) || events.contains(Player.EVENT_PLAY_WHEN_READY_CHANGED)) {
+                    checkpoint(queueChanged)
+                }
+            }
+
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_READY) {
                     val sessionId = player.audioSessionId
@@ -159,6 +221,9 @@ class MusicService : MediaLibraryService() {
     }
 
     override fun onDestroy() {
+        checkpoint()
+        checkpointJob?.cancel()
+        serviceScope.cancel()
         exoPlayer?.let(com.example.playback.SleepTimerManager::detach)
         com.example.playback.AudioEffectsManager.detachAudioSession()
         mediaLibrarySession?.run {
@@ -192,7 +257,8 @@ class MusicService : MediaLibraryService() {
             controller: MediaSession.ControllerInfo
         ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
             val player = exoPlayer
-            if (player != null && player.mediaItemCount > 0) {
+            if (player != null && player.mediaItemCount > 0 &&
+                (0 until player.mediaItemCount).all { PlaybackSessionStore.isReal(player.getMediaItemAt(it)) }) {
                 val currentIdx = player.currentMediaItemIndex.coerceIn(0, player.mediaItemCount - 1)
                 val currentPos = player.currentPosition
                 val items = mutableListOf<MediaItem>()
@@ -207,15 +273,11 @@ class MusicService : MediaLibraryService() {
                     )
                 )
             }
-            val tracks = MusicDataSource.curatedTracks
-            val mediaItems = tracks.map { it.toMediaItem() }
-            return Futures.immediateFuture(
-                MediaSession.MediaItemsWithStartPosition(
-                    mediaItems,
-                    /* startIndex = */ 0,
-                    /* startPositionMs = */ 0L
-                )
-            )
+            return future {
+                val saved = PlaybackSessionStore.restore(this@MusicService)
+                MediaSession.MediaItemsWithStartPosition(saved?.items.orEmpty(),
+                    saved?.index ?: C.INDEX_UNSET, saved?.positionMs ?: C.TIME_UNSET)
+            }
         }
 
         override fun onGetLibraryRoot(
@@ -277,59 +339,57 @@ class MusicService : MediaLibraryService() {
                     Futures.immediateFuture(LibraryResult.ofItemList(categories, params))
                 }
 
-                else -> {
+                else -> future {
                     val tracks = getTracksForCategory(parentId)
-                    Futures.immediateFuture(LibraryResult.ofItemList(tracks.map { it.toMediaItem() }, params))
+                    LibraryResult.ofItemList(paginate(tracks, page, pageSize).map { it.toMediaItem() }, params)
                 }
             }
         }
 
-        private fun getTracksForCategory(categoryId: String): List<com.example.data.model.MusicTrack> {
-            return when (categoryId) {
-                "category_driving" -> {
-                    MusicDataSource.curatedTracks.filter {
-                        it.genre.contains("synth", ignoreCase = true) ||
-                        it.genre.contains("electronic", ignoreCase = true) ||
-                        it.genre.contains("rock", ignoreCase = true) ||
-                        it.genre.contains("punjabi", ignoreCase = true)
-                    }
-                }
-                "category_recommended" -> {
-                    MusicDataSource.curatedTracks.take(6)
-                }
-                "category_punjabi" -> {
-                    MusicDataSource.curatedTracks.filter { 
-                        it.genre.contains("punjabi", ignoreCase = true) || 
-                        it.language.contains("punjabi", ignoreCase = true) 
-                    }.ifEmpty { MusicDataSource.curatedTracks.take(4) }
-                }
-                "category_bollywood" -> {
-                    MusicDataSource.curatedTracks.filter { 
-                        it.genre.contains("bollywood", ignoreCase = true) || 
-                        it.language.contains("hindi", ignoreCase = true) 
-                    }.ifEmpty { MusicDataSource.curatedTracks.take(4) }
-                }
-                "category_pop" -> {
-                    MusicDataSource.curatedTracks.filter { 
-                        it.genre.contains("pop", ignoreCase = true) || 
-                        it.genre.contains("rock", ignoreCase = true) 
-                    }.ifEmpty { MusicDataSource.curatedTracks.take(4) }
-                }
-                "category_synthwave" -> {
-                    MusicDataSource.curatedTracks.filter { 
-                        it.genre.contains("synth", ignoreCase = true) || 
-                        it.genre.contains("electronic", ignoreCase = true) 
-                    }
-                }
-                "category_chill" -> {
-                    MusicDataSource.curatedTracks.filter { 
-                        it.genre.contains("chill", ignoreCase = true) || 
-                        it.genre.contains("ambient", ignoreCase = true) ||
-                        it.genre.contains("jazz", ignoreCase = true)
-                    }
-                }
-                else -> MusicDataSource.curatedTracks
+        private suspend fun getTracksForCategory(categoryId: String): List<MusicTrack> = withContext(Dispatchers.IO) {
+            val records = app.database.musicDao().getAllTracksSync()
+                .filter { realTrack(it.toMusicTrack()) }
+                .sortedWith(compareByDescending<TrackEntity> { it.isLiked }.thenByDescending { it.lastPlayedAt }.thenByDescending { it.addedAt })
+            val tracks = records.map { it.toMusicTrack() }
+            fun has(track: MusicTrack, vararg words: String) = words.any { word ->
+                (word.length > 2 && track.genre.contains(word, true)) || track.language.equals(word, true)
             }
+            when (categoryId) {
+                "category_all" -> tracks
+                "category_driving" -> tracks.filter { has(it, "synth", "electronic", "rock", "punjabi") }
+                "category_punjabi" -> tracks.filter { has(it, "punjabi", "pa") }
+                "category_bollywood" -> tracks.filter { has(it, "bollywood", "hindi", "hi") }
+                "category_pop" -> tracks.filter { has(it, "pop", "rock", "english", "en") }
+                "category_synthwave" -> tracks.filter { has(it, "synth", "electronic") }
+                "category_chill" -> tracks.filter { has(it, "chill", "ambient", "jazz", "lo-fi") }
+                "category_recommended" -> {
+                    val discoveries = try { app.repository.getYtmQuickPicks(30) }
+                        catch (e: CancellationException) { throw e } catch (_: Exception) { emptyList() }
+                    (discoveries + records.filter { it.isLiked || it.lastPlayedAt > 0L }.map { it.toMusicTrack() })
+                        .filter(::realTrack).distinctBy { it.id }
+                }
+                else -> emptyList()
+            }
+        }
+
+        private suspend fun searchTracks(query: String, requestedPage: Int = 1): List<MusicTrack> = withContext(Dispatchers.IO) {
+            if (query.isBlank()) return@withContext emptyList()
+            val local = app.database.musicDao().getAllTracksSync().map { it.toMusicTrack() }.filter {
+                realTrack(it) && CatalogNames.score(query, it.title, listOf(it.artist, it.album, it.genre, it.language)) > 0
+            }
+            val remote = mutableListOf<MusicTrack>()
+            for (providerPage in 1..requestedPage.coerceIn(1, 10)) {
+                val result = try { app.repository.catalogBrowser.search(query, "Tracks", providerPage) }
+                    catch (e: CancellationException) { throw e } catch (_: Exception) { break }
+                remote.addAll(result.tracks)
+                if (result.nextPage == null) break
+            }
+            for (track in remote) {
+                if (app.database.musicDao().getTrackById(track.id) == null)
+                    app.database.musicDao().mergeTrackMetadata(TrackEntity.fromMusicTrack(track))
+            }
+            (local + remote).filter(::realTrack).distinctBy { it.id }
+                .sortedByDescending { CatalogNames.score(query, it.title, listOf(it.artist, it.album)) }
         }
 
         private fun createBrowsableCategory(id: String, title: String, subtitle: String): MediaItem {
@@ -356,15 +416,23 @@ class MusicService : MediaLibraryService() {
             val extras = Bundle().apply {
                 putInt("androidx.media.contentstyle.CONTENT_STYLE_PLAYABLE_HINT", 2)
                 putString("media_source", source)
+                putInt("bitrate", bitrateKbps)
+                putString("qualityBadge", qualityBadge)
+                putString("genre", genre)
+                putLong("duration", durationMs)
+                putBoolean("isLiked", isLiked); putBoolean("isLossless", isLossless)
+                putString("singers", singers); putString("writer", writer)
+                putString("language", language); putString("year", year); putString("isrc", isrc)
             }
             return MediaItem.Builder()
                 .setMediaId(id)
-                .setUri(audioUrl)
+                .setUri(YouTubeAudioStreamService.playbackUri(id, audioUrl))
                 .setMediaMetadata(
                     MediaMetadata.Builder()
                         .setTitle(title)
                         .setArtist(artist)
                         .setAlbumTitle(album)
+                        .setGenre(genre)
                         .setArtworkUri(Uri.parse(coverUrl))
                         .setIsBrowsable(false)
                         .setIsPlayable(true)
@@ -381,19 +449,11 @@ class MusicService : MediaLibraryService() {
             query: String,
             params: LibraryParams?
         ): ListenableFuture<LibraryResult<Void>> {
-            val q = query.trim().lowercase()
-            val count = if (q.isBlank()) {
-                MusicDataSource.curatedTracks.size
-            } else {
-                MusicDataSource.curatedTracks.count {
-                    it.title.lowercase().contains(q) ||
-                    it.artist.lowercase().contains(q) ||
-                    it.genre.lowercase().contains(q) ||
-                    it.language.lowercase().contains(q)
-                }.coerceAtLeast(1)
+            return future {
+                val tracks = searchTracks(query.trim())
+                session.notifySearchResultChanged(browser, query, tracks.size, params)
+                LibraryResult.ofVoid(params)
             }
-            session.notifySearchResultChanged(browser, query, count, params)
-            return Futures.immediateFuture(LibraryResult.ofVoid(params))
         }
 
         override fun onGetSearchResult(
@@ -403,20 +463,10 @@ class MusicService : MediaLibraryService() {
             page: Int,
             pageSize: Int,
             params: LibraryParams?
-        ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
-            val q = query.trim().lowercase()
-            val matchedTracks = if (q.isBlank()) {
-                MusicDataSource.curatedTracks
-            } else {
-                MusicDataSource.curatedTracks.filter {
-                    it.title.lowercase().contains(q) ||
-                    it.artist.lowercase().contains(q) ||
-                    it.genre.lowercase().contains(q) ||
-                    it.language.lowercase().contains(q)
-                }.ifEmpty { MusicDataSource.curatedTracks.take(5) }
-            }
-
-            return Futures.immediateFuture(LibraryResult.ofItemList(matchedTracks.map { it.toMediaItem() }, params))
+        ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> = future {
+            val needed = ((page.coerceAtLeast(0).toLong() + 1L) * pageSize.coerceIn(1, 100)).coerceAtMost(100L)
+            val tracks = searchTracks(query.trim(), ((needed + 9L) / 10L).toInt())
+            LibraryResult.ofItemList(paginate(tracks, page, pageSize).map { it.toMediaItem() }, params)
         }
 
         private fun getCategoryById(id: String): MediaItem? {
@@ -445,9 +495,11 @@ class MusicService : MediaLibraryService() {
             if (category != null) {
                 return Futures.immediateFuture(LibraryResult.ofItem(category, null))
             }
-            val track = MusicDataSource.curatedTracks.find { it.id == mediaId }
-            val item = track?.toMediaItem() ?: MediaItem.Builder().setMediaId(mediaId).build()
-            return Futures.immediateFuture(LibraryResult.ofItem(item, null))
+            return future {
+                val track = withContext(Dispatchers.IO) { app.database.musicDao().getTrackById(mediaId)?.toMusicTrack() }
+                if (track != null && realTrack(track)) LibraryResult.ofItem(track.toMediaItem(), null)
+                else LibraryResult.ofError(SessionResult.RESULT_ERROR_BAD_VALUE)
+            }
         }
 
         override fun onCustomCommand(
@@ -472,29 +524,35 @@ class MusicService : MediaLibraryService() {
             controller: MediaSession.ControllerInfo,
             mediaItems: MutableList<MediaItem>
         ): ListenableFuture<MutableList<MediaItem>> {
-            val updatedItems = mutableListOf<MediaItem>()
-            for (item in mediaItems) {
-                if (item.mediaId.startsWith("category_")) {
-                    val tracks = getTracksForCategory(item.mediaId)
-                    updatedItems.addAll(tracks.map { it.toMediaItem() })
-                } else if (item.localConfiguration?.uri != null && item.localConfiguration?.uri.toString().isNotBlank()) {
-                    updatedItems.add(item)
-                } else {
-                    val track = MusicDataSource.curatedTracks.find { it.id == item.mediaId }
-                    if (track != null) {
-                        updatedItems.add(track.toMediaItem())
-                    } else {
-                        val requestUri = item.requestMetadata.mediaUri
-                        if (requestUri != null) {
-                            updatedItems.add(item.buildUpon().setUri(requestUri).build())
-                        } else {
-                            updatedItems.add(item)
-                        }
+            return future {
+                val items = mutableListOf<MediaItem>()
+                for (item in mediaItems) {
+                    if (item.mediaId.startsWith("category_")) {
+                        items.addAll(getTracksForCategory(item.mediaId).take(100).map { it.toMediaItem() })
+                    } else items.add(item)
+                }
+                val expandingCategory = mediaItems.any { it.mediaId.startsWith("category_") }
+                coroutineScope {
+                    val slots = kotlinx.coroutines.sync.Semaphore(3)
+                    items.map { item -> async(Dispatchers.IO) {
+                        slots.acquire()
+                        try {
+                            if (PlaybackSessionStore.isReal(item) && controller.packageName == packageName) return@async item
+                            val known = app.database.musicDao().getTrackById(item.mediaId)?.toMusicTrack()
+                            if (known != null && realTrack(known)) {
+                                app.repository.resolvePlayableTrack(known).toMediaItem()
+                            } else if (PlaybackSessionStore.isReal(item)) item
+                            else throw IllegalArgumentException("No real track found for this media ID")
+                        } catch (e: CancellationException) { throw e }
+                        catch (e: Exception) { if (expandingCategory) null else throw e }
+                        finally { slots.release() }
+                    } }.awaitAll().filterNotNull().toMutableList().also {
+                        if (it.isEmpty() && items.isNotEmpty()) throw IllegalArgumentException("No playable tracks are available in this category")
                     }
                 }
             }
-            return Futures.immediateFuture(updatedItems)
         }
+
     }
 
     companion object {

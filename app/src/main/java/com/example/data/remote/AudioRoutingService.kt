@@ -5,6 +5,7 @@ import com.example.data.local.AudioQualityPreferences
 import com.example.data.model.MusicTrack
 import com.example.playback.AudioQuality
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 
 data class RoutedSearchResult(
@@ -21,7 +22,7 @@ data class RoutedSearchResult(
  *      - If valid streamable lossless audio verified, returns lossless stream and isLossless = true.
  *   2. Secondary Source (JioSaavn API Fallback):
  *      - Triggered if Internet Archive has no lossless files, times out, or fails.
- *      - Returns 320kbps CD-quality audio stream.
+ *      - Returns the matching available JioSaavn recording.
  *   3. Tertiary Source (YouTube Music API Fallback):
  *      - Triggered if JioSaavn has no matching results or fails.
  *
@@ -29,6 +30,8 @@ data class RoutedSearchResult(
  *   1. Primary Source: JioSaavn API (highest available quality stream, e.g. 320kbps).
  *   2. Secondary Source Fallback: YouTube Music API.
  *   (Internet Archive API is bypassed completely).
+ * Search returns catalog metadata. Playback resolves the exact selected YouTube video
+ * through YouTubeMusicApiService.resolveAudio when the other sources have no match.
  */
 object AudioRoutingService {
 
@@ -50,7 +53,7 @@ object AudioRoutingService {
                 if (losslessTracks.isNotEmpty()) {
                     return@withContext RoutedSearchResult(tracks = losslessTracks, isLossless = true)
                 }
-            } catch (_: Exception) {
+            } catch (e: CancellationException) { throw e } catch (_: Exception) {
                 // Tier 1 timeout or failure -> Fallback to Tier 2
             }
 
@@ -60,7 +63,7 @@ object AudioRoutingService {
                 if (jioTracks.isNotEmpty()) {
                     return@withContext RoutedSearchResult(tracks = jioTracks, isLossless = false)
                 }
-            } catch (_: Exception) {
+            } catch (e: CancellationException) { throw e } catch (_: Exception) {
                 // Tier 2 failure -> Fallback to Tier 3
             }
 
@@ -70,7 +73,7 @@ object AudioRoutingService {
                 if (ytTracks.isNotEmpty()) {
                     return@withContext RoutedSearchResult(tracks = ytTracks, isLossless = false)
                 }
-            } catch (_: Exception) {
+            } catch (e: CancellationException) { throw e } catch (_: Exception) {
                 // Exhausted all tiers
             }
 
@@ -87,7 +90,7 @@ object AudioRoutingService {
                 if (jioTracks.isNotEmpty()) {
                     return@withContext RoutedSearchResult(tracks = jioTracks, isLossless = false)
                 }
-            } catch (_: Exception) {
+            } catch (e: CancellationException) { throw e } catch (_: Exception) {
                 // Tier 1 failure -> Fallback to Tier 2
             }
 
@@ -95,7 +98,7 @@ object AudioRoutingService {
             try {
                 val ytTracks = YouTubeMusicApiService.searchSongs(query, limit = limit)
                 return@withContext RoutedSearchResult(tracks = ytTracks, isLossless = false)
-            } catch (_: Exception) {
+            } catch (e: CancellationException) { throw e } catch (_: Exception) {
                 RoutedSearchResult(tracks = emptyList(), isLossless = false)
             }
         }

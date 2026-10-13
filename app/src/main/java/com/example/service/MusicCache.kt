@@ -4,6 +4,12 @@ import android.content.Context
 import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.ResolvingDataSource
+import com.example.data.remote.YouTubeAudioStreamService
+import com.example.data.local.AudioQualityPreferences
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.Dispatchers
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
@@ -28,7 +34,7 @@ object MusicCache {
         }
     }
 
-    fun createCacheDataSourceFactory(context: Context): CacheDataSource.Factory {
+    fun createCacheDataSourceFactory(context: Context): DataSource.Factory {
         val cache = getSimpleCache(context)
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
             .setAllowCrossProtocolRedirects(true)
@@ -37,10 +43,25 @@ object MusicCache {
 
         val upstreamFactory = DefaultDataSource.Factory(context, httpDataSourceFactory)
 
-        return CacheDataSource.Factory()
+        val cached = CacheDataSource.Factory()
             .setCache(cache)
             .setUpstreamDataSourceFactory(upstreamFactory)
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+        // Media3 calls this on its loader thread. Refresh signed video URLs at load time,
+        // including restored queues, without holding the UI thread or storing stale URLs.
+        return ResolvingDataSource.Factory(cached) { spec ->
+            if (spec.uri.scheme == "xtreme-youtube") {
+                val videoId = spec.uri.pathSegments.firstOrNull().orEmpty()
+                val hls = spec.uri.lastPathSegment?.endsWith(".m3u8") == true
+                val audio = runBlocking(Dispatchers.IO) {
+                    YouTubeAudioStreamService.resolve(videoId, AudioQualityPreferences.getSelectedQuality(context), hlsOnly = hls)
+                }
+                spec.buildUpon().setUri(audio.url).setKey(if (hls) spec.key else audio.cacheKey)
+                    .setHttpRequestHeaders(spec.httpRequestHeaders + YouTubeAudioStreamService.playbackHeaders).build()
+            } else if (spec.uri.host?.endsWith(".googlevideo.com") == true) {
+                spec.buildUpon().setHttpRequestHeaders(spec.httpRequestHeaders + YouTubeAudioStreamService.playbackHeaders).build()
+            } else spec
+        }
     }
 
     @Synchronized
