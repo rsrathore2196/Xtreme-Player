@@ -2,6 +2,7 @@ package com.example.ui.components
 
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.withFrameMillis
 import androidx.lifecycle.Lifecycle
@@ -61,6 +62,9 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ShaderBrush
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.drawscope.ContentDrawScope
 import androidx.compose.ui.graphics.drawscope.clipRect
@@ -90,6 +94,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlin.math.roundToInt
+import kotlin.math.PI
+import kotlin.math.sin
 
 /**
  * Word metadata pre-mapped to character index ranges inside line.text.
@@ -354,13 +360,13 @@ fun SyncedLyricsView(
 
                     val animatedAlpha by animateFloatAsState(
                         targetValue = targetAlpha,
-                        animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing),
+                        animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing),
                         label = "lyric_alpha_$index"
                     )
 
                     val animatedScale by animateFloatAsState(
                         targetValue = if (isActive) 1.03f else 0.98f,
-                        animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing),
+                        animationSpec = spring(dampingRatio = 0.95f, stiffness = 360f),
                         label = "lyric_scale_$index"
                     )
 
@@ -412,6 +418,7 @@ fun SyncedLyricsView(
                             trackArtist = lyrics.artist,
                             activeTextColor = activeTextColor,
                             inactiveTextColor = inactiveTextColor,
+                            glowColor = lerp(activeTextColor, accentColor.takeIf { it.alpha > 0f } ?: activeTextColor, 0.25f),
                             currentPositionProvider = {
                                 currentPlayheadMs
                             }
@@ -441,6 +448,7 @@ private fun KaraokeLineItem(
     trackArtist: String?,
     activeTextColor: Color,
     inactiveTextColor: Color,
+    glowColor: Color,
     currentPositionProvider: () -> Long
 ) {
     // Keep line wrapping and row height fixed as activity changes. Emphasis is a
@@ -448,6 +456,11 @@ private fun KaraokeLineItem(
     val fontSize = 28.sp
     val fontWeight = FontWeight.ExtraBold
     val lineHeight = 40.sp
+    val glowFocus = animateFloatAsState(
+        targetValue = if (isActive) 1f else 0f,
+        animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing),
+        label = "lyric_glow_focus"
+    )
 
     if (!isSynced) {
         Text(
@@ -498,11 +511,13 @@ private fun KaraokeLineItem(
                         layout.getParagraphDirection(layout.getLineStart(index)) == ResolvedTextDirection.Rtl)
                 }
             val completed = Path()
-            val feather = 5.dp.toPx()
-            val glowRadius = 7.dp.toPx()
+            val feather = 8.dp.toPx()
+            val revealPaint = RevealPaint(activeTextColor, glowColor, 12.dp.toPx(), 4.dp.toPx())
             onDrawWithContent {
                 drawContent()
-                if (!isActive || layout == null) return@onDrawWithContent
+                // Read focus only while drawing, so the outgoing line's halo fades without relaying out text.
+                val focus = glowFocus.value
+                if ((!isActive && focus <= 0f) || layout == null) return@onDrawWithContent
                 val position = latestPosition()
                 if (position < line.timestampMs) return@onDrawWithContent
                 completed.reset()
@@ -513,14 +528,14 @@ private fun KaraokeLineItem(
                         ?: nextLine?.timestampMs?.takeIf { it > line.timestampMs }
                         ?: line.endTimeMs.takeIf { it > line.timestampMs } ?: (line.timestampMs + 3_000)
                     val progress = ((position - line.timestampMs).toFloat() / (end - line.timestampMs).coerceAtLeast(1)).coerceIn(0f, 1f)
-                    drawReveal(layout, fallbackRows, progress, activeTextColor, feather, glowRadius, completed, glow = 0.22f)
+                    drawReveal(layout, fallbackRows, progress, activeTextColor, feather, completed, revealPaint,
+                        glow = vocalGlow(position, line.timestampMs, end) * focus)
                 } else {
                     for (unit in units) {
                         if (position < unit.start) continue
                         val progress = ((position - unit.start).toFloat() / (unit.end - unit.start).coerceAtLeast(1)).coerceIn(0f, 1f)
-                        val glow = if (position <= unit.end) 0.32f else
-                            (1f - (position - unit.end) / 180f).coerceIn(0f, 1f) * 0.32f
-                        drawReveal(layout, unit.regions, progress, activeTextColor, feather, glowRadius, completed, glow)
+                        val glow = vocalGlow(position, unit.start, unit.end) * focus
+                        drawReveal(layout, unit.regions, progress, activeTextColor, feather, completed, revealPaint, glow)
                     }
                 }
                 // Completed syllables are one draw, regardless of how many words were sung.
@@ -532,6 +547,40 @@ private fun KaraokeLineItem(
 
 private data class RevealRegion(val bounds: Rect, val rtl: Boolean)
 private data class RevealUnit(val start: Long, val end: Long, val regions: List<RevealRegion>)
+
+/** Animate illumination only: the reveal edge still follows the provider's exact vocal clock. */
+private fun vocalGlow(position: Long, start: Long, end: Long): Float {
+    if (position < start) return 0f
+    fun smooth(value: Float): Float {
+        val amount = value.coerceIn(0f, 1f)
+        return amount * amount * (3f - 2f * amount)
+    }
+    if (position >= end) return 0.82f * (1f - smooth((position - end) / 260f))
+    val duration = (end - start).coerceAtLeast(1L)
+    val progress = (position - start).toFloat() / duration
+    val attack = smooth((position - start) / minOf(80f, duration * 0.25f).coerceAtLeast(1f))
+    return attack * (0.82f + 0.18f * sin(PI * progress).toFloat())
+}
+
+/** Native feather shaders and both halo sizes are reused across display frames. */
+private class RevealPaint(color: Color, glowColor: Color, broadRadius: Float, coreRadius: Float) {
+    private val forward = android.graphics.LinearGradient(-1f, 0f, 1f, 0f,
+        intArrayOf(color.toArgb(), android.graphics.Color.TRANSPARENT), null, android.graphics.Shader.TileMode.CLAMP)
+    private val reverse = android.graphics.LinearGradient(-1f, 0f, 1f, 0f,
+        intArrayOf(android.graphics.Color.TRANSPARENT, color.toArgb()), null, android.graphics.Shader.TileMode.CLAMP)
+    private val forwardBrush = ShaderBrush(forward)
+    private val reverseBrush = ShaderBrush(reverse)
+    private val matrix = android.graphics.Matrix()
+    val broad = Array(65) { Shadow(glowColor.copy(alpha = it / 64f * 0.42f), Offset.Zero, broadRadius) }
+    val core = Array(65) { Shadow(glowColor.copy(alpha = it / 64f * 0.64f), Offset.Zero, coreRadius) }
+
+    fun feather(edge: Float, width: Float, rtl: Boolean): Brush {
+        matrix.setScale(width, 1f)
+        matrix.postTranslate(edge, 0f)
+        (if (rtl) reverse else forward).setLocalMatrix(matrix)
+        return if (rtl) reverseBrush else forwardBrush
+    }
+}
 
 private fun buildRevealUnits(layout: TextLayoutResult, words: List<MeasuredWord>): List<RevealUnit> {
     fun regions(start: Int, end: Int): List<RevealRegion> {
@@ -574,7 +623,7 @@ private fun buildRevealUnits(layout: TextLayoutResult, words: List<MeasuredWord>
 
 private fun ContentDrawScope.drawReveal(
     layout: TextLayoutResult, regions: List<RevealRegion>, progress: Float, color: Color,
-    feather: Float, glowRadius: Float, completed: Path, glow: Float
+    feather: Float, completed: Path, paint: RevealPaint, glow: Float
 ) {
     if (progress <= 0f) return
     var remaining = regions.sumOf { it.bounds.width.toDouble() }.toFloat() * progress
@@ -589,16 +638,22 @@ private fun ContentDrawScope.drawReveal(
             else Rect(bounds.left, bounds.top, edge - softWidth, bounds.bottom)
         if (solid.width > 0f) completed.addRect(solid)
         if (glow > 0f || !complete) {
-            val brush = if (complete || softWidth <= 0f) Brush.linearGradient(listOf(color, color)) else {
-                val colors = if (region.rtl) listOf(Color.Transparent, color) else listOf(color, Color.Transparent)
-                Brush.linearGradient(colors, Offset(edge - softWidth, 0f), Offset(edge + softWidth, 0f))
-            }
+            val brush = if (complete || softWidth <= 0f) null else paint.feather(edge, softWidth, region.rtl)
             // The shadow must not illuminate letters ahead of the vocal reveal.
             val clipLeft = if (region.rtl && !complete) maxOf(bounds.left, edge - softWidth) else bounds.left
             val clipRight = if (!region.rtl && !complete) minOf(bounds.right, edge + softWidth) else bounds.right
             clipRect(clipLeft, bounds.top, clipRight, bounds.bottom) {
-                drawText(layout, brush = brush,
-                    shadow = if (glow > 0f) Shadow(color.copy(alpha = glow), Offset.Zero, glowRadius) else null)
+                val glowIndex = (glow.coerceIn(0f, 1f) * 64).roundToInt()
+                if (glowIndex > 0) {
+                    if (brush == null) {
+                        drawText(layout, color = color, shadow = paint.broad[glowIndex])
+                        drawText(layout, color = color, shadow = paint.core[glowIndex])
+                    } else {
+                        drawText(layout, brush = brush, shadow = paint.broad[glowIndex])
+                        drawText(layout, brush = brush, shadow = paint.core[glowIndex])
+                    }
+                } else if (brush == null) drawText(layout, color = color)
+                else drawText(layout, brush = brush)
             }
         }
         remaining -= bounds.width
