@@ -375,10 +375,19 @@ class PlaybackManager(
                 }
                 recoveryJob?.cancel()
                 val failedUrl = player.currentMediaItem?.localConfiguration?.uri?.toString() ?: current.audioUrl
+                val transientFailure = error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
+                    error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ||
+                    (error.cause as? androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException)
+                        ?.responseCode?.let { it in 500..599 } == true
                 _uiState.update { it.copy(isLoading = true, errorMessage = null) }
                 recoveryJob = scope.launch {
                     try {
-                        val resolved = withContext(Dispatchers.IO) {
+                        // CDN URLs can stay identical after a temporary connection/server failure.
+                        // The existing guard allows just one retry per selection, never a loop.
+                        val resolved = if (transientFailure) {
+                            delay(300L)
+                            current
+                        } else withContext(Dispatchers.IO) {
                             repo.resolvePlayableTrack(current, forceRefresh = true, failedUrl = failedUrl)
                         }
                         if (!recoveryGuard.isCurrent(current.id, token) ||
@@ -387,7 +396,7 @@ class PlaybackManager(
                         val position = player.currentPosition.coerceAtLeast(0L)
                         val resume = player.playWhenReady
                         val replacement = resolved.toMediaItem()
-                        if (replacement.localConfiguration?.uri?.toString() == failedUrl) {
+                        if (!transientFailure && replacement.localConfiguration?.uri?.toString() == failedUrl) {
                             throw TrackUnavailableException(current.title)
                         }
                         if (index in activeQueue.indices) activeQueue[index] = resolved
@@ -1174,14 +1183,15 @@ class PlaybackManager(
 
             val currentTrack = _uiState.value.currentTrack ?: return
             if (currentTrack.audioUrl.contains("saavncdn.com")) {
+                val availableBitrate = currentTrack.saavnBitrateFor(quality)
                 val updatedUrl = com.example.data.remote.OnlineMusicApiService.formatUrlForQuality(
                     currentTrack.audioUrl,
-                    quality.id
+                    availableBitrate.toString()
                 )
                 val updatedTrack = currentTrack.copy(
                     audioUrl = updatedUrl,
-                    bitrateKbps = quality.kbps,
-                    qualityBadge = quality.badge
+                    // Keep the catalog's supported maximum when changing the playback preference.
+                    qualityBadge = if (availableBitrate < 96) "$availableBitrate kbps" else AudioQuality.fromId(availableBitrate.toString()).badge
                 )
                 val currentPos = player.currentPosition
                 val wasPlaying = player.isPlaying
@@ -1195,7 +1205,7 @@ class PlaybackManager(
                 _uiState.update {
                     it.copy(
                         currentTrack = updatedTrack,
-                        qualityBadge = quality.badge
+                        qualityBadge = updatedTrack.qualityBadge
                     )
                 }
                 Log.i(TAG, "Audio quality changed to: ${quality.id} (${quality.badge})")
@@ -1241,15 +1251,24 @@ class PlaybackManager(
         }
     }
 
+    private fun MusicTrack.saavnBitrateFor(quality: AudioQuality): Int {
+        val supported = bitrateKbps.takeIf { it in 1..320 } ?: 320
+        val requested = minOf(quality.kbps, supported, 320)
+        return when { requested >= 320 -> 320; requested >= 160 -> 160; requested >= 96 -> 96; else -> 48 }
+    }
+
     private fun MusicTrack.toMediaItem(): MediaItem {
         val targetQuality = _uiState.value.selectedQuality
+        val availableBitrate = saavnBitrateFor(targetQuality)
         val effectiveUrl = if (audioUrl.contains("saavncdn.com")) {
-            com.example.data.remote.OnlineMusicApiService.formatUrlForQuality(audioUrl, targetQuality.id)
+            com.example.data.remote.OnlineMusicApiService.formatUrlForQuality(audioUrl, availableBitrate.toString())
         } else {
             audioUrl
         }
-        val effectiveBitrate = if (audioUrl.contains("saavncdn.com")) targetQuality.kbps else bitrateKbps
-        val rawBadge = targetQuality.badge
+        val effectiveBitrate = if (audioUrl.contains("saavncdn.com")) availableBitrate else bitrateKbps
+        val rawBadge = if (audioUrl.contains("saavncdn.com")) {
+            if (availableBitrate < 96) "$availableBitrate kbps" else AudioQuality.fromId(availableBitrate.toString()).badge
+        } else targetQuality.badge
         val effectiveBadge = rawBadge
             .replace("YouTube Music", "HQ Stream", ignoreCase = true)
             .replace("YouTube", "HQ Stream", ignoreCase = true)

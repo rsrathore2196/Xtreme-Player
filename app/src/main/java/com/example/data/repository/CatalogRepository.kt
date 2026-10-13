@@ -29,7 +29,7 @@ class CatalogRepository {
             try {
                 val body = client.catalogGet(url)
                 val json = JSONObject(body)
-                if (json.has("error")) throw IOException("Catalog unavailable")
+                if (json.opt("error")?.let { it != JSONObject.NULL && it != false && it != "" && it != 0 } == true) throw IOException("Catalog unavailable")
                 synchronized(cache) { cache.put(url, System.currentTimeMillis() to body) }
                 json
             } catch (e: CancellationException) { throw e }
@@ -66,17 +66,10 @@ class CatalogRepository {
     }
     private fun track(o: JSONObject): MusicTrack? {
         if (text(o, "type") != "song" || text(o, "id").isBlank()) return null
-        val info = o.optJSONObject("more_info") ?: return null
         val artists = credits(o)
-        val title = text(o, "title")
-        if (title.isBlank() || artists.isEmpty()) return null
-        val stream = text(info, "encrypted_media_url").takeIf(String::isNotBlank)?.let { OnlineMusicApiService.decryptMediaUrl(it) }
-            ?.takeIf { it.startsWith("https://") || it.startsWith("http://") } ?: return null
-        return MusicTrack(id = "online_${text(o, "id")}", title = title, artist = artists.joinToString(", ") { it.name },
-            album = text(info, "album"), durationMs = info.optLong("duration") * 1000,
-            coverUrl = image(o), audioUrl = stream, singers = artists.joinToString(", ") { it.name },
-            language = text(o, "language").ifBlank { "Unknown" }, genre = text(info, "genre").ifBlank { "Unknown" },
-            year = text(o, "year"), isrc = text(info, "isrc"))
+        if (artists.isEmpty()) return null
+        return OnlineMusicApiService.parseSong(o, allowMissingStream = true)?.copy(
+            artist = artists.joinToString(", ") { it.name }, singers = artists.joinToString(", ") { it.name })
     }
     fun uniqueTracks(tracks: List<MusicTrack>): List<MusicTrack> {
         val ids = mutableSetOf<String>()
@@ -128,12 +121,19 @@ class CatalogRepository {
     suspend fun artistSongs(selected: CatalogArtist, page: Int): CatalogPage = withContext(Dispatchers.Default) {
         val root = request("artist.getArtistMoreSong", "artistId" to selected.id, "page" to page.toString(),
             "category" to "popularity", "sort_order" to "desc", "n" to "10", "song_count" to "10")
-        if (text(root, "artistId").ifBlank { text(root, "id") } != selected.id) throw IOException("Artist identity mismatch")
-        val songs = root.optJSONObject("topSongs") ?: throw IOException("Missing artist songs")
-        val raw = songs.optJSONArray("songs").objects()
+        val responseArtist = text(root, "artistId").ifBlank { text(root, "id") }
+        // This paginated endpoint does not always echo the artist ID. Every song still has
+        // to credit the exact requested catalog ID; a missing echo is not a mismatch.
+        if (responseArtist.isNotBlank() && responseArtist != selected.id) throw IOException("Artist identity mismatch")
+        val songs = root.optJSONObject("topSongs")
+        val entries = songs?.optJSONArray("songs") ?: root.optJSONArray("topSongs")
+            ?: root.optJSONArray("songs") ?: root.optJSONArray("results") ?: throw IOException("Missing artist songs")
+        val raw = entries.objects()
         val tracks = raw.filter { item -> credits(item).any { it.id == selected.id } }
             .mapNotNull(::track).filterNot { unofficial.containsMatchIn(it.title) || Regex("(?i)\\bcover\\b").containsMatchIn(it.title) }
-        CatalogPage(tracks = uniqueTracks(tracks), nextPage = if (raw.isNotEmpty() && (page + 1) * raw.size < songs.optInt("total", Int.MAX_VALUE)) page + 1 else null)
+        val total = songs?.optInt("total", -1)?.takeIf { it >= 0 } ?: root.optInt("total", -1)
+        val more = raw.isNotEmpty() && (if (total >= 0) (page + 1) * 10 < total else raw.size >= 10)
+        CatalogPage(tracks = uniqueTracks(tracks), nextPage = if (more) page + 1 else null)
     }
     suspend fun albumSongs(selected: CatalogAlbum): CatalogPage = withContext(Dispatchers.Default) {
         val root = request("content.getAlbumDetails", "albumid" to selected.id)

@@ -200,6 +200,7 @@ fun ExpandedPlayerScreen(
     val appColors = LocalAppColors.current
 
     val itunesRepo = remember { iTunesArtworkRepository.getInstance(context) }
+    val artworkLoader = remember(context) { context.imageLoader }
     val initialRawCoverUrl = remember(track.coverUrl) {
         val raw = track.coverUrl
         when {
@@ -214,28 +215,49 @@ fun ExpandedPlayerScreen(
         }
     }
 
-    val memoryItunesUrl = remember(track.id) {
+    val memoryItunesUrl = remember(track.id, track.coverUrl) {
         itunesRepo.getMemoryCachedUrl(track.toMediaItem(), ArtworkDimensions.EXPANDED_PLAYER)
+            ?.takeUnless { it == track.coverUrl }
     }
 
-    var highResCoverUrl by remember(track.id) {
+    var highResCoverUrl by remember(track.id, track.coverUrl) {
         mutableStateOf(memoryItunesUrl ?: initialRawCoverUrl)
     }
 
-    LaunchedEffect(track.id) {
+    LaunchedEffect(track.id, track.coverUrl, isScreenVisible) {
+        if (!isScreenVisible) return@LaunchedEffect
         if (memoryItunesUrl == null) {
             val resolved = withContext(Dispatchers.IO) {
                 itunesRepo.resolveArtwork(track.toMediaItem(), ArtworkDimensions.EXPANDED_PLAYER)
             }
-            if (resolved.isNotBlank() && resolved != highResCoverUrl) {
-                highResCoverUrl = resolved
+            if (resolved.isNotBlank() && resolved != track.coverUrl && resolved != highResCoverUrl) {
+                // Finish decoding the upgrade before switching URLs. A metadata lookup must
+                // not cancel the source artwork download and leave the player blank again.
+                val result = artworkLoader.execute(ImageRequest.Builder(context).data(resolved)
+                    .size(coil.size.Size.ORIGINAL).scale(coil.size.Scale.FILL).allowHardware(true).build())
+                if (result is SuccessResult) highResCoverUrl = resolved
             }
         }
     }
 
-    val highResImageRequest = remember(highResCoverUrl) {
+    val cachedArtworkKey = remember(track.id, track.coverUrl, highResCoverUrl, memoryItunesUrl) {
+        val urls = mutableSetOf(track.coverUrl, initialRawCoverUrl, highResCoverUrl)
+        memoryItunesUrl?.let { url ->
+            listOf(200, 600, 1200).forEach { size ->
+                urls.add(url.replace(Regex("\\d+x\\d+bb"), "${size}x${size}bb"))
+            }
+        }
+        val cache = artworkLoader.memoryCache
+        // Reuse a decoded Home/mini-player image immediately; still load the final image
+        // at ORIGINAL size. This runs only on artwork changes, never on playback frames.
+        cache?.keys?.asSequence()?.filter { it.key in urls }
+            ?.mapNotNull { key -> cache[key]?.bitmap?.let { key to it.width.toLong() * it.height } }
+            ?.maxByOrNull { it.second }?.first
+    }
+    val highResImageRequest = remember(highResCoverUrl, cachedArtworkKey, track.id, track.coverUrl) {
         ImageRequest.Builder(context)
             .data(highResCoverUrl)
+            .placeholderMemoryCacheKey(cachedArtworkKey)
             .size(coil.size.Size.ORIGINAL) // Full High Quality album art without downscaling
             .scale(coil.size.Scale.FILL)
             .crossfade(true)
@@ -244,6 +266,12 @@ fun ExpandedPlayerScreen(
             .memoryCachePolicy(coil.request.CachePolicy.ENABLED)
             .diskCachePolicy(coil.request.CachePolicy.ENABLED)
             .networkCachePolicy(coil.request.CachePolicy.ENABLED)
+            .listener(onError = { request, _ ->
+                if (highResCoverUrl == request.data.toString() && highResCoverUrl != track.coverUrl && track.coverUrl.isNotBlank()) {
+                    // Some videos do not publish maxresdefault; use their genuine source art.
+                    highResCoverUrl = track.coverUrl
+                }
+            })
             .build()
     }
 

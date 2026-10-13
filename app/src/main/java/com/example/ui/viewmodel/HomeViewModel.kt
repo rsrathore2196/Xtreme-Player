@@ -116,9 +116,22 @@ class HomeViewModel(
             ids.chunked(900).flatMap { database.musicDao().getTracksByIds(it) }.map { it.toMusicTrack() }
         }
     }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
+    private data class TasteInputs(val events: List<ListeningEventEntity>, val tracks: List<MusicTrack>,
+        val favorites: List<MusicTrack>, val preferences: UserProfile)
+    private var lastTasteInputs: TasteInputs? = null
+    private var retainedTaste = UserTasteProfile.COLD_START_PROFILE
     private val tasteProfile = combine(actualPlays, historyMetadata, favoriteTracks, _userProfile) { events, tracks, favorites, preferences ->
-        val taste = UserTasteProfile.fromEvents(events, tracks, favorites)
-        taste.copy(languageAffinities = preferences.languages.associate { HomeRecommendationPolicy.normalize(it) to 0.35f } + taste.languageAffinities)
+        val inputs = TasteInputs(events, tracks, favorites, preferences)
+        // Restarting a screen subscription is not a new listening signal. Keep the same decay
+        // snapshot until real data changes, rather than reshuffling on every tab return.
+        if (inputs != lastTasteInputs) {
+            val taste = UserTasteProfile.fromEvents(events, tracks, favorites)
+            retainedTaste = taste.copy(languageAffinities = preferences.languages.associate {
+                HomeRecommendationPolicy.normalize(it) to 0.35f
+            } + taste.languageAffinities)
+            lastTasteInputs = inputs
+        }
+        retainedTaste
     }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UserTasteProfile.COLD_START_PROFILE)
     val recentlyPlayed: StateFlow<List<MusicTrack>> = combine(actualPlays, historyMetadata, tasteProfile) { events, metadata, taste ->
         if (taste.isColdStart) emptyList() else {
@@ -207,8 +220,15 @@ class HomeViewModel(
     private val renderMutex = Mutex()
     private var renderedGeneration = -1L
     private var previousExposure: Set<String> = emptySet()
+    private data class RenderInputs(val pool: Candidates, val taste: UserTasteProfile,
+        val profile: UserProfile, val catalog: List<MusicTrack>, val history: List<MusicTrack>,
+        val favorites: List<MusicTrack>, val recent: List<MusicTrack>)
+    private var lastRenderInputs: RenderInputs? = null
 
     private suspend fun renderRecommendations(pool: Candidates, taste: UserTasteProfile) = renderMutex.withLock {
+        val inputs = RenderInputs(pool, taste, _userProfile.value, _catalogTracks.value,
+            historyMetadata.value, favoriteTracks.value, recentlyPlayed.value)
+        if (inputs == lastRenderInputs) return@withLock
         val catalog = HomeRecommendationPolicy.originals(_catalogTracks.value + pool.quick + pool.era + pool.chart + historyMetadata.value + favoriteTracks.value)
         if (pool.generation != renderedGeneration) {
             previousExposure = exposurePreferences.getStringSet("recordings_v2", emptySet()).orEmpty().toSet()
@@ -249,7 +269,8 @@ class HomeViewModel(
         }.map { it.tracks }
         // Round robin prevents the first shelf from monopolizing the entire card.
         val personalized = HomeRecommendationPolicy.diversify(fresh(HomeRecommendationPolicy.interleave(personalizedGroups)), 15, seen)
-        val quickRanked = personalizedEngine.scoreAndRankCandidates(pool.quick, taste, limit = pool.quick.size)
+        val quickRanked = personalizedEngine.scoreAndRankCandidates(pool.quick, taste,
+            limit = pool.quick.size, variationSeed = pool.generation)
         val quick = HomeRecommendationPolicy.diversify(fresh(quickRanked), 15, seen)
         // Reranking must retain error/loading updates arriving from the refresh requests.
         _countryLanguageCard.update { it.copy(tracks = chart) }
@@ -264,6 +285,7 @@ class HomeViewModel(
         val shown = chart + era + quick + personalized + artists.flatMap { it.tracks }
         if (shown.isNotEmpty()) exposurePreferences.edit().putStringSet("recordings_v2",
             shown.map(HomeRecommendationPolicy::metadataKey).toSet()).apply()
+        lastRenderInputs = inputs
     }
 
     // Smooth Pull-to-Refresh & Background Sync State
@@ -281,6 +303,7 @@ class HomeViewModel(
     private var regionalTrendingJob: Job? = null
 
     fun loadRegionalTrending(country: String, countryCode: String = "IN", forceRefresh: Boolean = false) {
+        pendingRegionalRefresh = false
         regionalTrendingJob?.cancel()
         val item = CountryData.findCountry(countryCode) ?: CountryData.findCountry(country)
         val name = item?.name ?: country.ifBlank { "India" }
@@ -321,16 +344,20 @@ class HomeViewModel(
     private var refreshGeneration = 0L
     private var lastDiscoveryRefresh = 0L
     private var pendingSilentRefresh = false
+    private var pendingRegionalRefresh = false
+    private var refreshCandidatesPending = false
     private var lastDiscoverySignal: Pair<Set<String>, Set<String>>? = null
 
     fun setHomeVisible(visible: Boolean) {
         if (homeVisible.value == visible) return
         homeVisible.value = visible
         if (!visible) {
-            if (homeRefreshJob?.isActive == true || regionalTrendingJob?.isActive == true) {
+            // Waiting for the separate chart job must not invalidate already loaded Quick Picks.
+            if (homeRefreshJob?.isActive == true && (refreshCandidatesPending || activeRefreshIsExplicit)) {
                 pendingSilentRefresh = true
                 if (activeRefreshIsExplicit) pendingExplicitRefresh = true
             }
+            if (regionalTrendingJob?.isActive == true) pendingRegionalRefresh = true
             homeRefreshJob?.cancel()
             regionalTrendingJob?.cancel()
             homeRefreshJob = null
@@ -384,6 +411,11 @@ class HomeViewModel(
                         combine(tasteProfile, favoriteTracks) { taste, favorites ->
                             taste.topRecentTrackIds.toSet() to favorites.map { it.id }.toSet()
                         }.distinctUntilChanged().debounce(2_000).collectLatest { signal ->
+                            if (lastDiscoverySignal == null) {
+                                // The initial request already reads listening history and likes.
+                                lastDiscoverySignal = signal
+                                return@collectLatest
+                            }
                             if (signal != lastDiscoverySignal && (signal.first.isNotEmpty() || signal.second.isNotEmpty())) {
                                 delay((60_000 - (System.currentTimeMillis() - lastDiscoveryRefresh)).coerceAtLeast(0))
                                 lastDiscoverySignal = signal
@@ -393,6 +425,9 @@ class HomeViewModel(
                     }
                     if (pendingSilentRefresh || lastDiscoveryRefresh == 0L || System.currentTimeMillis() - lastDiscoveryRefresh >= 10 * 60_000L) {
                         refreshHome(false)
+                    } else if (pendingRegionalRefresh) {
+                        val profile = _userProfile.value
+                        loadRegionalTrending(resolveCountryDisplayName(profile), profile.countryCode)
                     }
                     awaitCancellation()
                 }
@@ -425,6 +460,7 @@ class HomeViewModel(
                 try {
                     while (true) {
                         activeRefreshIsExplicit = explicit
+                        refreshCandidatesPending = true
                         _isRefreshing.value = explicit
                         _refreshErrorMessage.value = null
                         _ytmCard.update { it.copy(isLoading = it.tracks.isEmpty(), isError = false, errorMessage = "") }
@@ -488,6 +524,7 @@ class HomeViewModel(
             playbackManager.setCandidatePool(catalog)
         }
         lastDiscoveryRefresh = System.currentTimeMillis()
+        refreshCandidatesPending = false
         chartRequest?.join()
     }
 

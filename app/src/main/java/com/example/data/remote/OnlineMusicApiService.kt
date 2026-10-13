@@ -14,6 +14,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.json.JSONObject
 import java.net.URLEncoder
 import java.util.concurrent.ConcurrentHashMap
@@ -48,7 +49,7 @@ object OnlineMusicApiService {
         return cachedDESKey!!
     }
 
-    private val memoryQueryCache = object : android.util.LruCache<String, List<MusicTrack>>(60) {}
+    private val memoryQueryCache = object : android.util.LruCache<String, Pair<Long, List<MusicTrack>>>(60) {}
 
     private val httpClientDelegate = lazy {
         val cache = context?.let { ctx ->
@@ -127,19 +128,20 @@ object OnlineMusicApiService {
      * Formats an audio stream URL to the requested bitrate quality (lossless/320, 160, 96).
      */
     fun formatUrlForQuality(rawUrl: String, quality: String): String {
+        if (quality == "original" || !Regex("(?i)^https?://(?:[a-z0-9-]+\\.)*saavncdn\\.com(?:/|:)").containsMatchIn(rawUrl)) return rawUrl
         val q = when (quality.lowercase().trim()) {
             "lossless", "hires", "flac" -> "320" // Highest available studio master bit-stream
             "320", "ultrahd" -> "320"
             "160", "high" -> "160"
             "96", "medium", "standard", "datasaver" -> "96"
+            "48" -> "48"
             else -> "320"
         }
-        val targetSuffix = "_$q.mp4"
-        return rawUrl.replace("_320.mp4", targetSuffix)
-            .replace("_160.mp4", targetSuffix)
-            .replace("_96.mp4", targetSuffix)
-            .replace("_48.mp4", targetSuffix)
-            .replace(".m4a", targetSuffix)
+        // Rewrite only a known CDN bitrate suffix, preserving extensions and signed queries.
+        // Appending to arbitrary .m4a paths produced URLs such as song_320_320.mp4.
+        return rawUrl.replace(Regex("_(?:320|160|96|48)\\.(mp4|m4a)(?=$|[?#])")) {
+            "_${q}.${it.groupValues[1]}"
+        }
     }
 
     /**
@@ -152,12 +154,15 @@ object OnlineMusicApiService {
         val cacheKey = "${trimmed.lowercase()}_${page}_$limit"
         synchronized(memoryQueryCache) {
             if (forceRefresh) memoryQueryCache.remove(cacheKey)
-            else memoryQueryCache.get(cacheKey)?.let { return@withContext it }
+            else memoryQueryCache.get(cacheKey)?.let {
+                if (System.currentTimeMillis() - it.first < 300_000L) return@withContext it.second
+                memoryQueryCache.remove(cacheKey)
+            }
         }
 
         try {
             val encodedQuery = URLEncoder.encode(trimmed, "UTF-8")
-            val url = "https://www.jiosaavn.com/api.php?__call=search.getResults&_format=json&_marker=0&cc=in&includeMetaTags=1&p=$page&n=$limit&q=$encodedQuery"
+            val url = "https://www.jiosaavn.com/api.php?__call=search.getResults&_format=json&_marker=0&api_version=4&ctx=web6dot0&cc=in&includeMetaTags=1&p=$page&n=$limit&q=$encodedQuery"
 
             val request = Request.Builder()
                 .url(url)
@@ -167,10 +172,10 @@ object OnlineMusicApiService {
                 .build()
 
             val bodyString = httpClient.catalogRequest(request)
-            val parsed = parseSongsJson(bodyString, fallbackGenre = trimmed.replaceFirstChar { it.uppercase() })
+            val parsed = parseSongsJson(bodyString)
             if (parsed.isNotEmpty()) {
                 synchronized(memoryQueryCache) {
-                    memoryQueryCache.put(cacheKey, parsed)
+                    memoryQueryCache.put(cacheKey, System.currentTimeMillis() to parsed)
                 }
             }
             parsed
@@ -318,104 +323,80 @@ object OnlineMusicApiService {
         com.example.recommendation.AlbumArtDeduplicator.interleaveAndDiversify(queryResults, limit)
     }
 
-    private fun parseSongsJson(jsonString: String, fallbackGenre: String): List<MusicTrack> {
-        val trackList = mutableListOf<MusicTrack>()
-        try {
-            val root = JSONObject(jsonString)
-            val results = root.optJSONArray("results") ?: return emptyList()
-
-            for (i in 0 until results.length()) {
-                val item = results.optJSONObject(i) ?: continue
-
-                val id = item.optString("id")
-                if (id.isBlank()) continue
-
-                val rawTitle = item.optString("song", "")
-                val cleanTitle = cleanHtml(rawTitle)
-                    .replace(Regex("(?i)\\b(?:youtube\\s*music|youtube|jiosaavn|saavn)\\b"), "")
-                    .trim()
-
-                val rawArtist = item.optString("primary_artists", "").ifBlank {
-                    item.optString("singers", "").ifBlank {
-                        item.optString("music", "Unknown Artist")
-                    }
-                }
-                val cleanArtist = cleanHtml(rawArtist)
-                    .replace(Regex("(?i)\\b(?:youtube\\s*music|youtube|jiosaavn|saavn)\\b"), "")
-                    .trim().ifBlank { "Various Artists" }
-
-                val rawAlbum = item.optString("album", "Single")
-                val cleanAlbum = cleanHtml(rawAlbum)
-                    .replace(Regex("(?i)\\b(?:youtube\\s*music|youtube|jiosaavn|saavn)\\b"), "")
-                    .trim().ifBlank { "HD Stream" }
-
-                val rawImage = item.optString("image", "")
-                // High-resolution 500x500 album art
-                val cleanImage = rawImage
-                    .replace("\\/", "/")
-                    .replace("150x150.jpg", "500x500.jpg")
-                    .replace("50x50.jpg", "500x500.jpg")
-
-                val encMediaUrl = item.optString("encrypted_media_url", "")
-                var audioUrl = decryptMediaUrl(encMediaUrl)
-
-                // Fallback to media_preview_url if decryption fails
-                if (audioUrl.isNullOrBlank()) {
-                    val preview = item.optString("media_preview_url", "")
-                    if (preview.isNotBlank()) {
-                        audioUrl = preview.replace("\\/", "/")
-                    }
-                }
-
-                if (audioUrl.isNullOrBlank()) continue
-
-                val rawSingers = item.optString("singers", "").ifBlank { cleanArtist }
-                val cleanSingers = cleanHtml(rawSingers)
-
-                val rawWriter = item.optString("music", "").ifBlank {
-                    item.optString("starring", "").ifBlank { "Original Composer" }
-                }
-                val cleanWriter = cleanHtml(rawWriter)
-
-                val rawLanguage = item.optString("language", "Unknown").replaceFirstChar { it.uppercase() }
-                val rawYear = item.optString("year", "")
-
-                val durationSec = item.optString("duration", "0").toLongOrNull() ?: 0L
-                val durationMs = durationSec * 1000L
-
-                val is320k = item.optString("320kbps", "true").equals("true", ignoreCase = true)
-                val badge = if (is320k) "HD • 320 kbps" else "HQ • Lossless"
-
-                val moreInfo = item.optJSONObject("more_info")
-                val rawIsrc = item.optString("isrc", "").ifBlank {
-                    moreInfo?.optString("isrc", "") ?: ""
-                }.trim()
-
-                trackList.add(
-                    MusicTrack(
-                        id = "online_$id",
-                        title = cleanTitle.ifBlank { "Track $id" },
-                        artist = cleanArtist.ifBlank { "Unknown Artist" },
-                        album = cleanAlbum.ifBlank { "Online Stream" },
-                        durationMs = durationMs,
-                        coverUrl = cleanImage,
-                        audioUrl = audioUrl,
-                        genre = item.optString("genre", "Unknown").ifBlank { "Unknown" },
-                        bitrateKbps = if (is320k) 320 else 160,
-                        qualityBadge = badge,
-                        isLiked = false,
-                        singers = cleanSingers,
-                        writer = cleanWriter,
-                        language = rawLanguage,
-                        year = rawYear,
-                        isrc = rawIsrc
-                    )
-                )
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error parsing JioSaavn JSON: ${e.message}")
+    private fun parseSongsJson(jsonString: String): List<MusicTrack> {
+        val results = JSONObject(jsonString).optJSONArray("results") ?: return emptyList()
+        return (0 until results.length()).mapNotNull { index ->
+            results.optJSONObject(index)?.let { parseSong(it) }
         }
-        return trackList
+    }
+
+    /** Both legacy search and v4 catalog responses describe the same real song IDs. */
+    internal fun parseSong(item: JSONObject, allowMissingStream: Boolean = false): MusicTrack? {
+        fun value(objectValue: JSONObject?, key: String): String = objectValue?.optString(key)
+            ?.takeUnless { it == "null" }?.let(::cleanHtml).orEmpty()
+        val info = item.optJSONObject("more_info")
+        fun field(key: String) = value(info, key).ifBlank { value(item, key) }
+        val id = value(item, "id")
+        val title = value(item, "title").ifBlank { value(item, "song") }
+        if (id.isBlank() || title.isBlank() || value(item, "type").let { it.isNotBlank() && it != "song" }) return null
+
+        val artistMap = info?.optJSONObject("artistMap")
+        fun artistNames(key: String, performersOnly: Boolean = false): List<String> {
+            val entries = artistMap?.optJSONArray(key) ?: return emptyList()
+            return (0 until entries.length()).mapNotNull { index ->
+                val credit = entries.optJSONObject(index) ?: return@mapNotNull null
+                if (performersOnly && value(credit, "role").lowercase() !in
+                    setOf("singer", "vocalist", "primary_artists", "featured_artists")) return@mapNotNull null
+                value(credit, "name").ifBlank { value(credit, "title") }.takeIf(String::isNotBlank)
+            }
+        }
+        val performers = (artistNames("primary_artists") + artistNames("featured_artists") +
+            artistNames("artists", performersOnly = true)).distinct()
+        val artist = performers.joinToString(", ").ifBlank {
+            field("primary_artists").ifBlank { field("singers") }
+        }.ifBlank { "Unknown Artist" }
+        val availability = field("320kbps").lowercase()
+        val requestedBitrate = when (availability) { "true", "1" -> "320"; "false", "0" -> "160"; else -> "original" }
+        val stream = field("encrypted_media_url").takeIf(String::isNotBlank)
+            ?.let { decryptMediaUrl(it, requestedBitrate) }
+            ?.takeIf { it.startsWith("http://") || it.startsWith("https://") }.orEmpty()
+        // Preview clips are not substitutes for full songs. Metadata-only catalog rows can
+        // obtain their full stream later through song.getDetails using this exact ID.
+        if (stream.isBlank() && !allowMissingStream) return null
+        val bitrate = when (availability) {
+            "true", "1" -> 320
+            "false", "0" -> 160
+            else -> Regex("_(320|160|96|48)\\.(?:mp4|m4a)(?=$|[?#])").find(stream)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+        }
+        return MusicTrack(id = "online_$id", title = title, artist = artist,
+            album = field("album").ifBlank { "Unknown" },
+            durationMs = (field("duration").toLongOrNull() ?: 0L).coerceAtLeast(0L) * 1000L,
+            coverUrl = field("image").replace("150x150", "500x500").replace("50x50", "500x500").replaceFirst("http://", "https://"),
+            audioUrl = stream, bitrateKbps = bitrate,
+            qualityBadge = if (bitrate > 0) "HD • $bitrate kbps" else "HQ Stream",
+            singers = field("singers").ifBlank { performers.joinToString(", ") },
+            writer = field("music"), language = field("language").ifBlank { "Unknown" },
+            genre = field("genre").ifBlank { "Unknown" }, year = field("year"), isrc = field("isrc"))
+    }
+
+    suspend fun fetchSongDetails(songId: String, forceRefresh: Boolean = false): MusicTrack? = withContext(Dispatchers.IO) {
+        if (songId.isBlank()) return@withContext null
+        try {
+            val url = "https://www.jiosaavn.com/api.php".toHttpUrl().newBuilder()
+                .addQueryParameter("__call", "song.getDetails").addQueryParameter("pids", songId)
+                .addQueryParameter("api_version", "4").addQueryParameter("ctx", "web6dot0")
+                .addQueryParameter("_format", "json").addQueryParameter("_marker", "0").build()
+            val request = Request.Builder().url(url)
+                .apply { if (forceRefresh) cacheControl(okhttp3.CacheControl.FORCE_NETWORK) }
+                .addHeader("User-Agent", "Mozilla/5.0").build()
+            val root = JSONObject(httpClient.catalogRequest(request))
+            val songs = root.optJSONArray("songs")
+            val exact = root.optJSONObject(songId) ?: (0 until (songs?.length() ?: 0))
+                .mapNotNull { songs?.optJSONObject(it) }.firstOrNull { it.optString("id") == songId }
+                ?: root.takeIf { it.optString("id") == songId }
+            exact?.takeIf { it.optString("id") == songId }?.let { parseSong(it) }
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { Log.w(TAG, "Song details unavailable: ${e.message}"); null }
     }
 
     private fun cleanHtml(raw: String): String {

@@ -79,7 +79,8 @@ class PersonalizedHomeRecommendationEngine(private val listeningEventDao: Listen
     }
 
     fun scoreAndRankCandidates(pool: List<MusicTrack>, tasteProfile: UserTasteProfile,
-        seedTrack: MusicTrack? = null, targetMood: String? = null, limit: Int = 15): List<MusicTrack> {
+        seedTrack: MusicTrack? = null, targetMood: String? = null, limit: Int = 15,
+        variationSeed: Long? = null): List<MusicTrack> {
         val ranked = HomeRecommendationPolicy.originals(pool).map { candidate ->
             val artists = HomeRecommendationPolicy.artists(candidate)
             val genre = HomeRecommendationPolicy.normalize(candidate.genre)
@@ -100,9 +101,11 @@ class PersonalizedHomeRecommendationEngine(private val listeningEventDao: Listen
                 genre.contains(HomeRecommendationPolicy.normalize(targetMood))) 3f else 0f
             val genreMood = HomeRecommendationPolicy.moodForGenre(candidate.genre)
             val moodAffinity = genreMood?.let { tasteProfile.moodAffinities[it] } ?: 0f
+            val variation = if (variationSeed == null) Random.nextFloat() else
+                Random(variationSeed xor key.hashCode().toLong()).nextFloat()
             val score = moodAffinity * 3 + artistScore * 22 + genreScore * 14 + languageScore * 12 + seedMatch + moodMatch +
                 (if (key in tasteProfile.favoriteRecordings) 5 else 0) +
-                (if (!recent) 10 else -18) - minOf(plays, 12) * 3 - minOf(skips, 8) * 12 + Random.nextFloat() * 8
+                (if (!recent) 10 else -18) - minOf(plays, 12) * 3 - minOf(skips, 8) * 12 + variation * 8
             candidate to score
         }.sortedByDescending { it.second }.map { it.first }
         // Reserve regular discovery opportunities, then diversify both artists and albums.

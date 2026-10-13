@@ -11,7 +11,6 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
 import java.util.Locale
-import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.coroutineContext
 import kotlin.math.abs
 
@@ -24,11 +23,15 @@ internal class StreamResolver(
     },
     private val searchLossless: suspend (String) -> List<MusicTrack> = {
         InternetArchiveApiService.searchLosslessTracks(it, maxResults = 3)
+    },
+    private val fetchById: suspend (String, Boolean) -> MusicTrack? = { id, refresh ->
+        OnlineMusicApiService.fetchSongDetails(id, refresh)
     }
 ) {
-    private val cache = ConcurrentHashMap<Pair<String, AudioQuality>, MusicTrack>()
-    val cacheSize: Int get() = cache.size
-    fun clear() = cache.clear()
+    private data class CachedStream(val track: MusicTrack, val expiresAt: Long)
+    private val cache = LinkedHashMap<Pair<String, AudioQuality>, CachedStream>(128, 0.75f, true)
+    val cacheSize: Int get() = synchronized(cache) { cache.size }
+    fun clear() = synchronized(cache) { cache.clear() }
 
     suspend fun resolve(
         track: MusicTrack,
@@ -38,9 +41,14 @@ internal class StreamResolver(
     ): MusicTrack = withContext(Dispatchers.IO) {
         val key = track.id to quality
         if (forceRefresh) {
-            cache.keys.removeAll { it.first == track.id }
+            synchronized(cache) { cache.keys.removeAll { it.first == track.id } }
         } else {
-            cache[key]?.takeIf { it.audioUrl != failedUrl && isValidStreamUrl(it.audioUrl) }?.let {
+            val cached = synchronized(cache) {
+                cache[key]?.let {
+                    if (it.expiresAt > System.currentTimeMillis()) it.track else { cache.remove(key); null }
+                }
+            }
+            cached?.takeIf { it.audioUrl != failedUrl && isValidStreamUrl(it.audioUrl) }?.let {
                 return@withContext withStream(track, it)
             }
             if (isValidStreamUrl(track.audioUrl) && track.audioUrl != failedUrl &&
@@ -54,10 +62,19 @@ internal class StreamResolver(
         val cleanTitle = extractCleanTitle(track.title)
         val cleanArtist = extractCleanArtist(track.artist)
 
+        suspend fun exactRecording(): MusicTrack? {
+            if (!track.id.startsWith("online_")) return null
+            val id = track.id.removePrefix("online_")
+            val exact = try { withTimeoutOrNull(8_000L) { fetchById(id, forceRefresh) } }
+                catch (e: CancellationException) { throw e } catch (_: Exception) { null }
+            return exact?.takeIf { it.id == track.id && isValidStreamUrl(it.audioUrl) &&
+                it.audioUrl != rejectedUrl && it.audioUrl != failedUrl }
+        }
+
         suspend fun find(search: suspend (String) -> List<MusicTrack>, text: String): MusicTrack? {
             if (text.isBlank()) return null
             val candidates = try {
-                withTimeoutOrNull(3500L) {
+                withTimeoutOrNull(8_000L) {
                     search(text)
                 } ?: emptyList()
             } catch (e: CancellationException) {
@@ -85,13 +102,17 @@ internal class StreamResolver(
         val artistFirstQuery = if (cleanArtist.isNotBlank() && cleanTitle.isNotBlank()) "$cleanArtist $cleanTitle".trim() else ""
 
         val candidate = (if (quality == AudioQuality.HI_RES_LOSSLESS) find(searchLossless, primaryQuery) else null)
+            ?: exactRecording()
             ?: find(standard, primaryQuery)
             ?: (if (titleOnlyQuery != primaryQuery && titleOnlyQuery.isNotBlank()) find(standard, titleOnlyQuery) else null)
             ?: (if (artistFirstQuery.isNotBlank() && artistFirstQuery != primaryQuery) find(standard, artistFirstQuery) else null)
             ?: throw TrackUnavailableException(track.title)
 
         coroutineContext.ensureActive()
-        cache[key] = candidate
+        synchronized(cache) {
+            cache[key] = CachedStream(candidate, System.currentTimeMillis() + 300_000L)
+            while (cache.size > 128) cache.remove(cache.keys.first())
+        }
         withStream(track, candidate)
     }
 
