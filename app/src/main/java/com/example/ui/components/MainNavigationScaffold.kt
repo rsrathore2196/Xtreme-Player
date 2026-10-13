@@ -249,11 +249,11 @@ fun MainNavigationScaffold(
                     AnimatedContent(
                         targetState = selectedTabIndex,
                         transitionSpec = {
-                            if (targetState == 3) {
-                                // Zoom in fast snappy transition to open settings tab with kinetic spring
+                            (if (targetState == 3) {
+                                // Keep the existing zoom, with a bounded opening duration.
                                 (scaleIn(
                                     initialScale = 0.88f,
-                                    animationSpec = spring(dampingRatio = 0.80f, stiffness = 850f)
+                                    animationSpec = tween(220, easing = FastOutSlowInEasing)
                                 ) + fadeIn(
                                     animationSpec = tween(140, easing = LinearOutSlowInEasing)
                                 )).togetherWith(
@@ -268,7 +268,7 @@ fun MainNavigationScaffold(
                                 // Modern, fast, and smooth zoom out closing animation to return from settings
                                 (scaleIn(
                                     initialScale = 1.04f,
-                                    animationSpec = spring(dampingRatio = 0.82f, stiffness = 850f)
+                                    animationSpec = tween(220, easing = FastOutSlowInEasing)
                                 ) + fadeIn(
                                     animationSpec = tween(140, easing = LinearOutSlowInEasing)
                                 )).togetherWith(
@@ -283,13 +283,13 @@ fun MainNavigationScaffold(
                                 // Kinetic directional spring slide & scale forward between tabs (120 FPS tuned)
                                 (slideInHorizontally(
                                     initialOffsetX = { (it * 0.12f).toInt() },
-                                    animationSpec = spring(dampingRatio = 0.84f, stiffness = 950f)
+                                    animationSpec = spring(dampingRatio = 0.84f, stiffness = 1800f)
                                 ) + fadeIn(
                                     animationSpec = tween(130, easing = LinearOutSlowInEasing)
                                 )).togetherWith(
                                     slideOutHorizontally(
                                         targetOffsetX = { (-it * 0.12f).toInt() },
-                                        animationSpec = spring(dampingRatio = 0.84f, stiffness = 950f)
+                                        animationSpec = spring(dampingRatio = 0.84f, stiffness = 1800f)
                                     ) + fadeOut(
                                         animationSpec = tween(90, easing = FastOutLinearInEasing)
                                     )
@@ -298,18 +298,18 @@ fun MainNavigationScaffold(
                                 // Kinetic directional spring slide & scale backward between tabs (120 FPS tuned)
                                 (slideInHorizontally(
                                     initialOffsetX = { (-it * 0.12f).toInt() },
-                                    animationSpec = spring(dampingRatio = 0.84f, stiffness = 950f)
+                                    animationSpec = spring(dampingRatio = 0.84f, stiffness = 1800f)
                                 ) + fadeIn(
                                     animationSpec = tween(130, easing = LinearOutSlowInEasing)
                                 )).togetherWith(
                                     slideOutHorizontally(
                                         targetOffsetX = { (it * 0.12f).toInt() },
-                                        animationSpec = spring(dampingRatio = 0.84f, stiffness = 950f)
+                                        animationSpec = spring(dampingRatio = 0.84f, stiffness = 1800f)
                                     ) + fadeOut(
                                         animationSpec = tween(90, easing = FastOutLinearInEasing)
                                     )
                                 )
-                            }
+                            }).using(null)
                         },
                         label = "tab_navigation_transition",
                         modifier = Modifier
@@ -477,18 +477,18 @@ fun MainNavigationScaffold(
             visibleState = playerVisibility,
             enter = slideInVertically(
                 initialOffsetY = { it },
-                animationSpec = LiquidGlass.PushPopIntOffsetSpring
+                animationSpec = tween(280, easing = FastOutSlowInEasing)
             ) + scaleIn(
                 initialScale = 0.92f,
-                animationSpec = LiquidGlass.PushPopSpring
-            ) + fadeIn(animationSpec = tween(190)),
+                animationSpec = tween(280, easing = FastOutSlowInEasing)
+            ) + fadeIn(animationSpec = tween(150, easing = LinearOutSlowInEasing)),
             exit = slideOutVertically(
                 targetOffsetY = { it },
-                animationSpec = LiquidGlass.PushPopIntOffsetSpring
+                animationSpec = tween(220, easing = FastOutSlowInEasing)
             ) + scaleOut(
                 targetScale = 0.92f,
-                animationSpec = LiquidGlass.PushPopSpring
-            ) + fadeOut(animationSpec = tween(140)),
+                animationSpec = tween(220, easing = FastOutSlowInEasing)
+            ) + fadeOut(animationSpec = tween(120, easing = FastOutLinearInEasing)),
             modifier = Modifier.fillMaxSize()
         ) {
             val currentLyrics by viewModel.currentLyrics.collectAsStateWithLifecycle()

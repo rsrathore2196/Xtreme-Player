@@ -85,6 +85,16 @@ class PlaybackManager(
     private var progressTickerJob: Job? = null
     private var recoveryJob: Job? = null
     private val recoveryGuard = PlaybackRecoveryGuard()
+    private var autoplaySuppressedBySleepTimer = false
+    private val sleepExpirationListener: () -> Unit = {
+        autoplaySuppressedBySleepTimer = true
+        recoveryJob?.cancel()
+        recoveryGuard.select(_uiState.value.currentTrack?.id, newRequest = true)
+        activeSearchPlayJob?.cancel()
+        playResolutionJob?.cancel()
+        cancelQueueRefill()
+        _uiState.update { it.copy(isLoading = false, isPlaying = false) }
+    }
 
     val recommendationEngine = RecommendationEngine()
     private val candidateCatalogPool = java.util.concurrent.CopyOnWriteArrayList<MusicTrack>()
@@ -135,6 +145,7 @@ class PlaybackManager(
     private var isCurrentSessionExplicitPlaylist: Boolean = false
 
     init {
+        SleepTimerManager.addExpirationListener(sleepExpirationListener)
         initMediaController()
     }
 
@@ -169,6 +180,7 @@ class PlaybackManager(
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 _uiState.update { it.copy(isPlaying = isPlaying) }
                 if (isPlaying) {
+                    autoplaySuppressedBySleepTimer = false
                     startProgressTicker()
                     // Genuinely playing: persist track into Room DB listening history immediately
                     val current = _uiState.value.currentTrack
@@ -229,6 +241,7 @@ class PlaybackManager(
 
                     Log.i(TAG, "Song completed playback. Autoplay enabled: ${_uiState.value.isAutoplayEnabled}")
                     scope.launch(Dispatchers.Main) {
+                        if (autoplaySuppressedBySleepTimer) return@launch
                         if (_uiState.value.repeatMode == RepeatMode.ONE) {
                             player.seekTo(0)
                             player.play()
@@ -1233,6 +1246,7 @@ class PlaybackManager(
     }
 
     fun release() {
+        SleepTimerManager.removeExpirationListener(sleepExpirationListener)
         try {
             progressTickerJob?.cancel()
             recommendationFetchJob?.cancel()

@@ -123,7 +123,7 @@ fun AnimatedBottomBar(
                         targetValue = if (isSelected) 1.12f else 1.0f,
                         animationSpec = spring(
                             dampingRatio = 0.68f,
-                            stiffness = 1200f
+                            stiffness = 1700f
                         ),
                         label = "tab_icon_scale_${item.index}"
                     )
@@ -132,7 +132,7 @@ fun AnimatedBottomBar(
                         targetValue = if (isSelected) -1.5f else 0f,
                         animationSpec = spring(
                             dampingRatio = 0.72f,
-                            stiffness = 1100f
+                            stiffness = 1600f
                         ),
                         label = "tab_bounce_y_${item.index}"
                     )
@@ -168,8 +168,8 @@ fun AnimatedBottomBar(
                             )
                             .animateContentSize(
                                 animationSpec = spring(
-                                    dampingRatio = 0.76f,
-                                    stiffness = 1050f
+                                    dampingRatio = 1f,
+                                    stiffness = 8000f
                                 )
                             )
                             .bouncyClickable { onTabSelected(item.index) }
@@ -232,7 +232,7 @@ fun AnimatedBottomBar(
                                 ) + expandHorizontally(
                                     animationSpec = spring(
                                         dampingRatio = 0.76f,
-                                        stiffness = 1050f
+                                        stiffness = 1700f
                                     ),
                                     expandFrom = Alignment.Start
                                 ),
@@ -241,7 +241,7 @@ fun AnimatedBottomBar(
                                 ) + shrinkHorizontally(
                                     animationSpec = spring(
                                         dampingRatio = 0.76f,
-                                        stiffness = 1050f
+                                        stiffness = 1700f
                                     ),
                                     shrinkTowards = Alignment.Start
                                 )

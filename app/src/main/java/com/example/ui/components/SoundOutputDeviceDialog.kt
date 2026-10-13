@@ -15,8 +15,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.animation.core.LinearOutSlowInEasing
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.updateTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -70,11 +71,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
@@ -97,8 +100,7 @@ import com.example.playback.SoundOutputDevice
 import com.example.ui.theme.LiquidGlass
 import com.example.ui.theme.LocalAppColors
 import com.example.ui.theme.bouncyClickable
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.first
 import kotlin.math.roundToInt
 
 /**
@@ -125,7 +127,7 @@ fun SoundOutputDeviceDialog(
 ) {
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
-    val coroutineScope = rememberCoroutineScope()
+    val latestDismiss by rememberUpdatedState(onDismiss)
     val appColors = LocalAppColors.current
 
     // Audio Manager & Volume Management
@@ -180,7 +182,7 @@ fun SoundOutputDeviceDialog(
         }
     }
 
-    // Smooth opening and exit spring animations tuned for 90Hz / 120Hz displays
+    // One transition owns every layer; dismissal waits for its actual completion.
     var isClosing by remember { mutableStateOf(false) }
     var isMounted by remember { mutableStateOf(false) }
 
@@ -191,10 +193,6 @@ fun SoundOutputDeviceDialog(
     val closeWithAnimation: () -> Unit = {
         if (!isClosing) {
             isClosing = true
-            coroutineScope.launch {
-                delay(170)
-                onDismiss()
-            }
         }
     }
 
@@ -203,45 +201,34 @@ fun SoundOutputDeviceDialog(
     }
 
     val isPresented = isMounted && !isClosing
+    val presentation = updateTransition(isPresented, label = "output_dialog_presentation")
 
-    val scale by animateFloatAsState(
-        targetValue = if (isPresented) 1.0f else 0.84f,
-        animationSpec = if (isPresented) {
-            spring(dampingRatio = 0.74f, stiffness = 480f)
-        } else {
-            tween(durationMillis = 160, easing = FastOutLinearInEasing)
-        },
+    val scale by presentation.animateFloat(
+        transitionSpec = { tween(if (targetState) 210 else 150, easing = FastOutSlowInEasing) },
         label = "dialog_scale"
-    )
+    ) { if (it) 1.0f else 0.92f }
 
-    val alpha by animateFloatAsState(
-        targetValue = if (isPresented) 1.0f else 0.0f,
-        animationSpec = if (isPresented) {
-            tween(durationMillis = 180, easing = LinearOutSlowInEasing)
-        } else {
-            tween(durationMillis = 140, easing = FastOutLinearInEasing)
-        },
+    val alpha by presentation.animateFloat(
+        transitionSpec = { tween(if (targetState) 140 else 120, easing = if (targetState) LinearOutSlowInEasing else FastOutLinearInEasing) },
         label = "dialog_alpha"
-    )
+    ) { if (it) 1.0f else 0.0f }
 
-    val translateY by animateFloatAsState(
-        targetValue = if (isPresented) 0f else 26f,
-        animationSpec = if (isPresented) {
-            spring(dampingRatio = 0.75f, stiffness = 500f)
-        } else {
-            tween(durationMillis = 160, easing = FastOutLinearInEasing)
-        },
+    val translateY by presentation.animateFloat(
+        transitionSpec = { tween(if (targetState) 210 else 150, easing = FastOutSlowInEasing) },
         label = "dialog_translate_y"
-    )
+    ) { if (it) 0f else 18f }
 
-    val scrimAlpha by animateFloatAsState(
-        targetValue = if (isPresented) 1.0f else 0.0f,
-        animationSpec = tween(
-            durationMillis = if (isPresented) 200 else 160,
-            easing = if (isPresented) LinearOutSlowInEasing else FastOutLinearInEasing
-        ),
+    val scrimAlpha by presentation.animateFloat(
+        transitionSpec = { tween(if (targetState) 150 else 130, easing = if (targetState) LinearOutSlowInEasing else FastOutLinearInEasing) },
         label = "scrim_alpha"
-    )
+    ) { if (it) 1.0f else 0.0f }
+
+    LaunchedEffect(isClosing, presentation) {
+        if (isClosing) {
+            snapshotFlow { !presentation.isRunning && !presentation.currentState }.first { it }
+            latestDismiss()
+        }
+    }
 
     Dialog(
         onDismissRequest = { closeWithAnimation() },
@@ -256,10 +243,10 @@ fun SoundOutputDeviceDialog(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(
-                        if (isDark) Color.Black.copy(alpha = 0.65f * scrimAlpha)
-                        else Color(0xFF0F172A).copy(alpha = 0.36f * scrimAlpha)
-                    )
+                    .drawBehind {
+                        drawRect(if (isDark) Color.Black.copy(alpha = 0.65f * scrimAlpha)
+                            else Color(0xFF0F172A).copy(alpha = 0.36f * scrimAlpha))
+                    }
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,

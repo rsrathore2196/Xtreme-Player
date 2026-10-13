@@ -80,6 +80,8 @@ import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.filled.BluetoothAudio
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Usb
@@ -108,6 +110,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -276,6 +279,7 @@ fun ExpandedPlayerScreen(
     }
 
     var isMenuOpen by remember { mutableStateOf(false) }
+    var isSleepTimerOpen by remember { mutableStateOf(false) }
     var isFlipped by remember(track.id) { mutableStateOf(false) }
     var showLyrics by remember(track.id) { mutableStateOf(false) }
     val lyricsLifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
@@ -399,12 +403,11 @@ fun ExpandedPlayerScreen(
 
     val flipRotation by animateFloatAsState(
         targetValue = if (isFlipped) 180f else 0f,
-        animationSpec = spring(
-            dampingRatio = 0.75f,
-            stiffness = Spring.StiffnessMedium
-        ),
+        animationSpec = tween(if (isFlipped) 300 else 260, easing = FastOutSlowInEasing),
         label = "flip_card_rotation"
     )
+    // Only switch faces at the midpoint; rotation itself is read by the graphics layer.
+    val showArtworkFront by remember { derivedStateOf { flipRotation <= 90f } }
 
     val lyricsInteractionSource = remember { MutableInteractionSource() }
     val isLyricsPressed by lyricsInteractionSource.collectIsPressedAsState()
@@ -510,7 +513,7 @@ fun ExpandedPlayerScreen(
                                             modifier = Modifier.size(44.dp)
                                                 .sharedElement(rememberSharedContentState("lyrics_artwork_${track.id}"),
                                                     animatedVisibilityScope = this@AnimatedContent,
-                                                    boundsTransform = { _, _ -> tween(500, easing = FastOutSlowInEasing) })
+                                                    boundsTransform = { _, _ -> tween(300, easing = FastOutSlowInEasing) })
                                                 .clip(RoundedCornerShape(10.dp)))
                                         Column(Modifier.weight(1f)) {
                                             Text(track.cleanTitle, color = appColors.textPrimary, fontWeight = FontWeight.Bold,
@@ -567,7 +570,7 @@ fun ExpandedPlayerScreen(
                                             .aspectRatio(1f)
                                             .sharedElement(rememberSharedContentState("lyrics_artwork_${track.id}"),
                                                 animatedVisibilityScope = this@AnimatedContent,
-                                                boundsTransform = { _, _ -> tween(500, easing = FastOutSlowInEasing) })
+                                                boundsTransform = { _, _ -> tween(300, easing = FastOutSlowInEasing) })
                                             .graphicsLayer {
                                                 rotationY = flipRotation
                                                 cameraDistance = 14f * density
@@ -585,7 +588,7 @@ fun ExpandedPlayerScreen(
                                             }
                                             .testTag("flip_album_art_card")
                                     ) {
-                                        if (flipRotation <= 90f) {
+                                        if (showArtworkFront) {
                                             // FRONT SIDE: Album Artwork with Motion Video Support
                                             MotionAlbumArtPlayer(
                                                 videoUrl = track.motionArtworkUrl,
@@ -757,6 +760,8 @@ fun ExpandedPlayerScreen(
                                     track = track,
                                     onAddToQueue = onAddToQueue,
                                     onAddToPlaylist = onAddToPlaylist,
+                                    onOpenEqualizer = onOpenEqualizer,
+                                    onOpenSleepTimer = { isSleepTimerOpen = true },
                                     isDark = isDark,
                                     appColors = appColors
                                 )
@@ -1242,6 +1247,8 @@ fun ExpandedPlayerScreen(
                         track = track,
                         onAddToQueue = onAddToQueue,
                         onAddToPlaylist = onAddToPlaylist,
+                        onOpenEqualizer = onOpenEqualizer,
+                        onOpenSleepTimer = { isSleepTimerOpen = true },
                         isDark = isDark,
                         appColors = appColors
                     )
@@ -1273,13 +1280,13 @@ fun ExpandedPlayerScreen(
                                     .sharedElement(
                                         rememberSharedContentState("lyrics_artwork_${track.id}"),
                                         animatedVisibilityScope = this@AnimatedContent,
-                                        boundsTransform = { _, _ -> tween(500, easing = FastOutSlowInEasing) }
+                                        boundsTransform = { _, _ -> tween(300, easing = FastOutSlowInEasing) }
                                     ).clip(RoundedCornerShape(12.dp))
                                 )
                                 Column(Modifier.weight(1f).sharedBounds(
                                         rememberSharedContentState("lyrics_metadata_${track.id}"),
                                         animatedVisibilityScope = this@AnimatedContent,
-                                        boundsTransform = { _, _ -> tween(500, easing = FastOutSlowInEasing) }
+                                        boundsTransform = { _, _ -> tween(300, easing = FastOutSlowInEasing) }
                                 )) {
                                     Text(track.cleanTitle, color = appColors.textPrimary,
                                         fontWeight = FontWeight.Bold, fontSize = 16.sp, maxLines = 1,
@@ -1296,7 +1303,7 @@ fun ExpandedPlayerScreen(
                                     .sharedElement(
                                         rememberSharedContentState("lyrics_favorite_${track.id}"),
                                         animatedVisibilityScope = this@AnimatedContent,
-                                        boundsTransform = { _, _ -> tween(500, easing = FastOutSlowInEasing) }
+                                        boundsTransform = { _, _ -> tween(300, easing = FastOutSlowInEasing) }
                                     )
                                     .liquidGlassButton(
                                         colors = appColors,
@@ -1370,7 +1377,7 @@ fun ExpandedPlayerScreen(
                                     .sharedElement(
                                         rememberSharedContentState("lyrics_artwork_${track.id}"),
                                         animatedVisibilityScope = this@AnimatedContent,
-                                        boundsTransform = { _, _ -> tween(500, easing = FastOutSlowInEasing) }
+                                        boundsTransform = { _, _ -> tween(300, easing = FastOutSlowInEasing) }
                                     )
                                     .graphicsLayer {
                                         rotationY = flipRotation
@@ -1389,7 +1396,7 @@ fun ExpandedPlayerScreen(
                                     }
                                     .testTag("flip_album_art_card")
                                 ) {
-                                    if (flipRotation <= 90f) {
+                                    if (showArtworkFront) {
                                         // FRONT SIDE: Album Artwork with Motion Video Support
                                         MotionAlbumArtPlayer(
                                             videoUrl = track.motionArtworkUrl,
@@ -1521,7 +1528,7 @@ fun ExpandedPlayerScreen(
                                 Column(modifier = Modifier.weight(1f).sharedBounds(
                                         rememberSharedContentState("lyrics_metadata_${track.id}"),
                                         animatedVisibilityScope = this@AnimatedContent,
-                                        boundsTransform = { _, _ -> tween(500, easing = FastOutSlowInEasing) }
+                                        boundsTransform = { _, _ -> tween(300, easing = FastOutSlowInEasing) }
                                 )) {
                                     Text(
                                         text = track.cleanTitle,
@@ -1551,7 +1558,7 @@ fun ExpandedPlayerScreen(
                                     .sharedElement(
                                         rememberSharedContentState("lyrics_favorite_${track.id}"),
                                         animatedVisibilityScope = this@AnimatedContent,
-                                        boundsTransform = { _, _ -> tween(500, easing = FastOutSlowInEasing) }
+                                        boundsTransform = { _, _ -> tween(300, easing = FastOutSlowInEasing) }
                                     )
                                     .liquidGlassButton(
                                         colors = appColors,
@@ -1918,6 +1925,9 @@ fun ExpandedPlayerScreen(
     }
 
     // Sound Output Devices Popup Dialog
+    if (isSleepTimerOpen) {
+        SleepTimerDialog(onDismiss = { isSleepTimerOpen = false })
+    }
     if (showSoundOutputDialog) {
         SoundOutputDeviceDialog(
             devices = effectiveDevices,
@@ -2039,6 +2049,8 @@ private fun PlayerOptionsMenu(
     track: MusicTrack,
     onAddToQueue: (MusicTrack) -> Unit,
     onAddToPlaylist: (MusicTrack) -> Unit,
+    onOpenEqualizer: () -> Unit,
+    onOpenSleepTimer: () -> Unit,
     isDark: Boolean,
     appColors: com.example.ui.theme.AppThemeColors = LocalAppColors.current,
     modifier: Modifier = Modifier
@@ -2093,6 +2105,21 @@ private fun PlayerOptionsMenu(
                 .padding(vertical = 4.dp, horizontal = 4.dp)
         ) {
             val itemIconBg = if (appColors.isAmoled) Color(0xFF141414) else if (isDark) appColors.cardBorder.copy(alpha = 0.35f) else appColors.chipBackground
+
+            listOf(Triple("Sleep Mode", Icons.Default.Timer, onOpenSleepTimer),
+                Triple("Equalizer", Icons.Default.Equalizer, onOpenEqualizer)).forEach { (title, icon, action) ->
+                DropdownMenuItem(
+                    text = { Text(title, style = MaterialTheme.typography.bodyMedium.copy(
+                        fontWeight = FontWeight.SemiBold, color = appColors.textPrimary)) },
+                    leadingIcon = {
+                        Box(Modifier.size(34.dp).clip(CircleShape).background(itemIconBg), contentAlignment = Alignment.Center) {
+                            Icon(icon, contentDescription = null, tint = appColors.primaryAccent, modifier = Modifier.size(18.dp))
+                        }
+                    },
+                    onClick = { AppHaptics.performTap(context); onDismissRequest(); action() },
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                )
+            }
 
             // Action 1: Add to Queue
             DropdownMenuItem(
@@ -2342,5 +2369,5 @@ private fun PlayerTimelineSection(
 
 /** Shared bounds carry the cover/header; only the lyrics and ambient glow fade. */
 private fun AnimatedContentTransitionScope<Boolean>.lyricsArtworkTransition(): ContentTransform =
-    (fadeIn(tween(240, delayMillis = if (targetState) 230 else 0, easing = FastOutSlowInEasing)) togetherWith
-        fadeOut(tween(150, easing = FastOutSlowInEasing))).using(null)
+    (fadeIn(tween(170, delayMillis = if (targetState) 45 else 0, easing = FastOutSlowInEasing)) togetherWith
+        fadeOut(tween(120, easing = FastOutSlowInEasing))).using(null)

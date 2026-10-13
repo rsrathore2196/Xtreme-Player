@@ -107,6 +107,7 @@ class MusicService : MediaLibraryService() {
             .build()
 
         exoPlayer = player
+        com.example.playback.SleepTimerManager.attach(this, player)
 
         // 4. Audio Effects & Equalizer real-time pipeline (attached on active playback session)
         player.addAnalyticsListener(object : androidx.media3.exoplayer.analytics.AnalyticsListener {
@@ -158,6 +159,7 @@ class MusicService : MediaLibraryService() {
     }
 
     override fun onDestroy() {
+        exoPlayer?.let(com.example.playback.SleepTimerManager::detach)
         com.example.playback.AudioEffectsManager.detachAudioSession()
         mediaLibrarySession?.run {
             player.release()

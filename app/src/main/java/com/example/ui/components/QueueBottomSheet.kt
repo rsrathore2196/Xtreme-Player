@@ -30,12 +30,29 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.ModalBottomSheetProperties
+import androidx.compose.material3.SheetState
+import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
+import androidx.activity.compose.BackHandler
+import androidx.compose.ui.MotionDurationScale
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -70,13 +87,51 @@ fun QueueBottomSheet(
     nextRecommendedTrack: MusicTrack? = null,
     onToggleAutoplay: () -> Unit = {}
 ) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val scope = rememberCoroutineScope()
+    val latestDismiss by rememberUpdatedState(onDismiss)
+    var closing by remember { mutableStateOf(false) }
+    // Keep Material's native sheet and drag behavior, shortening only its programmatic
+    // motion. Multiply the system scale so disabled/reduced animations stay respected.
+    val motionScale = remember(scope) {
+        object : MotionDurationScale {
+            override val scaleFactor: Float
+                get() = (scope.coroutineContext[MotionDurationScale]?.scaleFactor ?: 1f) * 0.65f
+        }
+    }
+    lateinit var sheetState: SheetState
+    fun dismissWithAnimation() {
+        if (closing) return
+        closing = true
+        scope.launch {
+            try {
+                withContext(motionScale) { sheetState.hide() }
+                if (!sheetState.isVisible) latestDismiss()
+            } finally { closing = false }
+        }
+    }
+    sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true,
+        confirmValueChange = { target ->
+            if (target == SheetValue.Hidden && !closing) {
+                dismissWithAnimation()
+                false
+            } else true
+        })
+    LaunchedEffect(sheetState) {
+        snapshotFlow { sheetState.hasExpandedState }.first { it }
+        // Anchor installation schedules Material's automatic show for the next composition.
+        // Wait until that effect starts, then replace it with the faster native motion.
+        withFrameNanos { }
+        withFrameNanos { }
+        if (!closing) withContext(motionScale) { sheetState.show() }
+    }
+    val currentIdx = remember(queue, currentTrack?.id) { queue.indexOfFirst { it.id == currentTrack?.id } }
     val appColors = LocalAppColors.current
     val isDark = appColors.isDark
 
     ModalBottomSheet(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { latestDismiss() },
         sheetState = sheetState,
+        properties = ModalBottomSheetProperties(shouldDismissOnBackPress = false),
         containerColor = if (appColors.isAmoled) Color(0xFF000000) else appColors.cardBackground,
         dragHandle = {
             Box(
@@ -89,6 +144,7 @@ fun QueueBottomSheet(
             )
         }
     ) {
+        BackHandler { dismissWithAnimation() }
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -212,8 +268,6 @@ fun QueueBottomSheet(
                     .height(360.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                val currentIdx = queue.indexOfFirst { it.id == currentTrack?.id }
-
                 itemsIndexed(
                     items = queue,
                     key = { index, track -> "${track.id}_$index" },
