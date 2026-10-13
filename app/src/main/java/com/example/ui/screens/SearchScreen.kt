@@ -162,7 +162,8 @@ fun SearchScreen(
     val listState = rememberLazyListState()
 
     val selectedTypeFilter: String? = catalogState.type.takeUnless { it == "All" }
-    LaunchedEffect(Unit) { onSelectType("All") }
+    // The catalog starts with All. Retain the selected filter on tab return,
+    // avoiding a redundant request while the existing transition is running.
 
     // Gracefully handle back press: Return to default "All" genres page rather than closing the app
     BackHandler(enabled = isGenreActive || hasQuery || selectedTypeFilter != null) {

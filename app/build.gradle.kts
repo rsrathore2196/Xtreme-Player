@@ -48,7 +48,7 @@ android {
   buildTypes {
     release {
       isCrunchPngs = false
-      isMinifyEnabled = false
+      isMinifyEnabled = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       signingConfig = signingConfigs.getByName("release")
     }
@@ -128,6 +128,7 @@ dependencies {
   implementation(libs.media3.common)
   implementation(libs.media3.datasource)
   implementation(libs.androidx.palette.ktx)
+  implementation("androidx.profileinstaller:profileinstaller:1.4.0")
   implementation(libs.okhttp)
   implementation(libs.converter.moshi)
   implementation(libs.firebase.ai)

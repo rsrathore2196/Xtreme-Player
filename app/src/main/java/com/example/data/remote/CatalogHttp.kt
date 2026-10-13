@@ -12,7 +12,8 @@ internal suspend fun OkHttpClient.catalogGet(url: String): String = catalogReque
         .header("Accept", "application/json").build()
 )
 
-internal suspend fun OkHttpClient.catalogRequest(request: Request): String = suspendCancellableCoroutine { continuation ->
+internal suspend fun OkHttpClient.catalogRequest(request: Request): String =
+    com.example.performance.BackgroundWorkCoordinator.work { suspendCancellableCoroutine { continuation ->
     val call = newCall(request)
     continuation.invokeOnCancellation { call.cancel() }
     call.enqueue(object : Callback {
@@ -31,5 +32,5 @@ internal suspend fun OkHttpClient.catalogRequest(request: Request): String = sus
             }
         }
     })
-}
+} }
 internal class CatalogHttpException(val status: Int, val retryAfter: Long?) : IOException("Catalog HTTP $status")

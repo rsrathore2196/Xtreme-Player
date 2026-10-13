@@ -11,6 +11,7 @@ import androidx.security.crypto.MasterKey
  * to protect API secrets and audio decryption keys.
  */
 object SecurityConfig {
+    @Volatile private var resolvedKey: String? = null
     private const val PREFERENCE_FILE = "xtreme_secure_prefs"
     private const val DES_KEY_ALIAS = "xtreme_des_key_alias"
 
@@ -40,7 +41,8 @@ object SecurityConfig {
      * Backed by Android KeyStore MasterKey (AES256_GCM).
      */
     fun getDESKey(context: Context): String {
-        return try {
+        resolvedKey?.let { return it }
+        return synchronized(this) { resolvedKey ?: try {
             val masterKey = MasterKey.Builder(context)
                 .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
                 .build()
@@ -58,7 +60,7 @@ object SecurityConfig {
                 storedKey = resolveObfuscatedKey()
                 prefs.edit().putString(DES_KEY_ALIAS, storedKey).apply()
             }
-            storedKey
+            storedKey.also { resolvedKey = it }
         } catch (e: Exception) {
             try {
                 android.util.Log.w("SecurityConfig", "KeyStore fallback engaged: ${e.message}")
@@ -66,7 +68,7 @@ object SecurityConfig {
                 // Ignore in standard JVM test environment
             }
             resolveObfuscatedKey()
-        }
+        } }
     }
 
     fun getFallbackDESKey(): String {
@@ -77,6 +79,7 @@ object SecurityConfig {
      * Clear stored encryption keys from secure storage.
      */
     fun clearStoredKeys(context: Context) {
+        resolvedKey = null
         try {
             val masterKey = MasterKey.Builder(context)
                 .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)

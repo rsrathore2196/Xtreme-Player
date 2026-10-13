@@ -7,6 +7,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import coil.request.CachePolicy
 import coil.request.ImageRequest
@@ -17,6 +18,7 @@ import com.example.data.repository.iTunesArtworkRepository
 import com.example.data.repository.toMediaItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
 
 object ImageConfig {
     const val LIST_ITEM_SIZE = 120 // ~120dp for track list items, playlist rows, search result items, and queue items
@@ -42,17 +44,60 @@ data class ExtractedTrackColors(
 
 object TrackPaletteCache {
     private val memoryCache = android.util.LruCache<String, ExtractedTrackColors>(128)
+    private val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
+    private val pending = kotlinx.coroutines.channels.Channel<Map<String, ExtractedTrackColors>>(kotlinx.coroutines.channels.Channel.CONFLATED)
+    private var clearGeneration = 0L
+    @Volatile private var file: android.util.AtomicFile? = null
+
+    fun initialize(context: android.content.Context) {
+        if (file != null) return
+        val storage = android.util.AtomicFile(java.io.File(context.applicationContext.filesDir, "track_palettes_v1.json"))
+        file = storage
+        val readGeneration = synchronized(memoryCache) { clearGeneration }
+        scope.launch {
+            try {
+                if (storage.baseFile.exists() && storage.baseFile.length() <= 100_000L) {
+                    val json = org.json.JSONObject(storage.openRead().use { String(it.readBytes()) })
+                    json.keys().asSequence().take(128).forEach { key ->
+                        val item = json.getJSONArray(key)
+                        synchronized(memoryCache) {
+                            if (clearGeneration == readGeneration && memoryCache.get(key) == null)
+                                memoryCache.put(key, ExtractedTrackColors(
+                                    Color(item.getInt(0)), Color(item.getInt(1)), Color(item.getInt(2))))
+                        }
+                    }
+                }
+            } catch (_: Exception) { /* A palette miss never prevents artwork/playback. */ }
+            for (snapshot in pending) {
+                try {
+                    val json = org.json.JSONObject()
+                    snapshot.forEach { (key, c) -> json.put(key, org.json.JSONArray().put(c.dominantColor.toArgb())
+                        .put(c.accentColor.toArgb()).put(c.vibrantColor.toArgb())) }
+                    val stream = storage.startWrite()
+                    try { stream.write(json.toString().toByteArray()); storage.finishWrite(stream) }
+                    catch (e: Exception) { storage.failWrite(stream); throw e }
+                } catch (_: Exception) { /* Keep the in-memory result if storage is unavailable. */ }
+            }
+        }
+    }
 
     fun get(trackId: String): ExtractedTrackColors? = memoryCache.get(trackId)
 
     fun put(trackId: String, colors: ExtractedTrackColors) {
         if (trackId.isNotBlank()) {
-            memoryCache.put(trackId, colors)
+            synchronized(memoryCache) {
+                memoryCache.put(trackId, colors)
+                pending.trySend(memoryCache.snapshot())
+            }
         }
     }
 
     fun clear() {
-        memoryCache.evictAll()
+        synchronized(memoryCache) {
+            ++clearGeneration
+            memoryCache.evictAll()
+            pending.trySend(emptyMap())
+        }
     }
 }
 

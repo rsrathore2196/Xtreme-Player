@@ -281,6 +281,7 @@ object BackupRestoreManager {
         context: Context,
         musicDatabase: MusicDatabase
     ): Result<BackupInfo> = withContext(Dispatchers.IO) {
+        val work = com.example.performance.BackgroundWorkCoordinator.busy()
         try {
             val dao = musicDatabase.musicDao()
             val (playlists, allTracks, crossRefs) = musicDatabase.withTransaction {
@@ -449,9 +450,9 @@ object BackupRestoreManager {
                 contentUri = contentUriString
             )
             Result.success(info)
-        } catch (e: Exception) {
+        } catch (e: CancellationException) { throw e } catch (e: Exception) {
             Result.failure(e)
-        }
+        } finally { work.close() }
     }
 
     enum class RestoreMode {
@@ -701,6 +702,7 @@ object BackupRestoreManager {
         mode: RestoreMode = RestoreMode.MERGE,
         confirmReplace: Boolean = false
     ): RestoreSummary = withContext(Dispatchers.IO) {
+      com.example.performance.BackgroundWorkCoordinator.work {
         restoreMutex.withLock {
             var previousProfile: UserProfile? = null
             var profileWriteAttempted = false
@@ -833,5 +835,6 @@ object BackupRestoreManager {
                 RestoreSummary(false, "Failed to restore backup: ${error.localizedMessage ?: "Invalid file format"}$profileWarning")
             }
         }
+      }
     }
 }

@@ -31,6 +31,10 @@ data class TrackPlayCount(
     val lastPlayed: Long
 )
 
+data class ActualPlayStamp(val id: Long, val trackId: String, val timestamp: Long,
+    val playedDurationMs: Long, val trackDurationMs: Long, val completionRatio: Float,
+    val completed: Boolean, val skipped: Boolean, val liked: Boolean, val metadata: String)
+
 @Dao
 interface ListeningEventDao {
 
@@ -43,6 +47,15 @@ interface ListeningEventDao {
 
     @Query("SELECT * FROM listening_events WHERE eventType = 'ACTUAL_PLAY' ORDER BY timestamp DESC LIMIT 5000")
     suspend fun getActualPlays(): List<ListeningEventEntity>
+
+    @Query("SELECT trackId FROM listening_events WHERE eventType = 'ACTUAL_PLAY' AND playedDurationMs > 0 GROUP BY trackId ORDER BY MAX(timestamp) DESC LIMIT 20")
+    suspend fun getRecentActualTrackIds(): List<String>
+
+    @Query("SELECT id, trackId, timestamp, playedDurationMs, trackDurationMs, completionRatio, completed, skipped, liked, artistId || '|' || artistName || '|' || album || '|' || genre || '|' || language || '|' || sessionId || '|' || source AS metadata FROM listening_events WHERE eventType = 'ACTUAL_PLAY' ORDER BY timestamp DESC LIMIT 5000")
+    fun observeActualPlayStamps(): Flow<List<ActualPlayStamp>>
+
+    @Query("SELECT * FROM listening_events WHERE id IN (:ids)")
+    suspend fun getEventsByIds(ids: List<Long>): List<ListeningEventEntity>
 
     /**
      * Cold-Start Query: Checks how many tracks have been played meaningfully

@@ -22,20 +22,20 @@ object MusicCache {
     @Volatile
     private var simpleCacheInstance: SimpleCache? = null
 
-    @Synchronized
     fun getSimpleCache(context: Context): SimpleCache {
-        return simpleCacheInstance ?: run {
+        simpleCacheInstance?.let { return it }
+        return synchronized(this) { simpleCacheInstance ?: run {
             val cacheDir = File(context.cacheDir, "xtreme_audio_cache")
             val evictor = LeastRecentlyUsedCacheEvictor(CACHE_SIZE)
             val databaseProvider = StandaloneDatabaseProvider(context)
             val cache = SimpleCache(cacheDir, evictor, databaseProvider)
             simpleCacheInstance = cache
             cache
-        }
+        } }
     }
 
     fun createCacheDataSourceFactory(context: Context): DataSource.Factory {
-        val cache = getSimpleCache(context)
+        val app = context.applicationContext
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
             .setAllowCrossProtocolRedirects(true)
             .setConnectTimeoutMs(15000)
@@ -43,10 +43,28 @@ object MusicCache {
 
         val upstreamFactory = DefaultDataSource.Factory(context, httpDataSourceFactory)
 
-        val cached = CacheDataSource.Factory()
-            .setCache(cache)
-            .setUpstreamDataSourceFactory(upstreamFactory)
-            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+        // Creating a Media3 factory happens on Main. Cache recovery happens only
+        // when its data source opens on Media3's loader thread.
+        val cached = DataSource.Factory { object : DataSource {
+            private var delegate: DataSource? = null
+            private val listeners = mutableListOf<androidx.media3.datasource.TransferListener>()
+            override fun addTransferListener(listener: androidx.media3.datasource.TransferListener) {
+                listeners.add(listener); delegate?.addTransferListener(listener)
+            }
+            override fun open(spec: androidx.media3.datasource.DataSpec): Long {
+                val source = CacheDataSource.Factory().setCache(getSimpleCache(app))
+                    .setUpstreamDataSourceFactory(upstreamFactory)
+                    .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR).createDataSource()
+                listeners.forEach(source::addTransferListener)
+                delegate = source
+                return source.open(spec)
+            }
+            override fun read(buffer: ByteArray, offset: Int, length: Int) =
+                checkNotNull(delegate).read(buffer, offset, length)
+            override fun getUri() = delegate?.uri
+            override fun getResponseHeaders(): Map<String, List<String>> = delegate?.responseHeaders.orEmpty()
+            override fun close() { try { delegate?.close() } finally { delegate = null } }
+        } }
         // Media3 calls this on its loader thread. Refresh signed video URLs at load time,
         // including restored queues, without holding the UI thread or storing stale URLs.
         return ResolvingDataSource.Factory(cached) { spec ->
@@ -64,7 +82,6 @@ object MusicCache {
         }
     }
 
-    @Synchronized
     fun getCacheSize(context: Context): Long {
         return try {
             getSimpleCache(context).cacheSpace
@@ -74,7 +91,6 @@ object MusicCache {
         }
     }
 
-    @Synchronized
     fun getCachedTrackCount(context: Context): Int {
         return try {
             getSimpleCache(context).keys.size
@@ -84,7 +100,6 @@ object MusicCache {
         }
     }
 
-    @Synchronized
     fun clearAudioCache(context: Context): Long {
         return trimAudioCache(context, 0L)
     }

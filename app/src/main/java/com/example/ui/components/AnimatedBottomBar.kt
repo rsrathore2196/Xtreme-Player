@@ -1,9 +1,9 @@
 package com.example.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandHorizontally
@@ -47,6 +47,12 @@ import com.example.ui.theme.bouncyClickable
 
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.key
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.State
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.offset
+import androidx.compose.ui.unit.constrainWidth
 
 /**
  * Data model for AnimatedBottomBar tabs.
@@ -117,6 +123,8 @@ fun AnimatedBottomBar(
             items.forEach { item ->
                 key(item.index) {
                     val isSelected = selectedTabIndex == item.index
+                    val contentInset = animateDpAsState(if (isSelected) 16.dp else 14.dp,
+                        spring(dampingRatio = 0.76f, stiffness = 1050f), label = "tab_inset_${item.index}")
 
                     val iconScale = animateFloatAsState(
                         targetValue = if (isSelected) 1.12f else 1.0f,
@@ -136,11 +144,12 @@ fun AnimatedBottomBar(
                         label = "tab_bounce_y_${item.index}"
                     )
 
-                    val activePillBrush = Brush.verticalGradient(listOf(
+                    val activePillBrush = remember(appColors.primaryAccent, appColors.isDark) { Brush.verticalGradient(listOf(
                         appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.24f else 0.20f),
                         appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.14f else 0.12f)
-                    ))
-                    val activeBorderStroke = BorderStroke(0.6.dp, Color.White.copy(alpha = if (appColors.isDark) 0.10f else 0.40f))
+                    )) }
+                    val activeBorderStroke = remember(appColors.isDark) {
+                        BorderStroke(0.6.dp, Color.White.copy(alpha = if (appColors.isDark) 0.10f else 0.40f)) }
 
                     // Individual tab item container: Active pill with 3D liquid glass capsule and theme accent blur
                     Box(
@@ -165,12 +174,8 @@ fun AnimatedBottomBar(
                                     Modifier.clip(CircleShape)
                                 }
                             )
-                            .animateContentSize(
-                                animationSpec = spring(
-                                    dampingRatio = 0.76f,
-                                    stiffness = 1050f
-                                )
-                            )
+                            // The label expansion already drives this capsule's width
+                            // with the same spring. Avoid making a second spring chase it.
                             .bouncyClickable { onTabSelected(item.index) }
                             .testTag(
                                 if (isSelected) "nav_tab_${item.title.lowercase()}_active"
@@ -202,10 +207,7 @@ fun AnimatedBottomBar(
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.Center,
-                            modifier = Modifier.padding(
-                                horizontal = if (isSelected) 16.dp else 14.dp,
-                                vertical = 8.dp
-                            )
+                            modifier = Modifier.animatedTabInset(contentInset).padding(vertical = 8.dp)
                         ) {
                             Icon(
                                 imageVector = if (isSelected) item.selectedIcon else item.unselectedIcon,
@@ -267,3 +269,11 @@ fun AnimatedBottomBar(
             }
         }
     }
+
+private fun Modifier.animatedTabInset(inset: State<Dp>): Modifier = layout { measurable, constraints ->
+    val padding = inset.value.roundToPx()
+    val child = measurable.measure(constraints.offset(horizontal = -padding * 2))
+    layout(constraints.constrainWidth(child.width + padding * 2), child.height) {
+        child.placeRelative(padding, 0)
+    }
+}

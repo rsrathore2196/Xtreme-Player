@@ -77,6 +77,8 @@ class MusicRepository(
     private val discoveryCache = android.util.LruCache<String, DiscoveryCache>(80)
     private val queryLocks = Array(16) { Mutex() }
     private val discoveryTtlMs = 10 * 60_000L
+    private val discoveryOwners = Array(8) { Mutex() }
+    private val discoveryBatches = android.util.LruCache<String, DiscoveryCache>(16)
 
     private suspend fun getLikedTrackIds(): Set<String> = musicDao.getFavoriteTracks().first().map { it.id }.toSet()
 
@@ -99,8 +101,7 @@ class MusicRepository(
 
     private suspend fun discoveryQueries(profile: UserProfile, era: Boolean = false): List<String> {
         val favoriteTracks = musicDao.getFavoriteTracks().first().map { it.toMusicTrack() }
-        val playedIds = context?.let { MusicDatabase.getDatabase(it).listeningEventDao().getActualPlays() }
-            .orEmpty().filter(UserTasteProfile::played).map { it.trackId }.distinct().take(20)
+        val playedIds = context?.let { MusicDatabase.getDatabase(it).listeningEventDao().getRecentActualTrackIds() }.orEmpty()
         val listened = musicDao.getTracksByIds(playedIds).map { it.toMusicTrack() }
         val seeds = (favoriteTracks + listened).filter { HomeRecommendationPolicy.known(it.artist) }
         val artists = seeds.flatMap(HomeRecommendationPolicy::artists).distinct().shuffled().take(2)
@@ -138,16 +139,31 @@ class MusicRepository(
         }
     }
 
-    private suspend fun discover(profile: UserProfile, era: Boolean, limit: Int, force: Boolean): List<MusicTrack> = coroutineScope {
+    private suspend fun discover(profile: UserProfile, era: Boolean, limit: Int, force: Boolean): List<MusicTrack> = withContext(Dispatchers.Default) {
+      val liked = withContext(Dispatchers.IO) { getLikedTrackIds() }
+      val recent = withContext(Dispatchers.IO) { context?.let {
+          MusicDatabase.getDatabase(it).listeningEventDao().getRecentActualTrackIds()
+      }.orEmpty() }
+      val key = "$era|${profile.countryCode}|${profile.languages}|${liked.sorted()}|$recent"
+      discoveryOwners[(key.hashCode() and Int.MAX_VALUE) % discoveryOwners.size].withLock {
+        val previous = discoveryBatches.get(key)
+        val now = System.currentTimeMillis()
+        if (previous != null && now - previous.fetchedAt < if (force) 1_000L else discoveryTtlMs)
+            return@withLock previous.tracks.take(limit).map { it.copy(isLiked = it.id in liked) }
+        coroutineScope {
         val queries = discoveryQueries(profile, era)
         val groups = queries.map { query -> async { discoverySearch(query, force, era) } }.awaitAll()
         val fresh = HomeRecommendationPolicy.originals(HomeRecommendationPolicy.interleave(groups))
-        val liked = getLikedTrackIds()
         if (fresh.isNotEmpty()) {
             musicDao.mergeTracksMetadata(fresh.map { TrackEntity.fromMusicTrack(it).copy(isCached = true, isLiked = it.id in liked) })
         }
         val cached = getInitialCatalog(profile).filter { !era || (it.year.toIntOrNull() ?: 0) in 1990..2009 }
-        HomeRecommendationPolicy.diversify(fresh.ifEmpty { cached }.shuffled(), limit).map { it.copy(isLiked = it.id in liked) }
+        val ranked = HomeRecommendationPolicy.diversify(fresh.ifEmpty { cached }.shuffled(), 160)
+            .map { it.copy(isLiked = it.id in liked) }
+        if (ranked.isNotEmpty()) discoveryBatches.put(key, DiscoveryCache(ranked, System.currentTimeMillis()))
+        ranked.take(limit)
+        }
+      }
     }
 
     suspend fun syncOnlineCatalog(profile: UserProfile? = null): List<MusicTrack> = withContext(Dispatchers.IO) {

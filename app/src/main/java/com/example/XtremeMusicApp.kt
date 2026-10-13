@@ -11,8 +11,13 @@ import com.example.data.local.MusicDatabase
 import com.example.data.repository.MusicRepository
 import com.example.data.remote.OnlineMusicApiService
 import com.example.playback.PlaybackManager
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 class XtremeMusicApp : Application(), ImageLoaderFactory {
+    private val startupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     lateinit var database: MusicDatabase
         private set
@@ -28,6 +33,14 @@ class XtremeMusicApp : Application(), ImageLoaderFactory {
 
     override fun newImageLoader(): ImageLoader {
         return ImageLoader.Builder(this)
+            .okHttpClient(okhttp3.OkHttpClient.Builder()
+                .dispatcher(okhttp3.Dispatcher().apply { maxRequests = 24; maxRequestsPerHost = 6 })
+                .eventListenerFactory { object : okhttp3.EventListener() {
+                    private var work: AutoCloseable? = null
+                    override fun callStart(call: okhttp3.Call) { work = com.example.performance.BackgroundWorkCoordinator.busy() }
+                    override fun callEnd(call: okhttp3.Call) { work?.close(); work = null }
+                    override fun callFailed(call: okhttp3.Call, ioe: java.io.IOException) { work?.close(); work = null }
+                } }.build())
             .memoryCache {
                 MemoryCache.Builder(this)
                     .maxSizePercent(0.20)
@@ -53,12 +66,13 @@ class XtremeMusicApp : Application(), ImageLoaderFactory {
     override fun onCreate() {
         super.onCreate()
         _instance = this
+        com.example.ui.util.TrackPaletteCache.initialize(this)
 
         // Initialize security configuration
-        try {
-            SecurityConfig.getDESKey(this)
-        } catch (e: Exception) {
-            android.util.Log.e("XtremeMusicApp", "Failed to initialize security: ${e.message}")
+        startupScope.launch {
+            com.example.performance.BackgroundWorkCoordinator.work {
+                runCatching { SecurityConfig.getDESKey(this@XtremeMusicApp) }
+            }
         }
 
         // Initialize API service with application context

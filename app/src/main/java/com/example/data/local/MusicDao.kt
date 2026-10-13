@@ -14,17 +14,26 @@ interface MusicDao {
     @Transaction
     suspend fun mergeTrackMetadata(track: TrackEntity) {
         val existing = getTrackById(track.id)
-        insertOrUpdateTrack(if (existing == null) track else track.copy(
+        val merged = if (existing == null) track else track.copy(
             isLiked = existing.isLiked,
             isCached = existing.isCached || track.isCached,
             lastPlayedAt = existing.lastPlayedAt,
             addedAt = existing.addedAt
-        ))
+        )
+        if (merged != existing) insertOrUpdateTrack(merged)
     }
 
     @Transaction
     suspend fun mergeTracksMetadata(tracks: List<TrackEntity>) {
-        tracks.forEach { mergeTrackMetadata(it) }
+        val rows = tracks.distinctBy { it.id }
+        val existing = rows.map { it.id }.chunked(900).flatMap { getTracksByIds(it) }.associateBy { it.id }
+        val changed = rows.mapNotNull { track ->
+            val local = existing[track.id]
+            val merged = if (local == null) track else track.copy(isLiked = local.isLiked,
+                isCached = local.isCached || track.isCached, lastPlayedAt = local.lastPlayedAt, addedAt = local.addedAt)
+            merged.takeIf { it != local }
+        }
+        if (changed.isNotEmpty()) insertOrUpdateTracks(changed)
     }
 
     @Transaction
@@ -68,6 +77,9 @@ interface MusicDao {
 
     @Query("SELECT * FROM tracks WHERE id IN (:trackIds)")
     suspend fun getTracksByIds(trackIds: List<String>): List<TrackEntity>
+
+    @Query("SELECT * FROM tracks WHERE id IN (:trackIds)")
+    fun observeTracksByIds(trackIds: List<String>): Flow<List<TrackEntity>>
 
     @Query("UPDATE tracks SET isLiked = :isLiked WHERE id = :trackId")
     suspend fun updateFavorite(trackId: String, isLiked: Boolean)

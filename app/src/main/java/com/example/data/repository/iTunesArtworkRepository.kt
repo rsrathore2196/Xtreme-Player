@@ -16,6 +16,7 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
@@ -78,6 +79,19 @@ class iTunesArtworkRepository(
     private val lookupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val networkSlots = Semaphore(4)
     private val inFlight = mutableMapOf<String, Flight>()
+    init {
+        lookupScope.launch {
+            com.example.performance.BackgroundWorkCoordinator.awaitIdle(requireForeground = false)
+            try {
+                cacheDao.getNewest().forEach { entry ->
+                    if (entry.rawArtworkUrl.isNotBlank()) synchronized(memoryCache) {
+                        if (memoryCache.get(entry.cacheKey) == null)
+                            memoryCache.put(entry.cacheKey, Lookup(entry.rawArtworkUrl, Long.MAX_VALUE))
+                    }
+                }
+            } catch (e: CancellationException) { throw e } catch (_: Exception) { /* Live lookup remains available. */ }
+        }
+    }
 
     // A scrolling card can re-enter composition many times. Parse its unchanged metadata once.
     private fun lookupMetadata(item: MediaItem): LookupMetadata {

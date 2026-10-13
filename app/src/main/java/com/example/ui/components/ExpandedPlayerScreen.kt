@@ -304,15 +304,18 @@ fun ExpandedPlayerScreen(
     val activeOutputDevice = effectiveDevices.find { it.isSelected }
 
     // Dynamic color extracted from album art with active theme fallback and in-memory song ID cache
-    val cachedColors = remember(track.id) { TrackPaletteCache.get(track.id) }
+    val paletteKey = remember(track.id, track.coverUrl, isDark, appColors.primaryAccent, appColors.cardBackgroundElevated) {
+        com.example.ui.util.playerPaletteKey(track, isDark, appColors.primaryAccent, appColors.cardBackgroundElevated)
+    }
+    val cachedColors = remember(paletteKey) { TrackPaletteCache.get(paletteKey) }
     var dominantColor by remember(track.id) { mutableStateOf(cachedColors?.dominantColor ?: appColors.cardBackgroundElevated) }
     var accentColor by remember(track.id, appColors.primaryAccent) { mutableStateOf(cachedColors?.accentColor ?: appColors.primaryAccent) }
     var vibrantColor by remember(track.id, appColors.primaryAccent) { mutableStateOf(cachedColors?.vibrantColor ?: appColors.primaryAccent) }
 
-    LaunchedEffect(track.id, track.coverUrl, appColors.primaryAccent, isScreenVisible) {
+    LaunchedEffect(paletteKey, isScreenVisible) {
         if (!isScreenVisible) return@LaunchedEffect
         // Fast-path: If already in memory cache, avoid all processing
-        val inMem = TrackPaletteCache.get(track.id)
+        val inMem = TrackPaletteCache.get(paletteKey)
         if (inMem != null) {
             dominantColor = inMem.dominantColor
             accentColor = inMem.accentColor
@@ -376,6 +379,7 @@ fun ExpandedPlayerScreen(
                             vibrantColor = Color(vib)
                         )
                         TrackPaletteCache.put(track.id, extracted)
+                        TrackPaletteCache.put(paletteKey, extracted)
                         withContext(Dispatchers.Main) {
                             dominantColor = extracted.dominantColor
                             accentColor = extracted.accentColor

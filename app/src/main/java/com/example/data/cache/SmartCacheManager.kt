@@ -10,6 +10,9 @@ import com.example.service.MusicCache
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
+import com.example.performance.BackgroundWorkCoordinator
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -64,10 +67,12 @@ object SmartCacheManager {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val maintenanceMutex = Mutex()
     private suspend fun <T> maintainCache(action: () -> T): T = withContext(Dispatchers.IO) {
-        maintenanceMutex.withLock { action() }
+        BackgroundWorkCoordinator.work { maintenanceMutex.withLock { action() } }
     }
     private var appContext: Context? = null
     private var repositoryRef: MusicRepository? = null
+    private var maintenanceJob: Job? = null
+    private var statisticsJob: Job? = null
 
     private val _stats = MutableStateFlow(CacheStats())
     val stats: StateFlow<CacheStats> = _stats.asStateFlow()
@@ -75,7 +80,6 @@ object SmartCacheManager {
     fun initialize(context: Context, repository: MusicRepository? = null) {
         appContext = context.applicationContext
         repositoryRef = repository
-        refreshStats()
         smartAutoTrim()
     }
 
@@ -85,7 +89,10 @@ object SmartCacheManager {
 
     fun refreshStats() {
         val ctx = appContext ?: return
-        scope.launch {
+        if (statisticsJob?.isActive == true) return
+        statisticsJob = scope.launch {
+          BackgroundWorkCoordinator.awaitIdle(requireForeground = false)
+          BackgroundWorkCoordinator.work {
             val prefs = getPrefs()
             val savedQuota = prefs?.getLong(KEY_MAX_QUOTA, QUOTA_BALANCED) ?: QUOTA_BALANCED
             val autoTrim = prefs?.getBoolean(KEY_SMART_AUTO_TRIM, true) ?: true
@@ -113,6 +120,7 @@ object SmartCacheManager {
                 cacheOnWifiOnly = wifiOnly,
                 freeDiskSpaceBytes = freeSpace
             )
+          }
         }
     }
 
@@ -122,20 +130,24 @@ object SmartCacheManager {
      */
     fun smartAutoTrim(context: Context? = appContext) {
         val ctx = context ?: appContext ?: return
-        scope.launch { maintenanceMutex.withLock {
+        if (maintenanceJob?.isActive == true) return
+        maintenanceJob = scope.launch {
+          BackgroundWorkCoordinator.awaitIdle(requireForeground = false)
+          BackgroundWorkCoordinator.work { maintenanceMutex.withLock {
             try {
                 val prefs = getPrefs()
                 val autoTrim = prefs?.getBoolean(KEY_SMART_AUTO_TRIM, true) ?: true
-                if (!autoTrim) return@launch
+                if (!autoTrim) { refreshStats(); return@launch }
 
                 val quota = prefs?.getLong(KEY_MAX_QUOTA, QUOTA_BALANCED) ?: QUOTA_BALANCED
                 val audioBytes = MusicCache.getCacheSize(ctx)
                 val imageBytes = calculateImageCacheBytes(ctx)
                 val total = audioBytes + imageBytes
 
-                // If cache exceeds 80% of quota or exceeds quota limit
-                if (total > (quota * 0.80f)) {
-                    Log.i(TAG, "Smart auto-trim activated: cache ($total bytes) exceeded 80% of quota ($quota bytes)")
+                // Keep useful artwork until the actual quota is exceeded. Maintenance
+                // remains bounded and never clears entries just because the app reopened.
+                if (total > quota) {
+                    Log.i(TAG, "Smart auto-trim activated: cache exceeded quota")
                     // 1. Delete temporary files
                     ctx.cacheDir.listFiles()?.forEach { file ->
                         if (file.isFile && file.lastModified() < System.currentTimeMillis() - 24 * 60 * 60_000L &&
@@ -144,19 +156,20 @@ object SmartCacheManager {
                         }
                     }
                     // 2. Trim complete image entries through the cache owner.
-                    if (imageBytes > 15L * 1024L * 1024L) {
-                        trimImageCache(ctx, imageBytes / 2)
+                    if (imageBytes > 0L) {
+                        trimImageCache(ctx, (quota - audioBytes).coerceAtLeast(0L))
                     }
                     // 3. Compact audio cache
                     if (audioBytes > (quota * 0.70f)) {
                         MusicCache.trimAudioCache(ctx, (quota * 0.50).toLong())
                     }
-                    refreshStats()
                 }
-            } catch (e: Exception) {
+            } catch (e: CancellationException) { throw e } catch (e: Exception) {
                 Log.w(TAG, "Smart auto-trim error: ${e.message}")
             }
-        } }
+          } }
+          refreshStats()
+        }
     }
 
     suspend fun clearAudioCache(): Long = maintainCache {

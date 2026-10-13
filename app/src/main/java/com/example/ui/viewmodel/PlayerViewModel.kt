@@ -22,6 +22,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -310,6 +311,26 @@ class PlayerViewModel(
 
     init {
         viewModelScope.launch {
+            com.example.updater.AppUpdateManager.updateStatus.map { status ->
+                status is com.example.updater.UpdateStatus.Checking ||
+                    status is com.example.updater.UpdateStatus.Downloading &&
+                    !status.message.contains("waiting", ignoreCase = true)
+            }.distinctUntilChanged().collectLatest { busy ->
+                if (busy) {
+                    val work = com.example.performance.BackgroundWorkCoordinator.busy()
+                    try { kotlinx.coroutines.awaitCancellation() } finally { work.close() }
+                }
+            }
+        }
+        viewModelScope.launch {
+            playbackManager.uiState.map { it.isLoading }.distinctUntilChanged().collectLatest { loading ->
+                if (loading) {
+                    val work = com.example.performance.BackgroundWorkCoordinator.busy()
+                    try { kotlinx.coroutines.awaitCancellation() } finally { work.close() }
+                }
+            }
+        }
+        viewModelScope.launch {
             playbackManager.uiState.map { it.selectedQuality }.distinctUntilChanged()
                 .collect(catalogBrowser::setAudioQuality)
         }
@@ -393,18 +414,8 @@ class PlayerViewModel(
             _catalogTracks.value = initial
             playbackManager.setCandidatePool(initial)
 
-            // Concurrently sync fresh online trending tracks in the background without blocking UI
-            launch(Dispatchers.IO) {
-                try {
-                    val enriched = repository.syncOnlineCatalog(_userProfile.value)
-                    if (enriched.isNotEmpty()) {
-                        _catalogTracks.value = enriched
-                        playbackManager.setCandidatePool(enriched)
-                    }
-                } catch (e: Exception) {
-                    // Graceful fallback: initial local catalog remains active
-                }
-            }
+            // Home owns optional discovery refreshes. Playback can use this real local
+            // pool immediately, without launching a competing discovery pass at startup.
         }
     }
 
@@ -676,6 +687,8 @@ class PlayerViewModel(
     // ==========================================
     private val _importState = MutableStateFlow(PlaylistImportUiState())
     val importState: StateFlow<PlaylistImportUiState> = _importState.asStateFlow()
+    val isImportDialogOpen = importState.map { it.isDialogOpen }.distinctUntilChanged()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), false)
     private var importJob: Job? = null
 
     fun openImportDialog() {
@@ -744,6 +757,7 @@ class PlayerViewModel(
 
         importJob?.cancel()
         importJob = viewModelScope.launch {
+            val work = com.example.performance.BackgroundWorkCoordinator.busy()
             try {
                 val platform = currentState.selectedPlatform
                 _importState.update {
@@ -807,11 +821,11 @@ class PlayerViewModel(
                         lastSummary = summary
                     )
                 }
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
                 _importState.update {
                     it.copy(step = PlaylistImportStep.Error(e.message ?: "Failed to import playlist."))
                 }
-            }
+            } finally { work.close() }
         }
     }
 
@@ -824,6 +838,7 @@ class PlayerViewModel(
         }
 
         viewModelScope.launch {
+            val work = com.example.performance.BackgroundWorkCoordinator.busy()
             _importState.update { it.copy(step = PlaylistImportStep.Saving(summary.playlistTitle)) }
             try {
                 val title = _importState.value.customTitle.ifBlank { summary.playlistTitle }
@@ -847,11 +862,11 @@ class PlayerViewModel(
                     )
                 }
                 onSaved?.invoke(playlistId)
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
                 _importState.update {
                     it.copy(step = PlaylistImportStep.Error("Error saving playlist to library: ${e.message}"))
                 }
-            }
+            } finally { work.close() }
         }
     }
 

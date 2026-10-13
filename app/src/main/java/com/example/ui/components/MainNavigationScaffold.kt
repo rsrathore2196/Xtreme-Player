@@ -72,6 +72,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
+import androidx.compose.animation.core.updateTransition
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.runtime.setValue
 import com.example.ui.theme.LiquidGlass
 import com.example.ui.theme.bouncyClickable
@@ -123,7 +127,7 @@ fun MainNavigationScaffold(
     val catalogDetail by viewModel.catalogBrowser.detail.collectAsStateWithLifecycle()
     val selectedPlaylistWithTracks by viewModel.selectedPlaylistTracks.collectAsStateWithLifecycle()
     val isDarkMode by viewModel.isDarkMode.collectAsStateWithLifecycle()
-    val importState by viewModel.importState.collectAsStateWithLifecycle()
+    val importDialogOpen by viewModel.isImportDialogOpen.collectAsStateWithLifecycle()
     val isDynamicGlassEnabled by viewModel.isDynamicGlassEnabled.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
@@ -137,6 +141,8 @@ fun MainNavigationScaffold(
     )
 
     var selectedTabIndex by remember { mutableIntStateOf(0) }
+    val tabState = rememberSaveableStateHolder()
+    val tabTransition = updateTransition(selectedTabIndex, label = "tab_navigation_transition")
     var isPlayerExpanded by remember { mutableStateOf(false) }
     var isQueueOpen by remember { mutableStateOf(false) }
     var isEqualizerOpen by remember { mutableStateOf(false) }
@@ -178,6 +184,11 @@ fun MainNavigationScaffold(
     val playerVisibility = remember { androidx.compose.animation.core.MutableTransitionState(false) }
     playerVisibility.targetState = isPlayerExpanded && playerUiState.currentTrack != null
     val playerCoversContent = playerVisibility.isIdle && playerVisibility.currentState && playerVisibility.targetState
+    val transitionRunning = !playerVisibility.isIdle || tabTransition.isRunning
+    DisposableEffect(transitionRunning) {
+        val work = if (transitionRunning) com.example.performance.BackgroundWorkCoordinator.busy() else null
+        onDispose { work?.close() }
+    }
     val homeLifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
     // Leave the rendered Home backdrop intact, but keep its data work out of both player transitions.
     val homeIsVisible = selectedTabIndex == 0 && !isPlayerExpanded && playerVisibility.isIdle &&
@@ -190,6 +201,16 @@ fun MainNavigationScaffold(
     }
 
     val appColors = LocalAppColors.current
+    val artworkTrack = playerUiState.currentTrack
+    LaunchedEffect(artworkTrack?.id, artworkTrack?.coverUrl, appColors.isDark,
+        appColors.primaryAccent, appColors.cardBackgroundElevated) {
+        if (artworkTrack != null) homeLifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.RESUMED) {
+            try { com.example.ui.util.preparePlayerArtwork(context, artworkTrack, appColors.isDark,
+                appColors.primaryAccent, appColors.cardBackgroundElevated) }
+            catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (_: Exception) { /* The visible image loader remains the fallback. */ }
+        }
+    }
 
     // These screens own their edge spring; disable Android's competing stretch effect.
     val platformOverscroll = LocalOverscrollConfiguration.current
@@ -205,7 +226,8 @@ fun MainNavigationScaffold(
                 containerColor = appColors.scaffoldBackground
             ) { _ ->
             Box(modifier = Modifier.fillMaxSize()) {
-                Box(Modifier.fillMaxSize().xtremeSharedBackdropSource(enabled = isDynamicGlassEnabled)) {
+                Box(Modifier.fillMaxSize().drawWithContent { if (!playerCoversContent) drawContent() }
+                    .xtremeSharedBackdropSource(enabled = isDynamicGlassEnabled && !playerCoversContent)) {
                 CompositionLocalProvider(LocalVisualEffectsActive provides (!playerCoversContent && catalogDetail == null)) {
                 // If playlist detail is open, show it with a smooth animated transition
                 val currentPlaylist = selectedPlaylistWithTracks
@@ -241,8 +263,7 @@ fun MainNavigationScaffold(
                 }
 
                 if (currentPlaylist == null) {
-                    AnimatedContent(
-                        targetState = selectedTabIndex,
+                    tabTransition.AnimatedContent(
                         transitionSpec = {
                             (if (targetState == 3) {
                                 // Keep the existing zoom, with a bounded opening duration.
@@ -306,10 +327,10 @@ fun MainNavigationScaffold(
                                 )
                             }).using(null)
                         },
-                        label = "tab_navigation_transition",
                         modifier = Modifier
                             .fillMaxSize()
                     ) { tabIndex ->
+                      tabState.SaveableStateProvider(tabIndex) {
                         when (tabIndex) {
                             0 -> HomeScreen(
                                 homeViewModel = homeViewModel,
@@ -391,6 +412,7 @@ fun MainNavigationScaffold(
                                 )
                             }
                         }
+                      }
                     }
                 }
 
@@ -591,23 +613,7 @@ fun MainNavigationScaffold(
         }
 
         // PLAYLIST IMPORT DIALOG (Spotify, YouTube Music, Apple Music, CSV)
-        if (importState.isDialogOpen) {
-            PlaylistImportDialog(
-                state = importState,
-                isDarkMode = isDarkMode,
-                onDismiss = { viewModel.closeImportDialog() },
-                onInputChanged = { viewModel.onImportInputChanged(it) },
-                onPlatformChanged = { viewModel.onImportPlatformChanged(it) },
-                onTokenChanged = { viewModel.onImportTokenChanged(it) },
-                onCustomTitleChanged = { viewModel.onCustomTitleChanged(it) },
-                onCustomDescriptionChanged = { viewModel.onCustomDescriptionChanged(it) },
-                onLoadSample = { viewModel.loadSamplePlaylist(it) },
-                onStartImport = { viewModel.startPlaylistImport() },
-                onSavePlaylist = { onSaved -> viewModel.saveImportedPlaylist(onSaved) },
-                onResetStep = { viewModel.resetImportStep() },
-                onOpenPlaylist = { playlistId -> viewModel.openPlaylist(playlistId) }
-            )
-        }
+        if (importDialogOpen) ImportDialogHost(viewModel, isDarkMode)
     }
 }
 }
@@ -641,5 +647,25 @@ fun FloatingPillBottomBar(
         items = items,
         modifier = modifier,
         ambientGlowColor = ambientGlowColor
+    )
+}
+
+@Composable
+private fun ImportDialogHost(viewModel: PlayerViewModel, isDarkMode: Boolean) {
+    val importState by viewModel.importState.collectAsStateWithLifecycle()
+    PlaylistImportDialog(
+        state = importState,
+        isDarkMode = isDarkMode,
+        onDismiss = { viewModel.closeImportDialog() },
+        onInputChanged = { viewModel.onImportInputChanged(it) },
+        onPlatformChanged = { viewModel.onImportPlatformChanged(it) },
+        onTokenChanged = { viewModel.onImportTokenChanged(it) },
+        onCustomTitleChanged = { viewModel.onCustomTitleChanged(it) },
+        onCustomDescriptionChanged = { viewModel.onCustomDescriptionChanged(it) },
+        onLoadSample = { viewModel.loadSamplePlaylist(it) },
+        onStartImport = { viewModel.startPlaylistImport() },
+        onSavePlaylist = { onSaved -> viewModel.saveImportedPlaylist(onSaved) },
+        onResetStep = { viewModel.resetImportStep() },
+        onOpenPlaylist = { playlistId -> viewModel.openPlaylist(playlistId) }
     )
 }
