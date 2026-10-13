@@ -24,35 +24,24 @@ import androidx.compose.material.icons.filled.AllInclusive
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.ModalBottomSheetProperties
 import androidx.compose.material3.SheetState
-import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.setValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.snapshotFlow
-import androidx.compose.runtime.withFrameNanos
 import androidx.activity.compose.BackHandler
-import androidx.compose.ui.MotionDurationScale
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -63,6 +52,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.testTag
 import coil.compose.AsyncImage
 import com.example.data.model.MusicTrack
 import com.example.ui.theme.LocalAppColors
@@ -88,50 +78,28 @@ fun QueueBottomSheet(
     onToggleAutoplay: () -> Unit = {}
 ) {
     val scope = rememberCoroutineScope()
-    val latestDismiss by rememberUpdatedState(onDismiss)
-    var closing by remember { mutableStateOf(false) }
-    // Keep Material's native sheet and drag behavior, shortening only its programmatic
-    // motion. Multiply the system scale so disabled/reduced animations stay respected.
-    val motionScale = remember(scope) {
-        object : MotionDurationScale {
-            override val scaleFactor: Float
-                get() = (scope.coroutineContext[MotionDurationScale]?.scaleFactor ?: 1f) * 0.65f
-        }
-    }
-    lateinit var sheetState: SheetState
-    fun dismissWithAnimation() {
-        if (closing) return
-        closing = true
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    fun dismissSheet() {
         scope.launch {
-            try {
-                withContext(motionScale) { sheetState.hide() }
-                if (!sheetState.isVisible) latestDismiss()
-            } finally { closing = false }
+            sheetState.hide()
+        }.invokeOnCompletion {
+            if (!sheetState.isVisible) {
+                onDismiss()
+            }
         }
     }
-    sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true,
-        confirmValueChange = { target ->
-            if (target == SheetValue.Hidden && !closing) {
-                dismissWithAnimation()
-                false
-            } else true
-        })
-    LaunchedEffect(sheetState) {
-        snapshotFlow { sheetState.hasExpandedState }.first { it }
-        // Anchor installation schedules Material's automatic show for the next composition.
-        // Wait until that effect starts, then replace it with the faster native motion.
-        withFrameNanos { }
-        withFrameNanos { }
-        if (!closing) withContext(motionScale) { sheetState.show() }
+
+    val displayQueue = remember(queue, currentTrack) {
+        if (queue.isEmpty() && currentTrack != null) listOf(currentTrack) else queue
     }
-    val currentIdx = remember(queue, currentTrack?.id) { queue.indexOfFirst { it.id == currentTrack?.id } }
+    val currentIdx = remember(displayQueue, currentTrack?.id) { displayQueue.indexOfFirst { it.id == currentTrack?.id } }
     val appColors = LocalAppColors.current
     val isDark = appColors.isDark
 
     ModalBottomSheet(
-        onDismissRequest = { latestDismiss() },
+        onDismissRequest = onDismiss,
         sheetState = sheetState,
-        properties = ModalBottomSheetProperties(shouldDismissOnBackPress = false),
         containerColor = if (appColors.isAmoled) Color(0xFF000000) else appColors.cardBackground,
         dragHandle = {
             Box(
@@ -142,9 +110,10 @@ fun QueueBottomSheet(
                     .clip(RoundedCornerShape(2.dp))
                     .background(appColors.cardBorder)
             )
-        }
+        },
+        modifier = Modifier.testTag("queue_bottom_sheet")
     ) {
-        BackHandler { dismissWithAnimation() }
+        BackHandler { dismissSheet() }
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -156,7 +125,10 @@ fun QueueBottomSheet(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
+                ) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.QueueMusic,
                         contentDescription = null,
@@ -173,12 +145,24 @@ fun QueueBottomSheet(
                             )
                         )
                         Text(
-                            text = "${queue.size} high-fidelity tracks in session",
+                            text = "${displayQueue.size} tracks in queue",
                             style = MaterialTheme.typography.bodySmall.copy(
                                 color = appColors.textMuted
                             )
                         )
                     }
+                }
+
+                IconButton(
+                    onClick = { dismissSheet() },
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Close Queue",
+                        tint = appColors.textSecondary,
+                        modifier = Modifier.size(20.dp)
+                    )
                 }
             }
 
@@ -262,17 +246,52 @@ fun QueueBottomSheet(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(360.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                itemsIndexed(
-                    items = queue,
-                    key = { index, track -> "${track.id}_$index" },
-                    contentType = { _, _ -> "queue_item" }
-                ) { index, track ->
+            if (displayQueue.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(200.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                            contentDescription = null,
+                            tint = appColors.textMuted,
+                            modifier = Modifier.size(40.dp)
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Queue is empty",
+                            style = MaterialTheme.typography.titleSmall.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = appColors.textPrimary
+                            )
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Play songs or tap 'Add to Queue' to build your list",
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                color = appColors.textSecondary
+                            )
+                        )
+                    }
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(360.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    itemsIndexed(
+                        items = displayQueue,
+                        key = { index, track -> "${track.id}_$index" },
+                        contentType = { _, _ -> "queue_item" }
+                    ) { index, track ->
                     val isCurrentlyPlaying = track.id == currentTrack?.id
                     val isUpNext = !isCurrentlyPlaying && (index == currentIdx + 1 || (currentIdx == -1 && index == 0))
                     val isUpcomingAutoplay = !isCurrentlyPlaying && !isUpNext && index > currentIdx
@@ -421,7 +440,7 @@ fun QueueBottomSheet(
                                     )
                                 }
                             }
-                            if (index < queue.lastIndex) {
+                            if (index < displayQueue.lastIndex) {
                                 IconButton(
                                     onClick = { onMoveTrack(index, index + 1) },
                                     modifier = Modifier.size(32.dp)
@@ -437,6 +456,7 @@ fun QueueBottomSheet(
                         }
                     }
                 }
+            }
             }
 
             Spacer(modifier = Modifier.height(16.dp))

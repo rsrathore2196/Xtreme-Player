@@ -22,11 +22,13 @@ object YouTubeAudioStreamService {
     private data class Client(val name: String, val version: String, val number: String, val agent: String)
     private val clients = listOf(
         Client("ANDROID_VR", "1.65.10", "28", "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L) gzip"),
-        Client("IOS", "21.26.4", "5", "com.google.ios.youtube/21.26.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)")
+        Client("IOS", "21.26.4", "5", "com.google.ios.youtube/21.26.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)"),
+        Client("ANDROID", "19.34.42", "3", "com.google.android.youtube/19.34.42 (Linux; U; Android 14; en_US) gzip"),
+        Client("WEB_REMIX", "1.20240101.01.00", "67", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     )
     val playbackHeaders = mapOf("User-Agent" to "Mozilla/5.0", "Referer" to "https://www.youtube.com/")
-    private val http = OkHttpClient.Builder().connectTimeout(4, TimeUnit.SECONDS)
-        .readTimeout(4, TimeUnit.SECONDS).callTimeout(5, TimeUnit.SECONDS).build()
+    private val http = OkHttpClient.Builder().connectTimeout(8, TimeUnit.SECONDS)
+        .readTimeout(8, TimeUnit.SECONDS).callTimeout(10, TimeUnit.SECONDS).build()
     private val cache = android.util.LruCache<String, AudioStream>(128)
     private val locks = Array(16) { Mutex() }
     private val slots = kotlinx.coroutines.sync.Semaphore(3)
@@ -66,10 +68,15 @@ object YouTubeAudioStreamService {
                     try {
                         val clientContext = JSONObject().put("clientName", client.name).put("clientVersion", client.version)
                             .put("hl", "en").put("gl", "US").put("userAgent", client.agent)
-                        if (client.name == "ANDROID_VR") clientContext.put("androidSdkVersion", 32)
-                            .put("osName", "Android").put("osVersion", "12L").put("deviceMake", "Oculus").put("deviceModel", "Quest 3")
-                        else clientContext.put("osName", "iPhone").put("osVersion", "18.3.2.22D82")
-                            .put("deviceMake", "Apple").put("deviceModel", "iPhone16,2")
+                        when (client.name) {
+                            "ANDROID_VR" -> clientContext.put("androidSdkVersion", 32)
+                                .put("osName", "Android").put("osVersion", "12L").put("deviceMake", "Oculus").put("deviceModel", "Quest 3")
+                            "IOS" -> clientContext.put("osName", "iPhone").put("osVersion", "18.3.2.22D82")
+                                .put("deviceMake", "Apple").put("deviceModel", "iPhone16,2")
+                            "ANDROID" -> clientContext.put("androidSdkVersion", 34)
+                                .put("osName", "Android").put("osVersion", "14").put("deviceMake", "Google").put("deviceModel", "Pixel 8")
+                            "WEB_REMIX" -> clientContext.put("osName", "Windows").put("osVersion", "10.0")
+                        }
                         val body = JSONObject().put("context", JSONObject().put("client", clientContext)).put("videoId", videoId)
                         val request = Request.Builder().url("https://www.youtube.com/youtubei/v1/player?prettyPrint=false")
                             .header("User-Agent", client.agent).header("X-YouTube-Client-Name", client.number)
@@ -95,6 +102,17 @@ object YouTubeAudioStreamService {
                                 if (expiry <= System.currentTimeMillis() + 15_000L) continue
                                 val result = AudioStream(url, format.optInt("bitrate") / 1000, false,
                                     "youtube:$videoId:${format.optInt("itag")}:${format.optString("lastModified")}", minOf(until, expiry))
+                                cache.put(key, result)
+                                cache.put("$videoId:${quality.id}:false", result)
+                                return@withLock result
+                            }
+                            // Direct fallback to highest quality googlevideo URL if byte-probe timed out
+                            val directFormat = audio.firstOrNull { mediaUrl(it.optString("url")) != null }
+                            if (directFormat != null) {
+                                val url = directFormat.optString("url")
+                                val expiry = mediaUrl(url)?.queryParameter("expire")?.toLongOrNull()?.let { it * 1000L - 30_000L } ?: until
+                                val result = AudioStream(url, directFormat.optInt("bitrate") / 1000, false,
+                                    "youtube:$videoId:${directFormat.optInt("itag")}:${directFormat.optString("lastModified")}", minOf(until, expiry))
                                 cache.put(key, result)
                                 cache.put("$videoId:${quality.id}:false", result)
                                 return@withLock result

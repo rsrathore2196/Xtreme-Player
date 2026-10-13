@@ -707,6 +707,12 @@ fun ExpandedPlayerScreen(
                                 modifier = Modifier
                                     .weight(1f)
                                     .padding(horizontal = 8.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .bouncyClickable {
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        onOpenQueue()
+                                    }
+                                    .testTag("player_now_playing_title_header")
                             ) {
                                 Text(
                                     text = "NOW PLAYING",
@@ -758,6 +764,7 @@ fun ExpandedPlayerScreen(
                                     expanded = isMenuOpen,
                                     onDismissRequest = { isMenuOpen = false },
                                     track = track,
+                                    onOpenQueue = onOpenQueue,
                                     onAddToQueue = onAddToQueue,
                                     onAddToPlaylist = onAddToPlaylist,
                                     onOpenEqualizer = onOpenEqualizer,
@@ -1196,6 +1203,12 @@ fun ExpandedPlayerScreen(
                     modifier = Modifier
                         .weight(1f)
                         .padding(horizontal = 8.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .bouncyClickable {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onOpenQueue()
+                        }
+                        .testTag("player_landscape_now_playing_title_header")
                 ) {
                     Text(
                         text = "NOW PLAYING",
@@ -1246,6 +1259,7 @@ fun ExpandedPlayerScreen(
                         expanded = isMenuOpen,
                         onDismissRequest = { isMenuOpen = false },
                         track = track,
+                        onOpenQueue = onOpenQueue,
                         onAddToQueue = onAddToQueue,
                         onAddToPlaylist = onAddToPlaylist,
                         onOpenEqualizer = onOpenEqualizer,
@@ -2049,6 +2063,7 @@ private fun PlayerOptionsMenu(
     expanded: Boolean,
     onDismissRequest: () -> Unit,
     track: MusicTrack,
+    onOpenQueue: () -> Unit = {},
     onAddToQueue: (MusicTrack) -> Unit,
     onAddToPlaylist: (MusicTrack) -> Unit,
     onOpenEqualizer: () -> Unit,
@@ -2107,6 +2122,41 @@ private fun PlayerOptionsMenu(
                 .padding(vertical = 4.dp, horizontal = 4.dp)
         ) {
             val itemIconBg = if (appColors.isAmoled) Color(0xFF141414) else if (isDark) appColors.cardBorder.copy(alpha = 0.35f) else appColors.chipBackground
+
+            // Action 0: View Now Playing & Queue
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        text = "Now Playing & Queue",
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            fontWeight = FontWeight.SemiBold,
+                            color = appColors.textPrimary
+                        )
+                    )
+                },
+                leadingIcon = {
+                    Box(
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clip(CircleShape)
+                            .background(itemIconBg),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                            contentDescription = null,
+                            tint = appColors.primaryAccent,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                },
+                onClick = {
+                    AppHaptics.performTap(context)
+                    onDismissRequest()
+                    onOpenQueue()
+                },
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+            )
 
             listOf(Triple("Sleep Mode", Icons.Default.Timer, onOpenSleepTimer),
                 Triple("Equalizer", Icons.Default.Equalizer, onOpenEqualizer)).forEach { (title, icon, action) ->

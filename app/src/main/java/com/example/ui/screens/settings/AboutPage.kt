@@ -174,7 +174,7 @@ fun AboutPage(
                 Spacer(modifier = Modifier.height(14.dp))
 
                 Text(
-                    text = "High-performance studio-grade music player engineered for audiophiles. Delivering Hi-Res Lossless and 320 kbps high quality audio streaming, real-time 5-band parametric equalization, dynamic bass enhancement, and 3D spatial audio.",
+                    text = "High-performance studio-grade music player engineered for audiophiles. Delivering Hi-Res Lossless and 320 kbps high quality audio streaming, real-time 5-band parametric equalization, and dynamic bass enhancement.",
                     fontSize = 12.5.sp,
                     color = appColors.textMuted,
                     lineHeight = 18.sp,
