@@ -117,20 +117,13 @@ fun MainNavigationScaffold(
     modifier: Modifier = Modifier
 ) {
     val playerUiState by viewModel.navigationPlayerUiState.collectAsStateWithLifecycle()
-    val selectedQuality by viewModel.selectedQuality.collectAsStateWithLifecycle()
-    val currentPlayingTrackId by viewModel.currentPlayingTrackId.collectAsStateWithLifecycle()
-    val favoriteTracks by viewModel.favoriteTracks.collectAsStateWithLifecycle()
-    val playlists by viewModel.playlists.collectAsStateWithLifecycle()
-    val searchState by viewModel.searchState.collectAsStateWithLifecycle()
-    val catalogSearch by viewModel.catalogBrowser.search.collectAsStateWithLifecycle()
+    // Retain navigation/back handling without reading search results on unrelated tabs.
+    val searchStateHolder = viewModel.searchState.collectAsStateWithLifecycle()
+    val currentPlayingTrackId = playerUiState.currentTrack?.id
     val catalogDetail by viewModel.catalogBrowser.detail.collectAsStateWithLifecycle()
     val selectedPlaylistWithTracks by viewModel.selectedPlaylistTracks.collectAsStateWithLifecycle()
-    val effectsState by viewModel.effectsState.collectAsStateWithLifecycle()
     val isDarkMode by viewModel.isDarkMode.collectAsStateWithLifecycle()
-    val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
-    val customThemeState by viewModel.customThemeState.collectAsStateWithLifecycle()
     val importState by viewModel.importState.collectAsStateWithLifecycle()
-    val userProfile by viewModel.userProfile.collectAsStateWithLifecycle()
     val isDynamicGlassEnabled by viewModel.isDynamicGlassEnabled.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
@@ -164,7 +157,7 @@ fun MainNavigationScaffold(
     }
 
     // Handle Back Press gracefully across the app
-    val isSearchSubPage = selectedTabIndex == 1 && (searchState.selectedGenre != "All" || searchState.query.isNotBlank())
+    val isSearchSubPage = selectedTabIndex == 1 && (searchStateHolder.value.selectedGenre != "All" || searchStateHolder.value.query.isNotBlank())
     BackHandler(enabled = catalogDetail != null || isPlayerExpanded || selectedPlaylistWithTracks != null || isSearchSubPage || selectedTabIndex != 0) {
         if (isPlayerExpanded) {
             isPlayerExpanded = false
@@ -174,7 +167,7 @@ fun MainNavigationScaffold(
             viewModel.closePlaylist()
         } else if (isSearchSubPage) {
             viewModel.selectGenre("All")
-            if (searchState.query.isNotBlank()) {
+            if (searchStateHolder.value.query.isNotBlank()) {
                 viewModel.onSearchQueryChange("")
             }
         } else if (selectedTabIndex != 0) {
@@ -280,31 +273,31 @@ fun MainNavigationScaffold(
                                     )
                                 )
                             } else if (targetState > initialState) {
-                                // Kinetic directional spring slide & scale forward between tabs (120 FPS tuned)
+                                // Preserve the original directional spring travel instead of shortening it.
                                 (slideInHorizontally(
                                     initialOffsetX = { (it * 0.12f).toInt() },
-                                    animationSpec = spring(dampingRatio = 0.84f, stiffness = 1800f)
+                                    animationSpec = spring(dampingRatio = 0.84f, stiffness = 950f)
                                 ) + fadeIn(
                                     animationSpec = tween(130, easing = LinearOutSlowInEasing)
                                 )).togetherWith(
                                     slideOutHorizontally(
                                         targetOffsetX = { (-it * 0.12f).toInt() },
-                                        animationSpec = spring(dampingRatio = 0.84f, stiffness = 1800f)
+                                        animationSpec = spring(dampingRatio = 0.84f, stiffness = 950f)
                                     ) + fadeOut(
                                         animationSpec = tween(90, easing = FastOutLinearInEasing)
                                     )
                                 )
                             } else {
-                                // Kinetic directional spring slide & scale backward between tabs (120 FPS tuned)
+                                // Use the same coordinated spring when travelling back between tabs.
                                 (slideInHorizontally(
                                     initialOffsetX = { (-it * 0.12f).toInt() },
-                                    animationSpec = spring(dampingRatio = 0.84f, stiffness = 1800f)
+                                    animationSpec = spring(dampingRatio = 0.84f, stiffness = 950f)
                                 ) + fadeIn(
                                     animationSpec = tween(130, easing = LinearOutSlowInEasing)
                                 )).togetherWith(
                                     slideOutHorizontally(
                                         targetOffsetX = { (it * 0.12f).toInt() },
-                                        animationSpec = spring(dampingRatio = 0.84f, stiffness = 1800f)
+                                        animationSpec = spring(dampingRatio = 0.84f, stiffness = 950f)
                                     ) + fadeOut(
                                         animationSpec = tween(90, easing = FastOutLinearInEasing)
                                     )
@@ -329,57 +322,72 @@ fun MainNavigationScaffold(
                                 onPlayInfiniteRadio = { seed -> viewModel.playInfiniteRadio(seed) },
                                 onAddToQueue = { track -> viewModel.addToQueue(track) }
                             )
-                            1 -> SearchScreen(
-                                searchState = searchState,
-                                catalogState = catalogSearch,
-                                onSelectType = viewModel.catalogBrowser::selectType,
-                                onLoadMore = viewModel.catalogBrowser::loadMoreSearch,
-                                onRetrySearch = { if (catalogSearch.page.nextPage != null && catalogSearch.error != null) viewModel.catalogBrowser.loadMoreSearch() else viewModel.catalogBrowser.retrySearch() },
-                                onOpenCatalog = viewModel.catalogBrowser::open,
-                                currentPlayingTrackId = currentPlayingTrackId,
-                                isPlaying = playerUiState.isPlaying,
-                                isLoading = playerUiState.isLoading,
-                                onQueryChange = { q -> viewModel.onSearchQueryChange(q) },
-                                onSelectGenre = { g -> viewModel.selectGenre(g) },
-                                onSelectSource = { s -> viewModel.selectSource(s) },
-                                onTrackClick = { track, queue -> viewModel.playFromSearch(track, queue) },
-                                onToggleFavorite = { track -> viewModel.toggleLike(track) }
-                            )
-                            2 -> LibraryScreen(
-                                favoriteTracks = favoriteTracks,
-                                playlists = playlists,
-                                currentPlayingTrackId = currentPlayingTrackId,
-                                isDarkMode = isDarkMode,
-                                onTrackClick = { track, queue -> viewModel.playTrack(track, queue) },
-                                onToggleFavorite = { track -> viewModel.toggleLike(track) },
-                                onOpenPlaylist = { id -> viewModel.openPlaylist(id) },
-                                onCreatePlaylistClick = { isCreatePlaylistOpen = true },
-                                onImportPlaylistClick = { viewModel.openImportDialog() }
-                            )
-                            3 -> SettingsScreen(
-                                selectedQuality = selectedQuality,
-                                effectsState = effectsState,
-                                isDarkMode = isDarkMode,
-                                themeMode = themeMode,
-                                userProfile = userProfile,
-                                isDynamicGlassEnabled = isDynamicGlassEnabled,
-                                onToggleDynamicGlass = { viewModel.setDynamicGlassEnabled(it) },
-                                onSubpageStateChanged = { isOpen -> isSettingsSubpageOpen = isOpen },
-                                onNavigateBackToHome = { selectedTabIndex = 0 },
-                                onUpdateProfile = { updated -> viewModel.updateUserProfile(updated) },
-                                onSelectThemeMode = { mode -> viewModel.setThemeMode(mode) },
-                                onToggleDarkMode = { viewModel.toggleDarkMode() },
-                                onAudioQualitySelected = { quality -> viewModel.setAudioQuality(quality) },
-                                onCrystalClarityToggle = { enabled -> viewModel.setCrystalClarityEnabled(enabled) },
-                                onToggleEqualizer = { enabled -> viewModel.setEqualizerEnabled(enabled) },
-                                onOpenEqualizer = { isEqualizerOpen = true },
-                                onSelectPreset = { preset -> viewModel.setEqualizerPreset(preset) },
-                                customThemeState = customThemeState,
-                                onUpdateCustomThemeState = { updatedState -> viewModel.updateCustomThemeState(updatedState) },
-                                onApplyPreset = { preset -> viewModel.applyThemePreset(preset) },
-                                onTextScaleChanged = { index -> viewModel.setTextScaleIndex(index) },
-                                onUiScaleChanged = { index -> viewModel.setUiScaleIndex(index) }
-                            )
+                            1 -> {
+                                val searchState by searchStateHolder
+                                val catalogSearch by viewModel.catalogBrowser.search.collectAsStateWithLifecycle()
+                                SearchScreen(
+                                    searchState = searchState,
+                                    catalogState = catalogSearch,
+                                    onSelectType = viewModel.catalogBrowser::selectType,
+                                    onLoadMore = viewModel.catalogBrowser::loadMoreSearch,
+                                    onRetrySearch = { if (catalogSearch.page.nextPage != null && catalogSearch.error != null) viewModel.catalogBrowser.loadMoreSearch() else viewModel.catalogBrowser.retrySearch() },
+                                    onOpenCatalog = viewModel.catalogBrowser::open,
+                                    currentPlayingTrackId = currentPlayingTrackId,
+                                    isPlaying = playerUiState.isPlaying,
+                                    isLoading = playerUiState.isLoading,
+                                    onQueryChange = { q -> viewModel.onSearchQueryChange(q) },
+                                    onSelectGenre = { g -> viewModel.selectGenre(g) },
+                                    onSelectSource = { s -> viewModel.selectSource(s) },
+                                    onTrackClick = { track, queue -> viewModel.playFromSearch(track, queue) },
+                                    onToggleFavorite = { track -> viewModel.toggleLike(track) }
+                                )
+                            }
+                            2 -> {
+                                val favoriteTracks by viewModel.favoriteTracks.collectAsStateWithLifecycle()
+                                val playlists by viewModel.playlists.collectAsStateWithLifecycle()
+                                LibraryScreen(
+                                    favoriteTracks = favoriteTracks,
+                                    playlists = playlists,
+                                    currentPlayingTrackId = currentPlayingTrackId,
+                                    isDarkMode = isDarkMode,
+                                    onTrackClick = { track, queue -> viewModel.playTrack(track, queue) },
+                                    onToggleFavorite = { track -> viewModel.toggleLike(track) },
+                                    onOpenPlaylist = { id -> viewModel.openPlaylist(id) },
+                                    onCreatePlaylistClick = { isCreatePlaylistOpen = true },
+                                    onImportPlaylistClick = { viewModel.openImportDialog() }
+                                )
+                            }
+                            3 -> {
+                                val selectedQuality by viewModel.selectedQuality.collectAsStateWithLifecycle()
+                                val effectsState by viewModel.effectsState.collectAsStateWithLifecycle()
+                                val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
+                                val customThemeState by viewModel.customThemeState.collectAsStateWithLifecycle()
+                                val userProfile by viewModel.userProfile.collectAsStateWithLifecycle()
+                                SettingsScreen(
+                                    selectedQuality = selectedQuality,
+                                    effectsState = effectsState,
+                                    isDarkMode = isDarkMode,
+                                    themeMode = themeMode,
+                                    userProfile = userProfile,
+                                    isDynamicGlassEnabled = isDynamicGlassEnabled,
+                                    onToggleDynamicGlass = { viewModel.setDynamicGlassEnabled(it) },
+                                    onSubpageStateChanged = { isOpen -> isSettingsSubpageOpen = isOpen },
+                                    onNavigateBackToHome = { selectedTabIndex = 0 },
+                                    onUpdateProfile = { updated -> viewModel.updateUserProfile(updated) },
+                                    onSelectThemeMode = { mode -> viewModel.setThemeMode(mode) },
+                                    onToggleDarkMode = { viewModel.toggleDarkMode() },
+                                    onAudioQualitySelected = { quality -> viewModel.setAudioQuality(quality) },
+                                    onCrystalClarityToggle = { enabled -> viewModel.setCrystalClarityEnabled(enabled) },
+                                    onToggleEqualizer = { enabled -> viewModel.setEqualizerEnabled(enabled) },
+                                    onOpenEqualizer = { isEqualizerOpen = true },
+                                    onSelectPreset = { preset -> viewModel.setEqualizerPreset(preset) },
+                                    customThemeState = customThemeState,
+                                    onUpdateCustomThemeState = { updatedState -> viewModel.updateCustomThemeState(updatedState) },
+                                    onApplyPreset = { preset -> viewModel.applyThemePreset(preset) },
+                                    onTextScaleChanged = { index -> viewModel.setTextScaleIndex(index) },
+                                    onUiScaleChanged = { index -> viewModel.setUiScaleIndex(index) }
+                                )
+                            }
                         }
                     }
                 }
@@ -536,6 +544,7 @@ fun MainNavigationScaffold(
 
         // EQUALIZER DIALOG
         if (isEqualizerOpen) {
+            val effectsState by viewModel.effectsState.collectAsStateWithLifecycle()
             EqualizerDialog(
                 effectsState = effectsState,
                 onEnableChanged = { viewModel.setEqualizerEnabled(it) },
@@ -550,6 +559,7 @@ fun MainNavigationScaffold(
 
         // ADD TO PLAYLIST DIALOG
         trackToAddToPlaylist?.let { track ->
+            val playlists by viewModel.playlists.collectAsStateWithLifecycle()
             AddToPlaylistDialog(
                 track = track,
                 playlists = playlists,

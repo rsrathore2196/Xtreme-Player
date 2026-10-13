@@ -27,7 +27,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -119,20 +118,20 @@ fun AnimatedBottomBar(
                 key(item.index) {
                     val isSelected = selectedTabIndex == item.index
 
-                    val iconScale by animateFloatAsState(
+                    val iconScale = animateFloatAsState(
                         targetValue = if (isSelected) 1.12f else 1.0f,
                         animationSpec = spring(
                             dampingRatio = 0.68f,
-                            stiffness = 1700f
+                            stiffness = 1200f
                         ),
                         label = "tab_icon_scale_${item.index}"
                     )
 
-                    val bounceOffsetY by animateFloatAsState(
+                    val bounceOffsetY = animateFloatAsState(
                         targetValue = if (isSelected) -1.5f else 0f,
                         animationSpec = spring(
                             dampingRatio = 0.72f,
-                            stiffness = 1600f
+                            stiffness = 1100f
                         ),
                         label = "tab_bounce_y_${item.index}"
                     )
@@ -148,7 +147,7 @@ fun AnimatedBottomBar(
                         modifier = Modifier
                             .height(52.dp)
                             .graphicsLayer {
-                                translationY = bounceOffsetY
+                                translationY = bounceOffsetY.value
                             }
                             .then(
                                 if (isSelected) {
@@ -168,8 +167,8 @@ fun AnimatedBottomBar(
                             )
                             .animateContentSize(
                                 animationSpec = spring(
-                                    dampingRatio = 1f,
-                                    stiffness = 8000f
+                                    dampingRatio = 0.76f,
+                                    stiffness = 1050f
                                 )
                             )
                             .bouncyClickable { onTabSelected(item.index) }
@@ -219,12 +218,12 @@ fun AnimatedBottomBar(
                                 modifier = Modifier
                                     .size(24.dp)
                                     .graphicsLayer {
-                                        scaleX = iconScale
-                                        scaleY = iconScale
+                                        scaleX = iconScale.value
+                                        scaleY = iconScale.value
                                     }
                             )
 
-                            // Smooth snappy horizontal expansion and fade-in / shrink and fade-out for label (120 FPS tuned)
+                            // Keep label and capsule springs coordinated throughout expansion and contraction.
                             AnimatedVisibility(
                                 visible = isSelected,
                                 enter = fadeIn(
@@ -232,7 +231,7 @@ fun AnimatedBottomBar(
                                 ) + expandHorizontally(
                                     animationSpec = spring(
                                         dampingRatio = 0.76f,
-                                        stiffness = 1700f
+                                        stiffness = 1050f
                                     ),
                                     expandFrom = Alignment.Start
                                 ),
@@ -241,7 +240,7 @@ fun AnimatedBottomBar(
                                 ) + shrinkHorizontally(
                                     animationSpec = spring(
                                         dampingRatio = 0.76f,
-                                        stiffness = 1700f
+                                        stiffness = 1050f
                                     ),
                                     shrinkTowards = Alignment.Start
                                 )

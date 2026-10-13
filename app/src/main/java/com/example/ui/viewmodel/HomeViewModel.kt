@@ -37,6 +37,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
@@ -107,14 +109,15 @@ class HomeViewModel(
     private val personalizedEngine by lazy { PersonalizedHomeRecommendationEngine(listeningEventDao) }
     val favoriteTracks = homeVisible.flatMapLatest { visible ->
         if (visible) repository.getFavoriteTracks() else emptyFlow()
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
+    }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
     private val actualPlays = homeVisible.flatMapLatest { visible ->
         if (visible) listeningEventDao.observeActualPlays() else emptyFlow()
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
+    }.flowOn(Dispatchers.IO).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
     private val historyMetadata = actualPlays.map { events -> events.map { it.trackId }.distinct() }.distinctUntilChanged().map { ids ->
-        withContext(Dispatchers.IO) {
-            ids.chunked(900).flatMap { database.musicDao().getTracksByIds(it) }.map { it.toMusicTrack() }
+        val entities = withContext(Dispatchers.IO) {
+            ids.chunked(900).flatMap { database.musicDao().getTracksByIds(it) }
         }
+        entities.map { it.toMusicTrack() }
     }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
     private data class TasteInputs(val events: List<ListeningEventEntity>, val tracks: List<MusicTrack>,
         val favorites: List<MusicTrack>, val preferences: UserProfile)
@@ -167,6 +170,7 @@ class HomeViewModel(
         .map { recent ->
             recent.distinctBy { it.id }.take(6)
         }
+        .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
 
     // Card 2: YouTube Music Home Screen-Based Card
@@ -204,7 +208,9 @@ class HomeViewModel(
     )
     val personalizedCard: StateFlow<SectionState> = _personalizedCard.asStateFlow()
 
-    private val exposurePreferences = application.getSharedPreferences("home_shelf_exposure", Context.MODE_PRIVATE)
+    private val exposurePreferences by lazy {
+        application.getSharedPreferences("home_shelf_exposure", Context.MODE_PRIVATE)
+    }
 
     private data class Candidates(
         val quick: List<MusicTrack> = emptyList(),
@@ -229,14 +235,17 @@ class HomeViewModel(
         val inputs = RenderInputs(pool, taste, _userProfile.value, _catalogTracks.value,
             historyMetadata.value, favoriteTracks.value, recentlyPlayed.value)
         if (inputs == lastRenderInputs) return@withLock
-        val catalog = HomeRecommendationPolicy.originals(_catalogTracks.value + pool.quick + pool.era + pool.chart + historyMetadata.value + favoriteTracks.value)
+        currentCoroutineContext().ensureActive()
+        val catalog = HomeRecommendationPolicy.originals(inputs.catalog + pool.quick + pool.era + pool.chart + inputs.history + inputs.favorites)
         if (pool.generation != renderedGeneration) {
-            previousExposure = exposurePreferences.getStringSet("recordings_v2", emptySet()).orEmpty().toSet()
+            previousExposure = withContext(Dispatchers.IO) {
+                exposurePreferences.getStringSet("recordings_v2", emptySet()).orEmpty().toSet()
+            }
             renderedGeneration = pool.generation
         }
-        val shelves = personalizedEngine.generateHomeShelves(catalog, _userProfile.value,
-            favorites = favoriteTracks.value, taste = taste)
-        _homeShelves.value = shelves
+        val shelves = personalizedEngine.generateHomeShelves(catalog, inputs.profile,
+            favorites = inputs.favorites, taste = taste)
+        currentCoroutineContext().ensureActive()
         val seen = HomeRecommendationPolicy.Recordings()
         val chart = HomeRecommendationPolicy.originals(pool.chart).take(20)
         chart.forEach { seen.add(it) } // Charts have priority and retain their source ranking.
@@ -245,7 +254,7 @@ class HomeViewModel(
         }.sortedBy { HomeRecommendationPolicy.metadataKey(it) in previousExposure }
         val era = HomeRecommendationPolicy.diversify(fresh(pool.era), 15, seen)
         val plays = actualPlays.value.filter(UserTasteProfile::played).distinctBy { it.sessionId to it.trackId }
-        val historyArtists = historyMetadata.value.associate { it.id to HomeRecommendationPolicy.artists(it) }
+        val historyArtists = inputs.history.associate { it.id to HomeRecommendationPolicy.artists(it) }
         val artistCounts = if (taste.isColdStart) emptyMap() else plays.asSequence().flatMap { event ->
             historyArtists[event.trackId].orEmpty().asSequence()
         }.groupingBy { it }.eachCount()
@@ -254,10 +263,11 @@ class HomeViewModel(
             catalogByArtist.getOrPut(artist) { mutableListOf() }.add(track)
         }
         val artists = artistCounts.entries.sortedByDescending { it.value }.take(10).mapNotNull { (artist, count) ->
+            currentCoroutineContext().ensureActive()
             val matches = catalogByArtist[artist].orEmpty()
             val tracks = HomeRecommendationPolicy.diversify(fresh(matches), 3, seen).ifEmpty {
                 // An artist history card can use its actual played song even when it is in a chart.
-                recentlyPlayed.value.filter { artist in HomeRecommendationPolicy.artists(it) }.take(1)
+                inputs.recent.filter { artist in HomeRecommendationPolicy.artists(it) }.take(1)
             }
             if (tracks.isEmpty()) null else MostListenedArtist(
                 matches.firstOrNull()?.let { track -> (track.artist + "," + track.singers).split(',')
@@ -272,6 +282,9 @@ class HomeViewModel(
         val quickRanked = personalizedEngine.scoreAndRankCandidates(pool.quick, taste,
             limit = pool.quick.size, variationSeed = pool.generation)
         val quick = HomeRecommendationPolicy.diversify(fresh(quickRanked), 15, seen)
+        // Cancellation on a tab change must not publish a partially calculated stale shelf set.
+        currentCoroutineContext().ensureActive()
+        _homeShelves.value = shelves
         // Reranking must retain error/loading updates arriving from the refresh requests.
         _countryLanguageCard.update { it.copy(tracks = chart) }
         _eraCard.update { it.copy(tracks = era, isLoading = false, isLoaded = era.isNotEmpty()) }
@@ -280,11 +293,15 @@ class HomeViewModel(
         _personalizedCard.value = _personalizedCard.value.copy(tracks = personalized,
             isLoading = false, isLoaded = personalized.isNotEmpty())
         // The small Recently Played card consumes this existing history flow without recommendation filtering.
-        _listeningHistoryCard.value = _listeningHistoryCard.value.copy(tracks = recentlyPlayed.value,
-            isLoading = false, isLoaded = recentlyPlayed.value.isNotEmpty())
+        _listeningHistoryCard.value = _listeningHistoryCard.value.copy(tracks = inputs.recent,
+            isLoading = false, isLoaded = inputs.recent.isNotEmpty())
         val shown = chart + era + quick + personalized + artists.flatMap { it.tracks }
-        if (shown.isNotEmpty()) exposurePreferences.edit().putStringSet("recordings_v2",
-            shown.map(HomeRecommendationPolicy::metadataKey).toSet()).apply()
+        if (shown.isNotEmpty()) {
+            val exposure = shown.map(HomeRecommendationPolicy::metadataKey).toSet()
+            withContext(Dispatchers.IO) {
+                exposurePreferences.edit().putStringSet("recordings_v2", exposure).apply()
+            }
+        }
         lastRenderInputs = inputs
     }
 
@@ -410,7 +427,7 @@ class HomeViewModel(
                     launch {
                         combine(tasteProfile, favoriteTracks) { taste, favorites ->
                             taste.topRecentTrackIds.toSet() to favorites.map { it.id }.toSet()
-                        }.distinctUntilChanged().debounce(2_000).collectLatest { signal ->
+                        }.flowOn(Dispatchers.Default).distinctUntilChanged().debounce(2_000).collectLatest { signal ->
                             if (lastDiscoverySignal == null) {
                                 // The initial request already reads listening history and likes.
                                 lastDiscoverySignal = signal

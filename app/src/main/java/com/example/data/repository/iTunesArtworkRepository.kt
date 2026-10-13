@@ -67,15 +67,34 @@ class iTunesArtworkRepository(
 ) {
     private data class Lookup(val url: String?, val expiresAt: Long)
     private data class Flight(val result: Deferred<Lookup>, var readers: Int = 0)
+    private data class RawMetadata(val title: String, val artist: String?, val source: AudioSource)
+    private data class LookupMetadata(val title: String, val artist: String, val key: String)
+    private val metadataCache = LruCache<RawMetadata, LookupMetadata>(256)
+    private val parenthesizedVideoTags = Regex("(?i)\\(.*?(official|video|lyric|lyrical|remix|audio|4k|hd|visualizer|mv|music video).*?\\)")
+    private val bracketedVideoTags = Regex("(?i)\\[.*?(official|video|lyric|lyrical|remix|audio|4k|hd|visualizer|mv|music video).*?\\]")
+    private val bracketedTags = Regex("(?i)\\[.*?\\]")
+    private val whitespace = Regex("\\s+")
     private val memoryCache = LruCache<String, Lookup>(200)
     private val lookupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val networkSlots = Semaphore(4)
     private val inFlight = mutableMapOf<String, Flight>()
 
+    // A scrolling card can re-enter composition many times. Parse its unchanged metadata once.
+    private fun lookupMetadata(item: MediaItem): LookupMetadata {
+        val raw = RawMetadata(item.rawTitle, item.rawArtist, item.source)
+        metadataCache.get(raw)?.let { return it }
+        val title = sanitizeTitle(raw.title, raw.source)
+        val artist = sanitizeArtist(raw.artist, raw.source)
+        return LookupMetadata(title, artist, "${title}_${artist}".lowercase()).also {
+            metadataCache.put(raw, it)
+        }
+    }
+
     suspend fun resolveArtwork(item: MediaItem, targetDimension: Int): String {
-        val cleanedTitle = sanitizeTitle(item.rawTitle, item.source)
-        val cleanedArtist = sanitizeArtist(item.rawArtist, item.source)
-        val cacheKey = "${cleanedTitle}_${cleanedArtist}".lowercase()
+        val metadata = lookupMetadata(item)
+        val cleanedTitle = metadata.title
+        val cleanedArtist = metadata.artist
+        val cacheKey = metadata.key
 
         if (cleanedTitle.isBlank()) {
             return item.sourceArtworkUrl
@@ -169,10 +188,7 @@ class iTunesArtworkRepository(
     }
 
     fun getMemoryCachedUrl(item: MediaItem, targetDimension: Int): String? {
-        val cleanedTitle = sanitizeTitle(item.rawTitle, item.source)
-        val cleanedArtist = sanitizeArtist(item.rawArtist, item.source)
-        val cacheKey = "${cleanedTitle}_${cleanedArtist}".lowercase()
-        val hit = cached(cacheKey) ?: return null
+        val hit = cached(lookupMetadata(item).key) ?: return null
         return hit.url?.let { formatUrl(it, targetDimension) } ?: item.sourceArtworkUrl
     }
 
@@ -214,16 +230,16 @@ class iTunesArtworkRepository(
         }
 
         // 3. YouTube Music & General: Remove video-specific titles
-        t = t.replace(Regex("(?i)\\(.*?(official|video|lyric|lyrical|remix|audio|4k|hd|visualizer|mv|music video).*?\\)"), "")
-            .replace(Regex("(?i)\\[.*?(official|video|lyric|lyrical|remix|audio|4k|hd|visualizer|mv|music video).*?\\]"), "")
-            .replace(Regex("(?i)\\[.*?\\]"), "")
+        t = t.replace(parenthesizedVideoTags, "")
+            .replace(bracketedVideoTags, "")
+            .replace(bracketedTags, "")
 
         // 4. Internet Archive API: Clean up filename-style titles (replace _ and - with spaces)
         if (source == AudioSource.INTERNET_ARCHIVE || t.contains("_")) {
             t = t.replace("_", " ").replace("-", " ")
         }
 
-        return t.replace(Regex("\\s+"), " ").trim()
+        return t.replace(whitespace, " ").trim()
     }
 
     fun sanitizeArtist(artist: String?, source: AudioSource? = null): String {

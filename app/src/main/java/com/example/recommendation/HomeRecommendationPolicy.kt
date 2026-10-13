@@ -32,8 +32,9 @@ object HomeRecommendationPolicy {
         .split(artistSeparator)
         .filter(::known).map(::normalize).distinct().sorted()
 
-    fun metadataKey(track: MusicTrack): String {
-        val artistNames = artists(track)
+    fun metadataKey(track: MusicTrack): String = metadataKey(track, artists(track))
+
+    private fun metadataKey(track: MusicTrack, artistNames: List<String>): String {
         var title = track.title.replace(displayNoise, " ")
             .replace(soundtrackTag, " ")
         title = normalize(title)
@@ -46,8 +47,10 @@ object HomeRecommendationPolicy {
         .takeIf { it.matches(isrcPattern) && !it.endsWith("0000000") }
 
     fun aliases(track: MusicTrack): List<String> {
-        val title = metadataKey(track).substringBefore('|')
-        return listOf(metadataKey(track)) + listOfNotNull(isrc(track)?.let { "isrc:$it" }) + artists(track).map { "$title|$it" }
+        val artistNames = artists(track)
+        val metadata = metadataKey(track, artistNames)
+        val title = metadata.substringBefore('|')
+        return listOf(metadata) + listOfNotNull(isrc(track)?.let { "isrc:$it" }) + artistNames.map { "$title|$it" }
     }
 
     class Recordings {
@@ -58,9 +61,11 @@ object HomeRecommendationPolicy {
         private val names = mutableSetOf<String>()
         fun contains(track: MusicTrack): Boolean = isrc(track)?.let { it in codes } == true || aliases(track).any { it in names }
         fun add(track: MusicTrack): Boolean {
-            val fresh = !contains(track)
-            isrc(track)?.let(codes::add)
-            names.addAll(aliases(track))
+            val code = isrc(track)
+            val recordingNames = aliases(track)
+            val fresh = (code == null || code !in codes) && recordingNames.none { it in names }
+            code?.let(codes::add)
+            names.addAll(recordingNames)
             if (fresh) {
                 artists(track).forEach { artistCounts.merge(it, 1, Int::plus) }
                 if (known(track.album)) albumCounts.merge(normalize(track.album), 1, Int::plus)
@@ -90,8 +95,8 @@ object HomeRecommendationPolicy {
             remaining.remove(next)
             if (!seen.add(next)) continue
             result.add(next)
-            artists(next).forEach { artists[it] = (artists[it] ?: 0) + 1 }
-            if (known(next.album)) albums.merge(normalize(next.album), 1, Int::plus)
+            credits.getValue(next).forEach { artists[it] = (artists[it] ?: 0) + 1 }
+            albumKeys[next]?.let { albums.merge(it, 1, Int::plus) }
         }
         return result
     }
