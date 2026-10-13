@@ -19,6 +19,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import com.example.data.remote.OnlineMusicApiService
 import com.example.data.remote.YouTubeMusicApiService
+import com.example.data.remote.catalogRequest
 import com.example.playback.AudioQuality
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -63,8 +64,9 @@ class MusicRepository(
     val catalogBrowser = CatalogRepository()
 
     // LRU / in-memory cache to avoid duplicate network calls and prevent rate limiting
-    private val searchCache = ConcurrentHashMap<String, SearchResultCategory>()
+    private val searchCache = android.util.LruCache<String, SearchResultCategory>(80)
     private val streamResolver = StreamResolver()
+    private val chartClient by lazy { OkHttpClient.Builder().connectTimeout(8, TimeUnit.SECONDS).readTimeout(10, TimeUnit.SECONDS).build() }
 
     // Static memory cache for enriched catalog to persist across fast navigations
     companion object {
@@ -72,7 +74,7 @@ class MusicRepository(
     }
 
     private data class DiscoveryCache(val tracks: List<MusicTrack>, val fetchedAt: Long)
-    private val discoveryCache = ConcurrentHashMap<String, DiscoveryCache>()
+    private val discoveryCache = android.util.LruCache<String, DiscoveryCache>(80)
     private val queryLocks = Array(16) { Mutex() }
     private val discoveryTtlMs = 10 * 60_000L
 
@@ -119,7 +121,7 @@ class MusicRepository(
     private suspend fun discoverySearch(query: String, force: Boolean, era: Boolean): List<MusicTrack> {
         val key = "$era:${query.lowercase()}"
         return queryLocks[(key.hashCode() and Int.MAX_VALUE) % queryLocks.size].withLock {
-            val cached = discoveryCache[key]
+            val cached = discoveryCache.get(key)
             val age = System.currentTimeMillis() - (cached?.fetchedAt ?: 0)
             // Coalesce simultaneous card requests, even during an explicit refresh.
             if (cached != null && age < if (force) 30_000L else discoveryTtlMs) return@withLock cached.tracks
@@ -130,8 +132,7 @@ class MusicRepository(
                     .filter { !era || (it.year.toIntOrNull() ?: 0) in 1990..2009 }
             } catch (e: CancellationException) { throw e } catch (_: Exception) { emptyList() }
             if (result.isNotEmpty()) {
-                if (discoveryCache.size >= 80) discoveryCache.entries.minByOrNull { it.value.fetchedAt }?.let { discoveryCache.remove(it.key) }
-                discoveryCache[key] = DiscoveryCache(result, System.currentTimeMillis())
+                discoveryCache.put(key, DiscoveryCache(result, System.currentTimeMillis()))
                 result
             } else cached?.tracks.orEmpty()
         }
@@ -234,7 +235,7 @@ class MusicRepository(
                     saveChart(cacheKey, result)
                     return@withContext result
                 }
-            } catch (e: Exception) {
+            } catch (e: CancellationException) { throw e } catch (e: Exception) {
                 Log.w("MusicRepository", "Failed to fetch JioSaavn India Superhits chart: ${e.message}")
             }
 
@@ -244,10 +245,7 @@ class MusicRepository(
                 val code = countryCode.lowercase(java.util.Locale.ROOT).takeIf { it.matches(Regex("[a-z]{2}")) }
                 if (code != null) {
                     val request = Request.Builder().url("https://rss.marketingtools.apple.com/api/v2/$code/music/most-played/50/songs.json").build()
-                    val client = OkHttpClient.Builder().connectTimeout(8, TimeUnit.SECONDS).readTimeout(10, TimeUnit.SECONDS).build()
-                    val entries = client.newCall(request).execute().use { response ->
-                        response.body?.string()?.takeIf { response.isSuccessful }?.let { JSONObject(it).optJSONObject("feed")?.optJSONArray("results") }
-                    }
+                    val entries = JSONObject(chartClient.catalogRequest(request)).optJSONObject("feed")?.optJSONArray("results")
                     val ranked = coroutineScope { (0 until minOf(entries?.length() ?: 0, limit)).chunked(4).flatMap { batch ->
                         batch.map { index -> async {
                         val entry = entries?.optJSONObject(index) ?: return@async null
@@ -273,20 +271,14 @@ class MusicRepository(
         regionalTrendingCache[cacheKey].orEmpty().take(limit)
     }
 
-    private fun fetchJioSaavnIndiaSuperhitsChart(): List<MusicTrack> {
-        val client = OkHttpClient.Builder()
-            .connectTimeout(8, TimeUnit.SECONDS)
-            .readTimeout(10, TimeUnit.SECONDS)
-            .build()
+    private suspend fun fetchJioSaavnIndiaSuperhitsChart(): List<MusicTrack> {
         // JioSaavn Editorial Chart ID for "India Superhits Top 50"
         val url = "https://www.jiosaavn.com/api.php?__call=playlist.getDetails&_format=json&listid=1134543272"
         val request = Request.Builder()
             .url(url)
             .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
             .build()
-        val response = client.newCall(request).execute()
-        if (!response.isSuccessful) return emptyList()
-        val body = response.body?.string() ?: return emptyList()
+        val body = chartClient.catalogRequest(request)
         val json = JSONObject(body)
         val songsArray = json.optJSONArray("songs") ?: return emptyList()
         val tracks = mutableListOf<MusicTrack>()
@@ -417,7 +409,7 @@ class MusicRepository(
         }
 
         val cacheKey = trimmed.lowercase()
-        searchCache[cacheKey]?.let { return it }
+        searchCache.get(cacheKey)?.let { return it }
 
         val likedEntities = try {
             musicDao.getFavoriteTracks().first()
@@ -607,7 +599,7 @@ class MusicRepository(
             artists = artists
         )
 
-        searchCache[cacheKey] = categoryResult
+        searchCache.put(cacheKey, categoryResult)
         return categoryResult
     }
 
@@ -661,11 +653,12 @@ class MusicRepository(
     }
 
     fun clearSearchCache() {
-        searchCache.clear()
+        searchCache.evictAll()
+        discoveryCache.evictAll()
         streamResolver.clear()
     }
 
     fun getSearchCacheEntryCount(): Int {
-        return searchCache.size + streamResolver.cacheSize
+        return searchCache.size() + discoveryCache.size() + streamResolver.cacheSize
     }
 }

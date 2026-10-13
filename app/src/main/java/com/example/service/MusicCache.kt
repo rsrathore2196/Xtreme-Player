@@ -65,34 +65,25 @@ object MusicCache {
 
     @Synchronized
     fun clearAudioCache(context: Context): Long {
-        var freed = 0L
-        try {
+        return trimAudioCache(context, 0L)
+    }
+
+    /** Remove committed spans through Media3 so its index and active writers stay consistent. */
+    fun trimAudioCache(context: Context, targetBytes: Long): Long {
+        return try {
             val cache = getSimpleCache(context)
-            freed = cache.cacheSpace
-            val keys = cache.keys.toList()
-            for (key in keys) {
-                try {
-                    cache.removeResource(key)
-                } catch (_: Exception) {}
+            val before = cache.cacheSpace
+            val spans = cache.keys.flatMap { cache.getCachedSpans(it).toList() }
+                .sortedBy { it.lastTouchTimestamp }
+            for (span in spans) {
+                if (cache.cacheSpace <= targetBytes.coerceAtLeast(0L)) break
+                cache.removeSpan(span)
             }
+            (before - cache.cacheSpace).coerceAtLeast(0L)
         } catch (e: Exception) {
-            android.util.Log.w("MusicCache", "Cache removeResource error: ${e.message}")
+            android.util.Log.w("MusicCache", "Cache trim error: ${e.message}")
+            0L
         }
-        try {
-            val cacheDir = File(context.cacheDir, "xtreme_audio_cache")
-            if (cacheDir.exists()) {
-                val files = cacheDir.listFiles() ?: emptyArray()
-                for (file in files) {
-                    if (file.isFile) {
-                        freed += file.length()
-                        file.delete()
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            android.util.Log.w("MusicCache", "Direct directory delete error: ${e.message}")
-        }
-        return freed
     }
 
     private fun getFolderSize(file: File): Long {

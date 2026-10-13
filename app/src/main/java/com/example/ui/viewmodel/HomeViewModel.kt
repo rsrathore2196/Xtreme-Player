@@ -21,6 +21,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import com.example.data.repository.MusicRepository
@@ -82,7 +86,7 @@ data class HomeUiState(
     val isRefreshing: Boolean = false
 )
 
-@OptIn(FlowPreview::class)
+@OptIn(FlowPreview::class, ExperimentalCoroutinesApi::class)
 class HomeViewModel(
     private val repository: MusicRepository,
     private val playbackManager: PlaybackManager,
@@ -96,31 +100,35 @@ class HomeViewModel(
     // 2. Instant Local Catalog state (Local-First: Room/Memory)
     private val _catalogTracks = MutableStateFlow<List<MusicTrack>>(emptyList())
     val catalogTracks: StateFlow<List<MusicTrack>> = _catalogTracks.asStateFlow()
+    private val homeVisible = MutableStateFlow(false)
 
     private val database by lazy { MusicDatabase.getDatabase(application) }
     private val listeningEventDao by lazy { database.listeningEventDao() }
     private val personalizedEngine by lazy { PersonalizedHomeRecommendationEngine(listeningEventDao) }
-    val favoriteTracks = repository.getFavoriteTracks()
-        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
-    private val actualPlays = listeningEventDao.observeActualPlays()
-        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    val favoriteTracks = homeVisible.flatMapLatest { visible ->
+        if (visible) repository.getFavoriteTracks() else emptyFlow()
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
+    private val actualPlays = homeVisible.flatMapLatest { visible ->
+        if (visible) listeningEventDao.observeActualPlays() else emptyFlow()
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
     private val historyMetadata = actualPlays.map { events -> events.map { it.trackId }.distinct() }.distinctUntilChanged().map { ids ->
         withContext(Dispatchers.IO) {
             ids.chunked(900).flatMap { database.musicDao().getTracksByIds(it) }.map { it.toMusicTrack() }
         }
-    }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
     private val tasteProfile = combine(actualPlays, historyMetadata, favoriteTracks, _userProfile) { events, tracks, favorites, preferences ->
         val taste = UserTasteProfile.fromEvents(events, tracks, favorites)
         taste.copy(languageAffinities = preferences.languages.associate { HomeRecommendationPolicy.normalize(it) to 0.35f } + taste.languageAffinities)
-    }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.Eagerly, UserTasteProfile.COLD_START_PROFILE)
+    }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UserTasteProfile.COLD_START_PROFILE)
     val recentlyPlayed: StateFlow<List<MusicTrack>> = combine(actualPlays, historyMetadata, tasteProfile) { events, metadata, taste ->
         if (taste.isColdStart) emptyList() else {
             val byId = metadata.associateBy { it.id }
             val seen = HomeRecommendationPolicy.Recordings()
-            events.filter(UserTasteProfile::played).sortedByDescending { it.timestamp }
-                .mapNotNull { byId[it.trackId] }.filter { seen.add(it) }.take(30)
+            // The DAO already orders newest first; stop once the visible history is filled.
+            events.asSequence().filter(UserTasteProfile::played)
+                .mapNotNull { byId[it.trackId] }.filter { seen.add(it) }.take(30).toList()
         }
-    }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
     val heroSeedTrack: StateFlow<MusicTrack?> = combine(recentlyPlayed, favoriteTracks, _catalogTracks) { recent, favorites, catalog ->
         (recent.asSequence() + favorites.asSequence() + catalog.asSequence())
             .firstOrNull(com.example.recommendation.OriginalMusicFilter::isHomeRecommendation)
@@ -217,12 +225,16 @@ class HomeViewModel(
         }.sortedBy { HomeRecommendationPolicy.metadataKey(it) in previousExposure }
         val era = HomeRecommendationPolicy.diversify(fresh(pool.era), 15, seen)
         val plays = actualPlays.value.filter(UserTasteProfile::played).distinctBy { it.sessionId to it.trackId }
-        val artistCounts = if (taste.isColdStart) emptyMap() else plays.flatMap { event ->
-            val track = historyMetadata.value.find { it.id == event.trackId }
-            track?.let(HomeRecommendationPolicy::artists).orEmpty()
+        val historyArtists = historyMetadata.value.associate { it.id to HomeRecommendationPolicy.artists(it) }
+        val artistCounts = if (taste.isColdStart) emptyMap() else plays.asSequence().flatMap { event ->
+            historyArtists[event.trackId].orEmpty().asSequence()
         }.groupingBy { it }.eachCount()
+        val catalogByArtist = mutableMapOf<String, MutableList<MusicTrack>>()
+        for (track in catalog) HomeRecommendationPolicy.artists(track).forEach { artist ->
+            catalogByArtist.getOrPut(artist) { mutableListOf() }.add(track)
+        }
         val artists = artistCounts.entries.sortedByDescending { it.value }.take(10).mapNotNull { (artist, count) ->
-            val matches = catalog.filter { artist in HomeRecommendationPolicy.artists(it) }
+            val matches = catalogByArtist[artist].orEmpty()
             val tracks = HomeRecommendationPolicy.diversify(fresh(matches), 3, seen).ifEmpty {
                 // An artist history card can use its actual played song even when it is in a chart.
                 recentlyPlayed.value.filter { artist in HomeRecommendationPolicy.artists(it) }.take(1)
@@ -308,6 +320,27 @@ class HomeViewModel(
     private var activeRefreshIsExplicit = false
     private var refreshGeneration = 0L
     private var lastDiscoveryRefresh = 0L
+    private var pendingSilentRefresh = false
+    private var lastDiscoverySignal: Pair<Set<String>, Set<String>>? = null
+
+    fun setHomeVisible(visible: Boolean) {
+        if (homeVisible.value == visible) return
+        homeVisible.value = visible
+        if (!visible) {
+            if (homeRefreshJob?.isActive == true || regionalTrendingJob?.isActive == true) {
+                pendingSilentRefresh = true
+                if (activeRefreshIsExplicit) pendingExplicitRefresh = true
+            }
+            homeRefreshJob?.cancel()
+            regionalTrendingJob?.cancel()
+            homeRefreshJob = null
+            ++refreshGeneration
+            _isRefreshing.value = false
+            _ytmCard.update { it.copy(isLoading = false) }
+            _eraCard.update { it.copy(isLoading = false) }
+            _countryLanguageCard.update { it.copy(isLoading = false) }
+        }
+    }
 
     init {
         viewModelScope.launch {
@@ -338,27 +371,42 @@ class HomeViewModel(
                 }
             }
         }
-        viewModelScope.launch(Dispatchers.Default) {
-            combine(candidates, tasteProfile, favoriteTracks, _userProfile, recentlyPlayed) { pool, taste, _, _, _ -> pool to taste }
-                .debounce(250).collectLatest { (pool, taste) -> renderRecommendations(pool, taste) }
-        }
-        // History/likes trigger cheap local reranking immediately; network discovery is coalesced.
         viewModelScope.launch {
-            combine(tasteProfile, favoriteTracks) { taste, favorites ->
-                taste.topRecentTrackIds.toSet() to favorites.map { it.id }.toSet()
-            }.distinctUntilChanged().debounce(2_000).collectLatest { (recent, favorites) ->
-                if (recent.isNotEmpty() || favorites.isNotEmpty()) {
-                    delay((60_000 - (System.currentTimeMillis() - lastDiscoveryRefresh)).coerceAtLeast(0))
-                    refreshHome(false)
+            homeVisible.collectLatest { visible ->
+                if (!visible) return@collectLatest
+                coroutineScope {
+                    launch(Dispatchers.Default) {
+                        combine(candidates, tasteProfile, favoriteTracks, _userProfile, recentlyPlayed) { pool, taste, _, _, _ -> pool to taste }
+                            .debounce(250).collectLatest { (pool, taste) -> renderRecommendations(pool, taste) }
+                    }
+                    // Re-read real listening/likes on return, but do not fetch again for an unchanged signal.
+                    launch {
+                        combine(tasteProfile, favoriteTracks) { taste, favorites ->
+                            taste.topRecentTrackIds.toSet() to favorites.map { it.id }.toSet()
+                        }.distinctUntilChanged().debounce(2_000).collectLatest { signal ->
+                            if (signal != lastDiscoverySignal && (signal.first.isNotEmpty() || signal.second.isNotEmpty())) {
+                                delay((60_000 - (System.currentTimeMillis() - lastDiscoveryRefresh)).coerceAtLeast(0))
+                                lastDiscoverySignal = signal
+                                refreshHome(false)
+                            }
+                        }
+                    }
+                    if (pendingSilentRefresh || lastDiscoveryRefresh == 0L || System.currentTimeMillis() - lastDiscoveryRefresh >= 10 * 60_000L) {
+                        refreshHome(false)
+                    }
+                    awaitCancellation()
                 }
             }
         }
-        refreshHome(isExplicitPull = false)
     }
 
     fun refreshHome(isExplicitPull: Boolean = true) {
         // Request/job ownership stays on Main; catalog and ranking work stays off Main.
         viewModelScope.launch(Dispatchers.Main.immediate) {
+            if (!homeVisible.value) {
+                if (isExplicitPull) pendingExplicitRefresh = true else pendingSilentRefresh = true
+                return@launch
+            }
             if (homeRefreshJob?.isActive == true) {
                 if (isExplicitPull) {
                     _isRefreshing.value = true
@@ -369,6 +417,7 @@ class HomeViewModel(
                 return@launch
             }
             val generation = ++refreshGeneration
+            pendingSilentRefresh = false
             val initialExplicit = isExplicitPull || pendingExplicitRefresh || _isRefreshing.value
             pendingExplicitRefresh = false
             homeRefreshJob = viewModelScope.launch {
@@ -378,8 +427,8 @@ class HomeViewModel(
                         activeRefreshIsExplicit = explicit
                         _isRefreshing.value = explicit
                         _refreshErrorMessage.value = null
-                        _ytmCard.update { it.copy(isError = false, errorMessage = "") }
-                        _eraCard.update { it.copy(isError = false, errorMessage = "") }
+                        _ytmCard.update { it.copy(isLoading = it.tracks.isEmpty(), isError = false, errorMessage = "") }
+                        _eraCard.update { it.copy(isLoading = it.tracks.isEmpty(), isError = false, errorMessage = "") }
                         try {
                             refreshSuggestions(explicit)
                         } catch (e: CancellationException) { throw e }

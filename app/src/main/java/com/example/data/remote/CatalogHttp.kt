@@ -6,7 +6,7 @@ import java.io.IOException
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-/** Cancellable requests shared by catalog metadata lookups, never by the playback pipeline. */
+/** Cancellable catalog/metadata HTTP; the Media3 audio data-source pipeline is unchanged. */
 internal suspend fun OkHttpClient.catalogGet(url: String): String = catalogRequest(
     Request.Builder().url(url).header("User-Agent", "Mozilla/5.0")
         .header("Accept", "application/json").build()

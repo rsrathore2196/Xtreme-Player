@@ -15,8 +15,8 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
-import java.util.concurrent.ConcurrentHashMap
 import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -39,10 +39,27 @@ object LyricsProvider {
     private val LRC_REGEX = Pattern.compile("\\[(\\d{1,2}):(\\d{1,2}(?:\\.\\d{1,3})?)\\](.*)")
 
     // In-memory cache for parsed lyrics (0ms instant access)
-    private val lyricsCache = ConcurrentHashMap<String, TrackLyrics>()
-    private val cachedAt = ConcurrentHashMap<String, Long>()
+    private data class MemoryLyrics(val lyrics: TrackLyrics, val cachedAt: Long, val complete: Boolean)
+    private val lyricsCache = object : android.util.LruCache<String, MemoryLyrics>(4 * 1024 * 1024) {
+        override fun sizeOf(key: String, value: MemoryLyrics): Int {
+            var bytes = 256L
+            for (line in value.lyrics.lines) {
+                bytes += 128 + 2L * (line.text.length + line.translation.orEmpty().length + line.romanization.orEmpty().length)
+                for (word in line.words) {
+                    bytes += 96 + 2L * word.text.length
+                    for (syllable in word.syllables) bytes += 64 + 2L * syllable.text.length
+                }
+            }
+            return bytes.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        }
+    }
     private const val CACHE_VERSION = 3
     private const val CACHE_TTL_MS = 30 * 60 * 1000L
+    private var lastDiskTrimAt = 0L
+
+    private fun cacheLyrics(trackId: String, lyrics: TrackLyrics, complete: Boolean = true) {
+        if (trackId.isNotBlank()) lyricsCache.put(trackId, MemoryLyrics(lyrics, System.currentTimeMillis(), complete))
+    }
 
     private fun getDiskCacheDir(): File? {
         return try {
@@ -158,8 +175,9 @@ object LyricsProvider {
     private fun getCachedLyrics(identity: SongIdentity, cleanTitle: String, primaryArtist: String, allowStale: Boolean = false): TrackLyrics? {
         val trackId = identity.trackId ?: ""
         if (trackId.isNotBlank()) {
-            lyricsCache[trackId]?.let {
-                if (it.lines.isNotEmpty() && (allowStale || System.currentTimeMillis() - (cachedAt[trackId] ?: 0L) < CACHE_TTL_MS)) return it
+            lyricsCache.get(trackId)?.let {
+                if (!allowStale && !it.complete) return null
+                if (it.lyrics.lines.isNotEmpty() && (allowStale || it.complete && System.currentTimeMillis() - it.cachedAt < CACHE_TTL_MS)) return it.lyrics
             }
         }
 
@@ -169,8 +187,7 @@ object LyricsProvider {
             val trackFile = File(dir, "trk_${safeHash(trackId)}.json")
             loadFromDisk(trackFile, allowStale)?.let {
                 if (!allowStale) {
-                    lyricsCache[trackId] = it
-                    cachedAt[trackId] = System.currentTimeMillis()
+                    cacheLyrics(trackId, it)
                 }
                 Log.i(TAG, "Hit disk lyrics cache for '${identity.title}' (track ID)")
                 return it
@@ -182,7 +199,7 @@ object LyricsProvider {
             val isrcFile = File(dir, "isrc_${safeHash(isrcKey)}.json")
             loadFromDisk(isrcFile, allowStale)?.let {
                 val mapped = if (trackId.isNotBlank()) it.copy(trackId = trackId) else it
-                if (trackId.isNotBlank() && !allowStale) { lyricsCache[trackId] = mapped; cachedAt[trackId] = System.currentTimeMillis() }
+                if (!allowStale) cacheLyrics(trackId, mapped)
                 Log.i(TAG, "Hit disk lyrics cache for '${identity.title}' (ISRC $isrcKey)")
                 return mapped
             }
@@ -193,7 +210,7 @@ object LyricsProvider {
             val metaFile = File(dir, "meta_${safeHash(metaKey)}.json")
             loadFromDisk(metaFile, allowStale)?.let {
                 val mapped = if (trackId.isNotBlank()) it.copy(trackId = trackId) else it
-                if (trackId.isNotBlank() && !allowStale) { lyricsCache[trackId] = mapped; cachedAt[trackId] = System.currentTimeMillis() }
+                if (!allowStale) cacheLyrics(trackId, mapped)
                 Log.i(TAG, "Hit disk lyrics cache for '${identity.title}' (metadata)")
                 return mapped
             }
@@ -202,6 +219,7 @@ object LyricsProvider {
         return null
     }
 
+    @Synchronized
     private fun persistLyrics(
         identity: SongIdentity,
         cleanTitle: String,
@@ -210,10 +228,7 @@ object LyricsProvider {
         isrc: String = ""
     ) {
         val trackId = identity.trackId ?: lyrics.trackId
-        if (trackId.isNotBlank()) {
-            lyricsCache[trackId] = lyrics
-            cachedAt[trackId] = System.currentTimeMillis()
-        }
+        cacheLyrics(trackId, lyrics)
         if (lyrics.lines.isEmpty()) return
 
         val dir = getDiskCacheDir() ?: return
@@ -288,6 +303,20 @@ object LyricsProvider {
                 val metaFile = File(dir, "meta_${safeHash(metaKey)}.json")
                 metaFile.writeText(content, Charsets.UTF_8)
             }
+            // Freshness expiry is independent of storage limits; retain recent stale lyrics for outages.
+            val now = System.currentTimeMillis()
+            if (now - lastDiskTrimAt >= 30_000L) {
+                lastDiskTrimAt = now
+                val files = dir.listFiles()?.filter { it.isFile && it.extension == "json" }
+                    ?.sortedBy { it.lastModified() }.orEmpty()
+                var bytes = files.sumOf { it.length() }
+                var count = files.size
+                for (file in files) {
+                    if (bytes <= 20L * 1024 * 1024 && count <= 512) break
+                    val size = file.length()
+                    if (file.delete()) { bytes -= size; count-- }
+                }
+            }
         } catch (e: Exception) {
             Log.d(TAG, "Error saving lyrics to disk cache: ${e.message}")
         }
@@ -295,8 +324,7 @@ object LyricsProvider {
 
     @Synchronized
     fun clearCache() {
-        lyricsCache.clear()
-        cachedAt.clear()
+        lyricsCache.evictAll()
         try {
             val dir = getDiskCacheDir()
             dir?.listFiles()?.forEach { it.delete() }
@@ -307,7 +335,6 @@ object LyricsProvider {
     @Synchronized
     fun clearCacheForTrack(trackId: String) {
         lyricsCache.remove(trackId)
-        cachedAt.remove(trackId)
         try {
             val dir = getDiskCacheDir()
             val file = File(dir, "trk_${safeHash(trackId)}.json")
@@ -325,12 +352,12 @@ object LyricsProvider {
                 size += it.length()
             }
         } catch (_: Exception) {}
-        return size.coerceAtLeast(lyricsCache.size * 512L)
+        return size.coerceAtLeast(lyricsCache.size().toLong())
     }
 
     @Synchronized
     fun getCacheCount(): Int {
-        var count = lyricsCache.size
+        var count = lyricsCache.snapshot().size
         try {
             val dir = getDiskCacheDir()
             val fileCount = dir?.list()?.count { it.startsWith("trk_") } ?: 0
@@ -378,18 +405,23 @@ object LyricsProvider {
         val updateLock = Any()
         var provisional = cached
         cached?.let(onUpdate)
-        // Publish useful word timing while slower sources are queried, but never downgrade it.
-        candidates += sources.rich { candidate ->
-            if (LyricsDocuments.quality(candidate) >= 2) synchronized(updateLock) {
+        // Show available lyrics immediately while every rich source still gets a chance to improve them.
+        val publish: (TrackLyrics) -> Unit = { candidate ->
+            synchronized(updateLock) {
                 if (provisional == null || LyricsDocuments.comparator.compare(candidate, provisional!!) > 0) {
                     provisional = candidate
+                    // A canceled partial lookup is usable immediately on reopening, but must still seek richer timing.
+                    cacheLyrics(identity.trackId.orEmpty(), candidate, complete = false)
                     onUpdate(candidate)
                 }
             }
         }
-        currentCoroutineContext().ensureActive()
-        // All potentially rich sources finish before falling back to whole lines/plain text.
-        if (candidates.none { LyricsDocuments.quality(it) >= 2 }) candidates += sources.fallback()
+        coroutineScope {
+            val rich = async { sources.rich(publish) }
+            val fallback = async { sources.fallback(publish) }
+            candidates += rich.await()
+            candidates += fallback.await()
+        }
         currentCoroutineContext().ensureActive()
         val best = (candidates + listOfNotNull(cached)).maxWithOrNull(LyricsDocuments.comparator)
         if (best != null) {

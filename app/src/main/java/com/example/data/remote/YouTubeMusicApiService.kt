@@ -3,6 +3,7 @@ package com.example.data.remote
 import android.util.Log
 import com.example.data.model.MusicTrack
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -96,15 +97,9 @@ object YouTubeMusicApiService {
                 .addHeader("Referer", "https://music.youtube.com/")
                 .build()
 
-            val response = httpClient.newCall(request).execute()
-            if (!response.isSuccessful) {
-                Log.w(TAG, "YTMusic search returned status ${response.code}")
-                return@withContext emptyList()
-            }
-
-            val body = response.body?.string() ?: return@withContext emptyList()
+            val body = httpClient.catalogRequest(request)
             parseSearchResults(body, limit)
-        } catch (e: Exception) {
+        } catch (e: CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "Error searching YouTube Music: ${e.message}")
             emptyList()
         }
@@ -124,9 +119,7 @@ object YouTubeMusicApiService {
             val request = Request.Builder().url("https://music.youtube.com/youtubei/v1/next")
                 .post(payload.toString().toRequestBody(jsonMediaType))
                 .header("User-Agent", "Mozilla/5.0").header("Referer", "https://music.youtube.com/").build()
-            val body = httpClient.newCall(request).execute().use { response ->
-                if (response.isSuccessful) response.body?.string() else null
-            } ?: return@withContext emptyList()
+            val body = httpClient.catalogRequest(request)
             withContext(Dispatchers.Default) {
                 val tracks = mutableListOf<MusicTrack>()
                 fun visit(value: Any?, depth: Int = 0) {
@@ -340,12 +333,7 @@ object YouTubeMusicApiService {
                 .addHeader("Referer", "https://music.youtube.com/")
                 .build()
 
-            val response = httpClient.newCall(request).execute()
-            if (!response.isSuccessful) {
-                return@withContext null
-            }
-
-            val body = response.body?.string() ?: return@withContext null
+            val body = httpClient.catalogRequest(request)
             val root = JSONObject(body)
 
             // Metadata from microformat
@@ -469,9 +457,8 @@ object YouTubeMusicApiService {
                         .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
                         .build()
 
-                    val webResp = httpClient.newCall(webReq).execute()
-                    if (webResp.isSuccessful) {
-                        val webRoot = JSONObject(webResp.body?.string().orEmpty())
+                    run {
+                        val webRoot = JSONObject(httpClient.catalogRequest(webReq))
                         val webContents = webRoot.optJSONObject("contents")?.optJSONObject("twoColumnBrowseResultsRenderer")
                             ?.optJSONArray("tabs")?.optJSONObject(0)?.optJSONObject("tabRenderer")?.optJSONObject("content")
                             ?.optJSONObject("sectionListRenderer")?.optJSONArray("contents")
@@ -500,7 +487,7 @@ object YouTubeMusicApiService {
                             title = plHeader?.optJSONObject("title")?.optString("simpleText", "").orEmpty()
                         }
                     }
-                } catch (e: Exception) {
+                } catch (e: CancellationException) { throw e } catch (e: Exception) {
                     Log.w(TAG, "YouTube WEB client fallback error: ${e.message}")
                 }
             }
@@ -533,9 +520,7 @@ object YouTubeMusicApiService {
                         }
                         .build()
 
-                    val contResp = httpClient.newCall(contRequest).execute()
-                    if (!contResp.isSuccessful) break
-                    val contBody = contResp.body?.string() ?: break
+                    val contBody = httpClient.catalogRequest(contRequest)
                     val contRoot = JSONObject(contBody)
 
                     var foundBatchItems: JSONArray? = null
@@ -579,7 +564,7 @@ object YouTubeMusicApiService {
                     if (addedInBatch == 0 && continuationToken == null) {
                         break
                     }
-                } catch (e: Exception) {
+                } catch (e: CancellationException) { throw e } catch (e: Exception) {
                     Log.w(TAG, "Pagination error fetching continuation: ${e.message}")
                     break
                 }
@@ -593,7 +578,7 @@ object YouTubeMusicApiService {
                 coverUrl = coverUrl,
                 tracks = tracks
             )
-        } catch (e: Exception) {
+        } catch (e: CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "Error fetching playlist details: ${e.message}")
             null
         }

@@ -29,11 +29,64 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.example.ui.theme.LocalAppColors
 import kotlin.math.PI
 import kotlin.math.sin
+import kotlin.math.cos
+
+/** Draw-phase scratch storage. Geometry changes with progress; phase changes reuse all allocations. */
+private class WaveformDrawCache(private val colors: List<Color>) {
+    private val path = Path()
+    private var width = Float.NaN
+    private var wavelength = Float.NaN
+    private var startFade = Float.NaN
+    private var endFade = Float.NaN
+    private var count = 0
+    private var sine = DoubleArray(0)
+    private var cosine = DoubleArray(0)
+    private var damping = FloatArray(0)
+    private var brushWidth = Float.NaN
+    private var brush: Brush? = null
+
+    fun brush(activeWidth: Float): Brush {
+        if (brush == null || brushWidth != activeWidth) {
+            brushWidth = activeWidth
+            brush = Brush.horizontalGradient(colors, startX = 0f, endX = activeWidth.coerceAtLeast(1f))
+        }
+        return brush!!
+    }
+
+    fun path(activeWidth: Float, phase: Float, centerY: Float, amplitude: Float,
+        waveLength: Float, startDistance: Float, endDistance: Float): Path {
+        if (width != activeWidth || wavelength != waveLength || startFade != startDistance || endFade != endDistance) {
+            width = activeWidth; wavelength = waveLength; startFade = startDistance; endFade = endDistance
+            count = (activeWidth / 3f).toInt() + 1
+            if (sine.size < count) {
+                val capacity = maxOf(count, sine.size * 2)
+                sine = DoubleArray(capacity); cosine = DoubleArray(capacity); damping = FloatArray(capacity)
+            }
+            for (index in 0 until count) {
+                val x = index * 3f
+                val angle = (x / waveLength) * 2 * PI
+                sine[index] = sin(angle); cosine[index] = cos(angle)
+                damping[index] = (x / startDistance).coerceIn(0f, 1f) *
+                    ((activeWidth - x) / endDistance).coerceIn(0f, 1f)
+            }
+        }
+        val phaseSine = sin(phase.toDouble())
+        val phaseCosine = cos(phase.toDouble())
+        path.reset()
+        path.moveTo(0f, centerY)
+        for (index in 0 until count) {
+            val value = (sine[index] * phaseCosine + cosine[index] * phaseSine).toFloat()
+            path.lineTo(index * 3f, centerY + value * amplitude * damping[index])
+        }
+        return path
+    }
+}
 
 /**
  * Dynamic Wavy Scrubber Bar with Real-time Audio Visualizer Motion:
@@ -89,6 +142,15 @@ fun WavyScrubberBar(
 
     val primaryAccent = appColors.primaryAccent
     val secondaryAccent = appColors.secondaryAccent
+    val drawCache = remember(primaryAccent, secondaryAccent) { WaveformDrawCache(listOf(primaryAccent, secondaryAccent)) }
+    val density = LocalDensity.current
+    val trackStrokeWidth = with(density) { 4.dp.toPx() }
+    val waveLengthPx = with(density) { 22.dp.toPx() }
+    val startFadePx = with(density) { 24.dp.toPx() }
+    val endFadePx = with(density) { 20.dp.toPx() }
+    val waveStroke = remember(trackStrokeWidth) { Stroke(width = trackStrokeWidth, cap = StrokeCap.Round) }
+    val rimWidth = with(density) { 1.5.dp.toPx() }
+    val rimStroke = remember(rimWidth) { Stroke(width = rimWidth) }
     val inactiveTrackColor = if (isDark) {
         appColors.cardBorder.copy(alpha = 0.8f)
     } else {
@@ -151,9 +213,7 @@ fun WavyScrubberBar(
             val thumbRadius = 7.dp.toPx() * thumbScale
             val activeWidth = (width * currentFraction).coerceIn(0f, width)
 
-            val trackStrokeWidth = 4.dp.toPx()
             val waveAmplitudePx = animatedAmplitude.dp.toPx()
-            val waveLengthPx = 22.dp.toPx()
 
             // 1. Draw inactive / remaining track (flat background line)
             if (activeWidth < width) {
@@ -169,38 +229,16 @@ fun WavyScrubberBar(
 
             // 2. Draw active track (Animated Wavy Path or Smooth Line)
             if (activeWidth > 0f) {
-                val activeBrush = Brush.horizontalGradient(
-                    colors = listOf(primaryAccent, secondaryAccent),
-                    startX = 0f,
-                    endX = activeWidth.coerceAtLeast(1f)
-                )
+                val activeBrush = drawCache.brush(activeWidth)
 
                 if (waveAmplitudePx > 0.8f && activeWidth > 12f) {
-                    // Draw sinusoidal wave path
-                    val wavePath = Path()
-                    wavePath.moveTo(0f, centerY)
-
-                    val stepPx = 3f
-                    var x = 0f
-                    while (x <= activeWidth) {
-                        // Fade wave amplitude smoothly near start (0f) and thumb end (activeWidth)
-                        val startDamping = (x / 24.dp.toPx()).coerceIn(0f, 1f)
-                        val endDamping = ((activeWidth - x) / 20.dp.toPx()).coerceIn(0f, 1f)
-                        val damping = startDamping * endDamping
-
-                        val angle = (x / waveLengthPx) * 2 * PI + wavePhase
-                        val y = centerY + (sin(angle).toFloat() * waveAmplitudePx * damping)
-                        wavePath.lineTo(x, y)
-                        x += stepPx
-                    }
+                    val wavePath = drawCache.path(activeWidth, wavePhase, centerY, waveAmplitudePx,
+                        waveLengthPx, startFadePx, endFadePx)
 
                     drawPath(
                         path = wavePath,
                         brush = activeBrush,
-                        style = Stroke(
-                            width = trackStrokeWidth,
-                            cap = StrokeCap.Round
-                        )
+                        style = waveStroke
                     )
                 } else {
                     // Draw smooth flat line
@@ -240,7 +278,7 @@ fun WavyScrubberBar(
                     color = primaryAccent.copy(alpha = 0.5f),
                     radius = thumbRadius,
                     center = Offset(activeWidth, centerY),
-                    style = Stroke(width = 1.5.dp.toPx())
+                    style = rimStroke
                 )
             }
         }

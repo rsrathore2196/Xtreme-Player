@@ -36,7 +36,9 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
     private var searchGeneration = 0
     private var detailGeneration = 0
     private val scrollPositions = object : android.util.LruCache<String, Pair<Int, Int>>(20) {}
-    private val detailAliases = mutableMapOf<String, String>()
+    private val detailAliases = object : LinkedHashMap<String, String>(40, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?) = size > 40
+    }
     private val details = object : LinkedHashMap<String, CatalogDetailState>(12, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, CatalogDetailState>?) = size > 10
     }

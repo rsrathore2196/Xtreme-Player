@@ -1,5 +1,7 @@
 package com.example.ui.components
 
+import androidx.lifecycle.repeatOnLifecycle
+
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 import android.Manifest
@@ -183,6 +185,14 @@ fun MainNavigationScaffold(
     val playerVisibility = remember { androidx.compose.animation.core.MutableTransitionState(false) }
     playerVisibility.targetState = isPlayerExpanded && playerUiState.currentTrack != null
     val playerCoversContent = playerVisibility.isIdle && playerVisibility.currentState && playerVisibility.targetState
+    val homeLifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    val homeIsVisible = selectedTabIndex == 0 && !playerCoversContent && catalogDetail == null && selectedPlaylistWithTracks == null
+    LaunchedEffect(homeViewModel, homeLifecycle, homeIsVisible) {
+        if (homeIsVisible) homeLifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.RESUMED) {
+            homeViewModel.setHomeVisible(true)
+            try { kotlinx.coroutines.awaitCancellation() } finally { homeViewModel.setHomeVisible(false) }
+        }
+    }
 
     val appColors = LocalAppColors.current
 
@@ -499,6 +509,8 @@ fun MainNavigationScaffold(
                 onAddToQueue = { track -> viewModel.addToQueue(track) },
                 lyrics = currentLyrics,
                 onRetryLyrics = { viewModel.retryLyrics() },
+                onLyricsVisibilityChanged = viewModel::setLyricsVisible,
+                isScreenVisible = isPlayerExpanded,
                 availableAudioDevices = availableAudioDevices,
                 onSelectAudioDevice = { deviceId -> viewModel.selectAudioOutputDevice(deviceId) },
                 playbackPositionFlow = viewModel.playbackPosition,

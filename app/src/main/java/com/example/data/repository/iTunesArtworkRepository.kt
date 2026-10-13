@@ -10,6 +10,14 @@ import com.example.data.model.MusicTrack
 import com.example.data.remote.iTunesApiService
 import com.example.data.remote.iTunesApiServiceImpl
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 
 enum class AudioSource {
@@ -57,7 +65,12 @@ class iTunesArtworkRepository(
     private val apiService: iTunesApiService,
     private val cacheDao: ArtworkCacheDao
 ) {
-    private val memoryCache = LruCache<String, String>(200)
+    private data class Lookup(val url: String?, val expiresAt: Long)
+    private data class Flight(val result: Deferred<Lookup>, var readers: Int = 0)
+    private val memoryCache = LruCache<String, Lookup>(200)
+    private val lookupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val networkSlots = Semaphore(4)
+    private val inFlight = mutableMapOf<String, Flight>()
 
     suspend fun resolveArtwork(item: MediaItem, targetDimension: Int): String {
         val cleanedTitle = sanitizeTitle(item.rawTitle, item.source)
@@ -68,26 +81,53 @@ class iTunesArtworkRepository(
             return item.sourceArtworkUrl
         }
 
-        // 1. Check LruCache (instant synchronous lookup)
-        memoryCache.get(cacheKey)?.let { return formatUrl(it, targetDimension) }
+        cached(cacheKey)?.let { return it.url?.let { url -> formatUrl(url, targetDimension) } ?: item.sourceArtworkUrl }
+
+        // A lookup belongs to all its callers. Only the last departing caller cancels its HTTP work.
+        val flight = synchronized(inFlight) {
+            inFlight.getOrPut(cacheKey) {
+                Flight(lookupScope.async(start = CoroutineStart.LAZY) {
+                    lookup(cacheKey, cleanedTitle, cleanedArtist).also { memoryCache.put(cacheKey, it) }
+                })
+            }.also { it.readers++ }
+        }
+        return try {
+            flight.result.start()
+            flight.result.await().url?.let { formatUrl(it, targetDimension) } ?: item.sourceArtworkUrl
+        } finally {
+            synchronized(inFlight) {
+                if (--flight.readers == 0) {
+                    if (inFlight[cacheKey] === flight) inFlight.remove(cacheKey)
+                    if (!flight.result.isCompleted) flight.result.cancel()
+                }
+            }
+        }
+    }
+
+    private fun cached(key: String): Lookup? = synchronized(memoryCache) { memoryCache.get(key)?.let {
+        if (it.expiresAt > System.currentTimeMillis()) it else { memoryCache.remove(key); null }
+    } }
+
+    private suspend fun lookup(cacheKey: String, cleanedTitle: String, cleanedArtist: String): Lookup {
+        // Another caller may have completed just before this flight was registered.
+        cached(cacheKey)?.let { return it }
 
         // 2. Check Room Database Cache
         val dbUrl = withContext(Dispatchers.IO) {
             try {
                 cacheDao.getUrl(cacheKey)
-            } catch (_: Exception) {
+            } catch (e: CancellationException) { throw e } catch (_: Exception) {
                 null
             }
         }
         if (dbUrl != null) {
-            memoryCache.put(cacheKey, dbUrl)
-            return formatUrl(dbUrl, targetDimension)
+            return Lookup(dbUrl, Long.MAX_VALUE)
         }
 
         // 3. Network Fetch iTunes API (Offloaded to Dispatchers.IO)
         return try {
             val queryTerm = if (cleanedArtist.isNotBlank()) "$cleanedTitle $cleanedArtist" else cleanedTitle
-            val response = withContext(Dispatchers.IO) {
+            val response = networkSlots.withPermit {
                 apiService.searchSong(term = queryTerm, media = "music", limit = 4)
             }
 
@@ -117,15 +157,14 @@ class iTunesArtworkRepository(
                 withContext(Dispatchers.IO) {
                     try {
                         cacheDao.insert(ArtworkCacheEntity(cacheKey, rawUrl))
-                    } catch (_: Exception) {}
+                    } catch (e: CancellationException) { throw e } catch (_: Exception) {}
                 }
-                memoryCache.put(cacheKey, rawUrl)
-                formatUrl(rawUrl, targetDimension)
+                Lookup(rawUrl, Long.MAX_VALUE)
             } else {
-                item.sourceArtworkUrl // Fallback to original API image if not verified on iTunes
+                Lookup(null, System.currentTimeMillis() + 3_600_000L)
             }
-        } catch (_: Exception) {
-            item.sourceArtworkUrl // Fallback on network failure
+        } catch (e: CancellationException) { throw e } catch (_: Exception) {
+            Lookup(null, System.currentTimeMillis() + 30_000L)
         }
     }
 
@@ -133,8 +172,8 @@ class iTunesArtworkRepository(
         val cleanedTitle = sanitizeTitle(item.rawTitle, item.source)
         val cleanedArtist = sanitizeArtist(item.rawArtist, item.source)
         val cacheKey = "${cleanedTitle}_${cleanedArtist}".lowercase()
-        val raw = memoryCache.get(cacheKey) ?: return null
-        return formatUrl(raw, targetDimension)
+        val hit = cached(cacheKey) ?: return null
+        return hit.url?.let { formatUrl(it, targetDimension) } ?: item.sourceArtworkUrl
     }
 
     fun formatUrl(url: String, size: Int): String {

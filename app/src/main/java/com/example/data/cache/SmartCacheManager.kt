@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
 import com.example.data.remote.LyricsProvider
+import com.example.data.remote.OnlineMusicApiService
 import com.example.data.repository.MusicRepository
 import com.example.service.MusicCache
 import kotlinx.coroutines.CoroutineScope
@@ -14,6 +15,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import coil.imageLoader
 import java.io.File
 import java.text.DecimalFormat
 
@@ -44,6 +48,7 @@ data class CacheStats(
     val formattedFreeDisk: String get() = SmartCacheManager.formatBytes(freeDiskSpaceBytes)
 }
 
+@OptIn(coil.annotation.ExperimentalCoilApi::class)
 object SmartCacheManager {
     private const val TAG = "SmartCacheManager"
     private const val PREFS_NAME = "xtreme_smart_cache_preferences"
@@ -57,6 +62,10 @@ object SmartCacheManager {
     const val QUOTA_GENEROUS = 120L * 1024L * 1024L // 120 MB Generous
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val maintenanceMutex = Mutex()
+    private suspend fun <T> maintainCache(action: () -> T): T = withContext(Dispatchers.IO) {
+        maintenanceMutex.withLock { action() }
+    }
     private var appContext: Context? = null
     private var repositoryRef: MusicRepository? = null
 
@@ -113,7 +122,7 @@ object SmartCacheManager {
      */
     fun smartAutoTrim(context: Context? = appContext) {
         val ctx = context ?: appContext ?: return
-        scope.launch {
+        scope.launch { maintenanceMutex.withLock {
             try {
                 val prefs = getPrefs()
                 val autoTrim = prefs?.getBoolean(KEY_SMART_AUTO_TRIM, true) ?: true
@@ -129,92 +138,77 @@ object SmartCacheManager {
                     Log.i(TAG, "Smart auto-trim activated: cache ($total bytes) exceeded 80% of quota ($quota bytes)")
                     // 1. Delete temporary files
                     ctx.cacheDir.listFiles()?.forEach { file ->
-                        if (file.isFile && (file.name.endsWith(".tmp") || file.name.startsWith("temp_"))) {
+                        if (file.isFile && file.lastModified() < System.currentTimeMillis() - 24 * 60 * 60_000L &&
+                            (file.name.endsWith(".tmp") || file.name.startsWith("temp_"))) {
                             file.delete()
                         }
                     }
-                    // 2. Trim oldest image cache if larger than 15MB
+                    // 2. Trim complete image entries through the cache owner.
                     if (imageBytes > 15L * 1024L * 1024L) {
-                        val imageDir = File(ctx.cacheDir, "image_cache")
-                        if (imageDir.exists()) {
-                            val files = imageDir.listFiles()?.sortedBy { it.lastModified() } ?: emptyList()
-                            for (i in 0 until (files.size / 2)) {
-                                files[i].delete()
-                            }
-                        }
+                        trimImageCache(ctx, imageBytes / 2)
                     }
                     // 3. Compact audio cache
                     if (audioBytes > (quota * 0.70f)) {
-                        MusicCache.clearAudioCache(ctx)
+                        MusicCache.trimAudioCache(ctx, (quota * 0.50).toLong())
                     }
                     refreshStats()
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Smart auto-trim error: ${e.message}")
             }
-        }
+        } }
     }
 
-    suspend fun clearAudioCache(): Long = withContext(Dispatchers.IO) {
-        val ctx = appContext ?: return@withContext 0L
+    suspend fun clearAudioCache(): Long = maintainCache {
+        val ctx = appContext ?: return@maintainCache 0L
         val freed = MusicCache.clearAudioCache(ctx)
         refreshStats()
         freed
     }
 
-    suspend fun clearImageCache(): Long = withContext(Dispatchers.IO) {
-        val ctx = appContext ?: return@withContext 0L
-        var freed = 0L
-        val imageDir = File(ctx.cacheDir, "image_cache")
-        if (imageDir.exists()) {
-            freed += deleteFolderContents(imageDir)
-        }
-        val coilDir = File(ctx.cacheDir, "image_manager_disk_cache")
-        if (coilDir.exists()) {
-            freed += deleteFolderContents(coilDir)
-        }
+    suspend fun clearImageCache(): Long = maintainCache {
+        val ctx = appContext ?: return@maintainCache 0L
+        val diskCache = ctx.imageLoader.diskCache
+        val before = diskCache?.size ?: 0L
+        diskCache?.clear()
+        val freed = (before - (diskCache?.size ?: 0L)).coerceAtLeast(0L)
         refreshStats()
         freed
     }
 
-    suspend fun clearLyricsCache(): Long = withContext(Dispatchers.IO) {
+    suspend fun clearLyricsCache(): Long = maintainCache {
         val freed = LyricsProvider.getCacheSize()
         LyricsProvider.clearCache()
         refreshStats()
         freed
     }
 
-    suspend fun clearMetadataCache(): Long = withContext(Dispatchers.IO) {
-        val ctx = appContext ?: return@withContext 0L
+    suspend fun clearMetadataCache(): Long = maintainCache {
+        if (appContext == null) return@maintainCache 0L
         repositoryRef?.clearSearchCache()
-        var freed = 0L
-        val httpCache = File(ctx.cacheDir, "http_cache")
-        if (httpCache.exists()) {
-            freed += deleteFolderContents(httpCache)
-        }
+        val freed = OnlineMusicApiService.trimNetworkCache(0L)
         refreshStats()
         freed
     }
 
-    suspend fun clearAllCache(): Long = withContext(Dispatchers.IO) {
-        val ctx = appContext ?: return@withContext 0L
+    suspend fun clearAllCache(): Long = maintainCache {
+        val ctx = appContext ?: return@maintainCache 0L
         var freed = 0L
         freed += MusicCache.clearAudioCache(ctx)
-        val imageDir = File(ctx.cacheDir, "image_cache")
-        if (imageDir.exists()) freed += deleteFolderContents(imageDir)
-        val coilDir = File(ctx.cacheDir, "image_manager_disk_cache")
-        if (coilDir.exists()) freed += deleteFolderContents(coilDir)
+        val diskCache = ctx.imageLoader.diskCache
+        val imageBytes = diskCache?.size ?: 0L
+        diskCache?.clear()
+        freed += (imageBytes - (diskCache?.size ?: 0L)).coerceAtLeast(0L)
         freed += LyricsProvider.getCacheSize()
         LyricsProvider.clearCache()
         repositoryRef?.clearSearchCache()
-        val httpCache = File(ctx.cacheDir, "http_cache")
-        if (httpCache.exists()) freed += deleteFolderContents(httpCache)
+        freed += OnlineMusicApiService.trimNetworkCache(0L)
         refreshStats()
         freed
     }
 
-    suspend fun smartOptimize(context: Context? = null): Pair<Long, String> = withContext(Dispatchers.IO) {
-        val ctx = context?.applicationContext ?: appContext ?: return@withContext Pair(0L, "Storage already optimized")
+    suspend fun smartOptimize(context: Context? = null): Pair<Long, String> = maintainCache {
+        val ctx = context?.applicationContext ?: appContext ?: return@maintainCache Pair(0L, "Storage already optimized")
         if (appContext == null) {
             appContext = ctx
         }
@@ -223,51 +217,22 @@ object SmartCacheManager {
             // 1. Clean temporary and buffer files in cache root
             val rootCache = ctx.cacheDir
             rootCache.listFiles()?.forEach { file ->
-                if (file.isFile && (file.name.endsWith(".tmp") || file.name.startsWith("temp_") || file.name.startsWith("cache_") || file.name.endsWith(".exo"))) {
+                if (file.isFile && file.lastModified() < System.currentTimeMillis() - 24 * 60 * 60_000L &&
+                    (file.name.endsWith(".tmp") || file.name.startsWith("temp_") || file.name.startsWith("cache_") || file.name.endsWith(".exo"))) {
                     freed += file.length()
                     file.delete()
                 }
             }
 
-            // 2. Prune http network cache
-            val httpCache = File(ctx.cacheDir, "http_cache")
-            if (httpCache.exists()) {
-                freed += deleteFolderContents(httpCache)
-            }
+            // 2. Prune complete HTTP entries through OkHttp's journal-aware API.
             val httpMusicCache = File(ctx.cacheDir, "http_music_cache")
             if (httpMusicCache.exists()) {
-                val files = httpMusicCache.listFiles()?.sortedBy { it.lastModified() } ?: emptyList()
-                if (files.size > 20) {
-                    for (i in 0 until (files.size / 3)) {
-                        freed += files[i].length()
-                        files[i].delete()
-                    }
-                }
+                freed += OnlineMusicApiService.trimNetworkCache(getFolderSize(httpMusicCache) * 2 / 3)
             }
 
-            // 3. Trim orphaned image cache
-            val imageDir = File(ctx.cacheDir, "image_cache")
-            if (imageDir.exists()) {
-                val files = imageDir.listFiles()?.sortedBy { it.lastModified() } ?: emptyList()
-                if (files.size > 15) {
-                    for (i in 0 until (files.size / 3)) {
-                        freed += files[i].length()
-                        files[i].delete()
-                    }
-                }
-            }
-
-            // 4. Prune disk image manager cache
-            val coilDir = File(ctx.cacheDir, "image_manager_disk_cache")
-            if (coilDir.exists()) {
-                val files = coilDir.listFiles()?.sortedBy { it.lastModified() } ?: emptyList()
-                if (files.size > 30) {
-                    for (i in 0 until (files.size / 3)) {
-                        freed += files[i].length()
-                        files[i].delete()
-                    }
-                }
-            }
+            // 3/4. Keep recent artwork while removing only complete Coil entries.
+            val imageBytes = ctx.imageLoader.diskCache?.size ?: 0L
+            if (imageBytes > 15L * 1024 * 1024) freed += trimImageCache(ctx, imageBytes * 2 / 3)
 
             // 5. Clear stale metadata cache & in-memory search tokens
             repositoryRef?.clearSearchCache()
@@ -276,7 +241,7 @@ object SmartCacheManager {
             val currentAudio = MusicCache.getCacheSize(ctx)
             val quota = _stats.value.maxQuotaBytes
             if (currentAudio > (quota * 0.65)) {
-                freed += MusicCache.clearAudioCache(ctx)
+                freed += MusicCache.trimAudioCache(ctx, (quota * 0.50).toLong())
             }
 
             refreshStats()
@@ -288,6 +253,9 @@ object SmartCacheManager {
             Pair(0L, "Cache optimized and audio buffers defragmented.")
         }
     }
+
+    private fun trimImageCache(ctx: Context, targetBytes: Long): Long =
+        (ctx.imageLoader.diskCache as? ManagedImageDiskCache)?.trimToSize(targetBytes) ?: 0L
 
     fun setQuota(quotaBytes: Long) {
         getPrefs()?.edit()?.putLong(KEY_MAX_QUOTA, quotaBytes)?.apply()
@@ -363,21 +331,6 @@ object SmartCacheManager {
             size += if (child.isDirectory) getFolderSize(child) else child.length()
         }
         return size
-    }
-
-    private fun deleteFolderContents(folder: File): Long {
-        var freed = 0L
-        val files = folder.listFiles() ?: return 0L
-        for (f in files) {
-            if (f.isDirectory) {
-                freed += deleteFolderContents(f)
-                f.delete()
-            } else {
-                freed += f.length()
-                f.delete()
-            }
-        }
-        return freed
     }
 
     fun formatBytes(bytes: Long): String {

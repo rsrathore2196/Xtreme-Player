@@ -17,7 +17,6 @@ import com.example.data.repository.iTunesArtworkRepository
 import com.example.data.repository.toMediaItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.util.concurrent.ConcurrentHashMap
 
 object ImageConfig {
     const val LIST_ITEM_SIZE = 120 // ~120dp for track list items, playlist rows, search result items, and queue items
@@ -42,18 +41,18 @@ data class ExtractedTrackColors(
 )
 
 object TrackPaletteCache {
-    private val memoryCache = ConcurrentHashMap<String, ExtractedTrackColors>(128)
+    private val memoryCache = android.util.LruCache<String, ExtractedTrackColors>(128)
 
-    fun get(trackId: String): ExtractedTrackColors? = memoryCache[trackId]
+    fun get(trackId: String): ExtractedTrackColors? = memoryCache.get(trackId)
 
     fun put(trackId: String, colors: ExtractedTrackColors) {
         if (trackId.isNotBlank()) {
-            memoryCache[trackId] = colors
+            memoryCache.put(trackId, colors)
         }
     }
 
     fun clear() {
-        memoryCache.clear()
+        memoryCache.evictAll()
     }
 }
 

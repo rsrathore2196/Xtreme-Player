@@ -1,6 +1,7 @@
 package com.example.ui.components
 
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
 
 import android.content.Intent
 import android.content.res.Configuration
@@ -189,6 +190,8 @@ fun ExpandedPlayerScreen(
     currentPositionProvider: () -> Long = { uiState.currentPositionMs },
     trackDurationProvider: () -> Long = { if (uiState.durationMs > 0) uiState.durationMs else (uiState.currentTrack?.durationMs ?: 0L) },
     bufferedPositionProvider: () -> Long = { uiState.bufferedPositionMs },
+    onLyricsVisibilityChanged: (Boolean) -> Unit = {},
+    isScreenVisible: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     val track = uiState.currentTrack ?: return
@@ -247,6 +250,14 @@ fun ExpandedPlayerScreen(
     var isMenuOpen by remember { mutableStateOf(false) }
     var isFlipped by remember(track.id) { mutableStateOf(false) }
     var showLyrics by remember(track.id) { mutableStateOf(false) }
+    val lyricsLifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    val lyricsVisibilityCallback by rememberUpdatedState(onLyricsVisibilityChanged)
+    LaunchedEffect(showLyrics, isScreenVisible, lyricsLifecycle) {
+        if (showLyrics && isScreenVisible) lyricsLifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.RESUMED) {
+            lyricsVisibilityCallback(true)
+            try { kotlinx.coroutines.awaitCancellation() } finally { lyricsVisibilityCallback(false) }
+        }
+    }
     var showSoundOutputDialog by remember { mutableStateOf(false) }
 
     val fallbackDevices by AudioDeviceManager.availableDevices.collectAsStateWithLifecycle()

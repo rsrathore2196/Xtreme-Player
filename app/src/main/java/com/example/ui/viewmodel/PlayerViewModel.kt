@@ -103,6 +103,7 @@ class PlayerViewModel(
     val currentLyrics: StateFlow<TrackLyrics?> = _currentLyrics.asStateFlow()
     private var lyricsJob: Job? = null
     private var lastObservedTrackId: String? = null
+    private var lyricsVisible = false
 
     private val _catalogTracks = MutableStateFlow<List<MusicTrack>>(emptyList())
     val catalogTracks: StateFlow<List<MusicTrack>> = _catalogTracks.asStateFlow()
@@ -318,7 +319,9 @@ class PlayerViewModel(
                 if (track != null) {
                     if (track.id != lastObservedTrackId) {
                         lastObservedTrackId = track.id
-                        fetchLyricsForTrack(track, forceRefresh = false)
+                        lyricsJob?.cancel()
+                        _currentLyrics.value = null
+                        if (lyricsVisible) fetchLyricsForTrack(track, forceRefresh = false)
                     }
                 } else {
                     lastObservedTrackId = null
@@ -329,6 +332,13 @@ class PlayerViewModel(
         }
     }
 
+    fun setLyricsVisible(visible: Boolean) {
+        if (lyricsVisible == visible) return
+        lyricsVisible = visible
+        if (visible) playbackManager.uiState.value.currentTrack?.let { fetchLyricsForTrack(it, forceRefresh = false) }
+        else lyricsJob?.cancel()
+    }
+
     fun retryLyrics() {
         val track = playbackManager.uiState.value.currentTrack ?: return
         fetchLyricsForTrack(track, forceRefresh = true)
@@ -336,7 +346,7 @@ class PlayerViewModel(
 
     private fun fetchLyricsForTrack(track: MusicTrack, forceRefresh: Boolean) {
         lyricsJob?.cancel()
-        _currentLyrics.value = null
+        if (_currentLyrics.value?.trackId != track.id || forceRefresh) _currentLyrics.value = null
         if (forceRefresh) {
             LyricsProvider.clearCacheForTrack(track.id)
         }

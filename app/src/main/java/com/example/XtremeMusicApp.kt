@@ -34,10 +34,11 @@ class XtremeMusicApp : Application(), ImageLoaderFactory {
                     .build()
             }
             .diskCache {
-                DiskCache.Builder()
+                val diskCache = DiskCache.Builder()
                     .directory(cacheDir.resolve("image_cache"))
                     .maxSizeBytes(60L * 1024 * 1024) // 60 MB high-speed disk cache
                     .build()
+                com.example.data.cache.ManagedImageDiskCache(diskCache, cacheDir.resolve("artwork_cache_keys.json"))
             }
             .bitmapConfig(android.graphics.Bitmap.Config.HARDWARE)
             .allowHardware(true)

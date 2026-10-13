@@ -38,6 +38,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -69,8 +70,12 @@ import androidx.compose.ui.text.style.ResolvedTextDirection
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -83,6 +88,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
+import kotlin.math.roundToInt
 
 /**
  * Word metadata pre-mapped to character index ranges inside line.text.
@@ -181,8 +187,15 @@ fun SyncedLyricsView(
     }
 
     val viewportSize by remember { derivedStateOf { listState.layoutInfo.viewportSize } }
+    val density = LocalDensity.current
+    val textMeasurer = rememberTextMeasurer()
+    val lyricStyle = LocalTextStyle.current.copy(fontSize = 24.sp, lineHeight = 34.sp,
+        fontWeight = FontWeight.Bold, textAlign = TextAlign.Start)
+    val romanizationStyle = LocalTextStyle.current.copy(fontSize = 14.sp, lineHeight = 18.sp,
+        fontWeight = FontWeight.Medium, textAlign = TextAlign.Start)
+    val rowHeights = remember(lyrics?.trackId, lines, viewportSize.width, density, lyricStyle, romanizationStyle) { mutableMapOf<Int, Int>() }
     var hasInitialScrolled by remember(lyrics?.trackId, lines) { mutableStateOf(false) }
-    LaunchedEffect(lyrics?.trackId, lines, activeLineIndex, isSynced, followPlayback, isDragged, viewportSize) {
+    LaunchedEffect(lyrics?.trackId, lines, activeLineIndex, isSynced, followPlayback, isDragged, viewportSize, rowHeights) {
         if (!isSynced || lines.isEmpty() || !followPlayback || isDragged) return@LaunchedEffect
         // Before the first vocal, show the first line without marking it active.
         val targetIndex = activeLineIndex.coerceAtLeast(0)
@@ -190,26 +203,37 @@ fun SyncedLyricsView(
             it.viewportSize.height > 0 && it.totalItemsCount == lines.size
         }
 
-        if (listState.layoutInfo.visibleItemsInfo.none { it.index == targetIndex }) {
-            // Bring an offscreen row into layout before using its actual wrapped height.
-            if (hasInitialScrolled) listState.animateScrollToItem(targetIndex)
-            else listState.scrollToItem(targetIndex)
-        }
         val layout = listState.layoutInfo
         val item = layout.visibleItemsInfo.firstOrNull { it.index == targetIndex }
-            ?: return@LaunchedEffect
         // Item offsets include the negative viewport start caused by content padding.
         // Using viewportSize / 2 alone shifts the vocal line down by the top padding.
         val viewportCenter = (layout.viewportStartOffset + layout.viewportEndOffset) / 2f
-        val distanceToCenter = item.offset + item.size / 2f - viewportCenter
-        if (kotlin.math.abs(distanceToCenter) > 1f) {
-            if (hasInitialScrolled) {
-                listState.animateScrollBy(
-                    distanceToCenter,
-                    animationSpec = tween(durationMillis = 350, easing = FastOutSlowInEasing)
-                )
-            } else {
-                listState.scrollBy(distanceToCenter)
+        if (item == null) {
+            // Measure only an unseen target using its unchanged text styles, including wrapped romanization.
+            // Animate directly to its final center rather than chaining two different scroll animations.
+            val targetHeight = rowHeights[targetIndex] ?: run {
+                val line = lines[targetIndex]
+                val constraints = Constraints(maxWidth = layout.viewportSize.width.coerceAtLeast(1))
+                val mainHeight = textMeasurer.measure(line.text, style = lyricStyle, constraints = constraints).size.height
+                val romanizationHeight = line.romanization?.takeIf { it.isNotBlank() }?.let {
+                    textMeasurer.measure(it, style = romanizationStyle, constraints = constraints).size.height + with(density) { 4.dp.roundToPx() }
+                } ?: 0
+                mainHeight + romanizationHeight + with(density) { 6.dp.roundToPx() * 2 }
+            }
+            val scrollOffset = (targetHeight / 2f - viewportCenter).roundToInt()
+            if (hasInitialScrolled) listState.animateScrollToItem(targetIndex, scrollOffset)
+            else listState.scrollToItem(targetIndex, scrollOffset)
+        } else {
+            val distanceToCenter = item.offset + item.size / 2f - viewportCenter
+            if (kotlin.math.abs(distanceToCenter) > 1f) {
+                if (hasInitialScrolled) {
+                    listState.animateScrollBy(
+                        distanceToCenter,
+                        animationSpec = tween(durationMillis = 350, easing = FastOutSlowInEasing)
+                    )
+                } else {
+                    listState.scrollBy(distanceToCenter)
+                }
             }
         }
         hasInitialScrolled = true
@@ -342,6 +366,7 @@ fun SyncedLyricsView(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .onSizeChanged { rowHeights[index] = it.height }
                             .graphicsLayer {
                                 alpha = animatedAlpha
                                 scaleX = animatedScale

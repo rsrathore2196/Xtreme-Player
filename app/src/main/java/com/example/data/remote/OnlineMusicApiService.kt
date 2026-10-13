@@ -7,6 +7,7 @@ import android.util.Log
 import com.example.config.SecurityConfig
 import com.example.data.model.MusicTrack
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -49,7 +50,7 @@ object OnlineMusicApiService {
 
     private val memoryQueryCache = object : android.util.LruCache<String, List<MusicTrack>>(60) {}
 
-    private val httpClient by lazy {
+    private val httpClientDelegate = lazy {
         val cache = context?.let { ctx ->
             try {
                 val httpCacheDirectory = java.io.File(ctx.cacheDir, "http_music_cache")
@@ -65,6 +66,27 @@ object OnlineMusicApiService {
             builder.cache(cache)
         }
         builder.build()
+    }
+    private val httpClient by httpClientDelegate
+
+    /** Maintenance stays with OkHttp, including open responses and the disk journal. */
+    fun trimNetworkCache(targetBytes: Long): Long {
+        if (!httpClientDelegate.isInitialized()) return 0L
+        val cache = httpClient.cache ?: return 0L
+        return try {
+            val before = cache.size()
+            if (targetBytes <= 0L) cache.evictAll() else {
+                val entries = cache.urls()
+                while (cache.size() > targetBytes && entries.hasNext()) {
+                    entries.next()
+                    entries.remove()
+                }
+            }
+            (before - cache.size()).coerceAtLeast(0L)
+        } catch (e: Exception) {
+            Log.w(TAG, "HTTP cache maintenance failed: ${e.message}")
+            0L
+        }
     }
 
     /**
@@ -144,13 +166,7 @@ object OnlineMusicApiService {
                 .addHeader("Accept", "application/json")
                 .build()
 
-            val response = httpClient.newCall(request).execute()
-            if (!response.isSuccessful) {
-                Log.w(TAG, "Search HTTP error: ${response.code}")
-                return@withContext emptyList()
-            }
-
-            val bodyString = response.body?.string() ?: return@withContext emptyList()
+            val bodyString = httpClient.catalogRequest(request)
             val parsed = parseSongsJson(bodyString, fallbackGenre = trimmed.replaceFirstChar { it.uppercase() })
             if (parsed.isNotEmpty()) {
                 synchronized(memoryQueryCache) {
@@ -158,7 +174,7 @@ object OnlineMusicApiService {
                 }
             }
             parsed
-        } catch (e: Exception) {
+        } catch (e: CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "Online search failed: ${e.message}")
             emptyList()
         }
@@ -425,9 +441,7 @@ object OnlineMusicApiService {
                 .url(url)
                 .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
                 .build()
-            val response = httpClient.newCall(request).execute()
-            if (!response.isSuccessful) return@withContext null
-            val body = response.body?.string() ?: return@withContext null
+            val body = httpClient.catalogRequest(request)
             val root = JSONObject(body)
             val songObj = root.optJSONObject(songId)
                 ?: root.optJSONArray("songs")?.optJSONObject(0)
@@ -436,7 +450,7 @@ object OnlineMusicApiService {
                 songObj.optJSONObject("more_info")?.optString("isrc", "") ?: ""
             }
             if (isrc.isNotBlank()) isrc.trim() else null
-        } catch (e: Exception) {
+        } catch (e: CancellationException) { throw e } catch (e: Exception) {
             Log.d(TAG, "Failed to fetch song ISRC: ${e.message}")
             null
         }

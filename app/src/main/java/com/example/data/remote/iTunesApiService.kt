@@ -1,6 +1,7 @@
 package com.example.data.remote
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -40,9 +41,8 @@ class iTunesApiServiceImpl(
                 .header("User-Agent", "XtremePlayer/1.8.0 (Android)")
                 .build()
 
-            client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return@withContext iTunesSearchResponse()
-                val body = response.body?.string() ?: return@withContext iTunesSearchResponse()
+            run {
+                val body = client.catalogRequest(request)
                 val root = JSONObject(body)
                 val count = root.optInt("resultCount", 0)
                 val resultsArr = root.optJSONArray("results") ?: return@withContext iTunesSearchResponse(count)
@@ -59,8 +59,8 @@ class iTunesApiServiceImpl(
                 }
                 iTunesSearchResponse(resultCount = count, results = list)
             }
-        } catch (_: Exception) {
-            iTunesSearchResponse()
+        } catch (e: CancellationException) {
+            throw e
         }
     }
 }

@@ -131,13 +131,7 @@ object InternetArchiveApiService {
                     .addHeader("Accept", "application/json")
                     .build()
 
-                val response = httpClient.newCall(request).execute()
-                if (!response.isSuccessful) {
-                    Log.w(TAG, "Search failed with HTTP code: ${response.code}")
-                    return@withTimeoutOrNull emptyList()
-                }
-
-                val responseBody = response.body?.string() ?: return@withTimeoutOrNull emptyList()
+                val responseBody = httpClient.catalogRequest(request)
                 val json = JSONObject(responseBody)
                 val responseObj = json.optJSONObject("response") ?: return@withTimeoutOrNull emptyList()
                 val docs = responseObj.optJSONArray("docs") ?: return@withTimeoutOrNull emptyList()
@@ -154,7 +148,7 @@ object InternetArchiveApiService {
                     }
                     deferredList.awaitAll().filterNotNull()
                 }
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
                 Log.w(TAG, "Internet Archive search encountered error/timeout: ${e.message}")
                 emptyList()
             }
@@ -171,7 +165,7 @@ object InternetArchiveApiService {
      * Retrieves metadata for an item and verifies that a true streamable lossless file exists.
      * Rejects items that only have lossy files.
      */
-    private fun verifyAndParseLosslessItem(doc: JSONObject): MusicTrack? {
+    private suspend fun verifyAndParseLosslessItem(doc: JSONObject): MusicTrack? {
         val identifier = doc.optString("identifier", "").trim()
         if (identifier.isBlank()) return null
 
@@ -188,10 +182,7 @@ object InternetArchiveApiService {
                 .addHeader("Accept", "application/json")
                 .build()
 
-            val response = httpClient.newCall(request).execute()
-            if (!response.isSuccessful) return null
-
-            val responseBody = response.body?.string() ?: return null
+            val responseBody = httpClient.catalogRequest(request)
             val metadataJson = JSONObject(responseBody)
             val filesArray = metadataJson.optJSONArray("files") ?: return null
 
@@ -250,7 +241,7 @@ object InternetArchiveApiService {
                 source = "INTERNET_ARCHIVE",
                 isLossless = true
             )
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
             Log.w(TAG, "Failed to verify metadata for $identifier: ${e.message}")
             return null
         }

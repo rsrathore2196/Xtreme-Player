@@ -27,6 +27,8 @@ internal class LyricsSources(private val identity: SongIdentity) {
     private val duration = (identity.durationMs ?: 0L) / 1000
     private val documents = ConcurrentHashMap<String, Deferred<String?>>()
     private val slots = Semaphore(4)
+    // Fallbacks cannot sit behind the whole rich-source queue; both lanes have bounded concurrency.
+    private val fallbackSlots = Semaphore(2)
     private val videoId = identity.trackId.orEmpty().removePrefix("yt_").takeIf { identity.trackId?.startsWith("yt_") == true && it.matches(Regex("[A-Za-z0-9_-]{11}")) }
     private data class Source(val name: String, val fetch: suspend () -> TrackLyrics?)
 
@@ -52,9 +54,9 @@ internal class LyricsSources(private val identity: SongIdentity) {
         } }.awaitAll().filterNotNull()
     }
 
-    suspend fun fallback(): List<TrackLyrics> = supervisorScope {
+    suspend fun fallback(onCandidate: (TrackLyrics) -> Unit = {}): List<TrackLyrics> = supervisorScope {
         listOf<suspend () -> TrackLyrics?>({ lrclib() }, { youtubeMusic() }, { kugou() }, { genius() }).map { fetch ->
-            async { slots.withPermit { safely { withTimeoutOrNull(12_000) { fetch() } } } }
+            async { fallbackSlots.withPermit { safely { withTimeoutOrNull(12_000) { fetch() } }?.also(onCandidate) } }
         }.awaitAll().filterNotNull()
     }
 
