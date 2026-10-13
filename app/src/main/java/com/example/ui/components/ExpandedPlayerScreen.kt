@@ -841,7 +841,8 @@ fun ExpandedPlayerScreen(
                             qualityChipText = qualityChipText,
                             onSeekTo = onSeekTo,
                             isDark = isDark,
-                            isPlaying = uiState.isPlaying
+                            isPlaying = uiState.isPlaying,
+                            dominantColor = animatedDominantColor
                         )
 
                         // Main Controls (Shuffle, Previous, Play/Pause, Next, Repeat/Replay) in Full Liquid Glass UI
@@ -1608,7 +1609,8 @@ fun ExpandedPlayerScreen(
                 qualityChipText = landscapeQualityChipText,
                 onSeekTo = onSeekTo,
                 isDark = isDark,
-                isPlaying = uiState.isPlaying
+                isPlaying = uiState.isPlaying,
+                dominantColor = animatedDominantColor
             )
 
             Spacer(modifier = Modifier.height(if (isLandscape) 4.dp else 14.dp))
@@ -2249,6 +2251,7 @@ private fun PlayerTimelineSection(
     onSeekTo: (Long) -> Unit,
     isDark: Boolean,
     isPlaying: Boolean = false,
+    dominantColor: Color = Color.Unspecified,
     modifier: Modifier = Modifier
 ) {
     val appColors = LocalAppColors.current
@@ -2284,6 +2287,30 @@ private fun PlayerTimelineSection(
     }
     val sliderValue = if (isUserScrubbing) scrubPosition else (currentPosition.toFloat() / trackDuration.toFloat()).coerceIn(0f, 1f)
 
+    // Contrast calculation according to theme and effective background
+    val isEffectivelyDark = remember(isDark, appColors.isDark, appColors.isAmoled, dominantColor, appColors.scaffoldBackground) {
+        if (isDark || appColors.isDark || appColors.isAmoled) {
+            true
+        } else if (dominantColor != Color.Unspecified) {
+            val base = appColors.scaffoldBackground
+            val blendedRed = dominantColor.red * 0.25f + base.red * 0.75f
+            val blendedGreen = dominantColor.green * 0.25f + base.green * 0.75f
+            val blendedBlue = dominantColor.blue * 0.25f + base.blue * 0.75f
+            val lum = 0.299f * blendedRed + 0.587f * blendedGreen + 0.114f * blendedBlue
+            lum < 0.50f
+        } else {
+            false
+        }
+    }
+
+    val liveProgressColor = if (isEffectivelyDark) Color.White else Color.Black
+    val inactiveProgressColor = if (isEffectivelyDark) Color.White.copy(alpha = 0.22f) else Color.Black.copy(alpha = 0.16f)
+
+    val chipContentColor = if (isEffectivelyDark) Color.White else Color(0xFF0F172A)
+    val chipBorderColor = if (isEffectivelyDark) Color.White.copy(alpha = 0.25f) else Color.Black.copy(alpha = 0.20f)
+    val chipBgColor = if (isEffectivelyDark) Color.White.copy(alpha = 0.12f) else Color.Black.copy(alpha = 0.08f)
+    val timeLabelColor = if (isEffectivelyDark) Color.White.copy(alpha = 0.65f) else Color.Black.copy(alpha = 0.65f)
+
     Column(modifier = modifier.fillMaxWidth().graphicsLayer()) {
         WavyScrubberBar(
             progress = sliderValue,
@@ -2300,7 +2327,9 @@ private fun PlayerTimelineSection(
                 onSeekTo(seekPos)
                 isUserScrubbing = false
             },
-            isDark = isDark,
+            isDark = isEffectivelyDark,
+            barColor = liveProgressColor,
+            inactiveBarColor = inactiveProgressColor,
             modifier = Modifier
                 .fillMaxWidth()
                 .testTag("player_scrub_slider")
@@ -2316,20 +2345,20 @@ private fun PlayerTimelineSection(
             Text(
                 text = formatTime(currentPosition),
                 style = MaterialTheme.typography.bodySmall.copy(
-                    color = appColors.textMuted,
+                    color = timeLabelColor,
                     fontSize = 12.sp
                 )
             )
 
-            // Dynamic Quality Chip (Hi Res Lossless, Lossless, Ultra HD, HD Audio, Data Saver)
+            // Dynamic Quality Chip adapting white or dark color with proper background contrast
             if (qualityChipText.isNotBlank()) {
                 Surface(
                     color = Color.Transparent,
-                    border = BorderStroke(1.dp, LiquidGlass.specularBorderBrush(appColors, highlightAlpha = 0.22f)),
+                    border = BorderStroke(1.dp, chipBorderColor),
                     shape = RoundedCornerShape(10.dp),
                     modifier = Modifier
                         .clip(RoundedCornerShape(10.dp))
-                        .background(LiquidGlass.glassBrush(appColors, translucency = 0.85f, tintAccent = false))
+                        .background(chipBgColor)
                         .padding(horizontal = 2.dp)
                 ) {
                     Row(
@@ -2340,13 +2369,13 @@ private fun PlayerTimelineSection(
                             modifier = Modifier
                                 .size(6.dp)
                                 .clip(CircleShape)
-                                .background(appColors.primaryAccent)
+                                .background(chipContentColor)
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = qualityChipText,
                             style = MaterialTheme.typography.labelSmall.copy(
-                                color = appColors.primaryAccent,
+                                color = chipContentColor,
                                 fontWeight = FontWeight.ExtraBold,
                                 fontSize = 10.sp,
                                 letterSpacing = 0.5.sp
@@ -2359,7 +2388,7 @@ private fun PlayerTimelineSection(
             Text(
                 text = formatTime(trackDuration),
                 style = MaterialTheme.typography.bodySmall.copy(
-                    color = appColors.textMuted,
+                    color = timeLabelColor,
                     fontSize = 12.sp
                 )
             )

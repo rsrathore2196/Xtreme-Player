@@ -162,7 +162,7 @@ fun AboutPage(
                         )
                 ) {
                     Text(
-                        text = "VERSION $APP_VERSION • AUDIO ENGINE",
+                        text = "VERSION $APP_VERSION",
                         fontSize = 10.sp,
                         fontWeight = FontWeight.ExtraBold,
                         letterSpacing = 1.sp,

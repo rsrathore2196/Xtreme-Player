@@ -103,9 +103,10 @@ fun WavyScrubberBar(
     onSeekProgress: (Float) -> Unit,
     onSeekFinished: (Float) -> Unit,
     isDark: Boolean,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    barColor: Color? = null,
+    inactiveBarColor: Color? = null
 ) {
-    val appColors = LocalAppColors.current
     val haptic = LocalHapticFeedback.current
 
     var isDragging by remember { mutableStateOf(false) }
@@ -140,9 +141,14 @@ fun WavyScrubberBar(
         label = "thumb_scale"
     )
 
-    val primaryAccent = appColors.primaryAccent
-    val secondaryAccent = appColors.secondaryAccent
-    val drawCache = remember(primaryAccent, secondaryAccent) { WaveformDrawCache(listOf(primaryAccent, secondaryAccent)) }
+    val resolvedActiveColor = barColor ?: if (isDark) Color.White else Color.Black
+    val resolvedInactiveColor = inactiveBarColor ?: if (isDark) {
+        Color.White.copy(alpha = 0.22f)
+    } else {
+        Color.Black.copy(alpha = 0.16f)
+    }
+
+    val drawCache = remember(resolvedActiveColor) { WaveformDrawCache(listOf(resolvedActiveColor, resolvedActiveColor)) }
     val density = LocalDensity.current
     val trackStrokeWidth = with(density) { 4.dp.toPx() }
     val waveLengthPx = with(density) { 22.dp.toPx() }
@@ -151,11 +157,6 @@ fun WavyScrubberBar(
     val waveStroke = remember(trackStrokeWidth) { Stroke(width = trackStrokeWidth, cap = StrokeCap.Round) }
     val rimWidth = with(density) { 1.5.dp.toPx() }
     val rimStroke = remember(rimWidth) { Stroke(width = rimWidth) }
-    val inactiveTrackColor = if (isDark) {
-        appColors.cardBorder.copy(alpha = 0.8f)
-    } else {
-        Color(0xFFCBD5E1)
-    }
 
     Box(
         modifier = modifier
@@ -219,7 +220,7 @@ fun WavyScrubberBar(
             if (activeWidth < width) {
                 val inactiveStart = (activeWidth + (if (animatedAmplitude > 0.5f) 0f else thumbRadius)).coerceAtMost(width)
                 drawLine(
-                    color = inactiveTrackColor,
+                    color = resolvedInactiveColor,
                     start = Offset(inactiveStart, centerY),
                     end = Offset(width, centerY),
                     strokeWidth = trackStrokeWidth,
@@ -252,30 +253,40 @@ fun WavyScrubberBar(
                 }
 
                 // 3. Draw Scrubber Thumb with specular liquid glass glow
+                val isDarkBar = (0.299 * resolvedActiveColor.red + 0.587 * resolvedActiveColor.green + 0.114 * resolvedActiveColor.blue) > 0.50f
+
                 // Outer ambient glow ring
+                val glowColor = if (isDarkBar) {
+                    Color.White.copy(alpha = if (isDragging) 0.35f else 0.18f)
+                } else {
+                    Color.Black.copy(alpha = if (isDragging) 0.25f else 0.12f)
+                }
                 drawCircle(
-                    color = primaryAccent.copy(alpha = if (isDragging) 0.35f else 0.20f),
+                    color = glowColor,
                     radius = thumbRadius + 5.dp.toPx(),
                     center = Offset(activeWidth, centerY)
                 )
 
                 // Main thumb circle
+                val thumbCircleColor = if (isDarkBar) Color.White else Color(0xFF0F172A)
                 drawCircle(
-                    color = Color.White,
+                    color = thumbCircleColor,
                     radius = thumbRadius,
                     center = Offset(activeWidth, centerY)
                 )
 
-                // Accent core dot
+                // Contrasting core dot
+                val coreDotColor = if (isDarkBar) Color(0xFF18181B) else Color.White
                 drawCircle(
-                    color = primaryAccent,
-                    radius = thumbRadius * 0.55f,
+                    color = coreDotColor,
+                    radius = thumbRadius * 0.50f,
                     center = Offset(activeWidth, centerY)
                 )
 
                 // Specular rim reflection
+                val rimColor = if (isDarkBar) Color.White.copy(alpha = 0.50f) else Color.Black.copy(alpha = 0.35f)
                 drawCircle(
-                    color = primaryAccent.copy(alpha = 0.5f),
+                    color = rimColor,
                     radius = thumbRadius,
                     center = Offset(activeWidth, centerY),
                     style = rimStroke
