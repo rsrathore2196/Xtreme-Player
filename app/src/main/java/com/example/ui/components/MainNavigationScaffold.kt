@@ -74,6 +74,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.animation.core.updateTransition
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.runtime.setValue
@@ -132,23 +133,24 @@ fun MainNavigationScaffold(
 
     val context = LocalContext.current
     val app = context.applicationContext as XtremeMusicApp
-    val homeViewModel: HomeViewModel = viewModel(
-        factory = HomeViewModel.provideFactory(
+    val homeFactory = remember(app) {
+        HomeViewModel.provideFactory(
             repository = app.repository,
             playbackManager = app.playbackManager,
             application = app
         )
-    )
+    }
+    val homeViewModel: HomeViewModel = viewModel(factory = homeFactory)
 
-    var selectedTabIndex by remember { mutableIntStateOf(0) }
+    var selectedTabIndex by rememberSaveable { mutableIntStateOf(0) }
     val tabState = rememberSaveableStateHolder()
     val tabTransition = updateTransition(selectedTabIndex, label = "tab_navigation_transition")
-    var isPlayerExpanded by remember { mutableStateOf(false) }
-    var isQueueOpen by remember { mutableStateOf(false) }
-    var isEqualizerOpen by remember { mutableStateOf(false) }
-    var isCreatePlaylistOpen by remember { mutableStateOf(false) }
+    var isPlayerExpanded by rememberSaveable { mutableStateOf(false) }
+    var isQueueOpen by rememberSaveable { mutableStateOf(false) }
+    var isEqualizerOpen by rememberSaveable { mutableStateOf(false) }
+    var isCreatePlaylistOpen by rememberSaveable { mutableStateOf(false) }
     var trackToAddToPlaylist by remember { mutableStateOf<MusicTrack?>(null) }
-    var isSettingsSubpageOpen by remember { mutableStateOf(false) }
+    var isSettingsSubpageOpen by rememberSaveable { mutableStateOf(false) }
 
     // Request notification permission for Android 13+ (API 33)
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
@@ -181,7 +183,9 @@ fun MainNavigationScaffold(
         }
     }
 
-    val playerVisibility = remember { androidx.compose.animation.core.MutableTransitionState(false) }
+    val playerVisibility = remember {
+        androidx.compose.animation.core.MutableTransitionState(isPlayerExpanded && playerUiState.currentTrack != null)
+    }
     playerVisibility.targetState = isPlayerExpanded && playerUiState.currentTrack != null
     val playerCoversContent = playerVisibility.isIdle && playerVisibility.currentState && playerVisibility.targetState
     val transitionRunning = !playerVisibility.isIdle || tabTransition.isRunning

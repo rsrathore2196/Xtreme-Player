@@ -10,6 +10,9 @@ import kotlinx.coroutines.channels.Channel
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /** Last successful shelf selection, independent of Activity and process lifetime. */
 data class SavedHomeCards(
@@ -17,31 +20,51 @@ data class SavedHomeCards(
     val quick: SectionState, val era: SectionState, val chart: SectionState,
     val history: SectionState, val personalized: SectionState, val artists: List<MostListenedArtist>,
     val quickCandidates: List<MusicTrack>, val eraCandidates: List<MusicTrack>,
-    val chartCandidates: List<MusicTrack>, val catalog: List<MusicTrack>
+    val chartCandidates: List<MusicTrack>, val catalog: List<MusicTrack>,
+    val chartRefreshedAt: Long = refreshedAt
 )
 
 class HomeCardCache(context: Context) {
     private val file = AtomicFile(File(context.applicationContext.filesDir, "home_cards_v1.json"))
+    private data class Retained(val path: String, val cards: SavedHomeCards)
+    private companion object {
+        val memory = AtomicReference<Retained?>(null)
+        val fileMutex = Mutex()
+    }
+    fun peek(profile: String): SavedHomeCards? = memory.get()?.takeIf {
+        it.path == file.baseFile.path && it.cards.profileKey == profile
+    }?.cards
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val writes = Channel<SavedHomeCards>(Channel.CONFLATED)
     private val writer = scope.launch {
         for (snapshot in writes) {
             try {
                 val json = withContext(Dispatchers.Default) { encode(snapshot).toString().toByteArray() }
-                val output = file.startWrite()
-                try { output.write(json); file.finishWrite(output) }
-                catch (e: Exception) { file.failWrite(output); throw e }
+                fileMutex.withLock {
+                    val output = file.startWrite()
+                    try { output.write(json); file.finishWrite(output) }
+                    catch (e: Exception) { file.failWrite(output); throw e }
+                }
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { android.util.Log.w("HomeCache", "Could not checkpoint shelves: ${e.message}") }
         }
     }
-    fun save(snapshot: SavedHomeCards) { writes.trySend(snapshot) }
+    fun save(snapshot: SavedHomeCards) {
+        memory.set(Retained(file.baseFile.path, snapshot))
+        writes.trySend(snapshot)
+    }
     fun close() { writes.close(); writer.invokeOnCompletion { scope.cancel() } }
     suspend fun read(profile: String): SavedHomeCards? = withContext(Dispatchers.IO) {
+        peek(profile)?.let { return@withContext it }
+        val before = memory.get()
         try {
-            if (!file.baseFile.exists() || file.baseFile.length() > 4_000_000L) return@withContext null
-            val bytes = file.openRead().use { it.readBytes() }
-            withContext(Dispatchers.Default) { decode(JSONObject(String(bytes)), profile) }
+            val bytes = fileMutex.withLock {
+                if (!file.baseFile.exists() || file.baseFile.length() > 4_000_000L) return@withContext null
+                file.openRead().use { it.readBytes() }
+            }
+            val decoded = withContext(Dispatchers.Default) { decode(JSONObject(String(bytes)), profile) }
+            decoded?.let { memory.compareAndSet(before, Retained(file.baseFile.path, it)) }
+            peek(profile) ?: decoded
         } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
     }
     private fun encode(s: SavedHomeCards): JSONObject {
@@ -53,6 +76,7 @@ class HomeCardCache(context: Context) {
             .put("subtitle", value.subtitle).put("tracks", ids(value.tracks))
         return JSONObject().put("version", 1).put("profile", s.profileKey).put("signal", s.signal)
             .put("generation", s.generation).put("refreshedAt", s.refreshedAt)
+            .put("chartRefreshedAt", s.chartRefreshedAt)
             .put("tracks", JSONArray(tracks.map { t -> JSONObject()
                 .put("id", t.id).put("title", t.title).put("artist", t.artist).put("album", t.album)
                 .put("duration", t.durationMs).put("cover", t.coverUrl)
@@ -98,6 +122,7 @@ class HomeCardCache(context: Context) {
                 val list = tracks(a.optJSONArray("tracks"))
                 MostListenedArtist(a.getString("name"), a.optInt("count"), list).takeIf { list.isNotEmpty() }
             }, tracks(root.optJSONArray("quickCandidates")), tracks(root.optJSONArray("eraCandidates")),
-            tracks(root.optJSONArray("chartCandidates")), tracks(root.optJSONArray("catalog")))
+            tracks(root.optJSONArray("chartCandidates")), tracks(root.optJSONArray("catalog")),
+            root.optLong("chartRefreshedAt", root.optLong("refreshedAt")))
     }
 }

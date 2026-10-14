@@ -50,6 +50,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -105,22 +106,25 @@ class HomeViewModel(
     // 1. Instant User Profile (< 1ms)
     private val _userProfile = MutableStateFlow(UserProfilePreferences.getUserProfile(application))
     val userProfile: StateFlow<UserProfile> = _userProfile.asStateFlow()
+    private val shelfCache = HomeCardCache(application)
+    private val initialCards = shelfCache.peek(profileKey())
+    private val _currentStage = MutableStateFlow(LoadingStage.PRIORITY_1_INSTANT_SHELL)
+    val currentStage: StateFlow<LoadingStage> = _currentStage.asStateFlow()
 
     // 2. Instant Local Catalog state (Local-First: Room/Memory)
-    private val _catalogTracks = MutableStateFlow<List<MusicTrack>>(emptyList())
+    private val _catalogTracks = MutableStateFlow(initialCards?.catalog.orEmpty())
     val catalogTracks: StateFlow<List<MusicTrack>> = _catalogTracks.asStateFlow()
     private val homeVisible = MutableStateFlow(false)
     private val restored = CompletableDeferred<Unit>()
     private val eventsLoaded = CompletableDeferred<Unit>()
     private val favoritesLoaded = CompletableDeferred<Unit>()
-    private val shelfCache = HomeCardCache(application)
-    private var savedSignal: String? = null
-    private var savedGeneration = -1L
+    private var savedSignal: String? = initialCards?.signal
+    private var savedGeneration = initialCards?.generation ?: -1L
     private val lastEventStamps = mutableMapOf<Long, com.example.data.local.ActualPlayStamp>()
     private val retainedEvents = mutableMapOf<Long, ListeningEventEntity>()
     private fun profileKey() = "${_userProfile.value.countryCode}|${_userProfile.value.languages.joinToString(",")}"
-    private val cachedHero = MutableStateFlow<MusicTrack?>(null)
-    private val cachedHistory = MutableStateFlow<List<MusicTrack>?>(null)
+    private val cachedHero = MutableStateFlow(initialCards?.history?.tracks?.firstOrNull() ?: initialCards?.catalog?.firstOrNull())
+    private val cachedHistory = MutableStateFlow(initialCards?.history?.tracks)
 
     private val database by lazy { MusicDatabase.getDatabase(application) }
     private val listeningEventDao by lazy { database.listeningEventDao() }
@@ -131,6 +135,7 @@ class HomeViewModel(
     private val actualPlays = homeVisible.flatMapLatest { visible ->
         if (!visible) emptyFlow() else flow {
             restored.await()
+            if (savedCandidates != null && !eventsLoaded.isCompleted) awaitHomeIdle()
             listeningEventDao.observeActualPlayStamps().collect { stamps ->
                 val changed = stamps.filter { lastEventStamps[it.id] != it }.map { it.id }
                 val rows = changed.chunked(900).flatMap { listeningEventDao.getEventsByIds(it) }
@@ -145,7 +150,8 @@ class HomeViewModel(
         }
     }.flowOn(Dispatchers.IO).stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
     private data class HistoryRows(val ids: List<String> = emptyList(), val tracks: List<MusicTrack> = emptyList())
-    private val historyRows = actualPlays.map { events -> events.map { it.trackId }.distinct() }.distinctUntilChanged().flatMapLatest { ids ->
+    private val historyRows = combine(actualPlays.map { events -> events.map { it.trackId }.distinct() }.distinctUntilChanged(), homeVisible) { ids, visible -> ids to visible }.flatMapLatest { (ids, visible) ->
+        if (!visible) return@flatMapLatest emptyFlow()
         val pages = ids.chunked(900).map { database.musicDao().observeTracksByIds(it).distinctUntilChanged() }
         if (pages.isEmpty()) kotlinx.coroutines.flow.flowOf(HistoryRows(ids)) else combine(pages) { groups ->
             HistoryRows(ids, groups.flatMap { rows -> rows.map { it.toMusicTrack() } })
@@ -159,22 +165,29 @@ class HomeViewModel(
     private var lastTasteInputs: TasteInputs? = null
     private var retainedTaste = UserTasteProfile.COLD_START_PROFILE
     private val tasteSnapshot = combine(actualPlays, historyMetadata, favoriteTracks, _userProfile) { events, tracks, favorites, preferences ->
-        val inputs = TasteInputs(events, tracks, favorites, preferences)
+        TasteInputs(events, tracks, favorites, preferences)
+    }.distinctUntilChanged().mapLatest { inputs ->
+        restored.await()
+        eventsLoaded.await(); favoritesLoaded.await()
         // Restarting a screen subscription is not a new listening signal. Keep the same decay
         // snapshot until real data changes, rather than reshuffling on every tab return.
         if (inputs != lastTasteInputs) {
-            val taste = UserTasteProfile.fromEvents(events, tracks, favorites)
-            retainedTaste = taste.copy(languageAffinities = preferences.languages.associate {
-                HomeRecommendationPolicy.normalize(it) to 0.35f
-            } + taste.languageAffinities)
-            lastTasteInputs = inputs
+            awaitHomeIdle()
+            BackgroundWorkCoordinator.work {
+                val taste = UserTasteProfile.fromEvents(inputs.events, inputs.tracks, inputs.favorites)
+                currentCoroutineContext().ensureActive()
+                retainedTaste = taste.copy(languageAffinities = inputs.preferences.languages.associate {
+                    HomeRecommendationPolicy.normalize(it) to 0.35f
+                } + taste.languageAffinities)
+                lastTasteInputs = inputs
+            }
         }
         TasteSnapshot(inputs, retainedTaste)
     }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), TasteSnapshot())
     private val tasteProfile = tasteSnapshot.map { it.taste }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UserTasteProfile.COLD_START_PROFILE)
-    val recentlyPlayed: StateFlow<List<MusicTrack>> = combine(actualPlays, historyMetadata, tasteProfile, cachedHistory) { events, metadata, taste, cached ->
-        if (taste.isColdStart) cached.orEmpty() else {
+    val recentlyPlayed: StateFlow<List<MusicTrack>> = combine(actualPlays, historyMetadata, cachedHistory) { events, metadata, cached ->
+        if (events.none(UserTasteProfile::played)) cached.orEmpty() else {
             val byId = metadata.associateBy { it.id }
             val seen = HomeRecommendationPolicy.Recordings()
             // The DAO already orders newest first; stop once the visible history is filled.
@@ -185,7 +198,7 @@ class HomeViewModel(
     val heroSeedTrack: StateFlow<MusicTrack?> = combine(recentlyPlayed, favoriteTracks, _catalogTracks, cachedHero) { recent, favorites, catalog, cached ->
         (recent.asSequence() + listOfNotNull(cached).asSequence() + favorites.asSequence() + catalog.asSequence())
             .firstOrNull(com.example.recommendation.OriginalMusicFilter::isHomeRecommendation)
-    }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), null)
+    }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), cachedHero.value)
 
     // Helper to compute authoritative trending title
     fun getAuthoritativeTrendingTitle(countryDisplayName: String): String {
@@ -212,20 +225,20 @@ class HomeViewModel(
 
     // Card 2: YouTube Music Home Screen-Based Card
     private val _ytmCard = MutableStateFlow(
-        SectionState(title = "Quick Picks", subtitle = "Dynamic hits inspired by YouTube Music", isLoading = true)
+        initialCards?.quick ?: SectionState(title = "Quick Picks", subtitle = "Dynamic hits inspired by YouTube Music", isLoading = true)
     )
     val ytmCard: StateFlow<SectionState> = _ytmCard.asStateFlow()
 
     // Card 3: Era-Specific Hits Card
     private val _eraCard = MutableStateFlow(
-        SectionState(title = "Era-Specific Hits", subtitle = "Golden 90s, 2000s classics & retro anthems", isLoading = true)
+        initialCards?.era ?: SectionState(title = "Era-Specific Hits", subtitle = "Golden 90s, 2000s classics & retro anthems", isLoading = true)
     )
     val eraCard: StateFlow<SectionState> = _eraCard.asStateFlow()
     val eraSection: StateFlow<SectionState> = _eraCard.asStateFlow() // Backward compatibility alias
 
     // Card 4: Trending Section (Country & Regional Charts)
     private val _countryLanguageCard = MutableStateFlow(
-        SectionState(
+        initialCards?.chart ?: SectionState(
             title = getAuthoritativeTrendingTitle(resolveCountryDisplayName(_userProfile.value)),
             subtitle = "Regional chart discoveries",
             isLoading = true
@@ -235,13 +248,13 @@ class HomeViewModel(
 
     // Card 5: User Listening History Based Card
     private val _listeningHistoryCard = MutableStateFlow(
-        SectionState(title = "Jump Back In", subtitle = "Based on your recent listening history & frequency", isLoading = false)
+        initialCards?.history ?: SectionState(title = "Jump Back In", subtitle = "Based on your recent listening history & frequency", isLoading = false)
     )
     val listeningHistoryCard: StateFlow<SectionState> = _listeningHistoryCard.asStateFlow()
 
     // Card 6: Fully Personalized Recommendation Card
     private val _personalizedCard = MutableStateFlow(
-        SectionState(title = "Recommended for You", subtitle = "Curated picks tailored to your sonic taste", isLoading = false)
+        initialCards?.personalized ?: SectionState(title = "Recommended for You", subtitle = "Curated picks tailored to your sonic taste", isLoading = false)
     )
     val personalizedCard: StateFlow<SectionState> = _personalizedCard.asStateFlow()
 
@@ -255,12 +268,19 @@ class HomeViewModel(
         val chart: List<MusicTrack> = emptyList(),
         val generation: Long = 0L
     )
-    private val candidates = MutableStateFlow(Candidates())
-    private var savedCandidates: Candidates? = null
-    private val _mostListenedArtists = MutableStateFlow<List<MostListenedArtist>>(emptyList())
+    private val candidates = MutableStateFlow(initialCards?.let {
+        Candidates(it.quickCandidates, it.eraCandidates, it.chartCandidates, it.generation)
+    } ?: Candidates())
+    private var savedCandidates: Candidates? = initialCards?.let { candidates.value }
+    private val _mostListenedArtists = MutableStateFlow(initialCards?.artists.orEmpty())
     val mostListenedArtists: StateFlow<List<MostListenedArtist>> = _mostListenedArtists.asStateFlow()
     private val _homeShelves = MutableStateFlow<List<HomeShelf>>(emptyList())
     val homeShelves: StateFlow<List<HomeShelf>> = _homeShelves.asStateFlow()
+    // Compatibility accessors for the old staged-loader name; no second pipeline.
+    val primaryCatalog: StateFlow<List<MusicTrack>> get() = catalogTracks
+    val heroTrack: StateFlow<MusicTrack?> get() = heroSeedTrack
+    val secondaryShelves: StateFlow<List<HomeShelf>> get() = homeShelves
+    fun refreshAll() = refreshHome(isExplicitPull = true)
     private val renderMutex = Mutex()
     private var renderedGeneration = -1L
     private var previousExposure: Set<String> = emptySet()
@@ -292,11 +312,12 @@ class HomeViewModel(
         val signal = "${actualPlays.value.hashCode()}|$metadataSignal|${inputs.favorites.map { it.id }.sorted()}|${profileKey()}"
         if (pool == savedCandidates && pool.generation == savedGeneration && signal == savedSignal) {
             _listeningHistoryCard.update { it.copy(tracks = inputs.recent, isLoaded = inputs.recent.isNotEmpty()) }
+            _currentStage.value = LoadingStage.PRIORITY_3_BACKGROUND_ENRICHED
             lastRenderInputs = inputs
             return@withLock
         }
         if (!activeRefreshIsExplicit && pool.generation != manualRenderGeneration)
-            BackgroundWorkCoordinator.awaitIdle()
+            awaitHomeIdle()
         val rendering = BackgroundWorkCoordinator.busy()
         try {
         currentCoroutineContext().ensureActive()
@@ -360,10 +381,12 @@ class HomeViewModel(
         _listeningHistoryCard.value = _listeningHistoryCard.value.copy(tracks = inputs.recent,
             isLoading = false, isLoaded = inputs.recent.isNotEmpty())
         lastRenderInputs = inputs
+        _currentStage.value = LoadingStage.PRIORITY_3_BACKGROUND_ENRICHED
         savedSignal = signal; savedGeneration = pool.generation; savedCandidates = pool
         shelfCache.save(SavedHomeCards(profileKey(), signal, pool.generation, lastDiscoveryRefresh,
             _ytmCard.value, _eraCard.value, _countryLanguageCard.value, _listeningHistoryCard.value,
-            _personalizedCard.value, _mostListenedArtists.value, pool.quick, pool.era, pool.chart, catalog.take(400)))
+            _personalizedCard.value, _mostListenedArtists.value, pool.quick, pool.era, pool.chart, catalog.take(400),
+            chartRefreshedAt = lastRegionalRefresh))
         if (manualRenderGeneration == pool.generation) manualRenderGeneration = -1L
         val shown = chart + era + quick + personalized + artists.flatMap { it.tracks }
         if (shown.isNotEmpty()) {
@@ -389,26 +412,46 @@ class HomeViewModel(
     }
 
     private var regionalTrendingJob: Job? = null
+    private var lastRegionalRefresh = initialCards?.chartRefreshedAt ?: 0L
+    private var lastRegionalAttempt = 0L
+    private var lastRegionalAttemptTitle: String? = null
+
+    private suspend fun awaitHomeIdle() {
+        while (true) {
+            homeVisible.first { it }
+            val essential = _ytmCard.value.tracks.isEmpty() && _countryLanguageCard.value.tracks.isEmpty()
+            BackgroundWorkCoordinator.awaitIdle(quietMillis = if (essential) 1_500L else 2_500L,
+                minimumUptimeMillis = if (essential) 1_500L else 6_000L,
+                userRequested = { _isRefreshing.value || manualRenderGeneration == candidates.value.generation })
+            if (homeVisible.value) return
+        }
+    }
 
     fun loadRegionalTrending(country: String, countryCode: String = "IN", forceRefresh: Boolean = false,
         alreadyIdle: Boolean = false) {
-        pendingRegionalRefresh = false
-        regionalTrendingJob?.cancel()
         val item = CountryData.findCountry(countryCode) ?: CountryData.findCountry(country)
         val name = item?.name ?: country.ifBlank { "India" }
         val title = getAuthoritativeTrendingTitle(name)
         val sameCountry = _countryLanguageCard.value.title == title
+        if (!forceRefresh && sameCountry && (regionalTrendingJob?.isActive == true ||
+                lastRegionalAttemptTitle == title && System.currentTimeMillis() - lastRegionalAttempt in 0 until 60_000L)) return
+        regionalTrendingJob?.cancel()
         if (!sameCountry) candidates.value = candidates.value.copy(chart = emptyList())
         _countryLanguageCard.update { it.copy(title = title,
             tracks = if (sameCountry) it.tracks else emptyList(),
             isLoading = true, isError = false, errorMessage = "") }
         regionalTrendingJob = viewModelScope.launch(Dispatchers.IO) {
-          if (!forceRefresh && !alreadyIdle) BackgroundWorkCoordinator.awaitIdle()
+          if (!forceRefresh && !alreadyIdle) awaitHomeIdle()
+          lastRegionalAttempt = System.currentTimeMillis()
+          lastRegionalAttemptTitle = title
           BackgroundWorkCoordinator.work {
             try {
                 val songs = repository.getRegionalTrending(name, item?.code ?: countryCode, limit = 20, forceRefresh = forceRefresh)
                 if (_countryLanguageCard.value.title != title) return@launch
-                if (songs.isNotEmpty()) candidates.update { it.copy(chart = songs) }
+                if (songs.isNotEmpty()) {
+                    lastRegionalRefresh = System.currentTimeMillis()
+                    candidates.update { it.copy(chart = songs) }
+                }
                 _countryLanguageCard.update { if (it.title != title) it else it.copy(isLoading = false,
                     isLoaded = candidates.value.chart.isNotEmpty(), isError = songs.isEmpty(),
                     errorMessage = if (songs.isEmpty()) "Regional charts are temporarily unavailable." else "") }
@@ -435,10 +478,11 @@ class HomeViewModel(
     private var pendingExplicitRefresh = false
     private var activeRefreshIsExplicit = false
     private var refreshGeneration = 0L
-    private var lastDiscoveryRefresh = 0L
+    private var lastDiscoveryRefresh = initialCards?.refreshedAt ?: 0L
+    private var lastDiscoveryAttempt = 0L
+    private var lastAttemptProfile: String? = null
     private var manualRenderGeneration = -1L
     private var pendingSilentRefresh = false
-    private var pendingRegionalRefresh = false
     private var refreshCandidatesPending = false
     private var lastDiscoverySignal: Pair<Set<String>, Set<String>>? = null
 
@@ -446,21 +490,16 @@ class HomeViewModel(
         if (homeVisible.value == visible) return
         homeVisible.value = visible
         if (!visible) {
-            // Waiting for the separate chart job must not invalidate already loaded Quick Picks.
-            if (homeRefreshJob?.isActive == true &&
-                (refreshCandidatesPending || activeRefreshIsExplicit || refreshWaitingForIdle)) {
+            // Keep bounded requests that have already started. Cancel only optional
+            // work still waiting for idle; tab returns reuse the same request/results.
+            if (homeRefreshJob?.isActive == true && refreshWaitingForIdle) {
                 pendingSilentRefresh = true
                 if (activeRefreshIsExplicit) pendingExplicitRefresh = true
+                homeRefreshJob?.cancel()
+                homeRefreshJob = null
+                ++refreshGeneration
+                _isRefreshing.value = false
             }
-            if (regionalTrendingJob?.isActive == true) pendingRegionalRefresh = true
-            homeRefreshJob?.cancel()
-            regionalTrendingJob?.cancel()
-            homeRefreshJob = null
-            ++refreshGeneration
-            _isRefreshing.value = false
-            _ytmCard.update { it.copy(isLoading = false) }
-            _eraCard.update { it.copy(isLoading = false) }
-            _countryLanguageCard.update { it.copy(isLoading = false) }
         }
     }
 
@@ -476,7 +515,7 @@ class HomeViewModel(
         }
         viewModelScope.launch(Dispatchers.IO) {
           try {
-            val cached = shelfCache.read(profileKey())
+            val cached = initialCards ?: shelfCache.read(profileKey())
             if (cached != null) {
                 savedSignal = cached.signal; savedGeneration = cached.generation
                 _ytmCard.value = cached.quick; _eraCard.value = cached.era
@@ -489,6 +528,7 @@ class HomeViewModel(
                     cached.chartCandidates, cached.generation)
                 savedCandidates = candidates.value
                 lastDiscoveryRefresh = cached.refreshedAt
+                lastRegionalRefresh = cached.chartRefreshedAt
                 withContext(Dispatchers.Main.immediate) { playbackManager.setCandidatePool(cached.catalog) }
             }
             val initial = if (cached == null) repository.getInitialCatalog(_userProfile.value) else emptyList()
@@ -498,7 +538,10 @@ class HomeViewModel(
                     era = initial.filter { (it.year.toIntOrNull() ?: 0) in 1990..2009 })
                 withContext(Dispatchers.Main.immediate) { playbackManager.setCandidatePool(initial) }
             }
-          } finally { restored.complete(Unit) }
+          } finally {
+            _currentStage.value = LoadingStage.PRIORITY_2_ESSENTIAL_CONTENT
+            restored.complete(Unit)
+          }
         }
         viewModelScope.launch {
             UserProfilePreferences.getUserProfileFlow(getApplication()).collect { profile ->
@@ -519,6 +562,12 @@ class HomeViewModel(
                         combine(candidates, tasteProfile, favoriteTracks, _userProfile, recentlyPlayed) { pool, taste, _, _, _ -> pool to taste }
                             .debounce(250).collectLatest { (pool, taste) -> renderRecommendations(pool, taste) }
                     }
+                    launch {
+                        recentlyPlayed.collect { recent ->
+                            _listeningHistoryCard.update { it.copy(tracks = recent,
+                                isLoaded = recent.isNotEmpty(), isLoading = false) }
+                        }
+                    }
                     // Re-read real listening/likes on return, but do not fetch again for an unchanged signal.
                     launch {
                         combine(tasteProfile, favoriteTracks) { taste, favorites ->
@@ -538,7 +587,8 @@ class HomeViewModel(
                     }
                     if (pendingSilentRefresh || lastDiscoveryRefresh == 0L || System.currentTimeMillis() - lastDiscoveryRefresh >= 10 * 60_000L) {
                         refreshHome(false)
-                    } else if (pendingRegionalRefresh) {
+                    } else if (candidates.value.chart.isEmpty() ||
+                        System.currentTimeMillis() - lastRegionalRefresh >= 10 * 60_000L) {
                         val profile = _userProfile.value
                         loadRegionalTrending(resolveCountryDisplayName(profile), profile.countryCode)
                     }
@@ -555,6 +605,8 @@ class HomeViewModel(
                 if (isExplicitPull) pendingExplicitRefresh = true else pendingSilentRefresh = true
                 return@launch
             }
+            if (!isExplicitPull && !pendingExplicitRefresh && lastAttemptProfile == profileKey() &&
+                System.currentTimeMillis() - lastDiscoveryAttempt in 0 until 60_000L) return@launch
             if (homeRefreshJob?.isActive == true) {
                 if (isExplicitPull && refreshWaitingForIdle) {
                     // A user refresh can take over a deferred job before it has made any requests.
@@ -582,10 +634,12 @@ class HomeViewModel(
                     restored.await()
                     if (!initialExplicit && !pendingExplicitRefresh) {
                         refreshWaitingForIdle = true
-                        try { BackgroundWorkCoordinator.awaitIdle() }
+                        try { awaitHomeIdle() }
                         finally { if (generation == refreshGeneration) refreshWaitingForIdle = false }
                     }
                     while (true) {
+                        lastDiscoveryAttempt = System.currentTimeMillis()
+                        lastAttemptProfile = profileKey()
                         activeRefreshIsExplicit = explicit
                         refreshCandidatesPending = true
                         _isRefreshing.value = explicit
@@ -623,9 +677,13 @@ class HomeViewModel(
     private suspend fun refreshSuggestions(force: Boolean) {
       BackgroundWorkCoordinator.work {
         val profile = _userProfile.value
-        loadRegionalTrending(resolveCountryDisplayName(profile), profile.countryCode, force, alreadyIdle = true)
-        val chartRequest = regionalTrendingJob
-        val (quick, era) = withContext(Dispatchers.Default) {
+        val country = resolveCountryDisplayName(profile)
+        if (force || candidates.value.chart.isEmpty() ||
+            _countryLanguageCard.value.title != getAuthoritativeTrendingTitle(country) ||
+            System.currentTimeMillis() - lastRegionalRefresh >= 10 * 60_000L)
+            loadRegionalTrending(country, profile.countryCode, force, alreadyIdle = true)
+        val chartRequest = regionalTrendingJob?.takeIf { it.isActive }
+        val (quick, era) = withContext(Dispatchers.IO) {
             coroutineScope {
                 val quickJob = async {
                     try { repository.getYtmQuickPicks(limit = 100, forceRefresh = force) }

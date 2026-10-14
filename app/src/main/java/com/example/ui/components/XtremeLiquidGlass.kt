@@ -6,9 +6,11 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -24,6 +26,7 @@ import androidx.compose.ui.graphics.RenderEffect
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
@@ -42,6 +45,7 @@ val LocalDynamicGlassEnabled = compositionLocalOf { true }
 /** A shared GPU display list. Glass controls must remain outside their own source. */
 class LiquidGlassBackdrop internal constructor(internal val layer: GraphicsLayer) {
     internal var position by mutableStateOf(Offset.Zero)
+    internal var sampleScale by mutableFloatStateOf(XtremeLiquidGlassDefaults.BackdropSampleScale)
     internal var revision by mutableIntStateOf(0)
     private var recording = 0
     internal fun recorded() { revision = ++recording }
@@ -70,7 +74,7 @@ object XtremeLiquidGlassDefaults {
     val RimBorderWidth: Dp = 0.8.dp
     val PillShape: Shape = CircleShape
     val Elevation: Dp = 10.dp
-    const val BackdropSampleScale: Float = 1f
+    const val BackdropSampleScale: Float = 0.33f
 }
 
 /** Record once for all floating surfaces; no bitmap readback or per-frame coroutine. */
@@ -81,6 +85,9 @@ fun Modifier.xtremeSharedBackdropSource(
     backdrop: LiquidGlassBackdrop? = LocalLiquidGlassBackdrop.current
 ): Modifier {
     if (!enabled || backdrop == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return this
+    val processingScale = sampleScale.takeIf { it.isFinite() }?.coerceIn(0.1f, 1f)
+        ?: XtremeLiquidGlassDefaults.BackdropSampleScale
+    SideEffect { backdrop.sampleScale = processingScale }
     return this.onGloballyPositioned { backdrop.position = it.positionInWindow() }
         .drawWithContent {
             backdrop.layer.record { this@drawWithContent.drawContent() }
@@ -108,10 +115,11 @@ fun Modifier.xtremeLiquidGlassBackground(
 ): Modifier {
     val density = LocalDensity.current
     val radius = with(density) { blurRadius.toPx() }
+    val processingScale = backdrop?.sampleScale ?: XtremeLiquidGlassDefaults.BackdropSampleScale
     val supportsBlur = enabled && radius > 0 && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
-    val blur = remember(supportsBlur, radius) {
+    val blur = remember(supportsBlur, radius, processingScale) {
         if (supportsBlur) android.graphics.RenderEffect.createBlurEffect(
-            radius, radius, android.graphics.Shader.TileMode.CLAMP
+            radius * processingScale, radius * processingScale, android.graphics.Shader.TileMode.CLAMP
         ).asComposeRenderEffect() else null
     }
     val sample = rememberGraphicsLayer()
@@ -145,7 +153,9 @@ fun Modifier.xtremeLiquidGlassBackground(
                 center = Offset(size.width * 0.72f, size.height * 1.6f), radius = size.width.coerceAtLeast(size.height) * 0.65f)
             // Extra pixels avoid dark seams when the blur kernel reaches the pill's edge.
             val bleed = ceil(radius * 2).toInt()
-            val sampleSize = IntSize(ceil(size.width).toInt() + bleed * 2, ceil(size.height).toInt() + bleed * 2)
+            val sampleSize = IntSize(
+                ceil((size.width + bleed * 2) * processingScale).toInt().coerceAtLeast(1),
+                ceil((size.height + bleed * 2) * processingScale).toInt().coerceAtLeast(1))
             onDrawWithContent {
                 val revision = backdrop?.revision ?: 0
                 val ready = blur != null && backdrop != null && revision > 0 && !backdrop.layer.isReleased
@@ -153,9 +163,11 @@ fun Modifier.xtremeLiquidGlassBackground(
                     val offset = backdrop!!.position - position
                     if (sampleCache.source !== backdrop.layer || sampleCache.revision != revision ||
                         sampleCache.offset != offset || sampleCache.size != sampleSize || sampleCache.effect !== blur) {
-                        sample.renderEffect = blur
+                        if (sampleCache.effect !== blur) sample.renderEffect = blur
                         sample.record(size = sampleSize) {
-                            translate(offset.x + bleed, offset.y + bleed) { drawLayer(backdrop.layer) }
+                            scale(processingScale, pivot = Offset.Zero) {
+                                translate(offset.x + bleed, offset.y + bleed) { drawLayer(backdrop.layer) }
+                            }
                         }
                         // Update only after recording succeeds. Keep these fields out of snapshot state.
                         sampleCache.source = backdrop.layer
@@ -164,7 +176,9 @@ fun Modifier.xtremeLiquidGlassBackground(
                         sampleCache.size = sampleSize
                         sampleCache.effect = blur
                     }
-                    translate(-bleed.toFloat(), -bleed.toFloat()) { drawLayer(sample) }
+                    translate(-bleed.toFloat(), -bleed.toFloat()) {
+                        scale(1f / processingScale, pivot = Offset.Zero) { drawLayer(sample) }
+                    }
                 }
                 drawRect(base.copy(alpha = if (ready || (backdrop == null && enabled)) { if (dark) 0.50f else 0.64f } else 0.90f))
                 drawRect(colorWash)

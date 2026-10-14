@@ -11,19 +11,23 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.UUID
 
 /** Observes existing player flows; never controls playback. One updatable row per actual play. */
+@OptIn(ExperimentalCoroutinesApi::class)
 class RecommendationListeningObserver(private val dao: ListeningEventDao, private val musicDao: MusicDao) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     fun start(player: PlaybackManager) {
         scope.launch {
             var track: MusicTrack? = null
-            var previousPosition = 0L
             var previousTime = SystemClock.elapsedRealtime()
+            var previousSequence = -1L
             var wasPlaying = false
             var listened = 0L
             var duration = 0L
@@ -47,29 +51,38 @@ class RecommendationListeningObserver(private val dao: ListeningEventDao, privat
                     // Recommendation persistence must never interrupt the player's application scope.
                 }
             }
-            combine(player.uiState, player.playbackPosition) { state, position -> state to position }
-                .collect { (state, position) ->
+            // Native playback events own the clock. Coarse persistence wakeups
+            // preserve background listening without polling or emitting UI positions.
+            player.listeningState.flatMapLatest { signal -> flow {
+                emit(signal)
+                if (signal.isPlaying) {
+                    delay(1_000L)
+                    emit(signal)
+                    val milestone = minOf(30_000L, signal.durationMs.takeIf { it > 0L }?.let { (it + 1L) / 2L } ?: 30_000L)
+                    delay((milestone - listened).coerceAtLeast(1_000L))
+                    while (true) { emit(signal); delay(30_000L) }
+                }
+            } }.collect { state ->
                     val now = SystemClock.elapsedRealtime()
                     val elapsed = (now - previousTime).coerceAtLeast(0)
-                    val delta = position - previousPosition
-                    val changed = track?.id != state.currentTrack?.id
-                    // A restart near zero after substantial playback is a new play, not a seek credit.
-                    val restarted = !changed && previousPosition > 10_000 && position < 1_000 && delta < 0
-                    if (changed || restarted) {
+                    if (wasPlaying && track != null) listened += elapsed
+                    val changed = track?.id != state.track?.id || previousSequence != state.playSequence
+                    if (changed) {
                         save(finished = true)
-                        track = state.currentTrack
+                        track = state.track
                         listened = 0; savedDuration = 0; rowId = 0
                         playId = UUID.randomUUID().toString()
-                    } else if (wasPlaying && delta > 0 && delta <= elapsed + 750 && elapsed <= 5_000) {
-                        listened += minOf(delta, elapsed)
+                    } else {
+                        track = state.track
                     }
                     duration = state.durationMs.takeIf { it > 0 } ?: (track?.durationMs ?: 0)
                     val meaningful = listened >= 30_000 || (duration > 0 && listened >= (duration + 1) / 2)
+                    track?.let { player.recordMeaningfulListening(it.id, state.playSequence, listened, duration) }
                     if ((rowId == 0L && listened > 0L) || (meaningful && savedDuration < 30_000 && (duration <= 0 || savedDuration < (duration + 1) / 2)) || listened - savedDuration >= 30_000 ||
                         (wasPlaying && !state.isPlaying && listened > savedDuration)) save()
-                    previousPosition = position
                     previousTime = now
-                    wasPlaying = state.isPlaying && !state.isLoading
+                    previousSequence = state.playSequence
+                    wasPlaying = state.isPlaying
                 }
         }
     }

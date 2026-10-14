@@ -104,7 +104,7 @@ fun LibraryScreen(
     onImportPlaylistClick: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    var selectedTab by remember { mutableIntStateOf(0) }
+    var selectedTab by androidx.compose.runtime.saveable.rememberSaveable { mutableIntStateOf(0) }
     val tabs = listOf("Playlists", "Liked Songs")
     val isDark = isDarkMode
     val appColors = LocalAppColors.current

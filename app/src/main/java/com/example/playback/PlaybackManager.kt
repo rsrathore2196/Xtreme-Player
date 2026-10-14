@@ -35,6 +35,7 @@ import com.example.data.repository.TrackUnavailableException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -72,6 +73,14 @@ data class PlayerUiState(
 enum class RepeatMode {
     OFF, ALL, ONE
 }
+
+/** Event-driven listening clock, independent of the foreground scrubber poll. */
+data class ListeningPlaybackState(
+    val track: MusicTrack? = null,
+    val isPlaying: Boolean = false,
+    val durationMs: Long = 0L,
+    val playSequence: Long = 0L
+)
 
 class PlaybackManager(
     private val context: Context,
@@ -129,6 +138,9 @@ class PlaybackManager(
         )
     )
     val uiState: StateFlow<PlayerUiState> = _uiState.asStateFlow()
+    private val _listeningState = MutableStateFlow(ListeningPlaybackState())
+    val listeningState: StateFlow<ListeningPlaybackState> = _listeningState.asStateFlow()
+    private var uiForeground = com.example.performance.BackgroundWorkCoordinator.uiForeground.value
 
     // Isolated high-frequency position state flows so high-frequency updates do NOT trigger full-screen recompositions
     private val _playbackPosition = MutableStateFlow(0L)
@@ -143,12 +155,50 @@ class PlaybackManager(
     val currentPlaybackPositionMs: Long
         get() = controller?.currentPosition?.coerceAtLeast(0L) ?: _playbackPosition.value
 
+    private var queueRevision = 0L
+    private var snapshotRevision = -1L
+    private var retainedQueueSnapshot: List<MusicTrack> = emptyList()
+    private var upcomingRevision = -1L
+    private var upcomingIndex = -1
+    private var retainedUpcoming: List<MusicTrack> = emptyList()
     private var activeQueue = mutableListOf<MusicTrack>()
+        set(value) { field = value; queueRevision++ }
+    private fun queueSnapshot(): List<MusicTrack> {
+        if (snapshotRevision != queueRevision) {
+            retainedQueueSnapshot = activeQueue.toList()
+            snapshotRevision = queueRevision
+        }
+        return retainedQueueSnapshot
+    }
+    private fun upcomingTracks(index: Int): List<MusicTrack> {
+        if (upcomingRevision != queueRevision || upcomingIndex != index) {
+            val queue = queueSnapshot()
+            retainedUpcoming = queue.subList((index + 1).coerceIn(0, queue.size), queue.size)
+            upcomingRevision = queueRevision
+            upcomingIndex = index
+        }
+        return retainedUpcoming
+    }
+    private fun replaceQueueTrack(index: Int, track: MusicTrack) {
+        if (index in activeQueue.indices && activeQueue[index] != track) {
+            activeQueue[index] = track
+            queueRevision++
+        }
+    }
     private var isCurrentSessionExplicitPlaylist: Boolean = false
 
     init {
         SleepTimerManager.addExpirationListener(sleepExpirationListener)
         initMediaController()
+        scope.launch {
+            com.example.performance.BackgroundWorkCoordinator.uiForeground.collect { visible ->
+                uiForeground = visible
+                if (visible) {
+                    updateProgressValues()
+                    if (controller?.isPlaying == true) startProgressTicker()
+                } else stopProgressTicker()
+            }
+        }
     }
 
     private fun initMediaController() {
@@ -191,15 +241,25 @@ class PlaybackManager(
             isLossless = item.mediaId.startsWith("ia_") || extras?.getBoolean("isLossless", false) == true)
     }
 
-    private fun synchronizeControllerQueue(player: MediaController) {
-        if (player.mediaItemCount == 0) return
-        val known = activeQueue.associateBy { it.id }
-        activeQueue = (0 until player.mediaItemCount).map { index ->
+    private fun synchronizeControllerQueue(player: MediaController): Boolean {
+        val count = player.mediaItemCount
+        val known by lazy(LazyThreadSafetyMode.NONE) { activeQueue.associateBy { it.id } }
+        var revised: MutableList<MusicTrack>? = null
+        for (index in 0 until count) {
             val item = player.getMediaItemAt(index)
-            known[item.mediaId] ?: controllerTrack(item)
-        }.toMutableList()
-        val index = player.currentMediaItemIndex.coerceIn(0, activeQueue.lastIndex)
-        _uiState.update { it.copy(queue = activeQueue.toList(), currentIndex = index) }
+            val existing = activeQueue.getOrNull(index)
+            val track = existing?.takeIf { it.id == item.mediaId } ?: known[item.mediaId] ?: controllerTrack(item)
+            if (existing != track) {
+                val target = revised ?: activeQueue.toMutableList().also { revised = it }
+                if (index < target.size) target[index] = track else target.add(track)
+            }
+        }
+        if (count < activeQueue.size) {
+            val target = revised ?: activeQueue.toMutableList().also { revised = it }
+            target.subList(count, target.size).clear()
+        }
+        revised?.let { activeQueue = it }
+        return revised != null
     }
 
     private fun setupPlayerListener() {
@@ -213,17 +273,35 @@ class PlaybackManager(
         player.currentMediaItem?.let { item ->
             val track = activeQueue.getOrNull(player.currentMediaItemIndex) ?: controllerTrack(item)
             recoveryGuard.select(track.id)
-            _uiState.update { it.copy(currentTrack = track, isFavorite = track.isLiked,
+            _uiState.update { it.copy(currentTrack = track, queue = queueSnapshot(), currentIndex = player.currentMediaItemIndex,
+                isFavorite = track.isLiked,
                 isPlaying = player.isPlaying, isLoading = player.playbackState == Player.STATE_BUFFERING,
                 durationMs = player.duration.takeIf { duration -> duration > 0L } ?: track.durationMs) }
             updateProgressValues()
+            publishListeningState(player, newPlay = true)
             if (player.isPlaying) startProgressTicker()
         }
         player.addListener(object : Player.Listener {
+            private var queueContentsChanged = false
+            private var listeningPlayRestart = false
+            override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
+                if (reason == Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED || timeline.windowCount != activeQueue.size)
+                    queueContentsChanged = true
+            }
+            override fun onEvents(player: Player, events: Player.Events) {
+                val controller = this@PlaybackManager.controller ?: return
+                if (queueContentsChanged) {
+                    queueContentsChanged = false
+                    if (synchronizeControllerQueue(controller) ||
+                        _uiState.value.currentIndex != controller.currentMediaItemIndex.coerceAtLeast(0)) publishQueueState()
+                }
+                publishListeningState(controller, newPlay = listeningPlayRestart)
+                listeningPlayRestart = false
+            }
             override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (isPlaying) autoplaySuppressedBySleepTimer = false
                 _uiState.update { it.copy(isPlaying = isPlaying) }
                 if (isPlaying) {
-                    autoplaySuppressedBySleepTimer = false
                     startProgressTicker()
                     // Genuinely playing: persist track into Room DB listening history immediately
                     val current = _uiState.value.currentTrack
@@ -306,13 +384,15 @@ class PlaybackManager(
                     val trackId = mediaItem.mediaId
                     recoveryGuard.select(trackId)
                     val oldTrack = _uiState.value.currentTrack
+                    val newListeningPlay = _listeningState.value.track?.id != trackId ||
+                        reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT
                     val elapsed = (System.currentTimeMillis() - currentTrackStartTimeMs).coerceAtLeast(0L)
                     val wasMeaningful = hasRecordedMeaningfulPlay
                     val shouldRecordPlayback = player.isPlaying || player.playWhenReady
-                    currentTrackStartTimeMs = System.currentTimeMillis()
-                    hasRecordedMeaningfulPlay = false
-                    synchronizeControllerQueue(player)
-                    val matchedTrack = activeQueue.find { it.id == trackId } ?: controllerTrack(mediaItem)
+                    if (activeQueue.size != player.mediaItemCount || activeQueue.getOrNull(player.currentMediaItemIndex)?.id != trackId)
+                        synchronizeControllerQueue(player)
+                    val matchedTrack = activeQueue.getOrNull(player.currentMediaItemIndex)?.takeIf { it.id == trackId }
+                        ?: controllerTrack(mediaItem)
                     val index = player.currentMediaItemIndex.takeIf {
                         it in activeQueue.indices && activeQueue[it].id == trackId
                     } ?: activeQueue.indexOfFirst { it.id == trackId }.coerceAtLeast(0)
@@ -328,9 +408,11 @@ class PlaybackManager(
                             qualityBadge = if (com.example.data.remote.YouTubeAudioStreamService.isYouTubeAudio(matchedTrack.id, matchedTrack.audioUrl)) matchedTrack.qualityBadge else _uiState.value.selectedQuality.badge,
                             isFavorite = matchedTrack.isLiked,
                             nextRecommendedTrack = nextTrackInQueue,
-                            infiniteAutoplayTracks = activeQueue.drop(index + 1)
+                            queue = queueSnapshot(),
+                            infiniteAutoplayTracks = upcomingTracks(index)
                         )
                     }
+                    listeningPlayRestart = listeningPlayRestart || newListeningPlay
 
                     // Keep player/queue access on Main; only persistence runs on IO.
                     scope.launch {
@@ -403,6 +485,10 @@ class PlaybackManager(
                 reason: Int
             ) {
                 updateProgressValues()
+                if (reason == Player.DISCONTINUITY_REASON_SEEK &&
+                    oldPosition.mediaItem?.mediaId == newPosition.mediaItem?.mediaId &&
+                    oldPosition.positionMs > 10_000L && newPosition.positionMs < 1_000L)
+                    listeningPlayRestart = true
             }
 
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
@@ -452,7 +538,7 @@ class PlaybackManager(
                             replacement.localConfiguration?.uri?.toString() == failedUrl) {
                             throw TrackUnavailableException(current.title)
                         }
-                        if (index in activeQueue.indices) activeQueue[index] = resolved
+                        replaceQueueTrack(index, resolved)
                         player.replaceMediaItem(index, replacement)
                         player.seekTo(index, position)
                         player.prepare()
@@ -460,7 +546,7 @@ class PlaybackManager(
                         _uiState.update {
                             it.copy(
                                 currentTrack = resolved,
-                                queue = activeQueue.toList(),
+                                queue = queueSnapshot(),
                                 isLoading = false,
                                 isPlaying = resume,
                                 errorMessage = null
@@ -482,10 +568,11 @@ class PlaybackManager(
                     !extras.getBoolean("audio_actual")) return
                 val updated = current.copy(bitrateKbps = extras.getInt("bitrate"),
                     qualityBadge = extras.getString("qualityBadge").orEmpty(), isLossless = false)
+                if (updated == current) return
                 val index = activeQueue.indexOfFirst { it.id == current.id }
-                if (index >= 0) activeQueue[index] = updated
+                replaceQueueTrack(index, updated)
                 _uiState.update { it.copy(currentTrack = updated, qualityBadge = updated.qualityBadge,
-                    queue = activeQueue.toList()) }
+                    queue = queueSnapshot()) }
             }
         })
     }
@@ -494,22 +581,57 @@ class PlaybackManager(
         _uiState.update { it.copy(isLoading = false, isPlaying = false, errorMessage = message) }
     }
 
+    private fun publishListeningState(player: MediaController, newPlay: Boolean = false) {
+        if (newPlay) {
+            currentTrackStartTimeMs = System.currentTimeMillis()
+            hasRecordedMeaningfulPlay = false
+        }
+        val item = player.currentMediaItem
+        val track = item?.let {
+            _uiState.value.currentTrack?.takeIf { current -> current.id == it.mediaId }
+                ?: activeQueue.getOrNull(player.currentMediaItemIndex)?.takeIf { current -> current.id == it.mediaId }
+                ?: controllerTrack(it)
+        }
+        _listeningState.update { previous -> ListeningPlaybackState(track,
+            player.isPlaying && !autoplaySuppressedBySleepTimer,
+            player.duration.takeIf { it > 0L } ?: track?.durationMs ?: 0L,
+            previous.playSequence + if (newPlay && track != null) 1L else 0L) }
+    }
+
+    internal fun recordMeaningfulListening(trackId: String, playSequence: Long, listenedMs: Long, durationMs: Long) {
+        if (hasRecordedMeaningfulPlay || _listeningState.value.playSequence != playSequence ||
+            _uiState.value.currentTrack?.id != trackId ||
+            (listenedMs < 30_000L && (durationMs <= 0L || listenedMs < (durationMs + 1L) / 2L))) return
+        hasRecordedMeaningfulPlay = true
+        val track = _uiState.value.currentTrack ?: return
+        scope.launch(Dispatchers.IO) {
+            try {
+                listeningEventDao.insertListeningEvent(ListeningEventEntity.fromTrack(
+                    track, currentSessionId, listenedMs, durationMs, "MEANINGFUL_PLAY",
+                    completed = false, skipped = false, liked = track.isLiked))
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { Log.w(TAG, "Couldn't save meaningful listening: ${e.message}") }
+        }
+    }
+
     private fun startProgressTicker() {
-        progressTickerJob?.cancel()
+        if (!uiForeground || progressTickerJob?.isActive == true) return
         progressTickerJob = scope.launch {
-            while (isActive) {
+            while (isActive && uiForeground) {
                 updateProgressValues()
-                delay(300) // 300ms smooth updates with minimal CPU and zero UI thrashing
+                delay(500L)
             }
         }
     }
 
     private fun stopProgressTicker() {
         progressTickerJob?.cancel()
-        updateProgressValues()
+        progressTickerJob = null
+        if (uiForeground) updateProgressValues()
     }
 
     private fun updateProgressValues() {
+        if (!uiForeground) return
         val player = controller
         if (player == null) {
             Log.w(TAG, "Cannot update progress: player is null")
@@ -537,26 +659,6 @@ class PlaybackManager(
                 }
             }
 
-            // Record MEANINGFUL_PLAY only once per track when threshold passes (>=30s or >=50%), zero writes on general ticker
-            if (!hasRecordedMeaningfulPlay && (pos >= 30_000L || (dur > 0 && pos.toFloat() / dur >= 0.5f))) {
-                hasRecordedMeaningfulPlay = true
-                val curTrack = _uiState.value.currentTrack
-                if (curTrack != null) {
-                    scope.launch(Dispatchers.IO) {
-                        val meaningfulEvent = ListeningEventEntity.fromTrack(
-                            track = curTrack,
-                            sessionId = currentSessionId,
-                            playedDurationMs = pos,
-                            trackDurationMs = dur,
-                            eventType = "MEANINGFUL_PLAY",
-                            completed = false,
-                            skipped = false,
-                            liked = curTrack.isLiked
-                        )
-                        listeningEventDao.insertListeningEvent(meaningfulEvent)
-                    }
-                }
-            }
         } catch (e: Exception) {
             Log.e(TAG, "Error updating progress values: ${e.message}", e)
         }
@@ -696,7 +798,7 @@ class PlaybackManager(
                 _uiState.update {
                     it.copy(
                         currentTrack = track,
-                        queue = activeQueue.toList(),
+                        queue = queueSnapshot(),
                         currentIndex = 0,
                         isPlaying = true,
                         isLoading = true,
@@ -726,7 +828,7 @@ class PlaybackManager(
                 _uiState.update {
                     it.copy(
                         currentTrack = track,
-                        queue = activeQueue.toList(),
+                        queue = queueSnapshot(),
                         currentIndex = startIndex,
                         isPlaying = true,
                         isLoading = true,
@@ -771,10 +873,10 @@ class PlaybackManager(
 
     private fun publishQueueState() {
         val index = controller?.currentMediaItemIndex?.coerceAtLeast(0) ?: 0
-        val upcoming = activeQueue.drop(index + 1)
+        val upcoming = upcomingTracks(index)
         _uiState.update {
             it.copy(
-                queue = activeQueue.toList(),
+                queue = queueSnapshot(),
                 currentIndex = index,
                 nextRecommendedTrack = upcoming.firstOrNull(),
                 infiniteAutoplayTracks = upcoming
@@ -805,7 +907,7 @@ class PlaybackManager(
                 }
                 suspend fun appendCandidates(pool: List<MusicTrack>, targetSize: Int = upcomingQueueTarget) {
                     val excludedIds = activeQueue.mapTo(mutableSetOf()) { it.id } + attemptedIds
-                    val queuedSnapshot = activeQueue.toList()
+                    val queuedSnapshot = queueSnapshot()
                     val ranked = withContext(Dispatchers.Default) {
                         recommendationEngine.buildInfiniteAutoplayRecommendations(
                             currentTrack = track,
@@ -833,7 +935,7 @@ class PlaybackManager(
                         } ?: continue
                         if (resolved.audioUrl.isBlank()) continue
                         if (!isActive || queueGeneration != generation || !_uiState.value.isAutoplayEnabled) return
-                        val currentQueue = activeQueue.toList()
+                        val currentQueue = queueSnapshot()
                         val duplicate = withContext(Dispatchers.Default) {
                             val queued = HomeRecommendationPolicy.Recordings()
                             currentQueue.forEach { queued.add(it) }
@@ -844,10 +946,12 @@ class PlaybackManager(
 
                         // Set the backing list before adding: player callbacks may run synchronously.
                         activeQueue.add(resolved)
+                        queueRevision++
                         try {
                             player.addMediaItem(resolved.toMediaItem())
                         } catch (e: Exception) {
                             activeQueue.removeAt(activeQueue.lastIndex)
+                            queueRevision++
                             throw e
                         }
                         publishQueueState()
@@ -984,6 +1088,7 @@ class PlaybackManager(
 
     fun setCandidatePool(pool: List<MusicTrack>) {
         synchronized(candidateCatalogPool) {
+            if (candidateCatalogPool == pool) return
             candidateCatalogPool.clear()
             candidateCatalogPool.addAll(pool)
         }
@@ -1169,9 +1274,10 @@ class PlaybackManager(
             // Also update inside activeQueue
             val idx = activeQueue.indexOfFirst { it.id == trackId }
             if (idx >= 0) {
-                activeQueue[idx] = activeQueue[idx].copy(isLiked = isLiked)
-                _uiState.update { it.copy(queue = activeQueue.toList()) }
+                replaceQueueTrack(idx, activeQueue[idx].copy(isLiked = isLiked))
+                _uiState.update { it.copy(queue = queueSnapshot()) }
             }
+            controller?.let { publishListeningState(it) }
             Log.d(TAG, "Updated favorite status for track $trackId: $isLiked")
         } catch (e: Exception) {
             Log.e(TAG, "Error updating favorite status: ${e.message}", e)
@@ -1182,7 +1288,9 @@ class PlaybackManager(
         try {
             if (fromIndex in activeQueue.indices && toIndex in activeQueue.indices) {
                 val item = activeQueue.removeAt(fromIndex)
+                queueRevision++
                 activeQueue.add(toIndex, item)
+                queueRevision++
                 controller?.moveMediaItem(fromIndex, toIndex)
                 publishQueueState()
                 Log.d(TAG, "Reordered queue: moved item from $fromIndex to $toIndex")
@@ -1207,10 +1315,12 @@ class PlaybackManager(
                 val player = controller ?: return@launch
                 val insertIndex = (player.currentMediaItemIndex + 1).coerceIn(0, activeQueue.size)
                 activeQueue.add(insertIndex, resolved)
+                queueRevision++
                 try {
                     player.addMediaItem(insertIndex, resolved.toMediaItem())
                 } catch (e: Exception) {
                     activeQueue.removeAt(insertIndex)
+                    queueRevision++
                     throw e
                 }
                 rememberQueueCandidates(listOf(resolved))
@@ -1267,11 +1377,11 @@ class PlaybackManager(
                         val position = player.currentPosition
                         val resume = player.playWhenReady
                         val updated = resolved.copy(isLiked = _uiState.value.currentTrack?.isLiked ?: resolved.isLiked)
-                        if (index in activeQueue.indices) activeQueue[index] = updated
+                        replaceQueueTrack(index, updated)
                         player.replaceMediaItem(index, updated.toMediaItem())
                         player.seekTo(index, position); player.prepare(); player.playWhenReady = resume
                         _uiState.update { it.copy(currentTrack = updated, qualityBadge = updated.qualityBadge,
-                            queue = activeQueue.toList()) }
+                            queue = queueSnapshot()) }
                     } catch (e: CancellationException) { throw e }
                     catch (_: Exception) { _uiState.update { it.copy(errorMessage = "Couldn't change audio quality. Current playback is preserved.") } }
                 }
