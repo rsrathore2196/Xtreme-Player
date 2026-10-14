@@ -2,6 +2,27 @@ package com.example.data.model
 
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import java.util.Locale
+
+/** Prefer the actual audio transport over the catalog ID when a provider fallback plays. */
+val MusicTrack.playbackSourceName: String
+    get() {
+        val uri = android.net.Uri.parse(audioUrl)
+        val host = uri.host.orEmpty().lowercase(Locale.ROOT)
+        return when {
+            uri.scheme == "xtreme-youtube" || host == "googlevideo.com" ||
+                host.endsWith(".googlevideo.com") -> "YouTube Music"
+            host == "archive.org" || host.endsWith(".archive.org") -> "Internet Archive"
+            host == "saavncdn.com" || host.endsWith(".saavncdn.com") -> "JioSaavn"
+            else -> when (source.trim().uppercase(Locale.ROOT)) {
+                "JIOSAAVN", "JIOSAAVN OFFICIAL CHART", "SAAVN" -> "JioSaavn"
+                "YOUTUBE", "YOUTUBE MUSIC", "YOUTUBE_MUSIC", "EXTENDED STREAM" -> "YouTube Music"
+                "INTERNET_ARCHIVE", "INTERNET ARCHIVE" -> "Internet Archive"
+                "", "HD STREAM" -> "Unknown"
+                else -> source
+            }
+        }
+    }
 
 /**
  * Extension function to convert MusicTrack to MediaItem.

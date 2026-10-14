@@ -75,10 +75,14 @@ class CatalogRepository {
         return CatalogPlaylist(text(o, "id"), text(o, "title"), image(o))
     }
     private fun track(o: JSONObject): MusicTrack? {
-        if (text(o, "type") != "song" || text(o, "id").isBlank()) return null
+        val parsed = OnlineMusicApiService.parseSong(o, allowMissingStream = true) ?: return null
         val artists = credits(o)
-        if (artists.isEmpty()) return null
-        return OnlineMusicApiService.parseSong(o, allowMissingStream = true)?.copy(
+        // Some genuine search rows have primary_artists/singers without artistMap.
+        // Use the shared parser's explicit performer credits instead of dropping them.
+        if (artists.isEmpty()) return parsed.takeIf {
+            CatalogNames.normalize(it.artist) !in setOf("", "unknown", "unknown artist", "various artists")
+        }
+        return parsed.copy(
             artist = artists.joinToString(", ") { it.name }, singers = artists.joinToString(", ") { it.name })
     }
     private val recordingIsrc = Regex("[A-Z]{2}[A-Z0-9]{3}[0-9]{7}")
@@ -128,16 +132,13 @@ class CatalogRepository {
                     results.mapNotNull { it?.warning }.firstOrNull()
                         ?: if (results.any { it == null }) "Some results couldn't load. Tap to retry." else null)
         }
-        if (type == "Tracks" && quality == AudioQuality.HI_RES_LOSSLESS)
-            return@withContext losslessTrackSearch(query.trim(), page, previousPage)
-        val call = when (type) { "Tracks" -> "search.getResults"; "Albums" -> "search.getAlbumResults"; "Artists" -> "search.getArtistResults"; "Playlists" -> "search.getPlaylistResults"; else -> return@withContext CatalogPage() }
+        if (type == "Tracks") return@withContext trackSearch(query.trim(), page, quality, previousPage)
+        val call = when (type) { "Albums" -> "search.getAlbumResults"; "Artists" -> "search.getArtistResults"; "Playlists" -> "search.getPlaylistResults"; else -> return@withContext CatalogPage() }
         val root = request(call, "q" to query, "p" to page.toString(), "n" to "10")
         val raw = root.optJSONArray("results").objects()
         if (!root.has("results")) throw IOException("Invalid catalog response")
         val next = if (raw.isNotEmpty() && (if (root.has("total")) page * 10 < root.optInt("total") else raw.size >= 10)) page + 1 else null
         when (type) {
-            "Tracks" -> CatalogPage(tracks = uniqueTracks(raw.mapNotNull(::track)).filter { CatalogNames.score(query, it.title, listOf(it.artist, it.album)) > 0 }
-                .sortedByDescending { CatalogNames.score(query, it.title, listOf(it.artist, it.album)) }, nextPage = next)
             "Albums" -> CatalogPage(albums = raw.mapNotNull(::album).distinctBy { it.id }.filter { CatalogNames.score(query, it.title, it.artists.map { a -> a.name }) > 0 }
                 .sortedByDescending { CatalogNames.score(query, it.title, it.artists.map { a -> a.name }) }, nextPage = next)
             "Artists" -> CatalogPage(artists = raw.mapNotNull(::artist).distinctBy { it.id }.filter { CatalogNames.score(query, it.name, it.aliases) > 0 }
@@ -147,23 +148,45 @@ class CatalogRepository {
         }
     }
 
-    private suspend fun losslessTrackSearch(query: String, page: Int, previousPage: CatalogPage?): CatalogPage = supervisorScope {
-        val cursor = previousPage?.losslessContinuation?.takeIf { it.query == query }
-            ?: LosslessCatalogContinuation(query, standardPage = page, archivePage = page)
+    private suspend fun searchJioTracks(query: String, page: Int): CatalogPage {
+        // Use the same v4 metadata/browser profile as the working song/artist API.
+        val root = request("search.getResults", "q" to query, "p" to page.toString(), "n" to "10", artistBrowse = true)
+        val results = root.optJSONArray("results") ?: throw IOException("Invalid catalog response")
+        val raw = results.objects()
+        val next = if (raw.isNotEmpty() && (if (root.has("total"))
+            page.toLong() * 10 < root.optLong("total") else raw.size >= 10)) page + 1 else null
+        return CatalogPage(tracks = raw.mapNotNull(::track), nextPage = next)
+    }
+
+    private suspend fun trackSearch(query: String, page: Int, quality: AudioQuality, previousPage: CatalogPage?): CatalogPage = supervisorScope {
+        val preferLossless = quality == AudioQuality.HI_RES_LOSSLESS
+        val cursor = previousPage?.trackSearchContinuation?.takeIf {
+            it.query == query && it.includeLossless == preferLossless
+        } ?: TrackSearchContinuation(query, standardPage = page,
+            archivePage = page.takeIf { preferLossless }, includeLossless = preferLossless)
         val standard = if (cursor.pendingTracks.size < 10) cursor.standardPage?.let { providerPage -> async {
-            try { search(query, "Tracks", providerPage) }
+            try { searchJioTracks(query, providerPage) }
             catch (e: CancellationException) { throw e } catch (_: Exception) { null }
         } } else null
+        val youtube = if (cursor.pendingTracks.size < 10 && cursor.youtubeHasMore) async {
+            try { YouTubeMusicApiService.searchSongsPage(query, cursor.youtubeContinuation) }
+            catch (e: CancellationException) { throw e } catch (_: Exception) { null }
+        } else null
         val archive = if (cursor.pendingTracks.size < 10) cursor.archivePage?.let { providerPage -> async {
             InternetArchiveApiService.searchLosslessPage(query, providerPage, pageSize = 8)
         } } else null
         val standardResult = standard?.await()
+        val youtubeResult = youtube?.await()
         val archiveResult = archive?.await()
         val standardFailed = standard != null && standardResult == null
+        val youtubeFailed = youtube != null && youtubeResult == null
         val archiveFailed = archive != null && archiveResult?.isSuccessful != true
-        if (standardFailed && archiveFailed && cursor.pendingTracks.isEmpty() && archiveResult?.tracks.isNullOrEmpty())
+        val attempted = listOfNotNull(standard, youtube, archive).size
+        if (attempted > 0 && listOf(standardFailed, youtubeFailed, archiveFailed).count { it } == attempted &&
+            cursor.pendingTracks.isEmpty() && archiveResult?.tracks.isNullOrEmpty())
             throw IOException("Search unavailable")
-        val candidates = cursor.pendingTracks + archiveResult?.tracks.orEmpty() + standardResult?.tracks.orEmpty()
+        val candidates = cursor.pendingTracks + standardResult?.tracks.orEmpty() +
+            youtubeResult?.tracks.orEmpty() + archiveResult?.tracks.orEmpty()
         val scores = candidates.associateWith { track ->
             CatalogNames.score(query, track.title, listOf(track.artist, track.album)).takeIf { it > 0 } ?: run {
                 val terms = CatalogNames.normalize(query).split(' ').filter(String::isNotBlank)
@@ -172,22 +195,27 @@ class CatalogRepository {
             }
         }
         val ranked = candidates.filter { scores.getValue(it) > 0 }.sortedWith(
-            compareByDescending<MusicTrack> { scores.getValue(it) }.thenByDescending { it.isLossless }
-                .thenByDescending { it.qualityBadge.contains("Hi-Res", ignoreCase = true) }
+            compareByDescending<MusicTrack> { scores.getValue(it) }.thenByDescending { preferLossless && it.isLossless }
+                .thenByDescending { preferLossless && it.qualityBadge.contains("Hi-Res", ignoreCase = true) }
         )
-        val tracks = uniqueTracks(ranked, preferLossless = true)
+        val previousTracks = previousPage?.tracks.orEmpty()
+        val previousIds = previousTracks.mapTo(mutableSetOf()) { it.id }
+        val tracks = uniqueTracks(previousTracks + ranked, preferLossless).filter { it.id !in previousIds }
         val pending = tracks.drop(10)
         val standardNext = if (standard == null) cursor.standardPage else standardResult?.nextPage
+        val youtubeNext = if (youtube == null) cursor.youtubeContinuation else youtubeResult?.continuation
+        val youtubeHasMore = if (youtube == null) cursor.youtubeHasMore else youtubeNext != null
         val archiveNext = if (archive == null) cursor.archivePage else
             archiveResult?.nextPage?.takeIf { archiveResult.isSuccessful }
-        val hasMore = pending.isNotEmpty() || standardNext != null || archiveNext != null
+        val hasMore = pending.isNotEmpty() || standardNext != null || youtubeHasMore || archiveNext != null
         CatalogPage(tracks = tracks.take(10), nextPage = if (hasMore) page + 1 else null,
             warning = when {
                 archiveFailed -> "Lossless results couldn't fully load. Tap to retry."
-                standardFailed -> "Some catalog results couldn't load. Tap to retry."
-                else -> previousPage?.warning?.takeIf { standard == null && archive == null }
+                standardFailed || youtubeFailed -> "Some catalog results couldn't load. Tap to retry."
+                else -> previousPage?.warning?.takeIf { standard == null && youtube == null && archive == null }
             },
-            losslessContinuation = LosslessCatalogContinuation(query, standardNext, archiveNext, pending))
+            trackSearchContinuation = TrackSearchContinuation(query, standardNext, archiveNext, pending,
+                youtubeNext, youtubeHasMore, preferLossless))
     }
     private fun sameArtistName(requested: String, credited: String): Boolean {
         val first = CatalogNames.normalize(requested)

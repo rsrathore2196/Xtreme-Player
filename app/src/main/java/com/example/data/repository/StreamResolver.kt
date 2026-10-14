@@ -158,7 +158,8 @@ internal class StreamResolver(
         audioUrl = stream.audioUrl,
         bitrateKbps = stream.bitrateKbps,
         qualityBadge = stream.qualityBadge,
-        isLossless = stream.isLossless
+        isLossless = stream.isLossless,
+        source = stream.source
     )
 
     companion object {

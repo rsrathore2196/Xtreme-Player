@@ -94,13 +94,13 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
                     albums = (state.page.albums + result.albums).distinctBy { it.id },
                     artists = (state.page.artists + result.artists).distinctBy { it.id },
                     playlists = (state.page.playlists + result.playlists).distinctBy { it.id }, nextPage = result.nextPage,
-                    warning = result.warning, losslessContinuation = result.losslessContinuation)
+                    warning = result.warning, trackSearchContinuation = result.trackSearchContinuation)
                 val repeated = result.tracks.isNotEmpty() && result.tracks.all { song -> state.page.tracks.any { it.id == song.id } } ||
                     result.albums.isNotEmpty() && result.albums.all { album -> state.page.albums.any { it.id == album.id } } ||
                     result.artists.isNotEmpty() && result.artists.all { artist -> state.page.artists.any { it.id == artist.id } } ||
                     result.playlists.isNotEmpty() && result.playlists.all { playlist -> state.page.playlists.any { it.id == playlist.id } }
                 _search.update { it.copy(page = merged.copy(nextPage =
-                    if (repeated && result.losslessContinuation == null) null else merged.nextPage), loadingMore = false) }
+                    if (repeated && result.trackSearchContinuation == null) null else merged.nextPage), loadingMore = false) }
             } catch (e: CancellationException) { throw e }
             catch (_: Exception) { if (generation == searchGeneration) _search.update { it.copy(loadingMore = false, error = "Couldn't load more. Tap to retry.") } }
         }

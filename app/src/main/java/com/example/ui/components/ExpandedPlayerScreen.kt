@@ -149,6 +149,7 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import coil.request.SuccessResult
 import com.example.data.model.MusicTrack
+import com.example.data.model.playbackSourceName
 import com.example.data.repository.ArtworkDimensions
 import com.example.data.repository.iTunesArtworkRepository
 import com.example.data.repository.toMediaItem
@@ -1517,7 +1518,7 @@ fun ExpandedPlayerScreen(
                                                 )
                                                 CreditDetailRow(
                                                     label = "Audio Fidelity",
-                                                    value = "${track.bitrateKbps} kbps Studio Master • 44.1 kHz • 24-Bit Lossless",
+                                                    value = remember(track.audioUrl, track.source) { track.playbackSourceName },
                                                     isDark = isDark
                                                 )
                                                 if (track.isrc.isNotBlank()) {

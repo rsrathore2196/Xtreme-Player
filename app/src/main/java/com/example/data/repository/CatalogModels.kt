@@ -9,10 +9,12 @@ import com.example.data.model.MusicTrack
 data class CatalogArtist(val id: String, val name: String, val musicBrainzId: String = "", val aliases: List<String> = emptyList(), val image: String = "")
 data class CatalogAlbum(val id: String, val title: String, val artists: List<CatalogArtist>, val image: String, val year: String)
 data class CatalogPlaylist(val id: String, val title: String, val image: String)
-/** Independent provider cursors and verified collection tracks waiting for the next ten rows. */
-data class LosslessCatalogContinuation(
+/** Independent song-provider cursors and results waiting for the next ten rows. */
+data class TrackSearchContinuation(
     val query: String, val standardPage: Int? = null, val archivePage: Int? = null,
-    val pendingTracks: List<MusicTrack> = emptyList()
+    val pendingTracks: List<MusicTrack> = emptyList(),
+    val youtubeContinuation: String? = null, val youtubeHasMore: Boolean = true,
+    val includeLossless: Boolean = false
 )
 /** Opaque YouTube Music cursor, kept independent of JioSaavn's numeric pages. */
 data class ArtistCatalogContinuation(val query: String, val token: String)
@@ -20,7 +22,7 @@ data class CatalogPage(
     val tracks: List<MusicTrack> = emptyList(), val albums: List<CatalogAlbum> = emptyList(),
     val artists: List<CatalogArtist> = emptyList(), val playlists: List<CatalogPlaylist> = emptyList(),
     val nextPage: Int? = null, val warning: String? = null,
-    val losslessContinuation: LosslessCatalogContinuation? = null,
+    val trackSearchContinuation: TrackSearchContinuation? = null,
     val artistContinuation: ArtistCatalogContinuation? = null,
     val resolvedArtist: CatalogArtist? = null
 )
