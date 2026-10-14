@@ -216,7 +216,7 @@ fun HomeScreen(
     HomeScreenContent(
         heroSeedTrack = recentlyPlayed.firstOrNull() ?: catalogTracks.firstOrNull(),
         pillsCardTracks = recentlyPlayed.take(6),
-        ytmCard = SectionState(title = "Quick Picks", tracks = com.example.recommendation.HomeRecommendationPolicy.diversify(catalogTracks, 15)),
+        ytmCard = SectionState(title = "Quick Picks", tracks = com.example.recommendation.HomeRecommendationPolicy.diversify(catalogTracks, com.example.recommendation.HomeRecommendationPolicy.MAX_SHELF_TRACKS)),
         eraCard = SectionState(title = "Era-Specific Hits", tracks = shelves.firstOrNull { it.id == "shelf_era_classics" }?.tracks.orEmpty()),
         countryLanguageCard = SectionState(title = trendingTitle, tracks = shelves.firstOrNull { it.id == "shelf_country_trending" }?.tracks.orEmpty()),
         listeningHistoryCard = SectionState(title = "Jump Back In", tracks = recentlyPlayed),
@@ -627,7 +627,9 @@ fun SectionCardLayout(
         return
     }
 
-    val safeTracks = remember(state.tracks) { state.tracks.distinctBy { it.id } }
+    val safeTracks = remember(state.tracks) {
+        state.tracks.distinctBy { it.id }.take(com.example.recommendation.HomeRecommendationPolicy.MAX_SHELF_TRACKS)
+    }
     Column(modifier = Modifier.padding(top = 22.dp)) {
         Column(modifier = Modifier.padding(horizontal = 20.dp)) {
             Text(

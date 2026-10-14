@@ -37,6 +37,8 @@ import com.example.recommendation.AlbumArtDeduplicator
 import com.example.recommendation.AlbumArtDeduplicator.distinctAlbumAndCover
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.CacheControl
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 import android.util.Log
@@ -190,6 +192,7 @@ class MusicRepository(
 
     private val regionalFetchedAt = ConcurrentHashMap<String, Long>()
     private val regionalTrendingCache = ConcurrentHashMap<String, List<MusicTrack>>()
+    private val regionalOwners = Array(8) { Mutex() }
 
     private val chartPreferences by lazy { context?.getSharedPreferences("home_chart_cache_v2", Context.MODE_PRIVATE) }
 
@@ -208,6 +211,9 @@ class MusicRepository(
         return regionalTrendingCache[cleanCountry.lowercase()]?.takeIf { it.isNotEmpty() && System.currentTimeMillis() - (regionalFetchedAt[cleanCountry.lowercase()] ?: 0L) < 30 * 60_000L }
     }
 
+    fun getRegionalTrendingFetchedAt(country: String): Long =
+        regionalFetchedAt[country.trim().ifBlank { "India" }.lowercase()] ?: 0L
+
     /**
      * Genuine regional trending / chart source for selected country.
      * When selected country is India: fetches JioSaavn's official editorial chart "India Superhits Top 50" (50 ranked songs).
@@ -222,6 +228,7 @@ class MusicRepository(
     ): List<MusicTrack> = withContext(Dispatchers.IO) {
         val cleanCountry = country.trim().ifBlank { "India" }
         val cacheKey = cleanCountry.lowercase()
+      regionalOwners[(cacheKey.hashCode() and Int.MAX_VALUE) % regionalOwners.size].withLock {
         if (regionalTrendingCache[cacheKey].isNullOrEmpty()) {
             val saved = chartPreferences?.getString(cacheKey, null)
             if (saved != null) try {
@@ -235,7 +242,7 @@ class MusicRepository(
 
         if (!forceRefresh) {
             getCachedRegionalTrending(cleanCountry)?.let { cached ->
-                if (cached.isNotEmpty()) return@withContext cached
+                if (cached.isNotEmpty()) return@withContext cached.take(limit)
             }
         }
 
@@ -245,17 +252,20 @@ class MusicRepository(
         if (isIndia) {
             // Priority 1: Genuine JioSaavn "India Superhits Top 50" editorial chart
             try {
-                val chartSongs = fetchJioSaavnIndiaSuperhitsChart()
+                val chartSongs = fetchJioSaavnIndiaSuperhitsChart(forceRefresh)
                 if (chartSongs.isNotEmpty()) {
-                    val result = HomeRecommendationPolicy.originals(chartSongs).take(limit).map { it.copy(isLiked = likedIds.contains(it.id)) }
+                    val result = HomeRecommendationPolicy.originals(chartSongs).map { it.copy(isLiked = likedIds.contains(it.id)) }
                     saveChart(cacheKey, result)
-                    return@withContext result
+                    return@withContext result.take(limit)
                 }
             } catch (e: CancellationException) { throw e } catch (e: Exception) {
                 Log.w("MusicRepository", "Failed to fetch JioSaavn India Superhits chart: ${e.message}")
             }
 
-        } else {
+        }
+        // India needs the same genuine-chart fallback as other regions when its
+        // editorial playlist is unavailable. Never substitute generic search hits.
+        run {
             // A search result is not a ranked chart. Use the country's published RSS chart.
             try {
                 val code = countryCode.lowercase(java.util.Locale.ROOT).takeIf { it.matches(Regex("[a-z]{2}")) }
@@ -285,57 +295,38 @@ class MusicRepository(
         }
         // Transient failures retain the last genuine chart for this country only.
         regionalTrendingCache[cacheKey].orEmpty().take(limit)
+      }
     }
 
-    private suspend fun fetchJioSaavnIndiaSuperhitsChart(): List<MusicTrack> {
+    private suspend fun fetchJioSaavnIndiaSuperhitsChart(forceRefresh: Boolean): List<MusicTrack> {
         // JioSaavn Editorial Chart ID for "India Superhits Top 50"
-        val url = "https://www.jiosaavn.com/api.php?__call=playlist.getDetails&_format=json&listid=1134543272"
+        val chartId = "1134543272"
+        val url = "https://www.jiosaavn.com/api.php".toHttpUrl().newBuilder()
+            .addQueryParameter("__call", "playlist.getDetails").addQueryParameter("_format", "json")
+            .addQueryParameter("_marker", "0").addQueryParameter("api_version", "4")
+            .addQueryParameter("ctx", "web6dot0").addQueryParameter("cc", "in")
+            .addQueryParameter("listid", chartId).addQueryParameter("p", "1").addQueryParameter("n", "50").build()
         val request = Request.Builder()
             .url(url)
-            .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+            .apply { if (forceRefresh) cacheControl(CacheControl.FORCE_NETWORK) }
+            .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .addHeader("Accept", "application/json")
             .build()
         val body = chartClient.catalogRequest(request)
-        val json = JSONObject(body)
-        val songsArray = json.optJSONArray("songs") ?: return emptyList()
-        val tracks = mutableListOf<MusicTrack>()
-        for (i in 0 until songsArray.length()) {
-            val item = songsArray.optJSONObject(i) ?: continue
-            val id = item.optString("id")
-            if (id.isBlank()) continue
-            val title = item.optString("song", "")
-                .replace("&quot;", "\"").replace("&amp;", "&").replace("&#039;", "'").trim()
-            val artist = item.optString("primary_artists", "").ifBlank { item.optString("singers", "Various Artists") }
-                .replace("&quot;", "\"").replace("&amp;", "&").replace("&#039;", "'").trim()
-            val album = item.optString("album", "").replace("&quot;", "\"").replace("&amp;", "&").trim()
-            val rawImage = item.optString("image", "")
-            val cleanImage = rawImage.replace("\\/", "/").replace("150x150.jpg", "500x500.jpg")
-            val encMediaUrl = item.optString("encrypted_media_url", "")
-            val audioUrl = OnlineMusicApiService.decryptMediaUrl(encMediaUrl) ?: item.optString("media_preview_url", "")
-            if (audioUrl.isBlank()) continue
-            val durationSec = item.optString("duration", "0").toLongOrNull() ?: 0L
-            val durationMs = durationSec * 1000L
-            val language = item.optString("language", "Unknown").replaceFirstChar { it.uppercase() }
-
-            tracks.add(
-                MusicTrack(
-                    id = "chart_in_$id",
-                    title = title.ifBlank { "Track $id" },
-                    artist = artist.ifBlank { "Various Artists" },
-                    album = album.ifBlank { "India Superhits Top 50" },
-                    durationMs = durationMs,
-                    coverUrl = cleanImage,
-                    audioUrl = audioUrl,
-                    language = language,
-                    genre = item.optString("genre", "Unknown").ifBlank { "Unknown" },
-                    year = item.optString("year", ""),
-                    isrc = item.optString("isrc", ""),
-                    source = "JioSaavn Official Chart",
-                    bitrateKbps = 320,
-                    qualityBadge = "HD • 320 kbps"
-                )
-            )
+        val response = JSONObject(body)
+        val json = response.optJSONObject("data") ?: response
+        val returnedId = json.optString("id").ifBlank { json.optString("listid") }
+        val title = CatalogNames.normalize(json.optString("title").ifBlank { json.optString("listname") })
+        if (returnedId.isNotBlank() && returnedId != chartId ||
+            !title.contains("india") || !(title.contains("superhits") || title.contains("top 50"))) return emptyList()
+        val songs = json.optJSONArray("list") ?: json.optJSONArray("songs") ?: return emptyList()
+        // The shared v4 parser reads real song IDs and credits, nested
+        // metadata and full audio, and leaves missing streams resolvable by exact ID.
+        // Preserve the playlist's order and its native, resolvable playback IDs.
+        return (0 until songs.length()).mapNotNull { index ->
+            songs.optJSONObject(index)?.let { OnlineMusicApiService.parseSong(it, allowMissingStream = true) }
+                ?.copy(source = "JioSaavn Official Chart")
         }
-        return tracks
     }
 
     fun getFavoriteTracks(): Flow<List<MusicTrack>> {

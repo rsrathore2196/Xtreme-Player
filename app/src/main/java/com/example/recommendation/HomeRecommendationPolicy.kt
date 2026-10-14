@@ -6,6 +6,7 @@ import java.util.Locale
 
 /** Recording identity is independent of provider IDs and artwork. Keep real version labels. */
 object HomeRecommendationPolicy {
+    const val MAX_SHELF_TRACKS = 12
     private val punctuation = Regex("[^\\p{L}\\p{N}]+")
     private val artistSeparator = Regex("(?i),|;|\\s+(?:feat\\.?|ft\\.?|featuring|&)\\s+")
     private val topicSuffix = Regex("(?i)\\s*-\\s*topic$")
