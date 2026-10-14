@@ -38,9 +38,20 @@ class MusicDatabaseMigrationTest {
         context.deleteDatabase(testDbName)
     }
 
-    private fun schema(version: Int): JSONObject = context.assets.open(
-        "com.example.data.local.MusicDatabase/$version.json"
-    ).bufferedReader().use { JSONObject(it.readText()).getJSONObject("database") }
+    private fun schema(version: Int): JSONObject {
+        val relative = "com.example.data.local.MusicDatabase/$version.json"
+        val stream = try {
+            context.assets.open(relative)
+        } catch (_: Exception) {
+            val file = listOf(
+                java.io.File("schemas/$relative"),
+                java.io.File("app/schemas/$relative"),
+                java.io.File("../app/schemas/$relative")
+            ).firstOrNull { it.exists() } ?: error("Schema file not found for version $version")
+            file.inputStream()
+        }
+        return stream.bufferedReader().use { JSONObject(it.readText()).getJSONObject("database") }
+    }
 
     private fun helper(version: Int, onCreate: (SupportSQLiteDatabase) -> Unit = {}): SupportSQLiteOpenHelper =
         FrameworkSQLiteOpenHelperFactory().create(

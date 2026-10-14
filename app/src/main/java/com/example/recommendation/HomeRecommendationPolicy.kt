@@ -28,10 +28,15 @@ object HomeRecommendationPolicy {
         else -> null
     }
 
-    fun artists(track: MusicTrack): List<String> = (track.artist + "," + track.singers)
+    fun rawArtists(track: MusicTrack): List<String> = (track.artist + "," + track.singers)
         .replace(topicSuffix, "")
         .split(artistSeparator)
-        .filter(::known).map(::normalize).distinct().sorted()
+        .map { it.trim() }
+        .filter(::known)
+        .distinct()
+
+    fun artists(track: MusicTrack): List<String> = rawArtists(track)
+        .map(::normalize).distinct().sorted()
 
     fun metadataKey(track: MusicTrack): String = metadataKey(track, artists(track))
 

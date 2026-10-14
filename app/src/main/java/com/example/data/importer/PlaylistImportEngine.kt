@@ -1285,12 +1285,25 @@ object PlaylistImportEngine {
             }
         }
 
-        // If an original song cannot be verified with confidence, mark it UNMATCHED (NOT_FOUND)
-        // instead of importing a wrong replacement or unofficial remix!
-        Log.w(TAG, "No verified original recording found for '${original.originalTitle}' by '${original.originalArtist}' — marking unmatched.")
+        // If an original song cannot be verified with confidence, provide a fallback metadata track
+        // to preserve the user's song details, while keeping matchStatus = NOT_FOUND.
+        val fallbackTrack = MusicTrack(
+            id = "imp_fallback_${original.originalTitle.hashCode()}_${original.originalArtist.hashCode()}",
+            title = original.originalTitle,
+            artist = original.originalArtist,
+            album = original.originalAlbum,
+            durationMs = original.durationMs,
+            coverUrl = "",
+            audioUrl = "",
+            bitrateKbps = 320,
+            qualityBadge = "Pending Stream",
+            genre = "Imported",
+            source = original.externalPlatform
+        )
+        Log.w(TAG, "No verified original recording found for '${original.originalTitle}' by '${original.originalArtist}' — preserving fallback.")
         MatchResult(
             original = original,
-            matchedTrack = null,
+            matchedTrack = fallbackTrack,
             confidenceScore = 0.0,
             matchStatus = MatchStatus.NOT_FOUND
         )

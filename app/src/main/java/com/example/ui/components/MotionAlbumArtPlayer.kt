@@ -65,7 +65,24 @@ fun MotionAlbumArtPlayer(
 
     val exoPlayer = remember(videoUrl, hasVideoError) {
         if (!videoUrl.isNullOrBlank() && !hasVideoError) {
-            ExoPlayer.Builder(context).build().apply {
+            val videoOnlyRenderersFactory = object : androidx.media3.exoplayer.DefaultRenderersFactory(context) {
+                override fun buildAudioRenderers(
+                    context: android.content.Context,
+                    extensionRendererMode: Int,
+                    mediaCodecSelector: androidx.media3.exoplayer.mediacodec.MediaCodecSelector,
+                    enableDecoderFallback: Boolean,
+                    audioSink: androidx.media3.exoplayer.audio.AudioSink,
+                    eventHandler: android.os.Handler,
+                    eventListener: androidx.media3.exoplayer.audio.AudioRendererEventListener,
+                    out: java.util.ArrayList<androidx.media3.exoplayer.Renderer>
+                ) {
+                    // Muted visual canvas: do not allocate audio decoders or query audio codecs
+                }
+            }
+                .setExtensionRendererMode(androidx.media3.exoplayer.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF)
+                .setEnableDecoderFallback(true)
+
+            ExoPlayer.Builder(context, videoOnlyRenderersFactory).build().apply {
                 volume = 0f // MUTED - Zero audio interference with music playback
                 repeatMode = Player.REPEAT_MODE_ALL
                 playWhenReady = false
