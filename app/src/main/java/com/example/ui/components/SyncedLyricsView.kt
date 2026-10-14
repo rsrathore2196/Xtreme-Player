@@ -502,8 +502,8 @@ private fun KaraokeLineItem(
     var textLayoutResult by remember(line.text) { mutableStateOf<TextLayoutResult?>(null) }
     val latestPosition by rememberUpdatedState(currentPositionProvider)
     val density = LocalDensity.current
-    val broadRadius = with(density) { 4.dp.toPx() }
-    val coreRadius = with(density) { 1.5.dp.toPx() }
+    val broadRadius = with(density) { 3.dp.toPx() }
+    val coreRadius = with(density) { 1.dp.toPx() }
     val revealUnits = remember(textLayoutResult, measuredWords) {
         textLayoutResult?.let { buildRevealUnits(it, measuredWords) } ?: emptyList()
     }
@@ -650,10 +650,12 @@ private suspend fun prepareGlyphGlows(
         layout.multiParagraph.paint(androidx.compose.ui.graphics.Canvas(source.asImageBitmap()), color = Color.White)
         val masks = withContext(Dispatchers.Default) {
             val broadPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-                maskFilter = android.graphics.BlurMaskFilter(broad, android.graphics.BlurMaskFilter.Blur.NORMAL)
+                // Keep only light outside the shaped letters. NORMAL also paints the
+                // solid glyph body twice, and wide overlapping halos flatten into a band.
+                maskFilter = android.graphics.BlurMaskFilter(broad, android.graphics.BlurMaskFilter.Blur.OUTER)
             }
             val corePaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-                maskFilter = android.graphics.BlurMaskFilter(core, android.graphics.BlurMaskFilter.Blur.NORMAL)
+                maskFilter = android.graphics.BlurMaskFilter(core, android.graphics.BlurMaskFilter.Blur.OUTER)
             }
             val result = HashMap<Rect, GlyphGlow>()
             for (region in regions) {
@@ -765,9 +767,9 @@ private fun ContentDrawScope.drawReveal(
                     // reveal path, edge and timing remain exactly the same.
                     if (brush != null) drawContext.canvas.saveLayer(glowBounds, paint.layerPaint)
                     drawImage(glyphs.broad.image, topLeft = glyphs.broad.origin,
-                        alpha = glow.coerceIn(0f, 1f) * 0.42f, colorFilter = paint.tint)
+                        alpha = glow.coerceIn(0f, 1f) * 0.24f, colorFilter = paint.tint)
                     drawImage(glyphs.core.image, topLeft = glyphs.core.origin,
-                        alpha = glow.coerceIn(0f, 1f) * 0.64f, colorFilter = paint.tint)
+                        alpha = glow.coerceIn(0f, 1f) * 0.48f, colorFilter = paint.tint)
                     if (brush != null) {
                         drawRect(brush, topLeft = glowBounds.topLeft, size = glowBounds.size,
                             blendMode = BlendMode.DstIn)

@@ -133,8 +133,10 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
                 else when (val selected = destination) {
                     is CatalogDestination.Artist -> {
                         val artist = if (state.artistContinuation != null) selected.artist else repository.resolveArtist(selected.artist)
-                        destination = CatalogDestination.Artist(artist)
-                        repository.artistSongs(artist, state.nextPage ?: 0, state.artistContinuation, state.tracks)
+                        repository.artistSongs(artist, state.nextPage ?: 0, state.artistContinuation, state.tracks).also {
+                            // Retain verified fallback aliases/IDs for subsequent pages and reopening.
+                            destination = CatalogDestination.Artist(it.resolvedArtist ?: artist)
+                        }
                     }
                     is CatalogDestination.Album -> repository.albumSongs(selected.album)
                     is CatalogDestination.Playlist -> repository.playlistSongs(selected.playlist, state.nextPage ?: 1)

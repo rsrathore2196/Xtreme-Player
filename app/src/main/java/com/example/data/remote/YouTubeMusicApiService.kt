@@ -2,6 +2,7 @@ package com.example.data.remote
 
 import android.util.Log
 import com.example.data.model.MusicTrack
+import com.metrolist.innertubex.models.YouTubeClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
@@ -12,6 +13,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
@@ -42,14 +44,24 @@ object YouTubeMusicApiService {
         artistSearchLocks[(key.hashCode() and Int.MAX_VALUE) % artistSearchLocks.size].withLock {
             artistSearchCache.get(key)?.takeIf { System.currentTimeMillis() - it.first < 300_000L }
                 ?.let { return@withLock it.second }
+            val profile = YouTubeClient.WEB_REMIX
             val payload = JSONObject().put("context", JSONObject().put("client", JSONObject()
-                .put("clientName", "WEB_REMIX").put("clientVersion", "1.20231204.01.00")
+                .put("clientName", profile.clientName).put("clientVersion", profile.clientVersion)
                 .put("hl", "en").put("gl", "US")))
             if (continuation == null) payload.put("query", query.trim()).put("params", "EgWKAQIIAWoKEAkQBRAKEAMQBA==")
-            else payload.put("continuation", continuation)
-            val request = Request.Builder().url("https://music.youtube.com/youtubei/v1/search")
+            // Search continuations are URL parameters, as in InnerTubeX's search API.
+            val url = "https://music.youtube.com/youtubei/v1/search".toHttpUrl().newBuilder().apply {
+                if (continuation != null) {
+                    addQueryParameter("continuation", continuation)
+                    addQueryParameter("ctoken", continuation)
+                }
+            }.build()
+            val request = Request.Builder().url(url)
                 .post(payload.toString().toRequestBody(jsonMediaType))
-                .header("User-Agent", "Mozilla/5.0").header("Referer", "https://music.youtube.com/").build()
+                .header("User-Agent", profile.userAgent).header("Referer", "https://music.youtube.com/")
+                .header("Origin", "https://music.youtube.com")
+                .header("X-YouTube-Client-Name", profile.clientId)
+                .header("X-YouTube-Client-Version", profile.clientVersion).build()
             val body = artistSearchClient.catalogRequest(request)
             val page = withContext(Dispatchers.Default) { parseSongSearchPage(body) }
             val result = page.copy(continuation = page.continuation?.takeUnless { it == continuation })

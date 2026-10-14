@@ -21,7 +21,8 @@ data class CatalogPage(
     val artists: List<CatalogArtist> = emptyList(), val playlists: List<CatalogPlaylist> = emptyList(),
     val nextPage: Int? = null, val warning: String? = null,
     val losslessContinuation: LosslessCatalogContinuation? = null,
-    val artistContinuation: ArtistCatalogContinuation? = null
+    val artistContinuation: ArtistCatalogContinuation? = null,
+    val resolvedArtist: CatalogArtist? = null
 )
 sealed interface CatalogDestination {
     val key: String

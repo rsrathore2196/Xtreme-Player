@@ -122,8 +122,8 @@ fun AnimatedBottomBar(
                     val iconScale = animateFloatAsState(
                         targetValue = if (isSelected) 1.12f else 1.0f,
                         animationSpec = spring(
-                            dampingRatio = 0.68f,
-                            stiffness = 1200f
+                            dampingRatio = 0.58f,
+                            stiffness = 420f
                         ),
                         label = "tab_icon_scale_${item.index}"
                     )
@@ -131,8 +131,8 @@ fun AnimatedBottomBar(
                     val bounceOffsetY = animateFloatAsState(
                         targetValue = if (isSelected) -1.5f else 0f,
                         animationSpec = spring(
-                            dampingRatio = 0.72f,
-                            stiffness = 1100f
+                            dampingRatio = 0.62f,
+                            stiffness = 380f
                         ),
                         label = "tab_bounce_y_${item.index}"
                     )
@@ -168,7 +168,7 @@ fun AnimatedBottomBar(
                                 }
                             )
                             .animateContentSize(
-                                animationSpec = spring(dampingRatio = 0.76f, stiffness = 1050f)
+                                animationSpec = spring(dampingRatio = 0.68f, stiffness = 500f)
                             )
                             .bouncyClickable { onTabSelected(item.index) }
                             .testTag(
@@ -226,20 +226,20 @@ fun AnimatedBottomBar(
                             AnimatedVisibility(
                                 visible = isSelected,
                                 enter = fadeIn(
-                                    animationSpec = tween(120)
+                                    animationSpec = tween(180)
                                 ) + expandHorizontally(
                                     animationSpec = spring(
-                                        dampingRatio = 0.76f,
-                                        stiffness = 1050f
+                                        dampingRatio = 0.68f,
+                                        stiffness = 500f
                                     ),
                                     expandFrom = Alignment.Start
                                 ),
                                 exit = fadeOut(
-                                    animationSpec = tween(90)
+                                    animationSpec = tween(140)
                                 ) + shrinkHorizontally(
                                     animationSpec = spring(
-                                        dampingRatio = 0.76f,
-                                        stiffness = 1050f
+                                        dampingRatio = 0.68f,
+                                        stiffness = 500f
                                     ),
                                     shrinkTowards = Alignment.Start
                                 )

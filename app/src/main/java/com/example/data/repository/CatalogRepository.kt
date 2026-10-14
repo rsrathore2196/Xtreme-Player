@@ -6,10 +6,12 @@ import com.example.data.remote.InternetArchiveApiService
 import com.example.data.remote.YouTubeMusicApiService
 import com.example.playback.AudioQuality
 import com.example.data.remote.catalogGet
+import com.example.data.remote.catalogRequest
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import okhttp3.OkHttpClient
+import okhttp3.Request
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.json.JSONArray
 import org.json.JSONObject
@@ -21,16 +23,21 @@ class CatalogRepository {
     private val client = OkHttpClient.Builder().connectTimeout(10, TimeUnit.SECONDS).readTimeout(12, TimeUnit.SECONDS).callTimeout(20, TimeUnit.SECONDS).build()
     private val cache = object : android.util.LruCache<String, Pair<Long, String>>(80) {}
     private val locks = Array(8) { Mutex() }
-    private suspend fun request(call: String, vararg params: Pair<String, String>): JSONObject = withContext(Dispatchers.IO) {
+    private suspend fun request(call: String, vararg params: Pair<String, String>, artistBrowse: Boolean = false): JSONObject = withContext(Dispatchers.IO) {
         val url = "https://www.jiosaavn.com/api.php".toHttpUrl().newBuilder()
             .addQueryParameter("__call", call).addQueryParameter("_format", "json").addQueryParameter("_marker", "0")
             .addQueryParameter("api_version", "4").addQueryParameter("ctx", "web6dot0")
-            .apply { params.forEach { (k, v) -> addQueryParameter(k, v) } }.build().toString()
+            .apply {
+                params.forEach { (k, v) -> addQueryParameter(k, v) }
+                if (artistBrowse) { addQueryParameter("cc", "in"); addQueryParameter("includeMetaTags", "1") }
+            }.build().toString()
         locks[(url.hashCode() and Int.MAX_VALUE) % locks.size].withLock {
             val cached = synchronized(cache) { cache.get(url) }
             if (cached != null && System.currentTimeMillis() - cached.first < 300_000) return@withLock JSONObject(cached.second)
             try {
-                val body = client.catalogGet(url)
+                val body = if (artistBrowse) client.catalogRequest(Request.Builder().url(url)
+                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                    .header("Accept", "application/json").build()) else client.catalogGet(url)
                 val json = JSONObject(body)
                 if (json.opt("error")?.let { it != JSONObject.NULL && it != false && it != "" && it != 0 } == true) throw IOException("Catalog unavailable")
                 synchronized(cache) { cache.put(url, System.currentTimeMillis() to body) }
@@ -203,51 +210,76 @@ class CatalogRepository {
         val queries = (artistQueries(selected.name) + selected.aliases.flatMap(::artistQueries)).distinct().take(3)
         val names = listOf(selected.name) + selected.aliases
         for (query in queries) {
-            val root = try { request("search.getArtistResults", "q" to query, "p" to "1", "n" to "10") }
+            val root = try { request("search.getArtistResults", "q" to query, "p" to "1", "n" to "10", artistBrowse = true) }
             catch (e: CancellationException) { throw e } catch (_: Exception) { null }
             val matches = root?.optJSONArray("results").objects().mapNotNull(::artist).filter { candidate ->
                 (listOf(candidate.name) + candidate.aliases).any { credit -> names.any { sameArtistName(it, credit) } } &&
                     (selected.musicBrainzId.isBlank() || candidate.musicBrainzId.isBlank() ||
                         selected.musicBrainzId.equals(candidate.musicBrainzId, ignoreCase = true))
             }.distinctBy { it.id }
-            if (matches.size > 1) return@withContext null
-            matches.singleOrNull()?.let { return@withContext it }
+            matches.singleOrNull()?.let { return@withContext it.copy(
+                musicBrainzId = it.musicBrainzId.ifBlank { selected.musicBrainzId },
+                aliases = (it.aliases + selected.aliases + selected.name).filter { name -> name != it.name }.distinct()) }
         }
         // Artist search sometimes omits an otherwise available performer. Resolve only a
         // unique, exact performer credit from real songs, not their title or popularity.
         for (query in queries) {
-            val root = try { request("search.getResults", "q" to query, "p" to "1", "n" to "10") }
+            val root = try { request("search.getResults", "q" to query, "p" to "1", "n" to "10", artistBrowse = true) }
             catch (e: CancellationException) { throw e } catch (_: Exception) { null }
             val matches = root?.optJSONArray("results").objects().flatMap { credits(it) }
                 .filter { candidate -> (listOf(candidate.name) + candidate.aliases)
-                    .any { credit -> names.any { sameArtistName(it, credit) } } }
+                    .any { credit -> names.any { sameArtistName(it, credit) } } &&
+                        (selected.musicBrainzId.isBlank() || candidate.musicBrainzId.isBlank() ||
+                            selected.musicBrainzId.equals(candidate.musicBrainzId, true)) }
                 .distinctBy { it.id }
-            if (matches.size > 1) return@withContext null
-            matches.singleOrNull()?.let { return@withContext it }
+            matches.singleOrNull()?.let { return@withContext it.copy(
+                musicBrainzId = it.musicBrainzId.ifBlank { selected.musicBrainzId },
+                aliases = (it.aliases + selected.aliases + selected.name).filter { name -> name != it.name }.distinct()) }
         }
         null
     }
     private val artistPageSizes = object : android.util.LruCache<String, Int>(40) {}
     private val artistCoverVersion = Regex("(?i)\\bcover\\b")
-    private fun verifiedArtistTracks(entries: List<JSONObject>, artistId: String): List<MusicTrack> =
-        uniqueTracks(entries.filter { item -> credits(item).any { it.id == artistId } }.mapNotNull(::track)
-            .filterNot { unofficial.containsMatchIn(it.title) || artistCoverVersion.containsMatchIn(it.title) })
+    private fun verifiedArtistTracks(entries: List<JSONObject>, selected: CatalogArtist): List<MusicTrack> {
+        val names = listOf(selected.name) + selected.aliases
+        val performerCredits = entries.associateWith { credits(it) }
+        val ids = if (selected.id.isNotBlank()) setOf(selected.id) else {
+            // Name-only Home routes can still find songs when the artist-search endpoint
+            // fails. Resolve a unique credited performer, never a title/keyword match.
+            performerCredits.values.flatten().filter { candidate ->
+                (listOf(candidate.name) + candidate.aliases).any { name -> names.any { sameArtistName(it, name) } } &&
+                    (selected.musicBrainzId.isBlank() || candidate.musicBrainzId.isBlank() ||
+                        selected.musicBrainzId.equals(candidate.musicBrainzId, true))
+            }.map { it.id }.distinct().singleOrNull()?.let(::setOf).orEmpty()
+        }
+        return uniqueTracks(entries.filter { item -> performerCredits.getValue(item).any { it.id in ids } }.mapNotNull(::track))
+            .filterNot { unofficial.containsMatchIn(it.title) || artistCoverVersion.containsMatchIn(it.title) }
+    }
     private suspend fun artistSearchPage(selected: CatalogArtist, page: Int): CatalogPage {
-        val root = request("search.getResults", "q" to selected.name, "p" to page.toString(), "n" to "10")
+        val root = withTimeoutOrNull(8_000L) {
+            request("search.getResults", "q" to selected.name, "p" to page.toString(), "n" to "10", artistBrowse = true)
+        } ?: throw IOException("Artist song search timed out")
         val entries = root.optJSONArray("results") ?: throw IOException("Missing artist song search results")
         val raw = entries.objects()
         val total = root.optInt("total", -1)
         val more = raw.isNotEmpty() && (if (total >= 0) page.toLong() * 10 < total else raw.size >= 10)
         // Negative cursors distinguish this one-based search from the zero-based artist
         // endpoint, so a retry/fallback cannot silently skip or repeat provider pages.
-        return CatalogPage(tracks = verifiedArtistTracks(raw, selected.id), nextPage = if (more) -(page + 1) else null)
+        return CatalogPage(tracks = verifiedArtistTracks(raw, selected), nextPage = if (more) -(page + 1) else null)
     }
     private suspend fun artistSearchPages(selected: CatalogArtist, start: Int, existing: List<MusicTrack>): CatalogPage {
         val collected = mutableListOf<MusicTrack>()
         var number = start
         var next: Int? = null
         repeat(3) {
-            val result = artistSearchPage(selected, number)
+            val result = try { artistSearchPage(selected, number) }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                val fresh = uniqueTracks(existing + collected).drop(existing.size)
+                if (fresh.isEmpty()) throw e
+                return CatalogPage(tracks = fresh, nextPage = -number,
+                    warning = "Some songs couldn't load. Tap See More to retry.")
+            }
             collected += result.tracks
             next = result.nextPage
             val fresh = uniqueTracks(existing + collected).drop(existing.size)
@@ -256,19 +288,24 @@ class CatalogRepository {
         }
         return CatalogPage(tracks = uniqueTracks(existing + collected).drop(existing.size), nextPage = next)
     }
-    private suspend fun artistProviderPage(selected: CatalogArtist, page: Int): CatalogPage {
-        val response = request("artist.getArtistMoreSong", "artistId" to selected.id, "page" to page.toString(),
-            "category" to "popularity", "sort_order" to "desc")
+    private suspend fun artistProviderPage(selected: CatalogArtist, page: Int, details: Boolean = false): CatalogPage {
+        val response = if (details) request("artist.getArtistPageDetails", "artistId" to selected.id,
+            "page" to "0", "n_song" to "10", "n_album" to "0", "category" to "popularity", "sort_order" to "desc", artistBrowse = true)
+        else request("artist.getArtistMoreSong", "artistId" to selected.id, "page" to page.toString(),
+            "category" to "popularity", "sort_order" to "desc", artistBrowse = true)
         val root = response.optJSONObject("data") ?: response
         val responseArtist = text(root, "artistId").ifBlank { text(root, "id") }
         // Some API responses do not echo artistId; every song must still credit it.
         if (responseArtist.isNotBlank() && responseArtist != selected.id) throw IOException("Artist identity mismatch")
+        val responseName = text(root, "name")
+        if (responseName.isNotBlank() && (listOf(selected.name) + selected.aliases).none { sameArtistName(it, responseName) })
+            throw IOException("Artist name mismatch")
         val songs = root.optJSONObject("topSongs")
         val entries = songs?.optJSONArray("songs") ?: root.optJSONArray("topSongs")
             ?: root.optJSONArray("songs") ?: root.optJSONArray("results") ?: root.optJSONArray("list")
             ?: throw IOException("Missing artist songs")
         val raw = entries.objects()
-        val tracks = verifiedArtistTracks(raw, selected.id)
+        val tracks = verifiedArtistTracks(raw, selected)
         if (page == 0 && tracks.isEmpty()) throw IOException("No verified songs in artist response")
         val total = songs?.optInt("total", -1)?.takeIf { it >= 0 } ?: root.optInt("total", -1)
         val size = synchronized(artistPageSizes) {
@@ -279,7 +316,9 @@ class CatalogRepository {
         val start = songs?.optLong("start", -1)?.takeIf { it >= 0 } ?: root.optLong("start", -1)
         val consumed = (start.takeIf { it >= 0 } ?: page.toLong() * size) + raw.size
         val more = raw.isNotEmpty() && (if (total >= 0) consumed < total else raw.size >= size)
-        return CatalogPage(tracks = tracks, nextPage = if (more) page + 1 else null)
+        // The overview's ten-song window is independent of the MoreSong endpoint's
+        // page size. Continue through song search rather than skipping a provider page.
+        return CatalogPage(tracks = tracks, nextPage = if (more) { if (details) -1 else page + 1 } else null)
     }
     private suspend fun youtubeArtistPage(selected: CatalogArtist, query: String, token: String?, page: Int,
         existing: List<MusicTrack>): CatalogPage {
@@ -290,7 +329,8 @@ class CatalogRepository {
         // Skip a small number of empty/overlapping provider pages, rather than making
         // See More appear stuck. Further pages remain truly incremental.
         repeat(3) {
-            val result = try { YouTubeMusicApiService.searchSongsPage(query, continuation) }
+            val result = try { withTimeoutOrNull(12_000L) { YouTubeMusicApiService.searchSongsPage(query, continuation) }
+                ?: throw IOException("Artist song fallback timed out") }
             catch (e: CancellationException) { throw e }
             catch (e: Exception) {
                 val fresh = uniqueTracks(existing + collected).drop(existing.size)
@@ -305,7 +345,7 @@ class CatalogRepository {
             }
             val fresh = uniqueTracks(existing + collected).drop(existing.size)
             continuation = result.continuation?.takeIf(visited::add)
-            if (fresh.size >= 10 || continuation == null) return CatalogPage(tracks = fresh,
+            if (fresh.size >= 10 || continuation == null || existing.isEmpty() && fresh.isEmpty()) return CatalogPage(tracks = fresh,
                 nextPage = if (continuation != null) page.coerceAtLeast(0) + 1 else null,
                 artistContinuation = continuation?.let { ArtistCatalogContinuation(query, it) })
         }
@@ -319,6 +359,7 @@ class CatalogRepository {
         if (selected.name.isBlank()) return@withContext CatalogPage()
         var failure: Exception? = null
         var available: CatalogPage? = null
+        val attemptedQueries = mutableSetOf<String>()
         suspend fun attempt(load: suspend () -> CatalogPage): CatalogPage? = try {
             load().also { if (available == null || it.tracks.isNotEmpty() || it.nextPage != null ||
                 available?.nextPage == null) available = it }
@@ -326,30 +367,55 @@ class CatalogRepository {
         catch (e: Exception) { failure = e; null }
         if (continuation != null) {
             attempt { youtubeArtistPage(selected, continuation.query, continuation.token, page, existing) }
-                ?.let { return@withContext it }
+                ?.let { return@withContext it.copy(resolvedArtist = selected) }
         }
-        if (selected.id.isNotBlank()) {
-            val primary = attempt {
-                withTimeoutOrNull(8_000L) {
-                    if (page < 0) artistSearchPages(selected, -page, existing)
-                    else artistProviderPage(selected, if (continuation != null) 0 else page)
-                } ?: throw IOException("Artist provider timed out")
-            }
-            if (primary != null && uniqueTracks(existing + primary.tracks).size > existing.size)
-                return@withContext primary
-            if (page >= 0 || continuation != null) {
-                val fallback = attempt {
-                    withTimeoutOrNull(6_000L) { artistSearchPages(selected, 1, existing) }
-                        ?: throw IOException("Artist song search timed out")
+        suspend fun catalogSongs(artist: CatalogArtist): CatalogPage? {
+            if (artist.id.isNotBlank() && page >= 0) {
+                val primary = attempt {
+                    withTimeoutOrNull(8_000L) { artistProviderPage(artist, if (continuation != null) 0 else page) }
+                        ?: throw IOException("Artist provider timed out")
                 }
-                if (fallback != null && fallback.tracks.isNotEmpty()) return@withContext fallback
+                if (primary != null && uniqueTracks(existing + primary.tracks).size > existing.size)
+                    return primary.copy(resolvedArtist = artist)
+                if (primary == null && existing.isEmpty()) {
+                    val overview = attempt {
+                        withTimeoutOrNull(8_000L) { artistProviderPage(artist, 0, details = true) }
+                            ?: throw IOException("Artist overview timed out")
+                    }
+                    if (overview != null && overview.tracks.isNotEmpty()) return overview.copy(resolvedArtist = artist)
+                }
             }
+            // Song credits can identify a performer even if artist-ID lookup failed.
+            val fallback = attempt { artistSearchPages(artist, if (page < 0 && continuation == null) -page else 1, existing) }
+            if (fallback != null && fallback.tracks.isNotEmpty()) return fallback.copy(resolvedArtist = artist)
+            return null
         }
-        val queries = (artistQueries(selected.name) + selected.aliases.flatMap(::artistQueries)).distinct().take(3)
-        for (query in queries) {
-            val fallback = attempt { youtubeArtistPage(selected, query, null, page, existing) }
-            if (fallback != null && (fallback.tracks.isNotEmpty() || fallback.nextPage != null))
-                return@withContext fallback
+        suspend fun youtubeSongs(artist: CatalogArtist): CatalogPage? {
+            val queries = (artistQueries(artist.name) + artist.aliases.flatMap(::artistQueries)).distinct().take(3)
+            for (query in queries) {
+                if (!attemptedQueries.add(query)) continue
+                val fallback = attempt { youtubeArtistPage(artist, query, null, page, existing) }
+                if (fallback != null && fallback.tracks.isNotEmpty()) return fallback.copy(resolvedArtist = artist)
+            }
+            return null
+        }
+        catalogSongs(selected)?.let { return@withContext it }
+        youtubeSongs(selected)?.let { return@withContext it }
+        // Recover stage-name/spelling variants from verified metadata, never by
+        // accepting a similarly named performer or relaxing track-credit checks.
+        val enriched = try { withTimeoutOrNull(4_000L) { ArtistPhotoRepository.enrichIdentity(selected) } ?: selected }
+            catch (e: CancellationException) { throw e }
+            catch (_: Exception) { selected }
+        val resolved = try { withTimeoutOrNull(6_000L) { resolveJioArtist(enriched) } }
+            catch (e: CancellationException) { throw e }
+            catch (_: Exception) { null }
+        val recovered = resolved ?: enriched
+        if (recovered != selected) {
+            catalogSongs(recovered)?.let { return@withContext it }
+            // An earlier empty search page can now pass credit verification using
+            // a learned alias; the response cache prevents another network request.
+            attemptedQueries.clear()
+            youtubeSongs(recovered)?.let { return@withContext it }
         }
         // Genuine empty responses use the existing empty state. Only total provider
         // failure is retryable; one failing API must not hide another API's real songs.

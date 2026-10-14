@@ -25,6 +25,8 @@ object ArtistPhotoRepository {
     private var nextRequestAt = 0L
     @Volatile private var audioDbBackoffUntil = 0L
     private val memory = object : android.util.LruCache<String, Pair<Long, String?>>(150) {}
+    private val identityMemory = android.util.LruCache<String, Pair<Long, JSONObject?>>(100)
+    private val identityLocks = Array(8) { Mutex() }
 
     private fun image(value: String?): String? = value?.takeIf {
         (it.startsWith("https://") || it.startsWith("http://")) &&
@@ -77,32 +79,63 @@ object ArtistPhotoRepository {
         }
     }
 
-    private suspend fun audioDb(artist: CatalogArtist): String? {
-        if (System.currentTimeMillis() < audioDbBackoffUntil) return null
-        rateLock.withLock {
-            delay((nextRequestAt - System.currentTimeMillis()).coerceAtLeast(0))
-            nextRequestAt = System.currentTimeMillis() + 500
-        }
-        if (System.currentTimeMillis() < audioDbBackoffUntil) return null
-        try {
-            val url = "https://www.theaudiodb.com/api/v1/json/123/search.php".toHttpUrl().newBuilder()
-                .addQueryParameter("s", artist.name).build().toString()
-            val array = JSONObject(client.catalogGet(url)).optJSONArray("artists")
-            val matches = (0 until (array?.length() ?: 0)).mapNotNull { array?.optJSONObject(it) }.filter { row ->
-                val names = listOf(row.optString("strArtist")) + row.optString("strAlternate").split(';', '|', ',')
-                row.optString("idArtist").isNotBlank() && if (artist.musicBrainzId.isNotBlank()) {
-                    row.optString("strMusicBrainzID").equals(artist.musicBrainzId, true)
-                } else (listOf(artist.name) + artist.aliases).any { name -> names.any { CatalogNames.same(name, it) } }
-            }.distinctBy { it.optString("idArtist") }
-            return matches.singleOrNull()?.let { row ->
-                image(row.optString("strArtistThumb")) ?: image(row.optString("strArtistWideThumb"))
+    private fun identityNames(row: JSONObject) = (listOf(row.optString("strArtist")) +
+        row.optString("strAlternate").split(';', '|', ',')).map(CatalogNames::clean)
+        .filter { it.isNotBlank() && it != "null" }.distinct()
+
+    /** Only aliases from a uniquely verified artist may broaden catalogue credit matching. */
+    internal suspend fun enrichIdentity(artist: CatalogArtist): CatalogArtist = withContext(Dispatchers.IO) {
+        val row = audioDbIdentity(artist) ?: return@withContext artist
+        artist.copy(musicBrainzId = artist.musicBrainzId.ifBlank {
+            row.optString("strMusicBrainzID").takeUnless { it == "null" }.orEmpty()
+        }, aliases = (artist.aliases + identityNames(row)).filter { it != artist.name }.distinct())
+    }
+
+    private suspend fun audioDb(artist: CatalogArtist): String? = audioDbIdentity(artist)?.let { row ->
+        image(row.optString("strArtistThumb")) ?: image(row.optString("strArtistWideThumb"))
+    }
+
+    private suspend fun audioDbIdentity(artist: CatalogArtist): JSONObject? {
+        val key = "${CatalogNames.normalize(artist.name)}:${artist.musicBrainzId}:${artist.aliases.sorted()}"
+        return identityLocks[(key.hashCode() and Int.MAX_VALUE) % identityLocks.size].withLock {
+            val now = System.currentTimeMillis()
+            val cached = synchronized(identityMemory) { identityMemory.get(key) }
+            if (cached != null && cached.first > now) return@withLock cached.second
+            if (now < audioDbBackoffUntil) return@withLock cached?.second
+            try {
+                val queries = (listOf(artist.name) + artist.aliases).filter(String::isNotBlank).distinct().take(3)
+                for (query in queries) {
+                    rateLock.withLock {
+                        delay((nextRequestAt - System.currentTimeMillis()).coerceAtLeast(0))
+                        nextRequestAt = System.currentTimeMillis() + 500
+                    }
+                    if (System.currentTimeMillis() < audioDbBackoffUntil) return@withLock cached?.second
+                    val url = "https://www.theaudiodb.com/api/v1/json/123/search.php".toHttpUrl().newBuilder()
+                        .addQueryParameter("s", query).build().toString()
+                    val array = JSONObject(client.catalogGet(url)).optJSONArray("artists")
+                    val matches = (0 until (array?.length() ?: 0)).mapNotNull { array?.optJSONObject(it) }.filter { row ->
+                        row.optString("idArtist").isNotBlank() && if (artist.musicBrainzId.isNotBlank()) {
+                            row.optString("strMusicBrainzID").equals(artist.musicBrainzId, true)
+                        } else (listOf(artist.name) + artist.aliases).any { name ->
+                            identityNames(row).any { CatalogNames.same(name, it) }
+                        }
+                    }.distinctBy { it.optString("idArtist") }
+                    // An ambiguous name is not an alias or photograph verification.
+                    if (matches.size > 1) return@withLock null
+                    matches.singleOrNull()?.let { row ->
+                        synchronized(identityMemory) { identityMemory.put(key, System.currentTimeMillis() + 7 * 86_400_000L to row) }
+                        return@withLock row
+                    }
+                }
+                synchronized(identityMemory) { identityMemory.put(key, System.currentTimeMillis() + 3_600_000L to null) }
+                null
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                val retry = if (e is CatalogHttpException && e.status == 429)
+                    (e.retryAfter ?: 60).coerceIn(30, 3600) * 1000 else 30_000L
+                audioDbBackoffUntil = System.currentTimeMillis() + retry
+                cached?.second ?: throw e
             }
-        } catch (e: CancellationException) { throw e }
-        catch (e: Exception) {
-            val retry = if (e is CatalogHttpException && e.status == 429)
-                (e.retryAfter ?: 60).coerceIn(30, 3600) * 1000 else 30_000L
-            audioDbBackoffUntil = System.currentTimeMillis() + retry
-            throw e
         }
     }
 }
