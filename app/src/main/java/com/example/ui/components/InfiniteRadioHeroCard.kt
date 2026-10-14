@@ -26,12 +26,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import coil.size.Precision
 import com.example.data.model.MusicTrack
 import com.example.ui.theme.LocalAppColors
 import com.example.ui.util.ImageConfig
@@ -57,6 +60,7 @@ fun InfiniteRadioHeroCard(
     val pressed by interaction.collectIsPressedAsState()
     val scale by animateFloatAsState(if (pressed) 0.96f else 1f, spring(), label = "radio_press")
     val shape = RoundedCornerShape(26.dp)
+    var artworkSize by remember { mutableStateOf(IntSize.Zero) }
     val textShadow = Shadow(
         if (isDark) Color.Black.copy(alpha = 0.85f) else Color.White.copy(alpha = 0.8f),
         Offset(0f, 1f), 6f
@@ -70,14 +74,18 @@ fun InfiniteRadioHeroCard(
                 Color.White.copy(alpha = 0.85f), Color.White.copy(alpha = 0.12f),
                 Color.Black.copy(alpha = if (isDark) 0.35f else 0.18f), Color.White.copy(alpha = 0.6f)
             )), shape)
+            .onSizeChanged { artworkSize = it }
             .testTag("infinite_radio_hero_card")
     ) {
-        if (seedTrack != null) {
+        if (seedTrack != null && artworkSize.width > 0 && artworkSize.height > 0) {
+            // Resolve a high-quality source, but decode only the measured pixel rectangle.
+            // Coil's FILL scaling keeps enough pixels for the existing center crop.
             val artworkRequest = rememberOptimizedImageRequest(
-                track = seedTrack, targetSize = ImageConfig.PLAYER_SCREEN_SIZE
+                track = seedTrack, targetSize = ImageConfig.HERO_BANNER_SIZE
             )
-            val fullQualityArtwork = remember(artworkRequest) {
-                artworkRequest.newBuilder().allowRgb565(false).build()
+            val fullQualityArtwork = remember(artworkRequest, artworkSize) {
+                artworkRequest.newBuilder().size(artworkSize.width, artworkSize.height)
+                    .precision(Precision.EXACT).allowRgb565(false).build()
             }
             AsyncImage(
                 model = fullQualityArtwork,

@@ -220,7 +220,7 @@ fun MainNavigationScaffold(
     val platformOverscroll = LocalOverscrollConfiguration.current
     CompositionLocalProvider(
         LocalDynamicGlassEnabled provides isDynamicGlassEnabled,
-        LocalLiquidGlassBackdrop provides rememberLiquidGlassBackdrop(),
+        LocalLiquidGlassBackdrop provides rememberLiquidGlassBackdrop(captureVisibleRegions = true),
         LocalOverscrollConfiguration provides
             if (selectedTabIndex == 3 && selectedPlaylistWithTracks == null) platformOverscroll else null
     ) {

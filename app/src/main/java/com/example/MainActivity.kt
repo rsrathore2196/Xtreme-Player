@@ -3,16 +3,26 @@ package com.example
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 import android.os.Bundle
+import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.Looper
+import android.os.PowerManager
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.hardware.display.DisplayManager
 import android.view.FrameMetrics
 import android.view.MotionEvent
+import android.view.View
 import android.view.Window
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.core.content.ContextCompat
 import androidx.compose.runtime.getValue
 import com.example.ui.components.MainNavigationScaffold
 import com.example.ui.theme.MyApplicationTheme
@@ -21,6 +31,21 @@ import com.example.ui.viewmodel.PlayerViewModel
 class MainActivity : ComponentActivity() {
     private var frameThread: HandlerThread? = null
     private var frameListener: Window.OnFrameMetricsAvailableListener? = null
+    @Volatile private var frameBudgetNanos = 16_666_667L
+    private var uiResumed = false
+    private var refreshObserversRegistered = false
+    private val displayManager by lazy { getSystemService(DisplayManager::class.java) }
+    private val powerManager by lazy { getSystemService(PowerManager::class.java) }
+    private val refreshPolicyReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) { updateRefreshRate() }
+    }
+    private val displayListener = object : DisplayManager.DisplayListener {
+        override fun onDisplayAdded(displayId: Int) = Unit
+        override fun onDisplayRemoved(displayId: Int) = Unit
+        override fun onDisplayChanged(displayId: Int) {
+            if (window.decorView.display?.displayId == displayId) updateRefreshRate()
+        }
+    }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
         com.example.performance.BackgroundWorkCoordinator.interaction()
@@ -29,20 +54,30 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        val rate = window.decorView.display?.refreshRate?.takeIf { it > 0f } ?: 60f
-        val budget = (1_000_000_000L / rate).toLong()
+        if (!refreshObserversRegistered) {
+            ContextCompat.registerReceiver(this, refreshPolicyReceiver,
+                IntentFilter(PowerManager.ACTION_POWER_SAVE_MODE_CHANGED), ContextCompat.RECEIVER_NOT_EXPORTED)
+            displayManager?.registerDisplayListener(displayListener, Handler(Looper.getMainLooper()))
+            refreshObserversRegistered = true
+        }
+        updateRefreshRate()
         val thread = HandlerThread("ui-frame-observer").apply { start() }
         frameThread = thread
         val listener = Window.OnFrameMetricsAvailableListener { _, metrics, _ ->
             val deadline = if (android.os.Build.VERSION.SDK_INT >= 31) metrics.getMetric(FrameMetrics.DEADLINE) else 0L
             com.example.performance.BackgroundWorkCoordinator.frame(metrics.getMetric(FrameMetrics.TOTAL_DURATION),
-                deadline.takeIf { it > 0L } ?: budget)
+                deadline.takeIf { it > 0L } ?: frameBudgetNanos)
         }
         frameListener = listener
         window.addOnFrameMetricsAvailableListener(listener, Handler(thread.looper))
     }
 
     override fun onStop() {
+        if (refreshObserversRegistered) {
+            unregisterReceiver(refreshPolicyReceiver)
+            displayManager?.unregisterDisplayListener(displayListener)
+            refreshObserversRegistered = false
+        }
         frameListener?.let(window::removeOnFrameMetricsAvailableListener)
         frameListener = null
         frameThread?.quitSafely()
@@ -65,8 +100,7 @@ class MainActivity : ComponentActivity() {
             WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
         )
 
-        // No fixed refresh-rate vote: Android can use its adaptive refresh policy,
-        // including battery saver, without changing our animation clocks or rendering quality.
+        // Leave resolution selection to Android; refresh hints follow foreground/focus below.
         window.attributes = window.attributes.apply {
             preferredDisplayModeId = 0
             preferredRefreshRate = 0f
@@ -120,14 +154,55 @@ class MainActivity : ComponentActivity() {
     }
     override fun onResume() {
         super.onResume()
+        uiResumed = true
+        updateRefreshRate()
         com.example.performance.BackgroundWorkCoordinator.foreground(true)
         com.example.updater.AppUpdateManager.onForeground(this)
     }
 
     override fun onPause() {
+        uiResumed = false
+        updateRefreshRate()
         com.example.performance.BackgroundWorkCoordinator.foreground(false)
         com.example.updater.AppUpdateManager.onBackground()
         super.onPause()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        updateRefreshRate()
+    }
+
+    private fun updateRefreshRate() {
+        val decor = window.decorView
+        val display = decor.display
+        val actualRate = display?.refreshRate?.takeIf { it.isFinite() && it > 0f } ?: 60f
+        frameBudgetNanos = (1_000_000_000L / actualRate).toLong()
+        val active = uiResumed && decor.hasWindowFocus() && powerManager?.isPowerSaveMode != true
+        val adaptive = Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM
+        if (adaptive) {
+            // Adaptive refresh uses the display's high category, rather than a fixed 90/120 Hz.
+            // The platform boosts touch/animation frames and can lower the rate when idle.
+            val category = if (active) View.REQUESTED_FRAME_RATE_CATEGORY_HIGH
+                else View.REQUESTED_FRAME_RATE_CATEGORY_NO_PREFERENCE
+            if (decor.requestedFrameRate != category) decor.requestedFrameRate = category
+            if (window.frameRateBoostOnTouchEnabled != active) window.frameRateBoostOnTouchEnabled = active
+        }
+        val currentMode = display?.mode
+        val legacyRate = if (active && !adaptive && currentMode != null) {
+            display.supportedModes.asSequence()
+                .filter { it.physicalWidth == currentMode.physicalWidth && it.physicalHeight == currentMode.physicalHeight }
+                .flatMap {
+                    sequenceOf(it.refreshRate) + if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
+                        it.alternativeRefreshRates.asSequence() else emptySequence()
+                }.filter { it.isFinite() && it > 60f }.maxOrNull() ?: 0f
+        } else 0f
+        val attributes = window.attributes
+        if (attributes.preferredDisplayModeId != 0 || attributes.preferredRefreshRate != legacyRate) {
+            attributes.preferredDisplayModeId = 0
+            attributes.preferredRefreshRate = legacyRate
+            window.attributes = attributes
+        }
     }
 
 }
