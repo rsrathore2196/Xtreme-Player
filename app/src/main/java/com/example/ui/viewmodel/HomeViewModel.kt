@@ -285,6 +285,31 @@ class HomeViewModel(
     val heroTrack: StateFlow<MusicTrack?> get() = heroSeedTrack
     val secondaryShelves: StateFlow<List<HomeShelf>> get() = homeShelves
     fun refreshAll() = refreshHome(isExplicitPull = true)
+
+    private data class ArtistHistory(val plays: List<Pair<String, String>>, val trackIds: List<String>)
+    private suspend fun rankListenedArtists(plays: List<Pair<String, String>>, tracks: List<MusicTrack>) =
+        withContext(Dispatchers.Default) {
+            val byId = tracks.associateBy { it.id }
+            val counts = linkedMapOf<String, Int>()
+            val names = mutableMapOf<String, String>()
+            val artistTracks = mutableMapOf<String, MutableList<MusicTrack>>()
+            val sessions = mutableSetOf<Pair<String, String>>()
+            for (play in plays) {
+                currentCoroutineContext().ensureActive()
+                if (!sessions.add(play)) continue
+                val track = byId[play.second] ?: continue
+                for (artist in HomeRecommendationPolicy.artists(track)) {
+                    counts[artist] = (counts[artist] ?: 0) + 1
+                    names.putIfAbsent(artist, (track.artist + "," + track.singers).split(',')
+                        .firstOrNull { HomeRecommendationPolicy.normalize(it) == artist }?.trim() ?: artist)
+                    val songs = artistTracks.getOrPut(artist) { mutableListOf() }
+                    if (songs.size < 3 && songs.none { it.id == track.id }) songs.add(track)
+                }
+            }
+            counts.entries.sortedByDescending { it.value }.map { (artist, count) ->
+                MostListenedArtist(names.getValue(artist), count, artistTracks.getValue(artist).toList())
+            }
+        }
     private val renderMutex = Mutex()
     private var renderedGeneration = -1L
     private var previousExposure: Set<String> = emptySet()
@@ -356,7 +381,8 @@ class HomeViewModel(
         for (track in catalog) HomeRecommendationPolicy.artists(track).forEach { artist ->
             catalogByArtist.getOrPut(artist) { mutableListOf() }.add(track)
         }
-        val artists = artistCounts.entries.sortedByDescending { it.value }.take(10).mapNotNull { (artist, count) ->
+        // Retain the existing cross-shelf reservations; artist-card updates are independent.
+        val artistReservations = artistCounts.entries.sortedByDescending { it.value }.take(10).mapNotNull { (artist, count) ->
             currentCoroutineContext().ensureActive()
             val matches = catalogByArtist[artist].orEmpty()
             val tracks = HomeRecommendationPolicy.diversify(fresh(matches), 3, seen).ifEmpty {
@@ -384,7 +410,6 @@ class HomeViewModel(
         _countryLanguageCard.update { it.copy(tracks = chart) }
         _eraCard.update { it.copy(tracks = era, isLoading = false, isLoaded = era.isNotEmpty()) }
         _ytmCard.update { it.copy(tracks = quick, isLoading = false, isLoaded = quick.isNotEmpty()) }
-        _mostListenedArtists.value = artists
         _personalizedCard.value = _personalizedCard.value.copy(tracks = personalized,
             isLoading = false, isLoaded = personalized.isNotEmpty())
         // The small Recently Played card consumes this existing history flow without recommendation filtering.
@@ -393,12 +418,15 @@ class HomeViewModel(
         lastRenderInputs = inputs
         _currentStage.value = LoadingStage.PRIORITY_3_BACKGROUND_ENRICHED
         savedSignal = signal; savedGeneration = pool.generation; savedCandidates = pool
-        shelfCache.save(SavedHomeCards(profileKey(), signal, pool.generation, lastDiscoveryRefresh,
-            _ytmCard.value, _eraCard.value, _countryLanguageCard.value, _listeningHistoryCard.value,
-            _personalizedCard.value, _mostListenedArtists.value, pool.quick, pool.era, pool.chart, catalog.take(400),
-            chartRefreshedAt = lastRegionalRefresh))
+        // Serialize snapshot publication with the independent artist-card checkpoint.
+        withContext(Dispatchers.Main.immediate) {
+            shelfCache.save(SavedHomeCards(profileKey(), signal, pool.generation, lastDiscoveryRefresh,
+                _ytmCard.value, _eraCard.value, _countryLanguageCard.value, _listeningHistoryCard.value,
+                _personalizedCard.value, _mostListenedArtists.value.take(15), pool.quick, pool.era, pool.chart, catalog.take(400),
+                chartRefreshedAt = lastRegionalRefresh))
+        }
         if (manualRenderGeneration == pool.generation) manualRenderGeneration = -1L
-        val shown = chart + era + quick + personalized + artists.flatMap { it.tracks }
+        val shown = chart + era + quick + personalized + artistReservations.flatMap { it.tracks }
         if (shown.isNotEmpty()) {
             val exposure = shown.map(HomeRecommendationPolicy::metadataKey).toSet()
             withContext(Dispatchers.IO) {
@@ -580,6 +608,29 @@ class HomeViewModel(
                 if (!visible) return@collectLatest
                 restored.await()
                 coroutineScope {
+                    // Returning Home observes real playback without starting a general-card refresh.
+                    launch(Dispatchers.Default) {
+                        eventsLoaded.await()
+                        val artistHistory = actualPlays.map { events -> ArtistHistory(
+                            events.asSequence().filter(UserTasteProfile::played)
+                                .map { it.sessionId to it.trackId }.distinct().toList(),
+                            events.map { it.trackId }.distinct())
+                        }.distinctUntilChanged()
+                        combine(artistHistory, historyRows) { history, rows -> history to rows }
+                            .mapLatest { (history, rows) ->
+                                if (rows.ids != history.trackIds) null
+                                else rankListenedArtists(history.plays, rows.tracks)
+                            }.filterNotNull().distinctUntilChanged().collect { artists ->
+                                withContext(Dispatchers.Main.immediate) {
+                                    if (_mostListenedArtists.value != artists) {
+                                        _mostListenedArtists.value = artists
+                                        shelfCache.peek(profileKey())?.let { saved ->
+                                            shelfCache.save(saved.copy(artists = artists.take(15)))
+                                        }
+                                    }
+                                }
+                            }
+                    }
                     launch(Dispatchers.Default) {
                         combine(candidates, tasteProfile, favoriteTracks, _userProfile, recentlyPlayed) { pool, taste, _, _, _ -> pool to taste }
                             .combine(refreshCandidatesPending) { input, pending -> if (pending) null else input }
@@ -706,7 +757,7 @@ class HomeViewModel(
         }
     }
 
-    private suspend fun refreshSuggestions(force: Boolean) {
+    private suspend fun refreshSuggestions(force: Boolean) = withContext(Dispatchers.IO) {
         val profile = _userProfile.value
         val country = resolveCountryDisplayName(profile)
         val title = getAuthoritativeTrendingTitle(country)
@@ -717,7 +768,7 @@ class HomeViewModel(
             System.currentTimeMillis() - lastRegionalRefresh >= 30 * 60_000L
         // A full refresh owns the chart too. Cancel an older standalone request before
         // entering the busy section so a deferred chart cannot wait on our own idle gate.
-        if (fetchChart) {
+        if (fetchChart) withContext(Dispatchers.Main.immediate) {
             regionalTrendingJob?.cancelAndJoin()
             regionalTrendingJob = null
             _countryLanguageCard.update { it.copy(title = title,
@@ -746,31 +797,34 @@ class HomeViewModel(
                 Triple(quickJob.await(), eraJob.await(), chartJob.await())
             }
         }
-        if (profileKey() != profileKey(profile)) return
+        if (profileKey() != profileKey(profile)) return@work
         val catalog = withContext(Dispatchers.Default) {
             HomeRecommendationPolicy.originals(quick + era + _catalogTracks.value).take(300)
         }
-        if (catalog.isNotEmpty()) {
-            _catalogTracks.value = catalog
-            playbackManager.setCandidatePool(catalog)
-        }
-        if (!chart.isNullOrEmpty()) lastRegionalRefresh = repository.getRegionalTrendingFetchedAt(country)
-        if (quick.isNotEmpty() || era.isNotEmpty() || !chart.isNullOrEmpty() || !sameCountry) {
-            if (quick.isNotEmpty() || era.isNotEmpty()) lastDiscoveryRefresh = System.currentTimeMillis()
-            if (force) manualRenderGeneration = candidates.value.generation + 1L
-            candidates.update { old -> old.copy(quick = quick.ifEmpty { old.quick },
-                era = era.ifEmpty { old.era }, chart = chart?.takeIf { it.isNotEmpty() }
-                    ?: old.chart.takeIf { sameCountry }.orEmpty(),
-                generation = old.generation + 1) }
-        }
-        _ytmCard.update { it.copy(isLoading = false, isError = quick.isEmpty(),
-            errorMessage = if (quick.isEmpty()) "Quick Picks are temporarily unavailable." else "") }
-        _eraCard.update { it.copy(isLoading = false, isError = era.isEmpty(),
-            errorMessage = if (era.isEmpty()) "Era hits are temporarily unavailable." else "") }
-        if (fetchChart) {
-            _countryLanguageCard.update { it.copy(isLoading = false,
-                isLoaded = candidates.value.chart.isNotEmpty(), isError = chart.isNullOrEmpty(),
-                errorMessage = if (chart.isNullOrEmpty()) "Regional charts are temporarily unavailable." else "") }
+        withContext(Dispatchers.Main.immediate) commit@ {
+            if (profileKey() != profileKey(profile)) return@commit
+            if (catalog.isNotEmpty()) {
+                _catalogTracks.value = catalog
+                playbackManager.setCandidatePool(catalog)
+            }
+            if (!chart.isNullOrEmpty()) lastRegionalRefresh = repository.getRegionalTrendingFetchedAt(country)
+            if (quick.isNotEmpty() || era.isNotEmpty() || !chart.isNullOrEmpty() || !sameCountry) {
+                if (quick.isNotEmpty() || era.isNotEmpty()) lastDiscoveryRefresh = System.currentTimeMillis()
+                if (force) manualRenderGeneration = candidates.value.generation + 1L
+                candidates.update { old -> old.copy(quick = quick.ifEmpty { old.quick },
+                    era = era.ifEmpty { old.era }, chart = chart?.takeIf { it.isNotEmpty() }
+                        ?: old.chart.takeIf { sameCountry }.orEmpty(),
+                    generation = old.generation + 1) }
+            }
+            _ytmCard.update { it.copy(isLoading = false, isError = quick.isEmpty(),
+                errorMessage = if (quick.isEmpty()) "Quick Picks are temporarily unavailable." else "") }
+            _eraCard.update { it.copy(isLoading = false, isError = era.isEmpty(),
+                errorMessage = if (era.isEmpty()) "Era hits are temporarily unavailable." else "") }
+            if (fetchChart) {
+                _countryLanguageCard.update { it.copy(isLoading = false,
+                    isLoaded = candidates.value.chart.isNotEmpty(), isError = chart.isNullOrEmpty(),
+                    errorMessage = if (chart.isNullOrEmpty()) "Regional charts are temporarily unavailable." else "") }
+            }
         }
       }
     }

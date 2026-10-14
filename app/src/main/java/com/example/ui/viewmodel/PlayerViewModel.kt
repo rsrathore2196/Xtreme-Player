@@ -831,26 +831,29 @@ class PlayerViewModel(
 
     fun saveImportedPlaylist(onSaved: ((Long) -> Unit)? = null) {
         val summary = _importState.value.lastSummary ?: return
-        val matchedTracks = summary.matchedItems.mapNotNull { it.matchedTrack }
-        if (matchedTracks.isEmpty()) {
-            _importState.update { it.copy(step = PlaylistImportStep.Error("Cannot save empty playlist. No tracks were matched.")) }
-            return
-        }
 
         viewModelScope.launch {
             val work = com.example.performance.BackgroundWorkCoordinator.busy()
             _importState.update { it.copy(step = PlaylistImportStep.Saving(summary.playlistTitle)) }
             try {
+                val matchedTracks = withContext(Dispatchers.Default) {
+                    // Native IDs reconcile with the existing library; keep the first playlist position.
+                    summary.matchedItems.mapNotNull { it.matchedTrack }.distinctBy { it.id }
+                }
+                if (matchedTracks.isEmpty()) {
+                    _importState.update { it.copy(step = PlaylistImportStep.Error("Cannot save empty playlist. No tracks were matched.")) }
+                    return@launch
+                }
                 val title = _importState.value.customTitle.ifBlank { summary.playlistTitle }
                 val desc = _importState.value.customDescription.ifBlank { summary.playlistDescription }
                 val cover = summary.coverUrl.ifBlank { matchedTracks.firstOrNull()?.coverUrl.orEmpty() }
 
-                val playlistId = repository.createPlaylistWithTracks(
+                val playlistId = withContext(Dispatchers.IO) { repository.createPlaylistWithTracks(
                     title = title,
                     description = desc,
                     coverUrl = cover,
                     tracks = matchedTracks
-                )
+                ) }
 
                 _importState.update {
                     it.copy(

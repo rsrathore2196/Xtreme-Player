@@ -34,6 +34,8 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Equalizer
 import com.example.ui.components.xtremeLiquidGlassBackground
 import androidx.compose.material.icons.outlined.Settings
@@ -44,7 +46,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -79,6 +85,24 @@ import com.example.ui.viewmodel.MostListenedArtist
 import com.example.ui.viewmodel.HomeViewModel
 import com.example.ui.viewmodel.SectionState
 import java.util.Calendar
+import kotlinx.coroutines.launch
+
+@Composable
+private fun ArtistPageButton(forward: Boolean, tint: Color, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier.size(32.dp).clip(CircleShape)
+            .xtremeLiquidGlassBackground(shape = CircleShape, elevation = 3.dp, backdrop = null)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = if (forward) Icons.AutoMirrored.Filled.ArrowForward else Icons.AutoMirrored.Filled.ArrowBack,
+            contentDescription = if (forward) "See more artists" else "Previous artists",
+            tint = tint,
+            modifier = Modifier.size(16.dp)
+        )
+    }
+}
 
 @Composable
 private fun rememberShimmerBackground(): Modifier {
@@ -527,20 +551,41 @@ fun HomeScreenContent(
 
             if (mostListenedArtists.isNotEmpty()) {
                 item(key = "most_listened_artists") {
+                    var artistPage by rememberSaveable(mostListenedArtists.firstOrNull()?.name) { mutableIntStateOf(0) }
+                    val pageCount = (mostListenedArtists.size + 14) / 15
+                    val page = artistPage.coerceIn(0, pageCount - 1)
+                    val visibleArtists = remember(mostListenedArtists, page) {
+                        mostListenedArtists.drop(page * 15).take(15)
+                    }
+                    val artistListState = rememberLazyListState()
+                    val artistScope = rememberCoroutineScope()
                     Column(Modifier.padding(top = 22.dp)) {
-                        Text(
-                            "Most Listened Artists",
-                            modifier = Modifier.padding(horizontal = 20.dp),
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = textPrimaryColor
-                        )
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                "Most Listened Artists",
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = textPrimaryColor
+                            )
+                            if (page > 0) ArtistPageButton(forward = false, tint = textPrimaryColor) {
+                                artistPage = page - 1
+                                artistScope.launch { artistListState.scrollToItem(0) }
+                            }
+                            if (page + 1 < pageCount) ArtistPageButton(forward = true, tint = textPrimaryColor) {
+                                artistPage = page + 1
+                                artistScope.launch { artistListState.scrollToItem(0) }
+                            }
+                        }
                         Spacer(Modifier.height(12.dp))
                         LazyRow(
+                            state = artistListState,
                             contentPadding = PaddingValues(horizontal = 20.dp),
                             horizontalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
-                            items(mostListenedArtists, key = { it.name }) { artist ->
+                            items(visibleArtists, key = { it.name }) { artist ->
                                 Column(
                                     Modifier.width(140.dp).clip(RoundedCornerShape(18.dp))
                                         .background(cardBg)
