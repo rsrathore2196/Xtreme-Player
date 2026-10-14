@@ -130,7 +130,7 @@ interface MusicDao {
     @Query("SELECT * FROM tracks")
     suspend fun getAllTracksSync(): List<TrackEntity>
 
-    @Query("SELECT r.* FROM playlist_track_cross_ref r INNER JOIN playlists p ON p.playlistId = r.playlistId INNER JOIN tracks t ON t.id = r.trackId ORDER BY r.playlistId, r.orderIndex, r.trackId")
+    @Query("SELECT * FROM playlist_track_cross_ref ORDER BY playlistId, orderIndex, trackId")
     suspend fun getAllPlaylistCrossRefsSync(): List<PlaylistTrackCrossRef>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)

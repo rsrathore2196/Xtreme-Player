@@ -994,7 +994,7 @@ fun SupportDonationCard(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = "Donate via UPI 🚀",
+                        text = "Donate via UPI",
                         fontWeight = FontWeight.Bold,
                         fontSize = 15.sp,
                         color = donateTextColor

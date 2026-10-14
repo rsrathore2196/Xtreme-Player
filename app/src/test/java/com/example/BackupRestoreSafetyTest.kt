@@ -261,7 +261,7 @@ class BackupRestoreSafetyTest {
         dao.insertOrUpdateTrack(local)
         dao.insertPlaylist(PlaylistEntity(1, "Deleted playlist"))
         dao.insertPlaylistTrackRef(PlaylistTrackCrossRef(1, local.id, 4))
-        dao.deletePlaylist(1) // Older app versions left this junction row behind.
+        dao.deletePlaylistRow(1) // Older app versions left this junction row behind.
         val json = backup(listOf(song("imported")), listOf(playlist(1, "Imported")), listOf(ref(1, "imported", 0)))
         val result = BackupRestoreManager.restoreBackup(context, db, rawJson = json.toString())
         assertTrue(result.message, result.success)

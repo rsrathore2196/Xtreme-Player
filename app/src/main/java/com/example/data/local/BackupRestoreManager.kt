@@ -725,7 +725,6 @@ object BackupRestoreManager {
                 // from profile publication or mistake an already committed transaction for failure.
                 val restoredTrackCount = withContext(kotlinx.coroutines.NonCancellable) {
                     val restoredCount = musicDatabase.withTransaction {
-                        dao.removeOrphanPlaylistTrackRefs()
                         val existingPlaylists = dao.getAllPlaylistsSync()
                         val existingTracks = dao.getAllTracksSync()
                         val existingIds = existingTracks.map { it.id }.toSet()
