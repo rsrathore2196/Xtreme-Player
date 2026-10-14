@@ -454,7 +454,7 @@ class PlayerViewModel(
 
     fun playTrack(track: MusicTrack, queue: List<MusicTrack> = _catalogTracks.value, isExplicitPlaylist: Boolean = false) {
         activePlaybackLaunchJob?.cancel()
-        activePlaybackLaunchJob = viewModelScope.launch(Dispatchers.Main) {
+        activePlaybackLaunchJob = viewModelScope.launch(Dispatchers.Main.immediate) {
             val safeQueue = if (queue.isNotEmpty()) queue else _catalogTracks.value.ifEmpty { listOf(track) }
             playbackManager.playTrack(track, safeQueue, isExplicitPlaylist)
         }
@@ -462,7 +462,7 @@ class PlayerViewModel(
 
     fun playPlaylistTrack(track: MusicTrack, tracks: List<MusicTrack>) {
         activePlaybackLaunchJob?.cancel()
-        activePlaybackLaunchJob = viewModelScope.launch(Dispatchers.Main) {
+        activePlaybackLaunchJob = viewModelScope.launch(Dispatchers.Main.immediate) {
             val safeQueue = if (tracks.isNotEmpty()) tracks else listOf(track)
             playbackManager.playTrack(track, safeQueue, isExplicitPlaylist = true)
         }
@@ -475,7 +475,7 @@ class PlayerViewModel(
      */
     fun playFromSearch(track: MusicTrack, searchPool: List<MusicTrack>) {
         activePlaybackLaunchJob?.cancel()
-        activePlaybackLaunchJob = viewModelScope.launch(Dispatchers.Main) {
+        activePlaybackLaunchJob = viewModelScope.launch(Dispatchers.Main.immediate) {
             playbackManager.playFromSearch(track, searchPool)
         }
     }

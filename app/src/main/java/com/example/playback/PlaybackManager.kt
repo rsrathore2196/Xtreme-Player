@@ -30,6 +30,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.cancel
 import com.example.data.repository.TrackUnavailableException
 import kotlinx.coroutines.async
@@ -91,6 +92,7 @@ class PlaybackManager(
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private var controller: MediaController? = null
+    private val controllerReady = CompletableDeferred<MediaController>()
     private var progressTickerJob: Job? = null
     private var recoveryJob: Job? = null
     private var youtubeQualityJob: Job? = null
@@ -98,6 +100,8 @@ class PlaybackManager(
     private var autoplaySuppressedBySleepTimer = false
     private val sleepExpirationListener: () -> Unit = {
         autoplaySuppressedBySleepTimer = true
+        selectionGeneration++
+        pendingSelectionId = null
         recoveryJob?.cancel()
         youtubeQualityJob?.cancel()
         recoveryGuard.select(_uiState.value.currentTrack?.id, newRequest = true)
@@ -129,6 +133,9 @@ class PlaybackManager(
     private var activeSearchPlayJob: Job? = null
     private var lastPlayRequestTimeMs: Long = 0L
     private var lastRequestedTrackId: String? = null
+    private var selectionGeneration = 0L
+    private var pendingSelectionId: String? = null
+    private var selectionContext: List<MusicTrack> = emptyList()
 
     private val initialQuality = com.example.data.local.AudioQualityPreferences.getSelectedQuality(context)
     private val _uiState = MutableStateFlow(
@@ -153,7 +160,7 @@ class PlaybackManager(
     val trackDuration: StateFlow<Long> = _trackDuration.asStateFlow()
 
     val currentPlaybackPositionMs: Long
-        get() = controller?.currentPosition?.coerceAtLeast(0L) ?: _playbackPosition.value
+        get() = if (pendingSelectionId != null) 0L else controller?.currentPosition?.coerceAtLeast(0L) ?: _playbackPosition.value
 
     private var queueRevision = 0L
     private var snapshotRevision = -1L
@@ -206,16 +213,27 @@ class PlaybackManager(
             val sessionToken = SessionToken(context, ComponentName(context, MusicService::class.java))
             controllerFuture = MediaController.Builder(context, sessionToken).buildAsync()
             controllerFuture?.addListener({
-                try {
-                    controller = controllerFuture?.get()
-                    setupPlayerListener()
-                    Log.i(TAG, "MediaController initialized successfully")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to initialize MediaController: ${e.message}", e)
-                    _uiState.update { it.copy(errorMessage = "Player initialization failed") }
+                scope.launch {
+                    try {
+                        val connected = requireNotNull(controllerFuture?.get())
+                        controller = connected
+                        if (pendingSelectionId != null) {
+                            connected.pause()
+                            connected.stop()
+                            connected.clearMediaItems()
+                        }
+                        setupPlayerListener()
+                        controllerReady.complete(connected)
+                        Log.i(TAG, "MediaController initialized successfully")
+                    } catch (e: Exception) {
+                        controllerReady.completeExceptionally(e)
+                        Log.e(TAG, "Failed to initialize MediaController: ${e.message}", e)
+                        _uiState.update { it.copy(isLoading = false, errorMessage = "Player initialization failed") }
+                    }
                 }
             }, MoreExecutors.directExecutor())
         } catch (e: Exception) {
+            controllerReady.completeExceptionally(e)
             Log.e(TAG, "Error setting up MediaController: ${e.message}", e)
             _uiState.update { it.copy(errorMessage = "Failed to initialize player: ${e.message}") }
         }
@@ -290,6 +308,7 @@ class PlaybackManager(
             }
             override fun onEvents(player: Player, events: Player.Events) {
                 val controller = this@PlaybackManager.controller ?: return
+                if (pendingSelectionId != null && controller.currentMediaItem?.mediaId != pendingSelectionId) return
                 if (queueContentsChanged) {
                     queueContentsChanged = false
                     if (synchronizeControllerQueue(controller) ||
@@ -299,6 +318,10 @@ class PlaybackManager(
                 listeningPlayRestart = false
             }
             override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (pendingSelectionId != null && player.currentMediaItem?.mediaId != pendingSelectionId) {
+                    if (isPlaying) player.pause()
+                    return
+                }
                 if (isPlaying) autoplaySuppressedBySleepTimer = false
                 _uiState.update { it.copy(isPlaying = isPlaying) }
                 if (isPlaying) {
@@ -323,6 +346,7 @@ class PlaybackManager(
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
+                if (pendingSelectionId != null && player.currentMediaItem?.mediaId != pendingSelectionId) return
                 val isLoading = playbackState == Player.STATE_BUFFERING
                 val duration = if (player.duration > 0) player.duration else _uiState.value.durationMs
                 _uiState.update {
@@ -342,6 +366,9 @@ class PlaybackManager(
 
                 // Handle natural song completion
                 if (playbackState == Player.STATE_ENDED) {
+                    val endedId = player.currentMediaItem?.mediaId
+                    val endedGeneration = selectionGeneration
+                    if (pendingSelectionId != null || endedId != _uiState.value.currentTrack?.id) return
                     val completedTrack = _uiState.value.currentTrack
                     if (completedTrack != null) {
                         val elapsed = (System.currentTimeMillis() - currentTrackStartTimeMs).coerceAtLeast(0L)
@@ -362,6 +389,8 @@ class PlaybackManager(
 
                     Log.i(TAG, "Song completed playback. Autoplay enabled: ${_uiState.value.isAutoplayEnabled}")
                     scope.launch(Dispatchers.Main) {
+                        if (selectionGeneration != endedGeneration || pendingSelectionId != null ||
+                            player.currentMediaItem?.mediaId != endedId) return@launch
                         if (autoplaySuppressedBySleepTimer) return@launch
                         if (_uiState.value.repeatMode == RepeatMode.ONE) {
                             player.seekTo(0)
@@ -382,6 +411,9 @@ class PlaybackManager(
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 if (mediaItem != null) {
                     val trackId = mediaItem.mediaId
+                    if (player.currentMediaItem?.mediaId != trackId) return
+                    if (pendingSelectionId != null && pendingSelectionId != trackId) return
+                    if (pendingSelectionId == trackId) pendingSelectionId = null
                     recoveryGuard.select(trackId)
                     val oldTrack = _uiState.value.currentTrack
                     val newListeningPlay = _listeningState.value.track?.id != trackId ||
@@ -492,6 +524,7 @@ class PlaybackManager(
             }
 
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                if (pendingSelectionId != null) return
                 val player = controller ?: run {
                     showPlaybackFailure("Player not initialized")
                     return
@@ -578,6 +611,7 @@ class PlaybackManager(
     }
 
     private fun showPlaybackFailure(message: String) {
+        pendingSelectionId = null
         _uiState.update { it.copy(isLoading = false, isPlaying = false, errorMessage = message) }
     }
 
@@ -632,6 +666,7 @@ class PlaybackManager(
 
     private fun updateProgressValues() {
         if (!uiForeground) return
+        if (pendingSelectionId != null) return
         val player = controller
         if (player == null) {
             Log.w(TAG, "Cannot update progress: player is null")
@@ -664,6 +699,45 @@ class PlaybackManager(
         }
     }
 
+    /** Own the requested identity before native callbacks or asynchronous lookup can run. */
+    private fun beginSelection(track: MusicTrack, queue: List<MusicTrack>): Long {
+        val generation = ++selectionGeneration
+        pendingSelectionId = track.id
+        selectionContext = queue.toList()
+        val previous = _uiState.value.currentTrack
+        if (previous != null && previous.id != track.id && controller?.currentMediaItem?.mediaId == previous.id) {
+            playbackHistory.add(previous)
+            if (playbackHistory.size > 50) playbackHistory.removeAt(0)
+        }
+        stopProgressTicker()
+        _listeningState.update { it.copy(isPlaying = false) }
+        activeQueue = mutableListOf()
+        _playbackPosition.value = 0L
+        _bufferedPosition.value = 0L
+        _trackDuration.value = track.durationMs
+        _uiState.update { it.copy(currentTrack = track, isPlaying = false, isLoading = true,
+            currentPositionMs = 0L, bufferedPositionMs = 0L, durationMs = track.durationMs,
+            isFavorite = track.isLiked, queue = emptyList(), currentIndex = 0,
+            nextRecommendedTrack = null, infiniteAutoplayTracks = emptyList(), errorMessage = null) }
+        // stop() retains the old media items. Removing them prevents a resume or a
+        // deferred completion callback from replaying the previous song during lookup.
+        try {
+            controller?.pause()
+            controller?.stop()
+            controller?.clearMediaItems()
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not clear the previous playback selection: ${e.message}")
+        }
+        return generation
+    }
+
+    private fun ownsSelection(trackId: String, generation: Long): Boolean =
+        selectionGeneration == generation && _uiState.value.currentTrack?.id == trackId
+
+    private suspend fun awaitController(): MediaController = controller ?: withTimeoutOrNull(8_000L) {
+        controllerReady.await()
+    } ?: throw IllegalStateException("Player connection timed out. Please try again.")
+
     fun playTrack(track: MusicTrack, queue: List<MusicTrack> = listOf(track), isExplicitPlaylist: Boolean = false, isInfiniteRadio: Boolean = false) {
         if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
             scope.launch { playTrack(track, queue, isExplicitPlaylist, isInfiniteRadio) }
@@ -676,12 +750,11 @@ class PlaybackManager(
         // 1. Double-tap on currently playing track:
         // If already playing smoothly, do nothing; if paused, resume playback.
         // If in loading state, reset loading state safely.
-        if (isSameTrack && !isInfiniteRadio && now - lastPlayRequestTimeMs < 450L) {
+        if (isSameTrack && !isInfiniteRadio && _uiState.value.errorMessage == null && now - lastPlayRequestTimeMs < 450L) {
             val player = controller
             // UI selection can precede replacement of the controller's previous media item.
-            if (playResolutionJob?.isActive == true || activeSearchPlayJob?.isActive == true ||
-                player?.currentMediaItem?.mediaId != track.id) return
-            if (player != null) {
+            if (pendingSelectionId == track.id || playResolutionJob?.isActive == true || activeSearchPlayJob?.isActive == true) return
+            if (player != null && player.currentMediaItem?.mediaId == track.id) {
                 if (!player.isPlaying) {
                     try {
                         if (player.playbackState == Player.STATE_IDLE || player.playbackState == Player.STATE_ENDED) {
@@ -690,16 +763,16 @@ class PlaybackManager(
                         player.play()
                     } catch (_: Exception) {}
                 }
+                // Ensure loading flag is kept accurate and not stuck
+                if (_uiState.value.isLoading && player.isPlaying) {
+                    _uiState.update { it.copy(isLoading = false) }
+                }
+                return
             }
-            // Ensure loading flag is kept accurate and not stuck
-            if (_uiState.value.isLoading && controller?.isPlaying == true) {
-                _uiState.update { it.copy(isLoading = false) }
-            }
-            return
         }
 
         // 2. Debounce rapid spam clicks on the same track if already loading or processing (<250ms)
-        if (lastRequestedTrackId == track.id && !isInfiniteRadio && now - lastPlayRequestTimeMs < 250L) {
+        if (lastRequestedTrackId == track.id && !isInfiniteRadio && _uiState.value.errorMessage == null && now - lastPlayRequestTimeMs < 250L) {
             return
         }
 
@@ -716,29 +789,29 @@ class PlaybackManager(
         playResolutionJob?.cancel()
         cancelQueueRefill()
         rememberQueueCandidates(queue)
+        val generation = beginSelection(track, queue)
 
         val repo = repository
-        if (com.example.data.repository.StreamResolver.needsResolution(track) && repo != null) {
-            try { controller?.stop() } catch (_: Exception) {}
-            _uiState.update { it.copy(currentTrack = track, isLoading = true, errorMessage = null) }
-            playResolutionJob = scope.launch(Dispatchers.IO) {
+        val needsResolution = com.example.data.repository.StreamResolver.needsResolution(track)
+        if (needsResolution || controller == null) {
+            playResolutionJob = scope.launch {
                 try {
-                    val resolved = repo.resolvePlayableTrack(track)
+                    awaitController()
+                    val resolved = if (needsResolution) withContext(Dispatchers.IO) {
+                        (repo ?: throw IllegalStateException("Music catalogue is unavailable. Please try again."))
+                            .resolvePlayableTrack(track)
+                    } else track
                     val updatedQueue = queue.map { if (it.id == track.id) resolved else it }
-                    withContext(Dispatchers.Main) {
-                        if (isActive && _uiState.value.currentTrack?.id == track.id) {
-                            playTrackInternal(resolved, updatedQueue, isExplicitPlaylist)
-                        }
+                    if (isActive && ownsSelection(track.id, generation)) {
+                        playTrackInternal(resolved, updatedQueue, isExplicitPlaylist)
                     }
                 } catch (e: Exception) {
                     if (e is CancellationException) {
                         throw e
                     }
                     Log.e(TAG, "Failed resolving track stream: ${e.message}", e)
-                    withContext(Dispatchers.Main) {
-                        if (_uiState.value.currentTrack?.id == track.id) {
-                            showPlaybackFailure(e.message ?: "This track is unavailable.")
-                        }
+                    if (ownsSelection(track.id, generation)) {
+                        showPlaybackFailure(e.message ?: "This track is unavailable.")
                     }
                 }
             }
@@ -755,20 +828,14 @@ class PlaybackManager(
     }
 
     private fun playTrackInternal(track: MusicTrack, queue: List<MusicTrack>, isExplicitPlaylist: Boolean = false) {
-        if (track.audioUrl.isBlank()) {
+        if (track.audioUrl.isBlank() || Uri.parse(track.audioUrl).scheme !in setOf("http", "https", "file", "content", "xtreme-youtube")) {
             showPlaybackFailure("No playable stream is available for '${track.title}'.")
             return
         }
         val player = controller
         if (player == null) {
             Log.e(TAG, "Cannot play track: player is null")
-            _uiState.update {
-                it.copy(
-                    isPlaying = false,
-                    isLoading = false,
-                    errorMessage = "Player not initialized"
-                )
-            }
+            showPlaybackFailure("Player not initialized")
             return
         }
 
@@ -843,18 +910,13 @@ class PlaybackManager(
                 }
             }
 
+            if (pendingSelectionId == track.id && player.currentMediaItem?.mediaId == track.id) pendingSelectionId = null
             publishQueueState()
             refreshAutoplayRecommendation(track)
             Log.i(TAG, "Playing track: ${track.title}")
         } catch (e: Exception) {
             Log.e(TAG, "Error playing track: ${e.message}", e)
-            _uiState.update {
-                it.copy(
-                    isPlaying = false,
-                    isLoading = false,
-                    errorMessage = "Failed to play track: ${e.message}"
-                )
-            }
+            showPlaybackFailure("Failed to play track: ${e.message}")
         }
     }
 
@@ -890,6 +952,7 @@ class PlaybackManager(
      * selections cancel the job so a previous session cannot append to the new queue.
      */
     fun refreshAutoplayRecommendation(track: MusicTrack) {
+        if (pendingSelectionId != null) return
         val player = controller ?: return
         if (!_uiState.value.isAutoplayEnabled || recommendationFetchJob?.isActive == true) return
         val remaining = activeQueue.size - player.currentMediaItemIndex - 1
@@ -1018,64 +1081,26 @@ class PlaybackManager(
         rememberQueueCandidates(searchContextPool)
         isCurrentSessionExplicitPlaylist = false
         _uiState.update { it.copy(isInfiniteRadio = false) }
-
-        // 2. Pause audio if actively playing without freezing the Main thread with synchronous stops
-        try {
-            if (controller?.isPlaying == true) {
-                controller?.pause()
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Error pausing controller on search selection: ${e.message}")
-        }
-
-        // 3. Update UI state immediately so user receives instant visual feedback
-        _uiState.update {
-            it.copy(
-                currentTrack = track,
-                isLoading = true,
-                isPlaying = false,
-                errorMessage = null
-            )
-        }
+        val generation = beginSelection(track, searchContextPool)
 
         // 4. Asynchronously resolve stream URL on Dispatchers.IO
-        activeSearchPlayJob = scope.launch(Dispatchers.IO) {
-            val resolvedTrack = if (com.example.data.repository.StreamResolver.needsResolution(track)) {
-                val repo = repository
-                if (repo != null) {
-                    try {
-                        repo.resolvePlayableTrack(track)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Failed resolving track stream: ${e.message}", e)
-                        withContext(Dispatchers.Main) {
-                            if (_uiState.value.currentTrack?.id == track.id) {
-                                showPlaybackFailure(e.message ?: "This track is unavailable.")
-                            }
-                        }
-                        return@launch
+        activeSearchPlayJob = scope.launch {
+            try {
+                awaitController()
+                val resolvedTrack = if (com.example.data.repository.StreamResolver.needsResolution(track)) {
+                    withContext(Dispatchers.IO) {
+                        (repository ?: throw IllegalStateException("Music catalogue is unavailable. Please try again."))
+                            .resolvePlayableTrack(track)
                     }
-                } else {
-                    withContext(Dispatchers.Main) {
-                        if (_uiState.value.currentTrack?.id == track.id) {
-                            showPlaybackFailure("This track is unavailable.")
-                        }
-                    }
-                    return@launch
-                }
-            } else track
-
-            if (!isActive) return@launch
-
-            // Immediate fast queue: only include playable items with valid URLs
-            val validContext = searchContextPool.filter { it.id != track.id && it.audioUrl.isNotBlank() }.distinctBy { it.id }
-            val fastQueue = listOf(resolvedTrack) + validContext
-
-            withContext(Dispatchers.Main) {
-                if (isActive && _uiState.value.currentTrack?.id == track.id) {
+                } else track
+                if (isActive && ownsSelection(track.id, generation)) {
+                    val validContext = searchContextPool.filter { it.id != track.id && it.audioUrl.isNotBlank() }.distinctBy { it.id }
+                    val fastQueue = listOf(resolvedTrack) + validContext
                     playTrackInternal(resolvedTrack, fastQueue, isExplicitPlaylist = false)
                 }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                if (ownsSelection(track.id, generation)) showPlaybackFailure(e.message ?: "This track is unavailable.")
             }
         }
     }
@@ -1083,7 +1108,7 @@ class PlaybackManager(
     fun retryPlayback() {
         val current = _uiState.value.currentTrack ?: return
         recoveryGuard.select(current.id, newRequest = true)
-        playTrack(current, activeQueue, isCurrentSessionExplicitPlaylist, _uiState.value.isInfiniteRadio)
+        playTrack(current, activeQueue.ifEmpty { selectionContext }, isCurrentSessionExplicitPlaylist, _uiState.value.isInfiniteRadio)
     }
 
     fun setCandidatePool(pool: List<MusicTrack>) {
@@ -1115,6 +1140,16 @@ class PlaybackManager(
         val player = controller
         if (player == null) {
             Log.e(TAG, "Cannot toggle play/pause: player is null")
+            return
+        }
+
+        // A loading UI selection may not yet exist in the native player. Never
+        // prepare/play a different item or trigger resumption of the saved queue.
+        if (pendingSelectionId != null) return
+        val selected = _uiState.value.currentTrack
+        if (selected != null && player.currentMediaItem?.mediaId != selected.id) {
+            playTrack(selected, _uiState.value.queue.ifEmpty { selectionContext.ifEmpty { listOf(selected) } },
+                isCurrentSessionExplicitPlaylist, _uiState.value.isInfiniteRadio)
             return
         }
 
@@ -1438,6 +1473,9 @@ class PlaybackManager(
     }
 
     fun release() {
+        selectionGeneration++
+        pendingSelectionId = null
+        controllerReady.cancel()
         SleepTimerManager.removeExpirationListener(sleepExpirationListener)
         try {
             progressTickerJob?.cancel()

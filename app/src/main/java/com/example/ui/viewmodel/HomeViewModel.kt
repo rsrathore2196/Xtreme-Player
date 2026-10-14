@@ -126,7 +126,7 @@ class HomeViewModel(
     private var savedGeneration = initialCards?.generation ?: -1L
     private val lastEventStamps = mutableMapOf<Long, com.example.data.local.ActualPlayStamp>()
     private val retainedEvents = mutableMapOf<Long, ListeningEventEntity>()
-    private fun profileKey() = "${_userProfile.value.countryCode}|${_userProfile.value.languages.joinToString(",")}"
+    private fun profileKey(profile: UserProfile = _userProfile.value) = "${profile.countryCode}|${profile.languages.joinToString(",")}"
     private val cachedHero = MutableStateFlow(initialCards?.history?.tracks?.firstOrNull() ?: initialCards?.catalog?.firstOrNull())
     private val cachedHistory = MutableStateFlow(initialCards?.history?.tracks)
 
@@ -430,6 +430,10 @@ class HomeViewModel(
         while (true) {
             homeVisible.first { it }
             val essential = _ytmCard.value.tracks.isEmpty() && _countryLanguageCard.value.tracks.isEmpty()
+            // Empty Home content is essential loading, not optional revalidation.
+            // Startup work and shimmer frames must not postpone its IO/Default work
+            // indefinitely. The existing refresh owner still permits only one pass.
+            if (essential) return
             BackgroundWorkCoordinator.awaitIdle(quietMillis = if (essential) 1_500L else 2_500L,
                 minimumUptimeMillis = if (essential) 1_500L else 6_000L,
                 userRequested = { _isRefreshing.value || manualRenderGeneration == candidates.value.generation })
@@ -479,10 +483,20 @@ class HomeViewModel(
 
     fun updateUserProfile(profile: UserProfile) {
         UserProfilePreferences.saveUserProfile(getApplication(), profile)
+        applyUserProfile(profile)
+    }
+
+    private fun applyUserProfile(profile: UserProfile) {
+        if (_userProfile.value == profile) return
+        val musicPreferencesChanged = profileKey(profile) != profileKey()
         _userProfile.value = profile
-        homeRefreshJob?.cancel()
-        homeRefreshJob = null
-        refreshHome(isExplicitPull = false)
+        // Onboarding/name updates must not cancel the first request and then have
+        // its replacement rejected by the unchanged music-preference retry key.
+        if (musicPreferencesChanged) {
+            homeRefreshJob?.cancel()
+            homeRefreshJob = null
+            refreshHome(isExplicitPull = false)
+        }
     }
 
     private var homeRefreshJob: Job? = null
@@ -558,12 +572,7 @@ class HomeViewModel(
         }
         viewModelScope.launch {
             UserProfilePreferences.getUserProfileFlow(getApplication()).collect { profile ->
-                if (_userProfile.value != profile) {
-                    _userProfile.value = profile
-                    homeRefreshJob?.cancel()
-                    homeRefreshJob = null
-                    refreshHome(isExplicitPull = false)
-                }
+                applyUserProfile(profile)
             }
         }
         viewModelScope.launch {
@@ -626,7 +635,8 @@ class HomeViewModel(
                 if (isExplicitPull) pendingExplicitRefresh = true else pendingSilentRefresh = true
                 return@launch
             }
-            if (!isExplicitPull && !pendingExplicitRefresh && lastAttemptProfile == profileKey() &&
+            val emptyHome = _ytmCard.value.tracks.isEmpty() && _countryLanguageCard.value.tracks.isEmpty()
+            if (!isExplicitPull && !pendingExplicitRefresh && !emptyHome && lastAttemptProfile == profileKey() &&
                 System.currentTimeMillis() - lastDiscoveryAttempt in 0 until 60_000L) return@launch
             if (homeRefreshJob?.isActive == true) {
                 if (isExplicitPull && refreshWaitingForIdle) {
@@ -736,7 +746,7 @@ class HomeViewModel(
                 Triple(quickJob.await(), eraJob.await(), chartJob.await())
             }
         }
-        if (_userProfile.value != profile) return
+        if (profileKey() != profileKey(profile)) return
         val catalog = withContext(Dispatchers.Default) {
             HomeRecommendationPolicy.originals(quick + era + _catalogTracks.value).take(300)
         }
