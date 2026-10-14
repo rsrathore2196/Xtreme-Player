@@ -38,7 +38,7 @@ class iTunesApiServiceImpl(
             val url = "https://itunes.apple.com/search?term=$encodedTerm&media=$media&entity=song&limit=$limit"
             val request = Request.Builder()
                 .url(url)
-                .header("User-Agent", "XtremePlayer/1.8.0 (Android)")
+                .header("User-Agent", "XtremePlayer/1.9.0 (Android)")
                 .build()
 
             run {

@@ -275,8 +275,8 @@ class ExampleUnitTest {
 
     @Test
     fun testAppVersion() {
-        assertEquals("1.8.0", com.example.BuildConfig.VERSION_NAME)
-        assertEquals(8, com.example.BuildConfig.VERSION_CODE)
+        assertEquals("1.9.0", com.example.BuildConfig.VERSION_NAME)
+        assertEquals(9, com.example.BuildConfig.VERSION_CODE)
     }
 
     @Test
