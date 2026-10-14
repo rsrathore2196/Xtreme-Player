@@ -10,7 +10,7 @@
 
   <!-- Short Overview -->
   <p>
-    <b>Xtreme Player</b> is a lightweight, modern, open-source online music streaming application for Android. Built with a clean Material You (Material 3) interface, it delivers an ad-free, high-fidelity audio experience with zero subscription paywalls.
+    <b>Xtreme Player</b> is a lightweight, modern, open-source online streaming YouTube Music Client for Android. Built with a clean Material You (Material 3) interface, it delivers an ad-free, high-fidelity audio experience with zero subscription paywalls.
   </p>
   <p>
     Stream millions of online tracks in studio-grade <b> Lossless and FLAC high-res audio</b>, manage custom libraries, and enjoy seamless playback without interruptions.
