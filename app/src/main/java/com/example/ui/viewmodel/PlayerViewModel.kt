@@ -21,6 +21,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.map
@@ -32,6 +34,7 @@ import kotlinx.coroutines.flow.stateIn
 import androidx.compose.runtime.Immutable
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.plus
 import kotlinx.coroutines.withContext
 
 @Immutable
@@ -122,16 +125,22 @@ class PlayerViewModel(
     private var searchJob: Job? = null
     private var playlistTracksJob: Job? = null
 
+    // Reuse the ViewModel's lifecycle job while keeping large-list publication off Main.
+    private val libraryDataScope = viewModelScope + Dispatchers.Default
+
     val favoriteTracks: StateFlow<List<MusicTrack>> = repository.getFavoriteTracks()
-        .flowOn(Dispatchers.Default)
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
+        .stateIn(libraryDataScope, SharingStarted.WhileSubscribed(5000L), emptyList())
 
     val recentlyPlayed: StateFlow<List<MusicTrack>> = repository.getRecentlyPlayedTracks()
         .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
 
-    val playlists: StateFlow<List<PlaylistEntity>> = repository.getAllPlaylists()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
+    // Keep one foreground observer and its last snapshot instead of querying on every tab entry.
+    // Suspend observation in the background without clearing the retained Library content.
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val playlists: StateFlow<List<PlaylistEntity>> = com.example.performance.BackgroundWorkCoordinator.uiForeground
+        .flatMapLatest { foreground -> if (foreground) repository.getAllPlaylists() else emptyFlow() }
+        .stateIn(libraryDataScope, SharingStarted.Eagerly, emptyList())
 
     private val initialThemeMode = com.example.data.local.ThemePreferences.getThemeMode(application)
     private val _themeMode = MutableStateFlow(initialThemeMode)
@@ -421,7 +430,7 @@ class PlayerViewModel(
 
     fun renamePlaylist(playlistId: Long, newTitle: String) {
         viewModelScope.launch {
-            repository.renamePlaylist(playlistId, newTitle)
+            withContext(Dispatchers.IO) { repository.renamePlaylist(playlistId, newTitle) }
             val current = _selectedPlaylistTracks.value
             if (current != null && current.playlist.playlistId == playlistId) {
                 _selectedPlaylistTracks.value = current.copy(
@@ -587,14 +596,14 @@ class PlayerViewModel(
 
     fun createPlaylist(title: String, description: String, onCreated: ((Long) -> Unit)? = null) {
         viewModelScope.launch {
-            val id = repository.createPlaylist(title, description)
+            val id = withContext(Dispatchers.IO) { repository.createPlaylist(title, description) }
             onCreated?.invoke(id)
         }
     }
 
     fun deletePlaylist(playlistId: Long) {
         viewModelScope.launch {
-            repository.deletePlaylist(playlistId)
+            withContext(Dispatchers.IO) { repository.deletePlaylist(playlistId) }
             if (_selectedPlaylistTracks.value?.playlist?.playlistId == playlistId) {
                 _selectedPlaylistTracks.value = null
             }
@@ -603,13 +612,13 @@ class PlayerViewModel(
 
     fun addTrackToPlaylist(playlistId: Long, track: MusicTrack) {
         viewModelScope.launch {
-            repository.addTrackToPlaylist(playlistId, track)
+            withContext(Dispatchers.IO) { repository.addTrackToPlaylist(playlistId, track) }
         }
     }
 
     fun removeTrackFromPlaylist(playlistId: Long, trackId: String) {
         viewModelScope.launch {
-            repository.removeTrackFromPlaylist(playlistId, trackId)
+            withContext(Dispatchers.IO) { repository.removeTrackFromPlaylist(playlistId, trackId) }
         }
     }
 

@@ -27,7 +27,9 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
@@ -330,9 +332,13 @@ class MusicRepository(
     }
 
     fun getFavoriteTracks(): Flow<List<MusicTrack>> {
-        return musicDao.getFavoriteTracks().map { list ->
-            list.map { it.toMusicTrack() }
-        }
+        return musicDao.getFavoriteTracks()
+            .flowOn(Dispatchers.IO)
+            // Room invalidates this query for any track write, including unrelated playback updates.
+            .distinctUntilChanged()
+            .map { list -> list.map { it.toMusicTrack() } }
+            .distinctUntilChanged()
+            .flowOn(Dispatchers.Default)
     }
 
     fun getRecentlyPlayedTracks(): Flow<List<MusicTrack>> {
@@ -343,6 +349,9 @@ class MusicRepository(
 
     fun getAllPlaylists(): Flow<List<PlaylistEntity>> {
         return musicDao.getAllPlaylists()
+            .flowOn(Dispatchers.IO)
+            .distinctUntilChanged()
+            .flowOn(Dispatchers.Default)
     }
 
     fun getPlaylistWithTracks(playlistId: Long): Flow<PlaylistWithTracks?> {
