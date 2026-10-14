@@ -9,11 +9,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
+import android.graphics.drawable.BitmapDrawable
+import coil.imageLoader
+import coil.memory.MemoryCache
 import coil.request.CachePolicy
+import coil.request.ErrorResult
 import coil.request.ImageRequest
+import coil.request.SuccessResult
 import coil.size.Scale
 import com.example.data.model.MusicTrack
 import com.example.data.repository.ArtworkDimensions
+import com.example.data.repository.MediaItem as ArtworkMediaItem
 import com.example.data.repository.iTunesArtworkRepository
 import com.example.data.repository.toMediaItem
 import kotlinx.coroutines.Dispatchers
@@ -114,29 +120,35 @@ fun mapTargetSizeToArtworkDimension(targetSize: Int): Int {
 /**
  * Shared high-performance Coil ImageRequest with explicit hardware downscaling,
  * GPU hardware acceleration, 3-layer caching (LruCache, Room DB, Coil disk cache),
- * and iTunes Artwork resolution with smooth 200ms crossfade.
+ * and iTunes Artwork resolution. Home can opt out of crossfade and unnecessary upgrades.
  */
 @Composable
 fun rememberOptimizedImageRequest(
     track: MusicTrack,
-    targetSize: Int = ImageConfig.LIST_ITEM_SIZE
+    targetSize: Int = ImageConfig.LIST_ITEM_SIZE,
+    crossfadeEnabled: Boolean = true,
+    preferStableArtwork: Boolean = false
 ): ImageRequest = rememberOptimizedImageRequest(
     url = track.coverUrl,
     targetSize = targetSize,
-    track = track
+    track = track,
+    crossfadeEnabled = crossfadeEnabled,
+    preferStableArtwork = preferStableArtwork
 )
 
 @Composable
 fun rememberOptimizedImageRequest(
     url: String,
     targetSize: Int = ImageConfig.LIST_ITEM_SIZE,
-    track: MusicTrack? = null
+    track: MusicTrack? = null,
+    crossfadeEnabled: Boolean = true,
+    preferStableArtwork: Boolean = false
 ): ImageRequest {
     val context = LocalContext.current
     val repository = remember { iTunesArtworkRepository.getInstance(context) }
     val targetDimension = remember(targetSize) { mapTargetSizeToArtworkDimension(targetSize) }
 
-    val initialUrl = remember(url) {
+    val initialUrl = remember(url, targetDimension) {
         when {
             url.contains("150x150.jpg") -> url.replace("150x150.jpg", "500x500.jpg")
             url.contains("50x50.jpg") -> url.replace("50x50.jpg", "500x500.jpg")
@@ -150,23 +162,32 @@ fun rememberOptimizedImageRequest(
     }
 
     if (track == null) {
-        return remember(initialUrl, targetSize) {
-            buildImageRequest(context, initialUrl, targetSize)
+        return remember(initialUrl, targetSize, crossfadeEnabled) {
+            buildImageRequest(context, initialUrl, targetSize, crossfadeEnabled)
         }
     }
 
-    val memoryCachedUrl = remember(track.id, targetDimension) {
-        repository.getMemoryCachedUrl(track.toMediaItem(), targetDimension)
+    val item = remember(track.id, track.title, track.artist, track.source, track.audioUrl, track.coverUrl) {
+        track.toMediaItem()
+    }
+    val memoryCachedUrl = remember(item, targetDimension, preferStableArtwork) {
+        if (preferStableArtwork) repository.peekMemoryCachedUrl(item, targetDimension)
+        else repository.getMemoryCachedUrl(item, targetDimension)
     }
 
-    var displayUrl by remember(track.id, targetDimension) {
+    if (preferStableArtwork) {
+        return rememberStableHomeArtworkRequest(context, repository, item, track.id, track.album,
+            initialUrl, memoryCachedUrl, targetSize, targetDimension, crossfadeEnabled)
+    }
+
+    var displayUrl by remember(track.id, item, track.album, initialUrl, targetDimension) {
         mutableStateOf(memoryCachedUrl ?: initialUrl)
     }
 
-    LaunchedEffect(track.id, targetDimension) {
+    LaunchedEffect(track.id, item, track.album, initialUrl, targetDimension) {
         if (memoryCachedUrl == null) {
-            val resolved = withContext(Dispatchers.IO) {
-                repository.resolveArtwork(track.toMediaItem(), targetDimension)
+            val resolved = withContext(Dispatchers.Default) {
+                repository.resolveArtwork(item, targetDimension)
             }
             if (resolved.isNotBlank() && resolved != displayUrl) {
                 displayUrl = resolved
@@ -174,23 +195,113 @@ fun rememberOptimizedImageRequest(
         }
     }
 
-    return remember(displayUrl, targetSize) {
-        buildImageRequest(context, displayUrl, targetSize)
+    return remember(displayUrl, targetSize, crossfadeEnabled) {
+        buildImageRequest(context, displayUrl, targetSize, crossfadeEnabled)
     }
 }
 
-private fun buildImageRequest(context: android.content.Context, url: String, targetSize: Int): ImageRequest {
+// Per-composition request state; image data remains in the existing Coil/repository caches.
+private class HomeArtworkState(initialUrl: String) {
+    var displayUrl by mutableStateOf(initialUrl)
+    var needsResolution by mutableStateOf(initialUrl.isBlank())
+    var placeholderKey by mutableStateOf<MemoryCache.Key?>(null)
+    var lastSuccessfulKey: MemoryCache.Key? = null
+    var loadedDimension = 0
+    var resolutionAttempted = false
+    val failedUrls = mutableSetOf<String>()
+}
+
+private fun SuccessResult.minimumArtworkDimension(): Int {
+    val bitmap = (drawable as? BitmapDrawable)?.bitmap
+    return if (bitmap != null) minOf(bitmap.width, bitmap.height)
+        else minOf(drawable.intrinsicWidth, drawable.intrinsicHeight).coerceAtLeast(0)
+}
+
+@Composable
+private fun rememberStableHomeArtworkRequest(
+    context: android.content.Context,
+    repository: iTunesArtworkRepository,
+    item: ArtworkMediaItem,
+    trackId: String,
+    album: String,
+    initialUrl: String,
+    memoryCachedUrl: String?,
+    targetSize: Int,
+    targetDimension: Int,
+    crossfadeEnabled: Boolean
+): ImageRequest {
+    val state = remember(trackId, item, album, initialUrl, targetSize, targetDimension) {
+        HomeArtworkState(memoryCachedUrl?.takeIf { it.isNotBlank() } ?: initialUrl)
+    }
+    val requiredDimension = if (targetSize > 0) targetSize else targetDimension
+    val listener = remember(state, requiredDimension, initialUrl, item.sourceArtworkUrl) {
+        object : ImageRequest.Listener {
+            override fun onSuccess(request: ImageRequest, result: SuccessResult) {
+                if (request.data?.toString() != state.displayUrl) return
+                state.lastSuccessfulKey = result.memoryCacheKey
+                state.loadedDimension = result.minimumArtworkDimension()
+                // Decode size, rather than URL guesses, determines whether an upgrade helps.
+                state.needsResolution = state.loadedDimension in 1 until requiredDimension
+            }
+
+            override fun onError(request: ImageRequest, result: ErrorResult) {
+                if (request.data?.toString() != state.displayUrl) return
+                state.failedUrls.add(state.displayUrl)
+                state.needsResolution = true
+                val fallback = listOf(initialUrl, item.sourceArtworkUrl)
+                    .firstOrNull { it.isNotBlank() && it !in state.failedUrls }
+                if (fallback != null) {
+                    state.placeholderKey = state.lastSuccessfulKey
+                    state.displayUrl = fallback
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(state, state.needsResolution) {
+        if (!state.needsResolution || state.resolutionAttempted) return@LaunchedEffect
+        state.resolutionAttempted = true
+        val resolved = withContext(Dispatchers.Default) { repository.resolveArtwork(item, targetDimension) }
+        if (resolved.isBlank() || resolved == state.displayUrl || resolved in state.failedUrls) return@LaunchedEffect
+        // Keep the usable source image while Coil fetches/decodes the candidate off Main.
+        // The visible request then reuses this same memory/disk entry instead of decoding twice.
+        val candidate = withContext(Dispatchers.IO) {
+            context.imageLoader.execute(buildImageRequest(context, resolved, targetSize, crossfadeEnabled = false))
+                as? SuccessResult
+        } ?: return@LaunchedEffect
+        val canRecover = state.loadedDimension <= 0 || state.displayUrl in state.failedUrls
+        if (canRecover || candidate.minimumArtworkDimension() > state.loadedDimension) {
+            state.placeholderKey = candidate.memoryCacheKey ?: state.lastSuccessfulKey
+            state.displayUrl = resolved
+        }
+    }
+
+    return remember(state.displayUrl, state.placeholderKey, targetSize, crossfadeEnabled, listener) {
+        buildImageRequest(context, state.displayUrl, targetSize, crossfadeEnabled, state.placeholderKey, listener)
+    }
+}
+
+private fun buildImageRequest(
+    context: android.content.Context,
+    url: String,
+    targetSize: Int,
+    crossfadeEnabled: Boolean = true,
+    placeholderKey: MemoryCache.Key? = null,
+    listener: ImageRequest.Listener? = null
+): ImageRequest {
     val builder = ImageRequest.Builder(context)
         .data(url)
         .scale(Scale.FILL)
-        .crossfade(true)
-        .crossfade(200) // smooth 200ms crossfade transition once resolved
+        .crossfade(if (crossfadeEnabled) 200 else 0)
         .allowHardware(true)
         .bitmapConfig(android.graphics.Bitmap.Config.HARDWARE)
         .allowRgb565(true)
         .memoryCachePolicy(CachePolicy.ENABLED)
         .diskCachePolicy(CachePolicy.ENABLED)
         .networkCachePolicy(CachePolicy.ENABLED)
+
+    if (placeholderKey != null) builder.placeholderMemoryCacheKey(placeholderKey)
+    if (listener != null) builder.listener(listener)
 
     if (targetSize > 0) {
         builder.size(targetSize, targetSize)

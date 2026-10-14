@@ -325,7 +325,7 @@ fun HomeScreenContent(
             contentPadding = PaddingValues(bottom = 180.dp)
         ) {
             // HEADER BAR: Dynamic App Logo, XTREME PLAYER Title, Greeting & Settings Icon (Preserved)
-            item(key = "header_bar") {
+            item(key = "header_bar", contentType = "header") {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -412,7 +412,7 @@ fun HomeScreenContent(
 
             // Retryable error feedback for failed pull-to-refresh
             if (!refreshErrorMessage.isNullOrBlank()) {
-                item(key = "refresh_error_banner") {
+                item(key = "refresh_error_banner", contentType = "error_banner") {
                     Surface(
                         shape = RoundedCornerShape(14.dp),
                         color = if (isDark) Color(0x33EF4444) else Color(0x22DC2626),
@@ -457,7 +457,7 @@ fun HomeScreenContent(
             // and a radio-only glass button reflecting the actual radio session.
             // Always visible even when user has no listening history.
             // =========================================================================
-            item(key = "hero_infinite_radio_card") {
+            item(key = "hero_infinite_radio_card", contentType = "hero") {
                 InfiniteRadioHeroCard(
                     seedTrack = heroSeedTrack,
                     currentPlayingTrackId = currentPlayingId,
@@ -475,7 +475,7 @@ fun HomeScreenContent(
             // When history is empty, completely hide heading, card, placeholder message, and extra spacing.
             val pillsTracks = pillsCardTracks.take(6)
             if (pillsTracks.isNotEmpty()) {
-                item(key = "card_1_recently_played_grid") {
+                item(key = "card_1_recently_played_grid", contentType = "recent_grid") {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -537,7 +537,7 @@ fun HomeScreenContent(
             }
 
             // CARD 2: YouTube Music Home Screen-Based Card ("Quick Picks")
-            item(key = "card_2_ytm_dynamic_feed") {
+            item(key = "card_2_ytm_dynamic_feed", contentType = "song_shelf") {
                 SectionCardLayout(
                     state = ytmCard,
                     currentPlayingId = currentPlayingId,
@@ -550,7 +550,7 @@ fun HomeScreenContent(
             }
 
             if (mostListenedArtists.isNotEmpty()) {
-                item(key = "most_listened_artists") {
+                item(key = "most_listened_artists", contentType = "artist_shelf") {
                     var artistPage by rememberSaveable(mostListenedArtists.firstOrNull()?.name) { mutableIntStateOf(0) }
                     val pageCount = (mostListenedArtists.size + 14) / 15
                     val page = artistPage.coerceIn(0, pageCount - 1)
@@ -585,7 +585,7 @@ fun HomeScreenContent(
                             contentPadding = PaddingValues(horizontal = 20.dp),
                             horizontalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
-                            items(visibleArtists, key = { it.name }) { artist ->
+                            items(visibleArtists, key = { it.name }, contentType = { "artist_card" }) { artist ->
                                 Column(
                                     Modifier.width(140.dp).clip(RoundedCornerShape(18.dp))
                                         .background(cardBg)
@@ -613,7 +613,7 @@ fun HomeScreenContent(
             }
 
             // CARD 3: Era-Specific Hits Card (90s Hits, 2000s Nostalgia, Retro Classics)
-            item(key = "card_3_era_specific_hits") {
+            item(key = "card_3_era_specific_hits", contentType = "song_shelf") {
                 SectionCardLayout(
                     state = eraCard,
                     currentPlayingId = currentPlayingId,
@@ -626,7 +626,7 @@ fun HomeScreenContent(
             }
 
             // CARD 4: User Selected Country & Language Card (Dynamically powered by user prefs)
-            item(key = "card_4_country_language_hits") {
+            item(key = "card_4_country_language_hits", contentType = "song_shelf") {
                 SectionCardLayout(
                     state = countryLanguageCard,
                     currentPlayingId = currentPlayingId,
@@ -639,7 +639,7 @@ fun HomeScreenContent(
             }
 
             // CARD 5: Fully Personalized Recommendation Card (PersonalizedHomeRecommendationEngine)
-            item(key = "card_6_personalized_recommendation") {
+            item(key = "card_6_personalized_recommendation", contentType = "song_shelf") {
                 SectionCardLayout(
                     state = personalizedCard,
                     currentPlayingId = currentPlayingId,
@@ -762,7 +762,8 @@ fun HabitPillItem(
                 .background(cardBorderColor.copy(alpha = 0.25f))
         ) {
             AsyncImage(
-                model = rememberOptimizedImageRequest(track = track, targetSize = 100),
+                model = rememberOptimizedImageRequest(track = track, targetSize = 100,
+                    crossfadeEnabled = false, preferStableArtwork = true),
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
@@ -879,7 +880,8 @@ fun ShelfTrackCard(
                 )
         ) {
             AsyncImage(
-                model = rememberOptimizedImageRequest(track = track, targetSize = com.example.ui.util.ImageConfig.RECOMMENDATION_CARD_SIZE),
+                model = rememberOptimizedImageRequest(track = track, targetSize = com.example.ui.util.ImageConfig.RECOMMENDATION_CARD_SIZE,
+                    crossfadeEnabled = false, preferStableArtwork = true),
                 contentDescription = track.title,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()

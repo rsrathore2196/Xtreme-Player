@@ -68,7 +68,7 @@ class iTunesArtworkRepository(
 ) {
     private data class Lookup(val url: String?, val expiresAt: Long)
     private data class Flight(val result: Deferred<Lookup>, var readers: Int = 0)
-    private data class RawMetadata(val title: String, val artist: String?, val source: AudioSource)
+    private data class RawMetadata(val title: String, val artist: String?, val source: AudioSource, val artworkUrl: String)
     private data class LookupMetadata(val title: String, val artist: String, val key: String)
     private val metadataCache = LruCache<RawMetadata, LookupMetadata>(256)
     private val parenthesizedVideoTags = Regex("(?i)\\(.*?(official|video|lyric|lyrical|remix|audio|4k|hd|visualizer|mv|music video).*?\\)")
@@ -95,7 +95,7 @@ class iTunesArtworkRepository(
 
     // A scrolling card can re-enter composition many times. Parse its unchanged metadata once.
     private fun lookupMetadata(item: MediaItem): LookupMetadata {
-        val raw = RawMetadata(item.rawTitle, item.rawArtist, item.source)
+        val raw = RawMetadata(item.rawTitle, item.rawArtist, item.source, item.sourceArtworkUrl)
         metadataCache.get(raw)?.let { return it }
         val title = sanitizeTitle(raw.title, raw.source)
         val artist = sanitizeArtist(raw.artist, raw.source)
@@ -204,6 +204,13 @@ class iTunesArtworkRepository(
     fun getMemoryCachedUrl(item: MediaItem, targetDimension: Int): String? {
         val hit = cached(lookupMetadata(item).key) ?: return null
         return hit.url?.let { formatUrl(it, targetDimension) } ?: item.sourceArtworkUrl
+    }
+
+    /** UI-safe peek: reuse prepared metadata without sanitizing it or accessing Room/network. */
+    fun peekMemoryCachedUrl(item: MediaItem, targetDimension: Int): String? {
+        val metadata = metadataCache.get(RawMetadata(item.rawTitle, item.rawArtist, item.source, item.sourceArtworkUrl))
+            ?: return null
+        return cached(metadata.key)?.url?.let { formatUrl(it, targetDimension) }
     }
 
     fun formatUrl(url: String, size: Int): String {
