@@ -278,6 +278,10 @@ class HomeViewModel(
     private var savedCandidates: Candidates? = initialCards?.let { candidates.value }
     private val _mostListenedArtists = MutableStateFlow(initialCards?.artists.orEmpty())
     val mostListenedArtists: StateFlow<List<MostListenedArtist>> = _mostListenedArtists.asStateFlow()
+    private val listeningCardRequests = MutableStateFlow(0L)
+    private val pendingCardPlays = linkedMapOf<String, MusicTrack>()
+    private var lastCardPlaySession = ""
+    private var listeningCardsPublished = false
     private val _homeShelves = MutableStateFlow<List<HomeShelf>>(emptyList())
     val homeShelves: StateFlow<List<HomeShelf>> = _homeShelves.asStateFlow()
     // Compatibility accessors for the old staged-loader name; no second pipeline.
@@ -287,6 +291,40 @@ class HomeViewModel(
     fun refreshAll() = refreshHome(isExplicitPull = true)
 
     private data class ArtistHistory(val plays: List<Pair<String, String>>, val trackIds: List<String>)
+    private suspend fun refreshListeningCards() {
+        // Read only local history; no recommendation fetches or idle gate for these two cards.
+        val pending = pendingCardPlays.toMap()
+        val events = withContext(Dispatchers.IO) { listeningEventDao.getActualPlays() }
+        val played = withContext(Dispatchers.Default) { events.filter(UserTasteProfile::played) }
+        val ids = withContext(Dispatchers.Default) { played.map { it.trackId }.distinct() }
+        val entities = withContext(Dispatchers.IO) {
+            ids.chunked(900).flatMap { database.musicDao().getTracksByIds(it) }
+        }
+        val (recent, artists, committed) = withContext(Dispatchers.Default) {
+            val recorded = played.mapTo(mutableSetOf()) { it.sessionId to it.trackId }
+            val uncommitted = pending.filter { (session, track) -> (session to track.id) !in recorded }
+            val liveTracks = uncommitted.values.toList().asReversed()
+            val metadata = entities.map { it.toMusicTrack() }
+            val tracks = (liveTracks + metadata).distinctBy { it.id }
+            val byId = tracks.associateBy { it.id }
+            val seen = HomeRecommendationPolicy.Recordings()
+            val recentTracks = (liveTracks.asSequence() +
+                played.asSequence().mapNotNull { byId[it.trackId] }).filter(seen::add).take(30).toList()
+            val plays = uncommitted.entries.toList().asReversed().map { (session, track) -> session to track.id } +
+                played.map { it.sessionId to it.trackId }
+            Triple(recentTracks, rankListenedArtists(plays, tracks), recorded)
+        }
+        currentCoroutineContext().ensureActive()
+        listeningCardsPublished = true
+        val changed = _listeningHistoryCard.value.tracks != recent || _mostListenedArtists.value != artists
+        _listeningHistoryCard.update { it.copy(tracks = recent, isLoaded = recent.isNotEmpty(), isLoading = false) }
+        _mostListenedArtists.value = artists
+        pendingCardPlays.entries.removeAll { (it.key to it.value.id) in committed }
+        if (changed) shelfCache.peek(profileKey())?.let { saved ->
+            shelfCache.save(saved.copy(history = _listeningHistoryCard.value, artists = artists.take(15)))
+        }
+    }
+
     private suspend fun rankListenedArtists(plays: List<Pair<String, String>>, tracks: List<MusicTrack>) =
         withContext(Dispatchers.Default) {
             val byId = tracks.associateBy { it.id }
@@ -344,7 +382,6 @@ class HomeViewModel(
             it.genre, it.language, it.year, it.isLiked) }.hashCode()
         val signal = "${actualPlays.value.hashCode()}|$metadataSignal|${inputs.favorites.map { it.id }.sorted()}|${profileKey()}"
         if (pool == savedCandidates && pool.generation == savedGeneration && signal == savedSignal) {
-            _listeningHistoryCard.update { it.copy(tracks = inputs.recent, isLoaded = inputs.recent.isNotEmpty()) }
             _currentStage.value = LoadingStage.PRIORITY_3_BACKGROUND_ENRICHED
             lastRenderInputs = inputs
             return@withLock
@@ -412,9 +449,6 @@ class HomeViewModel(
         _ytmCard.update { it.copy(tracks = quick, isLoading = false, isLoaded = quick.isNotEmpty()) }
         _personalizedCard.value = _personalizedCard.value.copy(tracks = personalized,
             isLoading = false, isLoaded = personalized.isNotEmpty())
-        // The small Recently Played card consumes this existing history flow without recommendation filtering.
-        _listeningHistoryCard.value = _listeningHistoryCard.value.copy(tracks = inputs.recent,
-            isLoading = false, isLoaded = inputs.recent.isNotEmpty())
         lastRenderInputs = inputs
         _currentStage.value = LoadingStage.PRIORITY_3_BACKGROUND_ENRICHED
         savedSignal = signal; savedGeneration = pool.generation; savedCandidates = pool
@@ -560,6 +594,32 @@ class HomeViewModel(
 
     init {
         viewModelScope.launch {
+            var wasPlaying = false
+            playbackManager.listeningState.collect { state ->
+                val track = state.track
+                val newSession = state.playSessionId != lastCardPlaySession
+                if (state.isPlaying && track != null && state.playSessionId.isNotBlank() &&
+                    (newSession || !wasPlaying)) {
+                    if (newSession) {
+                        lastCardPlaySession = state.playSessionId
+                        pendingCardPlays[state.playSessionId] = track
+                        if (pendingCardPlays.size > 5000) pendingCardPlays.remove(pendingCardPlays.keys.first())
+                    }
+                    listeningCardRequests.update { it + 1 }
+                }
+                wasPlaying = state.isPlaying
+            }
+        }
+        viewModelScope.launch {
+            combine(listeningCardRequests, homeVisible) { request, visible -> request to visible }
+                .collectLatest { (_, visible) ->
+                    if (!visible) return@collectLatest
+                    try { refreshListeningCards() }
+                    catch (e: CancellationException) { throw e }
+                    catch (e: Exception) { android.util.Log.w("HomeViewModel", "Could not update listening cards", e) }
+                }
+        }
+        viewModelScope.launch {
             combine(_ytmCard, _eraCard, _countryLanguageCard) { quick, era, chart ->
                 listOf(quick, era, chart).filter { it.isError && !it.isLoading }.map { it.title }
             }.distinctUntilChanged().collect { failed ->
@@ -574,8 +634,15 @@ class HomeViewModel(
             if (cached != null) {
                 savedSignal = cached.signal; savedGeneration = cached.generation
                 _ytmCard.value = cached.quick.limitShelf(); _eraCard.value = cached.era.limitShelf()
-                _countryLanguageCard.value = cached.chart.limitShelf(); _listeningHistoryCard.value = cached.history
-                _personalizedCard.value = cached.personalized.limitShelf(); _mostListenedArtists.value = cached.artists
+                _countryLanguageCard.value = cached.chart.limitShelf()
+                _personalizedCard.value = cached.personalized.limitShelf()
+                withContext(Dispatchers.Main.immediate) {
+                    // A late cache restore must not overwrite a confirmed playback-start update.
+                    if (!listeningCardsPublished) {
+                        _listeningHistoryCard.value = cached.history
+                        _mostListenedArtists.value = cached.artists
+                    }
+                }
                 _catalogTracks.value = cached.catalog
                 cachedHero.value = cached.history.tracks.firstOrNull() ?: cached.catalog.firstOrNull()
                 cachedHistory.value = cached.history.tracks
@@ -608,7 +675,7 @@ class HomeViewModel(
                 if (!visible) return@collectLatest
                 restored.await()
                 coroutineScope {
-                    // Returning Home observes real playback without starting a general-card refresh.
+                    // Persisted history/metadata refinements update only the two listening cards.
                     launch(Dispatchers.Default) {
                         eventsLoaded.await()
                         val artistHistory = actualPlays.map { events -> ArtistHistory(
@@ -619,15 +686,10 @@ class HomeViewModel(
                         combine(artistHistory, historyRows) { history, rows -> history to rows }
                             .mapLatest { (history, rows) ->
                                 if (rows.ids != history.trackIds) null
-                                else rankListenedArtists(history.plays, rows.tracks)
-                            }.filterNotNull().distinctUntilChanged().collect { artists ->
+                                else history to rows
+                            }.filterNotNull().distinctUntilChanged().collect {
                                 withContext(Dispatchers.Main.immediate) {
-                                    if (_mostListenedArtists.value != artists) {
-                                        _mostListenedArtists.value = artists
-                                        shelfCache.peek(profileKey())?.let { saved ->
-                                            shelfCache.save(saved.copy(artists = artists.take(15)))
-                                        }
-                                    }
+                                    listeningCardRequests.update { it + 1 }
                                 }
                             }
                     }
@@ -637,12 +699,6 @@ class HomeViewModel(
                             .distinctUntilChanged().debounce(250).collectLatest { input ->
                                 if (input != null) renderRecommendations()
                             }
-                    }
-                    launch {
-                        recentlyPlayed.collect { recent ->
-                            _listeningHistoryCard.update { it.copy(tracks = recent,
-                                isLoaded = recent.isNotEmpty(), isLoading = false) }
-                        }
                     }
                     // Re-read real listening/likes on return, but do not fetch again for an unchanged signal.
                     launch {

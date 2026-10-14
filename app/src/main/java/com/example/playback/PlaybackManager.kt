@@ -80,7 +80,8 @@ data class ListeningPlaybackState(
     val track: MusicTrack? = null,
     val isPlaying: Boolean = false,
     val durationMs: Long = 0L,
-    val playSequence: Long = 0L
+    val playSequence: Long = 0L,
+    val playSessionId: String = ""
 )
 
 class PlaybackManager(
@@ -629,7 +630,9 @@ class PlaybackManager(
         _listeningState.update { previous -> ListeningPlaybackState(track,
             player.isPlaying && !autoplaySuppressedBySleepTimer,
             player.duration.takeIf { it > 0L } ?: track?.durationMs ?: 0L,
-            previous.playSequence + if (newPlay && track != null) 1L else 0L) }
+            previous.playSequence + if (newPlay && track != null) 1L else 0L,
+            if (track != null && (newPlay || previous.track?.id != track.id || previous.playSessionId.isBlank()))
+                java.util.UUID.randomUUID().toString() else previous.playSessionId) }
     }
 
     internal fun recordMeaningfulListening(trackId: String, playSequence: Long, listenedMs: Long, durationMs: Long) {

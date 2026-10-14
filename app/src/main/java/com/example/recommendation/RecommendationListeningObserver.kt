@@ -71,7 +71,7 @@ class RecommendationListeningObserver(private val dao: ListeningEventDao, privat
                         save(finished = true)
                         track = state.track
                         listened = 0; savedDuration = 0; rowId = 0
-                        playId = UUID.randomUUID().toString()
+                        playId = state.playSessionId.ifBlank { UUID.randomUUID().toString() }
                     } else {
                         track = state.track
                     }
