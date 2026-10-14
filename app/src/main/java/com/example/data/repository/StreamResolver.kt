@@ -74,10 +74,10 @@ internal class StreamResolver(
                 it.audioUrl != rejectedUrl && it.audioUrl != failedUrl }
         }
 
-        suspend fun find(search: suspend (String) -> List<MusicTrack>, text: String): MusicTrack? {
+        suspend fun find(search: suspend (String) -> List<MusicTrack>, text: String, timeoutMs: Long = 8_000L): MusicTrack? {
             if (text.isBlank()) return null
             val candidates = try {
-                withTimeoutOrNull(8_000L) {
+                withTimeoutOrNull(timeoutMs) {
                     search(text)
                 } ?: emptyList()
             } catch (e: CancellationException) {
@@ -98,8 +98,10 @@ internal class StreamResolver(
         val attemptedYouTubeTracks = mutableSetOf<String>()
         suspend fun exactYouTube(): MusicTrack? {
             if (!track.id.startsWith("yt_") || !attemptedYouTubeTracks.add(track.id)) return null
-            return try { withTimeoutOrNull(40_000L) { resolveYouTube(track, quality, forceRefresh) } }
+            val resolved = try { withTimeoutOrNull(40_000L) { resolveYouTube(track, quality, forceRefresh) } }
                 catch (e: CancellationException) { throw e } catch (_: Exception) { null }
+            return resolved?.takeIf { it.id == track.id && isValidStreamUrl(it.audioUrl) &&
+                it.audioUrl != rejectedUrl && it.audioUrl != failedUrl }?.copy(source = "Extended Stream")
         }
 
         suspend fun searchYouTube(query: String, songsOnly: Boolean = true): MusicTrack? {
@@ -145,14 +147,26 @@ internal class StreamResolver(
         // 3. Reversed Artist + Title
         val artistFirstQuery = if (cleanArtist.isNotBlank() && cleanTitle.isNotBlank()) "$cleanArtist $cleanTitle".trim() else ""
 
-        val exactYt = if (track.id.startsWith("yt_")) exactYouTube() else null
-        val candidate = exactYt?.takeIf { it.id == track.id && isValidStreamUrl(it.audioUrl) && it.audioUrl != rejectedUrl }
-            ?: (if (quality == AudioQuality.HI_RES_LOSSLESS) find(searchLossless, primaryQuery) else null)
+        suspend fun findProviderRecording(losslessTimeoutMs: Long = 8_000L): MusicTrack? =
+            (if (quality == AudioQuality.HI_RES_LOSSLESS) find(searchLossless, primaryQuery, losslessTimeoutMs) else null)
             ?: exactRecording()
             ?: find(standard, primaryQuery)
             ?: (if (primaryArtistQuery.isNotBlank() && primaryArtistQuery != primaryQuery) find(standard, primaryArtistQuery) else null)
             ?: (if (titleOnlyQuery != primaryQuery && titleOnlyQuery.isNotBlank()) find(standard, titleOnlyQuery) else null)
             ?: (if (artistFirstQuery.isNotBlank() && artistFirstQuery != primaryQuery) find(standard, artistFirstQuery) else null)
+
+        // A YouTube catalogue selection keeps its original video as a playable fallback.
+        // Share one deadline across all upgrade queries; Archive cannot consume the entire
+        // budget before JioSaavn gets a chance. Only this timeout becomes a miss: switching
+        // tracks or canceling playback still cancels resolution and its HTTP requests.
+        val providerRecording = if (track.id.startsWith("yt_")) {
+            withTimeoutOrNull(ALTERNATE_SOURCE_TIMEOUT_MS) {
+                findProviderRecording(LOSSLESS_LOOKUP_TIMEOUT_MS)
+            }
+        } else findProviderRecording()
+
+        val candidate = providerRecording
+            ?: exactYouTube()
             ?: searchYouTube(primaryQuery, songsOnly = true)
             ?: searchYouTube(primaryQuery, songsOnly = false)
             ?: (if (primaryArtistQuery.isNotBlank() && primaryArtistQuery != primaryQuery) searchYouTube(primaryArtistQuery, songsOnly = true) else null)
@@ -180,6 +194,9 @@ internal class StreamResolver(
     )
 
     companion object {
+        private const val ALTERNATE_SOURCE_TIMEOUT_MS = 6_000L
+        private const val LOSSLESS_LOOKUP_TIMEOUT_MS = 3_000L
+
         internal fun needsResolution(track: MusicTrack): Boolean {
             if (track.audioUrl.isBlank() || track.audioUrl.startsWith("yt_") || track.audioUrl.contains("placeholder")) return true
             // Old cross-provider mappings cannot establish which recording a stored URL plays.
