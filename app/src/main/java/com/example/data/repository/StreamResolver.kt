@@ -102,11 +102,19 @@ internal class StreamResolver(
                 catch (e: CancellationException) { throw e } catch (_: Exception) { null }
         }
 
-        suspend fun searchYouTube(query: String): MusicTrack? {
+        suspend fun searchYouTube(query: String, songsOnly: Boolean = true): MusicTrack? {
             if (query.isBlank()) return null
             return try {
                 withTimeoutOrNull(40_000L) {
-                    val ytTracks = com.example.data.remote.YouTubeMusicApiService.searchSongs(query, limit = 5, songsOnly = true)
+                    val ytTracks = try {
+                        val initial = com.example.data.remote.YouTubeMusicApiService.searchSongs(query, limit = 12, songsOnly = songsOnly)
+                        if (initial.isEmpty()) {
+                            com.example.data.remote.YouTubeMusicApiService.searchSongsPage(query).tracks
+                        } else initial
+                    } catch (e: CancellationException) { throw e } catch (_: Exception) {
+                        try { com.example.data.remote.YouTubeMusicApiService.searchSongsPage(query).tracks }
+                        catch (e: CancellationException) { throw e } catch (_: Exception) { emptyList() }
+                    }
                     for (cand in ytTracks) {
                         if (!cand.id.startsWith("yt_") || !matches(track, cand)) continue
                         if (!attemptedYouTubeTracks.add(cand.id)) continue
@@ -130,6 +138,8 @@ internal class StreamResolver(
         // Progressive targeted queries:
         // 1. Clean Title + Clean Artist (highest precision, stripped of video/audio tags)
         val primaryQuery = "$cleanTitle $cleanArtist".trim()
+        val primaryArtist = cleanArtist.split(Regex("(?i),|;|&|•|feat\\.?|ft\\.?|featuring|/")).firstOrNull()?.trim().orEmpty()
+        val primaryArtistQuery = if (primaryArtist.isNotBlank() && primaryArtist != cleanArtist) "$cleanTitle $primaryArtist".trim() else ""
         // 2. Clean Title only
         val titleOnlyQuery = cleanTitle.trim()
         // 3. Reversed Artist + Title
@@ -140,10 +150,17 @@ internal class StreamResolver(
             ?: (if (quality == AudioQuality.HI_RES_LOSSLESS) find(searchLossless, primaryQuery) else null)
             ?: exactRecording()
             ?: find(standard, primaryQuery)
+            ?: (if (primaryArtistQuery.isNotBlank() && primaryArtistQuery != primaryQuery) find(standard, primaryArtistQuery) else null)
             ?: (if (titleOnlyQuery != primaryQuery && titleOnlyQuery.isNotBlank()) find(standard, titleOnlyQuery) else null)
             ?: (if (artistFirstQuery.isNotBlank() && artistFirstQuery != primaryQuery) find(standard, artistFirstQuery) else null)
-            ?: searchYouTube(primaryQuery)
-            ?: (if (titleOnlyQuery != primaryQuery && titleOnlyQuery.isNotBlank()) searchYouTube(titleOnlyQuery) else null)
+            ?: searchYouTube(primaryQuery, songsOnly = true)
+            ?: searchYouTube(primaryQuery, songsOnly = false)
+            ?: (if (primaryArtistQuery.isNotBlank() && primaryArtistQuery != primaryQuery) searchYouTube(primaryArtistQuery, songsOnly = true) else null)
+            ?: (if (primaryArtistQuery.isNotBlank() && primaryArtistQuery != primaryQuery) searchYouTube(primaryArtistQuery, songsOnly = false) else null)
+            ?: (if (artistFirstQuery.isNotBlank() && artistFirstQuery != primaryQuery) searchYouTube(artistFirstQuery, songsOnly = true) else null)
+            ?: (if (artistFirstQuery.isNotBlank() && artistFirstQuery != primaryQuery) searchYouTube(artistFirstQuery, songsOnly = false) else null)
+            ?: (if (titleOnlyQuery != primaryQuery && titleOnlyQuery.isNotBlank()) searchYouTube(titleOnlyQuery, songsOnly = true) else null)
+            ?: (if (titleOnlyQuery != primaryQuery && titleOnlyQuery.isNotBlank()) searchYouTube(titleOnlyQuery, songsOnly = false) else null)
             ?: throw TrackUnavailableException(track.title)
 
         coroutineContext.ensureActive()
@@ -248,14 +265,14 @@ internal class StreamResolver(
                 if (reqArtists.isNotEmpty() && candArtists.isNotEmpty()) {
                     val sharedArtist = reqArtists.any { r ->
                         candArtists.any { c -> r == c || r.contains(c) || c.contains(r) }
-                    }
+                    } || reqArtists.any { r -> candTitle.contains(r) } || candArtists.any { c -> reqTitle.contains(c) }
                     if (!sharedArtist) return false
                 }
             }
 
             if (requested.durationMs > 0 && candidate.durationMs > 0) {
                 val diff = abs(requested.durationMs - candidate.durationMs)
-                val tolerance = maxOf(30_000L, (requested.durationMs * 0.20).toLong())
+                val tolerance = maxOf(45_000L, (requested.durationMs * 0.25).toLong())
                 if (diff > tolerance) return false
             }
 
