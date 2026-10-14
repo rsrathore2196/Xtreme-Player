@@ -295,7 +295,7 @@ fun SoundOutputDeviceDialog(
                 ) {
                     Box(modifier = Modifier.fillMaxWidth()) {
                         // Ambient chromatic soft glow
-                        if (!appColors.isAmoled) {
+                        if (!appColors.isAmoled && appColors.dynamicGlassEnabled) {
                             Box(
                                 modifier = Modifier
                                     .matchParentSize()

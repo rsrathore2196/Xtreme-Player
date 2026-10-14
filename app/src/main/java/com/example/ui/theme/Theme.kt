@@ -46,7 +46,9 @@ fun resolveAppThemeColors(darkTheme: Boolean, custom: CustomThemeState): AppThem
         primaryAccent
     )
 
-    val isAmoled = isDark && (effectiveCustom.isAmoled || effectiveCustom.canvasColorHex == "#000000")
+    val isAmoled = isDark && if (effectiveCustom.presetId.isBlank() && effectiveCustom.currentThemeName == "Custom") {
+        effectiveCustom.canvasColorHex == "#000000" && effectiveCustom.cardColorHex == "#000000"
+    } else (effectiveCustom.isAmoled || effectiveCustom.canvasColorHex == "#000000")
 
     val scaffoldBg = if (isAmoled) {
         Color(0xFF000000)

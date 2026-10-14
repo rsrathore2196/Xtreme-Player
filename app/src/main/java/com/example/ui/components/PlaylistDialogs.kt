@@ -108,7 +108,7 @@ fun CreatePlaylistDialog(
                         .fillMaxWidth()
                         .background(opaqueDialogBrush)
                 ) {
-                    if (!appColors.isAmoled) {
+                    if (!appColors.isAmoled && appColors.dynamicGlassEnabled) {
                         // Top specular highlight sheen
                         Box(
                             modifier = Modifier
@@ -274,7 +274,7 @@ fun AddToPlaylistDialog(
                         .background(opaqueDialogBrush)
                 ) {
                     // Frosted diffusion blur layer
-                    Box(
+                    if (appColors.dynamicGlassEnabled) Box(
                         modifier = Modifier
                             .matchParentSize()
                             .background(
@@ -292,7 +292,7 @@ fun AddToPlaylistDialog(
                     )
 
                     // Top specular highlight sheen
-                    Box(
+                    if (appColors.dynamicGlassEnabled) Box(
                         modifier = Modifier
                             .matchParentSize()
                             .background(

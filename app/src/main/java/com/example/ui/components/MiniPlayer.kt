@@ -216,7 +216,7 @@ fun MiniPlayer(
                         )
                     } else {
                         val isPlaying = uiState.isPlaying
-                        val playPauseMatteBorder = BorderStroke(
+                        val playPauseMatteBorder = if (!appColors.dynamicGlassEnabled) BorderStroke(1.2.dp, appColors.cardBorder) else BorderStroke(
                             1.2.dp,
                             Brush.verticalGradient(
                                 listOf(
@@ -225,7 +225,7 @@ fun MiniPlayer(
                                 )
                             )
                         )
-                        val playPauseMatteBg = if (isPlaying) {
+                        val playPauseMatteBg = if (!appColors.dynamicGlassEnabled) Brush.verticalGradient(listOf(appColors.cardBackground, appColors.cardBackground)) else if (isPlaying) {
                             // Active playing state: rich dynamic matte accent gradient
                             if (appColors.isAmoled && appColors.primaryAccent == Color.White) {
                                 Brush.verticalGradient(
@@ -274,7 +274,7 @@ fun MiniPlayer(
                         }
 
                         // Icon tint strictly calculated for high dynamic contrast against playPauseMatteBg
-                        val playPauseIconTint = if (isPlaying) {
+                        val playPauseIconTint = if (!appColors.dynamicGlassEnabled) contrastingContentColor(appColors.cardBackground) else if (isPlaying) {
                             val accentLum = (0.299 * appColors.primaryAccent.red + 0.587 * appColors.primaryAccent.green + 0.114 * appColors.primaryAccent.blue)
                             if (appColors.isAmoled && (appColors.primaryAccent == Color.White || accentLum > 0.70f)) {
                                 Color(0xFF0A0A0A)
@@ -313,7 +313,7 @@ fun MiniPlayer(
                                 .shadow(
                                     elevation = if (isPlaying) 8.dp else 4.dp,
                                     shape = CircleShape,
-                                    spotColor = appColors.primaryAccent.copy(alpha = if (isPlaying) 0.55f else 0.25f),
+                                    spotColor = if (!appColors.dynamicGlassEnabled) Color.Black.copy(alpha = 0.15f) else appColors.primaryAccent.copy(alpha = if (isPlaying) 0.55f else 0.25f),
                                     ambientColor = Color.Transparent
                                 )
                                 .clip(CircleShape)
@@ -321,7 +321,7 @@ fun MiniPlayer(
                                 .testTag("mini_player_play_pause")
                         ) {
                             // Top specular sheen
-                            val skipSheen = appColors.isAmoled
+                            val skipSheen = appColors.isAmoled || !appColors.dynamicGlassEnabled
                             if (!skipSheen) {
                                 Box(
                                     modifier = Modifier
@@ -357,7 +357,7 @@ fun MiniPlayer(
                 Spacer(modifier = Modifier.width(6.dp))
 
                 // Skip Next Button - Theme tint with blurry liquid glass UI style & matte finish
-                val nextMatteBorder = BorderStroke(
+                val nextMatteBorder = if (!appColors.dynamicGlassEnabled) BorderStroke(1.2.dp, appColors.cardBorder) else BorderStroke(
                     1.2.dp,
                     Brush.verticalGradient(
                         listOf(
@@ -366,7 +366,7 @@ fun MiniPlayer(
                         )
                     )
                 )
-                val nextMatteBg = if (appColors.isDark) {
+                val nextMatteBg = if (!appColors.dynamicGlassEnabled) Brush.verticalGradient(listOf(appColors.cardBackground, appColors.cardBackground)) else if (appColors.isDark) {
                     if (appColors.isAmoled) {
                         Brush.verticalGradient(
                             listOf(
@@ -415,7 +415,7 @@ fun MiniPlayer(
                         .testTag("mini_player_next")
                 ) {
                     // Top specular sheen
-                    Box(
+                    if (appColors.dynamicGlassEnabled) Box(
                         modifier = Modifier
                             .fillMaxSize()
                             .background(

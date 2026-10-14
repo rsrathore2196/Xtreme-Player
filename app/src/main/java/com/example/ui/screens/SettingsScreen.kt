@@ -244,7 +244,12 @@ fun SettingsScreen(
                             onUpdateCustomThemeState = onUpdateCustomThemeState,
                             onApplyPreset = onApplyPreset,
                             isDynamicGlassEnabled = isDynamicGlassEnabled,
-                            onToggleDynamicGlass = onToggleDynamicGlass
+                            onToggleDynamicGlass = onToggleDynamicGlass,
+                            onNestedPageChanged = { title, subtitle, back ->
+                                if (selectedCategory == SettingsCategory.THEMES_APP_UI) {
+                                    subPageTitle = title; subPageSubtitle = subtitle; subPageBackAction = back
+                                }
+                            }
                         )
                     }
                     SettingsCategory.MUSIC_PLAYBACK -> {

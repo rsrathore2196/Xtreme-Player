@@ -2041,6 +2041,10 @@ private fun PlayerGlassBackground(
 ) {
     val appColors = LocalAppColors.current
     val dynamicGlass = LocalDynamicGlassEnabled.current
+    if (!dynamicGlass) {
+        Box(modifier.fillMaxSize().background(appColors.scaffoldBackground))
+        return
+    }
     val context = LocalContext.current
     // This small derivative is only for diffusion. The main album artwork stays full resolution.
     val backdropRequest = remember(artworkUrl, context) {
@@ -2137,7 +2141,7 @@ private fun PlayerOptionsMenu(
                 .background(opaqueMenuBrush)
                 .drawWithContent {
                     drawContent()
-                    if (!appColors.isAmoled) {
+                    if (!appColors.isAmoled && appColors.dynamicGlassEnabled) {
                         // Top specular reflection sheen
                         val sheenBrush = Brush.verticalGradient(
                             colors = listOf(

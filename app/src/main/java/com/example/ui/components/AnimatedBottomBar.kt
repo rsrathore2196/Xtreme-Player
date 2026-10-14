@@ -137,12 +137,14 @@ fun AnimatedBottomBar(
                         label = "tab_bounce_y_${item.index}"
                     )
 
-                    val activePillBrush = remember(appColors.primaryAccent, appColors.isDark) { Brush.verticalGradient(listOf(
+                    val activePillBrush = remember(appColors.primaryAccent, appColors.isDark, appColors.dynamicGlassEnabled, appColors.bottomBarIndicator) {
+                        if (!appColors.dynamicGlassEnabled) Brush.verticalGradient(listOf(appColors.bottomBarIndicator, appColors.bottomBarIndicator))
+                        else Brush.verticalGradient(listOf(
                         appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.24f else 0.20f),
                         appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.14f else 0.12f)
                     )) }
-                    val activeBorderStroke = remember(appColors.isDark) {
-                        BorderStroke(0.6.dp, Color.White.copy(alpha = if (appColors.isDark) 0.10f else 0.40f)) }
+                    val activeBorderStroke = remember(appColors.isDark, appColors.dynamicGlassEnabled, appColors.cardBorder) {
+                        BorderStroke(0.6.dp, if (!appColors.dynamicGlassEnabled) appColors.cardBorder else Color.White.copy(alpha = if (appColors.isDark) 0.10f else 0.40f)) }
 
                     // Individual tab item container: Active pill with 3D liquid glass capsule and theme accent blur
                     Box(
@@ -157,7 +159,7 @@ fun AnimatedBottomBar(
                                         .shadow(
                                             elevation = 6.dp,
                                             shape = CircleShape,
-                                            spotColor = appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.50f else 0.30f),
+                                            spotColor = if (!appColors.dynamicGlassEnabled) Color.Black.copy(alpha = 0.15f) else appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.50f else 0.30f),
                                             ambientColor = Color.Transparent
                                         )
                                         .clip(CircleShape)
@@ -177,7 +179,7 @@ fun AnimatedBottomBar(
                             ),
                         contentAlignment = Alignment.Center
                     ) {
-                        if (isSelected) {
+                        if (isSelected && appColors.dynamicGlassEnabled) {
                             // 3D Liquid Glass Specular Highlight Sheen across top curvature (unblurred)
                             Box(
                                 modifier = Modifier

@@ -1,6 +1,7 @@
 package com.example.ui.components
 
 import android.os.Build
+import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
@@ -172,7 +173,7 @@ fun Modifier.xtremeSharedBackdropSource(
     sampleScale: Float = XtremeLiquidGlassDefaults.BackdropSampleScale,
     backdrop: LiquidGlassBackdrop? = LocalLiquidGlassBackdrop.current
 ): Modifier {
-    if (!enabled || backdrop == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return this
+    if (!enabled || !LocalDynamicGlassEnabled.current || backdrop == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return this
     val processingScale = sampleScale.takeIf { it.isFinite() }?.coerceIn(0.1f, 1f)
         ?: XtremeLiquidGlassDefaults.BackdropSampleScale
     SideEffect { backdrop.sampleScale = processingScale }
@@ -228,6 +229,12 @@ fun Modifier.xtremeLiquidGlassBackground(
     appColors: AppThemeColors = LocalAppColors.current,
     backdrop: LiquidGlassBackdrop? = LocalLiquidGlassBackdrop.current
 ): Modifier {
+    if (!enabled || !LocalDynamicGlassEnabled.current) return this
+        .shadow(elevation, shape)
+        .clip(shape)
+        .background(appColors.cardBackground.copy(alpha = 1f))
+        .border(borderWidth, appColors.cardBorder, shape)
+
     val density = LocalDensity.current
     val radius = with(density) { blurRadius.toPx() }
     val processingScale = backdrop?.sampleScale ?: XtremeLiquidGlassDefaults.BackdropSampleScale

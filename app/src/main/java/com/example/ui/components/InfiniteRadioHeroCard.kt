@@ -21,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
@@ -51,9 +52,12 @@ fun InfiniteRadioHeroCard(
     modifier: Modifier = Modifier,
     isRadioSession: Boolean = false
 ) {
-    val isDark = LocalAppColors.current.isDark
+    val appColors = LocalAppColors.current
+    val isDark = appColors.isDark
+    val glassEnabled = LocalDynamicGlassEnabled.current
     val glassTint = if (isDark) Color(0xFF080D18) else Color(0xFFF5F8FF)
     val foreground = if (isDark) Color.White else Color(0xFF122037)
+    val buttonForeground = if (glassEnabled) foreground else com.example.ui.theme.contrastingContentColor(appColors.cardBackground)
     val playbackActive = isPlaying
     val radioLoading = isRadioSession && isLoading && !playbackActive
     val interaction = remember { MutableInteractionSource() }
@@ -61,16 +65,16 @@ fun InfiniteRadioHeroCard(
     val scale by animateFloatAsState(if (pressed) 0.96f else 1f, spring(), label = "radio_press")
     val shape = RoundedCornerShape(26.dp)
     var artworkSize by remember { mutableStateOf(IntSize.Zero) }
-    val textShadow = Shadow(
+    val textShadow = if (!glassEnabled) Shadow.None else Shadow(
         if (isDark) Color.Black.copy(alpha = 0.85f) else Color.White.copy(alpha = 0.8f),
         Offset(0f, 1f), 6f
     )
 
     Box(
         modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 12.dp)
-            .height(200.dp).shadow(14.dp, shape).clip(shape)
+            .height(200.dp).shadow(if (glassEnabled) 14.dp else 6.dp, shape).clip(shape)
             .background(glassTint)
-            .border(1.5.dp, Brush.linearGradient(listOf(
+            .border(1.5.dp, if (!glassEnabled) SolidColor(appColors.cardBorder) else Brush.linearGradient(listOf(
                 Color.White.copy(alpha = 0.85f), Color.White.copy(alpha = 0.12f),
                 Color.Black.copy(alpha = if (isDark) 0.35f else 0.18f), Color.White.copy(alpha = 0.6f)
             )), shape)
@@ -102,7 +106,7 @@ fun InfiniteRadioHeroCard(
             1f to glassTint.copy(alpha = if (isDark) 0.92f else 0.68f)
         )))
         // A clear lens reflection keeps the artwork sharp beneath the glass.
-        Box(Modifier.fillMaxSize().background(Brush.linearGradient(
+        if (glassEnabled) Box(Modifier.fillMaxSize().background(Brush.linearGradient(
             0f to Color.White.copy(alpha = 0.20f),
             0.28f to Color.White.copy(alpha = 0.035f),
             0.48f to Color.Transparent,
@@ -126,13 +130,13 @@ fun InfiniteRadioHeroCard(
             val buttonShape = RoundedCornerShape(24.dp)
             Row(
                 Modifier.graphicsLayer { scaleX = scale; scaleY = scale }
-                    .shadow(8.dp, buttonShape, spotColor = Color.Black.copy(alpha = 0.25f))
+                    .shadow(if (glassEnabled) 8.dp else 2.dp, buttonShape, spotColor = Color.Black.copy(alpha = 0.25f))
                     .clip(buttonShape)
-                    .background(Brush.linearGradient(listOf(
+                    .background(if (!glassEnabled) SolidColor(appColors.cardBackground) else Brush.linearGradient(listOf(
                         Color.White.copy(alpha = 0.34f), Color.White.copy(alpha = 0.10f),
                         Color.White.copy(alpha = 0.22f)
                     )))
-                    .border(1.dp, Brush.verticalGradient(listOf(
+                    .border(1.dp, if (!glassEnabled) SolidColor(appColors.cardBorder) else Brush.verticalGradient(listOf(
                         Color.White.copy(alpha = 0.85f), Color.White.copy(alpha = 0.16f),
                         Color.White.copy(alpha = 0.48f)
                     )), buttonShape)
@@ -149,15 +153,15 @@ fun InfiniteRadioHeroCard(
                 horizontalArrangement = Arrangement.Center
             ) {
                 if (radioLoading) {
-                    CircularProgressIndicator(Modifier.size(18.dp), color = foreground, strokeWidth = 2.dp)
+                    CircularProgressIndicator(Modifier.size(18.dp), color = buttonForeground, strokeWidth = 2.dp)
                     Spacer(Modifier.width(8.dp))
                 } else if (!playbackActive) {
-                    Icon(Icons.Default.PlayArrow, contentDescription = null, tint = foreground, modifier = Modifier.size(20.dp))
+                    Icon(Icons.Default.PlayArrow, contentDescription = null, tint = buttonForeground, modifier = Modifier.size(20.dp))
                     Spacer(Modifier.width(8.dp))
                 }
                 Text(
                     if (playbackActive) "Playing" else if (radioLoading) "Starting radio…" else "Play",
-                    style = MaterialTheme.typography.labelLarge.copy(color = foreground, fontWeight = FontWeight.Bold, shadow = textShadow)
+                    style = MaterialTheme.typography.labelLarge.copy(color = buttonForeground, fontWeight = FontWeight.Bold, shadow = textShadow)
                 )
             }
         }

@@ -204,7 +204,10 @@ fun MainNavigationScaffold(
         }
     }
 
-    val appColors = LocalAppColors.current
+    val baseAppColors = LocalAppColors.current
+    val appColors = remember(baseAppColors, isDynamicGlassEnabled) {
+        baseAppColors.copy(dynamicGlassEnabled = isDynamicGlassEnabled)
+    }
     val artworkTrack = playerUiState.currentTrack
     LaunchedEffect(artworkTrack?.id, artworkTrack?.coverUrl, appColors.isDark,
         appColors.primaryAccent, appColors.cardBackgroundElevated) {
@@ -220,6 +223,7 @@ fun MainNavigationScaffold(
     val platformOverscroll = LocalOverscrollConfiguration.current
     CompositionLocalProvider(
         LocalDynamicGlassEnabled provides isDynamicGlassEnabled,
+        LocalAppColors provides appColors,
         LocalLiquidGlassBackdrop provides rememberLiquidGlassBackdrop(captureVisibleRegions = true),
         LocalOverscrollConfiguration provides
             if (selectedTabIndex == 3 && selectedPlaylistWithTracks == null) platformOverscroll else null

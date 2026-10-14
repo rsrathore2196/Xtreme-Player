@@ -288,7 +288,9 @@ fun SearchScreen(
                             val searchPillShape = remember { RoundedCornerShape(17.dp) }
                             val isSearchActive = hasQuery
 
-                            val searchPillBrush = if (isSearchActive) {
+                            val searchPillBrush = if (!appColors.dynamicGlassEnabled) {
+                                Brush.verticalGradient(listOf(appColors.cardBackground, appColors.cardBackground))
+                            } else if (isSearchActive) {
                                 Brush.verticalGradient(
                                     listOf(
                                         appColors.primaryAccent.copy(alpha = 0.32f),
@@ -301,7 +303,9 @@ fun SearchScreen(
 
                             val searchPillBorder = BorderStroke(
                                 1.2.dp,
-                                if (isSearchActive) {
+                                if (!appColors.dynamicGlassEnabled) {
+                                    Brush.verticalGradient(listOf(appColors.cardBorder, appColors.cardBorder))
+                                } else if (isSearchActive) {
                                     Brush.verticalGradient(
                                         listOf(
                                             Color.White.copy(alpha = 0.40f),

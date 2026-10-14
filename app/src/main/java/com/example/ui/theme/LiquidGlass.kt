@@ -84,6 +84,7 @@ object LiquidGlass {
         translucency: Float = 0.75f,
         tintAccent: Boolean = false
     ): Brush {
+        if (!colors.dynamicGlassEnabled) return Brush.linearGradient(listOf(colors.cardBackground, colors.cardBackground))
         val isDark = colors.isDark
         val accent = colors.primaryAccent
 
@@ -151,6 +152,7 @@ object LiquidGlass {
      * ambient blurry tint color of the background screen.
      */
     fun miniPlayerAndBottomBarBrush(colors: AppThemeColors): Brush {
+        if (!colors.dynamicGlassEnabled) return Brush.linearGradient(listOf(colors.cardBackground, colors.cardBackground))
         return if (colors.isDark) {
             if (colors.isAmoled) {
                 Brush.verticalGradient(
@@ -185,6 +187,7 @@ object LiquidGlass {
      * Clean, neutral, high-refraction meniscus stroke simulating physical clear glass refraction.
      */
     fun waterDropSpecularBorderBrush(colors: AppThemeColors): Brush {
+        if (!colors.dynamicGlassEnabled) return Brush.linearGradient(listOf(colors.cardBorder, colors.cardBorder))
         val isDark = colors.isDark
         return Brush.linearGradient(
             colors = if (isDark) {
@@ -210,6 +213,7 @@ object LiquidGlass {
         colors: AppThemeColors,
         translucency: Float = 0.82f
     ): Brush {
+        if (!colors.dynamicGlassEnabled) return Brush.linearGradient(listOf(colors.cardBackground, colors.cardBackground))
         val isDark = colors.isDark
         val accent = colors.primaryAccent
 
@@ -252,6 +256,7 @@ object LiquidGlass {
         colors: AppThemeColors,
         highlightAlpha: Float = 0.22f
     ): Brush {
+        if (!colors.dynamicGlassEnabled) return Brush.linearGradient(listOf(colors.cardBorder, colors.cardBorder))
         val isDark = colors.isDark
         val accent = colors.primaryAccent
 
@@ -309,6 +314,14 @@ object LiquidGlass {
  * - Glass Highlight Edge: Specular border with vertical gradient fading from top-left to bottom-right.
  * - Dynamic Icon/Text Contrast: Automatically switches inside content colors using calculateGlassContentColor().
  */
+private fun Modifier.matteThemeSurface(colors: AppThemeColors, shape: Shape, elevation: Dp,
+    borderWidth: Dp, active: Boolean = false): Modifier = this
+    .shadow(elevation, shape)
+    .clip(shape)
+    .background(if (active) colors.primaryAccent.copy(alpha = 0.16f).compositeOver(colors.cardBackground)
+        else colors.cardBackground.copy(alpha = 1f))
+    .border(borderWidth, if (active) colors.primaryAccent.copy(alpha = 0.45f) else colors.cardBorder, shape)
+
 fun Modifier.liquidGlass(
     colors: AppThemeColors,
     shape: Shape = RoundedCornerShape(20.dp),
@@ -320,6 +333,7 @@ fun Modifier.liquidGlass(
     sheenAlpha: Float = 0.16f,
     highlightAlpha: Float = 0.40f
 ): Modifier {
+    if (!colors.dynamicGlassEnabled) return matteThemeSurface(colors, shape, elevation, borderWidth, false)
     val isDark = colors.isDark
     val surfaceBase = if (isDark) Color.Black.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.15f)
     val effectiveTint = albumArtTint ?: if (tintAccent) colors.primaryAccent else null
@@ -407,6 +421,7 @@ fun Modifier.liquidGlassButton(
     translucency: Float = 0.75f,
     borderWidth: Dp = 1.3.dp
 ): Modifier {
+    if (!colors.dynamicGlassEnabled) return matteThemeSurface(colors, shape, elevation, borderWidth, isActive)
     val activePillBrush = if (colors.isDark) {
         Brush.verticalGradient(
             listOf(
@@ -525,7 +540,9 @@ fun Modifier.primaryLiquidGlassButton(
     elevation: Dp = 10.dp,
     translucency: Float = 0.82f,
     borderWidth: Dp = 1.3.dp
-): Modifier = this
+): Modifier {
+    if (!colors.dynamicGlassEnabled) return matteThemeSurface(colors, shape, elevation, borderWidth)
+    return this
     .shadow(
         elevation = if (colors.isDark) elevation else (elevation + 2.dp),
         shape = shape,
@@ -578,6 +595,8 @@ fun Modifier.primaryLiquidGlassButton(
         shape
     )
 
+}
+
 /**
  * Lightweight Liquid Glass Card modifier (for list cards, settings items, shelf items):
  * Frosted translucent glass fill with 1.3dp specular border and upper curvature sheen.
@@ -590,7 +609,9 @@ fun Modifier.liquidGlassCard(
     tintAccent: Boolean = false,
     borderWidth: Dp = 1.3.dp,
     highlightAlpha: Float = 0.38f
-): Modifier = this
+): Modifier {
+    if (!colors.dynamicGlassEnabled) return matteThemeSurface(colors, shape, elevation, borderWidth)
+    return this
     .shadow(
         elevation = if (colors.isDark) elevation else (elevation + 2.dp),
         shape = shape,
@@ -636,6 +657,8 @@ fun Modifier.liquidGlassCard(
         shape
     )
 
+}
+
 /**
  * Liquid Glass Pill modifier for genre pills, search pills, tags, and category chips:
  * - Active: dynamically adapts active theme color with translucent frosted accent capsule
@@ -650,6 +673,7 @@ fun Modifier.liquidGlassPill(
     borderWidth: Dp = 1.3.dp,
     sheenAlpha: Float = 0.14f
 ): Modifier {
+    if (!colors.dynamicGlassEnabled) return matteThemeSurface(colors, shape, elevation, borderWidth, isActive)
     val activePillBrush = if (colors.isDark) {
         Brush.verticalGradient(
             listOf(

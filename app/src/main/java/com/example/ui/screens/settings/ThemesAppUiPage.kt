@@ -1,5 +1,6 @@
 package com.example.ui.screens.settings
 
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -63,6 +64,8 @@ import com.example.ui.theme.liquidGlassSwitchColors
 import com.example.ui.theme.bouncyClickable
 import com.example.ui.theme.contrastingContentColor
 
+private enum class ThemeSettingsPage { OVERVIEW, PRESETS, CUSTOM }
+
 @Composable
 fun ThemesAppUiPage(
     isDarkMode: Boolean,
@@ -73,7 +76,67 @@ fun ThemesAppUiPage(
     onApplyPreset: (com.example.data.local.AppThemePreset) -> Unit = {},
     isDynamicGlassEnabled: Boolean = true,
     onToggleDynamicGlass: (Boolean) -> Unit = {},
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onNestedPageChanged: (String?, String?, (() -> Boolean)?) -> Unit = { _, _, _ -> }
+) {
+    var page by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(ThemeSettingsPage.OVERVIEW) }
+    val stateHolder = androidx.compose.runtime.saveable.rememberSaveableStateHolder()
+    val currentNavigationCallback by androidx.compose.runtime.rememberUpdatedState(onNestedPageChanged)
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val state = customThemeState ?: remember { com.example.data.local.ThemePreferences.getCustomThemeState(context) }
+    androidx.compose.runtime.LaunchedEffect(page) {
+        when (page) {
+            ThemeSettingsPage.OVERVIEW -> currentNavigationCallback(null, null, null)
+            ThemeSettingsPage.PRESETS -> currentNavigationCallback("Theme presets", "Choose your colour palette") {
+                page = ThemeSettingsPage.OVERVIEW; true
+            }
+            ThemeSettingsPage.CUSTOM -> currentNavigationCallback("Custom theming", "Accent, canvas & card colours") {
+                page = ThemeSettingsPage.OVERVIEW; true
+            }
+        }
+    }
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose { currentNavigationCallback(null, null, null) }
+    }
+    androidx.compose.animation.AnimatedContent(
+        targetState = page,
+        transitionSpec = {
+            val direction = if (targetState == ThemeSettingsPage.OVERVIEW) -1 else 1
+            (androidx.compose.animation.slideInHorizontally(
+                animationSpec = androidx.compose.animation.core.tween(220, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+                initialOffsetX = { (it * 0.12f * direction).toInt() }) +
+                androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(200)))
+                .togetherWith(androidx.compose.animation.slideOutHorizontally(
+                    animationSpec = androidx.compose.animation.core.tween(180, easing = androidx.compose.animation.core.FastOutLinearInEasing),
+                    targetOffsetX = { (-it * 0.08f * direction).toInt() }) +
+                    androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(160)))
+        }, modifier = modifier.fillMaxSize(), label = "ThemeSettingsPage"
+    ) { destination ->
+        stateHolder.SaveableStateProvider(destination.name) {
+            when (destination) {
+                ThemeSettingsPage.OVERVIEW -> ThemesAppUiOverview(isDarkMode, themeMode, onSelectThemeMode,
+                    state, onUpdateCustomThemeState, onApplyPreset, isDynamicGlassEnabled, onToggleDynamicGlass,
+                    onOpenPresets = { page = ThemeSettingsPage.PRESETS }, onOpenCustomTheming = { page = ThemeSettingsPage.CUSTOM })
+                ThemeSettingsPage.PRESETS -> ThemePresetsPage(state, onApplyPreset)
+                ThemeSettingsPage.CUSTOM -> CustomThemingPage(state, onUpdateCustomThemeState)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ThemesAppUiOverview(
+    isDarkMode: Boolean,
+    themeMode: AppThemeMode,
+    onSelectThemeMode: (AppThemeMode) -> Unit,
+    customThemeState: com.example.data.local.CustomThemeState? = null,
+    onUpdateCustomThemeState: (com.example.data.local.CustomThemeState) -> Unit = {},
+    onApplyPreset: (com.example.data.local.AppThemePreset) -> Unit = {},
+    isDynamicGlassEnabled: Boolean = true,
+    onToggleDynamicGlass: (Boolean) -> Unit = {},
+    modifier: Modifier = Modifier,
+    onOpenPresets: () -> Unit = {},
+    onOpenCustomTheming: () -> Unit = {}
 ) {
     val appColors = LocalAppColors.current
     val cardBg = appColors.cardBackground
@@ -89,10 +152,10 @@ fun ThemesAppUiPage(
     }
     val dividerColor = appColors.dividerColor
 
-    var showMiniHeart by remember { mutableStateOf(true) }
-    var showMiniNext by remember { mutableStateOf(true) }
-    var ambientGlowEnabled by remember { mutableStateOf(true) }
-    var highContrastTypography by remember { mutableStateOf(false) }
+    var showMiniHeart by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(true) }
+    var showMiniNext by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(true) }
+    var ambientGlowEnabled by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(true) }
+    var highContrastTypography by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
 
     Column(
         modifier = modifier
@@ -188,7 +251,9 @@ fun ThemesAppUiPage(
             isDarkMode = isDarkMode,
             customThemeState = customThemeState,
             onUpdateCustomThemeState = onUpdateCustomThemeState,
-            onApplyPreset = onApplyPreset
+            onApplyPreset = onApplyPreset,
+            onOpenPresets = onOpenPresets,
+            onOpenCustomTheming = onOpenCustomTheming
         )
 
         Spacer(modifier = Modifier.height(16.dp))

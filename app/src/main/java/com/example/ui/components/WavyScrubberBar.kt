@@ -108,6 +108,7 @@ fun WavyScrubberBar(
     inactiveBarColor: Color? = null
 ) {
     val haptic = LocalHapticFeedback.current
+    val glassEnabled = LocalDynamicGlassEnabled.current
 
     var isDragging by remember { mutableStateOf(false) }
     var dragFraction by remember { mutableFloatStateOf(progress) }
@@ -261,7 +262,7 @@ fun WavyScrubberBar(
                 } else {
                     Color.Black.copy(alpha = if (isDragging) 0.25f else 0.12f)
                 }
-                drawCircle(
+                if (glassEnabled) drawCircle(
                     color = glowColor,
                     radius = thumbRadius + 5.dp.toPx(),
                     center = Offset(activeWidth, centerY)
@@ -285,7 +286,7 @@ fun WavyScrubberBar(
 
                 // Specular rim reflection
                 val rimColor = if (isDarkBar) Color.White.copy(alpha = 0.50f) else Color.Black.copy(alpha = 0.35f)
-                drawCircle(
+                if (glassEnabled) drawCircle(
                     color = rimColor,
                     radius = thumbRadius,
                     center = Offset(activeWidth, centerY),

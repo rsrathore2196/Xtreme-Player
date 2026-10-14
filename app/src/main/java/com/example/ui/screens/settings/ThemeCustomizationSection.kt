@@ -40,6 +40,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Check
@@ -503,7 +504,9 @@ fun ThemeCustomizationSection(
     customThemeState: CustomThemeState? = null,
     onUpdateCustomThemeState: (CustomThemeState) -> Unit = {},
     onApplyPreset: (AppThemePreset) -> Unit = {},
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onOpenPresets: () -> Unit = {},
+    onOpenCustomTheming: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
@@ -519,10 +522,6 @@ fun ThemeCustomizationSection(
     val accentColor = appColors.primaryAccent
 
     // Dialog state
-    var showAccentDialog by remember { mutableStateOf(false) }
-    var showCanvasDialog by remember { mutableStateOf(false) }
-    var showCardDialog by remember { mutableStateOf(false) }
-    var showThemePresetsDialog by remember { mutableStateOf(false) }
     var showExportSuccessDialog by remember { mutableStateOf(false) }
     var exportedThemeFilePath by remember { mutableStateOf<String?>(null) }
 
@@ -539,12 +538,6 @@ fun ThemeCustomizationSection(
         }
     }
 
-    fun updateAndPersist(newState: CustomThemeState) {
-        customState = newState
-        ThemePreferences.saveCustomThemeState(context, newState)
-        onUpdateCustomThemeState(newState)
-    }
-
     Column(modifier = modifier.fillMaxWidth()) {
 
         // =====================================================================
@@ -556,7 +549,7 @@ fun ThemeCustomizationSection(
                 .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = true)
                 .bouncyClickable {
                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    showThemePresetsDialog = true
+                    onOpenPresets()
                 }
                 .testTag("choose_theme_preset_card")
         ) {
@@ -625,132 +618,21 @@ fun ThemeCustomizationSection(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // =====================================================================
-        // CARD 2: Accent Color & Hue, Canvas Color, Card Color
-        // =====================================================================
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = true)
-        ) {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                // Item 1: Accent Color & Hue
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp))
-                        .clickable { showAccentDialog = true }
-                        .padding(horizontal = 18.dp, vertical = 15.dp)
-                        .testTag("item_accent_color_hue")
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Accent Color & Hue",
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = appColors.textPrimary
-                        )
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = "${customState.accentName}, ${customState.accentShade}",
-                            fontSize = 11.5.sp,
-                            color = appColors.textMuted
-                        )
-                    }
-
-                    // Circular Preview
-                    val accentParsed = remember(customState.accentColorHex) {
-                        try {
-                            Color(android.graphics.Color.parseColor(customState.accentColorHex))
-                        } catch (e: Exception) {
-                            Color.White
-                        }
-                    }
-                    Box(
-                        modifier = Modifier
-                            .size(24.dp)
-                            .clip(CircleShape)
-                            .background(accentParsed)
-                            .border(1.dp, Color.White.copy(alpha = 0.5f), CircleShape)
-                    )
+        Box(Modifier.fillMaxWidth().liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp),
+            elevation = 6.dp, translucency = 0.82f, tintAccent = true).bouncyClickable(onClick = onOpenCustomTheming)) {
+            Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Icon(Icons.Default.Palette, contentDescription = null, tint = accentColor, modifier = Modifier.size(24.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Custom theming", color = appColors.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                    Text("Accent, canvas & card colours", color = appColors.textMuted, fontSize = 11.5.sp,
+                        modifier = Modifier.padding(top = 3.dp))
                 }
-
-                HorizontalDivider(color = dividerColor, thickness = 1.dp, modifier = Modifier.padding(horizontal = 18.dp))
-
-                // Item 2: Canvas Color
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { showCanvasDialog = true }
-                        .padding(horizontal = 18.dp, vertical = 15.dp)
-                        .testTag("item_canvas_color")
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Canvas Color",
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = appColors.textPrimary
-                        )
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = "Color of Background Canvas",
-                            fontSize = 11.5.sp,
-                            color = appColors.textMuted
-                        )
-                    }
-
-                    Text(
-                        text = customState.canvasColorName,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = appColors.textPrimary
-                    )
-                }
-
-                HorizontalDivider(color = dividerColor, thickness = 1.dp, modifier = Modifier.padding(horizontal = 18.dp))
-
-                // Item 3: Card Color
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(bottomStart = 18.dp, bottomEnd = 18.dp))
-                        .clickable { showCardDialog = true }
-                        .padding(horizontal = 18.dp, vertical = 15.dp)
-                        .testTag("item_card_color")
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Card Color",
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = appColors.textPrimary
-                        )
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = "Color of Search Bar, Alert Dialogs, Cards",
-                            fontSize = 11.5.sp,
-                            color = appColors.textMuted
-                        )
-                    }
-
-                    Text(
-                        text = customState.cardColorName,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = appColors.textPrimary
-                    )
-                }
+                Icon(Icons.AutoMirrored.Filled.ArrowForwardIos, contentDescription = "Open custom theming",
+                    tint = appColors.textMuted, modifier = Modifier.size(20.dp))
             }
         }
-
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(Modifier.height(16.dp))
 
         // =====================================================================
         // CARD 4: Current Theme & Save Theme
@@ -768,7 +650,7 @@ fun ThemeCustomizationSection(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp))
-                        .clickable { showThemePresetsDialog = true }
+                        .clickable { onOpenPresets() }
                         .padding(horizontal = 18.dp, vertical = 16.dp)
                         .testTag("item_current_theme")
                 ) {
@@ -846,70 +728,6 @@ fun ThemeCustomizationSection(
     // DIALOGS FOR CUSTOMIZATION
     // =========================================================================
 
-    // 1. Accent Color & Hue Dialog
-    if (showAccentDialog) {
-        AccentColorHueDialog(
-            currentAccentName = customState.accentName,
-            currentShade = customState.accentShade,
-            currentHex = customState.accentColorHex,
-            isDarkMode = isDarkMode,
-            onDismiss = { showAccentDialog = false },
-            onSelect = { name, shade, hex ->
-                val updated = customState.copy(
-                    isPresetDark = isDarkMode,
-                    isAmoled = false,
-                    accentName = name,
-                    accentShade = shade,
-                    accentColorHex = hex,
-                    currentThemeName = "Custom"
-                )
-                updateAndPersist(updated)
-                showAccentDialog = false
-            }
-        )
-    }
-
-    // 2. Canvas Color Dialog
-    if (showCanvasDialog) {
-        ColorSelectionDialog(
-            title = "Select Canvas Color",
-            options = ThemeCustomizationPresets.canvasOptions,
-            currentSelection = customState.canvasColorName,
-            isDarkMode = isDarkMode,
-            onDismiss = { showCanvasDialog = false },
-            onSelect = { option ->
-                val updated = customState.copy(
-                    isAmoled = option.name.contains("Black", ignoreCase = true) && customState.cardColorName.contains("Black", ignoreCase = true),
-                    canvasColorName = option.name,
-                    canvasColorHex = option.hex,
-                    currentThemeName = "Custom"
-                )
-                updateAndPersist(updated)
-                showCanvasDialog = false
-            }
-        )
-    }
-
-    // 3. Card Color Dialog
-    if (showCardDialog) {
-        ColorSelectionDialog(
-            title = "Select Card Color",
-            options = ThemeCustomizationPresets.cardOptions,
-            currentSelection = customState.cardColorName,
-            isDarkMode = isDarkMode,
-            onDismiss = { showCardDialog = false },
-            onSelect = { option ->
-                val updated = customState.copy(
-                    cardColorName = option.name,
-                    cardColorHex = option.hex,
-                    currentThemeName = "Custom"
-                )
-                updateAndPersist(updated)
-                showCardDialog = false
-            }
-        )
-    }
-
     // 4. Export Theme Success Dialog
     if (showExportSuccessDialog && exportedThemeFilePath != null) {
         ThemeExportSuccessDialog(
@@ -942,20 +760,6 @@ fun ThemeCustomizationSection(
 
 
     // 7. Theme Presets Dialog (5 Dark, 5 Light aesthetic presets)
-    if (showThemePresetsDialog) {
-        ThemePresetsDialog(
-            currentPresetId = customState.presetId,
-            currentTheme = customState.currentThemeName,
-            isDarkMode = isDarkMode,
-            onDismiss = { showThemePresetsDialog = false },
-            onSelectPreset = { preset ->
-                updateAndPersist(preset.toCustomThemeState())
-                onApplyPreset(preset)
-                Toast.makeText(context, "✨ Applied ${preset.name} theme!", Toast.LENGTH_SHORT).show()
-                showThemePresetsDialog = false
-            }
-        )
-    }
 }
 
 /**

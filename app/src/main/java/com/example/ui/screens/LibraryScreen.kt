@@ -200,7 +200,9 @@ fun LibraryScreen(
                 ) {
                     tabs.forEachIndexed { index, title ->
                         val isSelected = selectedTab == index
-                        val selectedTabBg = if (appColors.isDark) {
+                        val selectedTabBg = if (!appColors.dynamicGlassEnabled) {
+                            Brush.verticalGradient(listOf(appColors.primaryAccent, appColors.primaryAccent))
+                        } else if (appColors.isDark) {
                             if (appColors.isAmoled) {
                                 Brush.verticalGradient(
                                     listOf(
@@ -228,7 +230,9 @@ fun LibraryScreen(
                         }
                         val selectedTabBorder = BorderStroke(
                             1.3.dp,
-                            if (appColors.isDark) {
+                            if (!appColors.dynamicGlassEnabled) {
+                                Brush.verticalGradient(listOf(appColors.primaryAccent, appColors.primaryAccent))
+                            } else if (appColors.isDark) {
                                 LiquidGlass.specularBorderBrush(appColors, highlightAlpha = 0.75f)
                             } else {
                                 Brush.verticalGradient(
@@ -260,7 +264,8 @@ fun LibraryScreen(
                             Text(
                                 text = title,
                                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                color = if (appColors.isAmoled) Color.White else if (isSelected) Color.White else (if (appColors.isDark) Color.White.copy(alpha = 0.70f) else appColors.textMuted),
+                                color = if (!appColors.dynamicGlassEnabled && isSelected) com.example.ui.theme.contrastingContentColor(appColors.primaryAccent)
+                                    else if (appColors.isAmoled) Color.White else if (isSelected) Color.White else (if (appColors.isDark) Color.White.copy(alpha = 0.70f) else appColors.textMuted),
                                 fontSize = 14.sp
                             )
                         }
