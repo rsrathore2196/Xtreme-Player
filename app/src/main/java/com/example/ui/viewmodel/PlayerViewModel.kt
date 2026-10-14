@@ -20,6 +20,7 @@ import com.example.playback.PlayerUiState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flatMapLatest
@@ -36,6 +37,9 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.plus
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.atomic.AtomicLong
 
 @Immutable
 sealed interface PlaylistImportStep {
@@ -73,7 +77,11 @@ data class SearchUiState(
     val isSearching: Boolean = false,
     val selectedGenre: String = "All",
     val selectedSource: String = "All", // "All", "HD Stream", "Extended Stream"
-    val result: SearchResultCategory = SearchResultCategory()
+    val result: SearchResultCategory = SearchResultCategory(),
+    val recentSearches: List<String> = emptyList(),
+    val displayDirectTracks: List<MusicTrack>? = null,
+    val matchingPlaylistGenres: List<String>? = null,
+    internal val requestId: Long = 0L
 )
 
 class PlayerViewModel(
@@ -117,12 +125,27 @@ class PlayerViewModel(
         initialQuality = playbackManager.uiState.value.selectedQuality)
 
     private val _searchState = MutableStateFlow(SearchUiState())
-    val searchState: StateFlow<SearchUiState> = _searchState.asStateFlow()
+    val searchState: StateFlow<SearchUiState> = _searchState.map { state ->
+        val results = state.result
+        val raw = results.exactMatches.ifEmpty { results.songs }
+        val direct = when (state.selectedSource) {
+            "HD Stream" -> results.jioMatches.ifEmpty { raw.filter { it.source != "Extended Stream" && !it.id.startsWith("yt_") } }
+            "Extended Stream" -> results.ytMatches.ifEmpty { raw.filter { it.source == "Extended Stream" || it.id.startsWith("yt_") } }
+            else -> raw
+        }
+        state.copy(displayDirectTracks = if (state.query.isNotBlank()) direct.take(5) else direct,
+            matchingPlaylistGenres = MusicDataSource.genres.filter { it.contains(state.query, ignoreCase = true) }
+                .ifEmpty { MusicDataSource.genres.take(6) })
+    }.flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope + Dispatchers.Default, SharingStarted.WhileSubscribed(5000L), _searchState.value)
 
     private val _selectedPlaylistTracks = MutableStateFlow<PlaylistWithTracks?>(null)
     val selectedPlaylistTracks: StateFlow<PlaylistWithTracks?> = _selectedPlaylistTracks.asStateFlow()
 
     private var searchJob: Job? = null
+    private val legacySearchGeneration = AtomicLong()
+    private val recentSearchDispatcher = Dispatchers.IO.limitedParallelism(1)
+    private val favoriteUpdateMutex = Mutex()
     private var playlistTracksJob: Job? = null
 
     // Reuse the ViewModel's lifecycle job while keeping large-list publication off Main.
@@ -133,7 +156,7 @@ class PlayerViewModel(
 
     val recentlyPlayed: StateFlow<List<MusicTrack>> = repository.getRecentlyPlayedTracks()
         .flowOn(Dispatchers.Default)
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
+        .stateIn(libraryDataScope, SharingStarted.WhileSubscribed(5000L), emptyList())
 
     // Keep one foreground observer and its last snapshot instead of querying on every tab entry.
     // Suspend observation in the background without clearing the retained Library content.
@@ -312,13 +335,17 @@ class PlayerViewModel(
                 userProfile = profile
             )
         }
-    }.stateIn(
-        viewModelScope,
+    }.flowOn(Dispatchers.Default).stateIn(
+        viewModelScope + Dispatchers.Default,
         SharingStarted.WhileSubscribed(5000L),
         emptyList()
     )
 
     init {
+        viewModelScope.launch(recentSearchDispatcher) {
+            val recent = com.example.data.local.RecentSearchPreferences.getRecentSearches(application)
+            _searchState.update { it.copy(recentSearches = recent) }
+        }
         viewModelScope.launch {
             com.example.updater.AppUpdateManager.updateStatus.map { status ->
                 status is com.example.updater.UpdateStatus.Checking ||
@@ -417,9 +444,9 @@ class PlayerViewModel(
     }
 
     private fun loadCatalog() {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.Default) {
             // Room/cache work must not compete with the player's first composition and transition.
-            val initial = withContext(Dispatchers.IO) { repository.getInitialCatalog(_userProfile.value) }
+            val initial = repository.getInitialCatalog(_userProfile.value)
             _catalogTracks.value = initial
             playbackManager.setCandidatePool(initial)
 
@@ -501,7 +528,7 @@ class PlayerViewModel(
         val state = playbackManager.uiState.value
         if (state.isInfiniteRadio && (state.isPlaying || state.isLoading)) return
         activePlaybackLaunchJob?.cancel()
-        activePlaybackLaunchJob = viewModelScope.launch(Dispatchers.Main) {
+        activePlaybackLaunchJob = viewModelScope.launch(Dispatchers.Default) {
             val candidates = (_catalogTracks.value + recentlyPlayed.value + favoriteTracks.value + listOfNotNull(seedTrack))
                 .distinctBy { it.id }
                 .filterNot { it.audioUrl.contains("soundhelix.com", ignoreCase = true) }
@@ -510,8 +537,10 @@ class PlayerViewModel(
             val alternatives = pool.filter { it.id != state.currentTrack?.id }
             val randomized = alternatives.ifEmpty { pool }.shuffled()
             val chosen = randomized.firstOrNull() ?: return@launch
-            playbackManager.setAutoplayEnabled(true)
-            playbackManager.playTrack(chosen, randomized, isExplicitPlaylist = false, isInfiniteRadio = true)
+            withContext(Dispatchers.Main.immediate) {
+                playbackManager.setAutoplayEnabled(true)
+                playbackManager.playTrack(chosen, randomized, isExplicitPlaylist = false, isInfiniteRadio = true)
+            }
         }
     }
 
@@ -544,32 +573,37 @@ class PlayerViewModel(
     }
 
     fun toggleLike(track: MusicTrack) {
-        viewModelScope.launch {
-            val newLikedStatus = repository.toggleFavorite(track)
-            playbackManager.updateFavoriteStatus(track.id, newLikedStatus)
+        viewModelScope.launch(Dispatchers.Default) {
+          favoriteUpdateMutex.withLock {
+            val newLikedStatus = withContext(Dispatchers.IO) { repository.toggleFavorite(track) }
+            withContext(Dispatchers.Main.immediate) { playbackManager.updateFavoriteStatus(track.id, newLikedStatus) }
             _catalogTracks.update { list ->
                 list.map { if (it.id == track.id) it.copy(isLiked = newLikedStatus) else it }
             }
+          }
         }
     }
 
     fun onSearchQueryChange(newQuery: String) {
+        val generation = legacySearchGeneration.incrementAndGet()
         searchJob?.cancel()
-        _searchState.update { it.copy(query = newQuery, isSearching = false) }
+        _searchState.update { it.copy(query = newQuery, isSearching = false, requestId = generation) }
         catalogBrowser.queryChanged(newQuery)
         if (newQuery.isBlank()) selectGenre(_searchState.value.selectedGenre)
     }
 
     fun selectGenre(genre: String) {
-        _searchState.update { it.copy(selectedGenre = genre, isSearching = true) }
+        val generation = legacySearchGeneration.incrementAndGet()
+        val query = _searchState.value.query
+        _searchState.update { it.copy(selectedGenre = genre, isSearching = true, requestId = generation) }
         searchJob?.cancel()
-        searchJob = viewModelScope.launch {
-            if (genre.equals("All", ignoreCase = true)) {
-                val results = repository.search(_searchState.value.query, application)
-                _searchState.update { it.copy(selectedGenre = "All", result = results, isSearching = false) }
+        searchJob = viewModelScope.launch(Dispatchers.Default) {
+            val allGenres = genre.equals("All", ignoreCase = true)
+            val results = if (allGenres) {
+                repository.search(query, application)
             } else {
                 val tracks = repository.getTracksByGenre(genre).shuffled()
-                val results = SearchResultCategory(
+                SearchResultCategory(
                     topResult = tracks.firstOrNull(),
                     exactMatches = tracks,
                     similarTypeSongs = emptyList(),
@@ -578,8 +612,32 @@ class PlayerViewModel(
                     albums = tracks.map { it.album }.filter { it.isNotBlank() && it != "Single" && it != "Online Stream" }.distinct(),
                     artists = tracks.map { it.artist }.filter { it.isNotBlank() && it != "Unknown Artist" }.distinct()
                 )
-                _searchState.update { it.copy(result = results, isSearching = false) }
             }
+            ensureActive()
+            _searchState.update { if (generation != it.requestId || it.query != query || it.selectedGenre != genre) it else
+                it.copy(selectedGenre = if (allGenres) "All" else genre, result = results, isSearching = false) }
+        }
+    }
+
+    // Serial IO operations preserve history order and survive Search tab disposal.
+    fun rememberSearch(query: String) {
+        viewModelScope.launch(recentSearchDispatcher) {
+            val recent = com.example.data.local.RecentSearchPreferences.addRecentSearch(application, query)
+            _searchState.update { it.copy(recentSearches = recent) }
+        }
+    }
+
+    fun removeRecentSearch(query: String) {
+        viewModelScope.launch(recentSearchDispatcher) {
+            val recent = com.example.data.local.RecentSearchPreferences.removeRecentSearch(application, query)
+            _searchState.update { it.copy(recentSearches = recent) }
+        }
+    }
+
+    fun clearRecentSearches() {
+        viewModelScope.launch(recentSearchDispatcher) {
+            com.example.data.local.RecentSearchPreferences.clearRecentSearches(application)
+            _searchState.update { it.copy(recentSearches = emptyList()) }
         }
     }
 
@@ -588,7 +646,7 @@ class PlayerViewModel(
     }
 
     fun refreshCatalog() {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.Default) {
             val freshCatalog = repository.getInitialCatalog()
             _catalogTracks.value = freshCatalog
         }

@@ -1096,9 +1096,11 @@ class PlaybackManager(
                             .resolvePlayableTrack(track)
                     }
                 } else track
-                if (isActive && ownsSelection(track.id, generation)) {
+                val fastQueue = withContext(Dispatchers.Default) {
                     val validContext = searchContextPool.filter { it.id != track.id && it.audioUrl.isNotBlank() }.distinctBy { it.id }
-                    val fastQueue = listOf(resolvedTrack) + validContext
+                    listOf(resolvedTrack) + validContext
+                }
+                if (isActive && ownsSelection(track.id, generation)) {
                     playTrackInternal(resolvedTrack, fastQueue, isExplicitPlaylist = false)
                 }
             } catch (e: CancellationException) { throw e }

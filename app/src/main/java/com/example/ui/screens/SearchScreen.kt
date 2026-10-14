@@ -62,8 +62,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.platform.LocalContext
-import com.example.data.local.RecentSearchPreferences
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -115,7 +113,10 @@ fun SearchScreen(
     onSelectType: (String) -> Unit = {},
     onLoadMore: () -> Unit = {},
     onRetrySearch: () -> Unit = {},
-    onOpenCatalog: (com.example.data.repository.CatalogDestination) -> Unit = {}
+    onOpenCatalog: (com.example.data.repository.CatalogDestination) -> Unit = {},
+    onRememberSearch: (String) -> Unit = {},
+    onRemoveRecentSearch: (String) -> Unit = {},
+    onClearRecentSearches: () -> Unit = {}
 ) {
     val currentPlayingId = currentPlayingTrackId ?: playerUiState?.currentTrack?.id
     val isCurrentlyPlaying = isPlaying || (playerUiState?.isPlaying == true)
@@ -186,17 +187,14 @@ fun SearchScreen(
         }
     }
 
-    val context = LocalContext.current
-    var recentSearches by remember {
-        mutableStateOf(RecentSearchPreferences.getRecentSearches(context))
-    }
+    val recentSearches = searchState.recentSearches
 
     val triggerSearch: (String) -> Unit = { queryText ->
         val clean = queryText.trim()
         keyboardController?.hide()
         focusManager.clearFocus()
         if (clean.isNotEmpty()) {
-            recentSearches = RecentSearchPreferences.addRecentSearch(context, clean)
+            onRememberSearch(clean)
             onQueryChange(clean)
         }
     }
@@ -457,8 +455,7 @@ fun SearchScreen(
                             ),
                             modifier = Modifier
                                 .clickable {
-                                    RecentSearchPreferences.clearRecentSearches(context)
-                                    recentSearches = emptyList()
+                                    onClearRecentSearches()
                                 }
                                 .padding(4.dp)
                                 .testTag("clear_recent_searches_button")
@@ -501,7 +498,7 @@ fun SearchScreen(
                                             .size(22.dp)
                                             .clip(CircleShape)
                                             .clickable {
-                                                recentSearches = RecentSearchPreferences.removeRecentSearch(context, queryItem)
+                                                onRemoveRecentSearch(queryItem)
                                             }
                                             .testTag("remove_recent_search_$queryItem"),
                                         contentAlignment = Alignment.Center
@@ -798,13 +795,16 @@ fun SearchScreen(
             }
 
             // EXACT MATCHES / SONGS MATCHING QUERY (Strictly 4 to 5 options when searching)
-            val rawList = if (results.exactMatches.isNotEmpty()) results.exactMatches else results.songs
-            val directList = when (searchState.selectedSource) {
-                "HD Stream" -> (results.jioMatches.ifEmpty { rawList.filter { it.source != "Extended Stream" && !it.id.startsWith("yt_") } })
-                "Extended Stream" -> (results.ytMatches.ifEmpty { rawList.filter { it.source == "Extended Stream" || it.id.startsWith("yt_") } })
-                else -> rawList
+            val displayDirectList = searchState.displayDirectTracks ?: run {
+                // Retain the standalone/preview overload; production receives prepared VM data.
+                val rawList = if (results.exactMatches.isNotEmpty()) results.exactMatches else results.songs
+                val directList = when (searchState.selectedSource) {
+                    "HD Stream" -> results.jioMatches.ifEmpty { rawList.filter { it.source != "Extended Stream" && !it.id.startsWith("yt_") } }
+                    "Extended Stream" -> results.ytMatches.ifEmpty { rawList.filter { it.source == "Extended Stream" || it.id.startsWith("yt_") } }
+                    else -> rawList
+                }
+                if (hasQuery) directList.take(5) else directList
             }
-            val displayDirectList = if (hasQuery) directList.take(5) else directList
 
             if (showTracks && displayDirectList.isNotEmpty()) {
                 item {
@@ -1101,7 +1101,7 @@ fun SearchScreen(
 
             // PLAYLISTS CATEGORY
             if (showPlaylists) {
-                val matchingGenres = MusicDataSource.genres.filter {
+                val matchingGenres = searchState.matchingPlaylistGenres ?: MusicDataSource.genres.filter {
                     it.contains(searchState.query, ignoreCase = true)
                 }.ifEmpty { MusicDataSource.genres.take(6) }
 

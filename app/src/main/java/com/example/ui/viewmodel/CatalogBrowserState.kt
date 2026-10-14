@@ -8,19 +8,24 @@ import kotlinx.coroutines.flow.*
 
 data class CatalogSearchState(
     val query: String = "", val type: String = "All", val page: CatalogPage = CatalogPage(),
-    val loading: Boolean = false, val loadingMore: Boolean = false, val error: String? = null
+    val loading: Boolean = false, val loadingMore: Boolean = false, val error: String? = null,
+    internal val requestId: Int = 0
 )
 data class CatalogDetailState(
     val destination: CatalogDestination, val tracks: List<MusicTrack> = emptyList(),
     val nextPage: Int? = null, val pending: List<MusicTrack> = emptyList(),
     val loading: Boolean = false, val error: String? = null, val warning: String? = null,
     val scrollIndex: Int = 0, val scrollOffset: Int = 0, val initialized: Boolean = false,
-    val artistContinuation: ArtistCatalogContinuation? = null
+    val artistContinuation: ArtistCatalogContinuation? = null,
+    internal val requestId: Int = 0
 )
 
 /** Owned by PlayerViewModel's scope; browsing never changes playback state. */
 class CatalogBrowserState(private val repository: CatalogRepository, private val scope: CoroutineScope,
     initialQuality: AudioQuality = AudioQuality.ULTRA_HD_320) {
+    // Result computation/publication is serialized on Default; navigation and cache ownership
+    // stay with the caller's UI scope. Both scopes share the ViewModel's cancellation job.
+    private val dataScope = scope + Dispatchers.Default.limitedParallelism(1)
     private var audioQuality = initialQuality
     private val _search = MutableStateFlow(CatalogSearchState())
     val search = _search.asStateFlow()
@@ -28,14 +33,34 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
     val detail = _detail.asStateFlow()
     private var searchJob: Job? = null
     private var detailJob: Job? = null
-    private var favoriteIds: Set<String> = emptySet()
-    private fun liked(tracks: List<MusicTrack>) = tracks.map { it.copy(isLiked = it.id in favoriteIds) }
+    private var favoritesJob: Job? = null
+    @Volatile private var favoriteIds: Set<String> = emptySet()
+    private fun liked(tracks: List<MusicTrack>, ids: Set<String> = favoriteIds) =
+        tracks.map { it.copy(isLiked = it.id in ids) }
     fun updateFavorites(ids: Set<String>) {
-        if (ids == favoriteIds) return
+        if (ids === favoriteIds) return
         favoriteIds = ids
-        _search.update { it.copy(page = it.page.copy(tracks = liked(it.page.tracks))) }
-        _detail.update { it?.copy(tracks = liked(it.tracks), pending = liked(it.pending)) }
-        details.replaceAll { _, state -> state.copy(tracks = liked(state.tracks), pending = liked(state.pending)) }
+        favoritesJob?.cancel()
+        val retained = details.toMap()
+        favoritesJob = dataScope.launch {
+            ensureActive()
+            if (favoriteIds !== ids) return@launch
+            _search.update { it.copy(page = it.page.copy(tracks = liked(it.page.tracks, ids))) }
+            val refreshed = retained.mapValues { (_, state) ->
+                state.copy(tracks = liked(state.tracks, ids), pending = liked(state.pending, ids))
+            }
+            withContext(Dispatchers.Main.immediate) {
+                if (favoriteIds === ids) refreshed.forEach { (key, state) ->
+                    // A newly loaded page must not be replaced by an older cache snapshot.
+                    if (details[key] === retained[key]) details[key] = state
+                }
+            }
+            // A cached destination may have opened while its cache was being refreshed.
+            ensureActive()
+            if (favoriteIds === ids) _detail.update {
+                it?.copy(tracks = liked(it.tracks, ids), pending = liked(it.pending, ids))
+            }
+        }
     }
     private var searchGeneration = 0
     private var detailGeneration = 0
@@ -61,16 +86,19 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
     private fun startSearch(query: String, type: String, debounce: Boolean) {
         val generation = ++searchGeneration
         searchJob?.cancel()
-        _search.value = CatalogSearchState(query = query, type = type, loading = query.isNotBlank())
+        _search.value = CatalogSearchState(query = query, type = type, loading = query.isNotBlank(), requestId = generation)
         if (query.isBlank()) return
         val quality = audioQuality
-        searchJob = scope.launch {
+        searchJob = dataScope.launch {
             try {
                 if (debounce) delay(300)
                 val result = repository.search(query.trim(), type, quality = quality)
-                if (generation == searchGeneration) _search.update { it.copy(page = result.copy(tracks = liked(result.tracks)), loading = false) }
+                ensureActive()
+                _search.update { if (it.requestId != generation) it else
+                    it.copy(page = result.copy(tracks = liked(result.tracks)), loading = false) }
             } catch (e: CancellationException) { throw e }
-            catch (_: Exception) { if (generation == searchGeneration) _search.update { it.copy(loading = false, error = "Couldn't load results. Tap to retry.") } }
+            catch (_: Exception) { _search.update { if (it.requestId != generation) it else
+                it.copy(loading = false, error = "Couldn't load results. Tap to retry.") } }
         }
     }
     fun loadMoreSearch() {
@@ -80,15 +108,15 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
         val generation = searchGeneration
         val quality = audioQuality
         _search.update { it.copy(loadingMore = true, error = null) }
-        searchJob = scope.launch {
+        searchJob = dataScope.launch {
             try {
                 val result = repository.search(state.query.trim(), state.type, page, quality, state.page)
-                if (generation != searchGeneration) return@launch
+                if (generation != _search.value.requestId) return@launch
                 val tracks = withContext(Dispatchers.Default) {
                     repository.uniqueTracks(state.page.tracks + result.tracks,
                         preferLossless = quality == AudioQuality.HI_RES_LOSSLESS)
                 }
-                if (generation != searchGeneration) return@launch
+                if (generation != _search.value.requestId) return@launch
                 val merged = CatalogPage(
                     tracks = liked(tracks),
                     albums = (state.page.albums + result.albums).distinctBy { it.id },
@@ -99,10 +127,12 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
                     result.albums.isNotEmpty() && result.albums.all { album -> state.page.albums.any { it.id == album.id } } ||
                     result.artists.isNotEmpty() && result.artists.all { artist -> state.page.artists.any { it.id == artist.id } } ||
                     result.playlists.isNotEmpty() && result.playlists.all { playlist -> state.page.playlists.any { it.id == playlist.id } }
-                _search.update { it.copy(page = merged.copy(nextPage =
+                ensureActive()
+                _search.update { if (it.requestId != generation) it else it.copy(page = merged.copy(nextPage =
                     if (repeated && result.trackSearchContinuation == null) null else merged.nextPage), loadingMore = false) }
             } catch (e: CancellationException) { throw e }
-            catch (_: Exception) { if (generation == searchGeneration) _search.update { it.copy(loadingMore = false, error = "Couldn't load more. Tap to retry.") } }
+            catch (_: Exception) { _search.update { if (it.requestId != generation) it else
+                it.copy(loadingMore = false, error = "Couldn't load more. Tap to retry.") } }
         }
     }
     fun open(destination: CatalogDestination) {
@@ -111,7 +141,8 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
         val key = detailAliases[destination.key] ?: destination.key
         val position = scrollPositions.get(key)
         _detail.value = details[key]?.let { it.copy(loading = false,
-            scrollIndex = position?.first ?: it.scrollIndex, scrollOffset = position?.second ?: it.scrollOffset) } ?: CatalogDetailState(destination)
+            scrollIndex = position?.first ?: it.scrollIndex, scrollOffset = position?.second ?: it.scrollOffset,
+            requestId = detailGeneration) } ?: CatalogDetailState(destination, requestId = detailGeneration)
         if (_detail.value?.initialized != true) loadMoreDetail()
     }
     fun close() { saveDetail(); detailJob?.cancel(); detailGeneration++; _detail.value = null }
@@ -125,7 +156,7 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
         if (state.loading || (state.initialized && state.nextPage == null && state.pending.isEmpty())) return
         val generation = detailGeneration
         _detail.update { it?.copy(loading = true, error = null) }
-        detailJob = scope.launch {
+        detailJob = dataScope.launch {
             try {
                 var destination = state.destination
                 val page: CatalogPage = if (state.pending.isNotEmpty()) CatalogPage(tracks = state.pending,
@@ -141,11 +172,11 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
                     is CatalogDestination.Album -> repository.albumSongs(selected.album)
                     is CatalogDestination.Playlist -> repository.playlistSongs(selected.playlist, state.nextPage ?: 1)
                 }
-                if (generation != detailGeneration) return@launch
+                if (generation != _detail.value?.requestId) return@launch
                 val fresh = withContext(Dispatchers.Default) {
                     if (destination is CatalogDestination.Album) page.tracks else repository.uniqueTracks(state.tracks + page.tracks).drop(state.tracks.size)
                 }
-                if (generation != detailGeneration) return@launch
+                if (generation != _detail.value?.requestId) return@launch
                 val album = destination is CatalogDestination.Album
                 val added = if (album) fresh else fresh.take(10)
                 val pending = if (album) emptyList() else fresh.drop(10)
@@ -154,15 +185,21 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
                 // so later, genuinely new matches remain reachable without duplicates.
                 val repeated = page.tracks.isNotEmpty() && fresh.isEmpty() && (page.nextPage ?: 0) >= 0 &&
                     page.artistContinuation == null
-                _detail.update { current -> current?.copy(destination = destination, tracks = liked(state.tracks + added),
+                ensureActive()
+                _detail.update { current -> if (current?.requestId != generation) current else current.copy(destination = destination, tracks = liked(state.tracks + added),
                     nextPage = if (repeated) null else page.nextPage, pending = liked(pending), loading = false,
                     initialized = true, error = null, warning = page.warning,
                     artistContinuation = page.artistContinuation) }
                 // Store both name-only Home routes and provider-ID routes against the same loaded data.
-                detailAliases[state.destination.key] = destination.key
-                _detail.value?.let { details[destination.key] = it }
+                withContext(Dispatchers.Main.immediate) {
+                    if (generation == _detail.value?.requestId) {
+                        detailAliases[state.destination.key] = destination.key
+                        _detail.value?.let { details[destination.key] = it }
+                    }
+                }
             } catch (e: CancellationException) { throw e }
-            catch (_: Exception) { if (generation == detailGeneration) _detail.update { it?.copy(loading = false, error = "Couldn't load this catalog page. Tap to retry.") } }
+            catch (_: Exception) { _detail.update { if (it?.requestId != generation) it else
+                it.copy(loading = false, error = "Couldn't load this catalog page. Tap to retry.") } }
         }
     }
 }

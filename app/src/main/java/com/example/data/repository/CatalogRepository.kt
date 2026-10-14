@@ -33,17 +33,18 @@ class CatalogRepository {
             }.build().toString()
         locks[(url.hashCode() and Int.MAX_VALUE) % locks.size].withLock {
             val cached = synchronized(cache) { cache.get(url) }
-            if (cached != null && System.currentTimeMillis() - cached.first < 300_000) return@withLock JSONObject(cached.second)
+            if (cached != null && System.currentTimeMillis() - cached.first < 300_000)
+                return@withLock withContext(Dispatchers.Default) { JSONObject(cached.second) }
             try {
                 val body = if (artistBrowse) client.catalogRequest(Request.Builder().url(url)
                     .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
                     .header("Accept", "application/json").build()) else client.catalogGet(url)
-                val json = JSONObject(body)
+                val json = withContext(Dispatchers.Default) { JSONObject(body) }
                 if (json.opt("error")?.let { it != JSONObject.NULL && it != false && it != "" && it != 0 } == true) throw IOException("Catalog unavailable")
                 synchronized(cache) { cache.put(url, System.currentTimeMillis() to body) }
                 json
             } catch (e: CancellationException) { throw e }
-            catch (e: Exception) { cached?.let { JSONObject(it.second) } ?: throw e }
+            catch (e: Exception) { cached?.let { withContext(Dispatchers.Default) { JSONObject(it.second) } } ?: throw e }
         }
     }
     private fun JSONArray?.objects(): List<JSONObject> = (0 until (this?.length() ?: 0)).mapNotNull { this?.optJSONObject(it) }

@@ -74,7 +74,7 @@ class MusicRepository(
 
     // Static memory cache for enriched catalog to persist across fast navigations
     companion object {
-        private var memoryCachedCatalog: List<MusicTrack>? = null
+        @Volatile private var memoryCachedCatalog: List<MusicTrack>? = null
     }
 
     private data class DiscoveryCache(val tracks: List<MusicTrack>, val fetchedAt: Long)
@@ -84,29 +84,33 @@ class MusicRepository(
     private val discoveryOwners = Array(8) { Mutex() }
     private val discoveryBatches = android.util.LruCache<String, DiscoveryCache>(16)
 
-    private suspend fun getLikedTrackIds(): Set<String> = musicDao.getFavoriteTracks().first().map { it.id }.toSet()
+    private suspend fun getLikedTrackIds(): Set<String> = withContext(Dispatchers.Default) {
+        withContext(Dispatchers.IO) { musicDao.getFavoriteTracks().first() }.map { it.id }.toSet()
+    }
 
-    suspend fun getInitialCatalog(profile: UserProfile? = null): List<MusicTrack> {
+    suspend fun getInitialCatalog(profile: UserProfile? = null): List<MusicTrack> = withContext(Dispatchers.Default) {
         val liked = getLikedTrackIds()
         val cached = memoryCachedCatalog.orEmpty().ifEmpty {
-            musicDao.getCachedTracksSync(250).map { it.toMusicTrack() }
+            withContext(Dispatchers.IO) { musicDao.getCachedTracksSync(250) }.map { it.toMusicTrack() }
         }
         // Discard legacy fabricated YouTube defaults when reading old recommendation caches.
         val corrected = cached.map { track ->
             if (track.id.startsWith("yt_") && track.genre == "Pop" && track.language == "Hindi")
                 track.copy(genre = "Unknown", language = "Unknown") else track
         }
-        return HomeRecommendationPolicy.originals(corrected).map { it.copy(isLiked = it.id in liked) }
+        HomeRecommendationPolicy.originals(corrected).map { it.copy(isLiked = it.id in liked) }
     }
 
-    private fun homeProfile(profile: UserProfile? = null): UserProfile = profile ?: context?.let {
-        UserProfilePreferences.getUserProfile(it)
-    } ?: UserProfile()
+    private suspend fun homeProfile(profile: UserProfile? = null): UserProfile = profile ?: withContext(Dispatchers.IO) {
+        context?.let { UserProfilePreferences.getUserProfile(it) } ?: UserProfile()
+    }
 
-    private suspend fun discoveryQueries(profile: UserProfile, era: Boolean = false): List<String> {
-        val favoriteTracks = musicDao.getFavoriteTracks().first().map { it.toMusicTrack() }
-        val playedIds = context?.let { MusicDatabase.getDatabase(it).listeningEventDao().getRecentActualTrackIds() }.orEmpty()
-        val listened = musicDao.getTracksByIds(playedIds).map { it.toMusicTrack() }
+    private suspend fun discoveryQueries(profile: UserProfile, era: Boolean = false): List<String> = withContext(Dispatchers.Default) {
+        val favoriteTracks = withContext(Dispatchers.IO) { musicDao.getFavoriteTracks().first() }.map { it.toMusicTrack() }
+        val playedIds = withContext(Dispatchers.IO) {
+            context?.let { MusicDatabase.getDatabase(it).listeningEventDao().getRecentActualTrackIds() }.orEmpty()
+        }
+        val listened = withContext(Dispatchers.IO) { musicDao.getTracksByIds(playedIds) }.map { it.toMusicTrack() }
         val seeds = (favoriteTracks + listened).filter { HomeRecommendationPolicy.known(it.artist) }
         val artists = seeds.flatMap(HomeRecommendationPolicy::artists).distinct().shuffled().take(2)
         val languages = (profile.languages + seeds.map { it.language }).filter(HomeRecommendationPolicy::known).distinct().shuffled().take(2)
@@ -120,7 +124,7 @@ class MusicRepository(
                 languages.map { "$it ${genres.firstOrNull().orEmpty()} ${listOf("new releases $year", "original songs", "new artists").random()}" } +
                 genres.map { "$it ${profile.country} original songs" }
         }
-        return queries.ifEmpty { listOf("${profile.country} ${if (era) "1990s original songs" else "new music releases"}") }.distinct().take(4)
+        queries.ifEmpty { listOf("${profile.country} ${if (era) "1990s original songs" else "new music releases"}") }.distinct().take(4)
     }
 
     private suspend fun discoverySearch(query: String, force: Boolean, era: Boolean): List<MusicTrack> {
@@ -144,7 +148,7 @@ class MusicRepository(
     }
 
     private suspend fun discover(profile: UserProfile, era: Boolean, limit: Int, force: Boolean): List<MusicTrack> = withContext(Dispatchers.Default) {
-      val liked = withContext(Dispatchers.IO) { getLikedTrackIds() }
+      val liked = getLikedTrackIds()
       val recent = withContext(Dispatchers.IO) { context?.let {
           MusicDatabase.getDatabase(it).listeningEventDao().getRecentActualTrackIds()
       }.orEmpty() }
@@ -418,18 +422,18 @@ class MusicRepository(
         musicDao.removeTrackFromPlaylist(playlistId, trackId)
     }
 
-    suspend fun search(query: String, context: android.content.Context? = null): SearchResultCategory {
+    suspend fun search(query: String, context: android.content.Context? = null): SearchResultCategory = withContext(Dispatchers.Default) {
         val trimmed = query.trim()
         if (trimmed.isBlank()) {
-            return SearchResultCategory()
+            return@withContext SearchResultCategory()
         }
 
         val cacheKey = trimmed.lowercase()
-        searchCache.get(cacheKey)?.let { return it }
+        searchCache.get(cacheKey)?.let { return@withContext it }
 
         val likedEntities = try {
-            musicDao.getFavoriteTracks().first()
-        } catch (e: Exception) {
+            withContext(Dispatchers.IO) { musicDao.getFavoriteTracks().first() }
+        } catch (e: CancellationException) { throw e } catch (e: Exception) {
             emptyList()
         }
         val likedIds = likedEntities.map { it.id }.toSet()
@@ -441,13 +445,13 @@ class MusicRepository(
                     try {
                         val routed = com.example.data.remote.AudioRoutingService.resolveSearchTracks(ctx, trimmed, limit = 25)
                         routed.tracks
-                    } catch (e: Exception) {
+                    } catch (e: CancellationException) { throw e } catch (e: Exception) {
                         OnlineMusicApiService.searchSongs(trimmed, limit = 25)
                     }
                 } else {
                     try {
                         OnlineMusicApiService.searchSongs(trimmed, limit = 25)
-                    } catch (e: Exception) {
+                    } catch (e: CancellationException) { throw e } catch (e: Exception) {
                         emptyList()
                     }
                 }
@@ -455,7 +459,7 @@ class MusicRepository(
             val ytDeferred = async(Dispatchers.IO) {
                 try {
                     YouTubeMusicApiService.searchSongs(trimmed, limit = 25)
-                } catch (e: Exception) {
+                } catch (e: CancellationException) { throw e } catch (e: Exception) {
                     emptyList()
                 }
             }
@@ -533,7 +537,7 @@ class MusicRepository(
             matchedArtistName = singerQuery
             val onlineArtistTracks = try {
                 OnlineMusicApiService.searchSongs(singerQuery, limit = 15)
-            } catch (e: Exception) {
+                } catch (e: CancellationException) { throw e } catch (e: Exception) {
                 emptyList()
             }
             val localArtistTracks = MusicDataSource.curatedTracks.filter {
@@ -616,7 +620,7 @@ class MusicRepository(
         )
 
         searchCache.put(cacheKey, categoryResult)
-        return categoryResult
+        categoryResult
     }
 
     /**
@@ -641,10 +645,10 @@ class MusicRepository(
         streamResolver.resolve(track, quality, forceRefresh, failedUrl)
     }
 
-    suspend fun getTracksByGenre(genre: String): List<MusicTrack> {
+    suspend fun getTracksByGenre(genre: String): List<MusicTrack> = withContext(Dispatchers.Default) {
         val likedEntities = try {
-            musicDao.getFavoriteTracks().first()
-        } catch (e: Exception) {
+            withContext(Dispatchers.IO) { musicDao.getFavoriteTracks().first() }
+        } catch (e: CancellationException) { throw e } catch (e: Exception) {
             emptyList()
         }
         val likedIds = likedEntities.map { it.id }.toSet()
@@ -652,7 +656,7 @@ class MusicRepository(
         // Feeds exclusively from YouTube Music API per architectural rules
         val onlineGenreTracks = try {
             YouTubeMusicApiService.getGenreTracks(genre, limit = 25)
-        } catch (e: Exception) {
+        } catch (e: CancellationException) { throw e } catch (e: Exception) {
             emptyList()
         }
 
@@ -662,7 +666,7 @@ class MusicRepository(
             MusicDataSource.curatedTracks.filter { it.genre.equals(genre, ignoreCase = true) }
         }
 
-        return (onlineGenreTracks + localGenreTracks.shuffled())
+        (onlineGenreTracks + localGenreTracks.shuffled())
             .distinctBy { "${it.title.lowercase()}_${it.artist.lowercase()}" }
             .map { it.copy(isLiked = likedIds.contains(it.id)) }
             .shuffled()
