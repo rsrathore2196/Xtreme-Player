@@ -118,7 +118,7 @@ object YouTubeMusicApiService {
         if (!track.id.startsWith("yt_") || !YouTubeAudioStreamService.isVideoId(videoId)) return null
         val audio = YouTubeAudioStreamService.resolve(videoId, quality, forceRefresh)
         return track.copy(audioUrl = audio.url, bitrateKbps = audio.bitrateKbps,
-            qualityBadge = if (audio.bitrateKbps > 0) "HQ • ${audio.bitrateKbps} kbps" else "HQ Stream",
+            qualityBadge = audio.qualityBadge,
             isLossless = false)
     }
 

@@ -95,22 +95,24 @@ internal class StreamResolver(
         }
 
         val standard: suspend (String) -> List<MusicTrack> = { searchStandard(it, forceRefresh) }
+        val attemptedYouTubeTracks = mutableSetOf<String>()
         suspend fun exactYouTube(): MusicTrack? {
-            if (!track.id.startsWith("yt_")) return null
-            return try { withTimeoutOrNull(15_000L) { resolveYouTube(track, quality, forceRefresh) } }
+            if (!track.id.startsWith("yt_") || !attemptedYouTubeTracks.add(track.id)) return null
+            return try { withTimeoutOrNull(40_000L) { resolveYouTube(track, quality, forceRefresh) } }
                 catch (e: CancellationException) { throw e } catch (_: Exception) { null }
         }
 
         suspend fun searchYouTube(query: String): MusicTrack? {
             if (query.isBlank()) return null
             return try {
-                withTimeoutOrNull(12_000L) {
+                withTimeoutOrNull(40_000L) {
                     val ytTracks = com.example.data.remote.YouTubeMusicApiService.searchSongs(query, limit = 5, songsOnly = true)
                     for (cand in ytTracks) {
-                        if (!cand.id.startsWith("yt_")) continue
+                        if (!cand.id.startsWith("yt_") || !matches(track, cand)) continue
+                        if (!attemptedYouTubeTracks.add(cand.id)) continue
                         val resolved = try {
                             resolveYouTube(cand, quality, forceRefresh)
-                        } catch (_: Exception) { null }
+                        } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
                         if (resolved != null && isValidStreamUrl(resolved.audioUrl) &&
                             resolved.audioUrl != rejectedUrl && resolved.audioUrl != failedUrl) {
                             return@withTimeoutOrNull withStream(track, resolved)
@@ -142,7 +144,6 @@ internal class StreamResolver(
             ?: (if (artistFirstQuery.isNotBlank() && artistFirstQuery != primaryQuery) find(standard, artistFirstQuery) else null)
             ?: searchYouTube(primaryQuery)
             ?: (if (titleOnlyQuery != primaryQuery && titleOnlyQuery.isNotBlank()) searchYouTube(titleOnlyQuery) else null)
-            ?: exactYouTube()?.takeIf { isValidStreamUrl(it.audioUrl) && it.audioUrl != rejectedUrl }
             ?: throw TrackUnavailableException(track.title)
 
         coroutineContext.ensureActive()

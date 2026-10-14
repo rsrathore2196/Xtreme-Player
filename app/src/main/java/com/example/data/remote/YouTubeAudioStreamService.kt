@@ -2,187 +2,251 @@ package com.example.data.remote
 
 import android.net.Uri
 import com.example.playback.AudioQuality
+import com.metrolist.innertubex.InnerTube
+import com.metrolist.innertubex.cipher.PlayerConfigRepository
+import com.metrolist.innertubex.cipher.RemotePlayerConfigStore
+import com.metrolist.innertubex.cipher.YouTubeCipherService
+import com.metrolist.innertubex.extraction.ContentHints
+import com.metrolist.innertubex.extraction.InnerTubeExtractor
+import com.metrolist.innertubex.extraction.YtConfigParserImpl
+import com.metrolist.innertubex.extraction.strategy.ClientFallbackStrategy
+import com.metrolist.innertubex.extraction.strategy.ClientSelectionRequest
+import com.metrolist.innertubex.extraction.strategy.ClientSelectionResult
+import com.metrolist.innertubex.extraction.strategy.ContentAwareFallbackStrategy
+import com.metrolist.innertubex.extraction.strategy.PlaybackTransport
+import com.metrolist.innertubex.extraction.strategy.PlaybackTransportPreference
+import com.metrolist.innertubex.models.YouTubeClient
+import com.metrolist.innertubex.extraction.AudioQuality as ExtractionQuality
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.okhttp.OkHttp
+import io.ktor.client.plugins.HttpTimeout
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import okhttp3.*
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 
-/** Exact-video audio resolution. No proxy, alternate upload, credential or signature guesses. */
+/** Media3-facing adapter. InnerTubeX is the only player/cipher/audio extraction implementation. */
 object YouTubeAudioStreamService {
-    data class AudioStream(val url: String, val bitrateKbps: Int, val isHls: Boolean,
-        val cacheKey: String, val expiresAt: Long)
-    private data class Client(val name: String, val version: String, val number: String, val agent: String)
-    private val clients = listOf(
-        Client("ANDROID_VR", "1.65.10", "28", "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L) gzip"),
-        Client("IOS", "21.26.4", "5", "com.google.ios.youtube/21.26.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)"),
-        Client("ANDROID", "19.34.42", "3", "com.google.android.youtube/19.34.42 (Linux; U; Android 14; en_US) gzip"),
-        Client("WEB_REMIX", "1.20240101.01.00", "67", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-    )
-    val playbackHeaders = mapOf("User-Agent" to "Mozilla/5.0", "Referer" to "https://www.youtube.com/")
+    data class AudioStream(
+        val url: String, val bitrateKbps: Int, val isHls: Boolean,
+        val cacheKey: String, val expiresAt: Long, val headers: Map<String, String>,
+        val codec: String, val itag: Int, val contentLength: Long?, val videoId: String,
+        val useRangeChunks: Boolean, val rangeChunkSize: Long, val clientId: String
+    ) {
+        val qualityBadge: String get() = displayQuality(codec, bitrateKbps)
+        override fun toString() = "AudioStream(codec=" + codec + ", bitrateKbps=" + bitrateKbps + ", hls=" + isHls + ")"
+    }
     private val http = OkHttpClient.Builder().connectTimeout(8, TimeUnit.SECONDS)
-        .readTimeout(8, TimeUnit.SECONDS).callTimeout(10, TimeUnit.SECONDS).build()
+        .readTimeout(10, TimeUnit.SECONDS).callTimeout(12, TimeUnit.SECONDS).build()
     private val cache = android.util.LruCache<String, AudioStream>(128)
     private val locks = Array(16) { Mutex() }
-    private val slots = kotlinx.coroutines.sync.Semaphore(3)
+    private val slots = Semaphore(2)
     private val videoIdPattern = Regex("[A-Za-z0-9_-]{11}")
+    private val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    @Volatile private var runtime: Runtime? = null
+    private val runtimeLock = Any()
+    private val mediaHeaders = setOf("user-agent", "accept", "accept-language", "origin", "referer")
+
+    private class Media3FallbackStrategy(private val hlsOnly: Boolean?) : ClientFallbackStrategy {
+        private val standard = ContentAwareFallbackStrategy()
+        override fun resolveClients(hints: ContentHints): List<YouTubeClient> =
+            selectClients(ClientSelectionRequest(hints, authenticated = false)).candidates.map { it.client }
+        override fun selectClients(request: ClientSelectionRequest): ClientSelectionResult {
+            val preference = when (hlsOnly) {
+                true -> PlaybackTransportPreference.HLS
+                false -> PlaybackTransportPreference.DIRECT
+                null -> request.transportPreference
+            }
+            val result = standard.selectClients(request.copy(transportPreference = preference))
+            val supported = when (hlsOnly) {
+                true -> setOf(PlaybackTransport.HLS)
+                false -> setOf(PlaybackTransport.DIRECT)
+                null -> setOf(PlaybackTransport.DIRECT, PlaybackTransport.HLS)
+            }
+            return result.copy(candidates = result.candidates.filter { candidate ->
+                !candidate.client.useSabr && candidate.manifest?.transports?.any { it in supported } != false
+            })
+        }
+    }
+
+    private class Runtime {
+        private fun client(network: OkHttpClient) = HttpClient(OkHttp) {
+            engine {
+                // Ktor shuts down its OkHttp dispatcher/pool on close. Keep each
+                // engine separate from the probe client and from later sessions.
+                preconfigured = network.newBuilder().dispatcher(Dispatcher())
+                    .connectionPool(ConnectionPool()).build()
+            }
+            install(HttpTimeout) {
+                requestTimeoutMillis = 12_000L; connectTimeoutMillis = 8_000L; socketTimeoutMillis = 10_000L
+            }
+        }
+        private val cipherHttp = client(http)
+        private val config = RemotePlayerConfigStore(cipherHttp, PlayerConfigRepository.disabled())
+        private val cipher = YouTubeCipherService(cipherHttp, config)
+        private data class Engine(val http: HttpClient, val innerTube: InnerTube, val extractor: InnerTubeExtractor)
+        private val engines = mutableMapOf<String, Engine>()
+        fun extractor(cap: Int, hlsOnly: Boolean?): InnerTubeExtractor = synchronized(engines) {
+            engines.getOrPut(cap.toString() + ":" + hlsOnly) {
+                val network = http.newBuilder().addInterceptor(YouTubeAudioFormatPolicy(cap, hlsOnly)).build()
+                val apiHttp = client(network)
+                val innerTube = InnerTube(apiHttp)
+                Engine(apiHttp, innerTube, InnerTubeExtractor(
+                    configParser = YtConfigParserImpl(apiHttp, innerTube, config, cipherService = cipher),
+                    cipherService = cipher, innerTube = innerTube, fallbackStrategy = Media3FallbackStrategy(hlsOnly)))
+            }.extractor
+        }
+        suspend fun close() {
+            synchronized(engines) { engines.values.toList().also { engines.clear() } }.forEach {
+                it.innerTube.close(); it.http.close()
+            }
+            try { cipher.dispose() } finally { cipherHttp.close() }
+        }
+    }
+    private fun runtime(): Runtime = runtime ?: synchronized(runtimeLock) { runtime ?: Runtime().also { runtime = it } }
 
     fun isVideoId(value: String) = videoIdPattern.matches(value)
-    private fun mediaUrl(value: String): HttpUrl? = value.toHttpUrlOrNull()?.takeIf {
-        it.scheme == "https" && (it.host == "googlevideo.com" || it.host.endsWith(".googlevideo.com"))
-    }
-    private fun originalAudio(format: JSONObject): Boolean {
-        val track = format.optJSONObject("audioTrack") ?: return true
-        val label = track.optString("displayName")
-        val tags = format.optString("url").toHttpUrlOrNull()?.queryParameter("xtags").orEmpty()
-        return label.contains("original", true) || Regex("(?:^|[,:])acont=original(?:$|[,:])").containsMatchIn(tags)
+    fun isMediaUrl(value: String): Boolean = value.toHttpUrlOrNull()?.let {
+        it.scheme == "https" && it.port == 443 && it.username.isEmpty() && it.password.isEmpty() &&
+            (it.host == "googlevideo.com" || it.host.endsWith(".googlevideo.com") ||
+                (it.host == "youtube.com" || it.host.endsWith(".youtube.com")) &&
+                (it.encodedPath == "/videoplayback" || it.encodedPath.startsWith("/manifest/") ||
+                    it.encodedPath.startsWith("/api/manifest/")))
+    } == true
+    fun isYouTubeAudio(trackId: String, url: String) = url.startsWith("xtreme-youtube://") || isMediaUrl(url) ||
+        trackId.startsWith("yt_") && (url.isBlank() || url.startsWith("yt_"))
+    private fun isHls(url: String, mime: String?) = mime?.contains("mpegurl", true) == true ||
+        url.contains("/hls", true) || url.substringBefore('?').endsWith(".m3u8", true)
+    fun displayQuality(codec: String, bitrate: Int): String =
+        (codec.takeIf(String::isNotBlank) ?: "HQ Stream") + if (bitrate > 0) " • " + bitrate + " kbps" else ""
+    fun displayCodec(mime: String?, codec: String?): String = when {
+        codec?.contains("opus", true) == true || mime?.contains("opus", true) == true -> "Opus"
+        codec?.contains("vorbis", true) == true || mime?.contains("vorbis", true) == true -> "Vorbis"
+        codec?.contains("mp4a", true) == true || mime?.contains("mp4a", true) == true -> "AAC"
+        else -> codec.orEmpty().take(40)
     }
     fun playbackUri(trackId: String, url: String): String {
-        val id = trackId.removePrefix("yt_")
-        if (!trackId.startsWith("yt_") || !isVideoId(id) || mediaUrl(url) == null) return url
-        val hls = url.contains("/hls", true) || url.substringBefore('?').endsWith(".m3u8", true)
+        if (url.startsWith("xtreme-youtube://")) return url
+        // An exact matching JioSaavn/FLAC fallback keeps its own transport, even if the
+        // catalog identity is a YouTube video. Never reroute another provider's URL.
+        if (url.isNotBlank() && !url.startsWith("yt_") && !isMediaUrl(url)) return url
+        val resolved = cachedForUrl(url)
+        val id = if (trackId.startsWith("yt_")) trackId.removePrefix("yt_") else resolved?.videoId.orEmpty()
+        if (!isVideoId(id)) return url
+        // Queue resumption may hold an empty or expired signed URL; identity still resolves on the loader.
+        val itag = resolved?.itag ?: url.toHttpUrlOrNull()?.queryParameter("itag")?.toIntOrNull()
         return Uri.Builder().scheme("xtreme-youtube").authority("audio").appendPath(id)
-            .appendPath(if (hls) "stream.m3u8" else "stream.audio").build().toString()
+            .appendPath(if (isHls(url, null)) "stream.m3u8" else "stream.audio")
+            .apply {
+                itag?.let { appendQueryParameter("itag", it.toString()) }
+                resolved?.contentLength?.let { appendQueryParameter("length", it.toString()) }
+                if (isHls(url, null)) {
+                    // A refreshed HLS session needs a new playlist tracker. The digest
+                    // distinguishes sessions without persisting the signed media URL.
+                    val digest = java.security.MessageDigest.getInstance("SHA-256").digest(url.toByteArray())
+                    appendQueryParameter("session", digest.take(8).joinToString("") { "%02x".format(it) })
+                }
+            }.build().toString()
+    }
+    fun cachedForUrl(url: String): AudioStream? = synchronized(cache) { cache.snapshot().values.firstOrNull { it.url == url } }
+    fun currentStream(videoId: String, quality: AudioQuality): AudioStream? = synchronized(cache) {
+        val prefix = videoId + ":" + minOf(quality.kbps, 320) * 1000 + ":"
+        cache.snapshot().entries.lastOrNull { it.key.startsWith(prefix) }?.value
+    }
+    fun headersFor(url: String): Map<String, String> = synchronized(cache) {
+        val parsed = url.toHttpUrlOrNull()
+        val client = parsed?.queryParameter("c") ?: parsed?.pathSegments?.let { path ->
+            path.indexOf("c").takeIf { it >= 0 }?.let { path.getOrNull(it + 1) }
+        }
+        cache.snapshot().values.lastOrNull { it.url == url ||
+            client != null && it.url.toHttpUrlOrNull()?.queryParameter("c") == client }?.headers
+            ?: mapOf("User-Agent" to "Mozilla/5.0", "Referer" to "https://www.youtube.com/")
+    }
+    fun invalidate(videoId: String) = synchronized(cache) {
+        cache.snapshot().keys.filter { it.startsWith(videoId + ":") }.forEach(cache::remove)
     }
 
     suspend fun resolve(videoId: String, quality: AudioQuality, forceRefresh: Boolean = false,
-        hlsOnly: Boolean? = null): AudioStream = withContext(Dispatchers.IO) {
+        hlsOnly: Boolean? = null, excludedClient: String? = null): AudioStream = withContext(Dispatchers.IO) {
         require(isVideoId(videoId)) { "Invalid YouTube video identity" }
-        val key = "$videoId:${quality.id}:$hlsOnly"
+        val cap = minOf(quality.kbps, 320) * 1000
+        val key = videoId + ":" + cap + ":" + hlsOnly
         locks[(key.hashCode() and Int.MAX_VALUE) % locks.size].withLock {
-            if (forceRefresh) synchronized(cache) {
-                cache.snapshot().keys.filter { it.startsWith("$videoId:") }.forEach(cache::remove)
-            }
-            cache.get(key)?.takeIf { it.expiresAt > System.currentTimeMillis() + 15_000L }?.let { return@withLock it }
-            slots.acquire()
-            try {
-                for (client in clients) {
-                    currentCoroutineContext().ensureActive()
-                    try {
-                        val clientContext = JSONObject().put("clientName", client.name).put("clientVersion", client.version)
-                            .put("hl", "en").put("gl", "US").put("userAgent", client.agent)
-                        when (client.name) {
-                            "ANDROID_VR" -> clientContext.put("androidSdkVersion", 32)
-                                .put("osName", "Android").put("osVersion", "12L").put("deviceMake", "Oculus").put("deviceModel", "Quest 3")
-                            "IOS" -> clientContext.put("osName", "iPhone").put("osVersion", "18.3.2.22D82")
-                                .put("deviceMake", "Apple").put("deviceModel", "iPhone16,2")
-                            "ANDROID" -> clientContext.put("androidSdkVersion", 34)
-                                .put("osName", "Android").put("osVersion", "14").put("deviceMake", "Google").put("deviceModel", "Pixel 8")
-                            "WEB_REMIX" -> clientContext.put("osName", "Windows").put("osVersion", "10.0")
+            if (forceRefresh) invalidate(videoId)
+            cache.get(key)?.takeIf { it.expiresAt > System.currentTimeMillis() + 45_000L }?.let { return@withLock it }
+            slots.withPermit {
+                withTimeout(35_000L) {
+                    val excluded = mutableSetOf<String>().apply { excludedClient?.let(::add) }
+                    val extractor = runtime().extractor(cap, hlsOnly)
+                    val hints = ContentHints(wantVideo = false).withStreamCapabilities(
+                        allowHls = hlsOnly != false, allowSabr = false, allowBoundedRange = true)
+                    repeat(3) {
+                        currentCoroutineContext().ensureActive()
+                        val extracted = extractor.extract(videoId, hints, excludedClients = excluded, audioQuality = ExtractionQuality.HIGH)
+                            ?: throw IOException("No compatible YouTube audio format is available")
+                        if (extracted.videoId != videoId || !isMediaUrl(extracted.audioUrl) || extracted.sabrBootstrap != null)
+                            throw IOException("Invalid YouTube audio stream identity or transport")
+                        val hls = isHls(extracted.audioUrl, extracted.mimeType)
+                        val expiry = minOf(extracted.expiresAt?.toEpochMilliseconds() ?: Long.MAX_VALUE,
+                            extracted.audioUrl.toHttpUrlOrNull()?.queryParameter("expire")?.toLongOrNull()
+                                ?.let { it * 1000L } ?: Long.MAX_VALUE,
+                            System.currentTimeMillis() + 300_000L)
+                        val bitrate = extracted.bitrate?.coerceAtLeast(0) ?: 0
+                        val headers = extracted.headers.filter { (name, value) ->
+                            name.lowercase() in mediaHeaders && '\r' !in value && '\n' !in value }
+                        if ((hlsOnly == null || hlsOnly == hls) && (hls || bitrate in 1..cap) &&
+                            expiry > System.currentTimeMillis() + 45_000L && probe(extracted.audioUrl, headers, hls)) {
+                            val codec = displayCodec(extracted.mimeType, extracted.codecs)
+                            val result = AudioStream(extracted.audioUrl, bitrate / 1000, hls,
+                                "youtube:" + videoId + ":" + extracted.itag + ":" + extracted.contentLengthBytes,
+                                expiry - 30_000L, headers, codec, extracted.itag, extracted.contentLengthBytes, videoId,
+                                !hls && (extracted.requireBoundedRange || extracted.useRangeChunks),
+                                extracted.rangeChunkSizeBytes.coerceIn(64 * 1024L, 1024 * 1024L), extracted.profileId)
+                            cache.put(key, result); cache.put(videoId + ":" + cap + ":" + hls, result)
+                            return@withTimeout result
                         }
-                        val body = JSONObject().put("context", JSONObject().put("client", clientContext)).put("videoId", videoId)
-                        val request = Request.Builder().url("https://www.youtube.com/youtubei/v1/player?prettyPrint=false")
-                            .header("User-Agent", client.agent).header("X-YouTube-Client-Name", client.number)
-                            .header("X-YouTube-Client-Version", client.version)
-                            .post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType())).build()
-                        val response = JSONObject(http.catalogRequest(request))
-                        if (response.optJSONObject("videoDetails")?.optString("videoId") != videoId ||
-                            response.optJSONObject("playabilityStatus")?.optString("status") != "OK") continue
-                        val data = response.optJSONObject("streamingData") ?: continue
-                        if (data.optJSONArray("drmFamilies")?.length()?.let { it > 0 } == true) continue
-                        val until = System.currentTimeMillis() + minOf(data.optLong("expiresInSeconds", 300L), 300L) * 1000L
-                        if (hlsOnly != true) {
-                            val formats = data.optJSONArray("adaptiveFormats")
-                            val audio = (0 until (formats?.length() ?: 0)).mapNotNull { formats?.optJSONObject(it) }
-                                .filter { it.optString("mimeType").let { mime -> mime.startsWith("audio/mp4") || mime.startsWith("audio/webm") } &&
-                                    !it.has("drmFamilies") && it.optString("type") != "FORMAT_STREAM_TYPE_OTF" &&
-                                    originalAudio(it) && mediaUrl(it.optString("url")) != null }
-                                .sortedByDescending { minOf(it.optInt("bitrate"), quality.kbps.coerceAtMost(320) * 1000) }
-                            for (format in audio.take(3)) {
-                                val url = format.optString("url")
-                                if (!readableMedia(url)) continue
-                                val expiry = mediaUrl(url)?.queryParameter("expire")?.toLongOrNull()?.let { it * 1000L - 30_000L } ?: until
-                                if (expiry <= System.currentTimeMillis() + 15_000L) continue
-                                val result = AudioStream(url, format.optInt("bitrate") / 1000, false,
-                                    "youtube:$videoId:${format.optInt("itag")}:${format.optString("lastModified")}", minOf(until, expiry))
-                                cache.put(key, result)
-                                cache.put("$videoId:${quality.id}:false", result)
-                                return@withLock result
-                            }
-                            // Direct fallback to highest quality googlevideo URL if byte-probe timed out
-                            val directFormat = audio.firstOrNull { mediaUrl(it.optString("url")) != null }
-                            if (directFormat != null) {
-                                val url = directFormat.optString("url")
-                                val expiry = mediaUrl(url)?.queryParameter("expire")?.toLongOrNull()?.let { it * 1000L - 30_000L } ?: until
-                                val result = AudioStream(url, directFormat.optInt("bitrate") / 1000, false,
-                                    "youtube:$videoId:${directFormat.optInt("itag")}:${directFormat.optString("lastModified")}", minOf(until, expiry))
-                                cache.put(key, result)
-                                cache.put("$videoId:${quality.id}:false", result)
-                                return@withLock result
-                            }
-                        }
-                        if (hlsOnly != false) audioHls(videoId, data.optString("hlsManifestUrl"), until)?.let {
-                            cache.put(key, it); cache.put("$videoId:${quality.id}:true", it); return@withLock it
-                        }
-                    } catch (e: CancellationException) { throw e }
-                    catch (_: Exception) { /* Try the next public client; never substitute a different video. */ }
+                        excluded.add(extracted.profileId)
+                    }
+                    throw IOException("YouTube did not provide an accessible compatible audio stream")
                 }
-                throw IOException("YouTube did not provide an accessible audio stream for this video.")
-            } finally { slots.release() }
+            }
         }
     }
 
-    private fun request(url: String): Request = Request.Builder().url(url)
-        .apply { playbackHeaders.forEach { (key, value) -> header(key, value) } }.build()
-
-    private suspend fun readableMedia(url: String): Boolean = suspendCancellableCoroutine { continuation ->
-        val call = http.newCall(request(url).newBuilder().header("Range", "bytes=0-0").build())
-        continuation.invokeOnCancellation { call.cancel() }
+    private suspend fun probe(url: String, headers: Map<String, String>, hls: Boolean): Boolean = suspendCancellableCoroutine { result ->
+        val request = Request.Builder().url(url).apply { headers.forEach { (key, value) -> header(key, value) } }
+            .header("Range", "bytes=0-1023").header("Accept-Encoding", "identity").build()
+        val call = http.newBuilder().followRedirects(false).build().newCall(request)
+        result.invokeOnCancellation { call.cancel() }
         call.enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) { if (!continuation.isCancelled) continuation.resume(false) }
+            override fun onFailure(call: Call, e: IOException) { if (result.isActive) result.resume(false) }
             override fun onResponse(call: Call, response: Response) {
-                response.use {
-                    try {
-                        val type = it.header("Content-Type").orEmpty().substringBefore(';').lowercase()
-                        val valid = it.code in listOf(200, 206) && mediaUrl(it.request.url.toString()) != null &&
+                val valid = response.use {
+                    if (it.code !in listOf(200, 206) || !isMediaUrl(it.request.url.toString())) false
+                    else try {
+                        val body = it.body ?: return@use false
+                        if (hls) body.source().readUtf8(7) == "#EXTM3U"
+                        else {
+                            val type = it.header("Content-Type").orEmpty().substringBefore(';').lowercase()
                             (type.startsWith("audio/") || type in setOf("video/mp4", "video/webm", "video/mp2t", "application/octet-stream")) &&
-                            (it.body?.byteStream()?.read() ?: -1) >= 0
-                        if (!continuation.isCancelled) continuation.resume(valid)
-                    } catch (e: Exception) { if (!continuation.isCancelled) continuation.resumeWithException(e) }
+                                body.byteStream().read() >= 0
+                        }
+                    } catch (_: IOException) { false }
                 }
+                if (result.isActive) result.resume(valid)
             }
         })
     }
-
-    private fun attributes(line: String): Map<String, String> = Regex("([A-Z0-9-]+)=(?:\"([^\"]*)\"|([^,]*))")
-        .findAll(line.substringAfter(':')).associate { it.groupValues[1] to it.groupValues[2].ifBlank { it.groupValues[3] } }
-
-    private suspend fun audioHls(videoId: String, manifest: String, until: Long): AudioStream? {
-        val base = mediaUrl(manifest) ?: return null
-        val text = http.catalogRequest(request(base.toString()))
-        if (!text.startsWith("#EXTM3U")) return null
-        val lines = text.lines().map(String::trim)
-        val variants = mutableListOf<Pair<String, Int>>()
-        val audioGroups = lines.filter { it.startsWith("#EXT-X-MEDIA:") }.map(::attributes).filter { it["TYPE"] == "AUDIO" }
-        val multipleLanguages = audioGroups.mapNotNull { it["LANGUAGE"] }.distinct().size > 1
-        for ((index, line) in lines.withIndex()) {
-            val info = attributes(line)
-            if (line.startsWith("#EXT-X-MEDIA:") && info["TYPE"] == "AUDIO" &&
-                (info["NAME"].orEmpty().contains("original", true) || (!multipleLanguages && info["DEFAULT"] != "NO")))
-                info["URI"]?.let { variants.add(it to 0) }
-            if (line.startsWith("#EXT-X-STREAM-INF:") && info["RESOLUTION"] == null &&
-                !multipleLanguages &&
-                info["CODECS"].orEmpty().let { it.contains("mp4a") || it.contains("opus") } &&
-                !Regex("(?i)avc|hev|hvc|av01|vp0?9").containsMatchIn(info["CODECS"].orEmpty()))
-                lines.getOrNull(index + 1)?.takeUnless { it.startsWith('#') }?.let { variants.add(it to ((info["BANDWIDTH"]?.toIntOrNull() ?: 0) / 1000)) }
-        }
-        for ((relative, bitrate) in variants.distinct().sortedByDescending { it.second }.take(3)) {
-            val url = base.resolve(relative)?.toString() ?: continue
-            if (mediaUrl(url) == null) continue
-            val playlist = http.catalogRequest(request(url))
-            if (!playlist.startsWith("#EXTM3U") || playlist.contains("SAMPLE-AES")) continue
-            val segment = playlist.lines().map(String::trim).firstOrNull { it.isNotEmpty() && !it.startsWith('#') } ?: continue
-            val segmentUrl = url.toHttpUrlOrNull()?.resolve(segment)?.toString() ?: continue
-            if (mediaUrl(segmentUrl) == null || !readableMedia(segmentUrl)) continue
-            return AudioStream(url, bitrate, true, "youtube:$videoId:hls:$bitrate", until)
-        }
-        return null
+    /** Only the service's final teardown closes networking/cipher resources, never a screen disposal. */
+    fun releaseResources() {
+        val old = synchronized(runtimeLock) { runtime.also { runtime = null } } ?: return
+        synchronized(cache) { cache.evictAll() }
+        cleanupScope.launch { old.close() }
     }
 }

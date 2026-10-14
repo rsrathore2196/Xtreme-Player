@@ -11,7 +11,9 @@ plugins {
 
 android {
   namespace = "com.example"
-  compileSdk { version = release(36) { minorApiLevel = 1 } }
+  compileSdk {
+    version = release(37) { minorApiLevel = 0 }
+  }
 
   defaultConfig {
     applicationId = "com.aistudio.xtremeplayer.vkmz"
@@ -130,6 +132,8 @@ dependencies {
   implementation(libs.androidx.palette.ktx)
   implementation("androidx.profileinstaller:profileinstaller:1.4.0")
   implementation(libs.okhttp)
+  implementation(libs.innertubex)
+  implementation(libs.ktor.client.okhttp)
   implementation(libs.converter.moshi)
   implementation(libs.firebase.ai)
   // Uncomment to use Firestore:

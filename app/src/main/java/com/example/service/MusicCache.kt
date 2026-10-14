@@ -10,6 +10,7 @@ import com.example.data.remote.YouTubeAudioStreamService
 import com.example.data.local.AudioQualityPreferences
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.Dispatchers
+import java.io.IOException
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
@@ -42,6 +43,7 @@ object MusicCache {
             .setReadTimeoutMs(15000)
 
         val upstreamFactory = DefaultDataSource.Factory(context, httpDataSourceFactory)
+        val rangedUpstream = DataSource.Factory { YouTubeMediaDataSource(app, upstreamFactory) }
 
         // Creating a Media3 factory happens on Main. Cache recovery happens only
         // when its data source opens on Media3's loader thread.
@@ -53,7 +55,7 @@ object MusicCache {
             }
             override fun open(spec: androidx.media3.datasource.DataSpec): Long {
                 val source = CacheDataSource.Factory().setCache(getSimpleCache(app))
-                    .setUpstreamDataSourceFactory(upstreamFactory)
+                    .setUpstreamDataSourceFactory(rangedUpstream)
                     .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR).createDataSource()
                 listeners.forEach(source::addTransferListener)
                 delegate = source
@@ -71,13 +73,29 @@ object MusicCache {
             if (spec.uri.scheme == "xtreme-youtube") {
                 val videoId = spec.uri.pathSegments.firstOrNull().orEmpty()
                 val hls = spec.uri.lastPathSegment?.endsWith(".m3u8") == true
-                val audio = runBlocking(Dispatchers.IO) {
-                    YouTubeAudioStreamService.resolve(videoId, AudioQualityPreferences.getSelectedQuality(context), hlsOnly = hls)
+                val audio = try {
+                    runBlocking(Dispatchers.IO) {
+                        YouTubeAudioStreamService.resolve(videoId, AudioQualityPreferences.getSelectedQuality(context), hlsOnly = hls)
+                    }
+                } catch (e: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    throw IOException("Audio resolution interrupted", e)
+                } catch (e: Exception) {
+                    throw IOException("Couldn't resolve YouTube audio", e)
+                }
+                if (!hls) {
+                    val expectedItag = spec.uri.getQueryParameter("itag")?.toIntOrNull()
+                    val expectedLength = spec.uri.getQueryParameter("length")?.toLongOrNull()
+                    if (expectedItag != null && expectedItag != audio.itag ||
+                        expectedLength != null && audio.contentLength != null && expectedLength != audio.contentLength)
+                        throw IOException("Audio format changed; reopen the stream at its playback position")
                 }
                 spec.buildUpon().setUri(audio.url).setKey(if (hls) spec.key else audio.cacheKey)
-                    .setHttpRequestHeaders(spec.httpRequestHeaders + YouTubeAudioStreamService.playbackHeaders).build()
-            } else if (spec.uri.host?.endsWith(".googlevideo.com") == true) {
-                spec.buildUpon().setHttpRequestHeaders(spec.httpRequestHeaders + YouTubeAudioStreamService.playbackHeaders).build()
+                    .setHttpRequestHeaders(spec.httpRequestHeaders + audio.headers).build()
+            } else if (YouTubeAudioStreamService.isMediaUrl(spec.uri.toString())) {
+                val audio = YouTubeAudioStreamService.cachedForUrl(spec.uri.toString())
+                spec.buildUpon().setKey(audio?.takeUnless { it.isHls }?.cacheKey ?: spec.key)
+                    .setHttpRequestHeaders(spec.httpRequestHeaders + YouTubeAudioStreamService.headersFor(spec.uri.toString())).build()
             } else spec
         }
     }

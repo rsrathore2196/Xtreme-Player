@@ -22,6 +22,9 @@ import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.Renderer
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.video.VideoRendererEventListener
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
+import androidx.media3.common.Format
+import androidx.media3.exoplayer.DecoderReuseEvaluation
 import com.example.MainActivity
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
@@ -143,7 +146,9 @@ class MusicService : MediaLibraryService() {
         val mediaSourceFactory = DefaultMediaSourceFactory(this)
             .setDataSourceFactory(cacheDataSourceFactory)
 
+        val trackSelector = DefaultTrackSelector(this)
         val player = ExoPlayer.Builder(this, audioOnlyRenderersFactory)
+            .setTrackSelector(trackSelector)
             .setAudioAttributes(audioAttributes, /* handleAudioFocus = */ true)
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_NETWORK)
@@ -157,6 +162,34 @@ class MusicService : MediaLibraryService() {
 
         // 4. Audio Effects & Equalizer real-time pipeline (attached on active playback session)
         player.addAnalyticsListener(object : androidx.media3.exoplayer.analytics.AnalyticsListener {
+            override fun onAudioInputFormatChanged(
+                eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
+                format: Format,
+                decoderReuseEvaluation: DecoderReuseEvaluation?
+            ) {
+                val item = player.currentMediaItem ?: return
+                val uri = item.localConfiguration?.uri ?: return
+                if (!YouTubeAudioStreamService.isYouTubeAudio(item.mediaId, uri.toString())) return
+                val videoId = if (uri.scheme == "xtreme-youtube") uri.pathSegments.firstOrNull().orEmpty()
+                    else item.mediaId.removePrefix("yt_")
+                val resolved = YouTubeAudioStreamService.currentStream(videoId,
+                    com.example.data.local.AudioQualityPreferences.getSelectedQuality(this@MusicService))
+                val codec = YouTubeAudioStreamService.displayCodec(format.sampleMimeType, format.codecs)
+                    .ifBlank { resolved?.codec.orEmpty() }
+                val bitrate = format.averageBitrate.takeIf { it > 0 }?.div(1000)
+                    ?: resolved?.bitrateKbps ?: 0
+                val badge = YouTubeAudioStreamService.displayQuality(codec, bitrate)
+                val before = item.mediaMetadata.extras
+                if (before?.getString("qualityBadge") == badge && before.getBoolean("audio_actual")) return
+                val extras = Bundle(before ?: Bundle()).apply {
+                    putInt("bitrate", bitrate); putString("qualityBadge", badge)
+                    putBoolean("isLossless", false); putBoolean("audio_actual", true)
+                }
+                // Metadata-only replacement retains the same source, seek position and decoder.
+                player.replaceMediaItem(player.currentMediaItemIndex, item.buildUpon()
+                    .setMediaMetadata(item.mediaMetadata.buildUpon().setExtras(extras).build()).build())
+                checkpoint(rebuild = true)
+            }
             override fun onAudioSessionIdChanged(
                 eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
                 audioSessionId: Int
@@ -168,6 +201,21 @@ class MusicService : MediaLibraryService() {
         })
 
         player.addListener(object : Player.Listener {
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                val youtube = mediaItem?.let { YouTubeAudioStreamService.isYouTubeAudio(it.mediaId, it.localConfiguration?.uri.toString()) } == true
+                trackSelector.parameters = trackSelector.parameters.buildUpon()
+                    .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, youtube)
+                    .setMaxAudioBitrate(if (youtube) minOf(
+                        com.example.data.local.AudioQualityPreferences.getSelectedQuality(this@MusicService).kbps, 320) * 1000 else Int.MAX_VALUE)
+                    .setExceedAudioConstraintsIfNecessary(!youtube).build()
+            }
+            override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
+                val item = player.currentMediaItem ?: return
+                if (!YouTubeAudioStreamService.isYouTubeAudio(item.mediaId, item.localConfiguration?.uri.toString())) return
+                val kbps = mediaMetadata.extras?.getInt("requested_audio_kbps", 0) ?: 0
+                if (kbps > 0) trackSelector.parameters = trackSelector.parameters.buildUpon()
+                    .setMaxAudioBitrate(minOf(kbps, 320) * 1000).setExceedAudioConstraintsIfNecessary(false).build()
+            }
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 checkpointJob?.cancel()
                 checkpoint()
@@ -232,6 +280,7 @@ class MusicService : MediaLibraryService() {
             mediaLibrarySession = null
         }
         exoPlayer = null
+        YouTubeAudioStreamService.releaseResources()
         super.onDestroy()
     }
 

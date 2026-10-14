@@ -84,11 +84,13 @@ class PlaybackManager(
     private var controller: MediaController? = null
     private var progressTickerJob: Job? = null
     private var recoveryJob: Job? = null
+    private var youtubeQualityJob: Job? = null
     private val recoveryGuard = PlaybackRecoveryGuard()
     private var autoplaySuppressedBySleepTimer = false
     private val sleepExpirationListener: () -> Unit = {
         autoplaySuppressedBySleepTimer = true
         recoveryJob?.cancel()
+        youtubeQualityJob?.cancel()
         recoveryGuard.select(_uiState.value.currentTrack?.id, newRequest = true)
         activeSearchPlayJob?.cancel()
         playResolutionJob?.cancel()
@@ -323,7 +325,7 @@ class PlaybackManager(
                             currentTrack = matchedTrack,
                             currentIndex = index,
                             durationMs = if (player.duration > 0) player.duration else matchedTrack.durationMs,
-                            qualityBadge = _uiState.value.selectedQuality.badge,
+                            qualityBadge = if (com.example.data.remote.YouTubeAudioStreamService.isYouTubeAudio(matchedTrack.id, matchedTrack.audioUrl)) matchedTrack.qualityBadge else _uiState.value.selectedQuality.badge,
                             isFavorite = matchedTrack.isLiked,
                             nextRecommendedTrack = nextTrackInQueue,
                             infiniteAutoplayTracks = activeQueue.drop(index + 1)
@@ -473,6 +475,18 @@ class PlaybackManager(
                     }
                 }
             }
+            override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
+                val current = _uiState.value.currentTrack ?: return
+                val extras = mediaMetadata.extras ?: return
+                if (!com.example.data.remote.YouTubeAudioStreamService.isYouTubeAudio(current.id, current.audioUrl) || controller?.currentMediaItem?.mediaId != current.id ||
+                    !extras.getBoolean("audio_actual")) return
+                val updated = current.copy(bitrateKbps = extras.getInt("bitrate"),
+                    qualityBadge = extras.getString("qualityBadge").orEmpty(), isLossless = false)
+                val index = activeQueue.indexOfFirst { it.id == current.id }
+                if (index >= 0) activeQueue[index] = updated
+                _uiState.update { it.copy(currentTrack = updated, qualityBadge = updated.qualityBadge,
+                    queue = activeQueue.toList()) }
+            }
         })
     }
 
@@ -589,6 +603,7 @@ class PlaybackManager(
 
         lastPlayRequestTimeMs = now
         lastRequestedTrackId = track.id
+        youtubeQualityJob?.cancel()
         recoveryJob?.cancel()
         recoveryGuard.select(track.id, newRequest = true)
         isCurrentSessionExplicitPlaylist = isExplicitPlaylist
@@ -687,7 +702,7 @@ class PlaybackManager(
                         isLoading = true,
                         durationMs = track.durationMs,
                         currentPositionMs = 0L,
-                        qualityBadge = _uiState.value.selectedQuality.badge,
+                        qualityBadge = if (com.example.data.remote.YouTubeAudioStreamService.isYouTubeAudio(track.id, track.audioUrl)) track.qualityBadge else _uiState.value.selectedQuality.badge,
                         isFavorite = track.isLiked,
                         errorMessage = null,
                         sessionMemoryCount = recommendationEngine.getSessionTracks().size
@@ -717,7 +732,7 @@ class PlaybackManager(
                         isLoading = true,
                         durationMs = track.durationMs,
                         currentPositionMs = 0L,
-                        qualityBadge = _uiState.value.selectedQuality.badge,
+                        qualityBadge = if (com.example.data.remote.YouTubeAudioStreamService.isYouTubeAudio(track.id, track.audioUrl)) track.qualityBadge else _uiState.value.selectedQuality.badge,
                         isFavorite = track.isLiked,
                         errorMessage = null,
                         nextRecommendedTrack = nextInQueue,
@@ -888,6 +903,7 @@ class PlaybackManager(
             scope.launch(Dispatchers.Main) { playFromSearch(track, searchContextPool) }
             return
         }
+        youtubeQualityJob?.cancel()
         recoveryJob?.cancel()
         recoveryGuard.select(track.id, newRequest = true)
 
@@ -1225,7 +1241,8 @@ class PlaybackManager(
             _uiState.update {
                 it.copy(
                     selectedQuality = quality,
-                    qualityBadge = quality.badge
+                    qualityBadge = it.currentTrack?.takeIf { track -> com.example.data.remote.YouTubeAudioStreamService.isYouTubeAudio(track.id, track.audioUrl) }
+                        ?.qualityBadge ?: quality.badge
                 )
             }
 
@@ -1236,6 +1253,30 @@ class PlaybackManager(
             }
 
             val currentTrack = _uiState.value.currentTrack ?: return
+            if (com.example.data.remote.YouTubeAudioStreamService.isYouTubeAudio(currentTrack.id, currentTrack.audioUrl)) {
+                youtubeQualityJob?.cancel()
+                youtubeQualityJob = scope.launch {
+                    try {
+                        val resolved = withContext(Dispatchers.IO) {
+                            if (currentTrack.id.startsWith("yt_")) com.example.data.remote.YouTubeMusicApiService.resolveAudio(currentTrack, quality)
+                            else repository?.resolvePlayableTrack(currentTrack, forceRefresh = true)
+                        } ?: throw TrackUnavailableException(currentTrack.title)
+                        if (_uiState.value.currentTrack?.id != currentTrack.id || _uiState.value.selectedQuality != quality ||
+                            player.currentMediaItem?.mediaId != currentTrack.id) return@launch
+                        val index = player.currentMediaItemIndex
+                        val position = player.currentPosition
+                        val resume = player.playWhenReady
+                        val updated = resolved.copy(isLiked = _uiState.value.currentTrack?.isLiked ?: resolved.isLiked)
+                        if (index in activeQueue.indices) activeQueue[index] = updated
+                        player.replaceMediaItem(index, updated.toMediaItem())
+                        player.seekTo(index, position); player.prepare(); player.playWhenReady = resume
+                        _uiState.update { it.copy(currentTrack = updated, qualityBadge = updated.qualityBadge,
+                            queue = activeQueue.toList()) }
+                    } catch (e: CancellationException) { throw e }
+                    catch (_: Exception) { _uiState.update { it.copy(errorMessage = "Couldn't change audio quality. Current playback is preserved.") } }
+                }
+                return
+            }
             if (currentTrack.audioUrl.contains("saavncdn.com")) {
                 val availableBitrate = currentTrack.saavnBitrateFor(quality)
                 val updatedUrl = com.example.data.remote.OnlineMusicApiService.formatUrlForQuality(
@@ -1323,7 +1364,7 @@ class PlaybackManager(
         val effectiveBitrate = if (audioUrl.contains("saavncdn.com")) availableBitrate else bitrateKbps
         val rawBadge = if (audioUrl.contains("saavncdn.com")) {
             if (availableBitrate < 96) "$availableBitrate kbps" else AudioQuality.fromId(availableBitrate.toString()).badge
-        } else targetQuality.badge
+        } else if (com.example.data.remote.YouTubeAudioStreamService.isYouTubeAudio(id, audioUrl)) qualityBadge.ifBlank { "HQ Stream" } else targetQuality.badge
         val effectiveBadge = rawBadge
             .replace("YouTube Music", "HQ Stream", ignoreCase = true)
             .replace("YouTube", "HQ Stream", ignoreCase = true)
@@ -1342,6 +1383,7 @@ class PlaybackManager(
                     .setArtworkUri(Uri.parse(coverUrl))
                     .setExtras(Bundle().apply {
                         putInt("bitrate", effectiveBitrate)
+                        putInt("requested_audio_kbps", targetQuality.kbps)
                         putString("qualityBadge", effectiveBadge)
                         putString("genre", genre)
                         putString("media_source", source)
