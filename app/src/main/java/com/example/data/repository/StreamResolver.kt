@@ -40,7 +40,8 @@ internal class StreamResolver(
         track: MusicTrack,
         quality: AudioQuality,
         forceRefresh: Boolean = false,
-        failedUrl: String? = null
+        failedUrl: String? = null,
+        deferLossless: Boolean = false
     ): MusicTrack = withContext(Dispatchers.IO) {
         val key = track.id to quality
         if (forceRefresh) {
@@ -148,7 +149,7 @@ internal class StreamResolver(
         val artistFirstQuery = if (cleanArtist.isNotBlank() && cleanTitle.isNotBlank()) "$cleanArtist $cleanTitle".trim() else ""
 
         suspend fun findProviderRecording(losslessTimeoutMs: Long = 8_000L): MusicTrack? =
-            (if (quality == AudioQuality.HI_RES_LOSSLESS) find(searchLossless, primaryQuery, losslessTimeoutMs) else null)
+            (if (quality == AudioQuality.HI_RES_LOSSLESS && !deferLossless) find(searchLossless, primaryQuery, losslessTimeoutMs) else null)
             ?: exactRecording()
             ?: find(standard, primaryQuery)
             ?: (if (primaryArtistQuery.isNotBlank() && primaryArtistQuery != primaryQuery) find(standard, primaryArtistQuery) else null)
@@ -159,13 +160,14 @@ internal class StreamResolver(
         // Share one deadline across all upgrade queries; Archive cannot consume the entire
         // budget before JioSaavn gets a chance. Only this timeout becomes a miss: switching
         // tracks or canceling playback still cancels resolution and its HTTP requests.
-        val providerRecording = if (track.id.startsWith("yt_")) {
+        val immediateYouTube = if (deferLossless && quality == AudioQuality.HI_RES_LOSSLESS) exactYouTube() else null
+        val providerRecording = if (immediateYouTube != null) null else if (track.id.startsWith("yt_")) {
             withTimeoutOrNull(ALTERNATE_SOURCE_TIMEOUT_MS) {
                 findProviderRecording(LOSSLESS_LOOKUP_TIMEOUT_MS)
             }
         } else findProviderRecording()
 
-        val candidate = providerRecording
+        val candidate = immediateYouTube ?: providerRecording
             ?: exactYouTube()
             ?: searchYouTube(primaryQuery, songsOnly = true)
             ?: searchYouTube(primaryQuery, songsOnly = false)
@@ -196,6 +198,17 @@ internal class StreamResolver(
     companion object {
         private const val ALTERNATE_SOURCE_TIMEOUT_MS = 6_000L
         private const val LOSSLESS_LOOKUP_TIMEOUT_MS = 3_000L
+
+        internal fun matchesLosslessUpgrade(requested: MusicTrack, candidate: MusicTrack): Boolean {
+            if (!candidate.isLossless || candidate.audioUrl.isBlank() || requested.durationMs <= 0 || candidate.durationMs <= 0) return false
+            if (abs(requested.durationMs - candidate.durationMs) > 2_000L) return false
+            if (normalize(extractCleanTitle(requested.title, requested.artist)) != normalize(extractCleanTitle(candidate.title, candidate.artist))) return false
+            val requestedIsrc = isrc(requested.isrc); val candidateIsrc = isrc(candidate.isrc)
+            val requestedArtists = artists(requested.artist); val candidateArtists = artists(candidate.artist)
+            if (requestedArtists.isNotEmpty() && candidateArtists.isNotEmpty() && requestedArtists != candidateArtists) return false
+            if (requestedIsrc != null && candidateIsrc != null) return requestedIsrc == candidateIsrc
+            return requestedArtists.isNotEmpty() && requestedArtists == candidateArtists
+        }
 
         internal fun needsResolution(track: MusicTrack): Boolean {
             if (track.audioUrl.isBlank() || track.audioUrl.startsWith("yt_") || track.audioUrl.contains("placeholder")) return true

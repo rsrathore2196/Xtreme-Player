@@ -81,7 +81,7 @@ fun InfiniteRadioHeroCard(
             // Resolve a high-quality source, but decode only the measured pixel rectangle.
             // Coil's FILL scaling keeps enough pixels for the existing center crop.
             val artworkRequest = rememberOptimizedImageRequest(
-                track = seedTrack, targetSize = ImageConfig.HERO_BANNER_SIZE
+                track = seedTrack, targetSize = ImageConfig.HERO_BANNER_SIZE, decodeSize = artworkSize
             )
             val fullQualityArtwork = remember(artworkRequest, artworkSize) {
                 artworkRequest.newBuilder().size(artworkSize.width, artworkSize.height)
@@ -98,8 +98,8 @@ fun InfiniteRadioHeroCard(
         Box(Modifier.fillMaxSize().background(Brush.verticalGradient(
             0f to Color.Transparent,
             0.22f to glassTint.copy(alpha = 0.15f),
-            0.48f to glassTint.copy(alpha = if (isDark) 0.72f else 0.80f),
-            1f to glassTint.copy(alpha = if (isDark) 0.92f else 0.96f)
+            0.48f to glassTint.copy(alpha = if (isDark) 0.72f else 0.48f),
+            1f to glassTint.copy(alpha = if (isDark) 0.92f else 0.68f)
         )))
         // A clear lens reflection keeps the artwork sharp beneath the glass.
         Box(Modifier.fillMaxSize().background(Brush.linearGradient(

@@ -87,6 +87,22 @@ import com.example.ui.viewmodel.SectionState
 import java.util.Calendar
 import kotlinx.coroutines.launch
 
+private val NoHomeScrollListener: (Any, Boolean) -> Unit = { _, _ -> }
+private val LocalHomeScrollListener = androidx.compose.runtime.staticCompositionLocalOf { NoHomeScrollListener }
+
+@Composable
+private fun ObserveHomeScroll(state: androidx.compose.foundation.lazy.LazyListState) {
+    val listener = LocalHomeScrollListener.current
+    if (listener === NoHomeScrollListener) return
+    androidx.compose.runtime.LaunchedEffect(state, listener) {
+        androidx.compose.runtime.snapshotFlow { state.isScrollInProgress }
+            .collect { listener(state, it) }
+    }
+    androidx.compose.runtime.DisposableEffect(state, listener) {
+        onDispose { listener(state, false) }
+    }
+}
+
 @Composable
 private fun ArtistPageButton(forward: Boolean, tint: Color, onClick: () -> Unit) {
     Box(
@@ -167,48 +183,61 @@ fun HomeScreen(
     onOpenArtist: (com.example.data.repository.CatalogArtist) -> Unit = {}
 ) {
     val heroSeedTrack by homeViewModel.heroSeedTrack.collectAsStateWithLifecycle()
-    val ytmCard by homeViewModel.ytmCard.collectAsStateWithLifecycle()
-    val eraCard by homeViewModel.eraCard.collectAsStateWithLifecycle()
-    val countryLanguageCard by homeViewModel.countryLanguageCard.collectAsStateWithLifecycle()
+    val recommendationCards by homeViewModel.recommendationCards.collectAsStateWithLifecycle()
+    val ytmCard = recommendationCards.quick
+    val eraCard = recommendationCards.era
+    val countryLanguageCard = recommendationCards.chart
     val listeningHistoryCard by homeViewModel.listeningHistoryCard.collectAsStateWithLifecycle()
-    val personalizedCard by homeViewModel.personalizedCard.collectAsStateWithLifecycle()
+    val personalizedCard = recommendationCards.personalized
     val mostListenedArtists by homeViewModel.mostListenedArtists.collectAsStateWithLifecycle()
     val userProfile by homeViewModel.userProfile.collectAsStateWithLifecycle()
     val isRefreshing by homeViewModel.isRefreshing.collectAsStateWithLifecycle()
     val refreshErrorMessage by homeViewModel.refreshErrorMessage.collectAsStateWithLifecycle()
+    val scrollMonitor: (Any, Boolean) -> Unit = remember(homeViewModel) {
+        val activeLists = mutableSetOf<Any>()
+        return@remember { list, active ->
+            if (active) activeLists.add(list) else activeLists.remove(list)
+            homeViewModel.setHomeScrolling(activeLists.isNotEmpty())
+        }
+    }
+    androidx.compose.runtime.DisposableEffect(homeViewModel) {
+        onDispose { homeViewModel.setHomeScrolling(false) }
+    }
 
-    HomePullRefreshOverscrollLayout(
-        isRefreshing = isRefreshing,
-        onRefresh = { homeViewModel.refreshHome(isExplicitPull = true) },
-        modifier = modifier.fillMaxSize()
-    ) { contentOffset ->
-        HomeScreenContent(
-            heroSeedTrack = heroSeedTrack,
-            pillsCardTracks = listeningHistoryCard.tracks.take(6),
-            ytmCard = ytmCard,
-            eraCard = eraCard,
-            countryLanguageCard = countryLanguageCard,
-            listeningHistoryCard = listeningHistoryCard,
-            personalizedCard = personalizedCard,
-            mostListenedArtists = mostListenedArtists,
-            onOpenArtist = onOpenArtist,
-            isRadioSession = playerUiState?.isInfiniteRadio == true,
-            isRadioLoading = playerUiState?.isLoading == true,
-            userProfile = userProfile,
-            currentTrack = currentTrack ?: playerUiState?.currentTrack,
-            isPlaying = isPlaying,
-            isAutoplayEnabled = isAutoplayEnabled,
-            currentPlayingTrackId = currentPlayingTrackId ?: currentTrack?.id ?: playerUiState?.currentTrack?.id,
-            onTrackClick = onTrackClick,
-            onToggleFavorite = onToggleFavorite,
-            onOpenSettings = onOpenSettings,
-            onPlayInfiniteRadio = onPlayInfiniteRadio,
-            onAddToQueue = onAddToQueue,
-            boundaryOffset = contentOffset,
-            refreshErrorMessage = refreshErrorMessage,
-            onRetryRefresh = { homeViewModel.refreshHome(isExplicitPull = true) },
-            onDismissRefreshError = { homeViewModel.clearRefreshError() }
-        )
+    androidx.compose.runtime.CompositionLocalProvider(LocalHomeScrollListener provides scrollMonitor) {
+        HomePullRefreshOverscrollLayout(
+            isRefreshing = isRefreshing,
+            onRefresh = { homeViewModel.refreshHome(isExplicitPull = true) },
+            modifier = modifier.fillMaxSize()
+        ) { contentOffset ->
+            HomeScreenContent(
+                heroSeedTrack = heroSeedTrack,
+                pillsCardTracks = listeningHistoryCard.tracks.take(6),
+                ytmCard = ytmCard,
+                eraCard = eraCard,
+                countryLanguageCard = countryLanguageCard,
+                listeningHistoryCard = listeningHistoryCard,
+                personalizedCard = personalizedCard,
+                mostListenedArtists = mostListenedArtists,
+                onOpenArtist = onOpenArtist,
+                isRadioSession = playerUiState?.isInfiniteRadio == true,
+                isRadioLoading = playerUiState?.isLoading == true,
+                userProfile = userProfile,
+                currentTrack = currentTrack ?: playerUiState?.currentTrack,
+                isPlaying = isPlaying,
+                isAutoplayEnabled = isAutoplayEnabled,
+                currentPlayingTrackId = currentPlayingTrackId ?: currentTrack?.id ?: playerUiState?.currentTrack?.id,
+                onTrackClick = onTrackClick,
+                onToggleFavorite = onToggleFavorite,
+                onOpenSettings = onOpenSettings,
+                onPlayInfiniteRadio = onPlayInfiniteRadio,
+                onAddToQueue = onAddToQueue,
+                boundaryOffset = contentOffset,
+                refreshErrorMessage = refreshErrorMessage,
+                onRetryRefresh = { homeViewModel.refreshHome(isExplicitPull = true) },
+                onDismissRefreshError = { homeViewModel.clearRefreshError() }
+            )
+        }
     }
 }
 
@@ -305,6 +334,7 @@ fun HomeScreenContent(
     val textMutedColor = appColors.textMuted
 
     val homeListState = rememberLazyListState()
+    ObserveHomeScroll(homeListState)
 
     Box(
         modifier = modifier
@@ -558,6 +588,7 @@ fun HomeScreenContent(
                         mostListenedArtists.drop(page * 15).take(15)
                     }
                     val artistListState = rememberLazyListState()
+                    ObserveHomeScroll(artistListState)
                     val artistScope = rememberCoroutineScope()
                     Column(Modifier.padding(top = 22.dp)) {
                         Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp),
@@ -675,6 +706,8 @@ fun SectionCardLayout(
     val safeTracks = remember(state.tracks) {
         state.tracks.distinctBy { it.id }.take(com.example.recommendation.HomeRecommendationPolicy.MAX_SHELF_TRACKS)
     }
+    val shelfListState = rememberLazyListState()
+    ObserveHomeScroll(shelfListState)
     Column(modifier = Modifier.padding(top = 22.dp)) {
         Column(modifier = Modifier.padding(horizontal = 20.dp)) {
             Text(
@@ -702,6 +735,7 @@ fun SectionCardLayout(
             SectionShimmerRow()
         } else if (state.tracks.isNotEmpty()) {
             LazyRow(
+                state = shelfListState,
                 contentPadding = PaddingValues(horizontal = 20.dp),
                 horizontalArrangement = Arrangement.spacedBy(14.dp)
             ) {

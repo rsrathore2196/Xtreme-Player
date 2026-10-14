@@ -5,6 +5,8 @@ import com.example.data.model.*
 import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
+import java.text.Normalizer
+import java.util.Locale
 
 /** Provider wire formats retain their original clocks; no estimated syllable subdivision. */
 internal object LyricsDocuments {
@@ -33,6 +35,13 @@ internal object LyricsDocuments {
                 is JSONObject -> {
                     if (value.optBoolean("isError") || value.opt("ok") == false || value.opt("success") == false ||
                         (value.has("error") && !value.isNull("error") && value.opt("error") !in listOf(false, ""))) return null
+                    val metadata = value.optJSONObject("metadata") ?: value.optJSONObject("meta") ?: value
+                    val foundTitle = metadata.optString("trackName").ifBlank { (metadata.opt("title") as? String).orEmpty() }
+                    val foundArtist = metadata.optString("artistName").ifBlank { (metadata.opt("artist") as? String).orEmpty() }
+                    if ((foundTitle.isNotBlank() || foundArtist.isNotBlank()) && !identityMatches(identity,
+                        foundTitle.ifBlank { identity.title }, foundArtist.ifBlank { identity.artist.orEmpty() })) return null
+                    val suppliedDuration = metadata.optLong("durationMs", metadata.optLong("duration_ms", 0L))
+                    if (suppliedDuration > 0 && (identity.durationMs ?: 0) > 0 && kotlin.math.abs(suppliedDuration - identity.durationMs!!) > 5_000) return null
                     val choices = listOf("ttml", "ttmlContent", "syncedLyrics", "richsync_body", "subtitle_body",
                         "lyrics", "lrc", "content", "lines", "lyric", "data", "result", "response", "attributes", "plainLyrics", "text")
                         .mapNotNull { key -> value.opt(key)?.takeUnless { it == JSONObject.NULL }?.let {
@@ -59,10 +68,11 @@ internal object LyricsDocuments {
 
     fun build(identity: SongIdentity, provider: String, lines: List<LyricLine>, synced: Boolean = true): TrackLyrics? {
         val clean = lines.filter { it.text.isNotBlank() }.distinctBy { it.timestampMs to it.text }
-            .let { if (synced) it.sortedBy(LyricLine::timestampMs) else it }
         if (clean.isEmpty()) return null
         // A document extending beyond the recording is the wrong edit or uses the wrong units.
         val duration = identity.durationMs ?: 0
+        if (synced && (clean.any { it.timestampMs < 0 || it.durationMs < 0 || it.endTimeMs < it.timestampMs } ||
+            clean.zipWithNext().any { (a, b) -> b.timestampMs < a.timestampMs })) return null
         if (synced && duration > 0 && clean.any { maxOf(it.timestampMs, it.words.maxOfOrNull(LyricWord::endTimeMs) ?: 0) > duration + 5_000 }) return null
         return SyllableSynthesizer.enrichLyrics(TrackLyrics(identity.trackId.orEmpty(), identity.title,
             identity.artist.orEmpty(), synced, clean, provider = provider,
@@ -72,19 +82,104 @@ internal object LyricsDocuments {
     }
 
     /** Stable ties retain source preference; availability/timing always outranks provider order. */
+    private val providerOrder = listOf("lrc.red", "BiniLyrics", "BetterLyrics", "BetterLyrics Portato", "PaxSenix",
+        "PaxSenix: Spotify", "PaxSenix: Musixmatch", "LyricsPlus", "Unison", "YouTube captions", "KuGou", "LRCLIB", "Musixmatch", "YouTube Music", "Genius")
     val comparator: Comparator<TrackLyrics> = compareBy<TrackLyrics> { quality(it) }
-        .thenBy { coverage(it) }.thenBy { it.lines.count { line -> line.words.isNotEmpty() } }
+        .thenBy { (assessment(it).coverage * 20).toInt() }
+        .thenBy { assessment(it).textLength / 25 }
+        .thenBy { -providerOrder.indexOf(it.provider).let { index -> if (index < 0) providerOrder.size else index } }
+
+    data class TimingAssessment(val tier: Int, val coverage: Double, val syllableCoverage: Double,
+        val textLength: Int, val complete: Boolean)
+
+    private fun text(value: String) = Normalizer.normalize(value, Normalizer.Form.NFKC)
+        .lowercase(Locale.ROOT).filter {
+            val type = Character.getType(it)
+            it.isLetterOrDigit() || type == Character.NON_SPACING_MARK.toInt() ||
+                type == Character.COMBINING_SPACING_MARK.toInt() || type == Character.ENCLOSING_MARK.toInt()
+        }
+    private val versions = Regex("(?i)\\b(live|remix|acoustic|unplugged|instrumental|karaoke|cover|slowed|sped|reverb|nightcore|radio edit|remaster)\\b")
+    fun identityMatches(identity: SongIdentity, title: String, artist: String): Boolean {
+        if (versions.findAll(title).map { it.value.lowercase(Locale.ROOT) }.toSet() !=
+            versions.findAll(identity.title).map { it.value.lowercase(Locale.ROOT) }.toSet()) return false
+        val (clean, core) = LyricsProvider.sanitizeTitle(identity.title)
+        val (primary, artists) = LyricsProvider.sanitizeArtist(identity.artist.orEmpty())
+        return LyricsValidation.evaluateTitleMatch(title, artist, clean, core, artists) >= 0.85 &&
+            (primary.isBlank() || LyricsValidation.validateArtistMatch(artist, primary, artists))
+    }
+
+    fun verified(identity: SongIdentity, lyrics: TrackLyrics): Boolean {
+        if (lyrics.lines.isEmpty() || !identityMatches(identity, lyrics.title, lyrics.artist)) return false
+        if (!lyrics.isSynced) return true
+        val maximum = (identity.durationMs ?: 0L).takeIf { it > 0 }?.plus(5_000) ?: Long.MAX_VALUE
+        if (lyrics.lines.any { line -> line.timestampMs < 0 || line.durationMs < 0 ||
+            line.endTimeMs < line.timestampMs || line.timestampMs > maximum ||
+            line.isReliableDuration && (line.durationMs <= 0 || line.endTimeMs > maximum) }) return false
+        if (lyrics.lines.zipWithNext().any { (a, b) -> b.timestampMs < a.timestampMs }) return false
+        for (line in lyrics.lines) {
+            val words = line.words.filter { it.isReliableTiming }
+            if (words.any { it.timestampMs < line.timestampMs || it.durationMs <= 0 ||
+                it.endTimeMs <= it.timestampMs || it.endTimeMs > maximum ||
+                line.isReliableDuration && it.endTimeMs > line.endTimeMs + 50 } ||
+                words.zipWithNext().any { (a, b) -> b.timestampMs < a.timestampMs }) return false
+        }
+        // An all-zero timestamp response is plain text, not genuine line synchronization.
+        return lyrics.lines.any { it.timestampMs > 0 || it.isReliableDuration || it.words.any { word -> word.isReliableTiming } }
+    }
+
+    fun assessment(lyrics: TrackLyrics): TimingAssessment {
+        val total = lyrics.lines.sumOf { text(it.text).length }.coerceAtLeast(1)
+        if (lyrics.lines.isEmpty()) return TimingAssessment(-1, 0.0, 0.0, 0, false)
+        if (!lyrics.isSynced) return TimingAssessment(0, 0.0, 0.0, total, true)
+        var wordText = 0
+        var syllableText = 0
+        var splits = 0
+        for (line in lyrics.lines) {
+            val lineText = text(line.text)
+            var cursor = 0
+            var previous = line.timestampMs
+            for (word in line.words) {
+                val value = text(word.text)
+                val at = if (value.isNotEmpty()) lineText.indexOf(value, cursor) else -1
+                if (at < 0) continue
+                cursor = at + value.length
+                val valid = word.isReliableTiming && word.durationMs > 0 && word.timestampMs >= previous &&
+                    word.timestampMs >= line.timestampMs && word.endTimeMs > word.timestampMs &&
+                    (!line.isReliableDuration || word.endTimeMs <= line.endTimeMs + 50)
+                previous = maxOf(previous, word.timestampMs)
+                if (!valid) continue
+                wordText += value.length
+                val syllables = word.syllables
+                val authentic = syllables.isNotEmpty() && text(syllables.joinToString("") { it.text }) == value &&
+                    syllables.all { it.isReliableTiming && it.durationMs > 0 && it.timestampMs >= word.timestampMs &&
+                        it.endTimeMs > it.timestampMs && it.endTimeMs <= word.endTimeMs + 50 } &&
+                    syllables.zipWithNext().none { (a, b) -> b.timestampMs < a.timestampMs || b.timestampMs + 50 < a.endTimeMs }
+                val single = !SyllableSynthesizer.isNonEnglish(word.text, lyrics.language, lyrics.artist) &&
+                    SyllableSynthesizer.syllabifyWord(word.text, lyrics.language, lyrics.artist).size == 1
+                if (authentic && syllables.size > 1) { splits++; syllableText += value.length }
+                else if (single) syllableText += value.length
+            }
+        }
+        val words = (wordText.toDouble() / total).coerceIn(0.0, 1.0)
+        val syllables = (syllableText.toDouble() / total).coerceIn(0.0, 1.0)
+        val substantial = lyrics.lines.size >= 3 && total >= 50 &&
+            lyrics.lines.last().timestampMs - lyrics.lines.first().timestampMs >= 10_000
+        val tier = when { substantial && words >= 0.9 && syllables >= 0.85 && splits >= 2 -> 3
+            words >= 0.8 -> 2
+            else -> 1 }
+        return TimingAssessment(tier, words, syllables, total, substantial && (tier == 3 || tier == 2 && words >= 0.9))
+    }
 
     fun quality(lyrics: TrackLyrics): Int {
-        if (lyrics.lines.isEmpty()) return -1
-        val words = lyrics.lines.flatMap { it.words }.filter { it.isReliableTiming && it.durationMs > 0 }
-        if (words.any { word -> word.syllables.size > 1 && word.syllables.all { it.isReliableTiming && it.durationMs > 0 } }) return 3
-        if (words.isNotEmpty()) return 2
-        return if (lyrics.isSynced) 1 else 0
+        return assessment(lyrics).tier
     }
-    private fun coverage(lyrics: TrackLyrics): Double = lyrics.lines.sumOf { line ->
-        line.words.filter { it.isReliableTiming && it.durationMs > 0 }.sumOf { it.text.length }
-    }.toDouble() / lyrics.lines.sumOf { it.text.length }.coerceAtLeast(1)
+
+    fun meaningfulUpgrade(candidate: TrackLyrics, current: TrackLyrics?): Boolean {
+        if (current == null) return candidate.lines.isNotEmpty()
+        val next = assessment(candidate); val old = assessment(current)
+        return next.tier > old.tier || next.tier == old.tier &&
+            (next.coverage >= old.coverage + 0.05 || next.textLength >= old.textLength * 1.15 && next.coverage >= old.coverage)
+    }
 
     fun words(runs: List<Run>, explicitSpacing: Boolean): List<LyricWord> {
         if (!explicitSpacing) return runs.filter { it.text.isNotBlank() }.map {

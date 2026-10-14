@@ -78,6 +78,10 @@ data class SectionState(
 private fun SectionState.limitShelf() = copy(tracks = tracks.take(HomeRecommendationPolicy.MAX_SHELF_TRACKS))
 
 @Immutable
+data class RecommendationCards(val quick: SectionState, val era: SectionState,
+    val chart: SectionState, val personalized: SectionState)
+
+@Immutable
 data class MostListenedArtist(
     val name: String,
     val playCount: Int,
@@ -125,6 +129,11 @@ class HomeViewModel(
     private val _catalogTracks = MutableStateFlow(initialCards?.catalog.orEmpty())
     val catalogTracks: StateFlow<List<MusicTrack>> = _catalogTracks.asStateFlow()
     private val homeVisible = MutableStateFlow(false)
+    private val homeScrolling = MutableStateFlow(false)
+    fun setHomeScrolling(active: Boolean) {
+        homeScrolling.value = active
+        com.example.recommendation.DiscoveryRequestCoordinator.homeScrolling(active)
+    }
     private val restored = CompletableDeferred<Unit>()
     private val eventsLoaded = CompletableDeferred<Unit>()
     private val favoritesLoaded = CompletableDeferred<Unit>()
@@ -270,6 +279,11 @@ class HomeViewModel(
     )
     val personalizedCard: StateFlow<SectionState> = _personalizedCard.asStateFlow()
 
+    // One publication for the coordinated recommendation cards; history/artist updates stay independent.
+    private val _recommendationCards = MutableStateFlow(RecommendationCards(
+        _ytmCard.value, _eraCard.value, _countryLanguageCard.value, _personalizedCard.value))
+    val recommendationCards: StateFlow<RecommendationCards> = _recommendationCards.asStateFlow()
+
     private val exposurePreferences by lazy {
         application.getSharedPreferences("home_shelf_exposure", Context.MODE_PRIVATE)
     }
@@ -396,6 +410,7 @@ class HomeViewModel(
         }
         if (!activeRefreshIsExplicit && pool.generation != manualRenderGeneration)
             awaitHomeIdle()
+        homeScrolling.first { !it }
         if (refreshCandidatesPending.value || candidates.value != pool) return@withLock
         val rendering = BackgroundWorkCoordinator.busy()
         try {
@@ -449,6 +464,7 @@ class HomeViewModel(
         val quick = HomeRecommendationPolicy.diversify(fresh(quickRanked), HomeRecommendationPolicy.MAX_SHELF_TRACKS, seen)
         // Cancellation on a tab change must not publish a partially calculated stale shelf set.
         currentCoroutineContext().ensureActive()
+        homeScrolling.first { !it }
         if (refreshCandidatesPending.value || candidates.value != pool) return@withLock
         _homeShelves.value = shelves
         // Reranking must retain error/loading updates arriving from the refresh requests.
@@ -457,6 +473,8 @@ class HomeViewModel(
         _ytmCard.update { it.copy(tracks = quick, isLoading = false, isLoaded = quick.isNotEmpty()) }
         _personalizedCard.value = _personalizedCard.value.copy(tracks = personalized,
             isLoading = false, isLoaded = personalized.isNotEmpty())
+        _recommendationCards.value = RecommendationCards(_ytmCard.value, _eraCard.value,
+            _countryLanguageCard.value, _personalizedCard.value)
         lastRenderInputs = inputs
         _currentStage.value = LoadingStage.PRIORITY_3_BACKGROUND_ENRICHED
         savedSignal = signal; savedGeneration = pool.generation; savedCandidates = pool
@@ -497,6 +515,7 @@ class HomeViewModel(
     private suspend fun awaitHomeIdle() {
         while (true) {
             homeVisible.first { it }
+            homeScrolling.first { !it }
             val essential = _ytmCard.value.tracks.isEmpty() && _countryLanguageCard.value.tracks.isEmpty()
             // Empty Home content is essential loading, not optional revalidation.
             // Startup work and shimmer frames must not postpone its IO/Default work
@@ -590,6 +609,7 @@ class HomeViewModel(
         if (homeVisible.value == visible) return@launch
         homeVisible.value = visible
         if (!visible) {
+            setHomeScrolling(false)
             // Keep bounded requests that have already started. Cancel only optional
             // work still waiting for idle; tab returns reuse the same request/results.
             if (homeRefreshJob?.isActive == true && refreshWaitingForIdle) {
@@ -630,6 +650,19 @@ class HomeViewModel(
                     catch (e: CancellationException) { throw e }
                     catch (e: Exception) { android.util.Log.w("HomeViewModel", "Could not update listening cards", e) }
                 }
+        }
+        dataScope.launch {
+            combine(_ytmCard, _eraCard, _countryLanguageCard, _personalizedCard) { quick, era, chart, personalized ->
+                RecommendationCards(quick, era, chart, personalized)
+            }.debounce(32L).collectLatest { cards ->
+                homeScrolling.first { !it }
+                refreshCandidatesPending.first { !it }
+                // A single renderer publishes changed tracks; this path publishes loading/errors or cache restoration.
+                if (cards.quick.tracks == _ytmCard.value.tracks && cards.era.tracks == _eraCard.value.tracks &&
+                    cards.chart.tracks == _countryLanguageCard.value.tracks &&
+                    cards.personalized.tracks == _personalizedCard.value.tracks)
+                    _recommendationCards.value = cards
+            }
         }
         dataScope.launch {
             combine(_ytmCard, _eraCard, _countryLanguageCard) { quick, era, chart ->
@@ -861,6 +894,7 @@ class HomeViewModel(
             }
             Triple(quickJob.await(), eraJob.await(), chartJob.await())
         }
+        homeScrolling.first { !it }
         if (profileKey() != profileKey(profile)) return@work
         val catalog = HomeRecommendationPolicy.originals(quick + era + _catalogTracks.value).take(300)
         currentCoroutineContext().ensureActive()
@@ -915,6 +949,7 @@ class HomeViewModel(
     }
 
     override fun onCleared() {
+        setHomeScrolling(false)
         shelfCache.close()
         super.onCleared()
     }

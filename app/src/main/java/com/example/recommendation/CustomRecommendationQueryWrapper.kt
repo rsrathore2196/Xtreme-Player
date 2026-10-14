@@ -2,12 +2,15 @@ package com.example.recommendation
 
 import com.example.data.model.MusicTrack
 import com.example.data.remote.YouTubeMusicApiService
+import com.example.data.remote.OnlineMusicApiService
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import java.util.concurrent.ConcurrentHashMap
 
 /** Related-song radio plus contextual searches, with bounded caching and no guessed metadata. */
@@ -15,10 +18,35 @@ object CustomRecommendationQueryWrapper {
     private data class Cached(val tracks: List<MusicTrack>, val timestamp: Long)
     private val cache = ConcurrentHashMap<String, Cached>()
 
-    suspend fun fetchTargetedRecommendations(currentTrack: MusicTrack, limit: Int = 40): List<MusicTrack> = withContext(Dispatchers.IO) {
-        val key = HomeRecommendationPolicy.metadataKey(currentTrack)
+    suspend fun searchDiscovery(query: String, limit: Int = 35, era: Boolean = false,
+        forceRefresh: Boolean = false, essential: Boolean = false): List<MusicTrack> = withContext(Dispatchers.IO) {
+        if (query.isBlank() || limit <= 0) return@withContext emptyList()
+        val pageSize = maxOf(40, limit).coerceAtMost(100)
+        val key = "query:$era:$pageSize:${DiscoveryRequestCoordinator.normalize(query)}"
+        val hit = cache[key]
+        if (hit != null && System.currentTimeMillis() - hit.timestamp < if (forceRefresh) 30_000L else 600_000L)
+            return@withContext hit.tracks.take(limit)
+        DiscoveryRequestCoordinator.shared(key, essential) {
+            val latest = cache[key]
+            if (latest != null && System.currentTimeMillis() - latest.timestamp < if (forceRefresh) 30_000L else 600_000L)
+                return@shared latest.tracks
+            val tracks = if (era) OnlineMusicApiService.searchSongs(query, limit = pageSize, forceRefresh = forceRefresh)
+                else YouTubeMusicApiService.searchSongs(query, limit = pageSize, songsOnly = true)
+            currentCoroutineContext().ensureActive()
+            if (tracks.isNotEmpty()) remember(key, tracks)
+            tracks.ifEmpty { latest?.tracks.orEmpty() }
+        }.take(limit)
+    }
+
+    private fun remember(key: String, tracks: List<MusicTrack>) {
+        if (cache.size >= 80) cache.entries.minByOrNull { it.value.timestamp }?.let { cache.remove(it.key) }
+        cache[key] = Cached(tracks, System.currentTimeMillis())
+    }
+
+    suspend fun fetchTargetedRecommendations(currentTrack: MusicTrack, limit: Int = 40,
+        alreadyQueued: List<MusicTrack> = emptyList(), minimumUsable: Int = 20): List<MusicTrack> = withContext(Dispatchers.IO) {
+        val key = "seed:${HomeRecommendationPolicy.metadataKey(currentTrack)}:${currentTrack.id}"
         val cached = cache[key]
-        if (cached != null && System.currentTimeMillis() - cached.timestamp < 10 * 60_000) return@withContext cached.tracks.take(limit)
         val artist = extractPrimaryArtist(currentTrack)
         val language = extractExactLanguage(currentTrack)
         val genre = currentTrack.genre.takeIf(HomeRecommendationPolicy::known).orEmpty()
@@ -26,20 +54,36 @@ object CustomRecommendationQueryWrapper {
             if (artist.isNotBlank()) { add("$artist songs"); add("$artist collaborations") }
             if (language.isNotBlank() || genre.isNotBlank()) add("$language $genre original songs".trim())
         }.distinct().take(3)
-        val results = coroutineScope {
-            val radio = async {
-                val videoId = if (currentTrack.id.startsWith("yt_")) currentTrack.id.removePrefix("yt_") else {
-                    val seedMatches = YouTubeMusicApiService.searchSongs("${currentTrack.title} $artist", limit = 5, songsOnly = true)
-                    val identity = HomeRecommendationPolicy.Recordings().apply { add(currentTrack) }
-                    seedMatches.firstOrNull { identity.contains(it) }?.id?.removePrefix("yt_")
-                }
-                videoId?.let { YouTubeMusicApiService.getRadioRecommendations(it, limit = 40) }.orEmpty()
+        suspend fun usable(tracks: List<MusicTrack>) = withContext(Dispatchers.Default) {
+            val excluded = HomeRecommendationPolicy.Recordings().apply { add(currentTrack); alreadyQueued.forEach { add(it) } }
+            HomeRecommendationPolicy.originals(tracks).filter { candidate ->
+                !excluded.contains(candidate) && (language.isBlank() || !HomeRecommendationPolicy.known(candidate.language) || candidate.language.equals(language, true))
             }
-            val searches = queries.map { query -> async {
-                try { YouTubeMusicApiService.searchSongs(query, limit = 20, songsOnly = true) }
+        }
+        if (cached != null && System.currentTimeMillis() - cached.timestamp < 600_000L &&
+            usable(cached.tracks).size >= minOf(minimumUsable, limit)) return@withContext usable(cached.tracks).take(limit)
+        val results = DiscoveryRequestCoordinator.shared("$key:$limit:${alreadyQueued.map { it.id }.sorted()}", true, network = false) {
+            val existing = cache[key]
+            val radio = if (existing != null && System.currentTimeMillis() - existing.timestamp < 600_000L) existing.tracks else {
+                val videoId = if (currentTrack.id.startsWith("yt_") && com.example.data.remote.YouTubeAudioStreamService.isVideoId(currentTrack.id.removePrefix("yt_"))) currentTrack.id.removePrefix("yt_") else {
+                    val seedMatches = searchDiscovery("${currentTrack.title} $artist", limit = 40, essential = true)
+                    val identity = HomeRecommendationPolicy.Recordings().apply { add(currentTrack) }
+                    withContext(Dispatchers.Default) { seedMatches.firstOrNull { identity.contains(it) }?.id?.removePrefix("yt_") }
+                }
+                videoId?.let { id -> DiscoveryRequestCoordinator.shared("radio:$id:60", true) {
+                    YouTubeMusicApiService.getRadioRecommendations(id, limit = 60)
+                } }.orEmpty()
+            }
+            var combined = radio
+            for (batch in queries.chunked(2)) {
+                if (usable(combined).size >= minOf(minimumUsable, limit)) break
+                val additions = coroutineScope { batch.map { query -> async {
+                try { searchDiscovery(query, limit = 40, essential = true) }
                 catch (e: CancellationException) { throw e } catch (_: Exception) { emptyList() }
-            } }
-            radio.await() + HomeRecommendationPolicy.interleave(searches.awaitAll())
+                } }.awaitAll() }
+                combined = combined + withContext(Dispatchers.Default) { HomeRecommendationPolicy.interleave(additions) }
+            }
+            combined
         }
         val candidates = withContext(Dispatchers.Default) {
             val seed = HomeRecommendationPolicy.Recordings().apply { add(currentTrack) }
@@ -49,10 +93,9 @@ object CustomRecommendationQueryWrapper {
             }.take(limit.coerceAtLeast(60))
         }
         if (candidates.isNotEmpty()) {
-            if (cache.size >= 24) cache.entries.minByOrNull { it.value.timestamp }?.let { cache.remove(it.key) }
-            cache[key] = Cached(candidates, System.currentTimeMillis())
+            remember(key, candidates)
         }
-        candidates.ifEmpty { cached?.tracks.orEmpty() }.take(limit)
+        usable(candidates.ifEmpty { cached?.tracks.orEmpty() }).take(limit)
     }
 
     fun extractPrimaryArtist(track: MusicTrack): String = HomeRecommendationPolicy.rawArtists(track).firstOrNull().orEmpty()

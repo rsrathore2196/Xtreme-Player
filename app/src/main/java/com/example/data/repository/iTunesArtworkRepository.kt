@@ -68,16 +68,13 @@ class iTunesArtworkRepository(
 ) {
     private data class Lookup(val url: String?, val expiresAt: Long)
     private data class Flight(val result: Deferred<Lookup>, var readers: Int = 0)
-    private data class RawMetadata(val title: String, val artist: String?, val source: AudioSource, val artworkUrl: String)
+    private data class RawMetadata(val title: String, val artist: String?)
     private data class LookupMetadata(val title: String, val artist: String, val key: String)
     private val metadataCache = LruCache<RawMetadata, LookupMetadata>(256)
-    private val parenthesizedVideoTags = Regex("(?i)\\(.*?(official|video|lyric|lyrical|remix|audio|4k|hd|visualizer|mv|music video).*?\\)")
-    private val bracketedVideoTags = Regex("(?i)\\[.*?(official|video|lyric|lyrical|remix|audio|4k|hd|visualizer|mv|music video).*?\\]")
-    private val bracketedTags = Regex("(?i)\\[.*?\\]")
     private val whitespace = Regex("\\s+")
     private val memoryCache = LruCache<String, Lookup>(200)
     private val lookupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val networkSlots = Semaphore(4)
+    private val networkSlots = Semaphore(2)
     private val inFlight = mutableMapOf<String, Flight>()
     init {
         lookupScope.launch {
@@ -95,26 +92,26 @@ class iTunesArtworkRepository(
 
     // A scrolling card can re-enter composition many times. Parse its unchanged metadata once.
     private fun lookupMetadata(item: MediaItem): LookupMetadata {
-        val raw = RawMetadata(item.rawTitle, item.rawArtist, item.source, item.sourceArtworkUrl)
+        val raw = RawMetadata(item.rawTitle, item.rawArtist)
         metadataCache.get(raw)?.let { return it }
-        val title = sanitizeTitle(raw.title, raw.source)
-        val artist = sanitizeArtist(raw.artist, raw.source)
+        val title = sanitizeTitle(raw.title, artist = raw.artist)
+        val artist = sanitizeArtist(raw.artist)
         return LookupMetadata(title, artist, "${title}_${artist}".lowercase()).also {
             metadataCache.put(raw, it)
         }
     }
 
-    suspend fun resolveArtwork(item: MediaItem, targetDimension: Int): String {
+    suspend fun resolveArtwork(item: MediaItem, targetDimension: Int): String = withContext(Dispatchers.Default) {
         val metadata = lookupMetadata(item)
         val cleanedTitle = metadata.title
         val cleanedArtist = metadata.artist
         val cacheKey = metadata.key
 
         if (cleanedTitle.isBlank()) {
-            return item.sourceArtworkUrl
+            return@withContext item.sourceArtworkUrl
         }
 
-        cached(cacheKey)?.let { return it.url?.let { url -> formatUrl(url, targetDimension) } ?: item.sourceArtworkUrl }
+        cached(cacheKey)?.let { return@withContext it.url?.let { url -> formatUrl(url, targetDimension) } ?: item.sourceArtworkUrl }
 
         // A lookup belongs to all its callers. Only the last departing caller cancels its HTTP work.
         val flight = synchronized(inFlight) {
@@ -124,7 +121,7 @@ class iTunesArtworkRepository(
                 })
             }.also { it.readers++ }
         }
-        return try {
+        try {
             flight.result.start()
             flight.result.await().url?.let { formatUrl(it, targetDimension) } ?: item.sourceArtworkUrl
         } finally {
@@ -165,24 +162,18 @@ class iTunesArtworkRepository(
             }
 
             // Verify title and artist matching to avoid showing incorrect artwork covers
-            val matchedResult = response.results.firstOrNull { res ->
+            val matchedResult = withContext(Dispatchers.Default) { response.results.firstOrNull { res ->
                 val trackName = res.trackName?.trim().orEmpty()
                 val artistName = res.artistName?.trim().orEmpty()
                 if (trackName.isBlank() || res.artworkUrl100.isNullOrBlank()) return@firstOrNull false
 
-                val titleMatch = trackName.contains(cleanedTitle, ignoreCase = true) ||
-                        cleanedTitle.contains(trackName, ignoreCase = true)
+                val titleMatch = normalized(com.example.data.repository.StreamResolver.extractCleanTitle(trackName, artistName)) == normalized(cleanedTitle)
                 val artistMatch = if (cleanedArtist.isNotBlank() && artistName.isNotBlank()) {
-                    artistName.contains(cleanedArtist, ignoreCase = true) ||
-                            cleanedArtist.contains(artistName, ignoreCase = true)
-                } else true
+                    artistName.split(",", "&", ";", "feat.", "ft.").any { normalized(it) == normalized(cleanedArtist) }
+                } else false
 
                 titleMatch && artistMatch
-            } ?: response.results.firstOrNull()?.takeIf { res ->
-                // If only 1 result returned, verify title at least partially matches
-                val trackName = res.trackName.orEmpty()
-                trackName.contains(cleanedTitle, ignoreCase = true) || cleanedTitle.contains(trackName, ignoreCase = true)
-            }
+            } }
 
             val rawUrl = matchedResult?.artworkUrl100
 
@@ -208,7 +199,7 @@ class iTunesArtworkRepository(
 
     /** UI-safe peek: reuse prepared metadata without sanitizing it or accessing Room/network. */
     fun peekMemoryCachedUrl(item: MediaItem, targetDimension: Int): String? {
-        val metadata = metadataCache.get(RawMetadata(item.rawTitle, item.rawArtist, item.source, item.sourceArtworkUrl))
+        val metadata = metadataCache.get(RawMetadata(item.rawTitle, item.rawArtist))
             ?: return null
         return cached(metadata.key)?.url?.let { formatUrl(it, targetDimension) }
     }
@@ -221,46 +212,18 @@ class iTunesArtworkRepository(
         }
     }
 
-    fun sanitizeTitle(title: String, source: AudioSource? = null): String {
-        var t = title
+    private fun normalized(value: String) = java.text.Normalizer.normalize(value, java.text.Normalizer.Form.NFKC)
+        .lowercase(java.util.Locale.ROOT).replace(Regex("[^\\p{L}\\p{M}\\p{N}]"), "")
 
-        // 1. JioSaavn / General HTML entities stripping
-        if (source == AudioSource.JIOSAAVN || t.contains("&")) {
-            t = try {
-                Html.fromHtml(t, Html.FROM_HTML_MODE_LEGACY).toString()
-            } catch (_: Exception) {
-                t.replace("&quot;", "\"")
-                    .replace("&amp;", "&")
-                    .replace("&#039;", "'")
-                    .replace("&lt;", "<")
-                    .replace("&gt;", ">")
-            }
-        }
-
-        // 2. YouTube Music API: Separate artist name from song title if passed as "Artist - Song Title"
-        if (source == AudioSource.YOUTUBE_MUSIC || t.contains(" - ")) {
-            if (t.contains(" - ")) {
-                val parts = t.split(" - ")
-                if (parts.size >= 2) {
-                    val rightPart = parts[1].trim()
-                    if (rightPart.isNotBlank()) {
-                        t = rightPart
-                    }
-                }
-            }
-        }
-
-        // 3. YouTube Music & General: Remove video-specific titles
-        t = t.replace(parenthesizedVideoTags, "")
-            .replace(bracketedVideoTags, "")
-            .replace(bracketedTags, "")
-
-        // 4. Internet Archive API: Clean up filename-style titles (replace _ and - with spaces)
-        if (source == AudioSource.INTERNET_ARCHIVE || t.contains("_")) {
-            t = t.replace("_", " ").replace("-", " ")
-        }
-
-        return t.replace(whitespace, " ").trim()
+    fun sanitizeTitle(title: String, source: AudioSource? = null, artist: String? = null): String {
+        val decoded = if (title.contains('&')) {
+            try { Html.fromHtml(title, Html.FROM_HTML_MODE_LEGACY).toString() }
+            catch (_: Exception) { title.replace("&amp;", "&").replace("&#039;", "'") }
+        } else title
+        // Keep live/remix/edit distinctions, and strip a video prefix only when it is
+        // the credited artist. Different recordings must not share artwork lookups.
+        return StreamResolver.extractCleanTitle(decoded, artist.orEmpty())
+            .replace(whitespace, " ").trim()
     }
 
     fun sanitizeArtist(artist: String?, source: AudioSource? = null): String {

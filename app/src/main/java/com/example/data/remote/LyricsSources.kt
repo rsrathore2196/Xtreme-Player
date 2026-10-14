@@ -7,6 +7,7 @@ import com.example.data.model.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.selects.select
 import okhttp3.*
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
@@ -26,38 +27,63 @@ internal class LyricsSources(private val identity: SongIdentity) {
     private val artist = identity.artist.orEmpty()
     private val duration = (identity.durationMs ?: 0L) / 1000
     private val documents = ConcurrentHashMap<String, Deferred<String?>>()
-    private val slots = Semaphore(4)
-    // Fallbacks cannot sit behind the whole rich-source queue; both lanes have bounded concurrency.
-    private val fallbackSlots = Semaphore(2)
+    private val slots = Semaphore(3)
     private val videoId = identity.trackId.orEmpty().removePrefix("yt_").takeIf { identity.trackId?.startsWith("yt_") == true && it.matches(Regex("[A-Za-z0-9_-]{11}")) }
     private data class Source(val name: String, val fetch: suspend () -> TrackLyrics?)
 
-    suspend fun rich(onCandidate: (TrackLyrics) -> Unit): List<TrackLyrics> = supervisorScope {
-        val sources = listOf(
+    suspend fun lookup(initial: TrackLyrics?, onCandidate: (TrackLyrics) -> Unit): TrackLyrics? = supervisorScope {
+        var best = initial
+        val rich = listOf(
             Source("lrc.red") { lrcRed(this@supervisorScope) },
             Source("BiniLyrics") { bini(this@supervisorScope) },
             Source("BetterLyrics") { better("getLyrics", "BetterLyrics") },
-            Source("BetterLyrics Portato") { better("qq/getLyrics", "BetterLyrics Portato") },
             Source("PaxSenix") { paxApple() },
+            Source("LyricsPlus") { plus() },
+            Source("Unison") { unison() }
+        )
+        val word = listOf(
+            Source("BetterLyrics Portato") { better("qq/getLyrics", "BetterLyrics Portato") },
             Source("PaxSenix: Spotify") { pax("spotify") },
             Source("PaxSenix: Musixmatch") { pax("musixmatch") },
-            Source("LyricsPlus") { plus() },
-            Source("Unison") { unison() },
             Source("Musixmatch") { musixmatch() },
+            Source("KuGou") { kugou() },
             Source("YouTube captions") { captions() }
         )
-        // Results keep the above order for deterministic ties, regardless of response order.
-        sources.map { source -> async {
-            slots.withPermit {
-                safely { withTimeoutOrNull(12_000) { source.fetch() } }?.also(onCandidate)
+        val fallback = listOf(Source("LRCLIB") { lrclib() }, Source("YouTube Music") { youtubeMusic() }, Source("Genius") { genius() })
+        try {
+            withTimeoutOrNull(24_000L) {
+                for ((sources, budget) in listOf(rich to 10_000L, word to 8_000L, fallback to 6_000L)) {
+                    withTimeoutOrNull(budget) {
+                        for (batch in sources.chunked(3)) {
+                            supervisorScope {
+                                val jobs = batch.map { source -> async {
+                                    safely { withTimeoutOrNull(6_000L) { source.fetch() } }
+                                        ?.takeIf { LyricsDocuments.verified(identity, it) }
+                                } }
+                                val pending = jobs.toMutableList()
+                                try {
+                                    while (pending.isNotEmpty()) {
+                                        val (job, candidate) = select {
+                                            pending.forEach { job -> job.onAwait { job to it } }
+                                        }
+                                        pending.remove(job)
+                                        if (candidate != null) {
+                                            if (best == null || LyricsDocuments.comparator.compare(candidate, best!!) > 0) best = candidate
+                                            onCandidate(candidate)
+                                        }
+                                        if (best?.let { LyricsDocuments.assessment(it).let { timing -> timing.tier == 3 && timing.complete } } == true) break
+                                    }
+                                } finally { jobs.forEach { if (!it.isCompleted) it.cancel() } }
+                            }
+                            if (best?.let { LyricsDocuments.assessment(it).let { timing -> timing.tier == 3 && timing.complete } } == true) break
+                        }
+                    }
+                    val timing = best?.let(LyricsDocuments::assessment)
+                    if (timing != null && timing.complete && timing.tier >= 2) break
+                }
             }
-        } }.awaitAll().filterNotNull()
-    }
-
-    suspend fun fallback(onCandidate: (TrackLyrics) -> Unit = {}): List<TrackLyrics> = supervisorScope {
-        listOf<suspend () -> TrackLyrics?>({ lrclib() }, { youtubeMusic() }, { kugou() }, { genius() }).map { fetch ->
-            async { fallbackSlots.withPermit { safely { withTimeoutOrNull(12_000) { fetch() } }?.also(onCandidate) } }
-        }.awaitAll().filterNotNull()
+        } finally { documents.values.forEach { if (!it.isCompleted) it.cancel() } }
+        best
     }
 
     private suspend fun safely(block: suspend () -> TrackLyrics?): TrackLyrics? = try { block() }
@@ -66,11 +92,11 @@ internal class LyricsSources(private val identity: SongIdentity) {
     private fun url(base: String, vararg query: Pair<String, Any?>): String = base.toHttpUrl().newBuilder().apply {
         query.forEach { (key, value) -> if (value != null && value.toString().isNotBlank()) addQueryParameter(key, value.toString()) }
     }.build().toString()
-    private suspend fun get(url: String, bearer: String? = null): String? = request(Request.Builder().url(url).apply {
+    private suspend fun get(url: String, bearer: String? = null): String? = slots.withPermit { withContext(Dispatchers.IO) { request(Request.Builder().url(url).apply {
         header("User-Agent", "XtremePlayer/1.8 (lyrics)")
         header("Accept", "application/json, application/ttml+xml, text/plain, text/html")
         if (!bearer.isNullOrBlank()) header("Authorization", "Bearer $bearer")
-    }.build())
+    }.build()) } }
     private suspend fun shared(scope: CoroutineScope, address: String): String? {
         val existing = documents[address]
         if (existing != null) return existing.await()
@@ -83,14 +109,8 @@ internal class LyricsSources(private val identity: SongIdentity) {
     private fun array(value: JSONArray?): List<JSONObject> = if (value == null) emptyList() else (0 until value.length()).mapNotNull { value.optJSONObject(it) }
     private fun matches(name: String, singer: String, seconds: Double = 0.0): Boolean {
         if (name.isBlank()) return false
-        val (clean, core) = LyricsProvider.sanitizeTitle(identity.title)
-        val (primary, artists) = LyricsProvider.sanitizeArtist(artist)
-        // Live/remix/sped-up recordings must never borrow a studio recording's clock.
-        val versions = Regex("(?i)\\b(live|remix|acoustic|unplugged|instrumental|karaoke|cover|slowed|sped|reverb|nightcore)\\b")
-        if (versions.findAll(name).map { it.value.lowercase() }.toSet() != versions.findAll(identity.title).map { it.value.lowercase() }.toSet()) return false
         if (duration > 0 && seconds > 0 && abs(duration - seconds) > 5) return false
-        return LyricsValidation.evaluateTitleMatch(name, singer, clean, core, artists) >= 0.85 &&
-            (artist.isBlank() || singer.isNotBlank() && LyricsValidation.validateArtistMatch(singer, primary, artists))
+        return LyricsDocuments.identityMatches(identity, name, singer)
     }
     private fun isrc(value: String?): String? = value?.replace("-", "")?.uppercase()?.takeIf { it.matches(Regex("[A-Z]{2}[A-Z0-9]{3}[0-9]{7}")) }
     private suspend fun lrcRed(scope: CoroutineScope): TrackLyrics? {
@@ -190,7 +210,7 @@ internal class LyricsSources(private val identity: SongIdentity) {
         val request = Request.Builder().url("https://music.youtube.com/youtubei/v1/$path")
             .header("User-Agent", "Mozilla/5.0").header("Referer", "https://music.youtube.com/")
             .post(fields.toString().toRequestBody("application/json".toMediaType())).build()
-        return request(request)?.let(::JSONObject)
+        return slots.withPermit { withContext(Dispatchers.IO) { request(request) } }?.let(::JSONObject)
     }
     private suspend fun captions(): TrackLyrics? {
         val id = videoId ?: return null

@@ -97,6 +97,12 @@ class PlaybackManager(
     private var progressTickerJob: Job? = null
     private var recoveryJob: Job? = null
     private var youtubeQualityJob: Job? = null
+    private var losslessUpgradeJob: Job? = null
+    private var losslessAttemptKey: String? = null
+    private var losslessTransitionId: String? = null
+    private data class LosslessFallback(val generation: Long, val original: MusicTrack,
+        val upgradedUrl: String)
+    private var losslessFallback: LosslessFallback? = null
     private val recoveryGuard = PlaybackRecoveryGuard()
     private var autoplaySuppressedBySleepTimer = false
     private val sleepExpirationListener: () -> Unit = {
@@ -105,6 +111,7 @@ class PlaybackManager(
         pendingSelectionId = null
         recoveryJob?.cancel()
         youtubeQualityJob?.cancel()
+        cancelLosslessUpgrade()
         recoveryGuard.select(_uiState.value.currentTrack?.id, newRequest = true)
         activeSearchPlayJob?.cancel()
         playResolutionJob?.cancel()
@@ -119,6 +126,8 @@ class PlaybackManager(
     private var advanceWhenQueueReady = false
     private val refillThreshold = 5
     private val upcomingQueueTarget = 12
+    private var lastRefillKey: String? = null
+    private var lastRefillAt = 0L
 
     private val database by lazy { MusicDatabase.getDatabase(context) }
     val listeningEventDao: ListeningEventDao by lazy { database.listeningEventDao() }
@@ -298,7 +307,7 @@ class PlaybackManager(
                 durationMs = player.duration.takeIf { duration -> duration > 0L } ?: track.durationMs) }
             updateProgressValues()
             publishListeningState(player, newPlay = true)
-            if (player.isPlaying) startProgressTicker()
+            if (player.isPlaying) { startProgressTicker(); maybeUpgradeToLossless() }
         }
         player.addListener(object : Player.Listener {
             private var queueContentsChanged = false
@@ -327,6 +336,7 @@ class PlaybackManager(
                 _uiState.update { it.copy(isPlaying = isPlaying) }
                 if (isPlaying) {
                     startProgressTicker()
+                    maybeUpgradeToLossless()
                     // Genuinely playing: persist track into Room DB listening history immediately
                     val current = _uiState.value.currentTrack
                     if (current != null) {
@@ -417,6 +427,9 @@ class PlaybackManager(
                     if (pendingSelectionId == trackId) pendingSelectionId = null
                     recoveryGuard.select(trackId)
                     val oldTrack = _uiState.value.currentTrack
+                    val sourceOnlyTransition = losslessTransitionId == trackId && oldTrack?.id == trackId
+                    if (oldTrack?.id != trackId) cancelLosslessUpgrade()
+                    if (sourceOnlyTransition) losslessTransitionId = null
                     val newListeningPlay = _listeningState.value.track?.id != trackId ||
                         reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT
                     val elapsed = (System.currentTimeMillis() - currentTrackStartTimeMs).coerceAtLeast(0L)
@@ -438,7 +451,7 @@ class PlaybackManager(
                             currentTrack = matchedTrack,
                             currentIndex = index,
                             durationMs = if (player.duration > 0) player.duration else matchedTrack.durationMs,
-                            qualityBadge = if (com.example.data.remote.YouTubeAudioStreamService.isYouTubeAudio(matchedTrack.id, matchedTrack.audioUrl)) matchedTrack.qualityBadge else _uiState.value.selectedQuality.badge,
+                            qualityBadge = matchedTrack.qualityBadge.ifBlank { _uiState.value.qualityBadge },
                             isFavorite = matchedTrack.isLiked,
                             nextRecommendedTrack = nextTrackInQueue,
                             queue = queueSnapshot(),
@@ -446,6 +459,9 @@ class PlaybackManager(
                         )
                     }
                     listeningPlayRestart = listeningPlayRestart || newListeningPlay
+                    // Changing only the transport preserves the listening session and lyrics identity.
+                    if (sourceOnlyTransition) return
+                    if (player.isPlaying) maybeUpgradeToLossless()
 
                     // Keep player/queue access on Main; only persistence runs on IO.
                     scope.launch {
@@ -537,6 +553,8 @@ class PlaybackManager(
                 // An old player's error must not supersede a newer pending selection.
                 val curMediaId = player.currentMediaItem?.mediaId
                 if (!curMediaId.isNullOrBlank() && curMediaId != current.id) return
+                if (restoreLosslessFallback(player, current)) return
+                losslessUpgradeJob?.cancel()
                 val repo = repository
                 val token = recoveryGuard.claim(current.id)
                 if (repo == null || token == null) {
@@ -702,8 +720,106 @@ class PlaybackManager(
         }
     }
 
+    private fun cancelLosslessUpgrade() {
+        losslessUpgradeJob?.cancel()
+        losslessUpgradeJob = null
+        losslessAttemptKey = null
+        losslessFallback = null
+        losslessTransitionId = null
+    }
+
+    /** Start only after audible playback, and never let optional Archive work delay selection. */
+    private fun maybeUpgradeToLossless() {
+        val state = _uiState.value
+        if (state.selectedQuality != AudioQuality.HI_RES_LOSSLESS || pendingSelectionId != null) return
+        val player = controller ?: return
+        // This controller is built on Main; all native reads and mutations stay on its owner.
+        if (player.applicationLooper != android.os.Looper.getMainLooper() || !player.isPlaying) return
+        val original = state.currentTrack ?: return
+        if (player.currentMediaItem?.mediaId != original.id ||
+            original.isLossless && original.qualityBadge.startsWith("Hi-Res", ignoreCase = true)) return
+        val repo = repository ?: return
+        val generation = selectionGeneration
+        val key = "$generation|${original.id}"
+        if (losslessAttemptKey == key || losslessUpgradeJob?.isActive == true) return
+        losslessAttemptKey = key
+        fun stillCurrent(): Boolean = ownsSelection(original.id, generation) &&
+            pendingSelectionId == null && _uiState.value.selectedQuality == AudioQuality.HI_RES_LOSSLESS &&
+            player.currentMediaItem?.mediaId == original.id && player.isPlaying &&
+            _uiState.value.currentTrack?.audioUrl == original.audioUrl
+        losslessUpgradeJob = scope.launch {
+            try {
+                if (!stillCurrent()) return@launch
+                val lossless = withContext(Dispatchers.IO) { repo.findLosslessUpgrade(original) } ?: return@launch
+                if (!stillCurrent()) return@launch
+                // Preserve the selected recording's identity, artwork, lyrics and user metadata.
+                val updated = original.copy(audioUrl = lossless.audioUrl, bitrateKbps = lossless.bitrateKbps,
+                    qualityBadge = lossless.qualityBadge, isLossless = true, source = lossless.source)
+                if (!LosslessStreamPrebuffer.prepare(context, updated.toMediaItem(), updated.durationMs,
+                        currentPosition = { player.currentPosition }, stillCurrent = ::stillCurrent)) return@launch
+                val qualityStillSelected = withContext(Dispatchers.IO) {
+                    com.example.data.local.AudioQualityPreferences.getSelectedQuality(context) == AudioQuality.HI_RES_LOSSLESS
+                }
+                if (!qualityStillSelected || !stillCurrent()) return@launch
+                val index = player.currentMediaItemIndex
+                if (index !in activeQueue.indices) return@launch
+                val position = player.currentPosition.coerceAtLeast(0L)
+                val resume = player.playWhenReady
+                val latest = _uiState.value.currentTrack ?: return@launch
+                val replacement = latest.copy(audioUrl = updated.audioUrl, bitrateKbps = updated.bitrateKbps,
+                    qualityBadge = updated.qualityBadge, isLossless = true, source = updated.source)
+                losslessFallback = LosslessFallback(generation, latest, replacement.audioUrl)
+                losslessTransitionId = latest.id
+                replaceQueueTrack(index, replacement)
+                _uiState.update { it.copy(currentTrack = replacement, qualityBadge = replacement.qualityBadge,
+                    queue = queueSnapshot()) }
+                player.replaceMediaItem(index, replacement.toMediaItem())
+                player.seekTo(index, position)
+                player.prepare()
+                player.playWhenReady = resume
+                Log.i(TAG, "Switched the verified recording to ${replacement.qualityBadge}")
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                val current = _uiState.value.currentTrack
+                if (current != null && ownsSelection(current.id, generation)) restoreLosslessFallback(player, current)
+                Log.d(TAG, "Optional lossless upgrade unavailable: ${e.message}")
+            }
+        }
+    }
+
+    /** A failed upgraded transport falls back once to the already-playing original recording. */
+    private fun restoreLosslessFallback(player: MediaController, current: MusicTrack): Boolean {
+        val fallback = losslessFallback ?: return false
+        if (fallback.generation != selectionGeneration || fallback.original.id != current.id ||
+            fallback.upgradedUrl != current.audioUrl || player.currentMediaItem?.mediaId != current.id) return false
+        losslessFallback = null
+        val index = player.currentMediaItemIndex
+        if (index !in activeQueue.indices) return false
+        val position = player.currentPosition.coerceAtLeast(0L)
+        val resume = player.playWhenReady
+        val original = current.copy(audioUrl = fallback.original.audioUrl, bitrateKbps = fallback.original.bitrateKbps,
+            qualityBadge = fallback.original.qualityBadge, isLossless = fallback.original.isLossless,
+            source = fallback.original.source)
+        return try {
+            losslessTransitionId = original.id
+            replaceQueueTrack(index, original)
+            _uiState.update { it.copy(currentTrack = original, qualityBadge = original.qualityBadge,
+                errorMessage = null, queue = queueSnapshot()) }
+            player.replaceMediaItem(index, original.toMediaItem())
+            player.seekTo(index, position)
+            player.prepare()
+            player.playWhenReady = resume
+            true
+        } catch (e: Exception) {
+            losslessTransitionId = null
+            Log.w(TAG, "Original stream recovery failed: ${e.message}")
+            false
+        }
+    }
+
     /** Own the requested identity before native callbacks or asynchronous lookup can run. */
     private fun beginSelection(track: MusicTrack, queue: List<MusicTrack>): Long {
+        cancelLosslessUpgrade()
         val generation = ++selectionGeneration
         pendingSelectionId = track.id
         selectionContext = queue.toList()
@@ -934,6 +1050,7 @@ class PlaybackManager(
         recommendationFetchJob?.cancel()
         recommendationFetchJob = null
         advanceWhenQueueReady = false
+        lastRefillKey = null
     }
 
     private fun publishQueueState() {
@@ -961,6 +1078,11 @@ class PlaybackManager(
         val remaining = activeQueue.size - player.currentMediaItemIndex - 1
         if (remaining > refillThreshold) return
         val generation = queueGeneration
+        val requestKey = "$generation|${track.id}|${player.currentMediaItemIndex}|$remaining"
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (!advanceWhenQueueReady && requestKey == lastRefillKey && now - lastRefillAt < 2_000L) return
+        lastRefillKey = requestKey
+        lastRefillAt = now
         recommendationFetchJob = scope.launch {
             val attemptedIds = mutableSetOf<String>()
             try {
@@ -1032,9 +1154,12 @@ class PlaybackManager(
 
                 val seed = _uiState.value.currentTrack ?: track
                 val local = candidateCatalogPool.toList()
+                val queued = queueSnapshot()
+                val needed = (upcomingQueueTarget - remaining).coerceAtLeast(1)
                 val discovery = async(Dispatchers.IO) {
                     withTimeoutOrNull(15_000) {
-                        CustomRecommendationQueryWrapper.fetchTargetedRecommendations(seed, limit = 60)
+                        CustomRecommendationQueryWrapper.fetchTargetedRecommendations(seed, limit = 60,
+                            alreadyQueued = queued, minimumUsable = needed)
                     }.orEmpty()
                 }
                 // Keep an exhausted queue moving while discovery runs; do not fill all slots with generic catalog tracks.
@@ -1384,6 +1509,11 @@ class PlaybackManager(
     }
 
     fun setAudioQuality(quality: AudioQuality) {
+        if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
+            scope.launch { setAudioQuality(quality) }
+            return
+        }
+        cancelLosslessUpgrade()
         // 1. Immediately persist selection to persistent local storage so preference survives cold restarts
         com.example.data.local.AudioQualityPreferences.setSelectedQuality(context, quality)
 
@@ -1391,8 +1521,7 @@ class PlaybackManager(
             _uiState.update {
                 it.copy(
                     selectedQuality = quality,
-                    qualityBadge = it.currentTrack?.takeIf { track -> com.example.data.remote.YouTubeAudioStreamService.isYouTubeAudio(track.id, track.audioUrl) }
-                        ?.qualityBadge ?: quality.badge
+                    qualityBadge = it.currentTrack?.qualityBadge?.takeIf(String::isNotBlank) ?: quality.badge
                 )
             }
 
@@ -1422,6 +1551,7 @@ class PlaybackManager(
                         player.seekTo(index, position); player.prepare(); player.playWhenReady = resume
                         _uiState.update { it.copy(currentTrack = updated, qualityBadge = updated.qualityBadge,
                             queue = queueSnapshot()) }
+                        if (player.isPlaying) maybeUpgradeToLossless()
                     } catch (e: CancellationException) { throw e }
                     catch (_: Exception) { _uiState.update { it.copy(errorMessage = "Couldn't change audio quality. Current playback is preserved.") } }
                 }
@@ -1455,6 +1585,7 @@ class PlaybackManager(
                 }
                 Log.i(TAG, "Audio quality changed to: ${quality.id} (${quality.badge})")
             }
+            if (player.isPlaying) maybeUpgradeToLossless()
         } catch (e: Exception) {
             Log.e(TAG, "Error setting audio quality: ${e.message}", e)
         }
@@ -1478,6 +1609,7 @@ class PlaybackManager(
     }
 
     fun release() {
+        cancelLosslessUpgrade()
         selectionGeneration++
         pendingSelectionId = null
         controllerReady.cancel()
@@ -1517,7 +1649,7 @@ class PlaybackManager(
         val effectiveBitrate = if (audioUrl.contains("saavncdn.com")) availableBitrate else bitrateKbps
         val rawBadge = if (audioUrl.contains("saavncdn.com")) {
             if (availableBitrate < 96) "$availableBitrate kbps" else AudioQuality.fromId(availableBitrate.toString()).badge
-        } else if (com.example.data.remote.YouTubeAudioStreamService.isYouTubeAudio(id, audioUrl)) qualityBadge.ifBlank { "HQ Stream" } else targetQuality.badge
+        } else qualityBadge.ifBlank { if (isLossless) "Lossless" else "HQ Stream" }
         val effectiveBadge = rawBadge
             .replace("YouTube Music", "HQ Stream", ignoreCase = true)
             .replace("YouTube", "HQ Stream", ignoreCase = true)

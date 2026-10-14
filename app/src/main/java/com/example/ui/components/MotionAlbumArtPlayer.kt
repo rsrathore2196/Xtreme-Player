@@ -125,7 +125,7 @@ fun MotionAlbumArtPlayer(
         }
     }
     val artworkRequest = remember(context, staticCoverUrl, placeholderMemoryCacheKey) {
-        ImageRequest.Builder(context).data(staticCoverUrl)
+        ImageRequest.Builder(context).data(staticCoverUrl.takeIf { it.isNotBlank() })
             .placeholderMemoryCacheKey(placeholderMemoryCacheKey).crossfade(180).build()
     }
 

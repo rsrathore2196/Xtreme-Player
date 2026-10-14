@@ -16,6 +16,12 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.withContext
 import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
@@ -55,6 +61,9 @@ object LyricsProvider {
     }
     private const val CACHE_VERSION = 3
     private const val CACHE_TTL_MS = 30 * 60 * 1000L
+    private class LyricsFlight(val updates: MutableStateFlow<TrackLyrics?>, val result: Deferred<TrackLyrics>, var readers: Int = 0)
+    private val lookupScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val lookups = mutableMapOf<String, LyricsFlight>()
     private var lastDiskTrimAt = 0L
 
     private fun cacheLyrics(trackId: String, lyrics: TrackLyrics, complete: Boolean = true) {
@@ -394,42 +403,70 @@ object LyricsProvider {
         rawTrack: MusicTrack? = null,
         forceRefresh: Boolean = false,
         onUpdate: (TrackLyrics) -> Unit = {}
-    ): TrackLyrics = withContext(Dispatchers.IO) {
+    ): TrackLyrics = withContext(Dispatchers.Default) {
         val (cleanTitle, _) = sanitizeTitle(identity.title)
         val (primaryArtist, _) = sanitizeArtist(identity.artist.orEmpty(), rawTrack?.singers.orEmpty())
-        val fresh = getCachedLyrics(identity, cleanTitle, primaryArtist)
+        val fresh = withContext(Dispatchers.IO) { getCachedLyrics(identity, cleanTitle, primaryArtist) }
+            ?.takeIf { LyricsDocuments.verified(identity, it) }
         if (fresh != null && !forceRefresh) return@withContext fresh
-        val cached = fresh ?: getCachedLyrics(identity, cleanTitle, primaryArtist, allowStale = true)
-        val sources = LyricsSources(identity)
-        val candidates = mutableListOf<TrackLyrics>()
-        val updateLock = Any()
-        var provisional = cached
+        val cached = fresh ?: withContext(Dispatchers.IO) { getCachedLyrics(identity, cleanTitle, primaryArtist, allowStale = true) }
+            ?.takeIf { LyricsDocuments.verified(identity, it) }
         cached?.let(onUpdate)
-        // Show available lyrics immediately while every rich source still gets a chance to improve them.
-        val publish: (TrackLyrics) -> Unit = { candidate ->
-            synchronized(updateLock) {
-                if (provisional == null || LyricsDocuments.comparator.compare(candidate, provisional!!) > 0) {
-                    provisional = candidate
-                    // A canceled partial lookup is usable immediately on reopening, but must still seek richer timing.
-                    cacheLyrics(identity.trackId.orEmpty(), candidate, complete = false)
-                    onUpdate(candidate)
+        val isrc = identity.isrc.orEmpty().replace("-", "").uppercase().takeIf { it.matches(Regex("[A-Z]{2}[A-Z0-9]{3}[0-9]{7}")) }
+        val versionedTitle = com.example.data.repository.StreamResolver.extractCleanTitle(identity.title, identity.artist.orEmpty())
+        val key = "${isrc.orEmpty()}|${normalizeForLookup(versionedTitle)}|${normalizeForLookup(identity.artist.orEmpty())}|${identity.durationMs ?: 0}"
+        val flight = synchronized(lookups) {
+            lookups.getOrPut(key) {
+                val updates = MutableStateFlow(cached)
+                LyricsFlight(updates, lookupScope.async(start = CoroutineStart.LAZY) {
+                    val updateLock = Any()
+                    val best = LyricsSources(identity).lookup(cached) { candidate ->
+                        synchronized(updateLock) {
+                            if (LyricsDocuments.meaningfulUpgrade(candidate, updates.value)) {
+                                updates.value = candidate
+                                cacheLyrics(identity.trackId.orEmpty(), candidate, complete = false)
+                            }
+                        }
+                    }
+                    currentCoroutineContext().ensureActive()
+                    val published = updates.value
+                    val selected = if (best != null && LyricsDocuments.meaningfulUpgrade(best, published)) best else published ?: best
+                    if (selected != null) {
+                        withContext(Dispatchers.IO) { persistLyrics(identity, cleanTitle, primaryArtist, selected, identity.isrc.orEmpty()) }
+                        selected
+                    } else TrackLyrics(identity.trackId.orEmpty(), identity.title, identity.artist.orEmpty(), false, emptyList())
+                })
+            }.also { it.readers++ }
+        }
+        try {
+            coroutineScope {
+                var published = cached
+                val observer = launch(start = CoroutineStart.UNDISPATCHED) {
+                    flight.updates.filterNotNull().collect { candidate ->
+                        currentCoroutineContext().ensureActive()
+                        if (LyricsDocuments.verified(identity, candidate) && LyricsDocuments.meaningfulUpgrade(candidate, published)) {
+                            published = candidate
+                            onUpdate(candidate.copy(trackId = identity.trackId.orEmpty()))
+                        }
+                    }
+                }
+                try {
+                    flight.result.start()
+                    val result = flight.result.await()
+                    currentCoroutineContext().ensureActive()
+                    val verified = result.takeIf { LyricsDocuments.verified(identity, it) } ?: cached
+                    verified?.copy(trackId = identity.trackId.orEmpty())
+                        ?: TrackLyrics(identity.trackId.orEmpty(), identity.title, identity.artist.orEmpty(), false, emptyList())
+                } finally { observer.cancel() }
+            }
+        } finally {
+            synchronized(lookups) {
+                if (--flight.readers == 0) {
+                    if (lookups[key] === flight) lookups.remove(key)
+                    if (!flight.result.isCompleted) flight.result.cancel()
                 }
             }
         }
-        coroutineScope {
-            val rich = async { sources.rich(publish) }
-            val fallback = async { sources.fallback(publish) }
-            candidates += rich.await()
-            candidates += fallback.await()
-        }
-        currentCoroutineContext().ensureActive()
-        val best = (candidates + listOfNotNull(cached)).maxWithOrNull(LyricsDocuments.comparator)
-        if (best != null) {
-            persistLyrics(identity, cleanTitle, primaryArtist, best, identity.isrc.orEmpty())
-            return@withContext best
-        }
-        // An outage/miss is not written over valid disk lyrics or permanently negative-cached.
-        TrackLyrics(identity.trackId.orEmpty(), identity.title, identity.artist.orEmpty(), false, emptyList())
     }
 
     /**

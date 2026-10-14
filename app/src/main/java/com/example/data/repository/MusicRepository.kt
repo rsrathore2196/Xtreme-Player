@@ -128,17 +128,17 @@ class MusicRepository(
     }
 
     private suspend fun discoverySearch(query: String, force: Boolean, era: Boolean): List<MusicTrack> {
-        val key = "$era:${query.lowercase()}"
+        val key = "$era:${com.example.recommendation.DiscoveryRequestCoordinator.normalize(query)}"
         return queryLocks[(key.hashCode() and Int.MAX_VALUE) % queryLocks.size].withLock {
             val cached = discoveryCache.get(key)
             val age = System.currentTimeMillis() - (cached?.fetchedAt ?: 0)
             // Coalesce simultaneous card requests, even during an explicit refresh.
             if (cached != null && age < if (force) 30_000L else discoveryTtlMs) return@withLock cached.tracks
             val result = try {
-                val tracks = if (era) OnlineMusicApiService.searchSongs(query, limit = 35, forceRefresh = force)
-                    else YouTubeMusicApiService.searchSongs(query, limit = 35, songsOnly = true)
-                HomeRecommendationPolicy.originals(tracks)
-                    .filter { !era || (it.year.toIntOrNull() ?: 0) in 1990..2009 }
+                val tracks = com.example.recommendation.CustomRecommendationQueryWrapper.searchDiscovery(query, limit = 35,
+                    era = era, forceRefresh = force)
+                withContext(Dispatchers.Default) { HomeRecommendationPolicy.originals(tracks)
+                    .filter { !era || (it.year.toIntOrNull() ?: 0) in 1990..2009 } }
             } catch (e: CancellationException) { throw e } catch (_: Exception) { emptyList() }
             if (result.isNotEmpty()) {
                 discoveryCache.put(key, DiscoveryCache(result, System.currentTimeMillis()))
@@ -163,7 +163,8 @@ class MusicRepository(
         val groups = queries.map { query -> async { discoverySearch(query, force, era) } }.awaitAll()
         val fresh = HomeRecommendationPolicy.originals(HomeRecommendationPolicy.interleave(groups))
         if (fresh.isNotEmpty()) {
-            musicDao.mergeTracksMetadata(fresh.map { TrackEntity.fromMusicTrack(it).copy(isCached = true, isLiked = it.id in liked) })
+            val entities = fresh.map { TrackEntity.fromMusicTrack(it).copy(isCached = true, isLiked = it.id in liked) }
+            withContext(Dispatchers.IO) { musicDao.mergeTracksMetadata(entities) }
         }
         val cached = getInitialCatalog(profile).filter { !era || (it.year.toIntOrNull() ?: 0) in 1990..2009 }
         val ranked = HomeRecommendationPolicy.diversify(fresh.ifEmpty { cached }.shuffled(), 160)
@@ -258,7 +259,9 @@ class MusicRepository(
         if (isIndia) {
             // Priority 1: Genuine JioSaavn "India Superhits Top 50" editorial chart
             try {
-                val chartSongs = fetchJioSaavnIndiaSuperhitsChart(forceRefresh)
+                val chartSongs = com.example.recommendation.DiscoveryRequestCoordinator.shared("chart:jio:IN", essential = false) {
+                    fetchJioSaavnIndiaSuperhitsChart(forceRefresh)
+                }
                 if (chartSongs.isNotEmpty()) {
                     val result = HomeRecommendationPolicy.originals(chartSongs).map { it.copy(isLiked = likedIds.contains(it.id)) }
                     saveChart(cacheKey, result)
@@ -277,7 +280,8 @@ class MusicRepository(
                 val code = countryCode.lowercase(java.util.Locale.ROOT).takeIf { it.matches(Regex("[a-z]{2}")) }
                 if (code != null) {
                     val request = Request.Builder().url("https://rss.marketingtools.apple.com/api/v2/$code/music/most-played/50/songs.json").build()
-                    val entries = JSONObject(chartClient.catalogRequest(request)).optJSONObject("feed")?.optJSONArray("results")
+                    val body = com.example.recommendation.DiscoveryRequestCoordinator.network { chartClient.catalogRequest(request) }
+                    val entries = withContext(Dispatchers.Default) { JSONObject(body).optJSONObject("feed")?.optJSONArray("results") }
                     val ranked = coroutineScope { (0 until minOf(entries?.length() ?: 0, limit)).chunked(4).flatMap { batch ->
                         batch.map { index -> async {
                         val entry = entries?.optJSONObject(index) ?: return@async null
@@ -642,7 +646,10 @@ class MusicRepository(
     ): MusicTrack = withContext(Dispatchers.IO) {
         val quality = context?.let { AudioQualityPreferences.getSelectedQuality(it) }
             ?: AudioQuality.ULTRA_HD_320
-        streamResolver.resolve(track, quality, forceRefresh, failedUrl)
+        com.example.recommendation.DiscoveryRequestCoordinator.playback {
+            streamResolver.resolve(track, quality, forceRefresh, failedUrl,
+                deferLossless = quality == AudioQuality.HI_RES_LOSSLESS)
+        }
     }
 
     suspend fun getTracksByGenre(genre: String): List<MusicTrack> = withContext(Dispatchers.Default) {
@@ -670,6 +677,18 @@ class MusicRepository(
             .distinctBy { "${it.title.lowercase()}_${it.artist.lowercase()}" }
             .map { it.copy(isLiked = likedIds.contains(it.id)) }
             .shuffled()
+    }
+
+    suspend fun findLosslessUpgrade(track: MusicTrack): MusicTrack? = withContext(Dispatchers.IO) {
+        if (context == null || AudioQualityPreferences.getSelectedQuality(context) != AudioQuality.HI_RES_LOSSLESS) return@withContext null
+        kotlinx.coroutines.withTimeoutOrNull(8_000L) {
+            val query = "${StreamResolver.extractCleanTitle(track.title, track.artist)} ${StreamResolver.extractCleanArtist(track.artist)}".trim()
+            val candidates = InternetArchiveApiService.searchLosslessPage(query, pageSize = 8, playableOnly = true).tracks
+            withContext(Dispatchers.Default) { candidates.filter { candidate ->
+                candidate.audioUrl != track.audioUrl && StreamResolver.matchesLosslessUpgrade(track, candidate) &&
+                    (!track.isLossless || !track.qualityBadge.startsWith("Hi-Res") && candidate.qualityBadge.startsWith("Hi-Res"))
+            }.sortedByDescending { it.qualityBadge.startsWith("Hi-Res") }.firstOrNull() }
+        }
     }
 
     fun clearSearchCache() {
