@@ -8,12 +8,15 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 object YouTubeMusicApiService {
@@ -25,6 +28,87 @@ object YouTubeMusicApiService {
             .connectTimeout(8, TimeUnit.SECONDS)
             .readTimeout(10, TimeUnit.SECONDS)
             .build()
+    }
+    data class SongSearchPage(val tracks: List<MusicTrack>, val continuation: String?,
+        val artistCredits: Map<String, List<String>> = emptyMap())
+    private val artistSearchClient by lazy { httpClient.newBuilder().callTimeout(15, TimeUnit.SECONDS).build() }
+    private val artistSearchCache = android.util.LruCache<String, Pair<Long, SongSearchPage>>(48)
+    private val artistSearchLocks = Array(8) { Mutex() }
+
+    /** Incremental songs-only fallback for artist pages; never loads an entire discography. */
+    suspend fun searchSongsPage(query: String, continuation: String? = null): SongSearchPage = withContext(Dispatchers.IO) {
+        if (query.isBlank()) return@withContext SongSearchPage(emptyList(), null)
+        val key = "$query|${continuation.orEmpty()}"
+        artistSearchLocks[(key.hashCode() and Int.MAX_VALUE) % artistSearchLocks.size].withLock {
+            artistSearchCache.get(key)?.takeIf { System.currentTimeMillis() - it.first < 300_000L }
+                ?.let { return@withLock it.second }
+            val payload = JSONObject().put("context", JSONObject().put("client", JSONObject()
+                .put("clientName", "WEB_REMIX").put("clientVersion", "1.20231204.01.00")
+                .put("hl", "en").put("gl", "US")))
+            if (continuation == null) payload.put("query", query.trim()).put("params", "EgWKAQIIAWoKEAkQBRAKEAMQBA==")
+            else payload.put("continuation", continuation)
+            val request = Request.Builder().url("https://music.youtube.com/youtubei/v1/search")
+                .post(payload.toString().toRequestBody(jsonMediaType))
+                .header("User-Agent", "Mozilla/5.0").header("Referer", "https://music.youtube.com/").build()
+            val body = artistSearchClient.catalogRequest(request)
+            val page = withContext(Dispatchers.Default) { parseSongSearchPage(body) }
+            val result = page.copy(continuation = page.continuation?.takeUnless { it == continuation })
+            artistSearchCache.put(key, System.currentTimeMillis() to result)
+            result
+        }
+    }
+
+    private fun parseSongSearchPage(body: String): SongSearchPage {
+        val root = JSONObject(body)
+        if (root.has("error") || listOf("contents", "continuationContents", "onResponseReceivedActions",
+                "onResponseReceivedCommands", "onResponseReceivedEndpoints").none(root::has))
+            throw IOException("YouTube Music song catalogue unavailable")
+        val tracks = mutableListOf<MusicTrack>()
+        val credits = mutableMapOf<String, List<String>>()
+        var continuation: String? = null
+        fun shelf(value: JSONObject) {
+            val contents = value.optJSONArray("contents") ?: value.optJSONArray("continuationItems")
+            for (i in 0 until (contents?.length() ?: 0)) {
+                val item = contents?.optJSONObject(i)?.optJSONObject("musicResponsiveListItemRenderer") ?: continue
+                val track = parseListItemRenderer(item) ?: continue
+                tracks.add(track)
+                val columns = item.optJSONArray("flexColumns")
+                val names = mutableListOf<String>()
+                for (column in 1 until (columns?.length() ?: 0)) {
+                    val runs = columns?.optJSONObject(column)?.optJSONObject("musicResponsiveListItemFlexColumnRenderer")
+                        ?.optJSONObject("text")?.optJSONArray("runs")
+                    for (run in 0 until (runs?.length() ?: 0)) {
+                        val value = runs?.optJSONObject(run) ?: continue
+                        val endpoint = value.optJSONObject("navigationEndpoint")?.optJSONObject("browseEndpoint") ?: continue
+                        val type = endpoint.optJSONObject("browseEndpointContextSupportedConfigs")
+                            ?.optJSONObject("browseEndpointContextMusicConfig")?.optString("pageType")
+                        if (type == "MUSIC_PAGE_TYPE_ARTIST" ||
+                            type.isNullOrBlank() && endpoint.optString("browseId").startsWith("UC"))
+                            names.add(value.optString("text").trim())
+                    }
+                }
+                credits[track.id] = names.distinct()
+            }
+            extractContinuationToken(value)?.let { continuation = it }
+        }
+        fun visit(node: Any?, depth: Int = 0) {
+            if (depth > 24) return
+            when (node) {
+                is JSONObject -> {
+                    val page = node.optJSONObject("musicShelfRenderer") ?: node.optJSONObject("musicShelfContinuation")
+                        ?: node.optJSONObject("appendContinuationItemsAction")
+                    if (page != null) shelf(page)
+                    else {
+                        node.keys().forEach { visit(node.opt(it), depth + 1) }
+                        if (continuation == null && node.has("continuations"))
+                            continuation = extractContinuationToken(node)
+                    }
+                }
+                is JSONArray -> for (i in 0 until node.length()) visit(node.opt(i), depth + 1)
+            }
+        }
+        visit(root)
+        return SongSearchPage(tracks.distinctBy { it.id }, continuation, credits)
     }
 
     /** Resolve the selected video itself, retaining its identity and metadata. */

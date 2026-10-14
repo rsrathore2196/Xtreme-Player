@@ -14,11 +14,14 @@ data class LosslessCatalogContinuation(
     val query: String, val standardPage: Int? = null, val archivePage: Int? = null,
     val pendingTracks: List<MusicTrack> = emptyList()
 )
+/** Opaque YouTube Music cursor, kept independent of JioSaavn's numeric pages. */
+data class ArtistCatalogContinuation(val query: String, val token: String)
 data class CatalogPage(
     val tracks: List<MusicTrack> = emptyList(), val albums: List<CatalogAlbum> = emptyList(),
     val artists: List<CatalogArtist> = emptyList(), val playlists: List<CatalogPlaylist> = emptyList(),
     val nextPage: Int? = null, val warning: String? = null,
-    val losslessContinuation: LosslessCatalogContinuation? = null
+    val losslessContinuation: LosslessCatalogContinuation? = null,
+    val artistContinuation: ArtistCatalogContinuation? = null
 )
 sealed interface CatalogDestination {
     val key: String

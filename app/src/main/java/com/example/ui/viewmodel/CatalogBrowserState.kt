@@ -14,7 +14,8 @@ data class CatalogDetailState(
     val destination: CatalogDestination, val tracks: List<MusicTrack> = emptyList(),
     val nextPage: Int? = null, val pending: List<MusicTrack> = emptyList(),
     val loading: Boolean = false, val error: String? = null, val warning: String? = null,
-    val scrollIndex: Int = 0, val scrollOffset: Int = 0, val initialized: Boolean = false
+    val scrollIndex: Int = 0, val scrollOffset: Int = 0, val initialized: Boolean = false,
+    val artistContinuation: ArtistCatalogContinuation? = null
 )
 
 /** Owned by PlayerViewModel's scope; browsing never changes playback state. */
@@ -127,12 +128,13 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
         detailJob = scope.launch {
             try {
                 var destination = state.destination
-                val page: CatalogPage = if (state.pending.isNotEmpty()) CatalogPage(tracks = state.pending, nextPage = state.nextPage)
+                val page: CatalogPage = if (state.pending.isNotEmpty()) CatalogPage(tracks = state.pending,
+                    nextPage = state.nextPage, warning = state.warning, artistContinuation = state.artistContinuation)
                 else when (val selected = destination) {
                     is CatalogDestination.Artist -> {
-                        val artist = repository.resolveArtist(selected.artist)
+                        val artist = if (state.artistContinuation != null) selected.artist else repository.resolveArtist(selected.artist)
                         destination = CatalogDestination.Artist(artist)
-                        repository.artistSongs(artist, state.nextPage ?: 0)
+                        repository.artistSongs(artist, state.nextPage ?: 0, state.artistContinuation, state.tracks)
                     }
                     is CatalogDestination.Album -> repository.albumSongs(selected.album)
                     is CatalogDestination.Playlist -> repository.playlistSongs(selected.playlist, state.nextPage ?: 1)
@@ -148,10 +150,12 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
                 // A fallback search can begin at page one after an artist-endpoint
                 // failure. Its first page may overlap loaded songs; keep its own cursor
                 // so later, genuinely new matches remain reachable without duplicates.
-                val repeated = page.tracks.isNotEmpty() && fresh.isEmpty() && (page.nextPage ?: 0) >= 0
+                val repeated = page.tracks.isNotEmpty() && fresh.isEmpty() && (page.nextPage ?: 0) >= 0 &&
+                    page.artistContinuation == null
                 _detail.update { current -> current?.copy(destination = destination, tracks = liked(state.tracks + added),
                     nextPage = if (repeated) null else page.nextPage, pending = liked(pending), loading = false,
-                    initialized = true, error = null, warning = page.warning) }
+                    initialized = true, error = null, warning = page.warning,
+                    artistContinuation = page.artistContinuation) }
                 // Store both name-only Home routes and provider-ID routes against the same loaded data.
                 detailAliases[state.destination.key] = destination.key
                 _detail.value?.let { details[destination.key] = it }
