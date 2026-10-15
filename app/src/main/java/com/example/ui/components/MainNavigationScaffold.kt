@@ -10,6 +10,8 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.FastOutLinearInEasing
@@ -143,6 +145,20 @@ fun MainNavigationScaffold(
     val homeViewModel: HomeViewModel = viewModel(factory = homeFactory)
 
     var selectedTabIndex by rememberSaveable { mutableIntStateOf(0) }
+    val selectTab: (Int) -> Unit = { index ->
+        if (selectedTabIndex != index) {
+            com.example.performance.BackgroundWorkCoordinator.navigationInteraction()
+            selectedTabIndex = index
+        }
+    }
+    // Let the incoming tab complete its first layout before admitting optional work.
+    LaunchedEffect(selectedTabIndex) {
+        val navigation = com.example.performance.BackgroundWorkCoordinator.navigationBusy()
+        try {
+            androidx.compose.runtime.withFrameNanos { }
+            androidx.compose.runtime.withFrameNanos { }
+        } finally { navigation.close() }
+    }
     val tabState = rememberSaveableStateHolder()
     val tabTransition = updateTransition(selectedTabIndex, label = "tab_navigation_transition")
     var isPlayerExpanded by rememberSaveable { mutableStateOf(false) }
@@ -179,7 +195,7 @@ fun MainNavigationScaffold(
                 viewModel.onSearchQueryChange("")
             }
         } else if (selectedTabIndex != 0) {
-            selectedTabIndex = 0
+            selectTab(0)
         }
     }
 
@@ -190,7 +206,7 @@ fun MainNavigationScaffold(
     val playerCoversContent = playerVisibility.isIdle && playerVisibility.currentState && playerVisibility.targetState
     val transitionRunning = !playerVisibility.isIdle || tabTransition.isRunning
     DisposableEffect(transitionRunning) {
-        val work = if (transitionRunning) com.example.performance.BackgroundWorkCoordinator.busy() else null
+        val work = if (transitionRunning) com.example.performance.BackgroundWorkCoordinator.navigationBusy() else null
         onDispose { work?.close() }
     }
     val homeLifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
@@ -303,36 +319,10 @@ fun MainNavigationScaffold(
                                         animationSpec = tween(100, easing = FastOutLinearInEasing)
                                     )
                                 )
-                            } else if (targetState > initialState) {
-                                // Preserve the original directional spring travel instead of shortening it.
-                                (slideInHorizontally(
-                                    initialOffsetX = { (it * 0.12f).toInt() },
-                                    animationSpec = spring(dampingRatio = 0.84f, stiffness = 950f)
-                                ) + fadeIn(
-                                    animationSpec = tween(130, easing = LinearOutSlowInEasing)
-                                )).togetherWith(
-                                    slideOutHorizontally(
-                                        targetOffsetX = { (-it * 0.12f).toInt() },
-                                        animationSpec = spring(dampingRatio = 0.84f, stiffness = 950f)
-                                    ) + fadeOut(
-                                        animationSpec = tween(90, easing = FastOutLinearInEasing)
-                                    )
-                                )
                             } else {
-                                // Use the same coordinated spring when travelling back between tabs.
-                                (slideInHorizontally(
-                                    initialOffsetX = { (-it * 0.12f).toInt() },
-                                    animationSpec = spring(dampingRatio = 0.84f, stiffness = 950f)
-                                ) + fadeIn(
-                                    animationSpec = tween(130, easing = LinearOutSlowInEasing)
-                                )).togetherWith(
-                                    slideOutHorizontally(
-                                        targetOffsetX = { (it * 0.12f).toInt() },
-                                        animationSpec = spring(dampingRatio = 0.84f, stiffness = 950f)
-                                    ) + fadeOut(
-                                        animationSpec = tween(90, easing = FastOutLinearInEasing)
-                                    )
-                                )
+                                // BitChord swaps peer tabs immediately. Keep the existing
+                                // Settings transition without rendering two tab pages at once.
+                                EnterTransition.None togetherWith ExitTransition.None
                             }).using(null)
                         },
                         modifier = Modifier
@@ -349,7 +339,7 @@ fun MainNavigationScaffold(
                                 currentTrack = playerUiState.currentTrack,
                                 onTrackClick = { track, queue -> viewModel.playTrack(track, queue) },
                                 onToggleFavorite = { track -> viewModel.toggleLike(track) },
-                                onOpenSettings = { selectedTabIndex = 3 },
+                                onOpenSettings = { selectTab(3) },
                                 onPlayInfiniteRadio = { seed -> viewModel.playInfiniteRadio(seed) },
                                 onAddToQueue = { track -> viewModel.addToQueue(track) }
                             )
@@ -406,7 +396,7 @@ fun MainNavigationScaffold(
                                     isDynamicGlassEnabled = isDynamicGlassEnabled,
                                     onToggleDynamicGlass = { viewModel.setDynamicGlassEnabled(it) },
                                     onSubpageStateChanged = { isOpen -> isSettingsSubpageOpen = isOpen },
-                                    onNavigateBackToHome = { selectedTabIndex = 0 },
+                                    onNavigateBackToHome = { selectTab(0) },
                                     onUpdateProfile = { updated -> viewModel.updateUserProfile(updated) },
                                     onSelectThemeMode = { mode -> viewModel.setThemeMode(mode) },
                                     onToggleDarkMode = { viewModel.toggleDarkMode() },
@@ -495,7 +485,7 @@ fun MainNavigationScaffold(
                                 if (index != 3) {
                                     isSettingsSubpageOpen = false
                                 }
-                                selectedTabIndex = index
+                                selectTab(index)
                                 viewModel.catalogBrowser.close()
                                 viewModel.closePlaylist()
                             }
