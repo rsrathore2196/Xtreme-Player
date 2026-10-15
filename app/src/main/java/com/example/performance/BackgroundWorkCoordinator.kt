@@ -20,6 +20,42 @@ object BackgroundWorkCoordinator {
     private val lastSlowFrame = AtomicLong(startedAt)
     private val lastWork = AtomicLong(startedAt)
     private val jobs = AtomicInteger(0)
+    private val navigationJobs = AtomicInteger(0)
+    private val navigationUntil = AtomicLong(0L)
+
+    /** Called before changing the selected tab, so worker admission closes immediately. */
+    fun navigationInteraction() {
+        interaction()
+        navigationUntil.set(SystemClock.elapsedRealtime() + 350L)
+    }
+
+    /** A lifecycle-owned lease for first layout and full-screen transitions. */
+    fun navigationBusy(): AutoCloseable {
+        navigationJobs.incrementAndGet()
+        val work = busy()
+        val closed = AtomicBoolean(false)
+        return AutoCloseable {
+            if (closed.compareAndSet(false, true)) {
+                navigationJobs.decrementAndGet()
+                work.close()
+            }
+        }
+    }
+
+    /**
+     * Unlike awaitIdle, this ignores background jobs and loading shimmer frames.
+     * It is safe inside an admitted refresh: that refresh cannot wait on itself.
+     * Playback and essential user searches do not use this optional-work gate.
+     */
+    suspend fun awaitNavigationIdle(requireForeground: Boolean = false) {
+        while (true) {
+            currentCoroutineContext().ensureActive()
+            if ((!requireForeground || foreground.get()) &&
+                navigationJobs.get() == 0 &&
+                SystemClock.elapsedRealtime() >= navigationUntil.get()) return
+            delay(50L)
+        }
+    }
 
     fun foreground(visible: Boolean) {
         if (visible) interaction()

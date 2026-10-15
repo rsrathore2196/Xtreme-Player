@@ -425,8 +425,9 @@ class HomeViewModel(
         }
         if (!activeRefreshIsExplicit && pool.generation != manualRenderGeneration)
             awaitHomeIdle()
+        BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
         homeScrolling.first { !it }
-        if (refreshCandidatesPending.value || candidates.value != pool) return@withLock
+        if (!homeVisible.value || refreshCandidatesPending.value || candidates.value != pool) return@withLock
         val rendering = BackgroundWorkCoordinator.busy()
         try {
         currentCoroutineContext().ensureActive()
@@ -479,8 +480,9 @@ class HomeViewModel(
         val quick = HomeRecommendationPolicy.diversify(fresh(quickRanked), HomeRecommendationPolicy.MAX_SHELF_TRACKS, seen)
         // Cancellation on a tab change must not publish a partially calculated stale shelf set.
         currentCoroutineContext().ensureActive()
+        BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
         homeScrolling.first { !it }
-        if (refreshCandidatesPending.value || candidates.value != pool) return@withLock
+        if (!homeVisible.value || refreshCandidatesPending.value || candidates.value != pool) return@withLock
         _homeShelves.value = shelves
         // Reranking must retain error/loading updates arriving from the refresh requests.
         _countryLanguageCard.update { it.copy(tracks = chart) }
@@ -531,6 +533,8 @@ class HomeViewModel(
         while (true) {
             homeVisible.first { it }
             homeScrolling.first { !it }
+            BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
+            if (!homeVisible.value || homeScrolling.value) continue
             val essential = _ytmCard.value.tracks.isEmpty() && _countryLanguageCard.value.tracks.isEmpty()
             // Empty Home content is essential loading, not optional revalidation.
             // Startup work and shimmer frames must not postpone its IO/Default work
@@ -539,7 +543,8 @@ class HomeViewModel(
             BackgroundWorkCoordinator.awaitIdle(quietMillis = if (essential) 1_500L else 2_500L,
                 minimumUptimeMillis = if (essential) 1_500L else 6_000L,
                 userRequested = { _isRefreshing.value || manualRenderGeneration == candidates.value.generation })
-            if (homeVisible.value) return
+            BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
+            if (homeVisible.value && !homeScrolling.value) return
         }
     }
 
@@ -899,6 +904,7 @@ class HomeViewModel(
                 tracks = if (it.title == title) it.tracks else emptyList(),
                 isLoading = true, isError = false, errorMessage = "") }
         }
+      BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
       BackgroundWorkCoordinator.work {
         // Each repository method owns its IO and CPU dispatcher; keep only coordination here.
         val (quick, era, chart) = coroutineScope {
@@ -924,6 +930,8 @@ class HomeViewModel(
             }
             Triple(quickJob.await(), eraJob.await(), chartJob.await())
         }
+        // Keep bounded in-flight requests, but defer result processing through navigation.
+        BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
         homeScrolling.first { !it }
         if (profileKey() != profileKey(profile)) return@work
         val catalog = HomeRecommendationPolicy.originals(quick + era + _catalogTracks.value).take(300)
