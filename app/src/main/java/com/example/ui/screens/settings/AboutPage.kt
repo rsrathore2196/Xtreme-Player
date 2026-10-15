@@ -137,7 +137,8 @@ fun AboutPage(
                 Text(
                     text = "Xtreme Player",
                     fontWeight = FontWeight.Black,
-                    fontSize = 22.sp,
+                    fontSize = 26.sp,
+                    letterSpacing = (-0.5).sp,
                     color = appColors.textPrimary
                 )
 
