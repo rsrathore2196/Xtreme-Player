@@ -1,4 +1,5 @@
 import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy
+import java.util.Properties
 
 plugins {
   alias(libs.plugins.android.application)
@@ -21,6 +22,15 @@ android {
     targetSdk = 36
     versionCode = 9
     versionName = "1.9.0"
+
+    val lastFmKey = providers.gradleProperty("LASTFM_API_KEY")
+      .orElse(providers.environmentVariable("LASTFM_API_KEY"))
+      .orElse(provider {
+        val properties = Properties()
+        rootProject.file(".env").takeIf { it.isFile }?.inputStream()?.use(properties::load)
+        properties.getProperty("LASTFM_API_KEY", "")
+      }).get().trim()
+    buildConfigField("String", "LASTFM_API_KEY", "\"" + lastFmKey.replace("\\", "\\\\").replace("\"", "\\\"") + "\"")
 
     // Optional authenticated lyrics routes; public providers work without these values.
     for (keyName in listOf("PAXSENIX_API_KEY", "MUSIXMATCH_API_KEY")) {
@@ -93,6 +103,7 @@ secrets {
   propertiesFileName = ".env"
   defaultPropertiesFileName = ".env.example"
   ignoreList.add("FIREBASE_APPCHECK_DEBUG_TOKEN")
+  ignoreList.add("LASTFM_API_KEY")
 }
 
 googleServices { missingGoogleServicesStrategy = MissingGoogleServicesStrategy.WARN }

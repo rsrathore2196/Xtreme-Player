@@ -26,7 +26,14 @@ data class SavedHomeCards(
     val history: SectionState, val personalized: SectionState, val artists: List<MostListenedArtist>,
     val quickCandidates: List<MusicTrack>, val eraCandidates: List<MusicTrack>,
     val chartCandidates: List<MusicTrack>, val catalog: List<MusicTrack>,
-    val chartRefreshedAt: Long = refreshedAt
+    val chartRefreshedAt: Long = refreshedAt,
+    val similarArtists: SectionState = SectionState(title = "More from Similar Artists"),
+    val inspiredTrack: SectionState = SectionState(title = "Inspired by this Track"),
+    val personalizedCandidates: List<MusicTrack> = emptyList(),
+    val similarArtistCandidates: List<MusicTrack> = emptyList(),
+    val inspiredTrackCandidates: List<MusicTrack> = emptyList(),
+    val recommendationSource: String = "",
+    val seedKey: String = "", val seedArtist: String = "", val seedTitle: String = ""
 )
 
 @OptIn(FlowPreview::class, ExperimentalCoroutinesApi::class)
@@ -118,7 +125,9 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Di
             s.eraCandidates.take(MAX_CANDIDATE_TRACKS) + s.chartCandidates.take(MAX_CANDIDATE_TRACKS) +
             s.quick.tracks.take(MAX_TRACKS_PER_LIST) + s.era.tracks.take(MAX_TRACKS_PER_LIST) +
             s.chart.tracks.take(MAX_TRACKS_PER_LIST) + s.history.tracks.take(MAX_TRACKS_PER_LIST) +
-            s.personalized.tracks.take(MAX_TRACKS_PER_LIST) +
+            s.personalized.tracks.take(MAX_TRACKS_PER_LIST) + s.similarArtists.tracks.take(MAX_TRACKS_PER_LIST) +
+            s.inspiredTrack.tracks.take(MAX_TRACKS_PER_LIST) + s.personalizedCandidates.take(MAX_CANDIDATE_TRACKS) +
+            s.similarArtistCandidates.take(MAX_CANDIDATE_TRACKS) + s.inspiredTrackCandidates.take(MAX_CANDIDATE_TRACKS) +
             s.artists.flatMap { it.tracks.take(MAX_TRACKS_PER_LIST) }).distinctBy { it.id }
         fun ids(list: List<MusicTrack>) = JSONArray(list.map { it.id })
         fun section(value: SectionState) = JSONObject().put("title", value.title)
@@ -137,6 +146,12 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Di
                 .put("motion", t.motionArtworkUrl.orEmpty()) }))
             .put("quick", section(s.quick)).put("era", section(s.era)).put("chart", section(s.chart))
             .put("history", section(s.history)).put("personalized", section(s.personalized))
+            .put("similarArtists", section(s.similarArtists)).put("inspiredTrack", section(s.inspiredTrack))
+            .put("personalizedCandidates", ids(s.personalizedCandidates.take(MAX_CANDIDATE_TRACKS)))
+            .put("similarArtistCandidates", ids(s.similarArtistCandidates.take(MAX_CANDIDATE_TRACKS)))
+            .put("inspiredTrackCandidates", ids(s.inspiredTrackCandidates.take(MAX_CANDIDATE_TRACKS)))
+            .put("recommendationSource", s.recommendationSource).put("seedKey", s.seedKey)
+            .put("seedArtist", s.seedArtist).put("seedTitle", s.seedTitle)
             .put("artists", JSONArray(s.artists.map { a -> JSONObject().put("name", a.name)
                 .put("count", a.playCount).put("tracks", ids(a.tracks.take(MAX_TRACKS_PER_LIST))) }))
             .put("quickCandidates", ids(s.quickCandidates.take(MAX_CANDIDATE_TRACKS)))
@@ -174,6 +189,11 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Di
                 MostListenedArtist(a.getString("name"), a.optInt("count"), list).takeIf { list.isNotEmpty() }
             }, tracks(root.optJSONArray("quickCandidates")), tracks(root.optJSONArray("eraCandidates")),
             tracks(root.optJSONArray("chartCandidates")), tracks(root.optJSONArray("catalog")),
-            root.optLong("chartRefreshedAt", root.optLong("refreshedAt")))
+            root.optLong("chartRefreshedAt", root.optLong("refreshedAt")),
+            if (root.has("similarArtists")) section("similarArtists") else SectionState(title = "More from Similar Artists"),
+            if (root.has("inspiredTrack")) section("inspiredTrack") else SectionState(title = "Inspired by this Track"),
+            tracks(root.optJSONArray("personalizedCandidates")), tracks(root.optJSONArray("similarArtistCandidates")),
+            tracks(root.optJSONArray("inspiredTrackCandidates")), root.optString("recommendationSource"),
+            root.optString("seedKey"), root.optString("seedArtist"), root.optString("seedTitle"))
     }
 }

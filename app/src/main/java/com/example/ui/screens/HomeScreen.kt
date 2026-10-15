@@ -192,6 +192,8 @@ fun HomeScreen(
     val countryLanguageCard = recommendationCards.chart
     val listeningHistoryCard by homeViewModel.listeningHistoryCard.collectAsStateWithLifecycle()
     val personalizedCard = recommendationCards.personalized
+    val similarArtistsCard = recommendationCards.similarArtists
+    val inspiredTrackCard = recommendationCards.inspiredTrack
     val mostListenedArtists by homeViewModel.mostListenedArtists.collectAsStateWithLifecycle()
     val userProfile by homeViewModel.userProfile.collectAsStateWithLifecycle()
     val isRefreshing by homeViewModel.isRefreshing.collectAsStateWithLifecycle()
@@ -222,6 +224,8 @@ fun HomeScreen(
                 countryLanguageCard = countryLanguageCard,
                 listeningHistoryCard = listeningHistoryCard,
                 personalizedCard = personalizedCard,
+                similarArtistsCard = similarArtistsCard,
+                inspiredTrackCard = inspiredTrackCard,
                 mostListenedArtists = mostListenedArtists,
                 onOpenArtist = onOpenArtist,
                 isRadioSession = playerUiState?.isInfiniteRadio == true,
@@ -316,6 +320,8 @@ fun HomeScreenContent(
     onPlayInfiniteRadio: ((MusicTrack?) -> Unit)? = null,
     onAddToQueue: ((MusicTrack) -> Unit)? = null,
     mostListenedArtists: List<MostListenedArtist> = emptyList(),
+    similarArtistsCard: SectionState = SectionState(),
+    inspiredTrackCard: SectionState = SectionState(),
     isRadioSession: Boolean = false,
     isRadioLoading: Boolean = false,
     boundaryOffset: () -> Float = { 0f },
@@ -684,6 +690,16 @@ fun HomeScreenContent(
                     textMutedColor = textMutedColor,
                     onTrackClick = onTrackClick
                 )
+            }
+            item(key = "card_7_similar_artists", contentType = "song_shelf") {
+                SectionCardLayout(state = similarArtistsCard, currentPlayingId = currentPlayingId,
+                    cardBg = cardBg, cardBorderColor = cardBorderColor, textPrimaryColor = textPrimaryColor,
+                    textMutedColor = textMutedColor, onTrackClick = onTrackClick)
+            }
+            item(key = "card_8_inspired_by_track", contentType = "song_shelf") {
+                SectionCardLayout(state = inspiredTrackCard, currentPlayingId = currentPlayingId,
+                    cardBg = cardBg, cardBorderColor = cardBorderColor, textPrimaryColor = textPrimaryColor,
+                    textMutedColor = textMutedColor, onTrackClick = onTrackClick)
             }
         }
     }

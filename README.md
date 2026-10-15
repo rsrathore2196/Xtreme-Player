@@ -135,6 +135,13 @@
 
 ## 🚀 Getting Started
 
+Home discovery uses Last.fm metadata and matches suggestions to the existing music catalog for playback.
+Create your own API key at https://www.last.fm/api/account/create and set `LASTFM_API_KEY` in the ignored
+root `.env` file, a Gradle property, or the build environment before building. No Last.fm login or
+scrobbling permission is required. Without a configured key, existing cached Home cards remain visible
+and the refresh banner explains the missing configuration; unrelated catalog recommendations are not substituted.
+Recently Played and Most Listened Artists continue to use local listening history.
+
 ### Prerequisites
 - Android Studio Ladybug (2024.2.1 or newer)
 - Android SDK 26+ (Android 8.0 Oreo or higher)

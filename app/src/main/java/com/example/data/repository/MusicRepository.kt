@@ -75,6 +75,37 @@ class MusicRepository(
     val catalogBrowser = CatalogRepository()
     // Home's owners and workers share this cap, including discovery ranking.
     internal val homeDispatcher = Dispatchers.Default.limitedParallelism(2)
+    val lastFmHome by lazy { com.example.recommendation.LastFmHomeRecommendationEngine(this) }
+
+    /** Catalogue lookup only: Last.fm, not either catalogue's search ranking, chooses the song. */
+    internal suspend fun lastFmCatalogCandidates(query: String, force: Boolean): List<MusicTrack> = withContext(Dispatchers.IO) {
+        val key = "lastfm-recording:${DiscoveryRequestCoordinator.normalize(query)}"
+        val hit = discoveryCache.get(key)
+        if (hit != null && System.currentTimeMillis() - hit.fetchedAt < if (force) 15_000L else discoveryTtlMs)
+            return@withContext hit.tracks
+        DiscoveryRequestCoordinator.shared(key, essential = false) {
+            val existing = discoveryCache.get(key)
+            if (existing != null && System.currentTimeMillis() - existing.fetchedAt < if (force) 15_000L else discoveryTtlMs)
+                return@shared existing.tracks
+            val found = coroutineScope {
+                val jio = async { try { kotlinx.coroutines.withTimeoutOrNull(5_000L) {
+                    OnlineMusicApiService.searchSongs(query, limit = 8, forceRefresh = force)
+                }.orEmpty() } catch (e: CancellationException) { throw e } catch (_: Exception) { emptyList() } }
+                val youtube = async { try { kotlinx.coroutines.withTimeoutOrNull(5_000L) {
+                    YouTubeMusicApiService.searchSongsPage(query, useInnerTubeX = true, forceRefresh = force).tracks.take(10)
+                }.orEmpty() } catch (e: CancellationException) { throw e } catch (_: Exception) { emptyList() } }
+                jio.await() + youtube.await()
+            }
+            val result = withContext(homeDispatcher) { HomeRecommendationPolicy.originals(found) }
+            if (result.isNotEmpty()) discoveryCache.put(key, DiscoveryCache(result, System.currentTimeMillis()))
+            result.ifEmpty { existing?.tracks.orEmpty() }
+        }
+    }
+
+    internal suspend fun cacheLastFmTracks(tracks: List<MusicTrack>) = withContext(homeDispatcher) {
+        val rows = tracks.distinctBy { it.id }.map { TrackEntity.fromMusicTrack(it).copy(isCached = true) }
+        if (rows.isNotEmpty()) withContext(Dispatchers.IO) { musicDao.mergeTracksMetadata(rows) }
+    }
 
     // LRU / in-memory cache to avoid duplicate network calls and prevent rate limiting
     private val searchCache = android.util.LruCache<String, SearchResultCategory>(80)

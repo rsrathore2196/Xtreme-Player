@@ -12,6 +12,8 @@ import com.example.data.local.MusicDatabase
 import com.example.data.local.ListeningEventEntity
 import com.example.data.model.CountryData
 import com.example.data.model.MusicTrack
+import com.example.data.remote.LastFmApiService
+import com.example.recommendation.LastFmHomeRecommendationEngine
 import com.example.recommendation.HomeRecommendationPolicy
 import com.example.recommendation.DiscoveryRequestCoordinator
 import com.example.recommendation.UserTasteProfile
@@ -75,7 +77,8 @@ private fun SectionState.limitShelf() = copy(tracks = tracks.take(HomeRecommenda
 
 @Immutable
 data class RecommendationCards(val quick: SectionState, val era: SectionState,
-    val chart: SectionState, val personalized: SectionState)
+    val chart: SectionState, val personalized: SectionState,
+    val similarArtists: SectionState = SectionState(), val inspiredTrack: SectionState = SectionState())
 
 @Immutable
 data class MostListenedArtist(
@@ -263,7 +266,7 @@ class HomeViewModel(
 
     // Card 2: YouTube Music Home Screen-Based Card
     private val _ytmCard = MutableStateFlow(
-        initialCards?.quick?.limitShelf() ?: SectionState(title = "Quick Picks", subtitle = "Dynamic hits inspired by YouTube Music", isLoading = true)
+        initialCards?.quick?.limitShelf() ?: SectionState(title = "Quick Picks", subtitle = "Last.fm discoveries for your listening taste", isLoading = true)
     )
     val ytmCard: StateFlow<SectionState> = _ytmCard.asStateFlow()
 
@@ -296,9 +299,18 @@ class HomeViewModel(
     )
     val personalizedCard: StateFlow<SectionState> = _personalizedCard.asStateFlow()
 
+    private val _similarArtistsCard = MutableStateFlow(initialCards?.similarArtists?.limitShelf()
+        ?: SectionState(title = "More from Similar Artists"))
+    private val _inspiredTrackCard = MutableStateFlow(initialCards?.inspiredTrack?.limitShelf()
+        ?: SectionState(title = "Inspired by this Track"))
+    private val lastFmSeed = MutableStateFlow<MusicTrack?>(playbackManager.uiState.value.currentTrack)
+    private var lastRelatedKey = initialCards?.seedKey.orEmpty()
+    private var lastRelatedAttempt = initialCards?.refreshedAt ?: 0L
+    private fun recommendationSnapshot() = RecommendationCards(_ytmCard.value, _eraCard.value,
+        _countryLanguageCard.value, _personalizedCard.value, _similarArtistsCard.value, _inspiredTrackCard.value)
+
     // One publication for the coordinated recommendation cards; history/artist updates stay independent.
-    private val _recommendationCards = MutableStateFlow(RecommendationCards(
-        _ytmCard.value, _eraCard.value, _countryLanguageCard.value, _personalizedCard.value))
+    private val _recommendationCards = MutableStateFlow(recommendationSnapshot())
     val recommendationCards: StateFlow<RecommendationCards> = _recommendationCards.asStateFlow()
 
     private val exposurePreferences by lazy {
@@ -309,10 +321,18 @@ class HomeViewModel(
         val quick: List<MusicTrack> = emptyList(),
         val era: List<MusicTrack> = emptyList(),
         val chart: List<MusicTrack> = emptyList(),
-        val generation: Long = 0L
+        val generation: Long = 0L,
+        val personalized: List<MusicTrack> = emptyList(),
+        val similar: List<MusicTrack> = emptyList(),
+        val inspired: List<MusicTrack> = emptyList(),
+        val source: String = "", val seedKey: String = "", val seedArtist: String = "", val seedTitle: String = ""
     )
+    private fun restoredCandidates(cards: SavedHomeCards) = Candidates(cards.quickCandidates,
+        cards.eraCandidates, cards.chartCandidates, cards.generation, cards.personalizedCandidates,
+        cards.similarArtistCandidates, cards.inspiredTrackCandidates, cards.recommendationSource,
+        cards.seedKey, cards.seedArtist, cards.seedTitle)
     private val candidates = MutableStateFlow(initialCards?.let {
-        Candidates(it.quickCandidates, it.eraCandidates, it.chartCandidates, it.generation)
+        restoredCandidates(it)
     } ?: Candidates())
     private var savedCandidates: Candidates? = initialCards?.let { candidates.value }
     private val _mostListenedArtists = MutableStateFlow(initialCards?.artists.orEmpty().take(20))
@@ -406,6 +426,7 @@ class HomeViewModel(
         // chart/discovery arrivals or on metadata writes made by that same refresh.
         refreshCandidatesPending.first { !it }
         val pool = candidates.value
+        if (pool.source != LastFmHomeRecommendationEngine.SOURCE) return@withLock
         // Observe all generations together. An explicit render is not canceled
         // by collectLatest, so it must never wait for an obsolete captured ID list.
         val snapshot = combine(actualPlays, historyRows, favoriteTracks, _userProfile, tasteSnapshot) { events, rows, favorites, profile, taste ->
@@ -442,14 +463,15 @@ class HomeViewModel(
         val rendering = BackgroundWorkCoordinator.busy()
         try {
         currentCoroutineContext().ensureActive()
-        val catalog = HomeRecommendationPolicy.originals(inputs.catalog + pool.quick + pool.era + pool.chart + inputs.history + inputs.favorites)
+        val catalog = HomeRecommendationPolicy.originals(inputs.catalog + pool.quick + pool.era + pool.chart +
+            pool.personalized + pool.similar + pool.inspired + inputs.history + inputs.favorites)
         if (pool.generation != renderedGeneration) {
             previousExposure = withContext(Dispatchers.IO) {
                 exposurePreferences.getStringSet("recordings_v2", emptySet()).orEmpty().toSet()
             }
             renderedGeneration = pool.generation
         }
-        val shelves = personalizedEngine.generateHomeShelves(catalog, inputs.profile,
+        val shelves = personalizedEngine.generateHomeShelves(pool.personalized, inputs.profile,
             favorites = inputs.favorites, taste = taste)
         currentCoroutineContext().ensureActive()
         val seen = HomeRecommendationPolicy.Recordings()
@@ -481,14 +503,16 @@ class HomeViewModel(
                     .firstOrNull { HomeRecommendationPolicy.normalize(it) == artist }?.trim() } ?: artist,
                 count, tracks)
         }
-        val personalizedGroups = if (taste.isColdStart) emptyList() else shelves.filter {
-            it.id in setOf("shelf_mood_vibe", "shelf_top_artist", "shelf_quick_picks")
-        }.map { it.tracks }
-        // Round robin prevents the first shelf from monopolizing the entire card.
-        val personalized = HomeRecommendationPolicy.diversify(fresh(HomeRecommendationPolicy.interleave(personalizedGroups)), HomeRecommendationPolicy.MAX_SHELF_TRACKS, seen)
+        val personalizedRanked = if (taste.isColdStart) emptyList() else
+            personalizedEngine.scoreAndRankCandidates(pool.personalized, taste,
+                limit = pool.personalized.size, variationSeed = pool.generation)
+        val personalized = HomeRecommendationPolicy.diversify(fresh(personalizedRanked), HomeRecommendationPolicy.MAX_SHELF_TRACKS, seen)
         val quickRanked = personalizedEngine.scoreAndRankCandidates(pool.quick, taste,
             limit = pool.quick.size, variationSeed = pool.generation)
         val quick = HomeRecommendationPolicy.diversify(fresh(quickRanked), HomeRecommendationPolicy.MAX_SHELF_TRACKS, seen)
+        val relevantSeed = pool.seedKey.isNotBlank() && pool.seedKey == LastFmHomeRecommendationEngine.seedKey(lastFmSeed.value)
+        val similar = if (relevantSeed) HomeRecommendationPolicy.diversify(fresh(pool.similar), HomeRecommendationPolicy.MAX_SHELF_TRACKS, seen) else emptyList()
+        val inspired = if (relevantSeed) HomeRecommendationPolicy.diversify(fresh(pool.inspired), HomeRecommendationPolicy.MAX_SHELF_TRACKS, seen) else emptyList()
         // Cancellation on a tab change must not publish a partially calculated stale shelf set.
         currentCoroutineContext().ensureActive()
         // Retaining ready results while hidden must not hold other optional work busy.
@@ -503,8 +527,11 @@ class HomeViewModel(
         _ytmCard.update { it.copy(tracks = quick, isLoading = false, isLoaded = quick.isNotEmpty()) }
         _personalizedCard.value = _personalizedCard.value.copy(tracks = personalized,
             isLoading = false, isLoaded = personalized.isNotEmpty())
-        _recommendationCards.value = RecommendationCards(_ytmCard.value, _eraCard.value,
-            _countryLanguageCard.value, _personalizedCard.value)
+        _similarArtistsCard.update { it.copy(tracks = similar, isLoading = false, isLoaded = similar.isNotEmpty(),
+            subtitle = "Related to ${pool.seedArtist} • Last.fm") }
+        _inspiredTrackCard.update { it.copy(tracks = inspired, isLoading = false, isLoaded = inspired.isNotEmpty(),
+            subtitle = "Inspired by ${pool.seedTitle} • Last.fm") }
+        _recommendationCards.value = recommendationSnapshot()
         lastRenderInputs = inputs
         _currentStage.value = LoadingStage.PRIORITY_3_BACKGROUND_ENRICHED
         savedSignal = signal; savedGeneration = pool.generation; savedCandidates = pool
@@ -512,9 +539,12 @@ class HomeViewModel(
         shelfCache.save(SavedHomeCards(profileKey(), signal, pool.generation, lastDiscoveryRefresh,
             _ytmCard.value, _eraCard.value, _countryLanguageCard.value, _listeningHistoryCard.value,
             _personalizedCard.value, _mostListenedArtists.value.take(20), pool.quick, pool.era, pool.chart, catalog.take(400),
-            chartRefreshedAt = lastRegionalRefresh))
+            chartRefreshedAt = lastRegionalRefresh, similarArtists = _similarArtistsCard.value,
+            inspiredTrack = _inspiredTrackCard.value, personalizedCandidates = pool.personalized,
+            similarArtistCandidates = pool.similar, inspiredTrackCandidates = pool.inspired,
+            recommendationSource = pool.source, seedKey = pool.seedKey, seedArtist = pool.seedArtist, seedTitle = pool.seedTitle))
         if (manualRenderGeneration == pool.generation) manualRenderGeneration = -1L
-        val shown = chart + era + quick + personalized + artistReservations.flatMap { it.tracks }
+        val shown = chart + era + quick + personalized + similar + inspired + artistReservations.flatMap { it.tracks }
         if (shown.isNotEmpty()) {
             val exposure = shown.map(HomeRecommendationPolicy::metadataKey).toSet()
             withContext(Dispatchers.IO) {
@@ -539,10 +569,7 @@ class HomeViewModel(
         _refreshErrorMessage.value = null
     }
 
-    private var regionalTrendingJob: Job? = null
     @Volatile private var lastRegionalRefresh = initialCards?.chartRefreshedAt ?: 0L
-    private var lastRegionalAttempt = 0L
-    private var lastRegionalAttemptTitle: String? = null
 
     // Navigation admission ignores our rendering lease. Retain completed work
     // across hidden tabs rather than discarding it and reranking on the return.
@@ -577,44 +604,8 @@ class HomeViewModel(
 
     fun loadRegionalTrending(country: String, countryCode: String = "IN", forceRefresh: Boolean = false,
         alreadyIdle: Boolean = false) {
-      ownerScope.launch {
-        val item = CountryData.findCountry(countryCode) ?: CountryData.findCountry(country)
-        val name = item?.name ?: country.ifBlank { "India" }
-        val title = getAuthoritativeTrendingTitle(name)
-        val sameCountry = _countryLanguageCard.value.title == title
-        if (!forceRefresh && sameCountry && (regionalTrendingJob?.isActive == true ||
-                lastRegionalAttemptTitle == title && System.currentTimeMillis() - lastRegionalAttempt in 0 until 60_000L)) return@launch
-        regionalTrendingJob?.cancel()
-        if (!sameCountry) candidates.value = candidates.value.copy(chart = emptyList())
-        _countryLanguageCard.update { it.copy(title = title,
-            tracks = if (sameCountry) it.tracks else emptyList(),
-            isLoading = true, isError = false, errorMessage = "") }
-        regionalTrendingJob = ownerScope.launch regional@ {
-          if (!forceRefresh && !alreadyIdle) awaitHomeIdle()
-          lastRegionalAttempt = System.currentTimeMillis()
-          lastRegionalAttemptTitle = title
-          BackgroundWorkCoordinator.work {
-            try {
-                val songs = repository.getRegionalTrending(name, item?.code ?: countryCode,
-                    limit = HomeRecommendationPolicy.MAX_SHELF_TRACKS,
-                    forceRefresh = forceRefresh || candidates.value.chart.any { it.id.startsWith("chart_in_") })
-                if (_countryLanguageCard.value.title != title) return@regional
-                if (songs.isNotEmpty()) {
-                    lastRegionalRefresh = repository.getRegionalTrendingFetchedAt(name)
-                    candidates.update { it.copy(chart = songs) }
-                }
-                _countryLanguageCard.update { if (it.title != title) it else it.copy(isLoading = false,
-                    isLoaded = candidates.value.chart.isNotEmpty(), isError = songs.isEmpty(),
-                    errorMessage = if (songs.isEmpty()) "Regional charts are temporarily unavailable." else "") }
-            } catch (e: CancellationException) { throw e } catch (_: Exception) {
-                if (_countryLanguageCard.value.title == title) {
-                    _countryLanguageCard.update { if (it.title != title) it else it.copy(isLoading = false, isError = true,
-                        errorMessage = "Regional charts are temporarily unavailable.") }
-                }
-            }
-          }
-        }
-      }
+        // All discovery now has one Last.fm refresh owner and cache publication.
+        refreshHome(isExplicitPull = forceRefresh)
     }
 
     fun updateUserProfile(profile: UserProfile) {
@@ -676,6 +667,8 @@ class HomeViewModel(
             var wasPlaying = false
             playbackManager.listeningState.collect { state ->
                 val track = state.track
+                if (track != null && LastFmHomeRecommendationEngine.seedKey(track) !=
+                    LastFmHomeRecommendationEngine.seedKey(lastFmSeed.value)) lastFmSeed.value = track
                 val newSession = state.playSessionId != lastCardPlaySession
                 if (state.isPlaying && track != null && state.playSessionId.isNotBlank() &&
                     (newSession || !wasPlaying)) {
@@ -697,16 +690,14 @@ class HomeViewModel(
             }
         }
         ownerScope.launch {
-            combine(_ytmCard, _eraCard, _countryLanguageCard, _personalizedCard) { quick, era, chart, personalized ->
+            combine(combine(_ytmCard, _eraCard, _countryLanguageCard, _personalizedCard) { quick, era, chart, personalized ->
                 RecommendationCards(quick, era, chart, personalized)
+            }, _similarArtistsCard, _inspiredTrackCard) { base, similar, inspired ->
+                base.copy(similarArtists = similar, inspiredTrack = inspired)
             }.debounce(32L).collectLatest { cards ->
                 homeScrolling.first { !it }
                 refreshCandidatesPending.first { !it }
-                // A single renderer publishes changed tracks; this path publishes loading/errors or cache restoration.
-                if (cards.quick.tracks == _ytmCard.value.tracks && cards.era.tracks == _eraCard.value.tracks &&
-                    cards.chart.tracks == _countryLanguageCard.value.tracks &&
-                    cards.personalized.tracks == _personalizedCard.value.tracks)
-                    _recommendationCards.value = cards
+                if (cards == recommendationSnapshot()) _recommendationCards.value = cards
             }
         }
         ownerScope.launch {
@@ -714,7 +705,10 @@ class HomeViewModel(
                 listOf(quick, era, chart).filter { it.isError && !it.isLoading }.map { it.title }
             }.distinctUntilChanged().collect { failed ->
                 _refreshErrorMessage.value = failed.takeIf { it.isNotEmpty() }?.let {
-                    "${it.joinToString(", ")} couldn't load. Tap Retry to try again."
+                    if (!LastFmApiService.isConfigured) LastFmApiService.CONFIGURATION_ERROR
+                    else listOf(_ytmCard.value, _eraCard.value, _countryLanguageCard.value)
+                        .firstOrNull { card -> card.errorMessage.contains("API key") }?.errorMessage
+                        ?: "${it.joinToString(", ")} couldn't load from Last.fm. Tap Retry to try again."
                 }
             }
         }
@@ -726,8 +720,9 @@ class HomeViewModel(
                 _ytmCard.value = cached.quick.limitShelf(); _eraCard.value = cached.era.limitShelf()
                 _countryLanguageCard.value = cached.chart.limitShelf()
                 _personalizedCard.value = cached.personalized.limitShelf()
-                _recommendationCards.value = RecommendationCards(_ytmCard.value, _eraCard.value,
-                    _countryLanguageCard.value, _personalizedCard.value)
+                _similarArtistsCard.value = cached.similarArtists.limitShelf()
+                _inspiredTrackCard.value = cached.inspiredTrack.limitShelf()
+                _recommendationCards.value = recommendationSnapshot()
                 // A late cache restore must not overwrite a confirmed playback-start update.
                 if (!listeningCardsPublished) {
                     _listeningHistoryCard.value = cached.history
@@ -736,18 +731,18 @@ class HomeViewModel(
                 _catalogTracks.value = cached.catalog
                 cachedHero.value = cached.history.tracks.firstOrNull() ?: cached.catalog.firstOrNull()
                 cachedHistory.value = cached.history.tracks
-                candidates.value = Candidates(cached.quickCandidates, cached.eraCandidates,
-                    cached.chartCandidates, cached.generation)
+                candidates.value = restoredCandidates(cached)
                 savedCandidates = candidates.value
-                lastDiscoveryRefresh = cached.refreshedAt
+                lastDiscoveryRefresh = cached.refreshedAt.takeIf {
+                    cached.recommendationSource == LastFmHomeRecommendationEngine.SOURCE } ?: 0L
                 lastRegionalRefresh = cached.chartRefreshedAt
+                lastRelatedKey = cached.seedKey
+                lastRelatedAttempt = cached.refreshedAt
                 playbackManager.setCandidatePool(cached.catalog)
             }
             val initial = if (cached == null) repository.getInitialCatalog(_userProfile.value) else emptyList()
             if (_catalogTracks.value.isEmpty()) {
                 _catalogTracks.value = initial
-                candidates.value = candidates.value.copy(quick = initial,
-                    era = initial.filter { (it.year.toIntOrNull() ?: 0) in 1990..2009 })
                 playbackManager.setCandidatePool(initial)
             }
           } finally {
@@ -798,6 +793,32 @@ class HomeViewModel(
                     lastDiscoverySignal = signal
                     refreshHome(false)
                 }
+            }
+        }
+        ownerScope.launch {
+            lastFmSeed.map { LastFmHomeRecommendationEngine.seedKey(it) }.distinctUntilChanged().debounce(800L).collectLatest { key ->
+                if (key.isBlank() || !LastFmApiService.isConfigured) return@collectLatest
+                restored.await()
+                if (candidates.value.seedKey != key) {
+                    _similarArtistsCard.update { it.copy(tracks = emptyList(), isLoaded = false) }
+                    _inspiredTrackCard.update { it.copy(tracks = emptyList(), isLoaded = false) }
+                }
+                awaitHomeIdle(allowWhenEmpty = false)
+                homeRefreshJob?.join()
+                if (key != LastFmHomeRecommendationEngine.seedKey(lastFmSeed.value) ||
+                    key == lastRelatedKey && System.currentTimeMillis() - lastRelatedAttempt < 30 * 60_000L) return@collectLatest
+                val seed = lastFmSeed.value ?: return@collectLatest
+                val profile = _userProfile.value
+                lastRelatedKey = key; lastRelatedAttempt = System.currentTimeMillis()
+                try {
+                    val batch = repository.lastFmHome.refresh(profile, resolveCountryDisplayName(profile), tasteProfile.value,
+                        seed, historyRows.value.tracks, favoriteTracks.value, _catalogTracks.value, force = false,
+                        includeChart = false, relatedOnly = true)
+                    awaitHomePresentation()
+                    if (key != LastFmHomeRecommendationEngine.seedKey(lastFmSeed.value) || profileKey(profile) != profileKey()) return@collectLatest
+                    candidates.update { it.copy(similar = batch.similarArtists, inspired = batch.inspiredTrack,
+                        seedKey = key, seedArtist = batch.seedArtist, seedTitle = batch.seedTitle) }
+                } catch (e: CancellationException) { throw e } catch (_: Exception) { /* Retain valid cached content. */ }
             }
         }
         ownerScope.launch {
@@ -875,7 +896,9 @@ class HomeViewModel(
                         try {
                             refreshSuggestions(activeRefreshIsExplicit)
                         } catch (e: CancellationException) { throw e }
-                        catch (_: Exception) {
+                        catch (e: Exception) {
+                            _refreshErrorMessage.value = e.message ?: "Last.fm recommendations are temporarily unavailable."
+                            _countryLanguageCard.update { it.copy(isLoading = false, isError = true, errorMessage = e.message.orEmpty()) }
                             _ytmCard.update { it.copy(isLoading = false, isError = true,
                                 errorMessage = "Quick Picks are temporarily unavailable.") }
                             _eraCard.update { it.copy(isLoading = false, isError = true,
@@ -912,80 +935,48 @@ class HomeViewModel(
         val country = resolveCountryDisplayName(profile)
         val title = getAuthoritativeTrendingTitle(country)
         val sameCountry = _countryLanguageCard.value.title == title
-        val legacyChart = candidates.value.chart.any { it.id.startsWith("chart_in_") }
-        val fetchChart = force || candidates.value.chart.isEmpty() || legacyChart ||
-            _countryLanguageCard.value.title != getAuthoritativeTrendingTitle(country) ||
-            System.currentTimeMillis() - lastRegionalRefresh >= 30 * 60_000L
-        // A full refresh owns the chart too. Cancel an older standalone request
-        // before issuing its replacement.
-        if (fetchChart) {
-            regionalTrendingJob?.cancelAndJoin()
-            regionalTrendingJob = null
-            _countryLanguageCard.update { it.copy(title = title,
-                tracks = if (it.title == title) it.tracks else emptyList(),
-                isLoading = true, isError = false, errorMessage = "") }
-        }
-        // Do not hold a busy lease over discovery IO: optional repository Room
-        // batches must be able to await idle after all fresh groups arrive.
-        val deferRoomMerge = !force && !activeRefreshIsExplicit &&
-            (_ytmCard.value.tracks.isNotEmpty() || _countryLanguageCard.value.tracks.isNotEmpty())
+        val fetchChart = force || candidates.value.source != LastFmHomeRecommendationEngine.SOURCE ||
+            candidates.value.chart.isEmpty() || !sameCountry || System.currentTimeMillis() - lastRegionalRefresh >= 30 * 60_000L
+        val seed = lastFmSeed.value
         BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
-        val (quick, era, chart) = coroutineScope {
-            val quickJob = async {
-                try { repository.getYtmQuickPicks(limit = 100, forceRefresh = force,
-                    deferRoomMergeUntilIdle = deferRoomMerge) }
-                catch (e: CancellationException) { throw e } catch (_: Exception) { emptyList() }
-            }
-            val eraJob = async {
-                try { repository.getEraHits(limit = 60, forceRefresh = force,
-                    deferRoomMergeUntilIdle = deferRoomMerge) }
-                catch (e: CancellationException) { throw e } catch (_: Exception) { emptyList() }
-            }
-            val chartJob = async {
-                if (!fetchChart) return@async null
-                lastRegionalAttempt = System.currentTimeMillis()
-                lastRegionalAttemptTitle = title
-                try {
-                    val refresh = currentCoroutineContext()[DiscoveryRequestCoordinator.HomeRefresh]
-                    suspend fun fetchChart() = repository.getRegionalTrending(country, profile.countryCode,
-                        limit = HomeRecommendationPolicy.MAX_SHELF_TRACKS, forceRefresh = force || legacyChart)
-                    if (refresh != null) refresh.withBudget(14_000L) { fetchChart() }.orEmpty() else fetchChart()
-                }
-                catch (e: CancellationException) { throw e } catch (_: Exception) { emptyList() }
-            }
-            Triple(quickJob.await(), eraJob.await(), chartJob.await())
-        }
-        // Keep bounded in-flight requests, but defer result processing through navigation.
-        BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
-        homeScrolling.first { !it }
+        if (fetchChart) _countryLanguageCard.update { it.copy(title = title,
+            tracks = if (sameCountry) it.tracks else emptyList(), isLoading = it.tracks.isEmpty(), isError = false) }
+        val batch = repository.lastFmHome.refresh(profile, country, tasteProfile.value, seed,
+            historyRows.value.tracks, favoriteTracks.value, _catalogTracks.value, force, includeChart = fetchChart)
+        awaitHomePresentation()
         if (profileKey() != profileKey(profile)) return@withContext
-        val catalog = withContext(workerDispatcher) {
-            HomeRecommendationPolicy.originals(quick + era + _catalogTracks.value).take(300)
-        }
-        currentCoroutineContext().ensureActive()
-        if (profileKey() != profileKey(profile)) return@withContext
-        if (catalog.isNotEmpty()) {
-            _catalogTracks.value = catalog
-            playbackManager.setCandidatePool(catalog)
-        }
-        if (!chart.isNullOrEmpty()) lastRegionalRefresh = repository.getRegionalTrendingFetchedAt(country)
-        if (quick.isNotEmpty() || era.isNotEmpty() || !chart.isNullOrEmpty() || !sameCountry) {
-            if (quick.isNotEmpty() || era.isNotEmpty()) lastDiscoveryRefresh = System.currentTimeMillis()
+        val fresh = withContext(workerDispatcher) { HomeRecommendationPolicy.originals(batch.quick + batch.era +
+            batch.chart.orEmpty() + batch.personalized + batch.similarArtists + batch.inspiredTrack) }
+        if (fresh.isNotEmpty()) {
+            _catalogTracks.value = withContext(workerDispatcher) {
+                HomeRecommendationPolicy.originals(fresh + _catalogTracks.value).take(300) }
+            playbackManager.setCandidatePool(_catalogTracks.value)
+            if (batch.quick.isNotEmpty() || batch.era.isNotEmpty()) lastDiscoveryRefresh = System.currentTimeMillis()
+            if (!batch.chart.isNullOrEmpty()) lastRegionalRefresh = batch.chartFetchedAt
+            val sameSeed = LastFmHomeRecommendationEngine.seedKey(lastFmSeed.value) == batch.seedKey
             if (force || activeRefreshIsExplicit) manualRenderGeneration = candidates.value.generation + 1L
-            candidates.update { old -> old.copy(quick = quick.ifEmpty { old.quick },
-                era = era.ifEmpty { old.era }, chart = chart?.takeIf { it.isNotEmpty() }
-                    ?: old.chart.takeIf { sameCountry }.orEmpty(),
-                generation = old.generation + 1) }
+            candidates.update { old -> old.copy(quick = batch.quick.ifEmpty {
+                    old.quick.takeIf { old.source == LastFmHomeRecommendationEngine.SOURCE }.orEmpty() },
+                era = batch.era.ifEmpty { old.era.takeIf { old.source == LastFmHomeRecommendationEngine.SOURCE }.orEmpty() },
+                chart = batch.chart?.takeIf { it.isNotEmpty() }
+                    ?: old.chart.takeIf { sameCountry && old.source == LastFmHomeRecommendationEngine.SOURCE }.orEmpty(),
+                personalized = batch.personalized.ifEmpty { old.personalized.takeIf { old.source == LastFmHomeRecommendationEngine.SOURCE }.orEmpty() },
+                similar = if (sameSeed) batch.similarArtists else emptyList(),
+                inspired = if (sameSeed) batch.inspiredTrack else emptyList(),
+                generation = old.generation + 1, source = LastFmHomeRecommendationEngine.SOURCE,
+                seedKey = batch.seedKey.takeIf { sameSeed }.orEmpty(), seedArtist = batch.seedArtist, seedTitle = batch.seedTitle) }
+            if (sameSeed) { lastRelatedKey = batch.seedKey; lastRelatedAttempt = System.currentTimeMillis() }
         }
-        _ytmCard.update { it.copy(isLoading = false, isError = quick.isEmpty(),
-            errorMessage = if (quick.isEmpty()) "Quick Picks are temporarily unavailable." else "") }
-        _eraCard.update { it.copy(isLoading = false, isError = era.isEmpty(),
-            errorMessage = if (era.isEmpty()) "Era hits are temporarily unavailable." else "") }
-        if (fetchChart) {
-            _countryLanguageCard.update { it.copy(isLoading = false,
-                isLoaded = candidates.value.chart.isNotEmpty(), isError = chart.isNullOrEmpty(),
-                errorMessage = if (chart.isNullOrEmpty()) "Regional charts are temporarily unavailable." else "") }
-        }
+        _ytmCard.update { it.copy(subtitle = "Last.fm discoveries for your listening taste", isLoading = false,
+            isError = batch.quick.isEmpty(), errorMessage = if (batch.quick.isEmpty()) "Last.fm Quick Picks are temporarily unavailable." else "") }
+        _eraCard.update { it.copy(subtitle = "1990s & 2000s picks from Last.fm", isLoading = false,
+            isError = batch.era.isEmpty(), errorMessage = if (batch.era.isEmpty()) "Last.fm era hits are temporarily unavailable." else "") }
+        _personalizedCard.update { it.copy(subtitle = "Last.fm similarities tailored to your listening", isLoading = false) }
+        if (fetchChart) _countryLanguageCard.update { it.copy(subtitle = "Last.fm listener chart for $country",
+            isLoading = false, isError = batch.chart.isNullOrEmpty(),
+            errorMessage = if (batch.chart.isNullOrEmpty()) "Last.fm regional charts are temporarily unavailable." else "") }
+        if (!activeRefreshIsExplicit) BackgroundWorkCoordinator.awaitIdle()
+        repository.cacheLastFmTracks(fresh)
     }
 
     fun loadEraSectionIfNeeded() {
