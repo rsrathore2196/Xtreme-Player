@@ -32,6 +32,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import androidx.compose.runtime.Immutable
@@ -130,6 +131,11 @@ class PlayerViewModel(
         initialQuality = playbackManager.uiState.value.selectedQuality)
 
     private val _searchState = MutableStateFlow(SearchUiState())
+    fun hasActiveSearch(): Boolean = _searchState.value.let { it.query.isNotBlank() || it.selectedGenre != "All" }
+    fun resetSearchNavigation() {
+        selectGenre("All")
+        if (_searchState.value.query.isNotBlank()) onSearchQueryChange("")
+    }
     val searchState: StateFlow<SearchUiState> = _searchState.map { state ->
         val results = state.result
         val raw = results.exactMatches.ifEmpty { results.songs }
@@ -170,23 +176,27 @@ class PlayerViewModel(
         .flatMapLatest { foreground -> if (foreground) repository.getAllPlaylists() else emptyFlow() }
         .stateIn(libraryDataScope, SharingStarted.Eagerly, emptyList())
 
-    private val initialThemeMode = com.example.data.local.ThemePreferences.getThemeMode(application)
+    private val initialSettings = (application as? com.example.XtremeMusicApp)?.startupSettings
+        ?: com.example.data.local.StartupSettings()
+    private val _settingsReady = MutableStateFlow(false)
+    val settingsReady: StateFlow<Boolean> = _settingsReady.asStateFlow()
+    private val initialThemeMode = initialSettings.themeMode
     private val _themeMode = MutableStateFlow(initialThemeMode)
     val themeMode: StateFlow<com.example.data.local.AppThemeMode> = _themeMode.asStateFlow()
 
-    private val _textScale = MutableStateFlow(com.example.data.local.OtherSettingsPreferences.getTextScale(application))
+    private val _textScale = MutableStateFlow(initialSettings.textScale)
     val textScale: StateFlow<Float> = _textScale.asStateFlow()
 
-    private val _textScaleIndex = MutableStateFlow(com.example.data.local.OtherSettingsPreferences.getTextSizeIndex(application))
+    private val _textScaleIndex = MutableStateFlow(initialSettings.textSizeIndex)
     val textScaleIndex: StateFlow<Int> = _textScaleIndex.asStateFlow()
 
-    private val _uiScale = MutableStateFlow(com.example.data.local.OtherSettingsPreferences.getUiScale(application))
+    private val _uiScale = MutableStateFlow(initialSettings.uiScale)
     val uiScale: StateFlow<Float> = _uiScale.asStateFlow()
 
-    private val _uiScaleIndex = MutableStateFlow(com.example.data.local.OtherSettingsPreferences.getUiSizeIndex(application))
+    private val _uiScaleIndex = MutableStateFlow(initialSettings.uiSizeIndex)
     val uiScaleIndex: StateFlow<Int> = _uiScaleIndex.asStateFlow()
 
-    private val _isDynamicGlassEnabled = MutableStateFlow(com.example.data.local.OtherSettingsPreferences.isDynamicGlassEnabled(application))
+    private val _isDynamicGlassEnabled = MutableStateFlow(initialSettings.dynamicGlass)
     val isDynamicGlassEnabled: StateFlow<Boolean> = _isDynamicGlassEnabled.asStateFlow()
 
     fun setDynamicGlassEnabled(enabled: Boolean) {
@@ -206,10 +216,10 @@ class PlayerViewModel(
         _uiScale.value = com.example.data.local.OtherSettingsPreferences.getUiScale(application)
     }
 
-    private val _userProfile = MutableStateFlow(com.example.data.local.UserProfilePreferences.getUserProfile(application))
+    private val _userProfile = MutableStateFlow(initialSettings.profile)
     val userProfile: StateFlow<com.example.data.local.UserProfile> = _userProfile.asStateFlow()
 
-    private val _isOnboardingCompleted = MutableStateFlow(com.example.data.local.UserProfilePreferences.isOnboardingCompleted(application))
+    private val _isOnboardingCompleted = MutableStateFlow(initialSettings.profile.isOnboardingCompleted)
     val isOnboardingCompleted: StateFlow<Boolean> = _isOnboardingCompleted.asStateFlow()
 
     fun completeOnboarding(
@@ -301,7 +311,7 @@ class PlayerViewModel(
         }
     }
 
-    private val _customThemeState = MutableStateFlow(com.example.data.local.ThemePreferences.getCustomThemeState(application))
+    private val _customThemeState = MutableStateFlow(initialSettings.customTheme)
     val customThemeState: StateFlow<com.example.data.local.CustomThemeState> = _customThemeState.asStateFlow()
 
     fun updateCustomThemeState(newState: com.example.data.local.CustomThemeState) {
@@ -349,6 +359,27 @@ class PlayerViewModel(
     ) }
 
     init {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val settings = (application as? com.example.XtremeMusicApp)?.takeInitialStartupSettings()
+                    ?: com.example.data.local.StartupSettings.read(application)
+                _themeMode.value = settings.themeMode
+                _isDarkMode.value = when (settings.themeMode) {
+                    com.example.data.local.AppThemeMode.DARK -> true
+                    com.example.data.local.AppThemeMode.LIGHT -> false
+                    com.example.data.local.AppThemeMode.SYSTEM -> application.resources.configuration.uiMode and
+                        android.content.res.Configuration.UI_MODE_NIGHT_MASK == android.content.res.Configuration.UI_MODE_NIGHT_YES
+                }
+                _customThemeState.value = settings.customTheme
+                _textScaleIndex.value = settings.textSizeIndex
+                _textScale.value = settings.textScale
+                _uiScaleIndex.value = settings.uiSizeIndex
+                _uiScale.value = settings.uiScale
+                _isDynamicGlassEnabled.value = settings.dynamicGlass
+                _userProfile.value = settings.profile
+                _isOnboardingCompleted.value = settings.profile.isOnboardingCompleted
+            } finally { _settingsReady.value = true }
+        }
         viewModelScope.launch(recentSearchDispatcher) {
             val recent = com.example.data.local.RecentSearchPreferences.getRecentSearches(application)
             _searchState.update { it.copy(recentSearches = recent) }
@@ -382,7 +413,11 @@ class PlayerViewModel(
                 .distinctUntilChanged().flowOn(Dispatchers.Default)
                 .collect { ids -> catalogBrowser.updateFavorites(ids) }
         }
-        loadCatalog()
+        viewModelScope.launch(Dispatchers.IO) {
+            _settingsReady.first { it }
+            com.example.performance.BackgroundWorkCoordinator.awaitIdle(minimumUptimeMillis = 2_500L)
+            loadCatalog()
+        }
         observeCurrentTrackForLyrics()
     }
 
@@ -471,7 +506,7 @@ class PlayerViewModel(
     }
 
     private fun loadCatalog() {
-        viewModelScope.launch(Dispatchers.Default) {
+        viewModelScope.launch(Dispatchers.IO) {
             // Room/cache work must not compete with the player's first composition and transition.
             val initial = repository.getInitialCatalog(_userProfile.value)
             _catalogTracks.value = initial

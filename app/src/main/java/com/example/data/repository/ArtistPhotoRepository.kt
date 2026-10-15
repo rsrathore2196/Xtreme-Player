@@ -10,6 +10,13 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
+import java.util.concurrent.ConcurrentHashMap
 import okhttp3.OkHttpClient
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.json.JSONObject
@@ -17,37 +24,55 @@ import java.util.concurrent.TimeUnit
 
 /** Metadata sources supply images only; listening history continues to determine artist ranking. */
 object ArtistPhotoRepository {
-    private val client = OkHttpClient.Builder().connectTimeout(8, TimeUnit.SECONDS)
-        .readTimeout(10, TimeUnit.SECONDS).callTimeout(15, TimeUnit.SECONDS).build()
-    private val catalog = CatalogRepository()
+    private val client by lazy { OkHttpClient.Builder().connectTimeout(8, TimeUnit.SECONDS)
+        .readTimeout(10, TimeUnit.SECONDS).callTimeout(15, TimeUnit.SECONDS).build() }
+    private val catalog by lazy { CatalogRepository() }
     private val locks = Array(8) { Mutex() }
     private val rateLock = Mutex()
     private var nextRequestAt = 0L
     @Volatile private var audioDbBackoffUntil = 0L
-    private val memory = object : android.util.LruCache<String, Pair<Long, String?>>(150) {}
+    private val memory = object : android.util.LruCache<String, Pair<Long, String?>>(512) {}
+    private val negatives = ConcurrentHashMap<String, Long>()
+    private val photoScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val photoSlots = Semaphore(3)
+    private var warmup: Deferred<Unit>? = null
+    private val placeholderImage = Regex("(?i)(?:no[_-]?image|default[_-]?(?:artist|avatar)|placeholder)")
+
+    @Synchronized
+    fun prewarm(context: Context): Deferred<Unit> = warmup ?: photoScope.async {
+        val now = System.currentTimeMillis()
+        val prefs = context.applicationContext.getSharedPreferences("artist_images_v2", Context.MODE_PRIVATE)
+        prefs.all.forEach { (key, value) ->
+            val stored = (value as? String)?.let { runCatching { JSONObject(it) }.getOrNull() } ?: return@forEach
+            val expires = stored.optLong("expires")
+            val url = image(stored.optString("image"))
+            if (url != null) memory.put(key, expires to url)
+            else if (expires > now) negatives[key] = expires
+        }
+    }.also { warmup = it }
     private val identityMemory = android.util.LruCache<String, Pair<Long, JSONObject?>>(100)
     private val identityLocks = Array(8) { Mutex() }
 
     private fun image(value: String?): String? = value?.takeIf {
         (it.startsWith("https://") || it.startsWith("http://")) &&
-            !Regex("(?i)(?:no[_-]?image|default[_-]?(?:artist|avatar)|placeholder)").containsMatchIn(it)
+            !placeholderImage.containsMatchIn(it)
     }?.replaceFirst("http://", "https://")
 
     suspend fun photo(context: Context, artist: CatalogArtist, fallbackArtwork: String? = null): String? = withContext(Dispatchers.IO) {
+        image(artist.image)?.let { return@withContext it }
         val name = CatalogNames.normalize(artist.name)
         if (name.isBlank() || name in setOf("unknown", "unknown artist", "various artists")) return@withContext null
         val key = "$name:${artist.musicBrainzId}:${artist.id}"
+        memory.get(key)?.takeIf { it.first > System.currentTimeMillis() }?.second?.let { return@withContext it }
+        prewarm(context).await()
         locks[(key.hashCode() and Int.MAX_VALUE) % locks.size].withLock {
             val now = System.currentTimeMillis()
             memory.get(key)?.takeIf { it.first > now }?.let { return@withLock it.second ?: image(fallbackArtwork) }
-            // A new cache namespace avoids retaining the former negative, AudioDB-only entries.
+            negatives[key]?.let { if (it > now) return@withLock image(fallbackArtwork) else negatives.remove(key) }
             val prefs = context.applicationContext.getSharedPreferences("artist_images_v2", Context.MODE_PRIVATE)
-            val stored = prefs.getString(key, null)?.let { runCatching { JSONObject(it) }.getOrNull() }
-            if (stored != null && stored.optLong("expires") > now) {
-                val cached = image(stored.optString("image"))
-                memory.put(key, stored.optLong("expires") to cached)
-                return@withLock cached ?: image(fallbackArtwork)
-            }
+            val stale = memory.get(key)?.second
+            com.example.performance.BackgroundWorkCoordinator.awaitIdle(minimumUptimeMillis = 3_500L)
+            photoSlots.withPermit {
             var failed = false
             suspend fun attempt(load: suspend () -> String?): String? = try { image(load()) }
                 catch (e: CancellationException) { throw e }
@@ -61,7 +86,7 @@ object ArtistPhotoRepository {
             }
             if (result == null) result = attempt { YouTubeMusicApiService.artistPhoto(artist.name) }
             // Keep a previously verified image through temporary provider failures.
-            if (result == null && failed) result = image(stored?.optString("image"))
+            if (result == null && failed) result = stale
             val hasPortrait = result != null
             if (result == null) result = image(fallbackArtwork)
             if (result == null && resolved != null) result = attempt {
@@ -74,8 +99,14 @@ object ArtistPhotoRepository {
                 else -> 3_600_000L
             }
             memory.put(key, expires to result)
+            if (result == null) {
+                negatives.entries.removeAll { it.value <= System.currentTimeMillis() }
+                if (negatives.size >= 512) negatives.keys.firstOrNull()?.let(negatives::remove)
+                negatives[key] = expires
+            } else negatives.remove(key)
             prefs.edit().putString(key, JSONObject().put("image", result.orEmpty()).put("expires", expires).toString()).apply()
             result
+            }
         }
     }
 

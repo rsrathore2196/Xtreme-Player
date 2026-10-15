@@ -45,8 +45,8 @@ interface ListeningEventDao {
     @Query("SELECT * FROM listening_events WHERE eventType = 'ACTUAL_PLAY' ORDER BY timestamp DESC LIMIT 250")
     fun observeActualPlays(): Flow<List<ListeningEventEntity>>
 
-    @Query("SELECT * FROM listening_events WHERE eventType = 'ACTUAL_PLAY' ORDER BY timestamp DESC LIMIT 5000")
-    suspend fun getActualPlays(): List<ListeningEventEntity>
+    @Query("SELECT * FROM listening_events WHERE eventType = 'ACTUAL_PLAY' ORDER BY timestamp DESC LIMIT :limit")
+    suspend fun getActualPlays(limit: Int = 300): List<ListeningEventEntity>
 
     @Query("SELECT trackId FROM listening_events WHERE eventType = 'ACTUAL_PLAY' AND playedDurationMs > 0 GROUP BY trackId ORDER BY MAX(timestamp) DESC LIMIT 20")
     suspend fun getRecentActualTrackIds(): List<String>

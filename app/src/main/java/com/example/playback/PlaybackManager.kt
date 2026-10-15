@@ -23,6 +23,7 @@ import com.example.recommendation.HomeRecommendationPolicy
 import com.example.recommendation.UserTasteProfile
 import com.example.recommendation.RecommendationEngine
 import com.example.service.MusicService
+import com.example.service.PlaybackSessionStore
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
 import kotlinx.coroutines.CoroutineScope
@@ -94,7 +95,9 @@ class PlaybackManager(
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private var controller: MediaController? = null
-    private val controllerReady = CompletableDeferred<MediaController>()
+    private var controllerReady = CompletableDeferred<MediaController>()
+    private val sessionRestored = CompletableDeferred<Unit>()
+    private var pendingRestoredSession: PlaybackSessionStore.Snapshot? = null
     private var progressTickerJob: Job? = null
     private var recoveryJob: Job? = null
     private var youtubeQualityJob: Job? = null
@@ -149,7 +152,8 @@ class PlaybackManager(
     private var pendingSelectionId: String? = null
     private var selectionContext: List<MusicTrack> = emptyList()
 
-    private val initialQuality = com.example.data.local.AudioQualityPreferences.getSelectedQuality(context)
+    private val initialQuality = (context.applicationContext as? com.example.XtremeMusicApp)
+        ?.startupSettings?.quality ?: AudioQuality.EXTREME_320
     private val _uiState = MutableStateFlow(
         PlayerUiState(
             selectedQuality = initialQuality,
@@ -208,7 +212,36 @@ class PlaybackManager(
 
     init {
         SleepTimerManager.addExpirationListener(sleepExpirationListener)
-        initMediaController()
+        scope.launch {
+            try {
+                val saved = PlaybackSessionStore.restore(context)
+                val tracks = withContext(Dispatchers.Default) { saved?.items?.map(::controllerTrack).orEmpty() }
+                // A tap or an already-running service always wins over the disk snapshot.
+                if (saved != null && tracks.isNotEmpty() && selectionGeneration == 0L &&
+                    (controller == null || controller?.mediaItemCount == 0)) {
+                    pendingRestoredSession = saved
+                    activeQueue = tracks.toMutableList()
+                    val current = tracks[saved.index]
+                    _playbackPosition.value = saved.positionMs
+                    _trackDuration.value = current.durationMs
+                    _uiState.update { it.copy(currentTrack = current, queue = queueSnapshot(), currentIndex = saved.index,
+                        isPlaying = false, isLoading = false, isFavorite = current.isLiked,
+                        currentPositionMs = saved.positionMs, durationMs = current.durationMs,
+                        qualityBadge = current.qualityBadge.ifBlank { it.selectedQuality.badge }) }
+                }
+            } finally { sessionRestored.complete(Unit) }
+        }
+        scope.launch {
+            // A service started by a headset/Auto is already paying initialization
+            // costs. Observe and reconnect immediately instead of waiting for idle.
+            MusicService.liveSession.collect { alive -> if (alive) ensureMediaControllerConnected() }
+        }
+        scope.launch {
+            delay(4_000L)
+            com.example.performance.BackgroundWorkCoordinator.awaitIdle(minimumUptimeMillis = 4_000L)
+            if (_uiState.value.currentTrack != null || MusicService.liveSession.value)
+                ensureMediaControllerConnected()
+        }
         scope.launch {
             com.example.performance.BackgroundWorkCoordinator.uiForeground.collect { visible ->
                 uiForeground = visible
@@ -221,6 +254,8 @@ class PlaybackManager(
     }
 
     private fun initMediaController() {
+        if (controller != null || controllerFuture != null) return
+        if (controllerReady.isCompleted) controllerReady = CompletableDeferred()
         try {
             val sessionToken = SessionToken(context, ComponentName(context, MusicService::class.java))
             controllerFuture = MediaController.Builder(context, sessionToken).buildAsync()
@@ -230,14 +265,23 @@ class PlaybackManager(
                         val connected = requireNotNull(controllerFuture?.get())
                         controller = connected
                         if (pendingSelectionId != null) {
+                            pendingRestoredSession = null
                             connected.pause()
                             connected.stop()
                             connected.clearMediaItems()
+                        } else if (connected.mediaItemCount == 0) {
+                            sessionRestored.await()
+                            hydrateRestoredSession(connected)
                         }
                         setupPlayerListener()
                         controllerReady.complete(connected)
                         Log.i(TAG, "MediaController initialized successfully")
                     } catch (e: Exception) {
+                        if (e is CancellationException) throw e
+                        controller?.release()
+                        controllerFuture?.let(MediaController::releaseFuture)
+                        controllerFuture = null
+                        controller = null
                         controllerReady.completeExceptionally(e)
                         Log.e(TAG, "Failed to initialize MediaController: ${e.message}", e)
                         _uiState.update { it.copy(isLoading = false, errorMessage = "Player initialization failed") }
@@ -245,9 +289,64 @@ class PlaybackManager(
                 }
             }, MoreExecutors.directExecutor())
         } catch (e: Exception) {
+            controllerFuture = null
             controllerReady.completeExceptionally(e)
             Log.e(TAG, "Error setting up MediaController: ${e.message}", e)
             _uiState.update { it.copy(errorMessage = "Failed to initialize player: ${e.message}") }
+        }
+    }
+
+    private suspend fun hydrateRestoredSession(player: MediaController) {
+        val saved = pendingRestoredSession ?: return
+        pendingRestoredSession = null
+        val generation = selectionGeneration
+        while (pendingSelectionId == null && player.mediaItemCount == 0) {
+            val revision = queueRevision
+            val quality = _uiState.value.selectedQuality
+            val tracks = queueSnapshot()
+            if (tracks.isEmpty()) return
+            val prepared = withContext(Dispatchers.Default) {
+                val items = tracks.map { it.toMediaItem(quality) }
+                items to items.map(::controllerTrack)
+            }
+            if (selectionGeneration != generation || pendingSelectionId != null || player.mediaItemCount > 0) return
+            // A settings/favorite edit during hydration must not be lost or apply the old bitrate.
+            if (revision != queueRevision || quality != _uiState.value.selectedQuality) continue
+            activeQueue = prepared.second.toMutableList()
+            player.setMediaItems(prepared.first, saved.index.coerceIn(prepared.first.indices), saved.positionMs)
+            player.pause() // Queue metadata only; prepare/play remain explicit user actions.
+            return
+        }
+    }
+
+    /** All connection/hydration and queued player commands stay on the application looper. */
+    private fun ensureMediaControllerConnected(guardSelection: Boolean = true,
+        onReady: ((MediaController) -> Unit)? = null) {
+        if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
+            scope.launch { ensureMediaControllerConnected(guardSelection, onReady) }
+            return
+        }
+        controller?.let {
+            if (!it.isConnected) {
+                it.release()
+                controller = null
+                controllerFuture?.let(MediaController::releaseFuture)
+                controllerFuture = null
+            } else if (controllerReady.isCompleted) { onReady?.invoke(it); return }
+        }
+        initMediaController()
+        if (onReady != null) {
+            val generation = selectionGeneration
+            val readiness = controllerReady
+            scope.launch {
+                try {
+                    val player = withTimeoutOrNull(8_000L) { readiness.await() } ?: return@launch
+                    if (!guardSelection || generation == selectionGeneration) onReady(player)
+                } catch (e: CancellationException) { throw e }
+                catch (e: Exception) {
+                    if (generation == selectionGeneration) showPlaybackFailure("Unable to connect to the player. Please try again.")
+                }
+            }
         }
     }
 
@@ -822,6 +921,7 @@ class PlaybackManager(
 
     /** Own the requested identity before native callbacks or asynchronous lookup can run. */
     private fun beginSelection(track: MusicTrack, queue: List<MusicTrack>): Long {
+        pendingRestoredSession = null
         cancelLosslessUpgrade()
         val generation = ++selectionGeneration
         pendingSelectionId = track.id
@@ -856,9 +956,11 @@ class PlaybackManager(
     private fun ownsSelection(trackId: String, generation: Long): Boolean =
         selectionGeneration == generation && _uiState.value.currentTrack?.id == trackId
 
-    private suspend fun awaitController(): MediaController = controller ?: withTimeoutOrNull(8_000L) {
-        controllerReady.await()
-    } ?: throw IllegalStateException("Player connection timed out. Please try again.")
+    private suspend fun awaitController(): MediaController {
+        ensureMediaControllerConnected()
+        return withTimeoutOrNull(8_000L) { controllerReady.await() }
+            ?: throw IllegalStateException("Player connection timed out. Please try again.")
+    }
 
     fun playTrack(track: MusicTrack, queue: List<MusicTrack> = listOf(track), isExplicitPlaylist: Boolean = false, isInfiniteRadio: Boolean = false) {
         if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
@@ -1092,7 +1194,7 @@ class PlaybackManager(
             val attemptedIds = mutableSetOf<String>()
             try {
                 val taste = withContext(Dispatchers.IO) {
-                    val events = listeningEventDao.getActualPlays()
+                    val events = listeningEventDao.getActualPlays(limit = 5000)
                     val metadata = events.map { it.trackId }.distinct().chunked(900)
                         .flatMap { database.musicDao().getTracksByIds(it) }.map { it.toMusicTrack() }
                     val favorites = repository?.getFavoriteTracks()?.first().orEmpty()
@@ -1274,8 +1376,8 @@ class PlaybackManager(
 
     fun playPause() {
         val player = controller
-        if (player == null) {
-            Log.e(TAG, "Cannot toggle play/pause: player is null")
+        if (player == null || !player.isConnected || !controllerReady.isCompleted) {
+            ensureMediaControllerConnected { playPause() }
             return
         }
 
@@ -1305,8 +1407,8 @@ class PlaybackManager(
 
     fun seekTo(positionMs: Long) {
         val player = controller
-        if (player == null) {
-            Log.e(TAG, "Cannot seek: player is null")
+        if (player == null || !player.isConnected || !controllerReady.isCompleted) {
+            ensureMediaControllerConnected { seekTo(positionMs) }
             return
         }
 
@@ -1320,7 +1422,11 @@ class PlaybackManager(
     }
 
     fun skipNext() {
-        val player = controller ?: return
+        val player = controller
+        if (player == null || !player.isConnected || !controllerReady.isCompleted) {
+            ensureMediaControllerConnected { skipNext() }
+            return
+        }
         try {
             if (player.hasNextMediaItem()) {
                 advanceWhenQueueReady = false
@@ -1348,8 +1454,8 @@ class PlaybackManager(
 
     fun skipPrevious() {
         val player = controller
-        if (player == null) {
-            Log.e(TAG, "Cannot skip previous: player is null")
+        if (player == null || !player.isConnected || !controllerReady.isCompleted) {
+            ensureMediaControllerConnected { skipPrevious() }
             return
         }
 
@@ -1390,8 +1496,8 @@ class PlaybackManager(
 
     fun toggleShuffle() {
         val player = controller
-        if (player == null) {
-            Log.e(TAG, "Cannot toggle shuffle: player is null")
+        if (player == null || !player.isConnected || !controllerReady.isCompleted) {
+            ensureMediaControllerConnected(guardSelection = false) { toggleShuffle() }
             return
         }
 
@@ -1407,8 +1513,8 @@ class PlaybackManager(
 
     fun toggleRepeat() {
         val player = controller
-        if (player == null) {
-            Log.e(TAG, "Cannot toggle repeat: player is null")
+        if (player == null || !player.isConnected || !controllerReady.isCompleted) {
+            ensureMediaControllerConnected(guardSelection = false) { toggleRepeat() }
             return
         }
 
@@ -1456,6 +1562,10 @@ class PlaybackManager(
     }
 
     fun reorderQueue(fromIndex: Int, toIndex: Int) {
+        if (controller == null || !controllerReady.isCompleted) {
+            ensureMediaControllerConnected { reorderQueue(fromIndex, toIndex) }
+            return
+        }
         try {
             if (fromIndex in activeQueue.indices && toIndex in activeQueue.indices) {
                 val item = activeQueue.removeAt(fromIndex)
@@ -1483,7 +1593,7 @@ class PlaybackManager(
                     else repository?.resolvePlayableTrack(track)
                 } ?: return@launch
                 if (generation != queueGeneration || resolved.audioUrl.isBlank()) return@launch
-                val player = controller ?: return@launch
+                val player = awaitController()
                 val insertIndex = (player.currentMediaItemIndex + 1).coerceIn(0, activeQueue.size)
                 activeQueue.add(insertIndex, resolved)
                 queueRevision++
@@ -1532,7 +1642,7 @@ class PlaybackManager(
             }
 
             val player = controller
-            if (player == null) {
+            if (player == null || !player.isConnected || !controllerReady.isCompleted) {
                 Log.d(TAG, "Quality preference persisted to storage; player controller not yet initialized")
                 return
             }
@@ -1601,6 +1711,10 @@ class PlaybackManager(
     val selectedAudioDeviceId: StateFlow<Int> = AudioDeviceManager.selectedDeviceId
 
     fun selectAudioOutputDevice(deviceId: Int) {
+        if (controller?.isConnected != true || !controllerReady.isCompleted) {
+            ensureMediaControllerConnected(guardSelection = false) { selectAudioOutputDevice(deviceId) }
+            return
+        }
         try {
             val player = controller
             val args = Bundle().apply { putInt("device_id", deviceId) }

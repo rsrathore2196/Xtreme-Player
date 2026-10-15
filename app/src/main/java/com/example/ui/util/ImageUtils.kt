@@ -159,7 +159,7 @@ fun rememberOptimizedImageRequest(
             .data(initialUrl)
             .setParameter(ARTWORK_METADATA_PARAMETER, metadata, null)
             .placeholderMemoryCacheKey(initialUrl.takeIf { it.isNotBlank() })
-            .interceptorDispatcher(Dispatchers.Default)
+            .interceptorDispatcher(Dispatchers.IO)
             .scale(Scale.FILL)
             .crossfade(if (crossfadeEnabled) 200 else 0)
             .allowHardware(true)

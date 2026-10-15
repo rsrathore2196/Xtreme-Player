@@ -94,7 +94,8 @@ fun Modifier.xtremeLiquidGlassBackground(
     elevation: Dp = XtremeLiquidGlassDefaults.Elevation,
     enabled: Boolean = LocalDynamicGlassEnabled.current,
     appColors: AppThemeColors = LocalAppColors.current,
-    backdrop: LiquidGlassBackdrop? = LocalLiquidGlassBackdrop.current
+    backdrop: LiquidGlassBackdrop? = LocalLiquidGlassBackdrop.current,
+    stableCaptureWidthPx: Float = 0f
 ): Modifier {
     if (!enabled || !LocalDynamicGlassEnabled.current) return this
         .shadow(elevation, shape)
@@ -144,7 +145,8 @@ fun Modifier.xtremeLiquidGlassBackground(
                 // default shadow/highlight over Xtreme's shadow and rim.
                 highlight = null,
                 shadow = null,
-                backdropScale = processingScale
+                backdropScale = processingScale,
+                stableCaptureWidthPx = stableCaptureWidthPx
             ) else Modifier
         )
         .drawWithCache {

@@ -48,6 +48,8 @@ import com.example.ui.components.backdrop.shadow.InnerShadowElement
 import com.example.ui.components.backdrop.shadow.Shadow
 import com.example.ui.components.backdrop.shadow.ShadowElement
 import kotlin.math.abs
+import android.os.Build
+import com.example.ui.components.backdrop.effects.runtimeShaderEffect
 
 private val DefaultHighlight = { Highlight.Default }
 private val DefaultShadow = { Shadow.Default }
@@ -107,7 +109,8 @@ fun Modifier.drawBackdrop(
     // processes far fewer pixels. Pixel-sized effect parameters (blur radius, lens
     // refraction) must be pre-multiplied by the same factor by the caller; the blur
     // hides the upscaling. 1f keeps the original full resolution behavior.
-    backdropScale: Float = 1f
+    backdropScale: Float = 1f,
+    stableCaptureWidthPx: Float = 0f
 ): Modifier {
     val shapeProvider = ShapeProvider(shape)
     return this
@@ -159,7 +162,8 @@ fun Modifier.drawBackdrop(
                 onDrawBackdrop = onDrawBackdrop,
                 onDrawSurface = onDrawSurface,
                 onDrawFront = onDrawFront,
-                backdropScale = backdropScale.coerceIn(0.05f, 1f)
+                backdropScale = backdropScale.coerceIn(0.05f, 1f),
+                stableCaptureWidthPx = stableCaptureWidthPx.coerceAtLeast(0f)
             )
         )
 }
@@ -174,7 +178,8 @@ private class DrawBackdropElement(
     val onDrawBackdrop: DrawScope.(drawBackdrop: DrawScope.() -> Unit) -> Unit,
     val onDrawSurface: (DrawScope.() -> Unit)?,
     val onDrawFront: (DrawScope.() -> Unit)?,
-    val backdropScale: Float
+    val backdropScale: Float,
+    val stableCaptureWidthPx: Float = 0f
 ) : ModifierNodeElement<DrawBackdropNode>() {
 
     override fun create(): DrawBackdropNode {
@@ -188,7 +193,8 @@ private class DrawBackdropElement(
             onDrawBackdrop = onDrawBackdrop,
             onDrawSurface = onDrawSurface,
             onDrawFront = onDrawFront,
-            backdropScale = backdropScale
+            backdropScale = backdropScale,
+            stableCaptureWidthPx = stableCaptureWidthPx
         )
     }
 
@@ -206,6 +212,7 @@ private class DrawBackdropElement(
         node.onDrawSurface = onDrawSurface
         node.onDrawFront = onDrawFront
         node.backdropScale = backdropScale
+        node.stableCaptureWidthPx = stableCaptureWidthPx
         node.invalidateDrawCache()
     }
 
@@ -236,6 +243,7 @@ private class DrawBackdropElement(
         if (onDrawSurface != other.onDrawSurface) return false
         if (onDrawFront != other.onDrawFront) return false
         if (backdropScale != other.backdropScale) return false
+        if (stableCaptureWidthPx != other.stableCaptureWidthPx) return false
 
         return true
     }
@@ -251,6 +259,7 @@ private class DrawBackdropElement(
         result = 31 * result + (onDrawSurface?.hashCode() ?: 0)
         result = 31 * result + (onDrawFront?.hashCode() ?: 0)
         result = 31 * result + backdropScale.hashCode()
+        result = 31 * result + stableCaptureWidthPx.hashCode()
         return result
     }
 }
@@ -265,7 +274,8 @@ private class DrawBackdropNode(
     var onDrawBackdrop: DrawScope.(drawBackdrop: DrawScope.() -> Unit) -> Unit,
     var onDrawSurface: (DrawScope.() -> Unit)?,
     var onDrawFront: (DrawScope.() -> Unit)?,
-    var backdropScale: Float
+    var backdropScale: Float,
+    var stableCaptureWidthPx: Float = 0f
 ) : LayoutModifierNode, DrawModifierNode, GlobalPositionAwareModifierNode, ObserverModifierNode, Modifier.Node() {
 
     private val effectScope =
@@ -293,6 +303,12 @@ private class DrawBackdropNode(
     private var recordedPadding = Float.NaN
     private var recordedScale = Float.NaN
     private var hasVisibleBackdrop = false
+    private var windowCapture = false
+    private var recordedWindow = false
+    private var captureOrigin = Offset.Unspecified
+    private var windowShift = Offset.Zero
+    private var windowBounds = IntSize.Zero
+
 
     private val recordBackdropBlock: (DrawScope.() -> Unit) = {
         val canvas = drawContext.canvas
@@ -307,7 +323,14 @@ private class DrawBackdropNode(
         if (scale != 1f) {
             canvas.scale(scale, scale)
         }
-        onDrawBackdrop {
+        if (windowCapture) {
+            // Record one fixed horizontal source window. Translation within that
+            // window is a shader uniform, so the animated pill never resizes it.
+            val source = backdrop as LayerBackdrop
+            canvas.translate(-captureOrigin.x, -captureOrigin.y)
+            drawLayer(source.graphicsLayer)
+            canvas.translate(captureOrigin.x, captureOrigin.y)
+        } else onDrawBackdrop {
             with(backdrop) {
                 drawBackdrop(
                     density = effectScope,
@@ -334,7 +357,6 @@ private class DrawBackdropNode(
         // Keep observing source attachment even when its display list is reused.
         val sourceCoordinates = source?.layerCoordinates
         if (source != null && sourceCoordinates?.isAttached != true) return@sample
-        val padding = padding
         val scale = backdropScale
         val reusable = source != null && layerBlock == null && onDrawBackdrop === DefaultOnDrawBackdrop
         val offset = if (reusable) {
@@ -344,13 +366,30 @@ private class DrawBackdropNode(
                 coordinates.positionInWindow() - requireNotNull(sourceCoordinates).positionInWindow()
             }
         } else Offset.Zero
+        val previousWindow = windowCapture
+        val previousShift = windowShift
+        // Android 12 has no runtime input-clamp shader: retain its exact bounds.
+        // Opt-in is restricted to the bottom bar's existing blur+lens recipe.
+        windowCapture = reusable && stableCaptureWidthPx > 0f && Build.VERSION.SDK_INT >= 33 && padding == 0f
+        if (windowCapture) {
+            val width = maxOf(stableCaptureWidthPx, size.width)
+            val desired = Offset(offset.x + (size.width - width) / 2f, offset.y)
+            if (!previousWindow || differsByPixel(captureOrigin.copy(x = desired.x), desired) ||
+                abs((captureOrigin.x + width / 2f) - (offset.x + size.width / 2f)) >= 2f) captureOrigin = desired
+            windowShift = (offset - captureOrigin) * scale
+        } else windowShift = Offset.Zero
+        val newBounds = IntSize((size.width * scale).toInt().coerceAtLeast(1),
+            (size.height * scale).toInt().coerceAtLeast(1))
+        val uniformChanged = previousWindow != windowCapture || previousShift != windowShift || windowBounds != newBounds
+        windowBounds = newBounds
+        if (effectScope.update(this, scale) || uniformChanged) updateEffects()
+        val padding = padding
         val requiredSize = IntSize(
-            ((size.width * scale).toInt() + padding.toInt() * 2).coerceAtLeast(1),
+            (((if (windowCapture) maxOf(stableCaptureWidthPx, size.width) else size.width) * scale).toInt() + padding.toInt() * 2).coerceAtLeast(1),
             ((size.height * scale).toInt() + padding.toInt() * 2).coerceAtLeast(1))
-        // Preserve exact input bounds: the blur's Clamp treatment depends on these
-        // edges even when a larger allocation would have the same visible clip.
-        if (!reusable || recordedSource !== source || recordedSize != requiredSize ||
-            recordedPadding != padding || recordedScale != scale || differsByPixel(recordedOffset, offset)) {
+        val recordingOffset = if (windowCapture) captureOrigin else offset
+        if (!reusable || recordedSource !== source || recordedSize != requiredSize || recordedWindow != windowCapture ||
+            recordedPadding != padding || recordedScale != scale || differsByPixel(recordedOffset, recordingOffset)) {
             recordLayer(
                 this@DrawBackdropNode,
                 layer,
@@ -358,7 +397,8 @@ private class DrawBackdropNode(
                 block = recordBackdropBlock
             )
             recordedSource = if (reusable) source else null
-            recordedOffset = offset
+            recordedOffset = recordingOffset
+            recordedWindow = windowCapture
             recordedSize = requiredSize
             recordedPadding = padding
             recordedScale = scale
@@ -402,10 +442,6 @@ private class DrawBackdropNode(
     }
 
     override fun ContentDrawScope.draw() {
-        if (effectScope.update(this, backdropScale)) {
-            updateEffects()
-        }
-
         onDrawBehind?.invoke(this)
         drawBackdropLayer()
         onDrawSurface?.invoke(this)
@@ -447,7 +483,17 @@ private class DrawBackdropNode(
     private fun updateEffects() {
         if (!isRenderEffectSupported()) return
 
-        effectScope.apply(effects)
+        effectScope.apply {
+            if (windowCapture) {
+                // Extend the exact visible input edges before blur, preserving its
+                // original Clamp pixels despite the larger reusable allocation.
+                runtimeShaderEffect("StableBackdropWindow", StableWindowShader, "content") {
+                    setFloatUniform("shift", windowShift.x, windowShift.y)
+                    setFloatUniform("bounds", windowBounds.width.toFloat(), windowBounds.height.toFloat())
+                }
+            }
+            this@DrawBackdropNode.effects(this)
+        }
         graphicsLayer?.renderEffect = effectScope.renderEffect
         padding = effectScope.padding
     }
@@ -475,9 +521,23 @@ private class DrawBackdropNode(
         recordedPadding = Float.NaN
         recordedScale = Float.NaN
         hasVisibleBackdrop = false
+        windowCapture = false
+        recordedWindow = false
+        captureOrigin = Offset.Unspecified
         exportedBackdrop?.layerCoordinates = null
     }
 }
 
 private fun differsByPixel(first: Offset, second: Offset): Boolean =
     abs(first.x - second.x) >= 1f || abs(first.y - second.y) >= 1f
+
+// Native Clamp samples edge pixel centres; shifting the input is independent of
+// the unchanged blur/lens shaders, shape clip, highlights and foreground controls.
+private const val StableWindowShader = """
+    uniform shader content;
+    uniform float2 shift;
+    uniform float2 bounds;
+    half4 main(float2 position) {
+        return content.eval(clamp(position, float2(0.5), bounds - float2(0.5)) + shift);
+    }
+"""

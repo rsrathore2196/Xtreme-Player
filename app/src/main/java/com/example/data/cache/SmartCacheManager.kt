@@ -77,9 +77,13 @@ object SmartCacheManager {
     private val _stats = MutableStateFlow(CacheStats())
     val stats: StateFlow<CacheStats> = _stats.asStateFlow()
 
-    fun initialize(context: Context, repository: MusicRepository? = null) {
+    fun configure(context: Context, repository: MusicRepository? = null) {
         appContext = context.applicationContext
         repositoryRef = repository
+    }
+
+    fun initialize(context: Context, repository: MusicRepository? = null) {
+        configure(context, repository)
         smartAutoTrim()
     }
 

@@ -12,6 +12,17 @@ object HomeRecommendationPolicy {
     private val normalizedValues = LruCache<String, String>(NORMALIZATION_CACHE_SIZE)
     private data class MetadataInput(val title: String, val artistNames: List<String>)
     private val metadataKeys = LruCache<MetadataInput, String>(NORMALIZATION_CACHE_SIZE)
+    private data class EligibilityInput(val id: String, val title: String, val artist: String,
+        val album: String, val duration: Long, val audio: String, val source: String)
+    private val eligibility = LruCache<EligibilityInput, Boolean>(4096)
+    fun isOriginalRecommendationTrack(track: MusicTrack): Boolean {
+        val key = EligibilityInput(track.id, track.title, track.artist, track.album,
+            track.durationMs, track.audioUrl, track.source)
+        synchronized(eligibility) { eligibility.get(key) }?.let { return it }
+        return OriginalMusicFilter.isHomeRecommendation(track).also { result ->
+            synchronized(eligibility) { eligibility.put(key, result) }
+        }
+    }
     private val punctuation = Regex("[^\\p{L}\\p{N}]+")
     private val artistSeparator = Regex("(?i),|;|\\s+(?:feat\\.?|ft\\.?|featuring|&)\\s+")
     private val topicSuffix = Regex("(?i)\\s*-\\s*topic$")
@@ -95,7 +106,7 @@ object HomeRecommendationPolicy {
 
     fun originals(tracks: List<MusicTrack>): List<MusicTrack> {
         val seen = Recordings()
-        return tracks.filter { OriginalMusicFilter.isHomeRecommendation(it) && seen.add(it) }
+        return tracks.filter { isOriginalRecommendationTrack(it) && seen.add(it) }
     }
 
     /** Soft diversity penalties: never discard a legitimate song solely for sharing an album. */

@@ -26,20 +26,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Outline
-import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Constraints
-import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.constrainHeight
 import androidx.compose.ui.unit.constrainWidth
@@ -86,6 +85,19 @@ fun AnimatedBottomBar(
     appColors: AppThemeColors = LocalAppColors.current,
     ambientGlowColor: Color = appColors.primaryAccent
 ) {
+    val textMeasurer = androidx.compose.ui.text.rememberTextMeasurer()
+    val density = LocalDensity.current
+    val labelStyle = androidx.compose.material3.LocalTextStyle.current.copy(
+        fontWeight = FontWeight.Bold, fontSize = 14.5.sp, letterSpacing = 0.2.sp)
+    val captureWidth = remember(items, textMeasurer, density, labelStyle) {
+        val labelWidth = items.maxOfOrNull { textMeasurer.measure(it.title, labelStyle, maxLines = 1, softWrap = false).size.width } ?: 0
+        with(density) {
+            // Existing 52dp collapsed tabs, expanded padding/gap, outer padding,
+            // gaps, and a small spring overshoot margin. This is never a layout width.
+            52.dp.toPx() * items.size + labelWidth + 10.dp.toPx() +
+                12.dp.toPx() + 4.dp.toPx() * (items.size - 1).coerceAtLeast(0) + 12.dp.toPx()
+        }
+    }
     val selectionTransition = updateTransition(
         targetState = selectedTabIndex,
         label = "bottom_bar_selection"
@@ -109,7 +121,8 @@ fun AnimatedBottomBar(
                     tintColor = ambientGlowColor,
                     borderWidth = 0.8.dp,
                     elevation = 16.dp,
-                    appColors = appColors
+                    appColors = appColors,
+                    stableCaptureWidthPx = captureWidth
                 )
         )
 
@@ -244,6 +257,8 @@ private fun BottomBarTabContent(
     selectedContentColor: Color,
     unselectedContentColor: Color
 ) {
+    val gapPx = with(LocalDensity.current) { 6.dp.toPx() }
+    val labelDirection = LocalLayoutDirection.current
     Layout(
         content = {
             Icon(
@@ -261,7 +276,13 @@ private fun BottomBarTabContent(
             // The label stays composed and measured even when its reveal is fully closed.
             Text(
                 text = item.title,
-                modifier = if (isSelected) Modifier else Modifier.clearAndSetSemantics { },
+                modifier = (if (isSelected) Modifier else Modifier.clearAndSetSemantics { })
+                    .drawWithContent {
+                        // Keep the exact old reveal window without a fresh Shape/Outline.
+                        val reveal = ((size.width + gapPx) * expansion.value - gapPx).coerceIn(0f, size.width)
+                        val left = if (labelDirection == LayoutDirection.Ltr) 0f else size.width - reveal
+                        clipRect(left = left, right = left + reveal) { this@drawWithContent.drawContent() }
+                    },
                 color = selectedContentColor,
                 fontWeight = FontWeight.Bold,
                 fontSize = 14.5.sp,
@@ -308,26 +329,10 @@ private fun BottomBarTabContent(
                 x = (startInset + icon.width + labelGap).roundToInt(),
                 y = (height - label.height) / 2
             ) {
-                // Reveal the original spacer + label span from the leading edge without
-                // changing the text's constraints or recording its drawing each frame.
                 alpha = labelAlpha.value
                 clip = true
-                shape = BottomBarLabelRevealShape(
-                    visibleWidth = ((size.width + labelGap) * expansion.value - labelGap)
-                        .coerceIn(0f, size.width)
-                )
+                shape = androidx.compose.ui.graphics.RectangleShape
             }
         }
-    }
-}
-
-private data class BottomBarLabelRevealShape(val visibleWidth: Float) : Shape {
-    override fun createOutline(
-        size: Size,
-        layoutDirection: LayoutDirection,
-        density: Density
-    ): Outline {
-        val left = if (layoutDirection == LayoutDirection.Ltr) 0f else size.width - visibleWidth
-        return Outline.Rectangle(Rect(left, 0f, left + visibleWidth, size.height))
     }
 }

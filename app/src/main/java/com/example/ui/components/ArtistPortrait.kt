@@ -20,8 +20,8 @@ import com.example.ui.theme.XtremeLightBlue
 @Composable
 fun ArtistPortrait(artist: CatalogArtist, modifier: Modifier = Modifier, fallbackArtwork: String? = null) {
     val context = LocalContext.current.applicationContext
-    val photo by produceState<String?>(null, artist.name, artist.musicBrainzId, artist.id, fallbackArtwork) {
-        value = null
+    val photo by produceState<String?>(artist.image.takeIf { it.isNotBlank() }, artist.name, artist.musicBrainzId, artist.id, artist.image, fallbackArtwork) {
+        value = artist.image.takeIf { it.isNotBlank() }
         value = ArtistPhotoRepository.photo(context, artist, fallbackArtwork)
     }
     var photoFailed by remember(photo) { mutableStateOf(false) }

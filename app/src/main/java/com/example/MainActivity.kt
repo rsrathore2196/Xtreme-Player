@@ -25,11 +25,15 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
 import androidx.compose.runtime.getValue
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
 import com.example.ui.components.MainNavigationScaffold
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.viewmodel.PlayerViewModel
 
 class MainActivity : ComponentActivity() {
+    private var initialContentReady = false
+    private var updateResumeJob: kotlinx.coroutines.Job? = null
     private var lastInteractionMs = 0L
     private var frameThread: HandlerThread? = null
     private var frameListener: Window.OnFrameMetricsAvailableListener? = null
@@ -113,7 +117,22 @@ class MainActivity : ComponentActivity() {
             preferredRefreshRate = 0f
         }
 
+        val app = application as XtremeMusicApp
+        // Keep the Android launch window until local settings are ready, avoiding
+        // a frame of onboarding/default colours for a returning user.
+        window.decorView.viewTreeObserver.addOnPreDrawListener(object : android.view.ViewTreeObserver.OnPreDrawListener {
+            override fun onPreDraw(): Boolean {
+                val ready = app.startupReady.value && playerViewModel.settingsReady.value && initialContentReady
+                if (ready) window.decorView.viewTreeObserver.removeOnPreDrawListener(this)
+                return ready
+            }
+        })
         setContent {
+            val coreReady by app.startupReady.collectAsStateWithLifecycle()
+            if (!coreReady) return@setContent
+            val settingsReady by playerViewModel.settingsReady.collectAsStateWithLifecycle()
+            if (!settingsReady) return@setContent
+            androidx.compose.runtime.SideEffect { initialContentReady = true }
             val themeMode by playerViewModel.themeMode.collectAsStateWithLifecycle()
             val customThemeState by playerViewModel.customThemeState.collectAsStateWithLifecycle()
             val textScale by playerViewModel.textScale.collectAsStateWithLifecycle()
@@ -164,10 +183,15 @@ class MainActivity : ComponentActivity() {
         uiResumed = true
         updateRefreshRate()
         com.example.performance.BackgroundWorkCoordinator.foreground(true)
-        com.example.updater.AppUpdateManager.onForeground(this)
+        updateResumeJob?.cancel()
+        updateResumeJob = lifecycleScope.launch {
+            kotlinx.coroutines.delay(3_500L)
+            if (uiResumed) com.example.updater.AppUpdateManager.onForeground(this@MainActivity)
+        }
     }
 
     override fun onPause() {
+        updateResumeJob?.cancel()
         uiResumed = false
         updateRefreshRate()
         com.example.performance.BackgroundWorkCoordinator.foreground(false)

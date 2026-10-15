@@ -86,6 +86,7 @@ class MusicService : MediaLibraryService() {
     @OptIn(UnstableApi::class)
     override fun onCreate() {
         super.onCreate()
+        serviceScope.launch(Dispatchers.IO) { com.example.playback.AudioDeviceManager.init(this@MusicService) }
 
         // 1. Audio Focus & Interruption Handling
         val audioAttributes = AudioAttributes.Builder()
@@ -266,6 +267,7 @@ class MusicService : MediaLibraryService() {
         mediaLibrarySession = MediaLibrarySession.Builder(this, player, CustomMediaLibrarySessionCallback())
             .setSessionActivity(pendingIntent)
             .build()
+        _liveSession.value = true
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? {
@@ -273,6 +275,7 @@ class MusicService : MediaLibraryService() {
     }
 
     override fun onDestroy() {
+        _liveSession.value = false
         checkpoint()
         checkpointJob?.cancel()
         serviceScope.cancel()
@@ -635,6 +638,8 @@ class MusicService : MediaLibraryService() {
     }
 
     companion object {
+        private val _liveSession = kotlinx.coroutines.flow.MutableStateFlow(false)
+        internal val liveSession: kotlinx.coroutines.flow.StateFlow<Boolean> = _liveSession
         const val COMMAND_SET_EQUALIZER = "com.example.COMMAND_SET_EQUALIZER"
         const val COMMAND_SET_OUTPUT_DEVICE = "com.example.COMMAND_SET_OUTPUT_DEVICE"
         const val ROOT_MEDIA_ID = "xtreme_media_root"

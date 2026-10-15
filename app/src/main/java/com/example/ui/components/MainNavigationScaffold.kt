@@ -123,8 +123,6 @@ fun MainNavigationScaffold(
     modifier: Modifier = Modifier
 ) {
     val playerUiState by viewModel.navigationPlayerUiState.collectAsStateWithLifecycle()
-    // Retain navigation/back handling without reading search results on unrelated tabs.
-    val searchStateHolder = viewModel.searchState.collectAsStateWithLifecycle()
     val currentPlayingTrackId = playerUiState.currentTrack?.id
     val catalogDetail by viewModel.catalogBrowser.detail.collectAsStateWithLifecycle()
     val selectedPlaylistWithTracks by viewModel.selectedPlaylistTracks.collectAsStateWithLifecycle()
@@ -178,6 +176,8 @@ fun MainNavigationScaffold(
     ) { _ -> }
 
     LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(3_500L)
+        com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
@@ -185,19 +185,15 @@ fun MainNavigationScaffold(
     }
 
     // Handle Back Press gracefully across the app
-    val isSearchSubPage = selectedTabIndex == 1 && (searchStateHolder.value.selectedGenre != "All" || searchStateHolder.value.query.isNotBlank())
-    BackHandler(enabled = catalogDetail != null || isPlayerExpanded || selectedPlaylistWithTracks != null || isSearchSubPage || selectedTabIndex != 0) {
+    BackHandler(enabled = catalogDetail != null || isPlayerExpanded || selectedPlaylistWithTracks != null || selectedTabIndex != 0) {
         if (isPlayerExpanded) {
             isPlayerExpanded = false
         } else if (catalogDetail != null) {
             viewModel.catalogBrowser.close()
         } else if (selectedPlaylistWithTracks != null) {
             viewModel.closePlaylist()
-        } else if (isSearchSubPage) {
-            viewModel.selectGenre("All")
-            if (searchStateHolder.value.query.isNotBlank()) {
-                viewModel.onSearchQueryChange("")
-            }
+        } else if (selectedTabIndex == 1 && viewModel.hasActiveSearch()) {
+            viewModel.resetSearchNavigation()
         } else if (selectedTabIndex != 0) {
             selectTab(0)
         }
@@ -380,7 +376,7 @@ fun MainNavigationScaffold(
                                 onAddToQueue = { track -> viewModel.addToQueue(track) }
                             )
                             1 -> {
-                                val searchState by searchStateHolder
+                                val searchState by viewModel.searchState.collectAsStateWithLifecycle()
                                 val catalogSearch by viewModel.catalogBrowser.search.collectAsStateWithLifecycle()
                                 SearchScreen(
                                     searchState = searchState,

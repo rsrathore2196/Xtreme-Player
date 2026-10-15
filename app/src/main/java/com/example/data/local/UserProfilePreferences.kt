@@ -65,6 +65,7 @@ object UserProfilePreferences {
     }
 
     private var _userProfileFlow: MutableStateFlow<UserProfile>? = null
+    fun peekUserProfile(): UserProfile? = synchronized(this) { _userProfileFlow?.value }
 
     fun getUserProfileFlow(context: Context): StateFlow<UserProfile> {
         synchronized(this) {

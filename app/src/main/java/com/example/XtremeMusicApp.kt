@@ -19,11 +19,15 @@ import kotlinx.coroutines.launch
 class XtremeMusicApp : Application(), ImageLoaderFactory {
     private val startupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    lateinit var database: MusicDatabase
+    val database: MusicDatabase by lazy { MusicDatabase.getDatabase(this) }
+    val repository: MusicRepository by lazy { MusicRepository(database.musicDao(), this) }
+    @Volatile var startupSettings: com.example.data.local.StartupSettings? = null
         private set
-
-    lateinit var repository: MusicRepository
-        private set
+    private val startupSettingsClaimed = java.util.concurrent.atomic.AtomicBoolean(false)
+    internal fun takeInitialStartupSettings(): com.example.data.local.StartupSettings? =
+        if (startupSettingsClaimed.compareAndSet(false, true)) startupSettings else null
+    private val _startupReady = kotlinx.coroutines.flow.MutableStateFlow(false)
+    val startupReady: kotlinx.coroutines.flow.StateFlow<Boolean> = _startupReady
 
     val playbackManager: PlaybackManager by lazy {
         PlaybackManager(this, repository).also {
@@ -83,12 +87,19 @@ class XtremeMusicApp : Application(), ImageLoaderFactory {
             android.util.Log.e("XtremeMusicApp", "Failed to initialize OnlineMusicApiService: ${e.message}")
         }
 
-        // Initialize database - with null safety checks
-        try {
-            database = MusicDatabase.getDatabase(this)
-        } catch (e: Exception) {
-            android.util.Log.e("XtremeMusicApp", "Failed to initialize database: ${e.message}")
-            throw RuntimeException("Critical: Cannot initialize database", e)
+        // Prepare local dependencies/preferences off Main, before the first screen uses them.
+        // This never waits for a network request or creates the audio service.
+        startupScope.launch {
+            repository
+            startupSettings = com.example.data.local.StartupSettings.read(this@XtremeMusicApp)
+            val profile = requireNotNull(startupSettings).profile
+            // Context registration is cheap; explicit cache controls must work even
+            // before the optional maintenance job is admitted below.
+            com.example.data.cache.SmartCacheManager.configure(this@XtremeMusicApp, repository)
+            com.example.data.cache.HomeCardCache.preloadAsync(this@XtremeMusicApp,
+                "${profile.countryCode}|${profile.languages.joinToString(",")}")
+            _startupReady.value = true
+            com.example.data.repository.ArtistPhotoRepository.prewarm(this@XtremeMusicApp)
         }
 
         // Construct the shared resolver off Main and warm its URL cache from Room.
@@ -96,26 +107,13 @@ class XtremeMusicApp : Application(), ImageLoaderFactory {
             com.example.data.repository.iTunesArtworkRepository.getInstance(this@XtremeMusicApp)
         }
 
-        // Initialize repository - with null safety checks
-        try {
-            repository = MusicRepository(database.musicDao(), this)
-        } catch (e: Exception) {
-            android.util.Log.e("XtremeMusicApp", "Failed to initialize repository: ${e.message}")
-            throw RuntimeException("Critical: Cannot initialize repository", e)
-        }
-
-        // Initialize Audio Output Device Manager
-        try {
-            com.example.playback.AudioDeviceManager.init(this)
-        } catch (e: Exception) {
-            android.util.Log.e("XtremeMusicApp", "Failed to initialize AudioDeviceManager: ${e.message}")
-        }
-
-        // Initialize Smart Cache Manager
-        try {
-            com.example.data.cache.SmartCacheManager.initialize(this, repository)
-        } catch (e: Exception) {
-            android.util.Log.e("XtremeMusicApp", "Failed to initialize SmartCacheManager: ${e.message}")
+        startupScope.launch {
+            kotlinx.coroutines.delay(2_500L)
+            com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle()
+            runCatching { com.example.playback.AudioDeviceManager.init(this@XtremeMusicApp) }
+                .onFailure { android.util.Log.w("XtremeMusicApp", "Audio devices unavailable", it) }
+            runCatching { com.example.data.cache.SmartCacheManager.initialize(this@XtremeMusicApp, repository) }
+                .onFailure { android.util.Log.w("XtremeMusicApp", "Cache maintenance unavailable", it) }
         }
     }
 

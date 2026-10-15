@@ -33,9 +33,26 @@ data class SavedHomeCards(
 class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Dispatchers.Default) {
     private val file = AtomicFile(File(context.applicationContext.filesDir, "home_cards_v1.json"))
     private data class Retained(val path: String, val cards: SavedHomeCards)
-    private companion object {
-        val memory = AtomicReference<Retained?>(null)
-        val fileMutex = Mutex()
+    companion object {
+        private const val MAX_TRACKS_PER_LIST = 40
+        private const val MAX_POOL_TRACKS = 80
+        private const val MAX_CANDIDATE_TRACKS = 60
+        private val memory = AtomicReference<Retained?>(null)
+        private val fileMutex = Mutex()
+        private val preloadScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        private val preloads = mutableMapOf<String, Deferred<SavedHomeCards?>>()
+        private fun preloadKey(context: Context, profile: String) = "${context.filesDir.path}|$profile"
+        fun preloadAsync(context: Context, profileKey: String): Deferred<SavedHomeCards?> = synchronized(preloads) {
+            val key = preloadKey(context, profileKey)
+            preloads.getOrPut(key) {
+                preloadScope.async(start = CoroutineStart.LAZY) {
+                    val cache = HomeCardCache(context.applicationContext)
+                    try { cache.readDisk(profileKey) } finally { cache.close() }
+                }.also { job ->
+                    job.invokeOnCompletion { synchronized(preloads) { if (preloads[key] === job) preloads.remove(key) } }
+                }
+            }.also { it.start() }
+        }
     }
     fun peek(profile: String): SavedHomeCards? = memory.get()?.takeIf {
         it.path == file.baseFile.path && it.cards.profileKey == profile
@@ -78,7 +95,12 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Di
         writes.close()
         writer.invokeOnCompletion { scope.cancel() }
     }
-    suspend fun read(profile: String): SavedHomeCards? = withContext(Dispatchers.IO) {
+    suspend fun read(profile: String): SavedHomeCards? {
+        peek(profile)?.let { return it }
+        val loading = synchronized(preloads) { preloads["${file.baseFile.parentFile!!.path}|$profile"] }
+        return loading?.await() ?: readDisk(profile)
+    }
+    private suspend fun readDisk(profile: String): SavedHomeCards? = withContext(Dispatchers.IO) {
         peek(profile)?.let { return@withContext it }
         val before = memory.get()
         try {
@@ -92,12 +114,15 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Di
         } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
     }
     private fun encode(s: SavedHomeCards): JSONObject {
-        val tracks = (s.catalog + s.quickCandidates + s.eraCandidates + s.chartCandidates +
-            s.quick.tracks + s.era.tracks + s.chart.tracks + s.history.tracks + s.personalized.tracks +
-            s.artists.flatMap { it.tracks }).distinctBy { it.id }
+        val tracks = (s.catalog.take(MAX_POOL_TRACKS) + s.quickCandidates.take(MAX_CANDIDATE_TRACKS) +
+            s.eraCandidates.take(MAX_CANDIDATE_TRACKS) + s.chartCandidates.take(MAX_CANDIDATE_TRACKS) +
+            s.quick.tracks.take(MAX_TRACKS_PER_LIST) + s.era.tracks.take(MAX_TRACKS_PER_LIST) +
+            s.chart.tracks.take(MAX_TRACKS_PER_LIST) + s.history.tracks.take(MAX_TRACKS_PER_LIST) +
+            s.personalized.tracks.take(MAX_TRACKS_PER_LIST) +
+            s.artists.flatMap { it.tracks.take(MAX_TRACKS_PER_LIST) }).distinctBy { it.id }
         fun ids(list: List<MusicTrack>) = JSONArray(list.map { it.id })
         fun section(value: SectionState) = JSONObject().put("title", value.title)
-            .put("subtitle", value.subtitle).put("tracks", ids(value.tracks))
+            .put("subtitle", value.subtitle).put("tracks", ids(value.tracks.take(MAX_TRACKS_PER_LIST)))
         return JSONObject().put("version", 1).put("profile", s.profileKey).put("signal", s.signal)
             .put("generation", s.generation).put("refreshedAt", s.refreshedAt)
             .put("chartRefreshedAt", s.chartRefreshedAt)
@@ -113,9 +138,11 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Di
             .put("quick", section(s.quick)).put("era", section(s.era)).put("chart", section(s.chart))
             .put("history", section(s.history)).put("personalized", section(s.personalized))
             .put("artists", JSONArray(s.artists.map { a -> JSONObject().put("name", a.name)
-                .put("count", a.playCount).put("tracks", ids(a.tracks)) }))
-            .put("quickCandidates", ids(s.quickCandidates)).put("eraCandidates", ids(s.eraCandidates))
-            .put("chartCandidates", ids(s.chartCandidates)).put("catalog", ids(s.catalog))
+                .put("count", a.playCount).put("tracks", ids(a.tracks.take(MAX_TRACKS_PER_LIST))) }))
+            .put("quickCandidates", ids(s.quickCandidates.take(MAX_CANDIDATE_TRACKS)))
+            .put("eraCandidates", ids(s.eraCandidates.take(MAX_CANDIDATE_TRACKS)))
+            .put("chartCandidates", ids(s.chartCandidates.take(MAX_CANDIDATE_TRACKS)))
+            .put("catalog", ids(s.catalog.take(MAX_POOL_TRACKS)))
     }
     private fun decode(root: JSONObject, profile: String): SavedHomeCards? {
         if (root.optInt("version") != 1 || root.optString("profile") != profile) return null

@@ -108,14 +108,17 @@ class HomeViewModel(
     application: Application
 ) : AndroidViewModel(application) {
 
-    // Serialize Home's mutable request/cache ownership off Main. Suspended IO requests
-    // still run concurrently, and all jobs remain children of the ViewModel lifecycle.
+    // IO collectors do not consume the two CPU-ranking workers. Only small mutable
+    // request/bookkeeping sections share an owner; queries and scoring suspend off it.
     private val workerDispatcher = repository.homeDispatcher
-    private val dataDispatcher = workerDispatcher.limitedParallelism(1)
+    private val dataDispatcher = Dispatchers.IO.limitedParallelism(4)
+    private val ownerDispatcher = Dispatchers.IO.limitedParallelism(1)
+    private val ownerScope = viewModelScope + ownerDispatcher
     private val dataScope = viewModelScope + dataDispatcher
 
     // 1. Instant User Profile (< 1ms)
-    private val _userProfile = MutableStateFlow(UserProfilePreferences.getUserProfile(application))
+    private val _userProfile = MutableStateFlow(UserProfilePreferences.peekUserProfile()
+        ?: (application as? com.example.XtremeMusicApp)?.startupSettings?.profile ?: UserProfile())
     val userProfile: StateFlow<UserProfile> = _userProfile.asStateFlow()
     private val shelfCache = HomeCardCache(application, workerDispatcher)
     private val initialCards = shelfCache.peek(profileKey())
@@ -147,23 +150,27 @@ class HomeViewModel(
     private val personalizedEngine by lazy { PersonalizedHomeRecommendationEngine(listeningEventDao, workerDispatcher) }
     val favoriteTracks = repository.getFavoriteTracks().onEach { favoritesLoaded.complete(Unit) }
         .flowOn(dataDispatcher).stateIn(dataScope, SharingStarted.Eagerly, emptyList())
+    private val historyLimit = MutableStateFlow(300)
+    private val historyReadyForRanking = MutableStateFlow(false)
     private val actualPlays = flow {
             restored.await()
             var previousCount = -1
+            var previousLimit = -1
             var previousIds: Set<Long>? = null
             combine(listeningEventDao.observeActualPlayStamps(),
-                listeningEventDao.observeActualPlayCount().distinctUntilChanged()) { stamps, count -> stamps to count }
-                .flowOn(Dispatchers.IO).collect { (stamps, count) ->
+                listeningEventDao.observeActualPlayCount().distinctUntilChanged(), historyLimit) { stamps, count, limit -> Triple(stamps, count, limit) }
+                .flowOn(Dispatchers.IO).collect { (stamps, count, limit) ->
                 val ids = stamps.mapTo(mutableSetOf()) { it.id }
-                val reloadHistory = previousIds != ids || previousCount != count
+                val reloadHistory = previousIds != ids || previousCount != count || previousLimit != limit
                 // Restore the long-term window once, and on structural history changes only.
                 // Playback milestones update at most 250 rows without truncating older preferences.
                 if (reloadHistory) {
-                    val history = withContext(Dispatchers.IO) { listeningEventDao.getActualPlays() }
+                    val history = withContext(Dispatchers.IO) { listeningEventDao.getActualPlays(limit) }
                     retainedEvents.clear()
                     history.forEach { retainedEvents[it.id] = it }
                     previousIds = ids
                     previousCount = count
+                    previousLimit = limit
                     lastEventStamps.clear()
                 }
                 val changed = if (reloadHistory) emptyList() else stamps.filter { lastEventStamps[it.id] != it }.map { it.id }
@@ -172,6 +179,7 @@ class HomeViewModel(
                 rows.forEach { retainedEvents[it.id] = it }
                 lastEventStamps.clear(); stamps.forEach { lastEventStamps[it.id] = it }
                 emit(retainedEvents.values.sortedByDescending { it.timestamp }.take(5000))
+                if (limit >= 5000 || count <= limit) historyReadyForRanking.value = true
                 if (stamps.isEmpty()) { cachedHero.value = null; cachedHistory.value = null }
                 eventsLoaded.complete(Unit)
             }
@@ -185,16 +193,16 @@ class HomeViewModel(
             HistoryRows(ids, groups.flatMap { rows -> rows.map { it.toMusicTrack() } })
         }
     }.flowOn(dataDispatcher).stateIn(dataScope, SharingStarted.Eagerly, HistoryRows())
-    private val historyMetadata = historyRows.map { it.tracks }.stateIn(dataScope, SharingStarted.Eagerly, emptyList())
     private data class TasteInputs(val events: List<ListeningEventEntity>, val tracks: List<MusicTrack>,
         val favorites: List<MusicTrack>, val preferences: UserProfile)
     private data class TasteSnapshot(val inputs: TasteInputs? = null,
         val taste: UserTasteProfile = UserTasteProfile.COLD_START_PROFILE)
     private var lastTasteInputs: TasteInputs? = null
     private var retainedTaste = UserTasteProfile.COLD_START_PROFILE
-    private val tasteSnapshot = combine(actualPlays, historyMetadata, favoriteTracks, _userProfile) { events, tracks, favorites, preferences ->
-        TasteInputs(events, tracks, favorites, preferences)
-    }.distinctUntilChanged().mapLatest { inputs ->
+    private val tasteSnapshot = combine(actualPlays, historyRows, favoriteTracks, _userProfile, historyReadyForRanking) { events, rows, favorites, preferences, ready ->
+        if (ready && rows.ids == events.map { it.trackId }.distinct())
+            TasteInputs(events, rows.tracks, favorites, preferences) else null
+    }.filterNotNull().distinctUntilChanged().mapLatest { inputs ->
         restored.await()
         eventsLoaded.await(); favoritesLoaded.await()
         // Restarting a screen subscription is not a new listening signal. Keep the same decay
@@ -391,7 +399,7 @@ class HomeViewModel(
         val favorites: List<MusicTrack>, val profile: UserProfile, val taste: TasteSnapshot)
     private var lastRenderInputs: RenderInputs? = null
 
-    private suspend fun renderRecommendations() = renderMutex.withLock {
+    private suspend fun renderRecommendations() = withContext(workerDispatcher) { renderMutex.withLock {
         restored.await()
         eventsLoaded.await(); favoritesLoaded.await()
         // A refresh owns one complete candidate snapshot. Do not rerank on individual
@@ -485,8 +493,9 @@ class HomeViewModel(
         currentCoroutineContext().ensureActive()
         // Retaining ready results while hidden must not hold other optional work busy.
         rendering.close()
+        withContext(ownerDispatcher) publish@ {
         awaitHomePresentation()
-        if (refreshCandidatesPending.value || candidates.value != pool) return@withLock
+        if (refreshCandidatesPending.value || candidates.value != pool || profileKey(inputs.profile) != profileKey()) return@publish
         _homeShelves.value = shelves
         // Reranking must retain error/loading updates arriving from the refresh requests.
         _countryLanguageCard.update { it.copy(tracks = chart) }
@@ -499,7 +508,7 @@ class HomeViewModel(
         lastRenderInputs = inputs
         _currentStage.value = LoadingStage.PRIORITY_3_BACKGROUND_ENRICHED
         savedSignal = signal; savedGeneration = pool.generation; savedCandidates = pool
-        // Both card checkpoint publishers share dataDispatcher; no Main hop or file work here.
+        // Both checkpoint publishers share the lightweight owner; no Main/file work here.
         shelfCache.save(SavedHomeCards(profileKey(), signal, pool.generation, lastDiscoveryRefresh,
             _ytmCard.value, _eraCard.value, _countryLanguageCard.value, _listeningHistoryCard.value,
             _personalizedCard.value, _mostListenedArtists.value.take(15), pool.quick, pool.era, pool.chart, catalog.take(400),
@@ -513,8 +522,10 @@ class HomeViewModel(
             }
         }
 
+        }
+
         } finally { rendering.close() }
-    }
+    } }
 
     // Smooth Pull-to-Refresh & Background Sync State
     private val _isRefreshing = MutableStateFlow(false)
@@ -529,7 +540,7 @@ class HomeViewModel(
     }
 
     private var regionalTrendingJob: Job? = null
-    private var lastRegionalRefresh = initialCards?.chartRefreshedAt ?: 0L
+    @Volatile private var lastRegionalRefresh = initialCards?.chartRefreshedAt ?: 0L
     private var lastRegionalAttempt = 0L
     private var lastRegionalAttemptTitle: String? = null
 
@@ -544,7 +555,8 @@ class HomeViewModel(
         }
     }
 
-    private suspend fun awaitHomeIdle() {
+    private suspend fun awaitHomeIdle(allowWhenEmpty: Boolean = true, quietMillis: Long = 2_500L) {
+        restored.await()
         while (true) {
             homeVisible.first { it }
             homeScrolling.first { !it }
@@ -554,8 +566,8 @@ class HomeViewModel(
             // Empty Home content is essential loading, not optional revalidation.
             // Startup work and shimmer frames must not postpone its IO/Default work
             // indefinitely. The existing refresh owner still permits only one pass.
-            if (essential) return
-            BackgroundWorkCoordinator.awaitIdle(quietMillis = 2_500L,
+            if (allowWhenEmpty && essential) return
+            BackgroundWorkCoordinator.awaitIdle(quietMillis = quietMillis,
                 minimumUptimeMillis = 6_000L,
                 userRequested = { _isRefreshing.value || manualRenderGeneration == candidates.value.generation })
             BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
@@ -565,7 +577,7 @@ class HomeViewModel(
 
     fun loadRegionalTrending(country: String, countryCode: String = "IN", forceRefresh: Boolean = false,
         alreadyIdle: Boolean = false) {
-      dataScope.launch {
+      ownerScope.launch {
         val item = CountryData.findCountry(countryCode) ?: CountryData.findCountry(country)
         val name = item?.name ?: country.ifBlank { "India" }
         val title = getAuthoritativeTrendingTitle(name)
@@ -577,7 +589,7 @@ class HomeViewModel(
         _countryLanguageCard.update { it.copy(title = title,
             tracks = if (sameCountry) it.tracks else emptyList(),
             isLoading = true, isError = false, errorMessage = "") }
-        regionalTrendingJob = dataScope.launch regional@ {
+        regionalTrendingJob = ownerScope.launch regional@ {
           if (!forceRefresh && !alreadyIdle) awaitHomeIdle()
           lastRegionalAttempt = System.currentTimeMillis()
           lastRegionalAttemptTitle = title
@@ -606,7 +618,7 @@ class HomeViewModel(
     }
 
     fun updateUserProfile(profile: UserProfile) {
-        dataScope.launch {
+        ownerScope.launch {
             withContext(Dispatchers.IO) { UserProfilePreferences.saveUserProfile(getApplication(), profile) }
             applyUserProfile(profile)
         }
@@ -628,20 +640,20 @@ class HomeViewModel(
     private var homeRefreshJob: Job? = null
     private var refreshWaitingForIdle = false
     private var pendingExplicitRefresh = false
-    private var activeRefreshIsExplicit = false
+    @Volatile private var activeRefreshIsExplicit = false
     private var activeRefreshPriority: DiscoveryRequestCoordinator.HomeRefresh? = null
     private var refreshGeneration = 0L
-    private var lastDiscoveryRefresh = initialCards?.refreshedAt ?: 0L
+    @Volatile private var lastDiscoveryRefresh = initialCards?.refreshedAt ?: 0L
     private var lastDiscoveryAttempt = 0L
     private var lastAttemptProfile: String? = null
-    private var manualRenderGeneration = -1L
+    @Volatile private var manualRenderGeneration = -1L
     private var pendingSilentRefresh = false
     private val refreshCandidatesPending = MutableStateFlow(false)
     private var startupRefreshScheduled = false
     private var lastDiscoverySignal: Pair<Set<String>, Set<String>>? = null
 
     fun setHomeVisible(visible: Boolean) {
-      dataScope.launch {
+      ownerScope.launch {
         if (homeVisible.value == visible) return@launch
         homeVisible.value = visible
         if (!visible) {
@@ -654,6 +666,13 @@ class HomeViewModel(
 
     init {
         dataScope.launch {
+            restored.await()
+            awaitHomeIdle(allowWhenEmpty = false)
+            // Expand only after launch/interaction: older listening preferences and
+            // lifetime artist rankings remain available without a 5,000-row startup burst.
+            historyLimit.value = 5000
+        }
+        ownerScope.launch {
             var wasPlaying = false
             playbackManager.listeningState.collect { state ->
                 val track = state.track
@@ -670,14 +689,14 @@ class HomeViewModel(
                 wasPlaying = state.isPlaying
             }
         }
-        dataScope.launch {
+        ownerScope.launch {
             listeningCardRequests.collectLatest {
                 try { refreshListeningCards() }
                 catch (e: CancellationException) { throw e }
                 catch (e: Exception) { android.util.Log.w("HomeViewModel", "Could not update listening cards", e) }
             }
         }
-        dataScope.launch {
+        ownerScope.launch {
             combine(_ytmCard, _eraCard, _countryLanguageCard, _personalizedCard) { quick, era, chart, personalized ->
                 RecommendationCards(quick, era, chart, personalized)
             }.debounce(32L).collectLatest { cards ->
@@ -690,7 +709,7 @@ class HomeViewModel(
                     _recommendationCards.value = cards
             }
         }
-        dataScope.launch {
+        ownerScope.launch {
             combine(_ytmCard, _eraCard, _countryLanguageCard) { quick, era, chart ->
                 listOf(quick, era, chart).filter { it.isError && !it.isLoading }.map { it.title }
             }.distinctUntilChanged().collect { failed ->
@@ -699,7 +718,7 @@ class HomeViewModel(
                 }
             }
         }
-        dataScope.launch {
+        ownerScope.launch {
           try {
             val cached = initialCards ?: shelfCache.read(profileKey())
             if (cached != null) {
@@ -736,7 +755,7 @@ class HomeViewModel(
             restored.complete(Unit)
           }
         }
-        dataScope.launch {
+        ownerScope.launch {
             val profiles = withContext(Dispatchers.IO) { UserProfilePreferences.getUserProfileFlow(getApplication()) }
             profiles.collect { profile ->
                 applyUserProfile(profile)
@@ -744,7 +763,7 @@ class HomeViewModel(
         }
         // These collectors belong to the ViewModel. Visibility only gates optional
         // processing, so changing tabs never restarts Room or replays discovery.
-        dataScope.launch {
+        ownerScope.launch {
             restored.await()
             eventsLoaded.await()
             val artistHistory = actualPlays.map { events -> ArtistHistory(
@@ -757,7 +776,7 @@ class HomeViewModel(
                     if (rows.ids == history.trackIds) listeningCardRequests.update { it + 1 }
                 }
         }
-        dataScope.launch {
+        ownerScope.launch {
             combine(candidates, tasteProfile, favoriteTracks, _userProfile, recentlyPlayed) { pool, taste, favorites, profile, recent ->
                 RenderTrigger(pool, taste, favorites, profile, recent)
             }.combine(refreshCandidatesPending) { input, pending -> if (pending) null else input }
@@ -765,7 +784,7 @@ class HomeViewModel(
                     if (input != null) renderRecommendations()
                 }
         }
-        dataScope.launch {
+        ownerScope.launch {
             // Only completed Room/taste snapshots establish a listening signal.
             tasteSnapshot.map { snapshot -> snapshot.inputs?.let { inputs ->
                 snapshot.taste.topRecentTrackIds.toSet() to inputs.favorites.map { it.id }.toSet()
@@ -781,12 +800,14 @@ class HomeViewModel(
                 }
             }
         }
-        dataScope.launch {
+        ownerScope.launch {
             restored.await()
             homeVisible.first { it }
             startupRefreshScheduled = true
             if (pendingExplicitRefresh || pendingSilentRefresh || lastDiscoveryRefresh == 0L ||
-                System.currentTimeMillis() - lastDiscoveryRefresh >= 10 * 60_000L) {
+                System.currentTimeMillis() - lastDiscoveryRefresh >= 30 * 60_000L) {
+                if (!pendingExplicitRefresh && shelfCache.peek(profileKey()) != null)
+                    awaitHomeIdle(allowWhenEmpty = false, quietMillis = 3_000L)
                 refreshHome(isExplicitPull = pendingExplicitRefresh)
             } else if (candidates.value.chart.isEmpty() ||
                 candidates.value.chart.any { it.id.startsWith("chart_in_") } ||
@@ -798,8 +819,8 @@ class HomeViewModel(
     }
 
     fun refreshHome(isExplicitPull: Boolean = true) {
-        // Request/job ownership and list publication share the same Default dispatcher.
-        dataScope.launch {
+        // Request ownership and short publication blocks share the IO owner.
+        ownerScope.launch {
             if (!homeVisible.value) {
                 if (isExplicitPull) pendingExplicitRefresh = true else pendingSilentRefresh = true
                 return@launch
@@ -835,7 +856,7 @@ class HomeViewModel(
             activeRefreshIsExplicit = initialExplicit
             _isRefreshing.value = initialExplicit
             if (initialExplicit) _refreshErrorMessage.value = null
-            homeRefreshJob = dataScope.launch {
+            homeRefreshJob = ownerScope.launch {
                 try {
                     withContext(priority) {
                         restored.await()
@@ -886,7 +907,7 @@ class HomeViewModel(
         }
     }
 
-    private suspend fun refreshSuggestions(force: Boolean) = withContext(dataDispatcher) {
+    private suspend fun refreshSuggestions(force: Boolean) = withContext(ownerDispatcher) {
         val profile = _userProfile.value
         val country = resolveCountryDisplayName(profile)
         val title = getAuthoritativeTrendingTitle(country)
@@ -938,7 +959,9 @@ class HomeViewModel(
         BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
         homeScrolling.first { !it }
         if (profileKey() != profileKey(profile)) return@withContext
-        val catalog = HomeRecommendationPolicy.originals(quick + era + _catalogTracks.value).take(300)
+        val catalog = withContext(workerDispatcher) {
+            HomeRecommendationPolicy.originals(quick + era + _catalogTracks.value).take(300)
+        }
         currentCoroutineContext().ensureActive()
         if (profileKey() != profileKey(profile)) return@withContext
         if (catalog.isNotEmpty()) {

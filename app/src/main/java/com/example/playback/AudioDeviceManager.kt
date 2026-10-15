@@ -53,6 +53,7 @@ object AudioDeviceManager {
     @Volatile private var audioManager: AudioManager? = null
     private var isInitialized = false
 
+    @Synchronized
     fun init(context: Context) {
         if (isInitialized) return
         val am = context.applicationContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
@@ -72,7 +73,7 @@ object AudioDeviceManager {
                     Log.d(TAG, "Audio device disconnected: ${removedDevices?.size} devices")
                     refreshDevices(context)
                 }
-            }, null)
+            }, Handler(android.os.Looper.getMainLooper()))
         } catch (e: Exception) {
             Log.w(TAG, "Failed to register AudioDeviceCallback: ${e.message}")
         }

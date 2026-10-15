@@ -37,7 +37,7 @@ data class UserTasteProfile(
         suspend fun buildProfile(dao: ListeningEventDao, nowMs: Long = System.currentTimeMillis(),
             tracks: List<MusicTrack> = emptyList(), favorites: List<MusicTrack> = emptyList()): UserTasteProfile =
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-                val events = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { dao.getActualPlays() }
+                val events = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { dao.getActualPlays(limit = 5000) }
                 fromEvents(events, tracks, favorites, nowMs)
             }
 
