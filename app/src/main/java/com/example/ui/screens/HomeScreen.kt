@@ -88,6 +88,7 @@ import com.example.ui.viewmodel.HomeViewModel
 import com.example.ui.viewmodel.SectionState
 import java.util.Calendar
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.distinctUntilChanged
 
 private val NoHomeScrollListener: (Any, Boolean) -> Unit = { _, _ -> }
 private val LocalHomeScrollListener = androidx.compose.runtime.staticCompositionLocalOf { NoHomeScrollListener }
@@ -205,8 +206,20 @@ fun HomeScreen(
             homeViewModel.setHomeScrolling(activeLists.isNotEmpty())
         }
     }
-    androidx.compose.runtime.DisposableEffect(homeViewModel) {
-        onDispose { homeViewModel.setHomeScrolling(false) }
+    val viewportOwner = remember(homeViewModel) { Any() }
+    androidx.compose.runtime.DisposableEffect(homeViewModel, viewportOwner) {
+        onDispose {
+            homeViewModel.setHomeScrolling(false)
+            homeViewModel.setRecommendationViewport(viewportOwner, emptySet())
+        }
+    }
+    androidx.compose.runtime.LaunchedEffect(homeViewModel, listState, viewportOwner) {
+        androidx.compose.runtime.snapshotFlow {
+            val layout = listState.layoutInfo
+            layout.visibleItemsInfo.filter { item ->
+                item.offset + item.size >= layout.viewportStartOffset && item.offset < layout.viewportEndOffset
+            }.mapNotNull { it.key as? String }.toSet()
+        }.distinctUntilChanged().collect { homeViewModel.setRecommendationViewport(viewportOwner, it) }
     }
 
     androidx.compose.runtime.CompositionLocalProvider(LocalHomeScrollListener provides scrollMonitor) {

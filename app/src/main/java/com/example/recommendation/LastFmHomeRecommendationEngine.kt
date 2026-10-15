@@ -15,9 +15,15 @@ import java.util.concurrent.atomic.AtomicReference
 
 /** Last.fm candidate selection with local taste ranking retained by HomeViewModel. */
 class LastFmHomeRecommendationEngine(private val repository: MusicRepository) {
+    enum class Shelf(val itemKey: String) {
+        QUICK("card_2_ytm_dynamic_feed"), ERA("card_3_era_specific_hits"),
+        CHART("card_4_country_language_hits"), PERSONALIZED("card_6_personalized_recommendation"),
+        SIMILAR("card_7_similar_artists"), INSPIRED("card_8_inspired_by_track")
+    }
     data class Batch(val quick: List<MusicTrack>, val era: List<MusicTrack>, val chart: List<MusicTrack>?,
         val personalized: List<MusicTrack>, val similarArtists: List<MusicTrack>, val inspiredTrack: List<MusicTrack>,
-        val chartFetchedAt: Long = 0L, val seedKey: String = "", val seedArtist: String = "", val seedTitle: String = "")
+        val chartFetchedAt: Long = 0L, val seedKey: String = "", val seedArtist: String = "", val seedTitle: String = "",
+        val requested: Set<Shelf> = emptySet(), val fetchedAt: Map<Shelf, Long> = emptyMap())
     private val variations = AtomicLong(0)
     companion object {
         const val SOURCE = "lastfm-v1"
@@ -43,14 +49,14 @@ class LastFmHomeRecommendationEngine(private val repository: MusicRepository) {
 
     suspend fun refresh(profile: UserProfile, country: String, taste: UserTasteProfile,
         current: MusicTrack?, history: List<MusicTrack>, favorites: List<MusicTrack>, known: List<MusicTrack>,
-        force: Boolean, includeChart: Boolean = true, relatedOnly: Boolean = false): Batch = withContext(repository.homeDispatcher) {
+        force: Boolean, shelves: Set<Shelf> = Shelf.entries.toSet()): Batch = withContext(repository.homeDispatcher) {
         if (!LastFm.isConfigured) throw IOException(LastFm.CONFIGURATION_ERROR)
         val failure = AtomicReference<Exception?>(null)
         suspend fun safe(block: suspend () -> List<LastFm.Track>): List<LastFm.Track> = try { block() }
             catch (e: CancellationException) { throw e } catch (e: Exception) { failure.compareAndSet(null, e); emptyList() }
         val artist = current?.let(CustomRecommendationQueryWrapper::extractPrimaryArtist)
             ?.takeIf(HomeRecommendationPolicy::known).orEmpty()
-        val rotation = if (force && !relatedOnly) variations.incrementAndGet() else variations.get()
+        val rotation = if (force && (Shelf.QUICK in shelves || Shelf.ERA in shelves)) variations.incrementAndGet() else variations.get()
         val page = 1 + (rotation % 3).toInt()
         val preferenceTags = (profile.languages + taste.genreAffinities.entries.sortedByDescending { it.value }
             .filter { it.value > 0 }.map { it.key }).filter(HomeRecommendationPolicy::known).distinct().take(2)
@@ -63,46 +69,55 @@ class LastFmHomeRecommendationEngine(private val repository: MusicRepository) {
         suspend fun group(index: Int, block: suspend () -> List<LastFm.Track>) = block().also { completed[index] = it }
         val metadataReady = withTimeoutOrNull(15_000L) { coroutineScope {
             val chart = async {
-                val result = if (!includeChart || relatedOnly) emptyList() else try {
-                    LastFm.countryTopTracks(country, force).also { chartTime = it.fetchedAt }.tracks
+                val result = if (Shelf.CHART !in shelves) emptyList() else try {
+                    LastFm.countryTopTracks(country).also { chartTime = it.fetchedAt }.tracks
                 } catch (e: CancellationException) { throw e }
                 catch (e: Exception) { failure.compareAndSet(null, e); emptyList() }
                 completed[2] = result
                 result
             }
             val quick = async { group(0) {
-                if (relatedOnly) emptyList() else {
+                if (Shelf.QUICK !in shelves) emptyList() else {
                     val tags = preferenceTags.ifEmpty { listOf("pop") }
-                    val picks = tags.map { tag -> async { safe { LastFm.tagTopTracks(tag, page, force) } } }.awaitAll().let { interleave(it) }
-                    picks.ifEmpty { safe { LastFm.globalTopTracks(force) } }.ifEmpty { chart.await() }
+                    val picks = tags.map { tag -> async { safe { LastFm.tagTopTracks(tag, page) } } }.awaitAll().let { interleave(it) }
+                    picks.ifEmpty { safe { LastFm.globalTopTracks() } }.ifEmpty { chart.await() }
                 }
             } }
-            val era = async { group(1) { if (relatedOnly) emptyList() else
-                listOf("90s", "2000s").map { tag -> async { safe { LastFm.tagTopTracks(tag, page, force) } } }
+            val era = async { group(1) { if (Shelf.ERA !in shelves) emptyList() else
+                listOf("90s", "2000s").map { tag -> async { safe { LastFm.tagTopTracks(tag, page) } } }
                     .awaitAll().let { interleave(it) } } }
-            val personalized = async { group(3) { if (relatedOnly || taste.isColdStart) emptyList() else
+            val personalized = async { group(3) { if (Shelf.PERSONALIZED !in shelves || taste.isColdStart) emptyList() else
                 personalSeeds.map { seed -> async { safe { LastFm.similarTracks(
-                    CustomRecommendationQueryWrapper.extractPrimaryArtist(seed), StreamResolver.extractCleanTitle(seed.title, seed.artist), force) } } }
+                    CustomRecommendationQueryWrapper.extractPrimaryArtist(seed), StreamResolver.extractCleanTitle(seed.title, seed.artist), seed.id)
+                    // Reserve the first slice for Inspired by this Track when both cards share a seed.
+                    .let { if (seedKey(seed) == seedKey(current)) it.drop((it.size / 2).coerceIn(1, 20)) else it } } } }
                     .awaitAll().let { interleave(it) } } }
             val similar = async { group(4) {
-                if (artist.isBlank()) emptyList() else {
-                    val artists = try { LastFm.similarArtists(artist, force) }
-                        catch (e: CancellationException) { throw e } catch (e: Exception) { failure.compareAndSet(null, e); emptyList() }
-                    artists.take(3).map { name -> async { safe { LastFm.artistTopTracks(name, force) } } }
+                if (Shelf.SIMILAR !in shelves || artist.isBlank()) emptyList() else {
+                    val artists = try { LastFm.similarArtists(artist) }
+                        catch (e: CancellationException) { throw e } catch (e: Exception) {
+                            failure.compareAndSet(null, e); LastFm.ArtistPage(emptyList(), 0L) }
+                    artists.names.take(3).map { name -> async { safe { LastFm.artistTopTracks(name).map {
+                        it.copy(expiresAt = minOf(it.expiresAt, artists.expiresAt)) } } } }
                         .awaitAll().let { interleave(it) }
                 }
             } }
-            val inspired = async { group(5) { if (artist.isBlank() || current == null) emptyList() else safe {
-                LastFm.similarTracks(artist, StreamResolver.extractCleanTitle(current.title, current.artist), force) } } }
+            val inspired = async { group(5) { if (Shelf.INSPIRED !in shelves || artist.isBlank() || current == null) emptyList() else safe {
+                LastFm.similarTracks(artist, StreamResolver.extractCleanTitle(current.title, current.artist), current.id)
+                    .let { it.take((it.size / 2).coerceIn(1, 20)) } } } }
             awaitAll(chart, quick, era, personalized, similar, inspired)
             true
         } }
         val groups = completed.toList()
+        val timestamps = Shelf.entries.mapIndexedNotNull { index, shelf ->
+            val ttl = if (shelf in setOf(Shelf.QUICK, Shelf.ERA, Shelf.CHART)) LastFm.CHART_TTL else LastFm.CONTEXT_TTL
+            groups[index].map { it.expiresAt }.filter { it > 0L }.minOrNull()?.let { shelf to it - ttl }
+        }.toMap()
         if (groups.all { it.isEmpty() }) {
             failure.get()?.let { throw it }
             if (metadataReady == null) throw IOException("Last.fm recommendations timed out. Please retry.")
         }
-        val requests = interleave(groups.map { it.take(30) }).distinctBy { it.key }.take(if (relatedOnly) 40 else 72)
+        val requests = interleave(groups.map { it.take(30) }).distinctBy { it.key }.take(72)
         val knownIndex = (known + history + favorites).distinctBy { it.id }.groupBy { title(it.title, it.artist) }
         val resolved = ConcurrentHashMap<String, MusicTrack>()
         // Resolve every local hit before waiting for any network lookup.
@@ -128,8 +143,8 @@ class LastFmHomeRecommendationEngine(private val repository: MusicRepository) {
         } }
         fun mapped(index: Int) = groups[index].mapNotNull { resolved[it.key] }.distinctBy { it.id }
         Batch(mapped(0), mapped(1).filter { it.year.toIntOrNull()?.let { year -> year in 1990..2009 } != false },
-            mapped(2).takeIf { includeChart && !relatedOnly }, mapped(3), mapped(4), mapped(5), chartTime,
-            seedKey(current), artist, current?.title.orEmpty())
+            mapped(2).takeIf { Shelf.CHART in shelves }, mapped(3), mapped(4), mapped(5), chartTime,
+            seedKey(current), artist, current?.title.orEmpty(), shelves, timestamps)
     }
 
     private fun <T> interleave(lists: List<List<T>>): List<T> = buildList {

@@ -71,6 +71,7 @@ class MusicRepository(
     private val musicDao: MusicDao,
     private val context: Context? = null
 ) {
+    init { context?.let(com.example.data.remote.LastFmApiService::initialize) }
 
     val catalogBrowser = CatalogRepository()
     // Home's owners and workers share this cap, including discovery ranking.

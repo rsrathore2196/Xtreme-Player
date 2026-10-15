@@ -20,6 +20,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /** Last successful shelf selection, independent of Activity and process lifetime. */
+data class LastFmShelfLoad(val context: String, val fetchedAt: Long)
+
 data class SavedHomeCards(
     val profileKey: String, val signal: String, val generation: Long, val refreshedAt: Long,
     val quick: SectionState, val era: SectionState, val chart: SectionState,
@@ -33,7 +35,9 @@ data class SavedHomeCards(
     val similarArtistCandidates: List<MusicTrack> = emptyList(),
     val inspiredTrackCandidates: List<MusicTrack> = emptyList(),
     val recommendationSource: String = "",
-    val seedKey: String = "", val seedArtist: String = "", val seedTitle: String = ""
+    val seedKey: String = "", val seedArtist: String = "", val seedTitle: String = "",
+    val lastFmLoads: Map<String, LastFmShelfLoad> = emptyMap(),
+    val readyShelves: Set<String> = emptySet()
 )
 
 @OptIn(FlowPreview::class, ExperimentalCoroutinesApi::class)
@@ -152,6 +156,9 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Di
             .put("inspiredTrackCandidates", ids(s.inspiredTrackCandidates.take(MAX_CANDIDATE_TRACKS)))
             .put("recommendationSource", s.recommendationSource).put("seedKey", s.seedKey)
             .put("seedArtist", s.seedArtist).put("seedTitle", s.seedTitle)
+            .put("lastFmLoads", JSONObject().apply { s.lastFmLoads.forEach { (key, value) ->
+                put(key, JSONObject().put("context", value.context).put("fetchedAt", value.fetchedAt)) } })
+            .put("readyShelves", JSONArray(s.readyShelves.toList()))
             .put("artists", JSONArray(s.artists.map { a -> JSONObject().put("name", a.name)
                 .put("count", a.playCount).put("tracks", ids(a.tracks.take(MAX_TRACKS_PER_LIST))) }))
             .put("quickCandidates", ids(s.quickCandidates.take(MAX_CANDIDATE_TRACKS)))
@@ -194,6 +201,10 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Di
             if (root.has("inspiredTrack")) section("inspiredTrack") else SectionState(title = "Inspired by this Track"),
             tracks(root.optJSONArray("personalizedCandidates")), tracks(root.optJSONArray("similarArtistCandidates")),
             tracks(root.optJSONArray("inspiredTrackCandidates")), root.optString("recommendationSource"),
-            root.optString("seedKey"), root.optString("seedArtist"), root.optString("seedTitle"))
+            root.optString("seedKey"), root.optString("seedArtist"), root.optString("seedTitle"),
+            root.optJSONObject("lastFmLoads")?.let { loads -> loads.keys().asSequence().mapNotNull { key ->
+                loads.optJSONObject(key)?.let { key to LastFmShelfLoad(it.optString("context"), it.optLong("fetchedAt")) }
+            }.toMap() }.orEmpty(),
+            root.optJSONArray("readyShelves")?.let { a -> (0 until a.length()).map { a.optString(it) }.toSet() }.orEmpty())
     }
 }
