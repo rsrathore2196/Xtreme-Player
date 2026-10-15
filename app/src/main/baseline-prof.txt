@@ -9,3 +9,9 @@ HSPLcom/example/ui/screens/HomeScreenKt;->**(**)**
 HSPLcom/example/ui/screens/SearchScreenKt;->**(**)**
 HSPLcom/example/ui/components/WavyScrubberBarKt;->**(**)**
 HSPLcom/example/ui/components/SyncedLyricsViewKt;->**(**)**
+HSPLcom/example/**;->**(**)**
+HSPLcom/example/ui/**;->**(**)**
+HSPLcom/example/playback/**;->**(**)**
+HSPLcom/example/data/**;->**(**)**
+HSPLcom/example/recommendation/**;->**(**)**
+HSPLcom/example/performance/**;->**(**)**

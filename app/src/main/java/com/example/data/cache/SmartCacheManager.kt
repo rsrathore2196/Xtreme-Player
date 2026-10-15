@@ -293,9 +293,7 @@ object SmartCacheManager {
     }
 
     private fun calculateImageCacheBytes(ctx: Context): Long {
-        var size = 0L
-        val imageDir = File(ctx.cacheDir, "image_cache")
-        if (imageDir.exists()) size += getFolderSize(imageDir)
+        var size = ctx.imageLoader.diskCache?.size ?: 0L
         val coilDir = File(ctx.cacheDir, "image_manager_disk_cache")
         if (coilDir.exists()) size += getFolderSize(coilDir)
         val coilDefault = File(ctx.cacheDir, "image_cache_default")

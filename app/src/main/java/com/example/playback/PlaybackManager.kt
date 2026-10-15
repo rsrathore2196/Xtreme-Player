@@ -43,6 +43,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.compose.runtime.Immutable
@@ -120,7 +121,8 @@ class PlaybackManager(
     }
 
     val recommendationEngine = RecommendationEngine()
-    private val candidateCatalogPool = java.util.concurrent.CopyOnWriteArrayList<MusicTrack>()
+    @Volatile private var candidateCatalogPool: List<MusicTrack> = emptyList()
+    private val candidateDispatcher = Dispatchers.Default.limitedParallelism(1)
     private var recommendationFetchJob: Job? = null
     private var queueGeneration = 0L
     private var advanceWhenQueueReady = false
@@ -659,10 +661,11 @@ class PlaybackManager(
             (listenedMs < 30_000L && (durationMs <= 0L || listenedMs < (durationMs + 1L) / 2L))) return
         hasRecordedMeaningfulPlay = true
         val track = _uiState.value.currentTrack ?: return
+        val sessionId = currentSessionId
         scope.launch(Dispatchers.IO) {
             try {
                 listeningEventDao.insertListeningEvent(ListeningEventEntity.fromTrack(
-                    track, currentSessionId, listenedMs, durationMs, "MEANINGFUL_PLAY",
+                    track, sessionId, listenedMs, durationMs, "MEANINGFUL_PLAY",
                     completed = false, skipped = false, liked = track.isLiked))
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { Log.w(TAG, "Couldn't save meaningful listening: ${e.message}") }
@@ -912,41 +915,28 @@ class PlaybackManager(
 
         val repo = repository
         val needsResolution = com.example.data.repository.StreamResolver.needsResolution(track)
-        if (needsResolution || controller == null) {
-            playResolutionJob = scope.launch {
-                try {
-                    awaitController()
-                    val resolved = if (needsResolution) withContext(Dispatchers.IO) {
-                        (repo ?: throw IllegalStateException("Music catalogue is unavailable. Please try again."))
-                            .resolvePlayableTrack(track)
-                    } else track
-                    val updatedQueue = queue.map { if (it.id == track.id) resolved else it }
-                    if (isActive && ownsSelection(track.id, generation)) {
-                        playTrackInternal(resolved, updatedQueue, isExplicitPlaylist)
-                    }
-                } catch (e: Exception) {
-                    if (e is CancellationException) {
-                        throw e
-                    }
-                    Log.e(TAG, "Failed resolving track stream: ${e.message}", e)
-                    if (ownsSelection(track.id, generation)) {
-                        showPlaybackFailure(e.message ?: "This track is unavailable.")
-                    }
+        // Even already-resolved selections prepare potentially large playlist metadata off Main.
+        playResolutionJob = scope.launch {
+            try {
+                awaitController()
+                val resolved = if (needsResolution) withContext(Dispatchers.IO) {
+                    (repo ?: throw IllegalStateException("Music catalogue is unavailable. Please try again."))
+                        .resolvePlayableTrack(track)
+                } else track
+                if (isActive && ownsSelection(track.id, generation)) {
+                    playTrackInternal(resolved, queue, isExplicitPlaylist)
                 }
-            }
-            return
-        }
-
-        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
-            playTrackInternal(track, queue, isExplicitPlaylist)
-        } else {
-            scope.launch(Dispatchers.Main) {
-                playTrackInternal(track, queue, isExplicitPlaylist)
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                Log.e(TAG, "Failed resolving track stream: ${e.message}", e)
+                if (ownsSelection(track.id, generation)) {
+                    showPlaybackFailure(e.message ?: "This track is unavailable.")
+                }
             }
         }
     }
 
-    private fun playTrackInternal(track: MusicTrack, queue: List<MusicTrack>, isExplicitPlaylist: Boolean = false) {
+    private suspend fun playTrackInternal(track: MusicTrack, queue: List<MusicTrack>, isExplicitPlaylist: Boolean = false) {
         if (track.audioUrl.isBlank() || Uri.parse(track.audioUrl).scheme !in setOf("http", "https", "file", "content", "xtreme-youtube")) {
             showPlaybackFailure("No playable stream is available for '${track.title}'.")
             return
@@ -958,6 +948,26 @@ class PlaybackManager(
             return
         }
 
+        val generation = selectionGeneration
+        var autoplayEnabled: Boolean
+        var targetQuality: AudioQuality
+        var prepared: Pair<MutableList<MusicTrack>, List<MediaItem>>
+        do {
+            autoplayEnabled = _uiState.value.isAutoplayEnabled
+            targetQuality = _uiState.value.selectedQuality
+            prepared = withContext(Dispatchers.Default) {
+                val tracks = if (autoplayEnabled && !isExplicitPlaylist) {
+                    val contextTracks = queue.filter { it.id != track.id && it.audioUrl.isNotBlank() }.distinctBy { it.id }
+                    (listOf(track) + contextTracks).toMutableList()
+                } else {
+                    (queue.map { if (it.id == track.id) track else it } + track)
+                        .filter { it.audioUrl.isNotBlank() }.distinctBy { it.id }.toMutableList()
+                }
+                tracks to tracks.map { it.toMediaItem(targetQuality) }
+            }
+            if (!ownsSelection(track.id, generation)) return
+        } while (autoplayEnabled != _uiState.value.isAutoplayEnabled || targetQuality != _uiState.value.selectedQuality)
+
         try {
             val oldTrack = _uiState.value.currentTrack
             if (oldTrack != null && oldTrack.id != track.id) {
@@ -966,16 +976,12 @@ class PlaybackManager(
             }
 
             recommendationEngine.recordTrackPlayed(track)
-            val autoplayEnabled = _uiState.value.isAutoplayEnabled
 
             if (autoplayEnabled && !isExplicitPlaylist) {
                 // Autoplay Session:
                 // Start playing immediately with playable candidates only
-                val validContext = queue.filter { it.id != track.id && it.audioUrl.isNotBlank() }.distinctBy { it.id }
-                val initialQueue = (listOf(track) + validContext).toMutableList()
-                activeQueue = initialQueue
-
-                val mediaItems = initialQueue.map { it.toMediaItem() }
+                activeQueue = prepared.first
+                val mediaItems = prepared.second
                 player.setMediaItems(mediaItems, 0, 0L)
                 player.prepare()
                 player.play()
@@ -998,12 +1004,9 @@ class PlaybackManager(
                 }
 
             } else {
-                val playableQueue = (queue.map { if (it.id == track.id) track else it } + track)
-                    .filter { it.audioUrl.isNotBlank() }.distinctBy { it.id }
-                activeQueue = playableQueue.toMutableList()
-                val startIndex = playableQueue.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
-
-                val mediaItems = playableQueue.map { it.toMediaItem() }
+                activeQueue = prepared.first
+                val startIndex = activeQueue.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
+                val mediaItems = prepared.second
                 player.setMediaItems(mediaItems, startIndex, 0L)
                 player.prepare()
                 player.play()
@@ -1040,9 +1043,11 @@ class PlaybackManager(
     }
 
     private fun rememberQueueCandidates(tracks: List<MusicTrack>) {
-        val merged = (candidateCatalogPool.toList() + tracks).distinctBy { it.id }.takeLast(600)
-        candidateCatalogPool.clear()
-        candidateCatalogPool.addAll(merged)
+        scope.launch(candidateDispatcher) {
+            val merged = (candidateCatalogPool + tracks).distinctBy { it.id }.takeLast(600)
+            ensureActive()
+            candidateCatalogPool = merged
+        }
     }
 
     private fun cancelQueueRefill() {
@@ -1153,7 +1158,7 @@ class PlaybackManager(
                 }
 
                 val seed = _uiState.value.currentTrack ?: track
-                val local = candidateCatalogPool.toList()
+                val local = candidateCatalogPool
                 val queued = queueSnapshot()
                 val needed = (upcomingQueueTarget - remaining).coerceAtLeast(1)
                 val discovery = async(Dispatchers.IO) {
@@ -1242,10 +1247,11 @@ class PlaybackManager(
     }
 
     fun setCandidatePool(pool: List<MusicTrack>) {
-        synchronized(candidateCatalogPool) {
-            if (candidateCatalogPool == pool) return
-            candidateCatalogPool.clear()
-            candidateCatalogPool.addAll(pool)
+        scope.launch(candidateDispatcher) {
+            if (candidateCatalogPool == pool) return@launch
+            val snapshot = pool.toList()
+            ensureActive()
+            candidateCatalogPool = snapshot
         }
     }
 
@@ -1623,9 +1629,7 @@ class PlaybackManager(
             controller?.release()
             controllerFuture?.let { MediaController.releaseFuture(it) }
             controller = null
-            synchronized(candidateCatalogPool) {
-                candidateCatalogPool.clear()
-            }
+            candidateCatalogPool = emptyList()
             Log.i(TAG, "PlaybackManager released successfully")
         } catch (e: Exception) {
             Log.e(TAG, "Error releasing resources: ${e.message}", e)
@@ -1638,8 +1642,7 @@ class PlaybackManager(
         return when { requested >= 320 -> 320; requested >= 160 -> 160; requested >= 96 -> 96; else -> 48 }
     }
 
-    private fun MusicTrack.toMediaItem(): MediaItem {
-        val targetQuality = _uiState.value.selectedQuality
+    private fun MusicTrack.toMediaItem(targetQuality: AudioQuality = _uiState.value.selectedQuality): MediaItem {
         val availableBitrate = saavnBitrateFor(targetQuality)
         val effectiveUrl = if (audioUrl.contains("saavncdn.com")) {
             com.example.data.remote.OnlineMusicApiService.formatUrlForQuality(audioUrl, availableBitrate.toString())

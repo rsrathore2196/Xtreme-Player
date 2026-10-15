@@ -4,6 +4,7 @@ import androidx.compose.runtime.Immutable
 import androidx.room.Embedded
 import androidx.room.Entity
 import androidx.room.Index
+import androidx.room.Ignore
 import androidx.room.Junction
 import androidx.room.PrimaryKey
 import androidx.room.Relation
@@ -122,4 +123,12 @@ data class PlaylistWithTracks(
         )
     )
     val tracks: List<TrackEntity>
-)
+) {
+    // A derived UI snapshot only: Room does not persist it or change the relation schema.
+    @get:Ignore
+    @delegate:Ignore
+    @delegate:Transient
+    val musicTracks: List<MusicTrack> by lazy(LazyThreadSafetyMode.PUBLICATION) {
+        tracks.map { it.toMusicTrack() }
+    }
+}

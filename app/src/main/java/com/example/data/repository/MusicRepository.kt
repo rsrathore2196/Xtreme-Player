@@ -350,9 +350,8 @@ class MusicRepository(
     }
 
     fun getRecentlyPlayedTracks(): Flow<List<MusicTrack>> {
-        return musicDao.getRecentlyPlayedTracks().map { list ->
-            list.map { it.toMusicTrack() }
-        }
+        return musicDao.getRecentlyPlayedTracks().flowOn(Dispatchers.IO).distinctUntilChanged()
+            .map { list -> list.map { it.toMusicTrack() } }.flowOn(Dispatchers.Default)
     }
 
     fun getAllPlaylists(): Flow<List<PlaylistEntity>> {
@@ -364,6 +363,8 @@ class MusicRepository(
 
     fun getPlaylistWithTracks(playlistId: Long): Flow<PlaylistWithTracks?> {
         return musicDao.getPlaylistWithTracks(playlistId)
+            .flowOn(Dispatchers.IO).distinctUntilChanged()
+            .map { content -> content?.also { it.musicTracks } }.flowOn(Dispatchers.Default)
     }
 
     suspend fun toggleFavorite(track: MusicTrack): Boolean =

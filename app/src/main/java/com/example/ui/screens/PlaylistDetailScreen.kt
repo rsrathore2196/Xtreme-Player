@@ -90,7 +90,7 @@ fun PlaylistDetailScreen(
     footer: (@Composable () -> Unit)? = null
 ) {
     val playlist = playlistWithTracks.playlist
-    val tracks = playlistWithTracks.tracks.map { it.toMusicTrack() }
+    val tracks = playlistWithTracks.musicTracks
     val currentPlayingId = currentPlayingTrackId ?: playerUiState?.currentTrack?.id
     val appColors = LocalAppColors.current
 

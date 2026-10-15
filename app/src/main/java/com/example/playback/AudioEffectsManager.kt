@@ -11,6 +11,12 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import androidx.compose.runtime.Immutable
 import kotlin.math.ln
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.launch
 
 @Immutable
 data class BandState(
@@ -70,6 +76,29 @@ data class AudioEffectsState(
 object AudioEffectsManager {
     private const val TAG = "AudioEffectsManager"
 
+    // Android DSP/binder work has no player-looper requirement. One suspended worker
+    // keeps every command in order, including release/attach, without blocking UI gestures.
+    private val commands = Channel<() -> Unit>(Channel.UNLIMITED)
+    private val effectsScope = CoroutineScope(SupervisorJob() + Dispatchers.IO).also { scope ->
+        scope.launch {
+            for (command in commands) {
+                try { command() }
+                catch (e: CancellationException) { throw e }
+                catch (e: Exception) { Log.e(TAG, "Audio effect command failed", e) }
+            }
+        }
+    }
+    fun attachAudioSession(sessionId: Int) { commands.trySend { attachAudioSessionOnWorker(sessionId) } }
+    fun setEnabled(enabled: Boolean) { commands.trySend { setEnabledOnWorker(enabled) } }
+    fun setBandLevel(bandIndex: Short, levelMb: Short) { commands.trySend { setBandLevelOnWorker(bandIndex, levelMb) } }
+    fun setBassBoost(strength: Int) { commands.trySend { setBassBoostOnWorker(strength) } }
+    fun setVirtualizer(strength: Int) { commands.trySend { setVirtualizerOnWorker(strength) } }
+    fun setLoudnessGain(gainMb: Int) { commands.trySend { setLoudnessGainOnWorker(gainMb) } }
+    fun applyPreset(presetName: String) { commands.trySend { applyPresetOnWorker(presetName) } }
+    fun setCrystalClarityEnabled(enabled: Boolean) { commands.trySend { setCrystalClarityEnabledOnWorker(enabled) } }
+    fun resetAll() { commands.trySend { resetAllOnWorker() } }
+    fun detachAudioSession() { commands.trySend { detachAudioSessionOnWorker() } }
+
     private var currentSessionId: Int = 0
     private var equalizer: Equalizer? = null
     private var bassBoost: BassBoost? = null
@@ -94,7 +123,7 @@ object AudioEffectsManager {
     val effectsState: StateFlow<AudioEffectsState> = _effectsState.asStateFlow()
 
     @Synchronized
-    fun attachAudioSession(sessionId: Int) {
+    private fun attachAudioSessionOnWorker(sessionId: Int) {
         if (sessionId <= 0 || sessionId == currentSessionId) return
         Log.d(TAG, "Attaching Audio Effects to Session ID: $sessionId")
         currentSessionId = sessionId
@@ -197,7 +226,7 @@ object AudioEffectsManager {
     }
 
     @Synchronized
-    fun setEnabled(enabled: Boolean) {
+    private fun setEnabledOnWorker(enabled: Boolean) {
         _effectsState.update { it.copy(isEnabled = enabled) }
         if (enabled) {
             if (equalizer == null && currentSessionId > 0) {
@@ -218,7 +247,7 @@ object AudioEffectsManager {
     }
 
     @Synchronized
-    fun setBandLevel(bandIndex: Short, levelMb: Short) {
+    private fun setBandLevelOnWorker(bandIndex: Short, levelMb: Short) {
         val band = _effectsState.value.bands.getOrNull(bandIndex.toInt())
         val clampedLevel = levelMb.coerceIn(
             band?.minLevelMb ?: -1500,
@@ -240,7 +269,7 @@ object AudioEffectsManager {
     }
 
     @Synchronized
-    fun setBassBoost(strength: Int) {
+    private fun setBassBoostOnWorker(strength: Int) {
         val clamped = strength.coerceIn(0, 1000)
         _effectsState.update { it.copy(bassBoostStrength = clamped) }
         try {
@@ -251,7 +280,7 @@ object AudioEffectsManager {
     }
 
     @Synchronized
-    fun setVirtualizer(strength: Int) {
+    private fun setVirtualizerOnWorker(strength: Int) {
         val clamped = strength.coerceIn(0, 1000)
         _effectsState.update { it.copy(virtualizerStrength = clamped) }
         try {
@@ -262,7 +291,7 @@ object AudioEffectsManager {
     }
 
     @Synchronized
-    fun setLoudnessGain(gainMb: Int) {
+    private fun setLoudnessGainOnWorker(gainMb: Int) {
         val clamped = gainMb.coerceIn(0, 800)
         _effectsState.update { it.copy(loudnessGainMb = clamped) }
         try {
@@ -273,7 +302,7 @@ object AudioEffectsManager {
     }
 
     @Synchronized
-    fun applyPreset(presetName: String) {
+    private fun applyPresetOnWorker(presetName: String) {
         _effectsState.update { it.copy(selectedPreset = presetName) }
         applyPresetInternal(presetName)
     }
@@ -417,9 +446,9 @@ object AudioEffectsManager {
             else -> 0 // Flat
         }
 
-        setBassBoost(targetBass)
-        setVirtualizer(targetVirt)
-        setLoudnessGain(targetGain)
+        setBassBoostOnWorker(targetBass)
+        setVirtualizerOnWorker(targetVirt)
+        setLoudnessGainOnWorker(targetGain)
 
         _effectsState.update {
             it.copy(
@@ -433,22 +462,22 @@ object AudioEffectsManager {
     }
 
     @Synchronized
-    fun setCrystalClarityEnabled(enabled: Boolean) {
+    private fun setCrystalClarityEnabledOnWorker(enabled: Boolean) {
         _effectsState.update { it.copy(crystalClarityEnabled = enabled) }
         if (enabled) {
-            applyPreset("Crystal Clarity")
+            applyPresetOnWorker("Crystal Clarity")
         } else {
-            applyPreset("Flat")
+            applyPresetOnWorker("Flat")
         }
     }
 
     @Synchronized
-    fun resetAll() {
-        applyPreset("Flat")
+    private fun resetAllOnWorker() {
+        applyPresetOnWorker("Flat")
     }
 
     @Synchronized
-    fun detachAudioSession() {
+    private fun detachAudioSessionOnWorker() {
         releaseEffects()
         currentSessionId = 0
     }

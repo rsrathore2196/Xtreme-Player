@@ -403,13 +403,15 @@ class MusicService : MediaLibraryService() {
 
                 else -> future {
                     val tracks = getTracksForCategory(parentId)
-                    LibraryResult.ofItemList(paginate(tracks, page, pageSize).map { it.toMediaItem() }, params)
+                    withContext(Dispatchers.Default) {
+                        LibraryResult.ofItemList(paginate(tracks, page, pageSize).map { it.toMediaItem() }, params)
+                    }
                 }
             }
         }
 
-        private suspend fun getTracksForCategory(categoryId: String): List<MusicTrack> = withContext(Dispatchers.IO) {
-            val records = app.database.musicDao().getAllTracksSync()
+        private suspend fun getTracksForCategory(categoryId: String): List<MusicTrack> = withContext(Dispatchers.Default) {
+            val records = withContext(Dispatchers.IO) { app.database.musicDao().getAllTracksSync() }
                 .filter { realTrack(it.toMusicTrack()) }
                 .sortedWith(compareByDescending<TrackEntity> { it.isLiked }.thenByDescending { it.lastPlayedAt }.thenByDescending { it.addedAt })
             val tracks = records.map { it.toMusicTrack() }
@@ -436,8 +438,10 @@ class MusicService : MediaLibraryService() {
 
         private suspend fun searchTracks(query: String, requestedPage: Int = 1): List<MusicTrack> = withContext(Dispatchers.IO) {
             if (query.isBlank()) return@withContext emptyList()
-            val local = app.database.musicDao().getAllTracksSync().map { it.toMusicTrack() }.filter {
+            val records = app.database.musicDao().getAllTracksSync()
+            val local = withContext(Dispatchers.Default) { records.map { it.toMusicTrack() }.filter {
                 realTrack(it) && CatalogNames.score(query, it.title, listOf(it.artist, it.album, it.genre, it.language)) > 0
+            }
             }
             val remote = mutableListOf<MusicTrack>()
             for (providerPage in 1..requestedPage.coerceIn(1, 10)) {
@@ -450,8 +454,8 @@ class MusicService : MediaLibraryService() {
                 if (app.database.musicDao().getTrackById(track.id) == null)
                     app.database.musicDao().mergeTrackMetadata(TrackEntity.fromMusicTrack(track))
             }
-            (local + remote).filter(::realTrack).distinctBy { it.id }
-                .sortedByDescending { CatalogNames.score(query, it.title, listOf(it.artist, it.album)) }
+            withContext(Dispatchers.Default) { (local + remote).filter(::realTrack).distinctBy { it.id }
+                .sortedByDescending { CatalogNames.score(query, it.title, listOf(it.artist, it.album)) } }
         }
 
         private fun createBrowsableCategory(id: String, title: String, subtitle: String): MediaItem {
@@ -528,7 +532,9 @@ class MusicService : MediaLibraryService() {
         ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> = future {
             val needed = ((page.coerceAtLeast(0).toLong() + 1L) * pageSize.coerceIn(1, 100)).coerceAtMost(100L)
             val tracks = searchTracks(query.trim(), ((needed + 9L) / 10L).toInt())
-            LibraryResult.ofItemList(paginate(tracks, page, pageSize).map { it.toMediaItem() }, params)
+            withContext(Dispatchers.Default) {
+                LibraryResult.ofItemList(paginate(tracks, page, pageSize).map { it.toMediaItem() }, params)
+            }
         }
 
         private fun getCategoryById(id: String): MediaItem? {
@@ -575,8 +581,10 @@ class MusicService : MediaLibraryService() {
             }
             if (customCommand.customAction == COMMAND_SET_OUTPUT_DEVICE) {
                 val deviceId = args.getInt("device_id", -1)
-                com.example.playback.AudioDeviceManager.selectDevice(this@MusicService, deviceId, exoPlayer)
-                return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                return future {
+                    com.example.playback.AudioDeviceManager.routeDevice(this@MusicService, deviceId, exoPlayer)
+                    SessionResult(SessionResult.RESULT_SUCCESS)
+                }
             }
             return Futures.immediateFuture(SessionResult(SessionResult.RESULT_ERROR_NOT_SUPPORTED))
         }

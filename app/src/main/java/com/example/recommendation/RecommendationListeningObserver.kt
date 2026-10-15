@@ -22,7 +22,7 @@ import java.util.UUID
 /** Observes existing player flows; never controls playback. One updatable row per actual play. */
 @OptIn(ExperimentalCoroutinesApi::class)
 class RecommendationListeningObserver(private val dao: ListeningEventDao, private val musicDao: MusicDao) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     fun start(player: PlaybackManager) {
         scope.launch {
             var track: MusicTrack? = null
@@ -77,7 +77,9 @@ class RecommendationListeningObserver(private val dao: ListeningEventDao, privat
                     }
                     duration = state.durationMs.takeIf { it > 0 } ?: (track?.durationMs ?: 0)
                     val meaningful = listened >= 30_000 || (duration > 0 && listened >= (duration + 1) / 2)
-                    track?.let { player.recordMeaningfulListening(it.id, state.playSequence, listened, duration) }
+                    track?.let { current -> withContext(Dispatchers.Main.immediate) {
+                        player.recordMeaningfulListening(current.id, state.playSequence, listened, duration)
+                    } }
                     if ((rowId == 0L && listened > 0L) || (meaningful && savedDuration < 30_000 && (duration <= 0 || savedDuration < (duration + 1) / 2)) || listened - savedDuration >= 30_000 ||
                         (wasPlaying && !state.isPlaying && listened > savedDuration)) save()
                     previousTime = now

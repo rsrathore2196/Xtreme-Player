@@ -8,6 +8,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -29,6 +30,7 @@ import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.viewmodel.PlayerViewModel
 
 class MainActivity : ComponentActivity() {
+    private var lastInteractionMs = 0L
     private var frameThread: HandlerThread? = null
     private var frameListener: Window.OnFrameMetricsAvailableListener? = null
     @Volatile private var frameBudgetNanos = 16_666_667L
@@ -48,7 +50,12 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
-        com.example.performance.BackgroundWorkCoordinator.interaction()
+        val now = SystemClock.uptimeMillis()
+        if (event.actionMasked == MotionEvent.ACTION_DOWN || event.actionMasked == MotionEvent.ACTION_UP ||
+            now - lastInteractionMs >= 200L) {
+            lastInteractionMs = now
+            com.example.performance.BackgroundWorkCoordinator.interaction()
+        }
         return super.dispatchTouchEvent(event)
     }
 

@@ -155,15 +155,29 @@ class HomeViewModel(
         if (!visible) emptyFlow() else flow {
             restored.await()
             if (savedCandidates != null && !eventsLoaded.isCompleted) awaitHomeIdle()
-            listeningEventDao.observeActualPlayStamps().flowOn(Dispatchers.IO).collect { stamps ->
-                val changed = stamps.filter { lastEventStamps[it.id] != it }.map { it.id }
+            var previousCount = -1
+            var previousIds: Set<Long>? = null
+            combine(listeningEventDao.observeActualPlayStamps(),
+                listeningEventDao.observeActualPlayCount().distinctUntilChanged()) { stamps, count -> stamps to count }
+                .flowOn(Dispatchers.IO).collect { (stamps, count) ->
+                val ids = stamps.mapTo(mutableSetOf()) { it.id }
+                val reloadHistory = previousIds != ids || previousCount != count
+                // Restore the long-term window once, and on structural history changes only.
+                // Playback milestones update at most 250 rows without truncating older preferences.
+                if (reloadHistory) {
+                    val history = withContext(Dispatchers.IO) { listeningEventDao.getActualPlays() }
+                    retainedEvents.clear()
+                    history.forEach { retainedEvents[it.id] = it }
+                    previousIds = ids
+                    previousCount = count
+                    lastEventStamps.clear()
+                }
+                val changed = if (reloadHistory) emptyList() else stamps.filter { lastEventStamps[it.id] != it }.map { it.id }
                 val pages = changed.chunked(900)
                 val rows = withContext(Dispatchers.IO) { pages.flatMap { listeningEventDao.getEventsByIds(it) } }
                 rows.forEach { retainedEvents[it.id] = it }
-                val ids = stamps.map { it.id }.toSet()
-                retainedEvents.keys.retainAll(ids)
                 lastEventStamps.clear(); stamps.forEach { lastEventStamps[it.id] = it }
-                emit(stamps.mapNotNull { retainedEvents[it.id] })
+                emit(retainedEvents.values.sortedByDescending { it.timestamp }.take(5000))
                 if (stamps.isEmpty()) { cachedHero.value = null; cachedHistory.value = null }
                 eventsLoaded.complete(Unit)
             }

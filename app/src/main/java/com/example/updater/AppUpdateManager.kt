@@ -295,11 +295,11 @@ object AppUpdateManager {
         require(row.url == s.info.apkDownloadUrl) { "Download identity does not match the release." }
         when (row.status) {
             DownloadManager.STATUS_SUCCESSFUL -> {
-                val source = external(app, s)
-                require(Uri.parse(row.local).scheme == "file" && File(Uri.parse(row.local).path.orEmpty()).canonicalFile == source.canonicalFile) { "Unexpected APK download location." }
                 _downloadProgress.value = 99
                 _updateStatus.value = UpdateStatus.Downloading(99, s.id, s.info, "Verifying APK")
                 val message = try { withContext(Dispatchers.IO) {
+                    val source = external(app, s)
+                    require(Uri.parse(row.local).scheme == "file" && File(Uri.parse(row.local).path.orEmpty()).canonicalFile == source.canonicalFile) { "Unexpected APK download location." }
                     require(source.isFile && row.bytes > 0 && row.bytes == source.length() && (row.total <= 0 || row.total == row.bytes)) { "The APK download is empty or incomplete." }
                     val privateFile = staged(app, s)
                     check(privateFile.parentFile?.mkdirs() == true || privateFile.parentFile?.isDirectory == true) { "Update storage is unavailable." }
@@ -360,7 +360,9 @@ object AppUpdateManager {
             try {
                 restore(app)
                 val s = session ?: throw IOException("Check for an update before installing.")
-                require(s.ready && apkFile.canonicalFile == staged(app, s).canonicalFile) { "Only a verified downloaded update can be installed." }
+                withContext(Dispatchers.IO) {
+                    require(s.ready && apkFile.canonicalFile == staged(app, s).canonicalFile) { "Only a verified downloaded update can be installed." }
+                }
                 session = s.copy(installRequested = true); persist(app, session)
                 resumeInstall(app)
             } catch (e: CancellationException) { throw e } catch (e: Exception) { fail(app, e.message ?: "Could not launch installation.") }
@@ -389,7 +391,7 @@ object AppUpdateManager {
         // Clear the request before opening Android so cancel/back cannot produce an install loop.
         s = s.copy(installRequested = false, waitingPermission = false); session = s; persist(app, s)
         _updateStatus.value = UpdateStatus.ReadyToInstall(file, s.info, message)
-        val uri = FileProvider.getUriForFile(app, "${app.packageName}.provider", file)
+        val uri = withContext(Dispatchers.IO) { FileProvider.getUriForFile(app, "${app.packageName}.provider", file) }
         app.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive")
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
             .apply { clipData = ClipData.newRawUri("App update", uri) })

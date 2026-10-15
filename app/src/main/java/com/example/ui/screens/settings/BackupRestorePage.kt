@@ -75,6 +75,9 @@ import com.example.ui.theme.liquidGlassPill
 import com.example.ui.theme.liquidGlassSwitchColors
 import com.example.ui.theme.bouncyClickable
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Job
 import java.io.File
 
 @Composable
@@ -108,7 +111,7 @@ fun BackupRestorePage(
     var locationInput by remember { mutableStateOf(autoBackupLocation) }
 
     // Last backup info & available backups
-    var lastBackupInfo by remember { mutableStateOf(BackupRestoreManager.getLastBackupInfo(context)) }
+    var lastBackupInfo by remember { mutableStateOf<BackupRestoreManager.BackupInfo?>(null) }
     var availableBackups by remember { mutableStateOf<List<BackupRestoreManager.BackupInfo>>(emptyList()) }
 
     var isCreatingBackup by remember { mutableStateOf(false) }
@@ -122,9 +125,16 @@ fun BackupRestorePage(
     var showPermissionRationaleDialog by remember { mutableStateOf(false) }
     var pendingAction by remember { mutableStateOf<(() -> Unit)?>(null) }
 
+    val refreshJob = remember { arrayOfNulls<Job>(1) }
     fun refreshBackups() {
-        lastBackupInfo = BackupRestoreManager.getLastBackupInfo(context)
-        availableBackups = BackupRestoreManager.getAvailableBackups(context)
+        refreshJob[0]?.cancel()
+        refreshJob[0] = coroutineScope.launch {
+            val (latest, backups) = withContext(Dispatchers.IO) {
+                BackupRestoreManager.getLastBackupInfo(context) to BackupRestoreManager.getAvailableBackups(context)
+            }
+            lastBackupInfo = latest
+            availableBackups = backups
+        }
     }
 
     val permissionLauncher = rememberLauncherForActivityResult(

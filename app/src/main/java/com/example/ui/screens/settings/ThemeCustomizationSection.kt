@@ -100,6 +100,8 @@ import com.example.ui.theme.LiquidGlass
 import com.example.ui.theme.liquidGlassCard
 import com.example.ui.theme.liquidGlassPill
 import com.example.ui.theme.bouncyClickable
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 
 /**
  * Color data models for pickers
@@ -525,17 +527,25 @@ fun ThemeCustomizationSection(
     var showExportSuccessDialog by remember { mutableStateOf(false) }
     var exportedThemeFilePath by remember { mutableStateOf<String?>(null) }
 
+    val exportScope = rememberCoroutineScope()
+    fun exportTheme() {
+        val stateToExport = customState
+        exportScope.launch {
+            val result = ThemeExportManager.exportCustomTheme(context, stateToExport)
+            result.onSuccess { path ->
+                exportedThemeFilePath = path
+                showExportSuccessDialog = true
+                Toast.makeText(context, "Theme exported to $path", Toast.LENGTH_LONG).show()
+            }.onFailure { e ->
+                Toast.makeText(context, "Export error: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     val storagePermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { _ ->
-        val result = ThemeExportManager.exportCustomTheme(context, customState)
-        result.onSuccess { path ->
-            exportedThemeFilePath = path
-            showExportSuccessDialog = true
-            Toast.makeText(context, "Theme exported to $path", Toast.LENGTH_LONG).show()
-        }.onFailure { e ->
-            Toast.makeText(context, "Export error: ${e.message}", Toast.LENGTH_SHORT).show()
-        }
+        exportTheme()
     }
 
     Column(modifier = modifier.fillMaxWidth()) {
@@ -685,14 +695,7 @@ fun ThemeCustomizationSection(
                             ) {
                                 storagePermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
                             } else {
-                                val result = ThemeExportManager.exportCustomTheme(context, customState)
-                                result.onSuccess { path ->
-                                    exportedThemeFilePath = path
-                                    showExportSuccessDialog = true
-                                    Toast.makeText(context, "Theme exported to $path", Toast.LENGTH_LONG).show()
-                                }.onFailure { e ->
-                                    Toast.makeText(context, "Export error: ${e.message}", Toast.LENGTH_SHORT).show()
-                                }
+                                exportTheme()
                             }
                         }
                         .padding(horizontal = 18.dp, vertical = 16.dp)

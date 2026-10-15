@@ -42,7 +42,7 @@ interface ListeningEventDao {
     suspend fun insertListeningEvent(event: ListeningEventEntity): Long
 
     // Actual playback rows are updated in place: milestones cannot inflate history counts.
-    @Query("SELECT * FROM listening_events WHERE eventType = 'ACTUAL_PLAY' ORDER BY timestamp DESC LIMIT 5000")
+    @Query("SELECT * FROM listening_events WHERE eventType = 'ACTUAL_PLAY' ORDER BY timestamp DESC LIMIT 250")
     fun observeActualPlays(): Flow<List<ListeningEventEntity>>
 
     @Query("SELECT * FROM listening_events WHERE eventType = 'ACTUAL_PLAY' ORDER BY timestamp DESC LIMIT 5000")
@@ -51,8 +51,12 @@ interface ListeningEventDao {
     @Query("SELECT trackId FROM listening_events WHERE eventType = 'ACTUAL_PLAY' AND playedDurationMs > 0 GROUP BY trackId ORDER BY MAX(timestamp) DESC LIMIT 20")
     suspend fun getRecentActualTrackIds(): List<String>
 
-    @Query("SELECT id, trackId, timestamp, playedDurationMs, trackDurationMs, completionRatio, completed, skipped, liked, artistId || '|' || artistName || '|' || album || '|' || genre || '|' || language || '|' || sessionId || '|' || source AS metadata FROM listening_events WHERE eventType = 'ACTUAL_PLAY' ORDER BY timestamp DESC LIMIT 5000")
+    @Query("SELECT id, trackId, timestamp, playedDurationMs, trackDurationMs, completionRatio, completed, skipped, liked, artistId || '|' || artistName || '|' || album || '|' || genre || '|' || language || '|' || sessionId || '|' || source AS metadata FROM listening_events WHERE eventType = 'ACTUAL_PLAY' ORDER BY timestamp DESC LIMIT 250")
     fun observeActualPlayStamps(): Flow<List<ActualPlayStamp>>
+
+    // A scalar invalidation signal preserves older history when rows are deleted or restored.
+    @Query("SELECT COUNT(*) FROM listening_events WHERE eventType = 'ACTUAL_PLAY'")
+    fun observeActualPlayCount(): Flow<Int>
 
     @Query("SELECT * FROM listening_events WHERE id IN (:ids)")
     suspend fun getEventsByIds(ids: List<Long>): List<ListeningEventEntity>

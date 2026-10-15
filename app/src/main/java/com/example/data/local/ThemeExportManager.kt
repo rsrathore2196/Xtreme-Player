@@ -8,6 +8,9 @@ import android.provider.MediaStore
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -23,8 +26,8 @@ object ThemeExportManager {
     private const val TAG = "ThemeExportManager"
     const val THEME_FILE_NAME = "customtheme.json"
 
-    fun exportCustomTheme(context: Context, state: CustomThemeState): Result<String> {
-        return try {
+    suspend fun exportCustomTheme(context: Context, state: CustomThemeState): Result<String> = withContext(Dispatchers.IO) {
+        try {
             val json = JSONObject().apply {
                 put("formatVersion", 1)
                 put("appName", "Xtreme Player")
@@ -106,10 +109,17 @@ object ThemeExportManager {
                 }
             }
 
-            // Also persist locally in app preferences
-            ThemePreferences.saveCustomThemeState(context, state)
+            // Keep the UI-owned theme current if the user edits it during the file export.
+            // SharedPreferences.apply only updates the small in-memory UI preference snapshot here.
+            withContext(Dispatchers.Main.immediate) {
+                if (ThemePreferences.getCustomThemeState(context) == state) {
+                    ThemePreferences.saveCustomThemeState(context, state)
+                }
+            }
 
             Result.success(savedPath)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Failed to export custom theme: ${e.message}", e)
             Result.failure(e)

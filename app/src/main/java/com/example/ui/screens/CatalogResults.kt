@@ -58,7 +58,7 @@ internal fun LazyListScope.catalogSearchResults(
     onOpen: (CatalogDestination) -> Unit, onMore: () -> Unit, onRetry: () -> Unit
 ) {
     val result = state.page
-    val topKeys = mutableSetOf<String>()
+    val display = state.display
     fun song(key: String, track: MusicTrack) {
         item(key, contentType = "track") {
             TrackListItem(track = track, isPlaying = track.id == playingId && isPlaying,
@@ -78,18 +78,13 @@ internal fun LazyListScope.catalogSearchResults(
         }
     }
     if (state.type == "All") {
-        data class Top(val key: String, val score: Int, val track: MusicTrack? = null, val destination: CatalogDestination? = null)
-        val top = (result.tracks.map { Top("song:${it.id}", CatalogNames.score(state.query, it.title, listOf(it.artist)), track = it) } +
-            result.albums.map { Top("album:${it.id}", CatalogNames.score(state.query, it.title, it.artists.map { a -> a.name }), destination = CatalogDestination.Album(it)) } +
-            result.artists.map { Top("artist:${it.id}", CatalogNames.score(state.query, it.name, it.aliases), destination = CatalogDestination.Artist(it)) })
-            .filter { it.score > 0 }.sortedByDescending { it.score }.take(3)
+        val top = display.top
         if (top.isNotEmpty()) item("top_header") { CatalogSectionTitle("Top Results") }
-        topKeys.addAll(top.map { it.key })
         top.forEach { entry -> entry.track?.let { song("top:${entry.key}", it) } ?: entry.destination?.let { entity("top:${entry.key}", it) } }
     }
-    val songs = result.tracks.filterNot { "song:${it.id}" in topKeys }.let { if (state.type == "All") it.take(5) else it }
-    val albums = result.albums.filterNot { "album:${it.id}" in topKeys }.let { if (state.type == "All") it.take(5) else it }
-    val artists = result.artists.filterNot { "artist:${it.id}" in topKeys }.let { if (state.type == "All") it.take(5) else it }
+    val songs = display.songs
+    val albums = display.albums
+    val artists = display.artists
     if (songs.isNotEmpty()) {
         item("songs_header") { CatalogSectionTitle("Songs") }
         songs.forEach { song("song:${it.id}", it) }

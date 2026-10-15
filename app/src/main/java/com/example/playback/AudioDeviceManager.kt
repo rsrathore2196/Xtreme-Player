@@ -12,6 +12,17 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import androidx.compose.runtime.Immutable
+import android.os.Handler
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.android.asCoroutineDispatcher
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.atomic.AtomicInteger
 
 @Immutable
 data class SoundOutputDevice(
@@ -29,6 +40,9 @@ data class SoundOutputDevice(
 
 object AudioDeviceManager {
     private const val TAG = "AudioDeviceManager"
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val refreshGeneration = AtomicInteger()
+    private val routingMutex = Mutex()
 
     private val _availableDevices = MutableStateFlow<List<SoundOutputDevice>>(emptyList())
     val availableDevices: StateFlow<List<SoundOutputDevice>> = _availableDevices.asStateFlow()
@@ -36,7 +50,7 @@ object AudioDeviceManager {
     private val _selectedDeviceId = MutableStateFlow<Int>(-1)
     val selectedDeviceId: StateFlow<Int> = _selectedDeviceId.asStateFlow()
 
-    private var audioManager: AudioManager? = null
+    @Volatile private var audioManager: AudioManager? = null
     private var isInitialized = false
 
     fun init(context: Context) {
@@ -65,9 +79,15 @@ object AudioDeviceManager {
     }
 
     fun refreshDevices(context: Context) {
+        val generation = refreshGeneration.incrementAndGet()
+        val app = context.applicationContext
+        scope.launch { refreshDevicesOnIo(app, generation) }
+    }
+
+    private fun refreshDevicesOnIo(context: Context, generation: Int) {
         val am = audioManager ?: (context.applicationContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager)
         if (am == null) {
-            _availableDevices.value = listOf(getFallbackSpeakerDevice())
+            if (generation == refreshGeneration.get()) _availableDevices.value = listOf(getFallbackSpeakerDevice())
             return
         }
 
@@ -122,6 +142,7 @@ object AudioDeviceManager {
             }
 
             // Resolve selection: if nothing selected (-1 or not in list), mark speaker or first device
+            if (generation != refreshGeneration.get()) return
             if (list.none { it.isSelected }) {
                 val defaultDev = list.find { it.isBluetooth } ?: list.find { it.isBuiltInSpeaker } ?: list.first()
                 val resolved = list.map { it.copy(isSelected = it.id == defaultDev.id) }
@@ -131,11 +152,18 @@ object AudioDeviceManager {
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error refreshing audio devices: ${e.message}", e)
-            _availableDevices.value = listOf(getFallbackSpeakerDevice())
+            if (generation == refreshGeneration.get()) _availableDevices.value = listOf(getFallbackSpeakerDevice())
         }
     }
 
     fun selectDevice(context: Context, deviceId: Int, player: Player? = null) {
+        val app = context.applicationContext
+        scope.launch { routeDevice(app, deviceId, player) }
+    }
+
+    internal suspend fun routeDevice(context: Context, deviceId: Int, player: Player? = null) = withContext(Dispatchers.IO) {
+      routingMutex.withLock {
+        refreshGeneration.incrementAndGet()
         _selectedDeviceId.value = deviceId
         val am = audioManager ?: (context.applicationContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager)
         val devices = am?.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
@@ -146,13 +174,11 @@ object AudioDeviceManager {
         // 1. Route directly on ExoPlayer if provided
         try {
             if (player is ExoPlayer) {
-                if (targetDevice != null && !isFallbackId(deviceId)) {
-                    player.setPreferredAudioDevice(targetDevice)
-                } else {
-                    player.setPreferredAudioDevice(null)
+                withContext(Handler(player.applicationLooper).asCoroutineDispatcher()) {
+                    player.setPreferredAudioDevice(targetDevice?.takeUnless { isFallbackId(deviceId) })
                 }
             }
-        } catch (e: Exception) {
+        } catch (e: CancellationException) { throw e } catch (e: Exception) {
             Log.w(TAG, "Failed setting preferred audio device on player: ${e.message}")
         }
 
@@ -173,6 +199,7 @@ object AudioDeviceManager {
         _availableDevices.value = _availableDevices.value.map {
             it.copy(isSelected = (it.id == deviceId))
         }
+      }
     }
 
     private fun isFallbackId(id: Int): Boolean = id == -100

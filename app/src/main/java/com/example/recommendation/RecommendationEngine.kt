@@ -108,7 +108,6 @@ class RecommendationEngine {
      * @param excludedIds IDs of tracks currently queued or recently played to prevent repetition.
      * @param prioritizeArtistAndGenre When true, weights singer and genre matching higher.
      */
-    @Synchronized
     fun recommendNextTrack(
         currentTrack: MusicTrack,
         candidatePool: List<MusicTrack>,
@@ -134,7 +133,7 @@ class RecommendationEngine {
         }
 
         // Fallback: choose first unplayed track in candidate pool that is strictly NOT the same song name or variant, and not in session history
-        val sessionList = sessionBuffer.toList()
+        val sessionList = getSessionTracks()
         return candidatePool.firstOrNull { cand ->
             cand.id != currentTrack.id &&
             !excludedIds.contains(cand.id) &&
@@ -168,7 +167,6 @@ class RecommendationEngine {
      *
      * Prints candidate scores and verifies mood matching in Logcat before adding to queue.
      */
-    @Synchronized
     fun evaluateAndScoreCandidates(
         currentTrack: MusicTrack,
         candidatePool: List<MusicTrack>,
@@ -183,7 +181,7 @@ class RecommendationEngine {
 
         val currentMood = MoodVibeAnalyzer.analyzeMood(currentTrack)
         val currentFeatures = AcousticFeatures.forTrack(currentTrack)
-        val sessionList = sessionBuffer.toList()
+        val sessionList = getSessionTracks()
         val sessionArtistWeights = sessionList.groupingBy { it.artist.lowercase() }.eachCount()
 
         val scoredList = candidatePool.map { candidate ->
@@ -319,7 +317,6 @@ class RecommendationEngine {
      * - Followed immediately by: Same singer/artist's other songs
      * - Followed by: Same genre/type songs matching the listener's taste profile
      */
-    @Synchronized
     fun buildSearchPlaybackQueue(
         selectedTrack: MusicTrack,
         candidatePool: List<MusicTrack>,
@@ -421,7 +418,6 @@ class RecommendationEngine {
     /**
      * Generates a continuous recommended batch (Infinity Queue / Autoplay stream) of tracks.
      */
-    @Synchronized
     fun recommendInfinityQueue(
         currentTrack: MusicTrack,
         candidatePool: List<MusicTrack>,

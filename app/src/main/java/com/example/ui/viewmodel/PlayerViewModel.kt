@@ -346,7 +346,7 @@ class PlayerViewModel(
             val recent = com.example.data.local.RecentSearchPreferences.getRecentSearches(application)
             _searchState.update { it.copy(recentSearches = recent) }
         }
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.Default) {
             com.example.updater.AppUpdateManager.updateStatus.map { status ->
                 status is com.example.updater.UpdateStatus.Checking ||
                     status is com.example.updater.UpdateStatus.Downloading &&
@@ -358,7 +358,7 @@ class PlayerViewModel(
                 }
             }
         }
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.Default) {
             playbackManager.uiState.map { it.isLoading }.distinctUntilChanged().collectLatest { loading ->
                 if (loading) {
                     val work = com.example.performance.BackgroundWorkCoordinator.busy()
@@ -456,24 +456,25 @@ class PlayerViewModel(
     }
 
     fun renamePlaylist(playlistId: Long, newTitle: String) {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.Default) {
             withContext(Dispatchers.IO) { repository.renamePlaylist(playlistId, newTitle) }
             val current = _selectedPlaylistTracks.value
             if (current != null && current.playlist.playlistId == playlistId) {
-                _selectedPlaylistTracks.value = current.copy(
+                val renamed = current.copy(
                     playlist = current.playlist.copy(title = newTitle.trim())
-                )
+                ).also { it.musicTracks }
+                _selectedPlaylistTracks.update { if (it === current) renamed else it }
             }
         }
     }
 
     fun reloadAfterRestore() {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             _userProfile.value = com.example.data.local.UserProfilePreferences.getUserProfile(application)
             loadCatalog()
             val currentId = _selectedPlaylistTracks.value?.playlist?.playlistId
             if (currentId != null) {
-                openPlaylist(currentId)
+                withContext(Dispatchers.Main.immediate) { openPlaylist(currentId) }
             }
         }
     }
@@ -669,22 +670,24 @@ class PlayerViewModel(
     }
 
     fun addTrackToPlaylist(playlistId: Long, track: MusicTrack) {
-        viewModelScope.launch {
-            withContext(Dispatchers.IO) { repository.addTrackToPlaylist(playlistId, track) }
+        viewModelScope.launch(Dispatchers.IO) {
+            repository.addTrackToPlaylist(playlistId, track)
         }
     }
 
     fun removeTrackFromPlaylist(playlistId: Long, trackId: String) {
-        viewModelScope.launch {
-            withContext(Dispatchers.IO) { repository.removeTrackFromPlaylist(playlistId, trackId) }
+        viewModelScope.launch(Dispatchers.IO) {
+            repository.removeTrackFromPlaylist(playlistId, trackId)
         }
     }
 
     fun openPlaylist(playlistId: Long) {
         playlistTracksJob?.cancel()
-        playlistTracksJob = viewModelScope.launch {
+        playlistTracksJob = viewModelScope.launch(Dispatchers.Default) {
             repository.getPlaylistWithTracks(playlistId).collect {
-                _selectedPlaylistTracks.value = it
+                // Publication belongs to the selected-page state machine; all row preparation
+                // has already completed on the repository's Default dispatcher.
+                withContext(Dispatchers.Main.immediate) { _selectedPlaylistTracks.value = it }
             }
         }
     }
@@ -823,7 +826,7 @@ class PlayerViewModel(
         }
 
         importJob?.cancel()
-        importJob = viewModelScope.launch {
+        importJob = viewModelScope.launch(Dispatchers.Default) {
             val work = com.example.performance.BackgroundWorkCoordinator.busy()
             try {
                 val platform = currentState.selectedPlatform
@@ -899,7 +902,7 @@ class PlayerViewModel(
     fun saveImportedPlaylist(onSaved: ((Long) -> Unit)? = null) {
         val summary = _importState.value.lastSummary ?: return
 
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.Default) {
             val work = com.example.performance.BackgroundWorkCoordinator.busy()
             _importState.update { it.copy(step = PlaylistImportStep.Saving(summary.playlistTitle)) }
             try {
@@ -931,7 +934,7 @@ class PlayerViewModel(
                         )
                     )
                 }
-                onSaved?.invoke(playlistId)
+                withContext(Dispatchers.Main.immediate) { onSaved?.invoke(playlistId) }
             } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
                 _importState.update {
                     it.copy(step = PlaylistImportStep.Error("Error saving playlist to library: ${e.message}"))

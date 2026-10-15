@@ -9,16 +9,45 @@ import kotlinx.coroutines.flow.*
 data class CatalogSearchState(
     val query: String = "", val type: String = "All", val page: CatalogPage = CatalogPage(),
     val loading: Boolean = false, val loadingMore: Boolean = false, val error: String? = null,
-    internal val requestId: Int = 0
+    internal val requestId: Int = 0,
+    val display: CatalogSearchDisplay = CatalogSearchDisplay()
 )
+data class CatalogTopResult(val key: String, val score: Int,
+    val track: MusicTrack? = null, val destination: CatalogDestination? = null)
+data class CatalogSearchDisplay(val top: List<CatalogTopResult> = emptyList(),
+    val songs: List<MusicTrack> = emptyList(), val albums: List<CatalogAlbum> = emptyList(),
+    val artists: List<CatalogArtist> = emptyList())
+
+/** Calculated only when search data changes, on the browser's Default dispatcher. */
+private fun CatalogSearchState.withPage(page: CatalogPage): CatalogSearchState {
+    val top = if (type != "All") emptyList() else
+        (page.tracks.map { CatalogTopResult("song:${it.id}", CatalogNames.score(query, it.title, listOf(it.artist)), track = it) } +
+            page.albums.map { CatalogTopResult("album:${it.id}", CatalogNames.score(query, it.title, it.artists.map { a -> a.name }), destination = CatalogDestination.Album(it)) } +
+            page.artists.map { CatalogTopResult("artist:${it.id}", CatalogNames.score(query, it.name, it.aliases), destination = CatalogDestination.Artist(it)) })
+            .filter { it.score > 0 }.sortedByDescending { it.score }.take(3)
+    val topKeys = top.mapTo(mutableSetOf()) { it.key }
+    val songs = page.tracks.filterNot { "song:${it.id}" in topKeys }.let { if (type == "All") it.take(5) else it }
+    val albums = page.albums.filterNot { "album:${it.id}" in topKeys }.let { if (type == "All") it.take(5) else it }
+    val artists = page.artists.filterNot { "artist:${it.id}" in topKeys }.let { if (type == "All") it.take(5) else it }
+    return copy(page = page, display = CatalogSearchDisplay(top, songs, albums, artists))
+}
 data class CatalogDetailState(
     val destination: CatalogDestination, val tracks: List<MusicTrack> = emptyList(),
     val nextPage: Int? = null, val pending: List<MusicTrack> = emptyList(),
     val loading: Boolean = false, val error: String? = null, val warning: String? = null,
     val scrollIndex: Int = 0, val scrollOffset: Int = 0, val initialized: Boolean = false,
     val artistContinuation: ArtistCatalogContinuation? = null,
-    internal val requestId: Int = 0
+    internal val requestId: Int = 0,
+    val playlistContent: com.example.data.local.PlaylistWithTracks? = null
 )
+private fun CatalogDetailState.withTracks(tracks: List<MusicTrack>, pending: List<MusicTrack> = this.pending): CatalogDetailState {
+    val playlist = (destination as? CatalogDestination.Playlist)?.playlist
+    val content = playlist?.let { com.example.data.local.PlaylistWithTracks(
+        com.example.data.local.PlaylistEntity(playlistId = it.id.toLongOrNull() ?: 0,
+            title = it.title, coverUrl = it.image),
+        tracks.map { track -> com.example.data.local.TrackEntity.fromMusicTrack(track) }).also { it.musicTracks } }
+    return copy(tracks = tracks, pending = pending, playlistContent = content)
+}
 
 /** Owned by PlayerViewModel's scope; browsing never changes playback state. */
 class CatalogBrowserState(private val repository: CatalogRepository, private val scope: CoroutineScope,
@@ -45,9 +74,9 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
         favoritesJob = dataScope.launch {
             ensureActive()
             if (favoriteIds !== ids) return@launch
-            _search.update { it.copy(page = it.page.copy(tracks = liked(it.page.tracks, ids))) }
+            _search.update { it.withPage(it.page.copy(tracks = liked(it.page.tracks, ids))) }
             val refreshed = retained.mapValues { (_, state) ->
-                state.copy(tracks = liked(state.tracks, ids), pending = liked(state.pending, ids))
+                state.withTracks(liked(state.tracks, ids), liked(state.pending, ids))
             }
             withContext(Dispatchers.Main.immediate) {
                 if (favoriteIds === ids) refreshed.forEach { (key, state) ->
@@ -58,7 +87,7 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
             // A cached destination may have opened while its cache was being refreshed.
             ensureActive()
             if (favoriteIds === ids) _detail.update {
-                it?.copy(tracks = liked(it.tracks, ids), pending = liked(it.pending, ids))
+                it?.withTracks(liked(it.tracks, ids), liked(it.pending, ids))
             }
         }
     }
@@ -95,7 +124,7 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
                 val result = repository.search(query.trim(), type, quality = quality)
                 ensureActive()
                 _search.update { if (it.requestId != generation) it else
-                    it.copy(page = result.copy(tracks = liked(result.tracks)), loading = false) }
+                    it.withPage(result.copy(tracks = liked(result.tracks))).copy(loading = false) }
             } catch (e: CancellationException) { throw e }
             catch (_: Exception) { _search.update { if (it.requestId != generation) it else
                 it.copy(loading = false, error = "Couldn't load results. Tap to retry.") } }
@@ -128,8 +157,8 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
                     result.artists.isNotEmpty() && result.artists.all { artist -> state.page.artists.any { it.id == artist.id } } ||
                     result.playlists.isNotEmpty() && result.playlists.all { playlist -> state.page.playlists.any { it.id == playlist.id } }
                 ensureActive()
-                _search.update { if (it.requestId != generation) it else it.copy(page = merged.copy(nextPage =
-                    if (repeated && result.trackSearchContinuation == null) null else merged.nextPage), loadingMore = false) }
+                _search.update { if (it.requestId != generation) it else it.withPage(merged.copy(nextPage =
+                    if (repeated && result.trackSearchContinuation == null) null else merged.nextPage)).copy(loadingMore = false) }
             } catch (e: CancellationException) { throw e }
             catch (_: Exception) { _search.update { if (it.requestId != generation) it else
                 it.copy(loadingMore = false, error = "Couldn't load more. Tap to retry.") } }
@@ -186,10 +215,10 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
                 val repeated = page.tracks.isNotEmpty() && fresh.isEmpty() && (page.nextPage ?: 0) >= 0 &&
                     page.artistContinuation == null
                 ensureActive()
-                _detail.update { current -> if (current?.requestId != generation) current else current.copy(destination = destination, tracks = liked(state.tracks + added),
-                    nextPage = if (repeated) null else page.nextPage, pending = liked(pending), loading = false,
+                _detail.update { current -> if (current?.requestId != generation) current else current.copy(destination = destination,
+                    nextPage = if (repeated) null else page.nextPage, loading = false,
                     initialized = true, error = null, warning = page.warning,
-                    artistContinuation = page.artistContinuation) }
+                    artistContinuation = page.artistContinuation).withTracks(liked(state.tracks + added), liked(pending)) }
                 // Store both name-only Home routes and provider-ID routes against the same loaded data.
                 withContext(Dispatchers.Main.immediate) {
                     if (generation == _detail.value?.requestId) {

@@ -44,11 +44,11 @@ fun CatalogDetailScreen(state: CatalogDetailState, player: PlayerUiState, onBack
     BackHandler(enabled = handleBack, onBack = onBack)
     if (state.destination is CatalogDestination.Playlist) {
         val playlist = state.destination.playlist
-        val content = remember(playlist, state.tracks) {
+        val content = state.playlistContent ?: remember(playlist) {
             com.example.data.local.PlaylistWithTracks(
                 com.example.data.local.PlaylistEntity(playlistId = playlist.id.toLongOrNull() ?: 0,
                     title = playlist.title, coverUrl = playlist.image),
-                state.tracks.map { com.example.data.local.TrackEntity.fromMusicTrack(it) })
+                emptyList())
         }
         PlaylistDetailScreen(playlistWithTracks = content, playerUiState = player, onBackClick = onBack,
             onPlayTrack = onPlay, onToggleFavorite = onFavorite, onDeletePlaylist = {}, onRemoveTrack = {},
