@@ -14,6 +14,7 @@ import com.example.data.local.ListeningEventEntity
 import com.example.data.model.CountryData
 import com.example.data.model.MusicTrack
 import com.example.recommendation.HomeRecommendationPolicy
+import com.example.recommendation.DiscoveryRequestCoordinator
 import com.example.recommendation.UserTasteProfile
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.update
@@ -608,6 +609,7 @@ class HomeViewModel(
     private var refreshWaitingForIdle = false
     private var pendingExplicitRefresh = false
     private var activeRefreshIsExplicit = false
+    private var activeRefreshPriority: DiscoveryRequestCoordinator.HomeRefresh? = null
     private var refreshGeneration = 0L
     private var lastDiscoveryRefresh = initialCards?.refreshedAt ?: 0L
     private var lastDiscoveryAttempt = 0L
@@ -812,8 +814,10 @@ class HomeViewModel(
                     if (isExplicitPull) {
                         _isRefreshing.value = true
                         _refreshErrorMessage.value = null
-                        // Coalesce pulls into one forced pass after a silent request, never parallel requests.
-                        if (!activeRefreshIsExplicit) pendingExplicitRefresh = true
+                        // Promote this pass in place: a pull must not wait for a silent
+                        // refresh and then repeat all of its network requests.
+                        activeRefreshIsExplicit = true
+                        activeRefreshPriority?.promote()
                     }
                     return@launch
                 }
@@ -822,26 +826,29 @@ class HomeViewModel(
             pendingSilentRefresh = false
             val initialExplicit = isExplicitPull || pendingExplicitRefresh || _isRefreshing.value
             pendingExplicitRefresh = false
+            val priority = DiscoveryRequestCoordinator.HomeRefresh(initialExplicit)
+            activeRefreshPriority = priority
+            activeRefreshIsExplicit = initialExplicit
+            _isRefreshing.value = initialExplicit
+            if (initialExplicit) _refreshErrorMessage.value = null
             homeRefreshJob = dataScope.launch {
-                var explicit = initialExplicit
                 try {
-                    restored.await()
-                    if (!initialExplicit && !pendingExplicitRefresh) {
-                        refreshWaitingForIdle = true
-                        try { awaitHomeIdle() }
-                        finally { if (generation == refreshGeneration) refreshWaitingForIdle = false }
-                    }
-                    while (true) {
+                    withContext(priority) {
+                        restored.await()
+                        if (!activeRefreshIsExplicit) {
+                            refreshWaitingForIdle = true
+                            try { awaitHomeIdle() }
+                            finally { if (generation == refreshGeneration) refreshWaitingForIdle = false }
+                        }
                         lastDiscoveryAttempt = System.currentTimeMillis()
                         lastAttemptProfile = profileKey()
-                        activeRefreshIsExplicit = explicit
                         refreshCandidatesPending.value = true
-                        _isRefreshing.value = explicit
+                        _isRefreshing.value = activeRefreshIsExplicit
                         _refreshErrorMessage.value = null
                         _ytmCard.update { it.copy(isLoading = it.tracks.isEmpty(), isError = false, errorMessage = "") }
                         _eraCard.update { it.copy(isLoading = it.tracks.isEmpty(), isError = false, errorMessage = "") }
                         try {
-                            refreshSuggestions(explicit)
+                            refreshSuggestions(activeRefreshIsExplicit)
                         } catch (e: CancellationException) { throw e }
                         catch (_: Exception) {
                             _ytmCard.update { it.copy(isLoading = false, isError = true,
@@ -849,9 +856,13 @@ class HomeViewModel(
                             _eraCard.update { it.copy(isLoading = false, isError = true,
                                 errorMessage = "Era hits are temporarily unavailable.") }
                         }
-                        if (!pendingExplicitRefresh) break
-                        pendingExplicitRefresh = false
-                        explicit = true
+                        refreshCandidatesPending.value = false
+                        // Finish the visible refresh only after the coherent shelf set
+                        // is ready; do not add the normal idle/debounce delay to a pull.
+                        if (activeRefreshIsExplicit) {
+                            manualRenderGeneration = candidates.value.generation
+                            renderRecommendations()
+                        }
                     }
                 } finally {
                     // A canceled request must not hide the spinner or clear ownership of its replacement.
@@ -860,6 +871,7 @@ class HomeViewModel(
                         _ytmCard.update { it.copy(isLoading = false) }
                         _eraCard.update { it.copy(isLoading = false) }
                         activeRefreshIsExplicit = false
+                        activeRefreshPriority = null
                         refreshCandidatesPending.value = false
                         refreshWaitingForIdle = false
                         homeRefreshJob = null
@@ -902,8 +914,12 @@ class HomeViewModel(
                 if (!fetchChart) return@async null
                 lastRegionalAttempt = System.currentTimeMillis()
                 lastRegionalAttemptTitle = title
-                try { repository.getRegionalTrending(country, profile.countryCode,
-                    limit = HomeRecommendationPolicy.MAX_SHELF_TRACKS, forceRefresh = force || legacyChart) }
+                try {
+                    val refresh = currentCoroutineContext()[DiscoveryRequestCoordinator.HomeRefresh]
+                    suspend fun fetchChart() = repository.getRegionalTrending(country, profile.countryCode,
+                        limit = HomeRecommendationPolicy.MAX_SHELF_TRACKS, forceRefresh = force || legacyChart)
+                    if (refresh != null) refresh.withBudget(14_000L) { fetchChart() }.orEmpty() else fetchChart()
+                }
                 catch (e: CancellationException) { throw e } catch (_: Exception) { emptyList() }
             }
             Triple(quickJob.await(), eraJob.await(), chartJob.await())
@@ -920,7 +936,7 @@ class HomeViewModel(
         if (!chart.isNullOrEmpty()) lastRegionalRefresh = repository.getRegionalTrendingFetchedAt(country)
         if (quick.isNotEmpty() || era.isNotEmpty() || !chart.isNullOrEmpty() || !sameCountry) {
             if (quick.isNotEmpty() || era.isNotEmpty()) lastDiscoveryRefresh = System.currentTimeMillis()
-            if (force) manualRenderGeneration = candidates.value.generation + 1L
+            if (force || activeRefreshIsExplicit) manualRenderGeneration = candidates.value.generation + 1L
             candidates.update { old -> old.copy(quick = quick.ifEmpty { old.quick },
                 era = era.ifEmpty { old.era }, chart = chart?.takeIf { it.isNotEmpty() }
                     ?: old.chart.takeIf { sameCountry }.orEmpty(),

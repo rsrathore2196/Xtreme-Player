@@ -3,13 +3,39 @@ package com.example.recommendation
 import com.example.data.model.MusicTrack
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.selects.select
 import java.text.Normalizer
 import java.util.Locale
+import kotlin.coroutines.AbstractCoroutineContextElement
+import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.EmptyCoroutineContext
 
-/** Shared discovery work, with one optional slot and two slots reserved for radio. */
+/** Shared discovery work: one optional slot, or two during an explicit Home refresh. */
 internal object DiscoveryRequestCoordinator {
+    /** A pull can promote its existing refresh without launching another pass. */
+    class HomeRefresh(requested: Boolean) : AbstractCoroutineContextElement(Key) {
+        companion object Key : CoroutineContext.Key<HomeRefresh>
+        val requested = MutableStateFlow(requested)
+        fun promote() { requested.value = true }
+
+        /** Start the deadline on a pull, including promotion of a deferred silent pass. */
+        suspend fun <T> withBudget(milliseconds: Long, block: suspend () -> T): T? = coroutineScope {
+            val work = async { block() }
+            val deadline = async { requested.first { it }; delay(milliseconds) }
+            try {
+                select {
+                    work.onAwait { it }
+                    deadline.onAwait { null }
+                }
+            } finally {
+                work.cancel()
+                deadline.cancel()
+            }
+        }
+    }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private class Flight(val urgent: MutableStateFlow<Boolean>, val result: Deferred<List<MusicTrack>>, var readers: Int = 0)
+    private class Flight(val urgent: MutableStateFlow<Boolean>, val requested: MutableStateFlow<Boolean>,
+        val result: Deferred<List<MusicTrack>>, var readers: Int = 0)
     private val flights = mutableMapOf<String, Flight>()
     private val lock = Any()
     private val changed = MutableStateFlow(0L)
@@ -24,11 +50,13 @@ internal object DiscoveryRequestCoordinator {
 
     fun homeScrolling(active: Boolean) { scrolling.value = active }
 
-    suspend fun <T> network(essential: Boolean = false, block: suspend () -> T): T =
-        permit(MutableStateFlow(essential)) {
+    suspend fun <T> network(essential: Boolean = false, block: suspend () -> T): T {
+        val requested = currentCoroutineContext()[HomeRefresh]?.requested ?: MutableStateFlow(false)
+        return permit(MutableStateFlow(essential), requested) {
             withTimeoutOrNull(12_000L) { Result.success(block()) }?.getOrThrow()
                 ?: throw java.io.IOException("Discovery request timed out")
         }
+    }
 
     suspend fun <T> playback(block: suspend () -> T): T {
         resolving.update { it + 1 }
@@ -37,16 +65,31 @@ internal object DiscoveryRequestCoordinator {
 
     suspend fun shared(key: String, essential: Boolean, network: Boolean = true,
         block: suspend () -> List<MusicTrack>): List<MusicTrack> {
+        val priority = currentCoroutineContext()[HomeRefresh]
         val flight = synchronized(flights) {
             flights.getOrPut(key) {
                 val urgent = MutableStateFlow(essential)
-                Flight(urgent, scope.async(start = CoroutineStart.LAZY) {
-                    if (network) permit(urgent) { withTimeoutOrNull(12_000L) { block() }.orEmpty() }
+                val requested = MutableStateFlow(priority?.requested?.value == true)
+                Flight(urgent, requested, scope.async(priority ?: EmptyCoroutineContext, start = CoroutineStart.LAZY) {
+                    if (network) permit(urgent, requested) { withTimeoutOrNull(12_000L) { block() }.orEmpty() }
                     else block()
                 })
-            }.also { it.readers++; if (essential) it.urgent.value = true }
+            }.also {
+                it.readers++
+                if (essential) it.urgent.value = true
+                if (priority?.requested?.value == true) it.requested.value = true
+            }
         }
-        try { flight.result.start(); return flight.result.await() }
+        try {
+            return coroutineScope {
+                val promotion = priority?.let { launch(start = CoroutineStart.UNDISPATCHED) {
+                    it.requested.first { requested -> requested }
+                    flight.requested.value = true
+                } }
+                try { flight.result.start(); flight.result.await() }
+                finally { promotion?.cancel() }
+            }
+        }
         finally {
             synchronized(flights) {
                 if (--flight.readers == 0) {
@@ -57,13 +100,18 @@ internal object DiscoveryRequestCoordinator {
         }
     }
 
-    private suspend fun <T> permit(urgent: StateFlow<Boolean>, block: suspend () -> T): T {
+    private suspend fun <T> permit(urgent: StateFlow<Boolean>, requested: StateFlow<Boolean>, block: suspend () -> T): T {
         var acquired = false
         var optional = false
         try {
-            combine(changed, urgent, scrolling, resolving) { _, _, _, _ -> Unit }.first {
+            combine(changed, urgent, requested, scrolling, resolving) { _, _, _, _, _ -> Unit }.first {
                 synchronized(lock) {
-                    if (running < 3 && (urgent.value || optionalRunning == 0 && !scrolling.value && resolving.value == 0)) {
+                    // Explicit refresh can use two slots and start during the pull's
+                    // settling scroll. A third slot remains available to radio;
+                    // selected-track resolution still takes priority over Home.
+                    val homeAllowed = resolving.value == 0 && if (requested.value)
+                        optionalRunning < 2 else optionalRunning == 0 && !scrolling.value
+                    if (running < 3 && (urgent.value || homeAllowed)) {
                         optional = !urgent.value
                         running++
                         if (optional) optionalRunning++

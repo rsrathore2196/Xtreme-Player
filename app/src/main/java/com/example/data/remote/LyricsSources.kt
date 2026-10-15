@@ -7,7 +7,8 @@ import com.example.data.model.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
-import kotlinx.coroutines.selects.select
+import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.firstOrNull
 import okhttp3.*
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
@@ -17,6 +18,8 @@ import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.math.abs
@@ -49,37 +52,54 @@ internal class LyricsSources(private val identity: SongIdentity) {
             Source("KuGou") { kugou() },
             Source("YouTube captions") { captions() }
         )
-        val fallback = listOf(Source("LRCLIB") { lrclib() }, Source("YouTube Music") { youtubeMusic() }, Source("Genius") { genius() })
+        // A quick, verified fallback must not wait for every rich provider to time out.
+        // Two rolling workers retain rich/word priority; the third HTTP slot lets
+        // LRCLIB (then exact-video lyrics) supply usable text while timing upgrades race.
+        val latest = AtomicReference(initial)
         try {
-            withTimeoutOrNull(24_000L) {
-                for ((sources, budget) in listOf(rich to 10_000L, word to 8_000L, fallback to 6_000L)) {
-                    withTimeoutOrNull(budget) {
-                        for (batch in sources.chunked(3)) {
-                            supervisorScope {
-                                val jobs = batch.map { source -> async {
-                                    safely { withTimeoutOrNull(6_000L) { source.fetch() } }
-                                        ?.takeIf { LyricsDocuments.verified(identity, it) }
-                                } }
-                                val pending = jobs.toMutableList()
-                                try {
-                                    while (pending.isNotEmpty()) {
-                                        val (job, candidate) = select {
-                                            pending.forEach { job -> job.onAwait { job to it } }
+            withTimeoutOrNull(18_000L) {
+                channelFlow {
+                    suspend fun publish(source: Source) {
+                        val candidate = safely { withTimeoutOrNull(6_000L) { source.fetch() } }
+                            ?.takeIf { LyricsDocuments.verified(identity, it) }
+                        if (candidate != null) send(candidate)
+                    }
+                    suspend fun prioritized(sources: List<Source>, budget: Long) {
+                        withTimeoutOrNull(budget) {
+                            val next = AtomicInteger()
+                            coroutineScope {
+                                repeat(2) {
+                                    launch {
+                                        while (isActive) {
+                                            val source = sources.getOrNull(next.getAndIncrement()) ?: break
+                                            publish(source)
                                         }
-                                        pending.remove(job)
-                                        if (candidate != null) {
-                                            if (best == null || LyricsDocuments.comparator.compare(candidate, best!!) > 0) best = candidate
-                                            onCandidate(candidate)
-                                        }
-                                        if (best?.let { LyricsDocuments.assessment(it).let { timing -> timing.tier == 3 && timing.complete } } == true) break
                                     }
-                                } finally { jobs.forEach { if (!it.isCompleted) it.cancel() } }
+                                }
                             }
-                            if (best?.let { LyricsDocuments.assessment(it).let { timing -> timing.tier == 3 && timing.complete } } == true) break
                         }
                     }
-                    val timing = best?.let(LyricsDocuments::assessment)
-                    if (timing != null && timing.complete && timing.tier >= 2) break
+                    val fastFallback = launch {
+                        publish(Source("LRCLIB") { lrclib() })
+                        if (videoId != null && latest.get()?.let { LyricsDocuments.quality(it) >= 1 } != true) {
+                            publish(Source("YouTube Music") { youtubeMusic() })
+                        }
+                    }
+                    prioritized(rich, 8_000L)
+                    prioritized(word, 6_000L)
+                    fastFallback.join()
+                    // Plain-text scraping only helps when no timed lyrics were found.
+                    if (latest.get()?.let { LyricsDocuments.quality(it) >= 1 } != true) {
+                        withTimeoutOrNull(4_000L) { publish(Source("Genius") { genius() }) }
+                    }
+                }.firstOrNull { candidate ->
+                    if (LyricsDocuments.meaningfulUpgrade(candidate, best)) {
+                        best = candidate
+                        latest.set(candidate)
+                        onCandidate(candidate)
+                    }
+                    // Stopping collection cancels the producer and all unfinished providers.
+                    best?.let { LyricsDocuments.assessment(it).let { timing -> timing.tier == 3 && timing.complete } } == true
                 }
             }
         } finally { documents.values.forEach { if (!it.isCompleted) it.cancel() } }

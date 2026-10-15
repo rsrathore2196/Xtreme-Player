@@ -26,6 +26,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
@@ -160,8 +163,22 @@ class MusicRepository(
             return@withLock previous.tracks.take(limit).map { it.copy(isLiked = it.id in liked) }
         coroutineScope {
         val queries = discoveryQueries(profile, era)
-        val groups = queries.map { query -> async { discoverySearch(query, force, era) } }.awaitAll()
-        val fresh = HomeRecommendationPolicy.originals(HomeRecommendationPolicy.interleave(groups))
+        val groups = arrayOfNulls<List<MusicTrack>>(queries.size)
+        val searches = queries.mapIndexed { index, query -> launch {
+            groups[index] = discoverySearch(query, force, era)
+        } }
+        try {
+            val refresh = currentCoroutineContext()[com.example.recommendation.DiscoveryRequestCoordinator.HomeRefresh]
+            if (refresh != null) {
+                // One slow query must not hold every refreshed card hostage. Keep
+                // completed groups, and cancel only this refresh's unfinished readers.
+                refresh.withBudget(12_000L) { searches.joinAll() }
+            } else searches.joinAll()
+        } finally {
+            searches.forEach { if (!it.isCompleted) it.cancel() }
+            searches.joinAll()
+        }
+        val fresh = HomeRecommendationPolicy.originals(HomeRecommendationPolicy.interleave(groups.map { it.orEmpty() }))
         if (fresh.isNotEmpty()) {
             val entities = fresh.map { TrackEntity.fromMusicTrack(it).copy(isCached = true, isLiked = it.id in liked) }
             withContext(Dispatchers.IO) { musicDao.mergeTracksMetadata(entities) }

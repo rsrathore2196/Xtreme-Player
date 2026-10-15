@@ -10,6 +10,7 @@ import com.example.data.local.PlaylistEntity
 import com.example.data.local.PlaylistWithTracks
 import com.example.data.model.MusicTrack
 import com.example.data.model.TrackLyrics
+import com.example.data.model.SongIdentity
 import com.example.data.remote.LyricsProvider
 import com.example.data.remote.MusicDataSource
 import com.example.data.repository.MusicRepository
@@ -26,6 +27,7 @@ import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -115,7 +117,10 @@ class PlayerViewModel(
     private val _currentLyrics = MutableStateFlow<TrackLyrics?>(null)
     val currentLyrics: StateFlow<TrackLyrics?> = _currentLyrics.asStateFlow()
     private var lyricsJob: Job? = null
-    private var lastObservedTrackId: String? = null
+    private var lastObservedLyricsIdentity: SongIdentity? = null
+    private val lyricsRequestGeneration = AtomicLong()
+    private var lyricsPrefetchStarted = false
+    @Volatile private var lyricsLookupComplete = false
     private var lyricsVisible = false
 
     private val _catalogTracks = MutableStateFlow<List<MusicTrack>>(emptyList())
@@ -381,19 +386,26 @@ class PlayerViewModel(
 
     private fun observeCurrentTrackForLyrics() {
         viewModelScope.launch {
-            playbackManager.uiState.collect { state ->
+            combine(playbackManager.uiState, com.example.performance.BackgroundWorkCoordinator.uiForeground) { state, foreground ->
+                state to foreground
+            }.collect { (state, foreground) ->
                 val track = state.currentTrack
-                if (track != null) {
-                    if (track.id != lastObservedTrackId) {
-                        lastObservedTrackId = track.id
-                        lyricsJob?.cancel()
-                        _currentLyrics.value = null
-                        if (lyricsVisible) fetchLyricsForTrack(track, forceRefresh = false)
-                    }
-                } else {
-                    lastObservedTrackId = null
+                val identity = track?.let(SongIdentity::from)
+                if (identity != lastObservedLyricsIdentity) {
+                    lastObservedLyricsIdentity = identity
+                    lyricsRequestGeneration.incrementAndGet()
                     lyricsJob?.cancel()
                     _currentLyrics.value = null
+                    lyricsLookupComplete = false
+                    lyricsPrefetchStarted = false
+                    if (track != null && lyricsVisible) fetchLyricsForTrack(track, forceRefresh = false)
+                }
+                // Start only after audio is playing, so lyrics never delay stream resolution.
+                // Opening the panel then joins this job instead of starting the search again.
+                if (track != null && foreground && state.isPlaying && !state.isLoading &&
+                    !lyricsPrefetchStarted && !lyricsLookupComplete && lyricsJob?.isActive != true) {
+                    lyricsPrefetchStarted = true
+                    fetchLyricsForTrack(track, forceRefresh = false)
                 }
             }
         }
@@ -402,8 +414,15 @@ class PlayerViewModel(
     fun setLyricsVisible(visible: Boolean) {
         if (lyricsVisible == visible) return
         lyricsVisible = visible
-        if (visible) playbackManager.uiState.value.currentTrack?.let { fetchLyricsForTrack(it, forceRefresh = false) }
-        else lyricsJob?.cancel()
+        if (visible) {
+            if (lyricsJob?.isActive != true && !lyricsLookupComplete) {
+                playbackManager.uiState.value.currentTrack?.let { fetchLyricsForTrack(it, forceRefresh = false) }
+            }
+        } else if (!playbackManager.uiState.value.isPlaying) {
+            lyricsRequestGeneration.incrementAndGet()
+            lyricsJob?.cancel()
+            lyricsPrefetchStarted = false
+        }
     }
 
     fun retryLyrics() {
@@ -413,31 +432,37 @@ class PlayerViewModel(
 
     private fun fetchLyricsForTrack(track: MusicTrack, forceRefresh: Boolean) {
         lyricsJob?.cancel()
+        val generation = lyricsRequestGeneration.incrementAndGet()
+        val identity = SongIdentity.from(track)
+        lyricsLookupComplete = false
         if (_currentLyrics.value?.trackId != track.id || forceRefresh) _currentLyrics.value = null
-        if (forceRefresh) {
-            LyricsProvider.clearCacheForTrack(track.id)
-        }
         lyricsJob = viewModelScope.launch(Dispatchers.IO) {
+            fun stillSelected(): Boolean = lyricsRequestGeneration.get() == generation &&
+                playbackManager.uiState.value.currentTrack?.let(SongIdentity::from) == identity
             try {
+                if (forceRefresh) LyricsProvider.clearCacheForTrack(track.id)
                 val lyrics = LyricsProvider.getLyricsForTrack(track, forceRefresh = forceRefresh) { improved ->
-                    if (playbackManager.uiState.value.currentTrack?.id == track.id && coroutineContext[kotlinx.coroutines.Job]?.isActive == true) {
+                    if (stillSelected() && coroutineContext[kotlinx.coroutines.Job]?.isActive == true) {
                         _currentLyrics.value = improved
                     }
                 }
-                if (playbackManager.uiState.value.currentTrack?.id == track.id) {
+                ensureActive()
+                if (stillSelected()) {
                     _currentLyrics.value = lyrics
+                    lyricsLookupComplete = true
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
-                if (playbackManager.uiState.value.currentTrack?.id == track.id && _currentLyrics.value == null) {
-                    _currentLyrics.value = TrackLyrics(
+                if (stillSelected()) {
+                    if (_currentLyrics.value == null) _currentLyrics.value = TrackLyrics(
                         trackId = track.id,
                         title = track.title,
                         artist = track.artist,
                         isSynced = false,
                         lines = emptyList()
                     )
+                    lyricsLookupComplete = true
                 }
             }
         }

@@ -489,7 +489,7 @@ fun HomeScreenContent(
             // =========================================================================
             item(key = "hero_infinite_radio_card", contentType = "hero") {
                 InfiniteRadioHeroCard(
-                    seedTrack = heroSeedTrack,
+                    seedTrack = currentTrack ?: heroSeedTrack,
                     currentPlayingTrackId = currentPlayingId,
                     isPlaying = isPlaying,
                     isLoading = isRadioLoading,
