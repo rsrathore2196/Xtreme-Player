@@ -429,7 +429,7 @@ class HomeViewModel(
         }
         if (!activeRefreshIsExplicit && pool.generation != manualRenderGeneration)
             awaitHomeIdle()
-        homeScrolling.first { !it }
+        awaitHomePresentation()
         if (refreshCandidatesPending.value || candidates.value != pool) return@withLock
         val rendering = BackgroundWorkCoordinator.busy()
         try {
@@ -483,7 +483,9 @@ class HomeViewModel(
         val quick = HomeRecommendationPolicy.diversify(fresh(quickRanked), HomeRecommendationPolicy.MAX_SHELF_TRACKS, seen)
         // Cancellation on a tab change must not publish a partially calculated stale shelf set.
         currentCoroutineContext().ensureActive()
-        homeScrolling.first { !it }
+        // Retaining ready results while hidden must not hold other optional work busy.
+        rendering.close()
+        awaitHomePresentation()
         if (refreshCandidatesPending.value || candidates.value != pool) return@withLock
         _homeShelves.value = shelves
         // Reranking must retain error/loading updates arriving from the refresh requests.
@@ -531,10 +533,23 @@ class HomeViewModel(
     private var lastRegionalAttempt = 0L
     private var lastRegionalAttemptTitle: String? = null
 
+    // Navigation admission ignores our rendering lease. Retain completed work
+    // across hidden tabs rather than discarding it and reranking on the return.
+    private suspend fun awaitHomePresentation() {
+        while (true) {
+            homeVisible.first { it }
+            homeScrolling.first { !it }
+            BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
+            if (homeVisible.value && !homeScrolling.value) return
+        }
+    }
+
     private suspend fun awaitHomeIdle() {
         while (true) {
             homeVisible.first { it }
             homeScrolling.first { !it }
+            BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
+            if (!homeVisible.value || homeScrolling.value) continue
             val essential = _ytmCard.value.tracks.isEmpty() && _countryLanguageCard.value.tracks.isEmpty()
             // Empty Home content is essential loading, not optional revalidation.
             // Startup work and shimmer frames must not postpone its IO/Default work
@@ -543,7 +558,8 @@ class HomeViewModel(
             BackgroundWorkCoordinator.awaitIdle(quietMillis = 2_500L,
                 minimumUptimeMillis = 6_000L,
                 userRequested = { _isRefreshing.value || manualRenderGeneration == candidates.value.generation })
-            if (homeVisible.value) return
+            BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
+            if (homeVisible.value && !homeScrolling.value) return
         }
     }
 
@@ -892,6 +908,7 @@ class HomeViewModel(
         // batches must be able to await idle after all fresh groups arrive.
         val deferRoomMerge = !force && !activeRefreshIsExplicit &&
             (_ytmCard.value.tracks.isNotEmpty() || _countryLanguageCard.value.tracks.isNotEmpty())
+        BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
         val (quick, era, chart) = coroutineScope {
             val quickJob = async {
                 try { repository.getYtmQuickPicks(limit = 100, forceRefresh = force,
@@ -917,6 +934,8 @@ class HomeViewModel(
             }
             Triple(quickJob.await(), eraJob.await(), chartJob.await())
         }
+        // Keep bounded in-flight requests, but defer result processing through navigation.
+        BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
         homeScrolling.first { !it }
         if (profileKey() != profileKey(profile)) return@withContext
         val catalog = HomeRecommendationPolicy.originals(quick + era + _catalogTracks.value).take(300)

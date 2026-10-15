@@ -104,6 +104,9 @@ internal object DiscoveryRequestCoordinator {
         var acquired = false
         var optional = false
         try {
+            // Do not admit optional discovery in the same frames as a tab/player transition.
+            // No request is cancelled or restarted, and playback's urgent lane stays open.
+            if (!urgent.value) com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(bypass = { urgent.value })
             combine(changed, urgent, requested, scrolling, resolving) { _, _, _, _, _ -> Unit }.first {
                 synchronized(lock) {
                     // Explicit refresh can use two slots and start during the pull's
@@ -121,6 +124,8 @@ internal object DiscoveryRequestCoordinator {
                 }
             }
             currentCoroutineContext().ensureActive()
+            // A tab can change while this request is queued for a network slot.
+            if (!urgent.value) com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(bypass = { urgent.value })
             return block()
         } finally {
             if (acquired) synchronized(lock) {
