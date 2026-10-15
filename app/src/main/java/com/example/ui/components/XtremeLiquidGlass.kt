@@ -113,12 +113,16 @@ fun Modifier.xtremeLiquidGlassBackground(
             {
                 blur(radius * processingScale)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && shape is CornerBasedShape) {
-                    lens(
-                        refractionHeight = lensSize,
-                        refractionAmount = lensSize,
-                        depthEffect = true,
-                        chromaticAberration = true
-                    )
+                    try {
+                        lens(
+                            refractionHeight = lensSize,
+                            refractionAmount = lensSize,
+                            depthEffect = true,
+                            chromaticAberration = true
+                        )
+                    } catch (_: Throwable) {
+                        // Gracefully ignored if size is unspecified or shader unavailable
+                    }
                 }
             }
         }

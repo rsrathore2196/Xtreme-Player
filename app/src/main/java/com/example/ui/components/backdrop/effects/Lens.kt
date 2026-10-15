@@ -17,6 +17,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.util.fastCoerceAtLeast
 import androidx.compose.ui.util.fastCoerceAtMost
 import com.example.ui.components.backdrop.BackdropEffectScope
+import androidx.compose.ui.geometry.isSpecified
 import com.example.ui.components.backdrop.internal.RoundedRectRefractionShaderString
 import com.example.ui.components.backdrop.internal.RoundedRectRefractionWithDispersionShaderString
 import com.example.ui.components.backdrop.internal.RuntimeShaderEffect
@@ -30,93 +31,98 @@ fun BackdropEffectScope.lens(
 ) {
     if (!isRuntimeShaderSupported()) return
     if (refractionHeight <= 0f || refractionAmount <= 0f) return
+    val currentSize = try { size } catch (_: Throwable) { return }
+    if (!currentSize.isSpecified || currentSize.isEmpty() || currentSize.width <= 0f || currentSize.height <= 0f) return
 
     if (padding > 0f) {
         padding = (padding - refractionHeight).fastCoerceAtLeast(0f)
     }
 
-    val cornerRadii = cornerRadii
-    val effect =
-        if (cornerRadii != null) {
-            val shader =
-                if (!chromaticAberration) {
-                    obtainRuntimeShader(
-                        "Refraction",
-                        RoundedRectRefractionShaderString
-                    )
-                } else {
-                    obtainRuntimeShader(
-                        "RefractionWithDispersion",
-                        RoundedRectRefractionWithDispersionShaderString
-                    )
-                }
-            shader.apply {
-                setFloatUniform("size", size.width, size.height)
-                setFloatUniform("offset", -padding, -padding)
-                setFloatUniform("cornerRadii", cornerRadii)
-                setFloatUniform("refractionHeight", refractionHeight)
-                setFloatUniform("refractionAmount", -refractionAmount)
-                setFloatUniform("depthEffect", if (depthEffect) 1f else 0f)
-                if (chromaticAberration) {
-                    setFloatUniform("chromaticAberration", 1f)
-                }
+    val cornerRadii = cornerRadii ?: return
+    try {
+        val shader =
+            if (!chromaticAberration) {
+                obtainRuntimeShader(
+                    "Refraction",
+                    RoundedRectRefractionShaderString
+                )
+            } else {
+                obtainRuntimeShader(
+                    "RefractionWithDispersion",
+                    RoundedRectRefractionWithDispersionShaderString
+                )
             }
-            RuntimeShaderEffect(shader, "content")
-        } else {
-            throwUnsupportedSDFException()
+        shader.apply {
+            setFloatUniform("size", currentSize.width, currentSize.height)
+            setFloatUniform("offset", -padding, -padding)
+            setFloatUniform("cornerRadii", cornerRadii)
+            setFloatUniform("refractionHeight", refractionHeight)
+            setFloatUniform("refractionAmount", -refractionAmount)
+            setFloatUniform("depthEffect", if (depthEffect) 1f else 0f)
+            if (chromaticAberration) {
+                setFloatUniform("chromaticAberration", 1f)
+            }
         }
-    effect(effect)
+        val effect = RuntimeShaderEffect(shader, "content")
+        effect(effect)
+    } catch (_: Throwable) {
+        // Fall back gracefully if runtime shader fails on device
+    }
 }
 
 // Vendored change: support for io.github.kyant0:shapes' RoundedRectangularShape was
 // dropped so the vendored sources have no external dependency; this app only passes
 // CornerBasedShape here.
 private val BackdropEffectScope.cornerRadii: FloatArray?
-    get() = when (val shape = shape) {
-        is AbsoluteRoundedCornerShape -> {
-            val size = size
-            val maxRadius = size.minDimension / 2f
-            val topLeft = shape.topStart.toPx(size, this)
-            val topRight = shape.topEnd.toPx(size, this)
-            val bottomRight = shape.bottomEnd.toPx(size, this)
-            val bottomLeft = shape.bottomStart.toPx(size, this)
-            floatArrayOf(
-                topLeft.fastCoerceAtMost(maxRadius),
-                topRight.fastCoerceAtMost(maxRadius),
-                bottomRight.fastCoerceAtMost(maxRadius),
-                bottomLeft.fastCoerceAtMost(maxRadius)
-            )
-        }
+    get() = try {
+        when (val shape = shape) {
+            is AbsoluteRoundedCornerShape -> {
+                val currentSize = size
+                if (!currentSize.isSpecified || currentSize.isEmpty() || currentSize.width <= 0f || currentSize.height <= 0f) null
+                else {
+                    val maxRadius = currentSize.minDimension / 2f
+                    val topLeft = shape.topStart.toPx(currentSize, this)
+                    val topRight = shape.topEnd.toPx(currentSize, this)
+                    val bottomRight = shape.bottomEnd.toPx(currentSize, this)
+                    val bottomLeft = shape.bottomStart.toPx(currentSize, this)
+                    floatArrayOf(
+                        topLeft.fastCoerceAtMost(maxRadius),
+                        topRight.fastCoerceAtMost(maxRadius),
+                        bottomRight.fastCoerceAtMost(maxRadius),
+                        bottomLeft.fastCoerceAtMost(maxRadius)
+                    )
+                }
+            }
 
-        is CornerBasedShape -> {
-            val size = size
-            val maxRadius = size.minDimension / 2f
-            val isLtr = layoutDirection == LayoutDirection.Ltr
-            val topLeft =
-                if (isLtr) shape.topStart.toPx(size, this)
-                else shape.topEnd.toPx(size, this)
-            val topRight =
-                if (isLtr) shape.topEnd.toPx(size, this)
-                else shape.topStart.toPx(size, this)
-            val bottomRight =
-                if (isLtr) shape.bottomEnd.toPx(size, this)
-                else shape.bottomStart.toPx(size, this)
-            val bottomLeft =
-                if (isLtr) shape.bottomStart.toPx(size, this)
-                else shape.bottomEnd.toPx(size, this)
-            floatArrayOf(
-                topLeft.fastCoerceAtMost(maxRadius),
-                topRight.fastCoerceAtMost(maxRadius),
-                bottomRight.fastCoerceAtMost(maxRadius),
-                bottomLeft.fastCoerceAtMost(maxRadius)
-            )
-        }
+            is CornerBasedShape -> {
+                val currentSize = size
+                if (!currentSize.isSpecified || currentSize.isEmpty() || currentSize.width <= 0f || currentSize.height <= 0f) null
+                else {
+                    val maxRadius = currentSize.minDimension / 2f
+                    val isLtr = layoutDirection == LayoutDirection.Ltr
+                    val topLeft =
+                        if (isLtr) shape.topStart.toPx(currentSize, this)
+                        else shape.topEnd.toPx(currentSize, this)
+                    val topRight =
+                        if (isLtr) shape.topEnd.toPx(currentSize, this)
+                        else shape.topStart.toPx(currentSize, this)
+                    val bottomRight =
+                        if (isLtr) shape.bottomEnd.toPx(currentSize, this)
+                        else shape.bottomStart.toPx(currentSize, this)
+                    val bottomLeft =
+                        if (isLtr) shape.bottomStart.toPx(currentSize, this)
+                        else shape.bottomEnd.toPx(currentSize, this)
+                    floatArrayOf(
+                        topLeft.fastCoerceAtMost(maxRadius),
+                        topRight.fastCoerceAtMost(maxRadius),
+                        bottomRight.fastCoerceAtMost(maxRadius),
+                        bottomLeft.fastCoerceAtMost(maxRadius)
+                    )
+                }
+            }
 
-        else -> null
+            else -> null
+        }
+    } catch (_: Throwable) {
+        null
     }
-
-private fun throwUnsupportedSDFException(): Nothing {
-    throw UnsupportedOperationException(
-        "Only RoundedRectangularShape or CornerBasedShape is supported in lens effects."
-    )
-}
