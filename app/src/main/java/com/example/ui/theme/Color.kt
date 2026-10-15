@@ -5,6 +5,7 @@ import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.Immutable
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 
 @Immutable
 data class AppThemeColors(
@@ -36,16 +37,10 @@ data class AppThemeColors(
         get() = Brush.linearGradient(listOf(primaryAccent, secondaryAccent))
 
     val onPrimaryAccent: Color
-        get() {
-            val lum = (0.299 * primaryAccent.red + 0.587 * primaryAccent.green + 0.114 * primaryAccent.blue)
-            return if (lum > 0.55f) Color(0xFF0A0A0A) else Color(0xFFFFFFFF)
-        }
+        get() = contrastingContentColor(primaryAccent)
 
     val onSecondaryAccent: Color
-        get() {
-            val lum = (0.299 * secondaryAccent.red + 0.587 * secondaryAccent.green + 0.114 * secondaryAccent.blue)
-            return if (lum > 0.55f) Color(0xFF0A0A0A) else Color(0xFFFFFFFF)
-        }
+        get() = contrastingContentColor(secondaryAccent)
 
     val bottomSheetBackground: Color
         get() = if (isAmoled) Color.Black else if (isDark) cardBackground else scaffoldBackground
@@ -53,11 +48,14 @@ data class AppThemeColors(
 
 /**
  * Universal contrast calculator returning deep contrast text/icon color
- * against any background color (WCAG AAA compliant).
+ * against the supplied opaque surface using actual relative luminance.
  */
 fun contrastingContentColor(background: Color): Color {
-    val lum = (0.299 * background.red + 0.587 * background.green + 0.114 * background.blue)
-    return if (lum > 0.55f) Color(0xFF0A0A0A) else Color(0xFFFFFFFF)
+    val dark = Color(0xFF0A0A0A)
+    val luminance = background.luminance()
+    val darkContrast = (luminance + 0.05f) / (dark.luminance() + 0.05f)
+    val lightContrast = 1.05f / (luminance + 0.05f)
+    return if (darkContrast >= lightContrast) dark else Color.White
 }
 
 // Night / Dark Theme: Neutral Studio Night - Deep Obsidian Charcoal & Eye-Catching Electric Azure Blue

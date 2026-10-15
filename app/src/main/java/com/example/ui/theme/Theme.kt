@@ -15,6 +15,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
+import androidx.core.graphics.ColorUtils
 import com.example.data.local.CustomThemeState
 import com.example.data.local.ThemePreferences
 import com.example.data.local.ThemePresets
@@ -33,8 +34,10 @@ private fun parseColorSafe(hex: String, fallback: Color): Color {
  */
 fun resolveAppThemeColors(darkTheme: Boolean, custom: CustomThemeState): AppThemeColors {
     val isDark = darkTheme
-    val effectiveCustom = custom
-    val isBrightnessMismatch = (isDark != custom.isPresetDark)
+    // System mode can change while a preset of the opposite brightness is saved.
+    // Resolve the whole palette together instead of mixing light text with dark surfaces.
+    val effectiveCustom = if (isDark == custom.isPresetDark) custom else
+        (if (isDark) ThemePresets.StudioNight else ThemePresets.CleanDay).toCustomThemeState()
 
     val primaryAccent = parseColorSafe(
         effectiveCustom.accentColorHex,
@@ -64,34 +67,37 @@ fun resolveAppThemeColors(darkTheme: Boolean, custom: CustomThemeState): AppThem
 
     val cardBorder = if (isAmoled) {
         Color(0xFF242424)
-    } else if (isBrightnessMismatch) {
-        if (isDark) Color(0xFF282832) else Color(0xFFE2E8F0)
     } else {
         parseColorSafe(effectiveCustom.cardBorderHex, if (isDark) Color(0xFF282832) else Color(0xFFE2E8F0))
     }
 
-    val textPrimary = if (isBrightnessMismatch) {
-        if (isDark) Color(0xFFF8FAFC) else Color(0xFF0F172A)
-    } else {
-        parseColorSafe(effectiveCustom.textPrimaryHex, if (isDark) Color(0xFFF8FAFC) else Color(0xFF0F172A))
+    fun readable(color: Color, minimum: Double): Color {
+        val surfaces = listOf(scaffoldBg, cardBg)
+        fun contrast(value: Color) = surfaces.minOf {
+            ColorUtils.calculateContrast(value.copy(alpha = 1f).toArgb(), it.copy(alpha = 1f).toArgb())
+        }
+        if (contrast(color) >= minimum) return color
+        val fallback = if (contrast(Color.Black) > contrast(Color.White)) Color.Black else Color.White
+        for (step in 1..20) {
+            val adjusted = Color(ColorUtils.blendARGB(color.toArgb(), fallback.toArgb(), step / 20f))
+            if (contrast(adjusted) >= minimum) return adjusted
+        }
+        return fallback
     }
 
-    val textSecondary = if (isBrightnessMismatch) {
-        if (isDark) Color(0xFFCBD5E1) else Color(0xFF475569)
-    } else {
-        parseColorSafe(effectiveCustom.textSecondaryHex, if (isDark) Color(0xFFCBD5E1) else Color(0xFF475569))
-    }
+    val textPrimary = readable(parseColorSafe(effectiveCustom.textPrimaryHex,
+        if (isDark) Color(0xFFF8FAFC) else Color(0xFF0F172A)), 4.5)
 
-    val textMuted = parseColorSafe(
+    val textSecondary = readable(parseColorSafe(effectiveCustom.textSecondaryHex,
+        if (isDark) Color(0xFFCBD5E1) else Color(0xFF475569)), 4.5)
+
+    val textMuted = readable(parseColorSafe(
         effectiveCustom.textMutedHex,
         Color(0xFF64748B)
-    )
+    ), 4.5)
 
     val bgGradientColors = if (isAmoled) {
         listOf(Color(0xFF000000), Color(0xFF000000))
-    } else if (isBrightnessMismatch) {
-        if (isDark) listOf(Color(0xFF121218), Color(0xFF0A0A0E), Color(0xFF050508))
-        else listOf(Color(0xFFFFFFFF), Color(0xFFF8FAFC), Color(0xFFF1F5F9))
     } else {
         effectiveCustom.bgGradientColorsHex.mapNotNull { hex ->
             try {
@@ -166,15 +172,15 @@ fun resolveColorScheme(darkTheme: Boolean, appColors: AppThemeColors): ColorSche
     return if (darkTheme) {
         darkColorScheme(
             primary = appColors.primaryAccent,
-            onPrimary = if (appColors.primaryAccent == Color.White) Color.Black else Color.White,
+            onPrimary = appColors.onPrimaryAccent,
             primaryContainer = appColors.cardBackgroundElevated,
             onPrimaryContainer = appColors.primaryAccent,
             secondary = appColors.secondaryAccent,
-            onSecondary = Color.White,
+            onSecondary = appColors.onSecondaryAccent,
             secondaryContainer = appColors.cardBackground,
             onSecondaryContainer = appColors.textSecondary,
             tertiary = appColors.secondaryAccent,
-            onTertiary = Color.White,
+            onTertiary = appColors.onSecondaryAccent,
             background = appColors.scaffoldBackground,
             onBackground = appColors.textPrimary,
             surface = appColors.cardBackground,
@@ -186,15 +192,15 @@ fun resolveColorScheme(darkTheme: Boolean, appColors: AppThemeColors): ColorSche
     } else {
         lightColorScheme(
             primary = appColors.primaryAccent,
-            onPrimary = Color.White,
+            onPrimary = appColors.onPrimaryAccent,
             primaryContainer = appColors.primaryAccent.copy(alpha = 0.12f),
             onPrimaryContainer = appColors.primaryAccent,
             secondary = appColors.secondaryAccent,
-            onSecondary = Color.White,
+            onSecondary = appColors.onSecondaryAccent,
             secondaryContainer = appColors.secondaryAccent.copy(alpha = 0.12f),
             onSecondaryContainer = appColors.secondaryAccent,
             tertiary = appColors.secondaryAccent,
-            onTertiary = Color.White,
+            onTertiary = appColors.onSecondaryAccent,
             background = appColors.scaffoldBackground,
             onBackground = appColors.textPrimary,
             surface = appColors.cardBackground,

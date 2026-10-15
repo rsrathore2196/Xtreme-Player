@@ -625,8 +625,17 @@ object ThemePreferences {
         val currentThemeName = prefs.getString(KEY_CURRENT_THEME, null)
         val presetId = prefs.getString(KEY_PRESET_ID, null)
 
-        // If not customized yet, use default preset StudioNight
-        val defaultPreset = ThemePresets.StudioNight
+        // A new installation follows the effective mode before onboarding is composed.
+        // Existing saved presets/custom colors remain authoritative.
+        val dark = when (getThemeMode(context)) {
+            AppThemeMode.DARK -> true
+            AppThemeMode.LIGHT -> false
+            AppThemeMode.SYSTEM -> context.resources.configuration.uiMode and
+                android.content.res.Configuration.UI_MODE_NIGHT_MASK == android.content.res.Configuration.UI_MODE_NIGHT_YES
+        }
+        val defaultPreset = ThemePresets.findById(presetId.orEmpty())
+            ?: ThemePresets.findByName(currentThemeName.orEmpty())
+            ?: if (dark) ThemePresets.StudioNight else ThemePresets.CleanDay
 
         val bgGradientColorsRaw = prefs.getString(KEY_BG_GRADIENT_COLORS, null)
         val bgGradientColors = if (!bgGradientColorsRaw.isNullOrBlank()) {

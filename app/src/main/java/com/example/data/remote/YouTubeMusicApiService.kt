@@ -111,6 +111,10 @@ object YouTubeMusicApiService {
                         ?: node.optJSONObject("appendContinuationItemsAction")
                     if (page != null) shelf(page)
                     else {
+                        // Corrected searches and Top Results can wrap songs outside musicShelfRenderer.
+                        node.optJSONObject("musicResponsiveListItemRenderer")?.let { item ->
+                            parseListItemRenderer(item)?.let(tracks::add)
+                        }
                         node.keys().forEach { visit(node.opt(it), depth + 1) }
                         if (continuation == null && node.has("continuations"))
                             continuation = extractContinuationToken(node)
@@ -188,11 +192,13 @@ object YouTubeMusicApiService {
         if (query.isBlank()) return@withContext emptyList()
 
         try {
+            if (songsOnly) return@withContext searchSongsPage(query).tracks.take(limit)
+            val profile = YouTubeClient.WEB_REMIX
             val payload = JSONObject().apply {
                 put("context", JSONObject().apply {
                     put("client", JSONObject().apply {
-                        put("clientName", "WEB_REMIX")
-                        put("clientVersion", "1.20231204.01.00")
+                        put("clientName", profile.clientName)
+                        put("clientVersion", profile.clientVersion)
                         put("hl", "en")
                         put("gl", "US")
                     })
@@ -204,12 +210,17 @@ object YouTubeMusicApiService {
             val request = Request.Builder()
                 .url("https://music.youtube.com/youtubei/v1/search")
                 .post(payload.toString().toRequestBody(jsonMediaType))
-                .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                .addHeader("User-Agent", profile.userAgent)
                 .addHeader("Referer", "https://music.youtube.com/")
+                .addHeader("Origin", "https://music.youtube.com")
+                .addHeader("X-YouTube-Client-Name", profile.clientId)
+                .addHeader("X-YouTube-Client-Version", profile.clientVersion)
                 .build()
 
             val body = httpClient.catalogRequest(request)
-            parseSearchResults(body, limit)
+            withContext(Dispatchers.Default) {
+                (parseSearchResults(body, limit) + parseSongSearchPage(body).tracks).distinctBy { it.id }.take(limit)
+            }
         } catch (e: CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "Error searching YouTube Music: ${e.message}")
             emptyList()
@@ -300,7 +311,9 @@ object YouTubeMusicApiService {
             val text0 = col0.optJSONObject("musicResponsiveListItemFlexColumnRenderer")?.optJSONObject("text")
             val runs0 = text0?.optJSONArray("runs") ?: return null
             if (runs0.length() == 0) return null
-            val rawTitle = runs0.getJSONObject(0).optString("text", "").trim()
+            val rawTitle = (0 until runs0.length()).joinToString("") {
+                runs0.optJSONObject(it)?.optString("text").orEmpty()
+            }.trim()
             if (rawTitle.isBlank()) return null
 
             // Only artist/album browse endpoints identify these fields reliably. A plain

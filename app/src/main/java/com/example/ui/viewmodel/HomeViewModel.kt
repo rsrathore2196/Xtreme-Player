@@ -315,7 +315,7 @@ class HomeViewModel(
         Candidates(it.quickCandidates, it.eraCandidates, it.chartCandidates, it.generation)
     } ?: Candidates())
     private var savedCandidates: Candidates? = initialCards?.let { candidates.value }
-    private val _mostListenedArtists = MutableStateFlow(initialCards?.artists.orEmpty())
+    private val _mostListenedArtists = MutableStateFlow(initialCards?.artists.orEmpty().take(20))
     val mostListenedArtists: StateFlow<List<MostListenedArtist>> = _mostListenedArtists.asStateFlow()
     private val listeningCardRequests = MutableStateFlow(0L)
     private val pendingCardPlays = linkedMapOf<String, MusicTrack>()
@@ -360,7 +360,7 @@ class HomeViewModel(
         _mostListenedArtists.value = artists
         pendingCardPlays.entries.removeAll { (it.key to it.value.id) in committed }
         if (changed) shelfCache.peek(profileKey())?.let { saved ->
-            shelfCache.save(saved.copy(history = _listeningHistoryCard.value, artists = artists.take(15)))
+            shelfCache.save(saved.copy(history = _listeningHistoryCard.value, artists = artists.take(20)))
         }
     }
 
@@ -383,7 +383,7 @@ class HomeViewModel(
                     if (songs.size < 3 && songs.none { it.id == track.id }) songs.add(track)
                 }
             }
-            counts.entries.sortedByDescending { it.value }.map { (artist, count) ->
+            counts.entries.sortedByDescending { it.value }.take(20).map { (artist, count) ->
                 MostListenedArtist(names.getValue(artist), count, artistTracks.getValue(artist).toList())
             }
         }
@@ -511,7 +511,7 @@ class HomeViewModel(
         // Both checkpoint publishers share the lightweight owner; no Main/file work here.
         shelfCache.save(SavedHomeCards(profileKey(), signal, pool.generation, lastDiscoveryRefresh,
             _ytmCard.value, _eraCard.value, _countryLanguageCard.value, _listeningHistoryCard.value,
-            _personalizedCard.value, _mostListenedArtists.value.take(15), pool.quick, pool.era, pool.chart, catalog.take(400),
+            _personalizedCard.value, _mostListenedArtists.value.take(20), pool.quick, pool.era, pool.chart, catalog.take(400),
             chartRefreshedAt = lastRegionalRefresh))
         if (manualRenderGeneration == pool.generation) manualRenderGeneration = -1L
         val shown = chart + era + quick + personalized + artistReservations.flatMap { it.tracks }
@@ -731,7 +731,7 @@ class HomeViewModel(
                 // A late cache restore must not overwrite a confirmed playback-start update.
                 if (!listeningCardsPublished) {
                     _listeningHistoryCard.value = cached.history
-                    _mostListenedArtists.value = cached.artists
+                    _mostListenedArtists.value = cached.artists.take(20)
                 }
                 _catalogTracks.value = cached.catalog
                 cachedHero.value = cached.history.tracks.firstOrNull() ?: cached.catalog.firstOrNull()

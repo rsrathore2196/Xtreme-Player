@@ -166,45 +166,62 @@ object YouTubeAudioStreamService {
             if (forceRefresh) invalidate(videoId)
             cache.get(key)?.takeIf { it.expiresAt > System.currentTimeMillis() + 45_000L }?.let { return@withLock it }
             slots.withPermit {
-                withTimeoutOrNull(35_000L) {
-                    val excluded = mutableSetOf<String>().apply { excludedClient?.let(::add) }
-                    val extractor = runtime().extractor(cap, hlsOnly)
-                    val hints = ContentHints(wantVideo = false).withStreamCapabilities(
-                        allowHls = hlsOnly != false, allowSabr = false, allowBoundedRange = true)
-                    repeat(3) {
-                        currentCoroutineContext().ensureActive()
-                        val extracted = extractor.extract(videoId, hints, excludedClients = excluded, audioQuality = ExtractionQuality.HIGH)
-                            ?: throw IOException("No compatible YouTube audio format is available")
-                        if (extracted.videoId != videoId || !isMediaUrl(extracted.audioUrl) || extracted.sabrBootstrap != null)
-                            throw IOException("Invalid YouTube audio stream identity or transport")
-                        val hls = isHls(extracted.audioUrl, extracted.mimeType)
-                        if (!hls && (extracted.mimeType?.startsWith("audio/") != true ||
-                                extracted.videoUrl != null || extracted.videoWidth != null || extracted.videoHeight != null)) {
-                            excluded.add(extracted.profileId)
-                            return@repeat
+                withTimeoutOrNull(35_000L) lookup@{
+                    // Prefer a directly playable audio-only format. An HLS-only client can
+                    // expose a muxed master which this audio player must reject; that is a
+                    // transport miss, not proof the selected recording is unavailable.
+                    val transports = if (hlsOnly == null) listOf(false, true) else listOf(hlsOnly)
+                    var failure: Exception? = null
+                    for (transport in transports) {
+                        val result = withTimeoutOrNull(if (transports.size > 1) 18_000L else 33_000L) transport@{
+                            val excluded = mutableSetOf<String>().apply { excludedClient?.let(::add) }
+                            val extractor = runtime().extractor(cap, transport)
+                            val hints = ContentHints(wantVideo = false).withStreamCapabilities(
+                                allowHls = transport, allowSabr = false, allowBoundedRange = true)
+                            repeat(3) {
+                                currentCoroutineContext().ensureActive()
+                                val extracted = try {
+                                    extractor.extract(videoId, hints, excludedClients = excluded, audioQuality = ExtractionQuality.HIGH)
+                                } catch (e: CancellationException) { throw e }
+                                catch (e: Exception) { failure = e; return@transport null }
+                                    ?: return@transport null
+                                if (extracted.videoId != videoId || !isMediaUrl(extracted.audioUrl) || extracted.sabrBootstrap != null)
+                                    return@transport null
+                                val hls = isHls(extracted.audioUrl, extracted.mimeType)
+                                if (!hls && (extracted.mimeType?.startsWith("audio/") != true ||
+                                        extracted.videoUrl != null || extracted.videoWidth != null || extracted.videoHeight != null)) {
+                                    excluded.add(extracted.profileId)
+                                    return@repeat
+                                }
+                                val expiry = minOf(extracted.expiresAt?.toEpochMilliseconds() ?: Long.MAX_VALUE,
+                                    extracted.audioUrl.toHttpUrlOrNull()?.queryParameter("expire")?.toLongOrNull()
+                                        ?.let { it * 1000L } ?: Long.MAX_VALUE,
+                                    System.currentTimeMillis() + 300_000L)
+                                val bitrate = extracted.bitrate?.coerceAtLeast(0) ?: 0
+                                val headers = extracted.headers.filter { (name, value) ->
+                                    name.lowercase() in mediaHeaders && '\r' !in value && '\n' !in value }
+                                val verified = if (transport == hls && (hls || bitrate in 1..cap) &&
+                                    expiry > System.currentTimeMillis() + 45_000L) probeAudio(extracted.audioUrl, headers, hls, cap) else null
+                                if (verified != null) {
+                                    val codec = verified.codec ?: displayCodec(extracted.mimeType, extracted.codecs)
+                                    return@transport AudioStream(verified.url, (verified.bitrate ?: bitrate) / 1000, hls,
+                                        "youtube:" + videoId + ":" + extracted.itag + ":" + extracted.contentLengthBytes,
+                                        expiry - 30_000L, headers, codec, extracted.itag, extracted.contentLengthBytes, videoId,
+                                        !hls && (extracted.requireBoundedRange || extracted.useRangeChunks),
+                                        extracted.rangeChunkSizeBytes.coerceIn(64 * 1024L, 1024 * 1024L), extracted.profileId)
+                                }
+                                // Let InnerTubeX pick a different supported client for this transport.
+                                excluded.add(extracted.profileId)
+                            }
+                            null
                         }
-                        val expiry = minOf(extracted.expiresAt?.toEpochMilliseconds() ?: Long.MAX_VALUE,
-                            extracted.audioUrl.toHttpUrlOrNull()?.queryParameter("expire")?.toLongOrNull()
-                                ?.let { it * 1000L } ?: Long.MAX_VALUE,
-                            System.currentTimeMillis() + 300_000L)
-                        val bitrate = extracted.bitrate?.coerceAtLeast(0) ?: 0
-                        val headers = extracted.headers.filter { (name, value) ->
-                            name.lowercase() in mediaHeaders && '\r' !in value && '\n' !in value }
-                        val verified = if ((hlsOnly == null || hlsOnly == hls) && (hls || bitrate in 1..cap) &&
-                            expiry > System.currentTimeMillis() + 45_000L) probeAudio(extracted.audioUrl, headers, hls, cap) else null
-                        if (verified != null) {
-                            val codec = verified.codec ?: displayCodec(extracted.mimeType, extracted.codecs)
-                            val result = AudioStream(verified.url, (verified.bitrate ?: bitrate) / 1000, hls,
-                                "youtube:" + videoId + ":" + extracted.itag + ":" + extracted.contentLengthBytes,
-                                expiry - 30_000L, headers, codec, extracted.itag, extracted.contentLengthBytes, videoId,
-                                !hls && (extracted.requireBoundedRange || extracted.useRangeChunks),
-                                extracted.rangeChunkSizeBytes.coerceIn(64 * 1024L, 1024 * 1024L), extracted.profileId)
-                            cache.put(key, result); cache.put(videoId + ":" + cap + ":" + hls, result)
-                            return@withTimeoutOrNull result
+                        if (result != null) {
+                            cache.put(key, result)
+                            cache.put(videoId + ":" + cap + ":" + result.isHls, result)
+                            return@lookup result
                         }
-                        excluded.add(extracted.profileId)
                     }
-                    throw IOException("YouTube did not provide an accessible compatible audio stream")
+                    throw IOException("YouTube did not provide an accessible compatible audio stream", failure)
                 } ?: throw IOException("YouTube audio resolution timed out")
             }
         }
