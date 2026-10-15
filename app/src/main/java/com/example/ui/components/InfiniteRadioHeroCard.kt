@@ -72,7 +72,7 @@ fun InfiniteRadioHeroCard(
 
     Box(
         modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 12.dp)
-            .height(200.dp).shadow(if (glassEnabled) 14.dp else 6.dp, shape).clip(shape)
+            .height(240.dp).shadow(if (glassEnabled) 14.dp else 6.dp, shape).clip(shape)
             .background(glassTint)
             .border(1.5.dp, if (!glassEnabled) SolidColor(appColors.cardBorder) else Brush.linearGradient(listOf(
                 Color.White.copy(alpha = 0.85f), Color.White.copy(alpha = 0.12f),

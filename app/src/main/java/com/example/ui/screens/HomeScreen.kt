@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -621,7 +622,7 @@ fun HomeScreenContent(
                         ) {
                             items(visibleArtists, key = { it.name }, contentType = { "artist_card" }) { artist ->
                                 Column(
-                                    Modifier.width(140.dp).clip(RoundedCornerShape(18.dp))
+                                    Modifier.width(168.dp).clip(RoundedCornerShape(18.dp))
                                         .background(cardBg)
                                         .clickable {
                                             onOpenArtist(com.example.data.repository.CatalogArtist("", artist.name))
@@ -631,7 +632,7 @@ fun HomeScreenContent(
                                     com.example.ui.components.ArtistPortrait(
                                         artist = com.example.data.repository.CatalogArtist("", artist.name),
                                         fallbackArtwork = artist.tracks.firstOrNull { it.coverUrl.isNotBlank() }?.coverUrl,
-                                        modifier = Modifier.size(104.dp).clip(CircleShape)
+                                        modifier = Modifier.size(124.8.dp).clip(CircleShape)
                                     )
                                     Spacer(Modifier.height(8.dp))
                                     Text(artist.name, color = textPrimaryColor, fontWeight = FontWeight.SemiBold,
@@ -777,7 +778,7 @@ fun HabitPillItem(
 
     Row(
         modifier = modifier
-            .height(52.dp)
+            .height(62.4.dp)
             .clip(pillShape)
             .background(if (isPlaying) appColors.primaryAccent.copy(alpha = 0.14f) else cardBg)
             .border(
@@ -794,7 +795,8 @@ fun HabitPillItem(
     ) {
         Box(
             modifier = Modifier
-                .size(52.dp)
+                .width(52.dp)
+                .fillMaxHeight()
                 .clip(RoundedCornerShape(topStart = 10.dp, bottomStart = 10.dp))
                 .background(cardBorderColor.copy(alpha = 0.25f))
         ) {
@@ -857,10 +859,10 @@ fun SectionShimmerRow(shimmerBrush: Brush? = null) {
         userScrollEnabled = false
     ) {
         items(4, key = { index -> "shimmer_col_$index" }) {
-            Column(modifier = Modifier.width(136.dp)) {
+            Column(modifier = Modifier.width(163.2.dp)) {
                 Box(
                     modifier = Modifier
-                        .size(136.dp)
+                        .size(163.2.dp)
                         .clip(RoundedCornerShape(14.dp))
                         .then(background)
                 )
@@ -899,13 +901,13 @@ fun ShelfTrackCard(
 
     Column(
         modifier = Modifier
-            .width(136.dp)
+            .width(163.2.dp)
             .clip(RoundedCornerShape(14.dp))
             .clickable(onClick = onClick)
     ) {
         Box(
             modifier = Modifier
-                .size(136.dp)
+                .size(163.2.dp)
                 .clip(RoundedCornerShape(14.dp))
                 .background(cardBg)
                 .border(

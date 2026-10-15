@@ -69,6 +69,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -79,6 +80,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
@@ -98,8 +101,11 @@ import com.example.data.model.LanguageData
 import com.example.data.model.LanguageOption
 import com.example.ui.components.AppDynamicLogo
 import com.example.ui.theme.LocalAppColors
+import com.example.ui.theme.AppThemeColors
+import com.example.ui.theme.LightAppColors
 import com.example.ui.theme.LiquidGlass
 import com.example.ui.theme.liquidGlass
+import com.example.ui.theme.resolveColorScheme
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.XtremeGradients
 import com.example.util.AppHaptics
@@ -113,9 +119,61 @@ private val FEATURED_LANGUAGE_NAMES = listOf(
     "English", "Hindi", "Punjabi", "Spanish", "Korean", "Tamil", "Telugu", "Arabic"
 )
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+/** Repair a dark saved palette in light mode only for the first-run flow. */
+private fun onboardingColors(colors: AppThemeColors): AppThemeColors {
+    if (colors.isDark) return colors
+    fun lightSurface(color: Color, fallback: Color): Color =
+        if (color.luminance() >= 0.5f) color.copy(alpha = 1f) else fallback
+    val canvas = lightSurface(colors.scaffoldBackground, LightAppColors.scaffoldBackground)
+    val card = lightSurface(colors.cardBackground, LightAppColors.cardBackground)
+    val elevated = lightSurface(colors.cardBackgroundElevated, LightAppColors.cardBackgroundElevated)
+    val surfaces = listOf(canvas, card, elevated)
+    fun readable(color: Color): Boolean = surfaces.all {
+        androidx.core.graphics.ColorUtils.calculateContrast(color.toArgb(), it.toArgb()) >= 4.5
+    }
+    fun accent(color: Color): Color {
+        if (readable(color)) return color
+        // Retain the selected hue, adjusting only the light-mode shade for text/icons.
+        for (step in 1..20) {
+            val candidate = Color(androidx.core.graphics.ColorUtils.blendARGB(
+                color.toArgb(), android.graphics.Color.BLACK, step / 20f
+            ))
+            if (readable(candidate)) return candidate
+        }
+        return LightAppColors.textPrimary
+    }
+    return colors.copy(
+        scaffoldBackground = canvas,
+        cardBackground = card,
+        cardBackgroundElevated = elevated,
+        cardBorder = if (colors.cardBackground.luminance() < 0.5f) LightAppColors.cardBorder else colors.cardBorder,
+        dividerColor = if (colors.cardBackground.luminance() < 0.5f) LightAppColors.dividerColor else colors.dividerColor,
+        textPrimary = colors.textPrimary.takeIf(::readable) ?: LightAppColors.textPrimary,
+        textSecondary = colors.textSecondary.takeIf(::readable) ?: LightAppColors.textSecondary,
+        textMuted = colors.textMuted.takeIf(::readable) ?: Color(0xFF475569),
+        primaryAccent = accent(colors.primaryAccent),
+        secondaryAccent = accent(colors.secondaryAccent)
+    )
+}
+
 @Composable
 fun OnboardingScreen(
+    onComplete: (name: String, languages: List<String>, country: String, countryCode: String, flag: String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val inheritedColors = LocalAppColors.current
+    val colors = remember(inheritedColors) { onboardingColors(inheritedColors) }
+    val scheme = remember(colors) { resolveColorScheme(colors.isDark, colors) }
+    CompositionLocalProvider(LocalAppColors provides colors) {
+        MaterialTheme(colorScheme = scheme) {
+            OnboardingContent(onComplete, modifier)
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+private fun OnboardingContent(
     onComplete: (name: String, languages: List<String>, country: String, countryCode: String, flag: String) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -317,7 +375,7 @@ fun OnboardingScreen(
                         placeholder = {
                             Text(
                                 "Enter your name (e.g. Alex)",
-                                color = textMuted.copy(alpha = 0.6f),
+                                color = textMuted.copy(alpha = if (isDark) 0.6f else 1f),
                                 fontSize = 13.5.sp
                             )
                         },
@@ -604,7 +662,7 @@ fun OnboardingScreen(
                     colors = ButtonDefaults.buttonColors(
                         containerColor = primaryAccent,
                         disabledContainerColor = primaryAccent.copy(alpha = 0.2f),
-                        contentColor = Color.White,
+                        contentColor = if (isDark) Color.White else appColors.onPrimaryAccent,
                         disabledContentColor = textMuted
                     ),
                     modifier = Modifier
@@ -842,7 +900,7 @@ fun OnboardingStartupPage(
             shape = RoundedCornerShape(22.dp),
             colors = ButtonDefaults.buttonColors(
                 containerColor = primaryAccent,
-                contentColor = Color.White
+                contentColor = if (isDark) Color.White else appColors.onPrimaryAccent
             ),
             elevation = ButtonDefaults.buttonElevation(defaultElevation = 8.dp),
             modifier = Modifier
