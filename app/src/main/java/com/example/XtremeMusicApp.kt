@@ -33,6 +33,7 @@ class XtremeMusicApp : Application(), ImageLoaderFactory {
 
     override fun newImageLoader(): ImageLoader {
         return ImageLoader.Builder(this)
+            .components { add(com.example.ui.util.ArtworkResolutionInterceptor()) }
             .okHttpClient(okhttp3.OkHttpClient.Builder()
                 .dispatcher(okhttp3.Dispatcher().apply { maxRequests = 24; maxRequestsPerHost = 6 })
                 .eventListenerFactory { object : okhttp3.EventListener() {
@@ -88,6 +89,11 @@ class XtremeMusicApp : Application(), ImageLoaderFactory {
         } catch (e: Exception) {
             android.util.Log.e("XtremeMusicApp", "Failed to initialize database: ${e.message}")
             throw RuntimeException("Critical: Cannot initialize database", e)
+        }
+
+        // Construct the shared resolver off Main and warm its URL cache from Room.
+        startupScope.launch {
+            com.example.data.repository.iTunesArtworkRepository.getInstance(this@XtremeMusicApp)
         }
 
         // Initialize repository - with null safety checks

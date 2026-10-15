@@ -13,6 +13,7 @@ import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -26,11 +27,9 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RenderEffect
 import androidx.compose.ui.graphics.Shape
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.drawscope.scale
-import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
@@ -41,31 +40,49 @@ import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntSize
-import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.dp
 import com.example.ui.theme.AppThemeColors
 import com.example.ui.theme.LocalAppColors
+import kotlin.math.abs
 import kotlin.math.ceil
-import kotlin.math.floor
 
 val LocalDynamicGlassEnabled = compositionLocalOf { true }
 
 /** A shared GPU display list. Glass controls must remain outside their own source. */
 class LiquidGlassBackdrop internal constructor(
     internal val layer: GraphicsLayer,
+    // Retained for callers that used region capture. The shared display list is now
+    // always full resolution; only the individual glass samples are downscaled.
     internal val captureVisibleRegions: Boolean
 ) {
     internal var position = Offset.Zero
     internal var sampleScale by mutableFloatStateOf(XtremeLiquidGlassDefaults.BackdropSampleScale)
     internal var revision by mutableIntStateOf(0)
-    private var regionEpoch by mutableIntStateOf(0)
+    internal var geometryRevision by mutableIntStateOf(0)
+        private set
+    internal var captureActive by mutableStateOf(false)
+        private set
+    internal var hasCapture = false
+    internal var isRecording = false
     private val regions = mutableListOf<LiquidGlassRegion>()
     private var sourceCoordinates: LayoutCoordinates? = null
-    private var sourcePosition = Offset.Zero
     private var sourceSize = IntSize.Zero
-    private var lastCapture: IntRect? = null
-    private var recording = 0
-    internal fun recorded() { revision = ++recording }
+    private var publishedPosition = Offset.Zero
+    private var hasSourceGeometry = false
+    private var recordingSerial = 0
+    internal fun recorded() {
+        hasCapture = true
+        revision = ++recordingSerial
+    }
+
+    internal fun clearSource() {
+        sourceCoordinates = null
+        sourceSize = IntSize.Zero
+        hasSourceGeometry = false
+        hasCapture = false
+        captureActive = false
+        revision = 0
+    }
 
     internal fun register(region: LiquidGlassRegion) {
         regions.add(region)
@@ -76,48 +93,27 @@ class LiquidGlassBackdrop internal constructor(
         if (regions.remove(region)) regionsChanged()
     }
 
-    internal fun regionsChanged() { regionEpoch++ }
+    internal fun regionsChanged() {
+        // Moving a pill must only redraw that pill. A full-size source needs a new
+        // capture only when glass becomes visible, not whenever its bounds change.
+        captureActive = regions.any { it.intersects(position, sourceSize) }
+    }
 
     internal fun updateSource(coordinates: LayoutCoordinates) {
         sourceCoordinates = coordinates
         val origin = coordinates.positionInWindow()
-        if (sourcePosition != origin || sourceSize != coordinates.size) {
-            sourcePosition = origin
+        position = origin
+        if (!hasSourceGeometry || differsByPixel(publishedPosition, origin) || sourceSize != coordinates.size) {
+            hasSourceGeometry = true
+            publishedPosition = origin
             sourceSize = coordinates.size
+            geometryRevision++
             regionsChanged()
         }
     }
 
     internal fun sourceOrigin(): Offset = sourceCoordinates?.takeIf { it.isAttached }
-        ?.positionInWindow() ?: sourcePosition
-
-    internal fun captureBounds(width: Float, height: Float, origin: Offset): IntRect? {
-        // This snapshot read belongs to the source's draw phase only. Attachment/layout
-        // changes request a capture without recomposing or relaying out the page.
-        regionEpoch
-        var left = width
-        var top = height
-        var right = 0f
-        var bottom = 0f
-        for (region in regions) {
-            val coordinates = region.coordinates?.takeIf { it.isAttached } ?: continue
-            val bounds = coordinates.boundsInWindow()
-            if (bounds.isEmpty || bounds.right <= origin.x || bounds.bottom <= origin.y ||
-                bounds.left >= origin.x + width || bounds.top >= origin.y + height) continue
-            left = minOf(left, (bounds.left - origin.x - region.padding).coerceAtLeast(0f))
-            top = minOf(top, (bounds.top - origin.y - region.padding).coerceAtLeast(0f))
-            right = maxOf(right, (bounds.right - origin.x + region.padding).coerceAtMost(width))
-            bottom = maxOf(bottom, (bounds.bottom - origin.y + region.padding).coerceAtMost(height))
-        }
-        if (right <= left || bottom <= top) return null
-        val l = if (captureVisibleRegions) floor(left).toInt() else 0
-        val t = if (captureVisibleRegions) floor(top).toInt() else 0
-        val r = if (captureVisibleRegions) ceil(right).toInt() else ceil(width).toInt()
-        val b = if (captureVisibleRegions) ceil(bottom).toInt() else ceil(height).toInt()
-        val cached = lastCapture
-        if (cached != null && cached.left == l && cached.top == t && cached.right == r && cached.bottom == b) return cached
-        return IntRect(l, t, r, b).also { lastCapture = it }
-    }
+        ?.positionInWindow() ?: position
 }
 
 val LocalLiquidGlassBackdrop = compositionLocalOf<LiquidGlassBackdrop?> { null }
@@ -134,22 +130,44 @@ private class GlassSampleCache {
 /** Reused region registration; rapidly changing coordinates are never composition state. */
 internal class LiquidGlassRegion {
     var coordinates: LayoutCoordinates? = null
-    var padding = 0f
+    var geometryRevision by mutableIntStateOf(0)
+        private set
     private var position = Offset.Unspecified
     private var size = IntSize.Zero
     private var bounds = Rect.Zero
+    private var publishedBounds = Rect.Zero
+    private var hasGeometry = false
+
+    fun intersects(origin: Offset, sourceSize: IntSize): Boolean =
+        coordinates?.isAttached == true && !bounds.isEmpty &&
+            bounds.right > origin.x && bounds.bottom > origin.y &&
+            bounds.left < origin.x + sourceSize.width && bounds.top < origin.y + sourceSize.height
 
     fun update(coordinates: LayoutCoordinates): Boolean {
         this.coordinates = coordinates
         val newPosition = coordinates.positionInWindow()
         val newBounds = coordinates.boundsInWindow()
-        val changed = position != newPosition || size != coordinates.size || bounds != newBounds
-        position = newPosition
-        size = coordinates.size
         bounds = newBounds
+        val changed = !hasGeometry || differsByPixel(position, newPosition) || size != coordinates.size ||
+            publishedBounds.isEmpty != newBounds.isEmpty ||
+            abs(publishedBounds.left - newBounds.left) >= 1f || abs(publishedBounds.top - newBounds.top) >= 1f ||
+            abs(publishedBounds.right - newBounds.right) >= 1f || abs(publishedBounds.bottom - newBounds.bottom) >= 1f
+        if (changed) {
+            hasGeometry = true
+            position = newPosition
+            size = coordinates.size
+            publishedBounds = newBounds
+            geometryRevision++
+        }
         return changed
     }
 }
+
+private fun differsByPixel(first: Offset, second: Offset): Boolean =
+    abs(first.x - second.x) >= 1f || abs(first.y - second.y) >= 1f
+
+/** Round capacity up so growing surfaces do not resize their sample every pixel. */
+private fun sampleDimension(pixels: Float): Int = ceil(pixels / 16f).toInt().coerceAtLeast(1) * 16
 
 @Composable
 fun rememberLiquidGlassBackdrop(captureVisibleRegions: Boolean = false): LiquidGlassBackdrop {
@@ -176,40 +194,31 @@ fun Modifier.xtremeSharedBackdropSource(
     if (!enabled || !LocalDynamicGlassEnabled.current || backdrop == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return this
     val processingScale = sampleScale.takeIf { it.isFinite() }?.coerceIn(0.1f, 1f)
         ?: XtremeLiquidGlassDefaults.BackdropSampleScale
+    DisposableEffect(backdrop) {
+        onDispose { backdrop.clearSource() }
+    }
     SideEffect { backdrop.sampleScale = processingScale }
-    val source = this.onGloballyPositioned(backdrop::updateSource)
+    return this.onGloballyPositioned(backdrop::updateSource)
         .drawWithContent {
-            val origin = backdrop.sourceOrigin()
-            val capture = backdrop.captureBounds(size.width, size.height, origin)
-            if (capture == null) {
+            if (!backdrop.captureActive || size.width < 1f || size.height < 1f) {
+                backdrop.hasCapture = false
                 drawContent()
                 return@drawWithContent
             }
-            val fullSize = size
-            val captureSize = IntSize(capture.width, capture.height)
-            backdrop.position = origin + Offset(capture.left.toFloat(), capture.top.toFloat())
-            backdrop.layer.record(size = captureSize) {
-                // Keep the page's drawing coordinates/gradients unchanged inside the smaller
-                // display list. Only the backdrop viewport is cropped, never the visible UI.
-                val recordedSize = drawContext.size
-                drawContext.size = fullSize
-                try {
-                    clipRect(0f, 0f, capture.width.toFloat(), capture.height.toFloat()) {
-                        translate(-capture.left.toFloat(), -capture.top.toFloat()) {
-                            this@drawWithContent.drawContent()
-                        }
-                    }
-                } finally { drawContext.size = recordedSize }
+            backdrop.position = backdrop.sourceOrigin()
+            backdrop.isRecording = true
+            try {
+                // Record the sharp viewport once, then replay its hardware display list.
+                // Downsampling is confined to each blurred pill; page text/art stay native.
+                backdrop.layer.record(size = IntSize(ceil(size.width).toInt(), ceil(size.height).toInt())) {
+                    this@drawWithContent.drawContent()
+                }
+            } finally {
+                backdrop.isRecording = false
             }
             backdrop.recorded()
-            // The expanded player's existing full-size source can still draw its display list
-            // once. A cropped Home source leaves the sharp page drawing independent of it.
-            if (backdrop.captureVisibleRegions) drawContent() else drawLayer(backdrop.layer)
+            drawLayer(backdrop.layer)
         }
-    // Both the sharp page and the cropped capture reuse this inner content display list;
-    // recording the crop does not traverse/redraw every Home item a second time. A plain
-    // graphicsLayer adds no blur, scaling, clipping or offscreen bitmap to the visible page.
-    return if (backdrop.captureVisibleRegions) source.graphicsLayer() else source
 }
 
 /**
@@ -247,9 +256,8 @@ fun Modifier.xtremeLiquidGlassBackground(
     val sample = rememberGraphicsLayer()
     val sampleCache = remember(sample) { GlassSampleCache() }
     val bleed = ceil(radius * 2).toInt()
-    DisposableEffect(backdrop, supportsBlur, bleed, sampleCache) {
+    DisposableEffect(backdrop, supportsBlur, sampleCache) {
         val registered = backdrop?.takeIf { supportsBlur }
-        sampleCache.region.padding = bleed.toFloat()
         registered?.register(sampleCache.region)
         onDispose { registered?.unregister(sampleCache.region) }
     }
@@ -283,31 +291,42 @@ fun Modifier.xtremeLiquidGlassBackground(
                 center = Offset(size.width * 0.72f, size.height * 1.6f), radius = size.width.coerceAtLeast(size.height) * 0.65f)
             // Extra pixels avoid dark seams when the blur kernel reaches the pill's edge.
             val sampleSize = IntSize(
-                ceil((size.width + bleed * 2) * processingScale).toInt().coerceAtLeast(1),
-                ceil((size.height + bleed * 2) * processingScale).toInt().coerceAtLeast(1))
+                sampleDimension((size.width + bleed * 2) * processingScale),
+                sampleDimension((size.height + bleed * 2) * processingScale))
             onDrawWithContent {
-                val revision = backdrop?.revision ?: 0
+                // Never add a dependency on a layer while that same layer is recording.
+                val source = backdrop?.takeUnless { it.isRecording }
+                val revision = source?.revision ?: 0
+                if (source != null) {
+                    source.geometryRevision
+                    sampleCache.region.geometryRevision
+                }
                 val coordinates = sampleCache.region.coordinates?.takeIf { it.isAttached }
                 val visible = coordinates != null && !coordinates.boundsInWindow().isEmpty
-                val ready = blur != null && backdrop != null && revision != 0 && visible && !backdrop.layer.isReleased
+                val ready = blur != null && source != null && source.hasCapture && revision != 0 && visible && !source.layer.isReleased
                 if (ready) {
-                    val offset = backdrop.position - coordinates.positionInWindow()
+                    val offset = source.position - coordinates.positionInWindow()
+                    // Keep capacity when a surface contracts, including when it oscillates
+                    // across a bucket boundary. The shape clip limits the visible sample.
+                    val allocationSize = IntSize(
+                        maxOf(sampleCache.size.width, sampleSize.width),
+                        maxOf(sampleCache.size.height, sampleSize.height))
                     // drawLayer records a live RenderNode reference, not a frozen bitmap.
                     // Content revisions still invalidate this draw, but only geometry/source/
                     // effect changes require rebuilding the sample's display list. Child layer
                     // changes continue to propagate through the GPU dependency graph.
-                    if (sampleCache.source !== backdrop.layer ||
-                        sampleCache.offset != offset || sampleCache.size != sampleSize || sampleCache.effect !== blur) {
+                    if (sampleCache.source !== source.layer ||
+                        differsByPixel(sampleCache.offset, offset) || sampleCache.size != allocationSize || sampleCache.effect !== blur) {
                         if (sampleCache.effect !== blur) sample.renderEffect = blur
-                        sample.record(size = sampleSize) {
+                        sample.record(size = allocationSize) {
                             scale(processingScale, pivot = Offset.Zero) {
-                                translate(offset.x + bleed, offset.y + bleed) { drawLayer(backdrop.layer) }
+                                translate(offset.x + bleed, offset.y + bleed) { drawLayer(source.layer) }
                             }
                         }
                         // Update only after recording succeeds. Keep these fields out of snapshot state.
-                        sampleCache.source = backdrop.layer
+                        sampleCache.source = source.layer
                         sampleCache.offset = offset
-                        sampleCache.size = sampleSize
+                        sampleCache.size = allocationSize
                         sampleCache.effect = blur
                     }
                     translate(-bleed.toFloat(), -bleed.toFloat()) {

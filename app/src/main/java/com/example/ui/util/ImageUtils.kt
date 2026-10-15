@@ -1,32 +1,19 @@
 package com.example.ui.util
 
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.unit.IntSize
-import coil.size.Dimension
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
-import android.graphics.drawable.BitmapDrawable
-import coil.imageLoader
-import coil.memory.MemoryCache
 import coil.request.CachePolicy
-import coil.request.ErrorResult
 import coil.request.ImageRequest
-import coil.request.SuccessResult
 import coil.size.Scale
 import com.example.data.model.MusicTrack
 import com.example.data.repository.ArtworkDimensions
-import com.example.data.repository.MediaItem as ArtworkMediaItem
 import com.example.data.repository.iTunesArtworkRepository
 import com.example.data.repository.toMediaItem
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 
 object ImageConfig {
@@ -36,7 +23,7 @@ object ImageConfig {
     const val PLAYLIST_HEADER_SIZE = 400 // ~400dp for playlist header cover
     const val RECOMMENDATION_CARD_SIZE = 450 // Crisp 400-600px for recommendation cards on Home screen
     const val HERO_BANNER_SIZE = 1200 // 1000-1200px ultra high-res for Now Playing hero banners
-    const val PLAYER_SCREEN_SIZE = -1 // Full High Quality image (Size.ORIGINAL) for expanded music player screen album art
+    const val PLAYER_SCREEN_SIZE = -1 // High-quality source decoded to the expanded player's displayed bounds
     const val PLAYER_COVER_SIZE = -1 // alias
     const val PALETTE_THUMBNAIL_SIZE = 120 // for fast palette extraction
 }
@@ -121,9 +108,8 @@ fun mapTargetSizeToArtworkDimension(targetSize: Int): Int {
 }
 
 /**
- * Shared high-performance Coil ImageRequest with explicit hardware downscaling,
- * GPU hardware acceleration, 3-layer caching (LruCache, Room DB, Coil disk cache),
- * and iTunes Artwork resolution. Home can opt out of crossfade and unnecessary upgrades.
+ * The request stays stable while Coil resolves artwork internally. Source resolution is
+ * independent of decode size: AsyncImage supplies its pixel bounds unless explicitly set.
  */
 @Composable
 fun rememberOptimizedImageRequest(
@@ -151,189 +137,42 @@ fun rememberOptimizedImageRequest(
     decodeSize: IntSize? = null
 ): ImageRequest {
     val context = LocalContext.current
-    val repository = remember { iTunesArtworkRepository.getInstance(context) }
-    val targetDimension = remember(targetSize) { mapTargetSizeToArtworkDimension(targetSize) }
-
-    val initialUrl = remember(url, targetDimension) {
-        when {
-            url.contains("150x150.jpg") -> url.replace("150x150.jpg", "500x500.jpg")
-            url.contains("50x50.jpg") -> url.replace("50x50.jpg", "500x500.jpg")
-            url.contains("hqdefault.jpg") -> url.replace("hqdefault.jpg", "maxresdefault.jpg")
-            url.contains("mqdefault.jpg") -> url.replace("mqdefault.jpg", "maxresdefault.jpg")
-            url.contains("default.jpg") && !url.contains("maxresdefault.jpg") -> url.replace("default.jpg", "maxresdefault.jpg")
-            url.contains("100x100bb") -> repository.formatUrl(url, targetDimension)
-            url.contains("100x100") -> repository.formatUrl(url, targetDimension)
-            else -> url
-        }
-    }
-
-    if (track == null) {
-        return remember(initialUrl, targetSize, crossfadeEnabled, decodeSize) {
-            buildImageRequest(context, initialUrl, targetSize, crossfadeEnabled, decodeSize = decodeSize)
-        }
-    }
-
-    // Audio transport/bitrate changes do not change this recording's artwork identity.
-    val item = remember(track.title, track.artist, track.coverUrl) {
-        track.toMediaItem()
-    }
-    val memoryCachedUrl = remember(item, targetDimension) {
-        repository.peekMemoryCachedUrl(item, targetDimension)
-    }
-    return rememberStableHomeArtworkRequest(context, repository, item, track.id, track.album,
-        initialUrl, memoryCachedUrl, targetSize, targetDimension, crossfadeEnabled, decodeSize)
-}
-
-// Per-composition request state; image data remains in the existing Coil/repository caches.
-private class HomeArtworkState(initialUrl: String) {
-    var displayUrl by mutableStateOf(initialUrl)
-    var needsResolution by mutableStateOf(initialUrl.isBlank())
-    var placeholderKey by mutableStateOf<MemoryCache.Key?>(null)
-    var lastSuccessfulKey: MemoryCache.Key? = null
-    var loadedDimension = 0
-    var resolutionAttempts = 0
-    var decodedSize: IntSize? = null
-    val failedUrls = mutableSetOf<String>()
-}
-
-private fun SuccessResult.minimumArtworkDimension(): Int {
-    val bitmap = (drawable as? BitmapDrawable)?.bitmap
-    return if (bitmap != null) minOf(bitmap.width, bitmap.height)
-        else minOf(drawable.intrinsicWidth, drawable.intrinsicHeight).coerceAtLeast(0)
-}
-
-@Composable
-private fun rememberStableHomeArtworkRequest(
-    context: android.content.Context,
-    repository: iTunesArtworkRepository,
-    item: ArtworkMediaItem,
-    trackId: String,
-    album: String,
-    initialUrl: String,
-    memoryCachedUrl: String?,
-    targetSize: Int,
-    targetDimension: Int,
-    crossfadeEnabled: Boolean,
-    decodeSize: IntSize?
-): ImageRequest {
-    val scope = rememberCoroutineScope()
-    val state = remember(trackId, item, album, initialUrl, targetSize, targetDimension, decodeSize) {
-        val cachedKey = MemoryCache.Key(initialUrl)
-        val cachedBitmap = context.imageLoader.memoryCache?.get(cachedKey)?.bitmap
-        val required = decodeSize?.let { maxOf(it.width, it.height) } ?: if (targetSize > 0) targetSize else targetDimension
-        val adequate = cachedBitmap != null && minOf(cachedBitmap.width, cachedBitmap.height) >= required
-        HomeArtworkState(memoryCachedUrl?.takeIf { it.isNotBlank() } ?: initialUrl.takeIf { adequate }.orEmpty()).apply {
-            // Fresh artwork comes from iTunes first. An already decoded, usable image can
-            // remain visible while a verified cover is restored from Room or fetched.
-            if (cachedBitmap != null) {
-                placeholderKey = cachedKey
-                lastSuccessfulKey = cachedKey
-                loadedDimension = minOf(cachedBitmap.width, cachedBitmap.height)
-            }
-            decodedSize = decodeSize
-        }
-    }
-    val requiredDimension = decodeSize?.let { maxOf(it.width, it.height) } ?: if (targetSize > 0) targetSize else targetDimension
-    val listener = remember(state, requiredDimension, initialUrl, item.sourceArtworkUrl) {
-        object : ImageRequest.Listener {
-            override fun onSuccess(request: ImageRequest, result: SuccessResult) {
-                if (request.data?.toString() != state.displayUrl) return
-                state.lastSuccessfulKey = result.memoryCacheKey
-                state.loadedDimension = result.minimumArtworkDimension()
-                scope.launch {
-                    val measured = withContext(Dispatchers.IO) { request.sizeResolver.size() }
-                    if (request.data?.toString() != state.displayUrl) return@launch
-                    val width = (measured.width as? Dimension.Pixels)?.px
-                    val height = (measured.height as? Dimension.Pixels)?.px
-                    if (width != null && height != null) state.decodedSize = IntSize(width, height)
-                    val needed = state.decodedSize?.let { maxOf(it.width, it.height) } ?: requiredDimension
-                    state.needsResolution = state.loadedDimension in 1 until needed
+    // Transport URL/bitrate changes do not change artwork. Metadata edits and a larger
+    // destination do create a new request, including when a recycled row keeps its ID.
+    return remember(context, url, track?.id, track?.title, track?.artist, track?.album,
+        track?.source, track?.coverUrl, targetSize, crossfadeEnabled, preferStableArtwork, decodeSize) {
+        val metadata = ArtworkRequestMetadata(
+            item = track?.toMediaItem(),
+            trackId = track?.id,
+            album = track?.album,
+            providerUrl = url,
+            sourceDimension = mapTargetSizeToArtworkDimension(targetSize),
+            preferStableArtwork = preferStableArtwork,
+            targetSize = targetSize
+        )
+        // Re-entering cards can start on a prepared resolved URL without constructing the
+        // repository or sanitizing metadata on Main. The interceptor retains raw fallbacks.
+        val initialUrl = metadata.item?.let {
+            iTunesArtworkRepository.peekInstance()?.peekMemoryCachedUrl(it, metadata.sourceDimension)
+        }?.takeIf { it.isNotBlank() } ?: url
+        ImageRequest.Builder(context)
+            .data(initialUrl)
+            .setParameter(ARTWORK_METADATA_PARAMETER, metadata, null)
+            .placeholderMemoryCacheKey(initialUrl.takeIf { it.isNotBlank() })
+            .interceptorDispatcher(Dispatchers.Default)
+            .scale(Scale.FILL)
+            .crossfade(if (crossfadeEnabled) 200 else 0)
+            .allowHardware(true)
+            .bitmapConfig(android.graphics.Bitmap.Config.HARDWARE)
+            .allowRgb565(true)
+            .memoryCachePolicy(CachePolicy.ENABLED)
+            .diskCachePolicy(CachePolicy.ENABLED)
+            .networkCachePolicy(CachePolicy.ENABLED)
+            .apply {
+                if (decodeSize != null && decodeSize.width > 0 && decodeSize.height > 0) {
+                    size(decodeSize.width, decodeSize.height)
                 }
             }
-
-            override fun onError(request: ImageRequest, result: ErrorResult) {
-                if (request.data?.toString() != state.displayUrl) return
-                state.failedUrls.add(state.displayUrl)
-                state.needsResolution = true
-                val fallback = listOf(initialUrl, item.sourceArtworkUrl)
-                    .firstOrNull { it.isNotBlank() && it !in state.failedUrls }
-                if (fallback != null) {
-                    state.placeholderKey = state.lastSuccessfulKey
-                    state.displayUrl = fallback
-                }
-            }
-        }
+            .build()
     }
-
-    LaunchedEffect(state, state.needsResolution) {
-        if (!state.needsResolution || state.resolutionAttempts >= 2) return@LaunchedEffect
-        state.resolutionAttempts++
-        val needed = state.decodedSize?.let { maxOf(it.width, it.height) } ?: requiredDimension
-        val resolved = withContext(Dispatchers.Default) { repository.resolveArtwork(item, maxOf(targetDimension, needed)) }
-        if (state.displayUrl.isBlank() && state.loadedDimension <= 0 && resolved.isNotBlank()) {
-            state.displayUrl = resolved
-            state.needsResolution = false
-            return@LaunchedEffect
-        }
-        if (resolved.isBlank() || resolved == state.displayUrl || resolved in state.failedUrls) return@LaunchedEffect
-        // Keep the usable source image while Coil fetches/decodes the candidate off Main.
-        // The visible request then reuses this same memory/disk entry instead of decoding twice.
-        val candidate = withContext(Dispatchers.IO) {
-            context.imageLoader.execute(buildImageRequest(context, resolved, targetSize, crossfadeEnabled = false,
-                decodeSize = state.decodedSize ?: IntSize(requiredDimension, requiredDimension)))
-                as? SuccessResult
-        } ?: return@LaunchedEffect
-        val canRecover = state.loadedDimension <= 0 || state.displayUrl in state.failedUrls
-        if (canRecover || candidate.minimumArtworkDimension() > state.loadedDimension) {
-            state.placeholderKey = candidate.memoryCacheKey ?: state.lastSuccessfulKey
-            state.displayUrl = resolved
-        } else if (state.displayUrl.isBlank() && initialUrl.isNotBlank()) {
-            // Keep an already decoded fallback if the replacement offers no quality improvement.
-            state.displayUrl = initialUrl
-        }
-        state.needsResolution = false
-    }
-
-    return remember(state.displayUrl, state.placeholderKey, targetSize, crossfadeEnabled, listener, decodeSize) {
-        buildImageRequest(context, state.displayUrl, targetSize, crossfadeEnabled, state.placeholderKey, listener,
-            decodeSize, useConstraints = true)
-    }
-}
-
-private fun buildImageRequest(
-    context: android.content.Context,
-    url: String,
-    targetSize: Int,
-    crossfadeEnabled: Boolean = true,
-    placeholderKey: MemoryCache.Key? = null,
-    listener: ImageRequest.Listener? = null,
-    decodeSize: IntSize? = null,
-    useConstraints: Boolean = false
-): ImageRequest {
-    val builder = ImageRequest.Builder(context)
-        .data(url.takeIf { it.isNotBlank() })
-        .scale(Scale.FILL)
-        .crossfade(if (crossfadeEnabled) 200 else 0)
-        .allowHardware(true)
-        .bitmapConfig(android.graphics.Bitmap.Config.HARDWARE)
-        .allowRgb565(true)
-        .memoryCachePolicy(CachePolicy.ENABLED)
-        .diskCachePolicy(CachePolicy.ENABLED)
-        .networkCachePolicy(CachePolicy.ENABLED)
-
-    if (placeholderKey != null) builder.placeholderMemoryCacheKey(placeholderKey)
-    if (listener != null) builder.listener(listener)
-
-    if (decodeSize != null && decodeSize.width > 0 && decodeSize.height > 0) {
-        builder.size(decodeSize.width, decodeSize.height)
-    } else if (useConstraints) {
-        // Leaving the request size undefined lets AsyncImage attach Coil's own
-        // constraint-based resolver to its displayed bounds (including density).
-    } else if (targetSize > 0) {
-        builder.size(targetSize, targetSize)
-    } else {
-        builder.size(coil.size.Size.ORIGINAL)
-    }
-
-    return builder.build()
 }

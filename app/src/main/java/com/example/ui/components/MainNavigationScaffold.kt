@@ -34,6 +34,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.layout.Column
@@ -144,6 +145,11 @@ fun MainNavigationScaffold(
 
     var selectedTabIndex by rememberSaveable { mutableIntStateOf(0) }
     val tabState = rememberSaveableStateHolder()
+    // Allocate these outside AnimatedContent; tab disposal never serializes or
+    // reconstructs the visible lists' scroll state during a slide.
+    val homeListState = rememberLazyListState()
+    val searchListState = rememberLazyListState()
+    val libraryListState = rememberLazyListState()
     val tabTransition = updateTransition(selectedTabIndex, label = "tab_navigation_transition")
     var isPlayerExpanded by rememberSaveable { mutableStateOf(false) }
     var isQueueOpen by rememberSaveable { mutableStateOf(false) }
@@ -190,11 +196,13 @@ fun MainNavigationScaffold(
     val playerCoversContent = playerVisibility.isIdle && playerVisibility.currentState && playerVisibility.targetState
     val transitionRunning = !playerVisibility.isIdle || tabTransition.isRunning
     DisposableEffect(transitionRunning) {
+        if (transitionRunning) com.example.performance.BackgroundWorkCoordinator.interaction()
         val work = if (transitionRunning) com.example.performance.BackgroundWorkCoordinator.busy() else null
         onDispose { work?.close() }
     }
     val homeLifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
-    // Leave the rendered Home backdrop intact, but keep its data work out of both player transitions.
+    // Visibility is a scheduling hint only. Home keeps its Room observers and
+    // retained state alive while another tab or the expanded player is visible.
     val homeIsVisible = selectedTabIndex == 0 && !isPlayerExpanded && playerVisibility.isIdle &&
         !playerVisibility.currentState && catalogDetail == null && selectedPlaylistWithTracks == null
     LaunchedEffect(homeViewModel, homeLifecycle, homeIsVisible) {
@@ -338,10 +346,14 @@ fun MainNavigationScaffold(
                         modifier = Modifier
                             .fillMaxSize()
                     ) { tabIndex ->
+                      // A stable RenderNode retains child display lists while the
+                      // existing slide/fade animates its placement; no raster downsampling.
+                      Box(Modifier.fillMaxSize().graphicsLayer { clip = false }) {
                       tabState.SaveableStateProvider(tabIndex) {
                         when (tabIndex) {
                             0 -> HomeScreen(
                                 homeViewModel = homeViewModel,
+                                listState = homeListState,
                                 onOpenArtist = { viewModel.catalogBrowser.open(com.example.data.repository.CatalogDestination.Artist(it)) },
                                 currentPlayingTrackId = currentPlayingTrackId,
                                 isPlaying = playerUiState.isPlaying,
@@ -358,6 +370,7 @@ fun MainNavigationScaffold(
                                 val catalogSearch by viewModel.catalogBrowser.search.collectAsStateWithLifecycle()
                                 SearchScreen(
                                     searchState = searchState,
+                                    listState = searchListState,
                                     catalogState = catalogSearch,
                                     onSelectType = viewModel.catalogBrowser::selectType,
                                     onLoadMore = viewModel.catalogBrowser::loadMoreSearch,
@@ -381,6 +394,7 @@ fun MainNavigationScaffold(
                                 val playlists by viewModel.playlists.collectAsStateWithLifecycle()
                                 LibraryScreen(
                                     favoriteTracks = favoriteTracks,
+                                    listState = libraryListState,
                                     playlists = playlists,
                                     currentPlayingTrackId = currentPlayingTrackId,
                                     isDarkMode = isDarkMode,
@@ -423,6 +437,7 @@ fun MainNavigationScaffold(
                                 )
                             }
                         }
+                      }
                       }
                     }
                 }

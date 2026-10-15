@@ -52,7 +52,8 @@ fun MotionAlbumArtPlayer(
     shape: Shape = RoundedCornerShape(24.dp),
     modifier: Modifier = Modifier,
     contentScale: ContentScale = ContentScale.Crop,
-    placeholderMemoryCacheKey: MemoryCache.Key? = null
+    placeholderMemoryCacheKey: MemoryCache.Key? = null,
+    staticImageRequest: ImageRequest? = null
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -124,9 +125,10 @@ fun MotionAlbumArtPlayer(
             exoPlayer?.pause()
         }
     }
-    val artworkRequest = remember(context, staticCoverUrl, placeholderMemoryCacheKey) {
-        ImageRequest.Builder(context).data(staticCoverUrl.takeIf { it.isNotBlank() })
-            .placeholderMemoryCacheKey(placeholderMemoryCacheKey).crossfade(180).build()
+    val artworkRequest = remember(context, staticCoverUrl, placeholderMemoryCacheKey, staticImageRequest) {
+        (staticImageRequest?.newBuilder() ?: ImageRequest.Builder(context).data(staticCoverUrl.takeIf { it.isNotBlank() }))
+            .placeholderMemoryCacheKey(placeholderMemoryCacheKey ?: staticImageRequest?.placeholderMemoryCacheKey)
+            .crossfade(180).build()
     }
 
     Box(

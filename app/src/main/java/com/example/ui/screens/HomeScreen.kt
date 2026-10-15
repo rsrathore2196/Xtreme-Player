@@ -31,6 +31,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -180,6 +181,7 @@ fun HomeScreen(
     onPlayInfiniteRadio: ((MusicTrack?) -> Unit)? = null,
     onAddToQueue: ((MusicTrack) -> Unit)? = null,
     modifier: Modifier = Modifier,
+    listState: LazyListState = rememberLazyListState(),
     onOpenArtist: (com.example.data.repository.CatalogArtist) -> Unit = {}
 ) {
     val heroSeedTrack by homeViewModel.heroSeedTrack.collectAsStateWithLifecycle()
@@ -212,6 +214,7 @@ fun HomeScreen(
         ) { contentOffset ->
             HomeScreenContent(
                 heroSeedTrack = heroSeedTrack,
+                listState = listState,
                 pillsCardTracks = listeningHistoryCard.tracks.take(6),
                 ytmCard = ytmCard,
                 eraCard = eraCard,
@@ -319,6 +322,7 @@ fun HomeScreenContent(
     onRetryRefresh: (() -> Unit)? = null,
     onDismissRefreshError: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
+    listState: LazyListState = rememberLazyListState(),
     onOpenArtist: (com.example.data.repository.CatalogArtist) -> Unit = {}
 ) {
     val greeting = rememberGreeting()
@@ -333,8 +337,7 @@ fun HomeScreenContent(
     val textPrimaryColor = appColors.textPrimary
     val textMutedColor = appColors.textMuted
 
-    val homeListState = rememberLazyListState()
-    ObserveHomeScroll(homeListState)
+    ObserveHomeScroll(listState)
 
     Box(
         modifier = modifier
@@ -343,7 +346,7 @@ fun HomeScreenContent(
         contentAlignment = Alignment.TopCenter
     ) {
         LazyColumn(
-            state = homeListState,
+            state = listState,
             modifier = Modifier
                 .fillMaxWidth()
                 .widthIn(max = 640.dp)

@@ -5,6 +5,7 @@ import com.example.data.local.UserProfile
 import com.example.data.model.MusicTrack
 import com.example.ui.ai.HomeShelf
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -12,7 +13,10 @@ import java.util.Calendar
 import kotlin.random.Random
 
 /** Metadata and actual-listening ranking shared by Home's existing recommendation cards. */
-class PersonalizedHomeRecommendationEngine(private val listeningEventDao: ListeningEventDao) {
+class PersonalizedHomeRecommendationEngine(
+    private val listeningEventDao: ListeningEventDao,
+    private val workerDispatcher: CoroutineDispatcher = Dispatchers.Default
+) {
     private val snapshotMutex = Mutex()
     private var cachedSnapshot: RecommendationSnapshot? = null
     private var cachedKey: Int? = null
@@ -24,7 +28,7 @@ class PersonalizedHomeRecommendationEngine(private val listeningEventDao: Listen
         forceRefresh: Boolean = false,
         favorites: List<MusicTrack> = emptyList(),
         taste: UserTasteProfile? = null
-    ): List<HomeShelf> = withContext(Dispatchers.Default) {
+    ): List<HomeShelf> = withContext(workerDispatcher) {
         val profile = taste ?: withContext(Dispatchers.IO) {
             UserTasteProfile.buildProfile(listeningEventDao, tracks = catalogTracks, favorites = favorites)
         }

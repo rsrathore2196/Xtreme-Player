@@ -324,7 +324,9 @@ class PlayerViewModel(
         .distinctUntilChanged { old, new -> old.first == new.first }
         .map { it.second }
 
-    val homeShelves: StateFlow<List<com.example.ui.ai.HomeShelf>> = kotlinx.coroutines.flow.combine(
+    // Compatibility API: HomeViewModel owns Home. Construct the older engine only
+    // if a caller actually requests it, and collect it only while subscribed.
+    val homeShelves: StateFlow<List<com.example.ui.ai.HomeShelf>> by lazy { kotlinx.coroutines.flow.combine(
         currentPlayingTrackFlow,
         recentlyPlayed,
         favoriteTracks,
@@ -344,7 +346,7 @@ class PlayerViewModel(
         viewModelScope + Dispatchers.Default,
         SharingStarted.WhileSubscribed(5000L),
         emptyList()
-    )
+    ) }
 
     init {
         viewModelScope.launch(recentSearchDispatcher) {

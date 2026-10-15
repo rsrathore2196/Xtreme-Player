@@ -1,5 +1,6 @@
 package com.example.recommendation
 
+import android.util.LruCache
 import com.example.data.model.MusicTrack
 import java.text.Normalizer
 import java.util.Locale
@@ -7,6 +8,10 @@ import java.util.Locale
 /** Recording identity is independent of provider IDs and artwork. Keep real version labels. */
 object HomeRecommendationPolicy {
     const val MAX_SHELF_TRACKS = 12
+    private const val NORMALIZATION_CACHE_SIZE = 4096
+    private val normalizedValues = LruCache<String, String>(NORMALIZATION_CACHE_SIZE)
+    private data class MetadataInput(val title: String, val artistNames: List<String>)
+    private val metadataKeys = LruCache<MetadataInput, String>(NORMALIZATION_CACHE_SIZE)
     private val punctuation = Regex("[^\\p{L}\\p{N}]+")
     private val artistSeparator = Regex("(?i),|;|\\s+(?:feat\\.?|ft\\.?|featuring|&)\\s+")
     private val topicSuffix = Regex("(?i)\\s*-\\s*topic$")
@@ -14,8 +19,11 @@ object HomeRecommendationPolicy {
     private val soundtrackTag = Regex("(?i)\\(\\s*from\\s+.*?\\)")
     private val isrcPattern = Regex("[A-Z]{2}[A-Z0-9]{3}[0-9]{7}")
     private val unknowns = setOf("", "unknown", "unknown artist", "various artists", "online artist", "youtube artist", "single", "online stream")
-    fun normalize(value: String): String = Normalizer.normalize(value, Normalizer.Form.NFKC)
-        .lowercase(Locale.ROOT).replace(punctuation, " ").trim()
+    fun normalize(value: String): String = synchronized(normalizedValues) {
+        normalizedValues.get(value) ?: Normalizer.normalize(value, Normalizer.Form.NFKC)
+            .lowercase(Locale.ROOT).replace(punctuation, " ").trim()
+            .also { normalizedValues.put(value, it) }
+    }
 
     fun known(value: String): Boolean = normalize(value) !in unknowns
 
@@ -41,12 +49,17 @@ object HomeRecommendationPolicy {
     fun metadataKey(track: MusicTrack): String = metadataKey(track, artists(track))
 
     private fun metadataKey(track: MusicTrack, artistNames: List<String>): String {
-        var title = track.title.replace(displayNoise, " ")
-            .replace(soundtrackTag, " ")
-        title = normalize(title)
-        // Provider video titles often prefix the credited artist.
-        artistNames.forEach { if (title.startsWith("$it ")) title = title.removePrefix("$it ") }
-        return "$title|${artistNames.joinToString(",")}"
+        val input = MetadataInput(track.title, artistNames)
+        return synchronized(metadataKeys) {
+            metadataKeys.get(input) ?: run {
+                var title = track.title.replace(displayNoise, " ")
+                    .replace(soundtrackTag, " ")
+                title = normalize(title)
+                // Provider video titles often prefix the credited artist.
+                artistNames.forEach { if (title.startsWith("$it ")) title = title.removePrefix("$it ") }
+                "$title|${artistNames.joinToString(",")}".also { metadataKeys.put(input, it) }
+            }
+        }
     }
 
     fun isrc(track: MusicTrack): String? = track.isrc.replace("-", "").uppercase(Locale.ROOT)

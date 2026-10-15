@@ -26,6 +26,7 @@ import com.example.ui.components.bouncyOverscroll
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -111,6 +112,7 @@ fun SearchScreen(
     onTrackClick: (MusicTrack, List<MusicTrack>) -> Unit,
     onToggleFavorite: (MusicTrack) -> Unit,
     modifier: Modifier = Modifier,
+    listState: LazyListState = rememberLazyListState(),
     catalogState: com.example.ui.viewmodel.CatalogSearchState = com.example.ui.viewmodel.CatalogSearchState(),
     onSelectType: (String) -> Unit = {},
     onLoadMore: () -> Unit = {},
@@ -178,7 +180,6 @@ fun SearchScreen(
     }
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
-    val listState = rememberLazyListState()
 
     val selectedTypeFilter: String? = catalogState.type.takeUnless { it == "All" }
     // The catalog starts with All. Retain the selected filter on tab return,

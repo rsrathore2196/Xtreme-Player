@@ -2,7 +2,6 @@ package com.example.data.remote
 
 import android.content.Context
 import android.text.Html
-import android.util.Base64
 import android.util.Log
 import com.example.config.SecurityConfig
 import com.example.data.model.MusicTrack
@@ -24,29 +23,33 @@ import javax.crypto.spec.SecretKeySpec
 
 object OnlineMusicApiService {
     private const val TAG = "OnlineMusicApiService"
-    private var context: Context? = null
-    private var cachedDESKey: String? = null
+    @Volatile private var context: Context? = null
+    private val saavnCdnPattern = Regex("(?i)^https?://(?:[a-z0-9-]+\\.)*saavncdn\\.com(?:/|:)")
+    private val bitrateSuffixPattern = Regex("_(?:320|160|96|48)\\.(mp4|m4a)(?=$|[?#])")
+    private val streamBitratePattern = Regex("_(320|160|96|48)\\.(?:mp4|m4a)(?=$|[?#])")
 
     fun initialize(applicationContext: Context) {
         context = applicationContext
     }
 
     /**
-     * Get DES key from secure storage.
-     * This method retrieves the key from Android KeyStore instead of hardcoding it.
+     * Resolve on the first decryption in the IO parsing paths, never during initialization.
+     * Lazy publication shares one securely resolved key across parsing threads.
      */
-    private fun getDESKey(): String {
-        if (cachedDESKey != null) {
-            return cachedDESKey!!
-        }
-
+    private val desKeySpec: SecretKeySpec by lazy {
         val ctx = context
-        cachedDESKey = if (ctx != null) {
+        val key = if (ctx != null) {
             SecurityConfig.getDESKey(ctx)
         } else {
             SecurityConfig.getFallbackDESKey()
         }
-        return cachedDESKey!!
+        SecretKeySpec(key.toByteArray(Charsets.UTF_8), 0, 8, "DES")
+    }
+
+    private val mediaUrlCiphers = object : ThreadLocal<Cipher>() {
+        override fun initialValue(): Cipher = Cipher.getInstance("DES/ECB/PKCS5Padding").apply {
+            init(Cipher.DECRYPT_MODE, desKeySpec)
+        }
     }
 
     private val memoryQueryCache = object : android.util.LruCache<String, Pair<Long, List<MusicTrack>>>(60) {}
@@ -96,10 +99,7 @@ object OnlineMusicApiService {
     fun decryptMediaUrl(encryptedUrl: String, targetQuality: String = "320"): String? {
         if (encryptedUrl.isBlank()) return null
         return try {
-            val keyBytes = getDESKey().toByteArray(Charsets.UTF_8)
-            val keySpec = SecretKeySpec(keyBytes, 0, 8, "DES")
-            val cipher = Cipher.getInstance("DES/ECB/PKCS5Padding")
-            cipher.init(Cipher.DECRYPT_MODE, keySpec)
+            val cipher = mediaUrlCiphers.get()!!
 
             val decodedBytes = try {
                 java.util.Base64.getDecoder().decode(encryptedUrl)
@@ -115,6 +115,8 @@ object OnlineMusicApiService {
 
             formatUrlForQuality(rawUrl, targetQuality)
         } catch (e: Exception) {
+            // A successful doFinal resets the cipher; discard any state left by a failure.
+            mediaUrlCiphers.remove()
             try {
                 Log.e(TAG, "Error decrypting media URL: ${e.message}")
             } catch (_: Throwable) {
@@ -128,7 +130,7 @@ object OnlineMusicApiService {
      * Formats an audio stream URL to the requested bitrate quality (lossless/320, 160, 96).
      */
     fun formatUrlForQuality(rawUrl: String, quality: String): String {
-        if (quality == "original" || !Regex("(?i)^https?://(?:[a-z0-9-]+\\.)*saavncdn\\.com(?:/|:)").containsMatchIn(rawUrl)) return rawUrl
+        if (quality == "original" || !saavnCdnPattern.containsMatchIn(rawUrl)) return rawUrl
         val q = when (quality.lowercase().trim()) {
             "lossless", "hires", "flac" -> "320" // Highest available studio master bit-stream
             "320", "ultrahd" -> "320"
@@ -139,7 +141,7 @@ object OnlineMusicApiService {
         }
         // Rewrite only a known CDN bitrate suffix, preserving extensions and signed queries.
         // Appending to arbitrary .m4a paths produced URLs such as song_320_320.mp4.
-        return rawUrl.replace(Regex("_(?:320|160|96|48)\\.(mp4|m4a)(?=$|[?#])")) {
+        return rawUrl.replace(bitrateSuffixPattern) {
             "_${q}.${it.groupValues[1]}"
         }
     }
@@ -366,7 +368,7 @@ object OnlineMusicApiService {
         val bitrate = when (availability) {
             "true", "1" -> 320
             "false", "0" -> 160
-            else -> Regex("_(320|160|96|48)\\.(?:mp4|m4a)(?=$|[?#])").find(stream)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+            else -> streamBitratePattern.find(stream)?.groupValues?.get(1)?.toIntOrNull() ?: 0
         }
         return MusicTrack(id = "online_$id", title = title, artist = artist,
             album = field("album").ifBlank { "Unknown" },

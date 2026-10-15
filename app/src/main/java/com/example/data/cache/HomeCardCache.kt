@@ -3,13 +3,18 @@ package com.example.data.cache
 import android.content.Context
 import android.util.AtomicFile
 import com.example.data.model.MusicTrack
+import com.example.performance.BackgroundWorkCoordinator
 import com.example.ui.viewmodel.SectionState
 import com.example.ui.viewmodel.MostListenedArtist
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.receiveAsFlow
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -24,7 +29,8 @@ data class SavedHomeCards(
     val chartRefreshedAt: Long = refreshedAt
 )
 
-class HomeCardCache(context: Context) {
+@OptIn(FlowPreview::class, ExperimentalCoroutinesApi::class)
+class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Dispatchers.Default) {
     private val file = AtomicFile(File(context.applicationContext.filesDir, "home_cards_v1.json"))
     private data class Retained(val path: String, val cards: SavedHomeCards)
     private companion object {
@@ -35,12 +41,26 @@ class HomeCardCache(context: Context) {
         it.path == file.baseFile.path && it.cards.profileKey == profile
     }?.cards
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val serializationDispatcher = workerDispatcher.limitedParallelism(1)
     private val writes = Channel<SavedHomeCards>(Channel.CONFLATED)
+    private val closing = AtomicBoolean(false)
     private val writer = scope.launch {
-        for (snapshot in writes) {
+        // Debounce snapshots before building JSON. Closing the channel emits the
+        // final pending snapshot immediately, preserving the lifecycle flush.
+        writes.receiveAsFlow().debounce(2_000L).collect { snapshot ->
             try {
-                val json = withContext(Dispatchers.Default) { encode(snapshot).toString().toByteArray() }
+                if (memory.get()?.let { it.path == file.baseFile.path && it.cards !== snapshot } == true)
+                    return@collect
+                // A new transition can start during the debounce. Defer JSON
+                // work until quiet, while allowing disposal to flush immediately.
+                BackgroundWorkCoordinator.awaitIdle(requireForeground = false, userRequested = { closing.get() })
+                if (memory.get()?.let { it.path == file.baseFile.path && it.cards !== snapshot } == true)
+                    return@collect
+                val json = withContext(serializationDispatcher) { encode(snapshot).toString().toByteArray() }
                 fileMutex.withLock {
+                    // An older closing instance must not overwrite a newer checkpoint.
+                    if (memory.get()?.let { it.path == file.baseFile.path && it.cards !== snapshot } == true)
+                        return@withLock
                     val output = file.startWrite()
                     try { output.write(json); file.finishWrite(output) }
                     catch (e: Exception) { file.failWrite(output); throw e }
@@ -53,7 +73,11 @@ class HomeCardCache(context: Context) {
         memory.set(Retained(file.baseFile.path, snapshot))
         writes.trySend(snapshot)
     }
-    fun close() { writes.close(); writer.invokeOnCompletion { scope.cancel() } }
+    fun close() {
+        closing.set(true)
+        writes.close()
+        writer.invokeOnCompletion { scope.cancel() }
+    }
     suspend fun read(profile: String): SavedHomeCards? = withContext(Dispatchers.IO) {
         peek(profile)?.let { return@withContext it }
         val before = memory.get()
@@ -62,7 +86,7 @@ class HomeCardCache(context: Context) {
                 if (!file.baseFile.exists() || file.baseFile.length() > 4_000_000L) return@withContext null
                 file.openRead().use { it.readBytes() }
             }
-            val decoded = withContext(Dispatchers.Default) { decode(JSONObject(String(bytes)), profile) }
+            val decoded = withContext(serializationDispatcher) { decode(JSONObject(String(bytes)), profile) }
             decoded?.let { memory.compareAndSet(before, Retained(file.baseFile.path, it)) }
             peek(profile) ?: decoded
         } catch (e: CancellationException) { throw e } catch (_: Exception) { null }

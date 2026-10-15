@@ -19,6 +19,8 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import com.example.ui.components.bouncyOverscroll
 import androidx.compose.foundation.shape.CircleShape
@@ -102,7 +104,8 @@ fun LibraryScreen(
     onOpenPlaylist: (Long) -> Unit,
     onCreatePlaylistClick: () -> Unit,
     onImportPlaylistClick: () -> Unit = {},
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    listState: LazyListState = rememberLazyListState()
 ) {
     var selectedTab by androidx.compose.runtime.saveable.rememberSaveable { mutableIntStateOf(0) }
     val tabs = listOf("Playlists", "Liked Songs")
@@ -118,6 +121,7 @@ fun LibraryScreen(
         contentAlignment = Alignment.TopCenter
     ) {
         LazyColumn(
+            state = listState,
             modifier = Modifier
                 .fillMaxWidth()
                 .widthIn(max = 640.dp)

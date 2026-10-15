@@ -16,9 +16,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
@@ -609,9 +611,9 @@ fun Modifier.liquidGlassCard(
     tintAccent: Boolean = false,
     borderWidth: Dp = 1.3.dp,
     highlightAlpha: Float = 0.38f
-): Modifier {
-    if (!colors.dynamicGlassEnabled) return matteThemeSurface(colors, shape, elevation, borderWidth)
-    return this
+): Modifier = composed {
+    if (!colors.dynamicGlassEnabled) return@composed matteThemeSurface(colors, shape, elevation, borderWidth)
+    this
     .shadow(
         elevation = if (colors.isDark) elevation else (elevation + 2.dp),
         shape = shape,
@@ -619,8 +621,8 @@ fun Modifier.liquidGlassCard(
         ambientColor = if (colors.isDark) Color.Black.copy(alpha = 0.20f) else Color.Black.copy(alpha = 0.05f)
     )
     .clip(shape)
-    .background(LiquidGlass.glassBrush(colors, translucency, tintAccent))
-    .drawWithContent {
+    .background(remember(colors, translucency, tintAccent) { LiquidGlass.glassBrush(colors, translucency, tintAccent) })
+    .drawWithCache {
         // Optical frosted diffusion layer beneath content
         val frostedDiffusion = Brush.verticalGradient(
             colors = listOf(
@@ -628,8 +630,6 @@ fun Modifier.liquidGlassCard(
                 Color.White.copy(alpha = if (colors.isDark) 0.02f else 0.08f)
             )
         )
-        drawRect(frostedDiffusion)
-        drawContent()
         val sheen = if (colors.isDark) {
             Brush.verticalGradient(
                 colors = listOf(
@@ -650,10 +650,14 @@ fun Modifier.liquidGlassCard(
                 endY = size.height * 0.50f
             )
         }
-        drawRect(sheen)
+        onDrawWithContent {
+            drawRect(frostedDiffusion)
+            drawContent()
+            drawRect(sheen)
+        }
     }
     .border(
-        BorderStroke(borderWidth, LiquidGlass.specularBorderBrush(colors, highlightAlpha = highlightAlpha)),
+        remember(colors, borderWidth, highlightAlpha) { BorderStroke(borderWidth, LiquidGlass.specularBorderBrush(colors, highlightAlpha = highlightAlpha)) },
         shape
     )
 
@@ -672,9 +676,9 @@ fun Modifier.liquidGlassPill(
     translucency: Float = 0.75f,
     borderWidth: Dp = 1.3.dp,
     sheenAlpha: Float = 0.14f
-): Modifier {
-    if (!colors.dynamicGlassEnabled) return matteThemeSurface(colors, shape, elevation, borderWidth, isActive)
-    val activePillBrush = if (colors.isDark) {
+): Modifier = composed {
+    if (!colors.dynamicGlassEnabled) return@composed matteThemeSurface(colors, shape, elevation, borderWidth, isActive)
+    val activePillBrush = remember(colors) { if (colors.isDark) {
         Brush.verticalGradient(
             listOf(
                 colors.primaryAccent.copy(alpha = 0.35f),
@@ -691,7 +695,8 @@ fun Modifier.liquidGlassPill(
         )
     }
 
-    val activeBorderStroke = BorderStroke(
+    }
+    val activeBorderStroke = remember(colors, borderWidth) { BorderStroke(
         borderWidth,
         if (colors.isDark) {
             Brush.verticalGradient(
@@ -711,7 +716,12 @@ fun Modifier.liquidGlassPill(
         }
     )
 
-    return this
+    }
+    val inactiveBrush = remember(colors, translucency) { LiquidGlass.glassBrush(colors, translucency, false) }
+    val inactiveBorder = remember(colors, borderWidth) { BorderStroke(borderWidth,
+        LiquidGlass.specularBorderBrush(colors, highlightAlpha = if (colors.isDark) 0.38f else 0.50f)) }
+
+    this
         .shadow(
             elevation = if (colors.isDark) (if (isActive) (elevation + 2.dp) else elevation) else (elevation + 1.dp),
             shape = shape,
@@ -723,16 +733,10 @@ fun Modifier.liquidGlassPill(
             if (isActive) {
                 Modifier.background(activePillBrush)
             } else {
-                Modifier.background(
-                    LiquidGlass.glassBrush(
-                        colors = colors,
-                        translucency = translucency,
-                        tintAccent = false
-                    )
-                )
+                Modifier.background(inactiveBrush)
             }
         )
-        .drawWithContent {
+        .drawWithCache {
             // Optical frosted diffusion layer beneath content
             val frostedDiffusion = Brush.verticalGradient(
                 colors = listOf(
@@ -740,8 +744,6 @@ fun Modifier.liquidGlassPill(
                     Color.White.copy(alpha = if (colors.isDark) 0.02f else 0.08f)
                 )
             )
-            drawRect(frostedDiffusion)
-            drawContent()
             val sheenBrush = if (colors.isDark) {
                 Brush.verticalGradient(
                     colors = listOf(
@@ -762,22 +764,17 @@ fun Modifier.liquidGlassPill(
                     endY = size.height * 0.52f
                 )
             }
-            drawRect(sheenBrush)
+            onDrawWithContent {
+                drawRect(frostedDiffusion)
+                drawContent()
+                drawRect(sheenBrush)
+            }
         }
         .then(
             if (isActive) {
                 Modifier.border(activeBorderStroke, shape)
             } else {
-                Modifier.border(
-                    BorderStroke(
-                        borderWidth,
-                        LiquidGlass.specularBorderBrush(
-                            colors = colors,
-                            highlightAlpha = if (colors.isDark) 0.38f else 0.50f
-                        )
-                    ),
-                    shape
-                )
+                Modifier.border(inactiveBorder, shape)
             }
         )
 }

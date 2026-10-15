@@ -58,7 +58,7 @@ fun MusicTrack.toMediaItem(): MediaItem {
 
 /**
  * Multi-Source iTunes Artwork Resolver with 3-Layer Caching:
- * 1. In-Memory LruCache (up to 200 entries)
+ * 1. In-Memory LruCache (up to 2048 entries)
  * 2. Room Database Cache (persisted across app restarts)
  * 3. Network Fetch (iTunes Search API with Title/Artist Verification & Fallback-First strategy)
  */
@@ -72,15 +72,14 @@ class iTunesArtworkRepository(
     private data class LookupMetadata(val title: String, val artist: String, val key: String)
     private val metadataCache = LruCache<RawMetadata, LookupMetadata>(256)
     private val whitespace = Regex("\\s+")
-    private val memoryCache = LruCache<String, Lookup>(200)
+    private val memoryCache = LruCache<String, Lookup>(2048)
     private val lookupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val networkSlots = Semaphore(2)
     private val inFlight = mutableMapOf<String, Flight>()
     init {
         lookupScope.launch {
-            com.example.performance.BackgroundWorkCoordinator.awaitIdle(requireForeground = false)
             try {
-                cacheDao.getNewest().forEach { entry ->
+                cacheDao.getNewest(limit = 2048).asReversed().forEach { entry ->
                     if (entry.rawArtworkUrl.isNotBlank()) synchronized(memoryCache) {
                         if (memoryCache.get(entry.cacheKey) == null)
                             memoryCache.put(entry.cacheKey, Lookup(entry.rawArtworkUrl, Long.MAX_VALUE))
@@ -96,7 +95,7 @@ class iTunesArtworkRepository(
         metadataCache.get(raw)?.let { return it }
         val title = sanitizeTitle(raw.title, artist = raw.artist)
         val artist = sanitizeArtist(raw.artist)
-        return LookupMetadata(title, artist, "${title}_${artist}".lowercase()).also {
+        return LookupMetadata(title, artist, "${title}_${artist}".lowercase(java.util.Locale.ROOT)).also {
             metadataCache.put(raw, it)
         }
     }
@@ -197,6 +196,10 @@ class iTunesArtworkRepository(
         return hit.url?.let { formatUrl(it, targetDimension) } ?: item.sourceArtworkUrl
     }
 
+    /** Worker-thread lookup of verified hits only; a negative lookup is not a resolved cover. */
+    fun getMemoryCachedResolvedUrl(item: MediaItem, targetDimension: Int): String? =
+        cached(lookupMetadata(item).key)?.url?.let { formatUrl(it, targetDimension) }
+
     /** UI-safe peek: reuse prepared metadata without sanitizing it or accessing Room/network. */
     fun peekMemoryCachedUrl(item: MediaItem, targetDimension: Int): String? {
         val metadata = metadataCache.get(RawMetadata(item.rawTitle, item.rawArtist))
@@ -254,15 +257,18 @@ class iTunesArtworkRepository(
         @Volatile
         private var INSTANCE: iTunesArtworkRepository? = null
 
+        /** Never constructs Room/the API client; safe for composition's prepared-cache peek. */
+        fun peekInstance(): iTunesArtworkRepository? = INSTANCE
+
         fun getInstance(context: Context): iTunesArtworkRepository {
             return INSTANCE ?: synchronized(this) {
-                val db = MusicDatabase.getDatabase(context)
-                val repo = iTunesArtworkRepository(
-                    apiService = iTunesApiServiceImpl(),
-                    cacheDao = db.artworkCacheDao()
-                )
-                INSTANCE = repo
-                repo
+                INSTANCE ?: run {
+                    val db = MusicDatabase.getDatabase(context.applicationContext)
+                    iTunesArtworkRepository(
+                        apiService = iTunesApiServiceImpl(),
+                        cacheDao = db.artworkCacheDao()
+                    ).also { INSTANCE = it }
+                }
             }
         }
     }

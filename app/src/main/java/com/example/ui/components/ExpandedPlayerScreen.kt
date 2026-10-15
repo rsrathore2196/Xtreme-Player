@@ -447,6 +447,7 @@ fun ExpandedPlayerScreen(
             // Album-adaptive glossy backdrop; separate from sharp artwork and controls.
             PlayerGlassBackground(
                 artworkUrl = highResCoverUrl,
+                artworkRequest = resolvedArtworkRequest,
                 dominantColor = animatedDominantColor,
                 accentColor = animatedAccentColor,
                 vibrantColor = animatedVibrantColor,
@@ -566,6 +567,7 @@ fun ExpandedPlayerScreen(
                                             MotionAlbumArtPlayer(
                                                 videoUrl = track.motionArtworkUrl,
                                                 staticCoverUrl = highResCoverUrl,
+                                                staticImageRequest = resolvedArtworkRequest,
                                                 contentDescription = "Cover Art - Tap to flip",
                                                 shape = RoundedCornerShape(22.dp),
                                                 modifier = Modifier.fillMaxSize(),
@@ -1386,6 +1388,7 @@ fun ExpandedPlayerScreen(
                                         MotionAlbumArtPlayer(
                                             videoUrl = track.motionArtworkUrl,
                                             staticCoverUrl = highResCoverUrl,
+                                            staticImageRequest = resolvedArtworkRequest,
                                             contentDescription = "Cover Art - Tap to flip",
                                             shape = RoundedCornerShape(24.dp),
                                             modifier = Modifier.fillMaxSize(),
@@ -2033,6 +2036,7 @@ private fun Modifier.animatedFillMaxWidth(fraction: State<Float>): Modifier = la
 @Composable
 private fun PlayerGlassBackground(
     artworkUrl: String,
+    artworkRequest: ImageRequest? = null,
     dominantColor: State<Color>,
     accentColor: State<Color>,
     vibrantColor: State<Color> = accentColor,
@@ -2047,8 +2051,9 @@ private fun PlayerGlassBackground(
     }
     val context = LocalContext.current
     // This small derivative is only for diffusion. The main album artwork stays full resolution.
-    val backdropRequest = remember(artworkUrl, context) {
-        ImageRequest.Builder(context).data(artworkUrl).size(256).crossfade(650).build()
+    val backdropRequest = remember(artworkUrl, context, artworkRequest) {
+        (artworkRequest?.newBuilder() ?: ImageRequest.Builder(context).data(artworkUrl))
+            .size(256).crossfade(650).build()
     }
     val base = appColors.scaffoldBackground
     Box(modifier.fillMaxSize().xtremeSharedBackdropSource(enabled = dynamicGlass).background(base)) {

@@ -1,53 +1,55 @@
 package com.example.ui.components
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateContentSize
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandHorizontally
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkHorizontally
+import androidx.compose.animation.core.updateTransition
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.State
+import androidx.compose.runtime.key
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.unit.constrainHeight
+import androidx.compose.ui.unit.constrainWidth
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.theme.AppThemeColors
-import com.example.ui.theme.LiquidGlass
 import com.example.ui.theme.LocalAppColors
 import com.example.ui.theme.bouncyClickable
-
-import androidx.compose.runtime.Immutable
-import androidx.compose.runtime.key
-import androidx.compose.runtime.remember
+import kotlin.math.max
+import kotlin.math.roundToInt
 
 /**
  * Data model for AnimatedBottomBar tabs.
@@ -68,8 +70,8 @@ data class AnimatedBottomBarItem(
  *    dynamically expands/shrinks and slides horizontally between selected tab items.
  * 2. Label & Icon Visibility State: Unselected items display only their icon; selected item displays
  *    both its icon and animated text label.
- * 3. Smooth Spring / Layout Transition: Uses spring-based animateContentSize to smoothly animate
- *    width and layout position during selection switches.
+ * 3. Smooth Spring / Layout Transition: One selection transition coordinates capsule width and
+ *    placement while keeping icon and label measurements independent of animation frames.
  * 4. Scale & Alpha Feedback: Smooth fade-in/fade-out and horizontal expansion/contraction for the text
  *    label, paired with subtle icon bounce scaling.
  * 5. 3D Liquid Glass UI: 15% visibility translucent background with frosted blur, specular edge highlight,
@@ -84,6 +86,11 @@ fun AnimatedBottomBar(
     appColors: AppThemeColors = LocalAppColors.current,
     ambientGlowColor: Color = appColors.primaryAccent
 ) {
+    val selectionTransition = updateTransition(
+        targetState = selectedTabIndex,
+        label = "bottom_bar_selection"
+    )
+
     Box(
         modifier = modifier
             .testTag("floating_bottom_navigation_bar")
@@ -119,23 +126,33 @@ fun AnimatedBottomBar(
                 key(item.index) {
                     val isSelected = selectedTabIndex == item.index
 
-                    val iconScale = animateFloatAsState(
-                        targetValue = if (isSelected) 1.12f else 1.0f,
-                        animationSpec = spring(
-                            dampingRatio = 0.58f,
-                            stiffness = 420f
-                        ),
-                        label = "tab_icon_scale_${item.index}"
-                    )
+                    val expansion = selectionTransition.animateFloat(
+                        transitionSpec = { spring(dampingRatio = 0.68f, stiffness = 500f) },
+                        label = "tab_expansion_${item.index}"
+                    ) { selectedIndex ->
+                        if (selectedIndex == item.index) 1f else 0f
+                    }
 
-                    val bounceOffsetY = animateFloatAsState(
-                        targetValue = if (isSelected) -1.5f else 0f,
-                        animationSpec = spring(
-                            dampingRatio = 0.62f,
-                            stiffness = 380f
-                        ),
+                    val iconScale = selectionTransition.animateFloat(
+                        transitionSpec = { spring(dampingRatio = 0.58f, stiffness = 420f) },
+                        label = "tab_icon_scale_${item.index}"
+                    ) { selectedIndex ->
+                        if (selectedIndex == item.index) 1.12f else 1.0f
+                    }
+
+                    val bounceOffsetY = selectionTransition.animateFloat(
+                        transitionSpec = { spring(dampingRatio = 0.62f, stiffness = 380f) },
                         label = "tab_bounce_y_${item.index}"
-                    )
+                    ) { selectedIndex ->
+                        if (selectedIndex == item.index) -1.5f else 0f
+                    }
+
+                    val labelAlpha = selectionTransition.animateFloat(
+                        transitionSpec = { tween(if (targetState == item.index) 180 else 140) },
+                        label = "tab_label_alpha_${item.index}"
+                    ) { selectedIndex ->
+                        if (selectedIndex == item.index) 1f else 0f
+                    }
 
                     val activePillBrush = remember(appColors.primaryAccent, appColors.isDark, appColors.dynamicGlassEnabled, appColors.bottomBarIndicator) {
                         if (!appColors.dynamicGlassEnabled) Brush.verticalGradient(listOf(appColors.bottomBarIndicator, appColors.bottomBarIndicator))
@@ -169,9 +186,6 @@ fun AnimatedBottomBar(
                                     Modifier.clip(CircleShape)
                                 }
                             )
-                            .animateContentSize(
-                                animationSpec = spring(dampingRatio = 0.68f, stiffness = 500f)
-                            )
                             .bouncyClickable { onTabSelected(item.index) }
                             .testTag(
                                 if (isSelected) "nav_tab_${item.title.lowercase()}_active"
@@ -197,74 +211,123 @@ fun AnimatedBottomBar(
                                     )
                             )
                         }
-                        
+
                         val selectedTabContentColor = appColors.textPrimary
 
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center,
-                            modifier = Modifier.padding(
-                                horizontal = if (isSelected) 16.dp else 14.dp,
-                                vertical = 8.dp
-                            )
-                        ) {
-                            Icon(
-                                imageVector = if (isSelected) item.selectedIcon else item.unselectedIcon,
-                                contentDescription = item.title,
-                                tint = if (isSelected) {
-                                    selectedTabContentColor
-                                } else {
-                                    if (appColors.isDark) Color.White.copy(alpha = 0.65f) else Color(0xFF64748B)
-                                },
-                                modifier = Modifier
-                                    .size(24.dp)
-                                    .graphicsLayer {
-                                        scaleX = iconScale.value
-                                        scaleY = iconScale.value
-                                    }
-                            )
-
-                            // Keep label and capsule springs coordinated throughout expansion and contraction.
-                            AnimatedVisibility(
-                                visible = isSelected,
-                                enter = fadeIn(
-                                    animationSpec = tween(180)
-                                ) + expandHorizontally(
-                                    animationSpec = spring(
-                                        dampingRatio = 0.68f,
-                                        stiffness = 500f
-                                    ),
-                                    expandFrom = Alignment.Start
-                                ),
-                                exit = fadeOut(
-                                    animationSpec = tween(140)
-                                ) + shrinkHorizontally(
-                                    animationSpec = spring(
-                                        dampingRatio = 0.68f,
-                                        stiffness = 500f
-                                    ),
-                                    shrinkTowards = Alignment.Start
-                                )
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        text = item.title,
-                                        color = selectedTabContentColor,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 14.5.sp,
-                                        letterSpacing = 0.2.sp,
-                                        maxLines = 1,
-                                        softWrap = false
-                                    )
-                                }
+                        BottomBarTabContent(
+                            expansion = expansion,
+                            labelAlpha = labelAlpha,
+                            iconScale = iconScale,
+                            item = item,
+                            isSelected = isSelected,
+                            selectedContentColor = selectedTabContentColor,
+                            unselectedContentColor = if (appColors.isDark) {
+                                Color.White.copy(alpha = 0.65f)
+                            } else {
+                                Color(0xFF64748B)
                             }
-                        }
-                    }
+                        )
                     }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun BottomBarTabContent(
+    expansion: State<Float>,
+    labelAlpha: State<Float>,
+    iconScale: State<Float>,
+    item: AnimatedBottomBarItem,
+    isSelected: Boolean,
+    selectedContentColor: Color,
+    unselectedContentColor: Color
+) {
+    Layout(
+        content = {
+            Icon(
+                imageVector = if (isSelected) item.selectedIcon else item.unselectedIcon,
+                contentDescription = item.title,
+                tint = if (isSelected) selectedContentColor else unselectedContentColor,
+                modifier = Modifier
+                    .size(24.dp)
+                    .graphicsLayer {
+                        scaleX = iconScale.value
+                        scaleY = iconScale.value
+                    }
+            )
+
+            // The label stays composed and measured even when its reveal is fully closed.
+            Text(
+                text = item.title,
+                modifier = if (isSelected) Modifier else Modifier.clearAndSetSemantics { },
+                color = selectedContentColor,
+                fontWeight = FontWeight.Bold,
+                fontSize = 14.5.sp,
+                letterSpacing = 0.2.sp,
+                maxLines = 1,
+                softWrap = false
+            )
+        }
+    ) { measurables, constraints ->
+        val verticalPadding = 8.dp.roundToPx()
+        val contentMaxHeight = if (constraints.hasBoundedHeight) {
+            (constraints.maxHeight - verticalPadding * 2).coerceAtLeast(0)
+        } else {
+            Constraints.Infinity
+        }
+        // Fixed child constraints let Compose reuse the icon/text placeables as sibling widths
+        // change. Only this small layout observes the spring for its reported capsule width.
+        val contentConstraints = Constraints(maxHeight = contentMaxHeight)
+        val icon = measurables[0].measure(contentConstraints)
+        val label = measurables[1].measure(contentConstraints)
+        val collapsedInset = 14.dp.roundToPx().toFloat()
+        val expandedInset = 16.dp.roundToPx().toFloat()
+        val labelGap = 6.dp.roundToPx().toFloat()
+        // Preserve the original 52dp collapsed endpoint: a 24dp icon and 14dp on either side.
+        val collapsedWidth = icon.width + collapsedInset * 2
+        val expandedWidth = icon.width + expandedInset * 2 + labelGap + label.width
+        val width = constraints.constrainWidth(
+            (collapsedWidth + (expandedWidth - collapsedWidth) * expansion.value)
+                .roundToInt()
+                .coerceAtLeast(0)
+        )
+        val height = constraints.constrainHeight(
+            max(icon.height, label.height) + verticalPadding * 2
+        )
+
+        layout(width, height) {
+            val progress = expansion.value
+            val startInset = collapsedInset + (expandedInset - collapsedInset) * progress
+            icon.placeRelative(
+                x = startInset.roundToInt(),
+                y = (height - icon.height) / 2
+            )
+            label.placeRelativeWithLayer(
+                x = (startInset + icon.width + labelGap).roundToInt(),
+                y = (height - label.height) / 2
+            ) {
+                // Reveal the original spacer + label span from the leading edge without
+                // changing the text's constraints or recording its drawing each frame.
+                alpha = labelAlpha.value
+                clip = true
+                shape = BottomBarLabelRevealShape(
+                    visibleWidth = ((size.width + labelGap) * expansion.value - labelGap)
+                        .coerceIn(0f, size.width)
+                )
+            }
+        }
+    }
+}
+
+private data class BottomBarLabelRevealShape(val visibleWidth: Float) : Shape {
+    override fun createOutline(
+        size: Size,
+        layoutDirection: LayoutDirection,
+        density: Density
+    ): Outline {
+        val left = if (layoutDirection == LayoutDirection.Ltr) 0f else size.width - visibleWidth
+        return Outline.Rectangle(Rect(left, 0f, left + visibleWidth, size.height))
+    }
+}
