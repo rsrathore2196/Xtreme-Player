@@ -90,7 +90,7 @@ fun ThemesAppUiPage(
             ThemeSettingsPage.PRESETS -> currentNavigationCallback("Theme presets", "Choose your colour palette") {
                 page = ThemeSettingsPage.OVERVIEW; true
             }
-            ThemeSettingsPage.CUSTOM -> currentNavigationCallback("Custom theming", "Accent, canvas & card colours") {
+            ThemeSettingsPage.CUSTOM -> currentNavigationCallback("Custom Theme Colors", "Accent, canvas & card colours") {
                 page = ThemeSettingsPage.OVERVIEW; true
             }
         }

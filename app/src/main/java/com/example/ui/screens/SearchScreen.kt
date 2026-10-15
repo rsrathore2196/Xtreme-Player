@@ -69,6 +69,8 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -158,6 +160,22 @@ fun SearchScreen(
     val hasQuery = searchState.query.isNotBlank()
     val isGenreActive = !searchState.selectedGenre.equals("All", ignoreCase = true)
     val appColors = LocalAppColors.current
+    // These pills tint a surface; they do not use the solid accent button fill.
+    val selectedPillContentColor = remember(appColors) {
+        val surfaces = if (appColors.dynamicGlassEnabled) {
+            listOf(
+                Color.White.copy(alpha = if (appColors.isDark) 0.08f else 0.35f).compositeOver(
+                    appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.35f else 0.25f)
+                        .compositeOver(appColors.scaffoldBackground)),
+                Color.White.copy(alpha = if (appColors.isDark) 0.02f else 0.08f).compositeOver(
+                    appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.18f else 0.12f)
+                        .compositeOver(appColors.scaffoldBackground))
+            )
+        } else listOf(appColors.primaryAccent.copy(alpha = 0.16f).compositeOver(appColors.cardBackground))
+        val whiteContrast = surfaces.minOf { 1.05f / (it.luminance() + 0.05f) }
+        val blackContrast = surfaces.minOf { (it.luminance() + 0.05f) / 0.05f }
+        if (whiteContrast >= blackContrast) Color.White else Color.Black
+    }
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
     val listState = rememberLazyListState()
@@ -417,7 +435,7 @@ fun SearchScreen(
                         ) {
                             Text(
                                 text = filterName,
-                                color = if (isSelected) appColors.onPrimaryAccent else (if (appColors.isDark) Color.White else appColors.textPrimary),
+                                color = if (isSelected) selectedPillContentColor else (if (appColors.isDark) Color.White else appColors.textPrimary),
                                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
                                 fontSize = 13.sp,
                                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 7.dp)
@@ -564,7 +582,7 @@ fun SearchScreen(
                             ) {
                                 Text(
                                     text = genre,
-                                    color = if (isSelected) appColors.onPrimaryAccent else (if (appColors.isDark) Color.White else appColors.textPrimary),
+                                    color = if (isSelected) selectedPillContentColor else (if (appColors.isDark) Color.White else appColors.textPrimary),
                                     fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
                                     fontSize = 14.5.sp,
                                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
@@ -664,13 +682,13 @@ fun SearchScreen(
                                 Icon(
                                     imageVector = Icons.Default.Shuffle,
                                     contentDescription = "Shuffle songs",
-                                    tint = appColors.onPrimaryAccent,
+                                    tint = selectedPillContentColor,
                                     modifier = Modifier.size(14.dp)
                                 )
                                 Spacer(modifier = Modifier.width(5.dp))
                                 Text(
                                     text = "Shuffle Songs",
-                                    color = appColors.onPrimaryAccent,
+                                    color = selectedPillContentColor,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.SemiBold
                                 )

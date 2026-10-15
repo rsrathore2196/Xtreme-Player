@@ -369,7 +369,15 @@ object ThemeCustomizationPresets {
         ColorOption("Charcoal Onyx", "#0D1117", "Ultra-deep minimalist charcoal canvas", isDark = true),
         ColorOption("Deep Ruby", "#190A0E", "Rich dark wine velvet canvas", isDark = true),
         ColorOption("Sapphire Abyss", "#031428", "Deep midnight oceanic navy canvas", isDark = true),
-        ColorOption("Cyber Carbon", "#121316", "High-tech matte carbon dark canvas", isDark = true)
+        ColorOption("Cyber Carbon", "#121316", "High-tech matte carbon dark canvas", isDark = true),
+        ColorOption("Studio Void", "#020610", "Studio Void canvas color", isDark = true),
+        ColorOption("Deep Teal", "#041A1C", "Deep Teal canvas color", isDark = true),
+        ColorOption("Navy Ink", "#060B1A", "Navy Ink canvas color", isDark = true),
+        ColorOption("Storm Graphite", "#17191F", "Storm Graphite canvas color", isDark = true),
+        ColorOption("Plum Night", "#170F1E", "Plum Night canvas color", isDark = true),
+        ColorOption("Forest Noir", "#081510", "Forest Noir canvas color", isDark = true),
+        ColorOption("Indigo Afterglow", "#10102B", "Indigo Afterglow canvas color", isDark = true),
+        ColorOption("Coal Slate", "#1B1F26", "Coal Slate canvas color", isDark = true)
     )
 
     val canvasOptionsLight = listOf(
@@ -382,7 +390,15 @@ object ThemeCustomizationPresets {
         ColorOption("Morning Sky", "#E0F2FE", "Serene light airy azure canvas", isDark = false),
         ColorOption("Rose Blush", "#FFF1F2", "Gentle soft pastel rose canvas", isDark = false),
         ColorOption("Solar Amber", "#FFFBEB", "Sunlit warm golden glow canvas", isDark = false),
-        ColorOption("Silk Cashmere", "#F8F6F0", "Organic premium neutral warm canvas", isDark = false)
+        ColorOption("Silk Cashmere", "#F8F6F0", "Organic premium neutral warm canvas", isDark = false),
+        ColorOption("Porcelain Blue", "#EDF4FF", "Porcelain Blue canvas color", isDark = false),
+        ColorOption("Pearl Gray", "#F4F4F5", "Pearl Gray canvas color", isDark = false),
+        ColorOption("Peach Cloud", "#FFF4ED", "Peach Cloud canvas color", isDark = false),
+        ColorOption("Pistachio Wash", "#F3F8E8", "Pistachio Wash canvas color", isDark = false),
+        ColorOption("Powder Aqua", "#EFFCFB", "Powder Aqua canvas color", isDark = false),
+        ColorOption("Orchid Mist", "#FCF2FF", "Orchid Mist canvas color", isDark = false),
+        ColorOption("Sandstone", "#F7F0E6", "Sandstone canvas color", isDark = false),
+        ColorOption("Champagne", "#FFF7DE", "Champagne canvas color", isDark = false)
     )
 
     val canvasOptions = canvasOptionsDark + canvasOptionsLight
@@ -397,7 +413,15 @@ object ThemeCustomizationPresets {
         ColorOption("Cyber Slate", "#161B22", "Modern tech translucent surface card", isDark = true),
         ColorOption("Crimson Obsidian", "#2A1015", "Rich garnet illuminated card", isDark = true),
         ColorOption("Deep Cobalt", "#0C203F", "Vibrant high-contrast sapphire card", isDark = true),
-        ColorOption("Carbon Matte", "#1E2024", "Refined stealth dark surface card", isDark = true)
+        ColorOption("Carbon Matte", "#1E2024", "Refined stealth dark surface card", isDark = true),
+        ColorOption("Studio Glass", "#050C1B", "Studio Glass card color", isDark = true),
+        ColorOption("Slate Velvet", "#202535", "Slate Velvet card color", isDark = true),
+        ColorOption("Blue Lagoon", "#102D35", "Blue Lagoon card color", isDark = true),
+        ColorOption("Pine Shadow", "#16251F", "Pine Shadow card color", isDark = true),
+        ColorOption("Plum Silk", "#2C2033", "Plum Silk card color", isDark = true),
+        ColorOption("Bronze Slate", "#2B2520", "Bronze Slate card color", isDark = true),
+        ColorOption("Smoky Steel", "#30333B", "Smoky Steel card color", isDark = true),
+        ColorOption("Deep Indigo", "#232347", "Deep Indigo card color", isDark = true)
     )
 
     val cardOptionsLight = listOf(
@@ -410,7 +434,15 @@ object ThemeCustomizationPresets {
         ColorOption("Peach Silk", "#FFEDD5", "Delicate warm apricot light card", isDark = false),
         ColorOption("Rose Petal", "#FFE4E6", "Romantic soft blush card", isDark = false),
         ColorOption("Frosted Crystal", "#F8FAFC", "Translucent crisp porcelain card", isDark = false),
-        ColorOption("Ivory Cloud", "#FDFBF7", "Luxurious soft warm ivory card", isDark = false)
+        ColorOption("Ivory Cloud", "#FDFBF7", "Luxurious soft warm ivory card", isDark = false),
+        ColorOption("Porcelain Blue", "#EFF6FF", "Porcelain Blue card color", isDark = false),
+        ColorOption("Soft Periwinkle", "#E8EBFF", "Soft Periwinkle card color", isDark = false),
+        ColorOption("Pistachio", "#E9F5DC", "Pistachio card color", isDark = false),
+        ColorOption("Sea Foam", "#DFF4EE", "Sea Foam card color", isDark = false),
+        ColorOption("Pearl Gray", "#EFEFF2", "Pearl Gray card color", isDark = false),
+        ColorOption("Soft Coral", "#FFEAE2", "Soft Coral card color", isDark = false),
+        ColorOption("Champagne", "#FFF3D6", "Champagne card color", isDark = false),
+        ColorOption("Orchid", "#F7E7FA", "Orchid card color", isDark = false)
     )
 
     val cardOptions = cardOptionsDark + cardOptionsLight
@@ -634,11 +666,11 @@ fun ThemeCustomizationSection(
                 horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Icon(Icons.Default.Palette, contentDescription = null, tint = accentColor, modifier = Modifier.size(24.dp))
                 Column(Modifier.weight(1f)) {
-                    Text("Custom theming", color = appColors.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                    Text("Custom Theme Colors", color = appColors.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.Bold)
                     Text("Accent, canvas & card colours", color = appColors.textMuted, fontSize = 11.5.sp,
                         modifier = Modifier.padding(top = 3.dp))
                 }
-                Icon(Icons.AutoMirrored.Filled.ArrowForwardIos, contentDescription = "Open custom theming",
+                Icon(Icons.AutoMirrored.Filled.ArrowForwardIos, contentDescription = "Open Custom Theme Colors",
                     tint = appColors.textMuted, modifier = Modifier.size(20.dp))
             }
         }
