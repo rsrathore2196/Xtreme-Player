@@ -101,9 +101,9 @@ fun InfiniteRadioHeroCard(
         // A continuous, theme-aware tint supports the lower content without a separate text panel.
         Box(Modifier.fillMaxSize().background(Brush.verticalGradient(
             0f to Color.Transparent,
-            0.22f to glassTint.copy(alpha = 0.15f),
-            0.48f to glassTint.copy(alpha = if (isDark) 0.72f else 0.48f),
-            1f to glassTint.copy(alpha = if (isDark) 0.92f else 0.68f)
+            0.22f to glassTint.copy(alpha = if (isDark) 0.15f else 0.03f),
+            0.48f to glassTint.copy(alpha = if (isDark) 0.72f else 0.06f),
+            1f to glassTint.copy(alpha = if (isDark) 0.92f else 0.12f)
         )))
         // A clear lens reflection keeps the artwork sharp beneath the glass.
         if (glassEnabled) Box(Modifier.fillMaxSize().background(Brush.linearGradient(

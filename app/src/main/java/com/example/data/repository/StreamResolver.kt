@@ -5,6 +5,7 @@ import com.example.data.remote.InternetArchiveApiService
 import com.example.data.remote.OnlineMusicApiService
 import com.example.playback.AudioQuality
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -66,26 +67,35 @@ internal class StreamResolver(
         val cleanTitle = extractCleanTitle(track.title, track.artist)
         val cleanArtist = extractCleanArtist(track.artist)
 
+        suspend fun <T> attempt(timeoutMs: Long, block: suspend () -> T): T? = try {
+            withTimeoutOrNull(timeoutMs) { block() }
+        } catch (e: TimeoutCancellationException) {
+            // A provider's own deadline is a miss, not cancellation of the song
+            // selection. A parent timeout/track change must still propagate.
+            coroutineContext.ensureActive()
+            null
+        } catch (e: CancellationException) { throw e }
+        catch (_: Exception) { null }
+
+        fun usableYouTube(result: MusicTrack): Boolean {
+            if (!isValidStreamUrl(result.audioUrl)) return false
+            // A stable URI can stay identical after its signed URL was refreshed
+            // and probed. Rejecting it would prevent recovery of the same audio.
+            val refreshed = forceRefresh && result.audioUrl.startsWith("xtreme-youtube://audio/")
+            return refreshed || result.audioUrl != rejectedUrl && result.audioUrl != failedUrl
+        }
+
         suspend fun exactRecording(): MusicTrack? {
             if (!track.id.startsWith("online_")) return null
             val id = track.id.removePrefix("online_")
-            val exact = try { withTimeoutOrNull(8_000L) { fetchById(id, forceRefresh) } }
-                catch (e: CancellationException) { throw e } catch (_: Exception) { null }
+            val exact = attempt(8_000L) { fetchById(id, forceRefresh) }
             return exact?.takeIf { it.id == track.id && isValidStreamUrl(it.audioUrl) &&
                 it.audioUrl != rejectedUrl && it.audioUrl != failedUrl }
         }
 
         suspend fun find(search: suspend (String) -> List<MusicTrack>, text: String, timeoutMs: Long = 8_000L): MusicTrack? {
             if (text.isBlank()) return null
-            val candidates = try {
-                withTimeoutOrNull(timeoutMs) {
-                    search(text)
-                } ?: emptyList()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                emptyList()
-            }
+            val candidates = attempt(timeoutMs) { search(text) }.orEmpty()
             coroutineContext.ensureActive()
             return candidates.firstOrNull { candidate ->
                 isValidStreamUrl(candidate.audioUrl) &&
@@ -98,42 +108,34 @@ internal class StreamResolver(
         val standard: suspend (String) -> List<MusicTrack> = { searchStandard(it, forceRefresh) }
         val attemptedYouTubeTracks = mutableSetOf<String>()
         suspend fun exactYouTube(): MusicTrack? {
-            if (!track.id.startsWith("yt_") || !attemptedYouTubeTracks.add(track.id)) return null
-            val resolved = try { withTimeoutOrNull(40_000L) { resolveYouTube(track, quality, forceRefresh) } }
-                catch (e: CancellationException) { throw e } catch (_: Exception) { null }
-            return resolved?.takeIf { it.id == track.id && isValidStreamUrl(it.audioUrl) &&
-                it.audioUrl != rejectedUrl && it.audioUrl != failedUrl }?.copy(source = "Extended Stream")
+            if ((!track.id.startsWith("yt_") && !track.audioUrl.startsWith("xtreme-youtube://audio/")) ||
+                !attemptedYouTubeTracks.add(track.id)) return null
+            val resolved = attempt(40_000L) { resolveYouTube(track, quality, forceRefresh) }
+            return resolved?.takeIf { it.id == track.id && usableYouTube(it) }?.copy(source = "Extended Stream")
         }
 
         suspend fun searchYouTube(query: String, songsOnly: Boolean = true): MusicTrack? {
             if (query.isBlank()) return null
-            return try {
-                withTimeoutOrNull(40_000L) {
-                    val ytTracks = try {
-                        val initial = com.example.data.remote.YouTubeMusicApiService.searchSongs(query, limit = 12, songsOnly = songsOnly)
-                        if (initial.isEmpty()) {
-                            com.example.data.remote.YouTubeMusicApiService.searchSongsPage(query).tracks
-                        } else initial
-                    } catch (e: CancellationException) { throw e } catch (_: Exception) {
-                        try { com.example.data.remote.YouTubeMusicApiService.searchSongsPage(query).tracks }
-                        catch (e: CancellationException) { throw e } catch (_: Exception) { emptyList() }
-                    }
-                    for (cand in ytTracks) {
-                        if (!cand.id.startsWith("yt_") || !matches(track, cand)) continue
-                        if (!attemptedYouTubeTracks.add(cand.id)) continue
-                        val resolved = try {
-                            resolveYouTube(cand, quality, forceRefresh)
-                        } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
-                        if (resolved != null && isValidStreamUrl(resolved.audioUrl) &&
-                            resolved.audioUrl != rejectedUrl && resolved.audioUrl != failedUrl) {
-                            return@withTimeoutOrNull withStream(track, resolved)
-                        }
-                    }
-                    null
+            return attempt(40_000L) {
+                val ytTracks = try {
+                    val initial = com.example.data.remote.YouTubeMusicApiService.searchSongs(query, limit = 12, songsOnly = songsOnly)
+                    if (initial.isEmpty()) {
+                        com.example.data.remote.YouTubeMusicApiService.searchSongsPage(query).tracks
+                    } else initial
+                } catch (e: CancellationException) { throw e } catch (_: Exception) {
+                    try { com.example.data.remote.YouTubeMusicApiService.searchSongsPage(query).tracks }
+                    catch (e: CancellationException) { throw e } catch (_: Exception) { emptyList() }
                 }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
+                for (cand in ytTracks) {
+                    if (!cand.id.startsWith("yt_") || !matches(track, cand)) continue
+                    if (!attemptedYouTubeTracks.add(cand.id)) continue
+                    val resolved = try {
+                        resolveYouTube(cand, quality, forceRefresh)
+                    } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
+                    if (resolved != null && usableYouTube(resolved)) {
+                        return@attempt withStream(track, resolved)
+                    }
+                }
                 null
             }
         }
