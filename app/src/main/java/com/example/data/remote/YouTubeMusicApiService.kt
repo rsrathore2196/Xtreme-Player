@@ -38,12 +38,21 @@ object YouTubeMusicApiService {
     private val artistSearchLocks = Array(8) { Mutex() }
 
     /** Incremental songs-only fallback for artist pages; never loads an entire discography. */
-    suspend fun searchSongsPage(query: String, continuation: String? = null): SongSearchPage = withContext(Dispatchers.IO) {
+    suspend fun searchSongsPage(query: String, continuation: String? = null,
+        useInnerTubeX: Boolean = false, forceRefresh: Boolean = false): SongSearchPage = withContext(Dispatchers.IO) {
         if (query.isBlank()) return@withContext SongSearchPage(emptyList(), null)
-        val key = "$query|${continuation.orEmpty()}"
+        val key = "$query|${continuation.orEmpty()}|$useInnerTubeX"
         artistSearchLocks[(key.hashCode() and Int.MAX_VALUE) % artistSearchLocks.size].withLock {
+            if (forceRefresh) artistSearchCache.remove(key)
             artistSearchCache.get(key)?.takeIf { System.currentTimeMillis() - it.first < 300_000L }
                 ?.let { return@withLock it.second }
+            if (useInnerTubeX) {
+                val body = YouTubeAudioStreamService.searchSongsResponse(query.trim(), continuation)
+                val page = withContext(Dispatchers.Default) { parseSongSearchPage(body) }
+                val result = page.copy(continuation = page.continuation?.takeUnless { it == continuation })
+                artistSearchCache.put(key, System.currentTimeMillis() to result)
+                return@withLock result
+            }
             val profile = YouTubeClient.WEB_REMIX
             val payload = JSONObject().put("context", JSONObject().put("client", JSONObject()
                 .put("clientName", profile.clientName).put("clientVersion", profile.clientVersion)

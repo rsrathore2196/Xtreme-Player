@@ -6,6 +6,8 @@ import androidx.lifecycle.viewModelScope
 import com.example.data.importer.ImportedTrackMeta
 import com.example.data.importer.PlaylistImportEngine
 import com.example.data.importer.PlaylistImportSummary
+import com.example.data.importer.MatchResult
+import com.example.data.importer.MatchStatus
 import com.example.data.local.PlaylistEntity
 import com.example.data.local.PlaylistWithTracks
 import com.example.data.model.MusicTrack
@@ -43,6 +45,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.ConcurrentHashMap
 
 @Immutable
 sealed interface PlaylistImportStep {
@@ -71,7 +74,9 @@ data class PlaylistImportUiState(
     val step: PlaylistImportStep = PlaylistImportStep.Idle,
     val customTitle: String = "",
     val customDescription: String = "",
-    val lastSummary: PlaylistImportSummary? = null
+    val lastSummary: PlaylistImportSummary? = null,
+    val retryingRows: Set<Int> = emptySet(),
+    val retryMessages: Map<Int, String> = emptyMap()
 )
 
 @Immutable
@@ -822,6 +827,15 @@ class PlayerViewModel(
     val isImportDialogOpen = importState.map { it.isDialogOpen }.distinctUntilChanged()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), false)
     private var importJob: Job? = null
+    private val importGeneration = AtomicLong(0)
+    private val importRetryJobs = ConcurrentHashMap<Int, Job>()
+
+    private fun cancelImportRetries() {
+        importGeneration.incrementAndGet()
+        importRetryJobs.values.forEach { it.cancel() }
+        importRetryJobs.clear()
+        _importState.update { it.copy(retryingRows = emptySet(), retryMessages = emptyMap()) }
+    }
 
     fun openImportDialog() {
         _importState.update { it.copy(isDialogOpen = true) }
@@ -829,6 +843,7 @@ class PlayerViewModel(
 
     fun closeImportDialog() {
         importJob?.cancel()
+        cancelImportRetries()
         _importState.update { it.copy(isDialogOpen = false, step = PlaylistImportStep.Idle) }
     }
 
@@ -888,6 +903,7 @@ class PlayerViewModel(
         }
 
         importJob?.cancel()
+        cancelImportRetries()
         importJob = viewModelScope.launch(Dispatchers.Default) {
             val work = com.example.performance.BackgroundWorkCoordinator.busy()
             try {
@@ -961,12 +977,62 @@ class PlayerViewModel(
         }
     }
 
+    fun retryUnmatchedOnYouTube(item: MatchResult) {
+        val snapshot = _importState.value
+        val summary = (snapshot.step as? PlaylistImportStep.Summary)?.summary ?: return
+        val index = item.originalIndex
+        if (!snapshot.isDialogOpen || index < 0 || summary.unmatchedItems.none {
+                it.originalIndex == index && it.original == item.original
+            }) return
+        val generation = importGeneration.get()
+        val job = viewModelScope.launch(Dispatchers.Default, start = kotlinx.coroutines.CoroutineStart.LAZY) {
+            val work = com.example.performance.BackgroundWorkCoordinator.busy()
+            try {
+                val result = PlaylistImportEngine.retryOnYouTube(item.original).copy(originalIndex = index)
+                ensureActive()
+                _importState.update { current ->
+                    val currentSummary = (current.step as? PlaylistImportStep.Summary)?.summary
+                    if (generation != importGeneration.get() || !current.isDialogOpen || currentSummary == null ||
+                        currentSummary.unmatchedItems.none { it.originalIndex == index && it.original == item.original }) current
+                    else if (result.matchStatus == MatchStatus.NOT_FOUND || result.matchedTrack == null) {
+                        current.copy(retryMessages = current.retryMessages + (index to "No verified YouTube Music match found."))
+                    } else {
+                        val updated = currentSummary.copy(
+                            matchedItems = (currentSummary.matchedItems + result).sortedBy { it.originalIndex },
+                            unmatchedItems = currentSummary.unmatchedItems.filterNot { it.originalIndex == index })
+                        current.copy(step = PlaylistImportStep.Summary(updated), lastSummary = updated,
+                            retryMessages = current.retryMessages - index)
+                    }
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) {
+                _importState.update { current -> if (generation != importGeneration.get()) current else
+                    current.copy(retryMessages = current.retryMessages +
+                        (index to (e.message ?: "Couldn't search YouTube Music. Tap to retry."))) }
+            } finally {
+                importRetryJobs.remove(index, kotlin.coroutines.coroutineContext[Job])
+                _importState.update { current -> if (generation != importGeneration.get()) current else
+                    current.copy(retryingRows = current.retryingRows - index) }
+                work.close()
+            }
+        }
+        if (importRetryJobs.putIfAbsent(index, job) != null) { job.cancel(); return }
+        _importState.update { current -> if (generation != importGeneration.get()) current else
+            current.copy(retryingRows = current.retryingRows + index, retryMessages = current.retryMessages - index) }
+        if (generation == importGeneration.get()) job.start() else {
+            importRetryJobs.remove(index, job)
+            job.cancel()
+        }
+    }
+
     fun saveImportedPlaylist(onSaved: ((Long) -> Unit)? = null) {
-        val summary = _importState.value.lastSummary ?: return
+        val snapshot = _importState.value
+        if (snapshot.retryingRows.isNotEmpty()) return
+        val summary = (snapshot.step as? PlaylistImportStep.Summary)?.summary ?: return
+        _importState.update { it.copy(step = PlaylistImportStep.Saving(summary.playlistTitle)) }
 
         viewModelScope.launch(Dispatchers.Default) {
             val work = com.example.performance.BackgroundWorkCoordinator.busy()
-            _importState.update { it.copy(step = PlaylistImportStep.Saving(summary.playlistTitle)) }
             try {
                 val matchedTracks = withContext(Dispatchers.Default) {
                     // Native IDs reconcile with the existing library; keep the first playlist position.
@@ -1006,6 +1072,8 @@ class PlayerViewModel(
     }
 
     fun resetImportStep() {
+        importJob?.cancel()
+        cancelImportRetries()
         _importState.update { it.copy(step = PlaylistImportStep.Idle, customTitle = "", customDescription = "") }
     }
 
@@ -1015,6 +1083,7 @@ class PlayerViewModel(
         searchJob?.cancel()
         playlistTracksJob?.cancel()
         importJob?.cancel()
+        cancelImportRetries()
     }
 
     companion object {

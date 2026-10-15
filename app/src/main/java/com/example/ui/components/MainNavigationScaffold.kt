@@ -702,6 +702,7 @@ private fun ImportDialogHost(viewModel: PlayerViewModel, isDarkMode: Boolean) {
         onStartImport = { viewModel.startPlaylistImport() },
         onSavePlaylist = { onSaved -> viewModel.saveImportedPlaylist(onSaved) },
         onResetStep = { viewModel.resetImportStep() },
-        onOpenPlaylist = { playlistId -> viewModel.openPlaylist(playlistId) }
+        onOpenPlaylist = { playlistId -> viewModel.openPlaylist(playlistId) },
+        onRetryUnmatched = viewModel::retryUnmatchedOnYouTube
     )
 }

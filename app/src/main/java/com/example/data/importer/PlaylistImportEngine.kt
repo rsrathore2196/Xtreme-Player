@@ -5,6 +5,7 @@ import com.example.data.model.MusicTrack
 import com.example.data.remote.InternetArchiveApiService
 import com.example.data.remote.OnlineMusicApiService
 import com.example.data.remote.YouTubeMusicApiService
+import com.example.data.remote.YouTubeAudioStreamService
 import com.example.data.repository.CatalogNames
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
@@ -36,7 +37,8 @@ data class ImportedTrackMeta(
     val originalArtist: String,
     val originalAlbum: String = "",
     val durationMs: Long = 0L,
-    val externalPlatform: String = "Spotify"
+    val externalPlatform: String = "Spotify",
+    val youtubeVideoId: String = ""
 )
 
 enum class MatchStatus {
@@ -49,7 +51,8 @@ data class MatchResult(
     val original: ImportedTrackMeta,
     val matchedTrack: MusicTrack?,
     val confidenceScore: Double,
-    val matchStatus: MatchStatus
+    val matchStatus: MatchStatus,
+    val originalIndex: Int = -1
 )
 
 data class PlaylistImportSummary(
@@ -69,8 +72,11 @@ object PlaylistImportEngine {
     private const val TAG = "PlaylistImportEngine"
     private const val MATCH_WORKERS = 6
     private val searchSlots = Semaphore(MATCH_WORKERS)
+    private val manualRetrySlots = Semaphore(2)
     private val artistSeparators = Regex("(?i)\\s*(?:,|&|•|\\s+/\\s+|;|\\+|(?<=\\S)\\s+(?:feat\\.?|ft\\.?|featuring|with|x)\\s+(?=\\S))\\s*")
     private val recordingVersions = Regex("(?i)\\b(?:live|remix|remaster(?:ed)?|radio edit|acoustic|instrumental|karaoke|cover|slowed|reverb|extended|demo)\\b")
+    private val latinName = Regex("[a-z0-9]+")
+    private val repeatedLetters = Regex("([a-z])\\1+")
 
     private val httpClient by lazy {
         OkHttpClient.Builder()
@@ -438,7 +444,8 @@ object PlaylistImportEngine {
                             // oEmbed does not provide a duration. An invented 3:30 length
                             // makes the recording verifier reject almost every real song.
                             durationMs = 0L,
-                            externalPlatform = "YouTube Music"
+                            externalPlatform = "YouTube Music",
+                            youtubeVideoId = videoId
                         )
                         return Pair(
                             PlaylistHeader(rawTitle, "Imported from YouTube", thumb, "YouTube Music"),
@@ -463,7 +470,8 @@ object PlaylistImportEngine {
                         originalArtist = it.artist,
                         originalAlbum = it.album,
                         durationMs = it.durationMs,
-                        externalPlatform = "YouTube Music"
+                        externalPlatform = "YouTube Music",
+                        youtubeVideoId = it.id.removePrefix("yt_").takeIf(YouTubeAudioStreamService::isVideoId).orEmpty()
                     )
                 }
                 val cover = ytmDetails.coverUrl.ifBlank {
@@ -528,7 +536,8 @@ object PlaylistImportEngine {
 
                                         if (rawTitle.isNotBlank()) {
                                             val (songTitle, artistName) = splitTitleAndArtist(rawTitle, rawArtist)
-                                            tracks.add(ImportedTrackMeta(songTitle, artistName, externalPlatform = "YouTube Music"))
+                                            tracks.add(ImportedTrackMeta(songTitle, artistName, externalPlatform = "YouTube Music",
+                                                youtubeVideoId = lockup.optString("contentId").takeIf(YouTubeAudioStreamService::isVideoId).orEmpty()))
                                         }
                                     }
 
@@ -542,7 +551,8 @@ object PlaylistImportEngine {
 
                                         if (rawTitle.isNotBlank()) {
                                             val (songTitle, artistName) = splitTitleAndArtist(rawTitle, rawArtist)
-                                            tracks.add(ImportedTrackMeta(songTitle, artistName, durationMs = durSec * 1000L, externalPlatform = "YouTube Music"))
+                                            tracks.add(ImportedTrackMeta(songTitle, artistName, durationMs = durSec * 1000L, externalPlatform = "YouTube Music",
+                                                youtubeVideoId = pvr.optString("videoId").takeIf(YouTubeAudioStreamService::isVideoId).orEmpty()))
                                         }
                                     }
                                 }
@@ -1183,7 +1193,7 @@ object PlaylistImportEngine {
         var lastProgressAt = 0L
         repeat(total) { completed ->
             val (index, match) = results.receive()
-            ordered[index] = match
+            ordered[index] = match.copy(originalIndex = index)
             if (match.matchedTrack != null && match.matchStatus == MatchStatus.EXACT_MATCH) matchedCount++
             val now = android.os.SystemClock.elapsedRealtime()
             if (completed + 1 == total || now - lastProgressAt >= 200L) {
@@ -1207,17 +1217,18 @@ object PlaylistImportEngine {
         )
     }
 
-    /**
-     * Matches a single track with Strict Original-Recording Verification & Audio Quality Routing:
-     * Priority:
-     * 1. Original recording accuracy first (genuine studio single/album release, artist/album/duration match, no unofficial edits)
-     * 2. Playable stream second (must have a valid, accessible audio URL; empty YouTube Music URLs are NOT considered matched)
-     * 3. Audio quality third (Hi-Res / 320 kbps preferred ONLY AFTER original recording and playable stream are verified;
-     *    never select an unofficial or bootleg recording merely because it claims FLAC/lossless)
-     *
-     * If an original song cannot be verified with confidence, marks it unmatched (NOT_FOUND) instead of importing a wrong replacement.
-     */
-    suspend fun matchSingleTrack(original: ImportedTrackMeta): MatchResult = withContext(Dispatchers.IO) {
+    /** A manual retry uses only fresh YouTube Music catalogue results, through InnerTubeX. */
+    suspend fun retryOnYouTube(original: ImportedTrackMeta): MatchResult =
+        withTimeoutOrNull(35_000L) {
+            manualRetrySlots.withPermit { matchTrack(original, youtubeOnly = true, forceRefresh = true) }
+        } ?: throw java.io.IOException("YouTube Music search timed out. Tap to retry.")
+
+    suspend fun matchSingleTrack(original: ImportedTrackMeta): MatchResult =
+        matchTrack(original, youtubeOnly = false, forceRefresh = false)
+
+    /** Match catalogue identity independently of the lifetime of a signed audio URL. */
+    private suspend fun matchTrack(original: ImportedTrackMeta, youtubeOnly: Boolean,
+        forceRefresh: Boolean): MatchResult = withContext(Dispatchers.IO) {
         val (cleanTitle, coreTitle, primaryArtist) = withContext(Dispatchers.Default) {
             val title = cleanTrackTitle(original.originalTitle)
             Triple(title, normalizeForComparison(title), extractPrimaryArtist(cleanArtistName(original.originalArtist)))
@@ -1225,12 +1236,31 @@ object PlaylistImportEngine {
         if (coreTitle.isBlank() || !com.example.recommendation.HomeRecommendationPolicy.known(primaryArtist)) {
             return@withContext MatchResult(original, null, 0.0, MatchStatus.NOT_FOUND)
         }
+        val isExplicitAlt = com.example.recommendation.OriginalMusicFilter.isExplicitAlternativeQuery(original.originalTitle)
+        fun matched(track: MusicTrack, score: Double) =
+            MatchResult(original, track, score.coerceIn(70.0, 99.0), MatchStatus.EXACT_MATCH)
+        fun youtubeReference(track: MusicTrack): MusicTrack? = track.takeIf {
+            it.id.startsWith("yt_") && YouTubeAudioStreamService.isVideoId(it.id.removePrefix("yt_"))
+        }?.copy(audioUrl = "", bitrateKbps = 0, qualityBadge = "YouTube Music", isLossless = false)
+
+        // Playlist parsing already knew this exact recording. Do not discard the video ID
+        // and try to rediscover it from a title/channel spelling. Media3's existing resolver
+        // obtains the current audio-only stream and actual quality when the track is played.
+        if (!youtubeOnly && YouTubeAudioStreamService.isVideoId(original.youtubeVideoId)) {
+            val reference = MusicTrack(id = "yt_${original.youtubeVideoId}", title = original.originalTitle,
+                artist = original.originalArtist, album = original.originalAlbum, durationMs = original.durationMs,
+                coverUrl = "https://i.ytimg.com/vi/${original.youtubeVideoId}/hqdefault.jpg", audioUrl = "",
+                bitrateKbps = 0, qualityBadge = "YouTube Music", genre = "Unknown", language = "Unknown",
+                source = "Extended Stream")
+            if (withContext(Dispatchers.Default) {
+                verifyStrictMatch(original, reference, coreTitle, primaryArtist, isExplicitAlt)
+            }) return@withContext matched(reference, 99.0)
+        }
 
         val queries = listOf("$cleanTitle $primaryArtist".trim(), cleanTitle,
             "${normalizeForComparison(cleanTitle)} $primaryArtist".trim()).filter(String::isNotBlank)
             .distinctBy { it.lowercase(Locale.ROOT) }
-        val isExplicitAlt = com.example.recommendation.OriginalMusicFilter.isExplicitAlternativeQuery(original.originalTitle)
-
+        var youtubeResponded = false
         suspend fun search(label: String, fetch: suspend () -> List<MusicTrack>): List<MusicTrack> =
             searchSlots.withPermit {
                 try { withTimeoutOrNull(12_000L) { fetch() }.orEmpty() }
@@ -1241,45 +1271,60 @@ object PlaylistImportEngine {
                     emptyList()
                 }
             }
-        suspend fun verified(tracks: List<MusicTrack>) = withContext(Dispatchers.Default) {
-            tracks.filter { verifyStrictMatch(original, it, coreTitle, primaryArtist, isExplicitAlt) }
+        suspend fun youtube(query: String) = search("YouTube Music") {
+            YouTubeMusicApiService.searchSongsPage(query, useInnerTubeX = true, forceRefresh = forceRefresh)
+                .also { youtubeResponded = true }.tracks
         }
         fun playable(track: MusicTrack): Boolean =
             (track.audioUrl.startsWith("https://") || track.audioUrl.startsWith("http://") ||
                 track.audioUrl.startsWith("xtreme-youtube://")) &&
                 !track.audioUrl.contains("soundhelix.com", ignoreCase = true)
-        fun matched(track: MusicTrack, score: Double) =
-            MatchResult(original, track, score.coerceIn(70.0, 99.0), MatchStatus.EXACT_MATCH)
 
-        val seenCandidates = mutableSetOf<String>()
+        val pool = linkedMapOf<String, MusicTrack>()
         for ((index, query) in queries.withIndex()) {
-            // A title-only retry recovers provider spelling corrections and incomplete
-            // collaborator indexing. The same strict recording verifier applies to all queries.
-            val candidates = coroutineScope {
+            val candidates = if (youtubeOnly) youtube(query) else coroutineScope {
                 val jio = async { search("JioSaavn") { OnlineMusicApiService.searchSongs(query, limit = 20) } }
-                val youtube = async { search("YouTube Music") { YouTubeMusicApiService.searchSongsPage(query).tracks } }
+                val youtube = async { youtube(query) }
                 val archive = if (index == 0) async { search("Internet Archive") {
                     InternetArchiveApiService.searchLosslessPage(query, pageSize = 6).tracks
                 } } else null
                 jio.await() + youtube.await() + archive?.await().orEmpty()
             }
-            val ranked = withContext(Dispatchers.Default) {
-                verified(candidates).filter { seenCandidates.add(it.id) }.map { track ->
+            val selected = withContext(Dispatchers.Default) {
+                candidates.filter { verifyStrictMatch(original, it, coreTitle, primaryArtist, isExplicitAlt) }
+                    .filter { playable(it) || youtubeReference(it) != null }.forEach { pool[it.id] = it }
+                val strong = pool.values.filter {
+                    val exactTitle = sameImportName(coreTitle, candidateCoreTitle(it))
+                    val exactArtist = verifyArtistTokens(primaryArtist, extractPrimaryArtist(cleanArtistName(it.artist)),
+                        cleanArtistName(it.artist), cleanArtistName(it.singers), allowSpellingVariation = false)
+                    exactTitle && exactArtist || corroborates(original, it)
+                }
+                // Exhaust the alternate queries before accepting a spelling-only result.
+                // Conflicting titles/artist identities must not become an arbitrary replacement.
+                val eligible = strong.ifEmpty {
+                    if (index != queries.lastIndex) emptyList() else pool.values.toList().takeIf { tracks ->
+                        tracks.map {
+                            val artist = cleanArtistName(it.artist)
+                            val exactArtist = verifyArtistTokens(primaryArtist, extractPrimaryArtist(artist), artist,
+                                cleanArtistName(it.singers), allowSpellingVariation = false)
+                            candidateCoreTitle(it).replace(" ", "").replace(repeatedLetters, "$1") + "|" +
+                                normalizeForComparison(if (exactArtist) primaryArtist else extractPrimaryArtist(artist)).replace(" ", "")
+                        }.distinct().size <= 1
+                    }.orEmpty()
+                }
+                eligible.map { track ->
                     val bonus = when { track.isLossless -> 35.0; playable(track) -> 30.0; else -> 20.0 }
-                    track to (com.example.recommendation.OriginalMusicFilter.calculateOriginalityScore(track, original.originalTitle) + bonus)
-                }.filter { it.second > 60.0 }.sortedByDescending { it.second }
+                    track to (com.example.recommendation.OriginalMusicFilter.calculateOriginalityScore(
+                        track.copy(album = ""), original.originalTitle) + bonus +
+                        if (sameImportName(coreTitle, candidateCoreTitle(track))) 20.0 else 0.0)
+                }.maxByOrNull { it.second }
             }
-            ranked.firstOrNull { playable(it.first) }?.let { return@withContext matched(it.first, it.second) }
-            if (ranked.isEmpty()) continue
-            val quality = com.example.data.local.AudioQualityPreferences.getSelectedQuality(com.example.XtremeMusicApp.getInstance())
-            for ((candidate, score) in ranked) {
-                val resolved = try { YouTubeMusicApiService.resolveAudio(candidate, quality) }
-                catch (e: TimeoutCancellationException) { currentCoroutineContext().ensureActive(); null }
-                catch (e: CancellationException) { throw e }
-                catch (_: Exception) { null } ?: continue
-                if (playable(resolved)) return@withContext matched(resolved, score)
+            if (selected != null) {
+                val track = youtubeReference(selected.first) ?: selected.first
+                return@withContext matched(track, selected.second)
             }
         }
+        if (youtubeOnly && !youtubeResponded) throw java.io.IOException("Couldn't search YouTube Music. Tap to retry.")
 
         // If an original song cannot be verified with confidence, provide a fallback metadata track
         // to preserve the user's song details, while keeping matchStatus = NOT_FOUND.
@@ -1307,10 +1352,10 @@ object PlaylistImportEngine {
 
     /**
      * Multi-Factor Verification Algorithm:
-     * 1. Normalized title, or a small spelling difference with corroborating metadata
+     * 1. Normalized title, or a small spelling difference with a verified artist
      * 2. Primary Artist / Singer Matching
      * 3. Originality Verification (Excludes unofficial remixes, edits, and bootlegs unless user requested)
-     * 4. Album Name & Track Duration Threshold (±3 to 5 seconds tolerance)
+     * 4. Album and duration evidence; incompatible durations/recording versions are rejected
      */
     fun verifyStrictMatch(
         original: ImportedTrackMeta,
@@ -1328,17 +1373,18 @@ object PlaylistImportEngine {
         }
 
         // 1. Originality check: If not explicitly requested as remix/alt, candidate must be original music
-        if (!isExplicitAlternativeQuery && !com.example.recommendation.OriginalMusicFilter.isOriginalMusic(candidate)) {
+        // A real song in an official compilation/playlist is still the same recording.
+        // Keep title/artist/content filtering, without treating the enclosing collection as audio.
+        if (!isExplicitAlternativeQuery && !com.example.recommendation.OriginalMusicFilter.isOriginalMusic(candidate.copy(album = ""))) {
             Log.d(TAG, "Rejecting candidate '${candidate.title}' because it is not an original recording.")
             return false
         }
 
-        val candCleanTitle = cleanTrackTitle(com.example.data.repository.StreamResolver.extractCleanTitle(candidate.title, candidate.artist))
-        val candCoreTitle = normalizeForComparison(candCleanTitle)
+        val candCoreTitle = candidateCoreTitle(candidate)
 
         // Spelling variants still require the same artist, version and corroborating metadata.
-        val exactTitle = origCoreTitle == candCoreTitle
-        if (origCoreTitle.isBlank() || !exactTitle && !CatalogNames.spellingEquivalent(origCoreTitle, candCoreTitle)) return false
+        val exactTitle = sameImportName(origCoreTitle, candCoreTitle)
+        if (origCoreTitle.isBlank() || !exactTitle && !importSpellingEquivalent(origCoreTitle, candCoreTitle)) return false
         if (recordingVersions.findAll(original.originalTitle).map { it.value.lowercase(Locale.ROOT) }.toSet() !=
             recordingVersions.findAll(candidate.title).map { it.value.lowercase(Locale.ROOT) }.toSet()) return false
 
@@ -1347,21 +1393,21 @@ object PlaylistImportEngine {
         val candPrimaryArtist = extractPrimaryArtist(candCleanArtist)
         val candSingers = cleanArtistName(candidate.singers)
 
-        val durationKnown = original.durationMs > 0 && candidate.durationMs > 0
-        val albumMatches = original.originalAlbum.isNotBlank() &&
-            com.example.recommendation.HomeRecommendationPolicy.known(candidate.album) &&
-            CatalogNames.same(original.originalAlbum, candidate.album)
-        val corroborated = albumMatches || durationKnown && kotlin.math.abs(original.durationMs - candidate.durationMs) <= 3000L
+        val corroborated = corroborates(original, candidate)
+        val exactArtist = verifyArtistTokens(origPrimaryArtist, candPrimaryArtist, candCleanArtist, candSingers,
+            allowSpellingVariation = false)
         val isArtistMatch = verifyArtistTokens(origPrimaryArtist, candPrimaryArtist, candCleanArtist, candSingers,
-            allowSpellingVariation = corroborated)
-        if (!isArtistMatch || !exactTitle && !corroborated) return false
+            allowSpellingVariation = exactTitle || corroborated)
+        // Missing album/duration is not a mismatch: one field may differ slightly when
+        // the other is exact. If both title and artist differ, require extra evidence.
+        if (!isArtistMatch || !exactTitle && !exactArtist && !corroborated) return false
 
-        // 4. Track Duration Threshold (±3 to 5 seconds tolerance)
+        // 4. Allow small provider rounding/leading-silence differences, never a different edit.
         if (original.durationMs > 0 && candidate.durationMs > 0) {
             val diffMs = kotlin.math.abs(original.durationMs - candidate.durationMs)
-            if (diffMs > 5000L) {
-                // Exceeds 5-second duration tolerance threshold -> rejected as different track/version
-                Log.d(TAG, "Rejecting candidate '${candidate.title}' due to duration diff: ${diffMs}ms (> 5000ms)")
+            val toleranceMs = maxOf(5000L, (original.durationMs * 0.03).toLong().coerceAtMost(10_000L))
+            if (diffMs > toleranceMs) {
+                Log.d(TAG, "Rejecting candidate '${candidate.title}' due to incompatible duration")
                 return false
             }
         }
@@ -1393,7 +1439,34 @@ object PlaylistImportEngine {
         // Providers disagree on secondary composer/featured credits. Verify the requested
         // primary artist against actual candidate credits, without requiring every composer.
         val primary = normOrig.replace(" ", "")
-        return candidates.any { it == primary || allowSpellingVariation && CatalogNames.spellingEquivalent(primary, it) }
+        return candidates.any { it == primary || allowSpellingVariation && importSpellingEquivalent(primary, it) }
+    }
+
+    private fun candidateCoreTitle(track: MusicTrack): String = normalizeForComparison(cleanTrackTitle(
+        com.example.data.repository.StreamResolver.extractCleanTitle(track.title, track.artist)))
+
+    private fun sameImportName(first: String, second: String): Boolean =
+        first.isNotBlank() && first.replace(" ", "") == second.replace(" ", "")
+
+    private fun corroborates(original: ImportedTrackMeta, candidate: MusicTrack): Boolean =
+        original.durationMs > 0 && candidate.durationMs > 0 &&
+            kotlin.math.abs(original.durationMs - candidate.durationMs) <= 3000L ||
+            com.example.recommendation.HomeRecommendationPolicy.known(original.originalAlbum) &&
+            com.example.recommendation.HomeRecommendationPolicy.known(candidate.album) &&
+            CatalogNames.same(original.originalAlbum, candidate.album)
+
+    /** Import-only tolerance; artist photos and general entity verification remain strict. */
+    private fun importSpellingEquivalent(first: String, second: String): Boolean {
+        if (CatalogNames.spellingEquivalent(first, second)) return true
+        val a = normalizeForComparison(first).replace(" ", "")
+        val b = normalizeForComparison(second).replace(" ", "")
+        if (!latinName.matches(a) || !latinName.matches(b) || maxOf(a.length, b.length) > 160 ||
+            a.filter(Char::isDigit) != b.filter(Char::isDigit)) return false
+        // Common Romanized spellings such as Aadat/Adat or Judaa/Juda.
+        if (minOf(a.length, b.length) >= 3 &&
+            a.replace(repeatedLetters, "$1") == b.replace(repeatedLetters, "$1")) return true
+        return minOf(a.length, b.length) >= 4 && kotlin.math.abs(a.length - b.length) == 1 &&
+            computeLevenshteinDistance(a, b) == 1
     }
 
     private fun cleanTrackTitle(title: String): String {

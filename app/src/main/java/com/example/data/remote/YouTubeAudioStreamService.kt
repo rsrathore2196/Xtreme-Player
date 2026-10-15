@@ -9,6 +9,8 @@ import androidx.media3.exoplayer.hls.playlist.HlsMultivariantPlaylist
 import androidx.media3.exoplayer.hls.playlist.HlsPlaylistParser
 import com.example.playback.AudioQuality
 import com.metrolist.innertubex.InnerTube
+import com.metrolist.innertubex.bodyAsTextLimited
+import com.metrolist.innertubex.models.YouTubeClient
 import com.metrolist.innertubex.cipher.PlayerConfigRepository
 import com.metrolist.innertubex.cipher.RemotePlayerConfigStore
 import com.metrolist.innertubex.cipher.YouTubeCipherService
@@ -70,7 +72,7 @@ object YouTubeAudioStreamService {
         private val cipher = YouTubeCipherService(cipherHttp, config)
         private data class Engine(val http: HttpClient, val innerTube: InnerTube, val extractor: InnerTubeExtractor)
         private val engines = mutableMapOf<String, Engine>()
-        fun extractor(cap: Int, hlsOnly: Boolean?): InnerTubeExtractor = synchronized(engines) {
+        private fun engine(cap: Int, hlsOnly: Boolean?): Engine = synchronized(engines) {
             engines.getOrPut(cap.toString() + ":" + hlsOnly) {
                 val network = http.newBuilder().addInterceptor(YouTubeAudioFormatPolicy(cap, hlsOnly)).build()
                 val apiHttp = client(network)
@@ -80,7 +82,18 @@ object YouTubeAudioStreamService {
                     // Keep the native strategy: the library enables visitor-backed and
                     // automatic fallback paths by its actual strategy type.
                     cipherService = cipher, innerTube = innerTube))
-            }.extractor
+            }
+        }
+        fun extractor(cap: Int, hlsOnly: Boolean?): InnerTubeExtractor = engine(cap, hlsOnly).extractor
+
+        suspend fun searchSongs(query: String, continuation: String?): String {
+            val response = engine(320_000, false).innerTube.search(
+                client = YouTubeClient.WEB_REMIX, query = query.takeIf { continuation == null },
+                params = "EgWKAQIIAWoKEAkQBRAKEAMQBA==".takeIf { continuation == null },
+                continuation = continuation, setLogin = false)
+            val body = response.bodyAsTextLimited(4 * 1024 * 1024)
+            if (response.status.value !in 200..299) throw IOException("YouTube Music search is unavailable")
+            return body
         }
         suspend fun close() {
             synchronized(engines) { engines.values.toList().also { engines.clear() } }.forEach {
@@ -90,6 +103,10 @@ object YouTubeAudioStreamService {
         }
     }
     private fun runtime(): Runtime = runtime ?: synchronized(runtimeLock) { runtime ?: Runtime().also { runtime = it } }
+
+    /** Import uses the same InnerTubeX session/client stack as audio extraction. */
+    internal suspend fun searchSongsResponse(query: String, continuation: String?): String =
+        withContext(Dispatchers.IO) { runtime().searchSongs(query, continuation) }
 
     fun isVideoId(value: String) = videoIdPattern.matches(value)
     fun isMediaUrl(value: String): Boolean = value.toHttpUrlOrNull()?.let {

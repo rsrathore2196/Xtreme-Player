@@ -82,6 +82,8 @@ import com.example.ui.theme.liquidGlassPill
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -122,7 +124,8 @@ fun PlaylistImportDialog(
     onStartImport: () -> Unit,
     onSavePlaylist: (onSaved: (Long) -> Unit) -> Unit,
     onResetStep: () -> Unit,
-    onOpenPlaylist: (Long) -> Unit
+    onOpenPlaylist: (Long) -> Unit,
+    onRetryUnmatched: (MatchResult) -> Unit
 ) {
     val context = LocalContext.current
     var showAdvancedAuth by remember { mutableStateOf(false) }
@@ -304,6 +307,9 @@ fun PlaylistImportDialog(
                                 onCustomTitleChanged = onCustomTitleChanged,
                                 onCustomDescriptionChanged = onCustomDescriptionChanged,
                                 onCancel = onResetStep,
+                                retryingRows = state.retryingRows,
+                                retryMessages = state.retryMessages,
+                                onRetryUnmatched = onRetryUnmatched,
                                 onSave = {
                                     onSavePlaylist { playlistId ->
                                         // Handled by viewmodel
@@ -675,7 +681,10 @@ private fun ImportSummaryContent(
     onCustomTitleChanged: (String) -> Unit,
     onCustomDescriptionChanged: (String) -> Unit,
     onCancel: () -> Unit,
-    onSave: () -> Unit
+    onSave: () -> Unit,
+    retryingRows: Set<Int>,
+    retryMessages: Map<Int, String>,
+    onRetryUnmatched: (MatchResult) -> Unit
 ) {
     val appColors = LocalAppColors.current
     val isDark = appColors.isDark
@@ -790,7 +799,7 @@ private fun ImportSummaryContent(
                         style = MaterialTheme.typography.bodySmall.copy(color = appColors.textMuted)
                     )
                     Spacer(modifier = Modifier.height(4.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Box(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(6.dp))
@@ -803,7 +812,10 @@ private fun ImportSummaryContent(
                                 text = "✓ ${summary.matchedItems.size} Matched (${summary.matchRatePercent}%)",
                                 color = if (isDark) XtremeGreen else Color(0xFF059669),
                                 fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                         if (summary.unmatchedItems.isNotEmpty()) {
@@ -819,7 +831,10 @@ private fun ImportSummaryContent(
                                     text = "${summary.unmatchedItems.size} Unmatched",
                                     color = if (isDark) Color(0xFFFFA726) else Color(0xFFD97706),
                                     fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                         }
@@ -900,7 +915,8 @@ private fun ImportSummaryContent(
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             items(displayList) { item ->
-                TrackMatchRow(item = item)
+                TrackMatchRow(item = item, retrying = item.originalIndex in retryingRows,
+                    retryMessage = retryMessages[item.originalIndex], onRetry = { onRetryUnmatched(item) })
             }
         }
 
@@ -930,7 +946,7 @@ private fun ImportSummaryContent(
 
             Button(
                 onClick = onSave,
-                enabled = summary.matchedItems.isNotEmpty(),
+                enabled = summary.matchedItems.isNotEmpty() && retryingRows.isEmpty(),
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = appColors.primaryAccent,
@@ -959,7 +975,7 @@ private fun ImportSummaryContent(
 }
 
 @Composable
-private fun TrackMatchRow(item: MatchResult) {
+private fun TrackMatchRow(item: MatchResult, retrying: Boolean, retryMessage: String?, onRetry: () -> Unit) {
     val appColors = LocalAppColors.current
     val isDark = appColors.isDark
     Card(
@@ -1005,21 +1021,45 @@ private fun TrackMatchRow(item: MatchResult) {
             Spacer(modifier = Modifier.width(10.dp))
 
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = item.matchedTrack?.title ?: item.original.originalTitle,
-                    style = MaterialTheme.typography.bodyMedium.copy(
-                        fontWeight = FontWeight.SemiBold,
-                        color = appColors.textPrimary
-                    ),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = item.matchedTrack?.title ?: item.original.originalTitle,
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            fontWeight = FontWeight.SemiBold,
+                            color = appColors.textPrimary
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (item.matchStatus == MatchStatus.NOT_FOUND) {
+                        Spacer(Modifier.width(4.dp))
+                        Box(
+                            Modifier.size(28.dp).clip(CircleShape)
+                                .background(appColors.primaryAccent.copy(alpha = if (isDark) 0.16f else 0.10f))
+                                .border(1.dp, appColors.primaryAccent.copy(alpha = 0.3f), CircleShape)
+                                .semantics { contentDescription = if (retrying) "Searching YouTube Music" else
+                                    "Search YouTube Music for ${item.original.originalTitle}" }
+                                .clickable(enabled = !retrying, onClick = onRetry),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (retrying) CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp), color = appColors.primaryAccent, strokeWidth = 1.5.dp)
+                            else Icon(Icons.Default.Sync, contentDescription = null,
+                                tint = appColors.primaryAccent, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                }
                 Text(
                     text = item.matchedTrack?.artist ?: item.original.originalArtist,
                     style = MaterialTheme.typography.bodySmall.copy(color = appColors.textMuted),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                if (retryMessage != null && item.matchStatus == MatchStatus.NOT_FOUND) {
+                    Text(retryMessage, color = appColors.textMuted, fontSize = 10.sp,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
             }
 
             Spacer(modifier = Modifier.width(8.dp))
