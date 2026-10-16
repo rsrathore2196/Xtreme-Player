@@ -38,6 +38,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -109,6 +110,7 @@ class PlaybackManager(
     private var youtubeQualityJob: Job? = null
     private var losslessUpgradeJob: Job? = null
     private var losslessAttemptKey: String? = null
+    private var losslessNetworkBlockedKey: String? = null
     private var losslessLookupStarted = false
     private var losslessTransitionId: String? = null
     private data class LosslessFallback(val generation: Long, val original: MusicTrack,
@@ -222,6 +224,24 @@ class PlaybackManager(
     private var isCurrentSessionExplicitPlaylist: Boolean = false
 
     init {
+        scope.launch {
+            MusicService.liveSession.collectLatest { alive ->
+                if (!alive) return@collectLatest
+                NetworkQualityMonitor.getInstance(context).activeQualityCeiling.collect { policy ->
+                    if (policy.effectiveCeiling != AudioQualityCeiling.MAX) {
+                        losslessUpgradeJob?.cancel()
+                        losslessUpgradeJob = null
+                        losslessAttemptKey = null
+                        losslessLookupStarted = false
+                        val current = _uiState.value.currentTrack
+                        if (pendingSelectionId == null && current != null && controller?.currentMediaItem?.mediaId == current.id)
+                            losslessNetworkBlockedKey = "$selectionGeneration|${current.id}"
+                    }
+                    // Raising a ceiling does not upgrade/restart the active song.
+                    // A new selection can use lossless again if its profile allows it.
+                }
+            }
+        }
         SleepTimerManager.addExpirationListener(sleepExpirationListener)
         scope.launch {
             try {
@@ -319,6 +339,7 @@ class PlaybackManager(
         val saved = pendingRestoredSession ?: return
         pendingRestoredSession = null
         val generation = selectionGeneration
+        withContext(Dispatchers.IO) { NetworkQualityMonitor.getInstance(context).snapshot() }
         while (pendingSelectionId == null && player.mediaItemCount == 0) {
             val revision = queueRevision
             val quality = _uiState.value.selectedQuality
@@ -968,6 +989,7 @@ class PlaybackManager(
         losslessUpgradeJob?.cancel()
         losslessUpgradeJob = null
         losslessAttemptKey = null
+        losslessNetworkBlockedKey = null
         losslessLookupStarted = false
         losslessFallback = null
         losslessTransitionId = null
@@ -977,6 +999,12 @@ class PlaybackManager(
     private fun maybeUpgradeToLossless() {
         val state = _uiState.value
         if (state.selectedQuality != AudioQuality.HI_RES_LOSSLESS || pendingSelectionId != null) return
+        val networkKey = "$selectionGeneration|${state.currentTrack?.id}"
+        if (NetworkQualityMonitor.getInstance(context).currentMaxBitrateBps != Int.MAX_VALUE) {
+            losslessNetworkBlockedKey = networkKey
+            return
+        }
+        if (losslessNetworkBlockedKey == networkKey) return
         val player = controller ?: return
         // This controller is built on Main; all native reads and mutations stay on its owner.
         if (player.applicationLooper != android.os.Looper.getMainLooper() || !player.isPlaying) return
@@ -992,6 +1020,7 @@ class PlaybackManager(
         losslessLookupStarted = false
         fun stillCurrent(): Boolean = ownsSelection(original.id, generation) &&
             pendingSelectionId == null && _uiState.value.selectedQuality == AudioQuality.HI_RES_LOSSLESS &&
+            NetworkQualityMonitor.getInstance(context).currentMaxBitrateBps == Int.MAX_VALUE &&
             player.currentMediaItem?.mediaId == original.id && player.isPlaying &&
             _uiState.value.currentTrack?.audioUrl == original.audioUrl
         losslessUpgradeJob = scope.launch {
@@ -1267,6 +1296,7 @@ class PlaybackManager(
         }
 
         val generation = selectionGeneration
+        withContext(Dispatchers.IO) { NetworkQualityMonitor.getInstance(context).snapshot() }
         var autoplayEnabled: Boolean
         var targetQuality: AudioQuality
         var prepared: Pair<MutableList<MusicTrack>, List<MediaItem>>
@@ -1976,7 +2006,8 @@ class PlaybackManager(
 
     private fun MusicTrack.saavnBitrateFor(quality: AudioQuality): Int {
         val supported = bitrateKbps.takeIf { it in 1..320 } ?: 320
-        val requested = minOf(quality.kbps, supported, 320)
+        val requested = minOf(quality.kbps, supported, 320,
+            NetworkQualityMonitor.getInstance(context).currentMaxBitrateBps / 1000)
         return when { requested >= 320 -> 320; requested >= 160 -> 160; requested >= 96 -> 96; else -> 48 }
     }
 
@@ -1998,7 +2029,7 @@ class PlaybackManager(
             .replace("JioSaavn", "HD Stream", ignoreCase = true)
             .replace("Saavn", "HD Stream", ignoreCase = true)
 
-        return MediaItem.Builder()
+        val mediaItem = MediaItem.Builder()
             .setMediaId(id)
             .setUri(com.example.data.remote.YouTubeAudioStreamService.playbackUri(id, effectiveUrl))
             .setRequestMetadata(MediaItem.RequestMetadata.Builder().setMediaUri(Uri.parse(
@@ -2026,5 +2057,7 @@ class PlaybackManager(
                     .build()
             )
             .build()
+        return com.example.service.NetworkAudioQualityPolicy.constrain(mediaItem,
+            NetworkQualityMonitor.getInstance(context).currentMaxBitrateBps)
     }
 }

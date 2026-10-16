@@ -3,10 +3,21 @@ package com.example.data.local
 import android.content.Context
 import android.content.SharedPreferences
 import com.example.playback.AudioQuality
+import com.example.playback.AudioQualityCeiling
+import com.example.playback.NetworkAudioPreferences
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
 
 object AudioQualityPreferences {
     private const val PREFS_NAME = "xtreme_audio_quality_prefs"
     private const val KEY_AUDIO_QUALITY_ID = "selected_audio_quality_id"
+    private const val KEY_WIFI_CEILING = "wifi_quality_ceiling"
+    private const val KEY_CELLULAR_CEILING = "cellular_quality_ceiling"
+    private const val KEY_METERED_WIFI = "treat_metered_wifi_as_cellular"
 
     private fun getPrefs(context: Context): SharedPreferences {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -23,5 +34,34 @@ object AudioQualityPreferences {
 
     fun setSelectedQuality(context: Context, quality: AudioQuality) {
         getPrefs(context).edit().putString(KEY_AUDIO_QUALITY_ID, quality.id).apply()
+    }
+
+    fun getNetworkSettings(context: Context): NetworkAudioPreferences = getPrefs(context).let { prefs ->
+        NetworkAudioPreferences(
+            AudioQualityCeiling.fromName(prefs.getString(KEY_WIFI_CEILING, null), AudioQualityCeiling.MAX),
+            AudioQualityCeiling.fromName(prefs.getString(KEY_CELLULAR_CEILING, null), AudioQualityCeiling.HIGH),
+            prefs.getBoolean(KEY_METERED_WIFI, true)
+        )
+    }
+
+    /** Listener callbacks only enqueue a signal; preference reads stay on IO. */
+    fun observeNetworkSettings(context: Context) = callbackFlow {
+        val prefs = getPrefs(context.applicationContext)
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == null || key in setOf(KEY_WIFI_CEILING, KEY_CELLULAR_CEILING, KEY_METERED_WIFI)) trySend(Unit)
+        }
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+        trySend(Unit)
+        awaitClose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+    }.conflate().map { getNetworkSettings(context.applicationContext) }.flowOn(Dispatchers.IO)
+
+    fun setWifiQualityCeiling(context: Context, ceiling: AudioQualityCeiling) {
+        getPrefs(context).edit().putString(KEY_WIFI_CEILING, ceiling.name).apply()
+    }
+    fun setCellularQualityCeiling(context: Context, ceiling: AudioQualityCeiling) {
+        getPrefs(context).edit().putString(KEY_CELLULAR_CEILING, ceiling.name).apply()
+    }
+    fun setTreatMeteredWifiAsCellular(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_METERED_WIFI, enabled).apply()
     }
 }

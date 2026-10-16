@@ -19,6 +19,22 @@ import java.io.File
 object MusicCache {
     const val DEFAULT_CACHE_SIZE = 50L * 1024L * 1024L // 50 MB lean LRU cache for 320kbps streams
     private const val CACHE_SIZE = DEFAULT_CACHE_SIZE
+    private val saavnRate = Regex("_(320|160|96|48)\\.(?:mp4|m4a)(?:$|[?#])")
+
+    private fun fullyCached(context: Context, key: String, knownLength: Long? = null): Boolean = runCatching {
+        val cache = getSimpleCache(context)
+        val length = knownLength?.takeIf { it > 0 }
+            ?: androidx.media3.datasource.cache.ContentMetadata.getContentLength(cache.getContentMetadata(key))
+        length > 0 && cache.isCached(key, 0L, length)
+    }.getOrDefault(false)
+
+    private fun offlineAudio(context: Context, video: String, cap: Int, sabr: Boolean): YouTubeAudioStreamService.AudioStream? {
+        val cached = YouTubeAudioStreamService.cachedStreams(video).filter {
+            it.isSabr == sabr && !it.isHls && fullyCached(context, it.cacheKey, it.contentLength)
+        }
+        return cached.filter { it.bitrateKbps.toLong() * 1000 <= cap }.maxByOrNull { it.bitrateKbps }
+            ?: cached.minByOrNull { it.bitrateKbps }
+    }
 
     @Volatile
     private var simpleCacheInstance: SimpleCache? = null
@@ -70,60 +86,90 @@ object MusicCache {
         } }
         // Media3 calls this on its loader thread. Refresh signed video URLs at load time,
         // including restored queues, without holding the UI thread or storing stale URLs.
-        return ResolvingDataSource.Factory(cached) { spec ->
-            if (spec.uri.scheme == "xtreme-sabr") {
-                if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper())
-                    throw IOException("SABR cache loading must run on the Media3 loader thread")
-                val cacheKey = SabrSessionRegistry.cacheKeyFromUri(spec.uri)
-                val quality = AudioQualityPreferences.getSelectedQuality(app)
-                if (spec.uri.getQueryParameter("cap")?.toIntOrNull() != minOf(quality.kbps, 320)) {
-                    // Apply changed preferences before even a fully cached old
-                    // representation can bypass the SABR upstream data source.
-                    val audio = runBlocking(Dispatchers.IO) {
-                        YouTubeAudioStreamService.resolveSabr(
-                            requireNotNull(YouTubeAudioStreamService.videoIdFromUri(spec.uri)), quality)
+        return DataSource.Factory {
+            // Per MediaPeriod/DataSource, not a global URL map: a new track uses
+            // today's policy, while routine close/reopen/seek retains its format.
+            var pinnedCeiling: Int? = null
+            var offline = false
+            var boundAudio: YouTubeAudioStreamService.AudioStream? = null
+            var boundJioUri: android.net.Uri? = null
+            ResolvingDataSource(cached.createDataSource()) { spec ->
+                val host = spec.uri.host.orEmpty()
+                val saavn = host == "saavncdn.com" || host.endsWith(".saavncdn.com")
+                if (spec.uri.scheme in setOf("xtreme-sabr", "xtreme-youtube") || saavn) {
+                    if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper())
+                        throw IOException("Audio resolution must run on the Media3 loader thread")
+                    if (pinnedCeiling == null) {
+                        val policy = com.example.playback.NetworkQualityMonitor.getInstance(app).snapshot()
+                        pinnedCeiling = policy.effectiveCeiling.maxBitrateBps
+                        offline = policy.connectionType == com.example.playback.NetworkConnectionType.OFFLINE
                     }
-                    SabrSessionRegistry.recordReplacement(spec.uri.toString(), audio)
-                    throw SabrStreamChangedException(audio)
                 }
-                spec.buildUpon().setKey(cacheKey).build()
-            } else if (spec.uri.scheme == "xtreme-youtube") {
-                if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper())
-                    throw IOException("YouTube audio resolution must run on the Media3 loader thread")
-                val videoId = spec.uri.pathSegments.firstOrNull().orEmpty()
-                val hls = spec.uri.lastPathSegment?.endsWith(".m3u8") == true
-                val audio = try {
-                    runBlocking(Dispatchers.IO) {
-                        YouTubeAudioStreamService.resolve(videoId, AudioQualityPreferences.getSelectedQuality(context), hlsOnly = hls)
-                    }
-                } catch (e: InterruptedException) {
-                    Thread.currentThread().interrupt()
-                    throw IOException("Audio resolution interrupted", e)
-                } catch (e: Exception) {
-                    throw IOException("Couldn't resolve YouTube audio", e)
-                }
-                if (audio.isHls && !hls || audio.isSabr) {
-                    // The old progressive extractor/cache offsets cannot be reused
-                    // against a SABR container, even when the audio itag is equal.
-                    SabrSessionRegistry.recordReplacement(spec.uri.toString(), audio)
-                    throw SabrStreamChangedException(audio)
-                }
-                if (!hls) {
-                    val expectedItag = spec.uri.getQueryParameter("itag")?.toIntOrNull()
-                    val expectedLength = spec.uri.getQueryParameter("length")?.toLongOrNull()
-                    if (expectedItag != null && expectedItag != audio.itag ||
-                        expectedLength != null && audio.contentLength != null && expectedLength != audio.contentLength) {
+                if (saavn) {
+                    val target = boundJioUri ?: run {
+                        val quality = AudioQualityPreferences.getSelectedQuality(app)
+                        val current = saavnRate.find(spec.uri.toString())?.groupValues?.get(1)?.toIntOrNull() ?: 320
+                        val rate = com.example.playback.AudioQualityCeiling.saavnKbps(quality.kbps, current,
+                            requireNotNull(pinnedCeiling))
+                        val requested = com.example.data.remote.OnlineMusicApiService.formatUrlForQuality(spec.uri.toString(), rate.toString())
+                        val cached = if (offline) listOf(48, 96, 160, 320).map { value ->
+                            value to com.example.data.remote.OnlineMusicApiService.formatUrlForQuality(spec.uri.toString(), value.toString())
+                        }.filter { fullyCached(app, it.second) } else emptyList()
+                        val available = cached.filter { it.first <= rate }.maxByOrNull { it.first }
+                            ?: cached.minByOrNull { it.first }
+                        android.net.Uri.parse(available?.second ?: requested)
+                    }.also { boundJioUri = it }
+                    spec.buildUpon().setUri(target).setKey(if (target == spec.uri) spec.key else target.toString()).build()
+                } else if (spec.uri.scheme == "xtreme-sabr") {
+                    val video = YouTubeAudioStreamService.videoIdFromUri(spec.uri)
+                        ?: throw IOException("Invalid SABR recording")
+                    val audio = (if (offline) offlineAudio(app, video, requireNotNull(pinnedCeiling), sabr = true) else null) ?: try { runBlocking(Dispatchers.IO) {
+                        YouTubeAudioStreamService.resolveSabr(video, AudioQualityPreferences.getSelectedQuality(app),
+                            maxBitrateBps = pinnedCeiling)
+                    } } catch (e: InterruptedException) {
+                        Thread.currentThread().interrupt(); throw IOException("Audio resolution interrupted", e)
+                    } catch (e: Exception) { throw IOException("Couldn't resolve SABR audio", e) }
+                    val expected = boundAudio?.cacheKey ?: SabrSessionRegistry.cacheKeyFromUri(spec.uri)
+                    if ((boundAudio != null || spec.position > 0) && expected != audio.cacheKey) {
                         SabrSessionRegistry.recordReplacement(spec.uri.toString(), audio)
                         throw SabrStreamChangedException(audio)
                     }
-                }
-                spec.buildUpon().setUri(audio.url).setKey(if (hls) spec.key else audio.cacheKey)
-                    .setHttpRequestHeaders(spec.httpRequestHeaders + audio.headers).build()
-            } else if (YouTubeAudioStreamService.isMediaUrl(spec.uri.toString())) {
-                val audio = YouTubeAudioStreamService.cachedForUrl(spec.uri.toString())
-                spec.buildUpon().setKey(audio?.takeUnless { it.isHls }?.cacheKey ?: spec.key)
-                    .setHttpRequestHeaders(spec.httpRequestHeaders + YouTubeAudioStreamService.headersFor(spec.uri.toString())).build()
-            } else spec
+                    boundAudio = audio
+                    spec.buildUpon().setUri(android.net.Uri.parse(audio.url)).setKey(audio.cacheKey).build()
+                } else if (spec.uri.scheme == "xtreme-youtube") {
+                    val videoId = spec.uri.pathSegments.firstOrNull().orEmpty()
+                    val hls = spec.uri.lastPathSegment?.endsWith(".m3u8") == true
+                    val audio = (if (offline && !hls) offlineAudio(app, videoId, requireNotNull(pinnedCeiling), sabr = false) else null) ?: try {
+                        runBlocking(Dispatchers.IO) {
+                            YouTubeAudioStreamService.resolve(videoId, AudioQualityPreferences.getSelectedQuality(app), hlsOnly = hls,
+                                maxBitrateBps = pinnedCeiling)
+                        }
+                    } catch (e: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        throw IOException("Audio resolution interrupted", e)
+                    } catch (e: Exception) { throw IOException("Couldn't resolve YouTube audio", e) }
+                    if (audio.isHls && !hls || audio.isSabr || boundAudio?.cacheKey?.let { it != audio.cacheKey } == true) {
+                        SabrSessionRegistry.recordReplacement(spec.uri.toString(), audio)
+                        throw SabrStreamChangedException(audio)
+                    }
+                    if (!hls && (boundAudio != null || spec.position > 0)) {
+                        val expectedItag = boundAudio?.itag ?: spec.uri.getQueryParameter("itag")?.toIntOrNull()
+                        val expectedLength = boundAudio?.contentLength ?: spec.uri.getQueryParameter("length")?.toLongOrNull()
+                        if (expectedItag != null && expectedItag != audio.itag ||
+                            expectedLength != null && audio.contentLength != null && expectedLength != audio.contentLength) {
+                            SabrSessionRegistry.recordReplacement(spec.uri.toString(), audio)
+                            throw SabrStreamChangedException(audio)
+                        }
+                    }
+                    boundAudio = audio
+                    spec.buildUpon().setUri(audio.url).setKey(if (hls) spec.key else audio.cacheKey)
+                        .setHttpRequestHeaders(spec.httpRequestHeaders + audio.headers).build()
+                } else if (YouTubeAudioStreamService.isMediaUrl(spec.uri.toString())) {
+                    val audio = YouTubeAudioStreamService.cachedForUrl(spec.uri.toString())
+                    spec.buildUpon().setKey(audio?.takeUnless { it.isHls }?.cacheKey ?: spec.key)
+                        .setHttpRequestHeaders(spec.httpRequestHeaders + YouTubeAudioStreamService.headersFor(spec.uri.toString())).build()
+                } else spec
+            }
         }
     }
 

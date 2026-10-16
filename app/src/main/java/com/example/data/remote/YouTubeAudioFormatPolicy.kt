@@ -8,9 +8,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 
-/** Preserve InnerTubeX's native inventory, original-vocal selection, cipher and transport fallback.
- * Only explicitly DRM-protected formats are removed; quality is checked after extraction. */
-internal class YouTubeAudioFormatPolicy : Interceptor {
+/** Restrict each vocal-track inventory before native selection; never replace the extractor. */
+internal class YouTubeAudioFormatPolicy(private val maxBitrateBps: Int = Int.MAX_VALUE) : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
         val response = chain.proceed(chain.request())
         if (!response.isSuccessful || chain.request().url.encodedPath != "/youtubei/v1/player") return response
@@ -25,10 +24,24 @@ internal class YouTubeAudioFormatPolicy : Interceptor {
         for (name in listOf("formats", "adaptiveFormats")) {
             val entries = data.optJSONArray(name) ?: continue
             val safe = JSONArray()
+            val audioGroups = (0 until entries.length()).mapNotNull(entries::optJSONObject)
+                .filter { it.optString("mimeType").startsWith("audio/") &&
+                    (it.optJSONArray("drmFamilies")?.length() ?: 0) == 0 && it.optString("drmTrackType").isBlank() }
+                // Do not drop the original vocal track just because a dub fits the cap.
+                .groupBy { it.optJSONObject("audioTrack")?.optString("id").orEmpty() }
+            val lowestByTrack = audioGroups.mapValues { (_, formats) ->
+                formats.map { it.optInt("bitrate", 0) }.filter { it > 0 }.minOrNull()
+            }
+            val fittingTracks = audioGroups.filterValues { formats -> formats.any { it.optInt("bitrate", 0) in 1..maxBitrateBps } }.keys
             for (index in 0 until entries.length()) {
                 val entry = entries.optJSONObject(index) ?: continue
                 if ((entry.optJSONArray("drmFamilies")?.length() ?: 0) > 0 ||
-                    entry.optString("drmTrackType").isNotBlank()) changed = true else safe.put(entry)
+                    entry.optString("drmTrackType").isNotBlank()) { changed = true; continue }
+                val group = entry.optJSONObject("audioTrack")?.optString("id").orEmpty()
+                val bitrate = entry.optInt("bitrate", 0)
+                val exceeds = entry.optString("mimeType").startsWith("audio/") && bitrate > maxBitrateBps
+                if (exceeds && (group in fittingTracks || bitrate != lowestByTrack[group])) changed = true
+                else safe.put(entry)
             }
             data.put(name, safe)
         }
@@ -41,8 +54,7 @@ internal class YouTubeAudioFormatPolicy : Interceptor {
 
     companion object {
         private const val MAX_PLAYER_BYTES = 4L * 1024 * 1024
-        fun quality(cap: Int, attempt: Int): AudioQuality = when {
-            cap < 128_000 -> AudioQuality.LOW
+        fun quality(@Suppress("UNUSED_PARAMETER") cap: Int, attempt: Int): AudioQuality = when {
             attempt == 0 -> AudioQuality.HIGH
             attempt == 1 -> AudioQuality.MP4
             else -> AudioQuality.LOW

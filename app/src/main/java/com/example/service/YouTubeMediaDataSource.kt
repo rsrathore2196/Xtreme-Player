@@ -103,7 +103,8 @@ internal class YouTubeMediaDataSource(private val context: Context, private val 
             val refreshed = try {
                 runBlocking(Dispatchers.IO) {
                     YouTubeAudioStreamService.resolve(videoId, AudioQualityPreferences.getSelectedQuality(context),
-                        forceRefresh = true, hlsOnly = false, excludedClient = stream.clientId)
+                        forceRefresh = true, hlsOnly = false, excludedClient = stream.clientId,
+                        maxBitrateBps = stream.selectionCapBps)
                 }
             } catch (e: InterruptedException) {
                 Thread.currentThread().interrupt()

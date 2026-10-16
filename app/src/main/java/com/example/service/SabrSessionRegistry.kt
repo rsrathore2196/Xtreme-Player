@@ -110,7 +110,8 @@ internal object SabrSessionRegistry {
             ?: throw IOException("Invalid SABR recording identity")
         var descriptor = descriptors.get(uri.toString())
         if (descriptor == null) {
-            val resolved = YouTubeAudioStreamService.resolveSabr(videoId, selectedQuality)
+            val resolved = YouTubeAudioStreamService.resolveSabr(videoId, selectedQuality,
+                maxBitrateBps = uri.getQueryParameter("cap")?.toIntOrNull()?.takeIf { it > 0 }?.times(1000))
             if (resolved.url != uri.toString()) {
                 recordReplacement(uri.toString(), resolved)
                 throw SabrStreamChangedException(resolved)
@@ -403,7 +404,8 @@ internal object SabrSessionRegistry {
                 excluded.add(audio.clientId)
                 YouTubeAudioStreamService.reject(audio.videoId, audio.url, audio.clientId)
             } else YouTubeAudioStreamService.invalidate(audio.videoId)
-            val refreshed = YouTubeAudioStreamService.resolveSabr(audio.videoId, quality, excluded.toSet())
+            val refreshed = YouTubeAudioStreamService.resolveSabr(audio.videoId, quality, excluded.toSet(),
+                maxBitrateBps = audio.selectionCapBps)
             if (refreshed.cacheKey != key) {
                 recordReplacement(audio.url, refreshed)
                 throw SabrStreamChangedException(refreshed)

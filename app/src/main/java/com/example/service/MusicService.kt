@@ -37,6 +37,8 @@ import com.example.data.local.TrackEntity
 import com.example.data.repository.CatalogNames
 import com.example.data.remote.YouTubeAudioStreamService
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
 
 class MusicService : MediaLibraryService() {
 
@@ -50,7 +52,75 @@ class MusicService : MediaLibraryService() {
     private var sabrRecoveryCount = 0
     private var sourceRecoveryJob: Job? = null
     private var jioFallback: JioSaavnPlaybackFallback? = null
+    private val networkQuality by lazy { com.example.playback.NetworkQualityMonitor.getInstance(this) }
+    private var networkQueueJob: Job? = null
+    private var applyingNetworkPolicy = false
     private val app: XtremeMusicApp get() = application as XtremeMusicApp
+
+    private fun applyAudioCeiling(selector: DefaultTrackSelector, player: Player) {
+        val item = player.currentMediaItem
+        val requested = item?.mediaMetadata?.extras?.getInt("requested_audio_kbps", 0)?.takeIf { it > 0 }
+        val youtube = item?.let { YouTubeAudioStreamService.isYouTubeAudio(it.mediaId, it.localConfiguration?.uri.toString()) } == true
+        val userCap = requested?.let { (it.toLong() * 1000).coerceAtMost(Int.MAX_VALUE.toLong()).toInt() } ?: Int.MAX_VALUE
+        selector.parameters = selector.buildUponParameters()
+            .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, youtube)
+            .setMaxAudioBitrate(minOf(networkQuality.currentMaxBitrateBps, userCap, if (youtube) 320_000 else Int.MAX_VALUE))
+            .setExceedAudioConstraintsIfNecessary(true).build()
+    }
+
+    /** Reconfigure only a small upcoming window. Never touch the current MediaItem. */
+    private fun scheduleUpcomingCeilings() {
+        if (applyingNetworkPolicy) return
+        networkQueueJob?.cancel()
+        networkQueueJob = serviceScope.launch {
+            yield() // Coalesce a burst of queue/metadata callbacks.
+            val player = exoPlayer ?: return@launch
+            val ceiling = networkQuality.currentMaxBitrateBps
+            var changed = false
+            val start = (player.currentMediaItemIndex + 1).coerceAtLeast(0)
+            for (index in start until minOf(player.mediaItemCount, start + 3)) {
+                if (index >= player.mediaItemCount) break
+                if (index <= player.currentMediaItemIndex) continue
+                val before = player.getMediaItemAt(index)
+                var after = NetworkAudioQualityPolicy.constrain(before, ceiling)
+                if (after === before) continue
+                val video = YouTubeAudioStreamService.videoIdFromUri(before.localConfiguration?.uri ?: Uri.EMPTY)
+                if (video != null) {
+                    if (networkQuality.activeQualityCeiling.value.connectionType == com.example.playback.NetworkConnectionType.OFFLINE) continue
+                    // Select a real transport/itag before changing an upcoming media
+                    // source: a SABR-only song must not masquerade as progressive.
+                    val quality = when (before.mediaMetadata.extras?.getInt("requested_audio_kbps", 320) ?: 320) {
+                        in 1..96 -> com.example.playback.AudioQuality.MEDIUM_96
+                        in 97..160 -> com.example.playback.AudioQuality.HIGH_160
+                        else -> com.example.playback.AudioQuality.ULTRA_HD_320
+                    }
+                    val audio = withTimeoutOrNull(12_000L) {
+                        try { withContext(Dispatchers.IO) {
+                            YouTubeAudioStreamService.resolve(video, quality, maxBitrateBps = ceiling)
+                        } } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
+                    } ?: continue
+                    val uri = Uri.parse(YouTubeAudioStreamService.playbackUri("yt_$video", audio.url))
+                    val extras = Bundle(after.mediaMetadata.extras ?: Bundle()).apply {
+                        putInt("bitrate", audio.bitrateKbps); putString("qualityBadge", audio.qualityBadge)
+                        putBoolean("isLossless", false); putBoolean("audio_actual", false)
+                    }
+                    after = after.buildUpon().setUri(uri).setMimeType(if (audio.isHls) androidx.media3.common.MimeTypes.APPLICATION_M3U8 else null)
+                        .setRequestMetadata(after.requestMetadata.buildUpon().setMediaUri(uri).build())
+                        .setMediaMetadata(after.mediaMetadata.buildUpon().setExtras(extras).build()).build()
+                }
+                ensureActive()
+                // Navigation/advance or another policy update always wins over this result.
+                if (ceiling != networkQuality.currentMaxBitrateBps || index <= player.currentMediaItemIndex ||
+                    index >= player.mediaItemCount) continue
+                val current = player.getMediaItemAt(index)
+                if (current.mediaId != before.mediaId || current.localConfiguration?.uri != before.localConfiguration?.uri) continue
+                applyingNetworkPolicy = true
+                try { player.replaceMediaItem(index, after); changed = true }
+                finally { applyingNetworkPolicy = false }
+            }
+            if (changed) checkpoint(rebuild = true)
+        }
+    }
 
     private fun checkpoint(rebuild: Boolean = false) {
         val player = exoPlayer ?: return
@@ -176,6 +246,13 @@ class MusicService : MediaLibraryService() {
             .build()
 
         exoPlayer = player
+        serviceScope.launch {
+            networkQuality.activeQualityCeiling.map { it.effectiveCeiling }.distinctUntilChanged().collect {
+                // Updating ABR constraints cannot re-prepare a progressive source.
+                applyAudioCeiling(trackSelector, player)
+                scheduleUpcomingCeilings()
+            }
+        }
         com.example.playback.SleepTimerManager.attach(this, player)
 
         // 4. Audio Effects & Equalizer real-time pipeline (attached on active playback session)
@@ -214,7 +291,9 @@ class MusicService : MediaLibraryService() {
                 if (!youtube && !saavn) return
                 val videoId = YouTubeAudioStreamService.videoIdFromUri(uri) ?: item.mediaId.removePrefix("yt_")
                 val resolved = if (youtube) YouTubeAudioStreamService.currentStream(videoId,
-                    com.example.data.local.AudioQualityPreferences.getSelectedQuality(this@MusicService)) else null
+                    com.example.data.local.AudioQualityPreferences.getSelectedQuality(this@MusicService),
+                    uri.getQueryParameter("cap")?.toIntOrNull()?.let { if (uri.scheme == "xtreme-sabr") it * 1000 else it }
+                        ?: Int.MAX_VALUE) else null
                 val codec = YouTubeAudioStreamService.displayCodec(format.sampleMimeType, format.codecs)
                     .ifBlank { resolved?.codec.orEmpty() }
                 val bitrate = format.averageBitrate.takeIf { it > 0 }?.div(1000)
@@ -250,7 +329,10 @@ class MusicService : MediaLibraryService() {
             } }, changed = { checkpoint(rebuild = true) })
         player.addListener(object : Player.Listener {
             override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
-                if (reason == Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED) queueGeneration++
+                if (reason == Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED) {
+                    queueGeneration++
+                    scheduleUpcomingCeilings()
+                }
             }
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 if (sabrRecoveryTrackId != mediaItem?.mediaId) {
@@ -258,20 +340,11 @@ class MusicService : MediaLibraryService() {
                     sabrRecoveryTrackId = mediaItem?.mediaId
                     sabrRecoveryCount = 0
                 }
-                val youtube = mediaItem?.let { YouTubeAudioStreamService.isYouTubeAudio(it.mediaId, it.localConfiguration?.uri.toString()) } == true
-                trackSelector.parameters = trackSelector.parameters.buildUpon()
-                    .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, youtube)
-                    .setMaxAudioBitrate(if (youtube) minOf(
-                        com.example.data.local.AudioQualityPreferences.getSelectedQuality(this@MusicService).kbps, 320) * 1000 else Int.MAX_VALUE)
-                    .setExceedAudioConstraintsIfNecessary(!youtube).build()
+                applyAudioCeiling(trackSelector, player)
+                scheduleUpcomingCeilings()
             }
             override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
-                val item = player.currentMediaItem ?: return
-                val youtube = YouTubeAudioStreamService.isYouTubeAudio(item.mediaId, item.localConfiguration?.uri.toString())
-                val kbps = mediaMetadata.extras?.getInt("requested_audio_kbps", 0) ?: 0
-                if (kbps > 0) trackSelector.parameters = trackSelector.parameters.buildUpon()
-                    .setMaxAudioBitrate(if (youtube) minOf(kbps, 320) * 1000 else Int.MAX_VALUE)
-                    .setExceedAudioConstraintsIfNecessary(!youtube).build()
+                applyAudioCeiling(trackSelector, player)
             }
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 checkpointJob?.cancel()
@@ -467,6 +540,10 @@ class MusicService : MediaLibraryService() {
             val resumingGeneration = queueGeneration
             return future {
                 val saved = PlaybackSessionStore.restore(this@MusicService)
+                val restoredItems = withContext(Dispatchers.IO) {
+                    val ceiling = networkQuality.snapshot().effectiveCeiling.maxBitrateBps
+                    saved?.items.orEmpty().map { NetworkAudioQualityPolicy.constrain(it, ceiling) }
+                }
                 val current = exoPlayer
                 // A new local selection or queue mutation supersedes this disk restore.
                 // Return the current queue instead of installing an older saved song.
@@ -475,7 +552,7 @@ class MusicService : MediaLibraryService() {
                     MediaSession.MediaItemsWithStartPosition(items,
                         current?.currentMediaItemIndex?.takeIf { it in items.indices } ?: C.INDEX_UNSET,
                         current?.currentPosition ?: C.TIME_UNSET)
-                } else MediaSession.MediaItemsWithStartPosition(saved?.items.orEmpty(),
+                } else MediaSession.MediaItemsWithStartPosition(restoredItems,
                     saved?.index ?: C.INDEX_UNSET, saved?.positionMs ?: C.TIME_UNSET)
             }
         }

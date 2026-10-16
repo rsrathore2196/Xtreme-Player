@@ -288,7 +288,9 @@ class MusicRepository(
             ?: AudioQuality.ULTRA_HD_320
         try {
             com.example.recommendation.DiscoveryRequestCoordinator.playback {
-                streamResolver.resolve(track, quality, forceRefresh, failedUrl, preferYouTube = preferYouTube, jioDeadlineMs = jioDeadlineMs)
+                streamResolver.resolve(track, quality, forceRefresh, failedUrl, preferYouTube = preferYouTube, jioDeadlineMs = jioDeadlineMs,
+                    maxBitrateBps = context?.let { com.example.playback.NetworkQualityMonitor.getInstance(it).snapshot().effectiveCeiling.maxBitrateBps }
+                        ?: Int.MAX_VALUE)
             }
         } catch (e: TrackUnavailableException) {
             if (track.recommendationOnly) recommendations.markUnavailable(track)
@@ -332,13 +334,16 @@ class MusicRepository(
 
     suspend fun findLosslessUpgrade(track: MusicTrack): MusicTrack? = withContext(Dispatchers.IO) {
         if (track.recommendationOnly) return@withContext null
+        if (context != null && com.example.playback.NetworkQualityMonitor.getInstance(context).snapshot().effectiveCeiling !=
+            com.example.playback.AudioQualityCeiling.MAX) return@withContext null
         if (context == null || AudioQualityPreferences.getSelectedQuality(context) != AudioQuality.HI_RES_LOSSLESS) return@withContext null
         val key = withContext(Dispatchers.Default) { RecordingIdentity.key(track) }
         fun missedRecently() = losslessMisses.get(key)?.let { android.os.SystemClock.elapsedRealtime() < it } == true
         if (missedRecently()) return@withContext null
         // One optional Archive lookup at a time, and recheck after waiting for its permit.
         losslessLookup.withLock {
-            if (missedRecently() || AudioQualityPreferences.getSelectedQuality(context) != AudioQuality.HI_RES_LOSSLESS)
+            if (missedRecently() || AudioQualityPreferences.getSelectedQuality(context) != AudioQuality.HI_RES_LOSSLESS ||
+                com.example.playback.NetworkQualityMonitor.getInstance(context).snapshot().effectiveCeiling != com.example.playback.AudioQualityCeiling.MAX)
                 return@withLock null
             val result = kotlinx.coroutines.withTimeoutOrNull(8_000L) {
                 // Archive often credits only the primary artist. Optional featured

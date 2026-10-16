@@ -94,6 +94,9 @@ fun MusicPlaybackPage(
             .verticalScroll(rememberScrollState())
             .padding(16.dp)
     ) {
+        NetworkStreamingQualitySection()
+        Spacer(modifier = Modifier.height(16.dp))
+
         // 1. Audio Quality & Streaming Card
         Box(
             modifier = Modifier

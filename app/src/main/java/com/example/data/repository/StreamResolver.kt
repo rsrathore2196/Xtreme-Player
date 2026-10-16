@@ -32,26 +32,35 @@ internal class StreamResolver(
     }
 ) {
     private data class CachedStream(val track: MusicTrack, val expiresAt: Long)
-    private val cache = LinkedHashMap<Triple<String, AudioQuality, Boolean>, CachedStream>(128, 0.75f, true)
+    private data class StreamKey(val id: String, val quality: AudioQuality, val recommendation: Boolean, val cap: Int)
+    private val cache = LinkedHashMap<StreamKey, CachedStream>(128, 0.75f, true)
     val cacheSize: Int get() = synchronized(cache) { cache.size }
     fun clear() = synchronized(cache) { cache.clear() }
 
     suspend fun resolve(track: MusicTrack, quality: AudioQuality, forceRefresh: Boolean = false,
         failedUrl: String? = null, @Suppress("UNUSED_PARAMETER") deferLossless: Boolean = true,
-        preferYouTube: Boolean = false, jioDeadlineMs: Long = 0L
+        preferYouTube: Boolean = false, jioDeadlineMs: Long = 0L, maxBitrateBps: Int = Int.MAX_VALUE
     ): MusicTrack = withContext(Dispatchers.IO) {
         val deadline = jioDeadlineMs.takeIf { it > 0L } ?: (android.os.SystemClock.elapsedRealtime() + 6_000L)
-        val key = Triple(track.id, quality, track.recommendationOnly)
+        val key = StreamKey(track.id, quality, track.recommendationOnly, maxBitrateBps)
+        fun capped(candidate: MusicTrack): MusicTrack {
+            val host = Uri.parse(candidate.audioUrl).host.orEmpty()
+            if (host != "saavncdn.com" && !host.endsWith(".saavncdn.com")) return candidate
+            val bitrate = com.example.playback.AudioQualityCeiling.saavnKbps(quality.kbps,
+                candidate.bitrateKbps.takeIf { it in 1..320 } ?: 320, maxBitrateBps)
+            return candidate.copy(audioUrl = OnlineMusicApiService.formatUrlForQuality(candidate.audioUrl, bitrate.toString()),
+                bitrateKbps = bitrate, qualityBadge = YouTubeAudioStreamService.displayQuality("AAC", bitrate))
+        }
         // A persisted fallback URL must not permanently turn an imported Jio
         // recording into a YouTube-first selection. Recovery stays on its active source.
         val youtubeSelection = selectedYouTube(track) &&
             (!track.id.startsWith("online_") || forceRefresh || preferYouTube)
         fun providerAllowed(candidate: MusicTrack) = isValidStreamUrl(candidate.audioUrl)
-        if (forceRefresh || preferYouTube) synchronized(cache) { cache.keys.removeAll { it.first == track.id } }
+        if (forceRefresh || preferYouTube) synchronized(cache) { cache.keys.removeAll { it.id == track.id } }
         else {
             // A working selected provider must not be displaced by an older cached fallback.
             if (providerAllowed(track) && isValidStreamUrl(track.audioUrl) && track.audioUrl != failedUrl && !needsResolution(track))
-                return@withContext track
+                return@withContext capped(track)
             val cached = synchronized(cache) { cache[key]?.takeIf { it.expiresAt > System.currentTimeMillis() }?.track }
             if (cached != null && providerAllowed(cached) && cached.audioUrl != failedUrl && isValidStreamUrl(cached.audioUrl) &&
                 youtubeSelection == YouTubeAudioStreamService.isYouTubeAudio(cached.id, cached.audioUrl)) {
@@ -135,7 +144,7 @@ internal class StreamResolver(
             else boundedJio() ?: youtubeExact(track) ?: youtubeFallback()
         } ?: throw TrackUnavailableException(track.title)
         coroutineContext.ensureActive()
-        val result = withStream(track, resolved)
+        val result = withStream(track, capped(resolved))
         synchronized(cache) {
             cache[key] = CachedStream(result, System.currentTimeMillis() + 300_000L)
             while (cache.size > 128) cache.remove(cache.keys.first())
