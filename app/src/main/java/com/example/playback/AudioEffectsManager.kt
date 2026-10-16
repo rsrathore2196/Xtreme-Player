@@ -89,14 +89,46 @@ object AudioEffectsManager {
         }
     }
     fun attachAudioSession(sessionId: Int) { commands.trySend { attachAudioSessionOnWorker(sessionId) } }
-    fun setEnabled(enabled: Boolean) { commands.trySend { setEnabledOnWorker(enabled) } }
-    fun setBandLevel(bandIndex: Short, levelMb: Short) { commands.trySend { setBandLevelOnWorker(bandIndex, levelMb) } }
-    fun setBassBoost(strength: Int) { commands.trySend { setBassBoostOnWorker(strength) } }
-    fun setVirtualizer(strength: Int) { commands.trySend { setVirtualizerOnWorker(strength) } }
-    fun setLoudnessGain(gainMb: Int) { commands.trySend { setLoudnessGainOnWorker(gainMb) } }
-    fun applyPreset(presetName: String) { commands.trySend { applyPresetOnWorker(presetName) } }
-    fun setCrystalClarityEnabled(enabled: Boolean) { commands.trySend { setCrystalClarityEnabledOnWorker(enabled) } }
-    fun resetAll() { commands.trySend { resetAllOnWorker() } }
+    fun setEnabled(enabled: Boolean) {
+        _effectsState.update { it.copy(isEnabled = enabled) }
+        commands.trySend { setEnabledOnWorker(enabled) }
+    }
+    fun setBandLevel(bandIndex: Short, levelMb: Short) {
+        _effectsState.update { state ->
+            val updatedBands = state.bands.map { b ->
+                if (b.index == bandIndex) b.copy(levelMb = levelMb.coerceIn(b.minLevelMb, b.maxLevelMb)) else b
+            }
+            state.copy(bands = updatedBands, selectedPreset = "Custom")
+        }
+        commands.trySend { setBandLevelOnWorker(bandIndex, levelMb) }
+    }
+    fun setBassBoost(strength: Int) {
+        val clamped = strength.coerceIn(0, 1000)
+        _effectsState.update { it.copy(bassBoostStrength = clamped) }
+        commands.trySend { setBassBoostOnWorker(strength) }
+    }
+    fun setVirtualizer(strength: Int) {
+        val clamped = strength.coerceIn(0, 1000)
+        _effectsState.update { it.copy(virtualizerStrength = clamped) }
+        commands.trySend { setVirtualizerOnWorker(strength) }
+    }
+    fun setLoudnessGain(gainMb: Int) {
+        val clamped = gainMb.coerceIn(0, 800)
+        _effectsState.update { it.copy(loudnessGainMb = clamped) }
+        commands.trySend { setLoudnessGainOnWorker(gainMb) }
+    }
+    fun applyPreset(presetName: String) {
+        _effectsState.update { computePresetEffectsState(it, presetName) }
+        commands.trySend { applyPresetOnWorker(presetName) }
+    }
+    fun setCrystalClarityEnabled(enabled: Boolean) {
+        _effectsState.update { it.copy(crystalClarityEnabled = enabled) }
+        commands.trySend { setCrystalClarityEnabledOnWorker(enabled) }
+    }
+    fun resetAll() {
+        _effectsState.update { computePresetEffectsState(it, "Flat").copy(isEnabled = false) }
+        commands.trySend { resetAllOnWorker() }
+    }
     fun detachAudioSession() { commands.trySend { detachAudioSessionOnWorker() } }
 
     private var currentSessionId: Int = 0
@@ -303,7 +335,6 @@ object AudioEffectsManager {
 
     @Synchronized
     private fun applyPresetOnWorker(presetName: String) {
-        _effectsState.update { it.copy(selectedPreset = presetName) }
         applyPresetInternal(presetName)
     }
 
@@ -333,9 +364,7 @@ object AudioEffectsManager {
         return anchorDbs.getOrNull(0) ?: 0
     }
 
-    private fun applyPresetInternal(presetName: String) {
-        val eq = equalizer
-
+    private fun computePresetEffectsState(currentState: AudioEffectsState, presetName: String): AudioEffectsState {
         // Professional Acoustic EQ Curves (mB = 1/100 dB):
         // Anchors: [60Hz Sub-bass, 230Hz Mid-bass, 910Hz Midrange, 3.6kHz Presence, 14kHz Brilliance]
         val bandDbs: List<Short> = when (presetName.lowercase().trim()) {
@@ -361,19 +390,13 @@ object AudioEffectsManager {
             else -> listOf(0, 0, 0, 0, 0) // Flat reference neutral
         }
 
-        val updatedBands = _effectsState.value.bands.mapIndexed { index, band ->
-            val targetLevel = if (_effectsState.value.bands.size == 5) {
+        val updatedBands = currentState.bands.mapIndexed { index, band ->
+            val targetLevel = if (currentState.bands.size == 5) {
                 bandDbs.getOrElse(index) { 0.toShort() }
             } else {
                 interpolateGain(band.centerFreqHz, bandDbs)
             }
-            val clampedLevel = targetLevel.coerceIn(band.minLevelMb, band.maxLevelMb)
-            try {
-                eq?.setBandLevel(band.index, clampedLevel)
-            } catch (e: Exception) {
-                Log.w(TAG, "Band ${band.index} level could not be applied: ${e.message}")
-            }
-            band.copy(levelMb = clampedLevel)
+            band.copy(levelMb = targetLevel.coerceIn(band.minLevelMb, band.maxLevelMb))
         }
 
         val targetBass = when (presetName.lowercase().trim()) {
@@ -422,7 +445,6 @@ object AudioEffectsManager {
             else -> 0 // Flat
         }
 
-        // Automatic headroom / loudness matching to prevent digital clipping
         val targetGain = when (presetName.lowercase().trim()) {
             "crystal clarity" -> 120
             "studio master" -> 80
@@ -446,18 +468,43 @@ object AudioEffectsManager {
             else -> 0 // Flat
         }
 
-        setBassBoostOnWorker(targetBass)
-        setVirtualizerOnWorker(targetVirt)
-        setLoudnessGainOnWorker(targetGain)
+        return currentState.copy(
+            selectedPreset = presetName,
+            bands = updatedBands,
+            bassBoostStrength = targetBass,
+            virtualizerStrength = targetVirt,
+            loudnessGainMb = targetGain,
+            crystalClarityEnabled = presetName.equals("Crystal Clarity", ignoreCase = true)
+        )
+    }
 
-        _effectsState.update {
-            it.copy(
-                bands = updatedBands,
-                bassBoostStrength = targetBass,
-                virtualizerStrength = targetVirt,
-                loudnessGainMb = targetGain,
-                crystalClarityEnabled = presetName.equals("Crystal Clarity", ignoreCase = true)
-            )
+    private fun applyPresetInternal(presetName: String) {
+        _effectsState.update { computePresetEffectsState(it, presetName) }
+        val state = _effectsState.value
+        val eq = equalizer
+
+        state.bands.forEach { band ->
+            try {
+                eq?.setBandLevel(band.index, band.levelMb)
+            } catch (e: Exception) {
+                Log.w(TAG, "Band ${band.index} level could not be applied: ${e.message}")
+            }
+        }
+
+        try {
+            bassBoost?.setStrength(state.bassBoostStrength.toShort())
+        } catch (e: Exception) {
+            Log.e(TAG, "Error setting bass boost strength: ${e.message}")
+        }
+        try {
+            virtualizer?.setStrength(state.virtualizerStrength.toShort())
+        } catch (e: Exception) {
+            Log.e(TAG, "Error setting virtualizer strength: ${e.message}")
+        }
+        try {
+            loudnessEnhancer?.setTargetGain(state.loudnessGainMb)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error setting loudness gain: ${e.message}")
         }
     }
 

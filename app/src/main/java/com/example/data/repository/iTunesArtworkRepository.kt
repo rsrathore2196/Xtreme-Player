@@ -217,12 +217,24 @@ class iTunesArtworkRepository(
     fun formatUrl(url: String, size: Int): String = formatArtworkUrl(url, size)
 
     fun sanitizeTitle(title: String, source: AudioSource? = null, artist: String? = null): String {
-        val decoded = if (title.contains('&')) {
-            try { Html.fromHtml(title, Html.FROM_HTML_MODE_LEGACY).toString() }
-            catch (_: Exception) { title.replace("&amp;", "&").replace("&#039;", "'") }
+        var decoded = if (title.contains('&')) {
+            runCatching { Html.fromHtml(title, Html.FROM_HTML_MODE_LEGACY)?.toString() }.getOrNull()
+                ?: title.replace("&quot;", "\"").replace("&amp;", "&").replace("&#039;", "'").replace("&apos;", "'")
         } else title
-        // Keep live/remix/edit distinctions, and strip a video prefix only when it is
-        // the credited artist. Different recordings must not share artwork lookups.
+
+        if (source == AudioSource.INTERNET_ARCHIVE) {
+            decoded = decoded.replace('_', ' ')
+        }
+
+        if (source == AudioSource.YOUTUBE_MUSIC || artist.isNullOrBlank()) {
+            if (decoded.contains(" - ")) {
+                val prefix = decoded.substringBefore(" - ").trim()
+                if (artist.isNullOrBlank() || CatalogNames.normalize(StreamResolver.extractCleanArtist(prefix)) == CatalogNames.normalize(StreamResolver.extractCleanArtist(artist))) {
+                    decoded = decoded.substringAfter(" - ")
+                }
+            }
+        }
+
         return StreamResolver.extractCleanTitle(decoded, artist.orEmpty())
             .replace(whitespace, " ").trim()
     }

@@ -40,7 +40,18 @@ object CatalogNames {
     private val punctuation = Regex("[^\\p{L}\\p{M}\\p{N}]+")
     private val spaces = Regex("\\s+")
     private val initials = Regex("\\b(?:\\p{L} ){1,3}\\p{L}\\b")
-    fun clean(value: String): String = Html.fromHtml(value, Html.FROM_HTML_MODE_LEGACY).toString().trim()
+    fun clean(value: String): String = runCatching {
+        Html.fromHtml(value, Html.FROM_HTML_MODE_LEGACY)?.toString()
+    }.getOrNull()?.trim() ?: unescapeHtml(value).trim()
+
+    private fun unescapeHtml(value: String): String = value
+        .replace("&amp;", "&")
+        .replace("&quot;", "\"")
+        .replace("&#039;", "'")
+        .replace("&apos;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace(Regex("<[^>]*>"), "")
     fun normalize(value: String): String = Normalizer.normalize(clean(value), Normalizer.Form.NFKD)
         .replace(latinMarks, "").replace(apostrophes, "").lowercase(Locale.ROOT).replace('&', ' ')
         .replace(punctuation, " ").trim().replace(spaces, " ")

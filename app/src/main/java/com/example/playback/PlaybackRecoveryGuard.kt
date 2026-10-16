@@ -15,7 +15,7 @@ internal class PlaybackRecoveryGuard {
     }
 
     fun claim(id: String): Long? {
-        if (trackId != id || attempts >= 2) return null
+        if (trackId != id || attempts >= 1) return null
         attempts++
         return generation
     }

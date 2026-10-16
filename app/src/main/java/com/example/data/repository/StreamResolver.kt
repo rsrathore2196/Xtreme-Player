@@ -44,7 +44,7 @@ internal class StreamResolver(
         val deadline = jioDeadlineMs.takeIf { it > 0L } ?: (android.os.SystemClock.elapsedRealtime() + 6_000L)
         val key = StreamKey(track.id, quality, track.recommendationOnly, maxBitrateBps)
         fun capped(candidate: MusicTrack): MusicTrack {
-            val host = Uri.parse(candidate.audioUrl).host.orEmpty()
+            val host = uriHost(candidate.audioUrl).orEmpty()
             if (host != "saavncdn.com" && !host.endsWith(".saavncdn.com")) return candidate
             val bitrate = com.example.playback.AudioQualityCeiling.saavnKbps(quality.kbps,
                 candidate.bitrateKbps.takeIf { it in 1..320 } ?: 320, maxBitrateBps)
@@ -86,7 +86,7 @@ internal class StreamResolver(
             if (!triedVideos.add(id)) return null
             val resolved = attempt(38_000L) { resolveYouTube(request, quality, forceRefresh) } ?: return null
             if (resolved.id != request.id || !isValidStreamUrl(resolved.audioUrl) ||
-                YouTubeAudioStreamService.videoIdFromUri(Uri.parse(resolved.audioUrl)) != id) return null
+                safeVideoIdFromUri(resolved.audioUrl) != id) return null
             // The stable reference can stay identical after its underlying signed URL is refreshed.
             return resolved.copy(isLossless = false, source = "YouTube Music")
         }
@@ -180,15 +180,45 @@ internal class StreamResolver(
                 RecordingIdentity.fallbackConfidence(requested, candidate, durationToleranceMs = 2_000L,
                     requireDuration = true) != null
 
+        private fun uriHost(url: String?): String? {
+            if (url.isNullOrBlank()) return null
+            return runCatching { Uri.parse(url)?.host }.getOrNull() ?: run {
+                val withoutScheme = url.substringAfter("://", "")
+                if (withoutScheme.isEmpty()) null
+                else withoutScheme.substringBefore('/').substringBefore('?').substringBefore(':')
+            }
+        }
+
+        private fun uriScheme(url: String?): String? {
+            if (url.isNullOrBlank()) return null
+            return runCatching { Uri.parse(url)?.scheme }.getOrNull() ?: run {
+                val idx = url.indexOf("://")
+                if (idx != -1) url.substring(0, idx).lowercase() else null
+            }
+        }
+
+        private fun safeVideoIdFromUri(url: String?): String? {
+            if (url.isNullOrBlank()) return null
+            val uri = runCatching { Uri.parse(url) }.getOrNull()
+            return if (uri != null) {
+                YouTubeAudioStreamService.videoIdFromUri(uri)
+            } else {
+                val q = url.substringAfter('?', "")
+                q.split('&').firstOrNull { it.startsWith("v=") }?.substringAfter("v=")
+                    ?: if (url.startsWith("https://youtu.be/")) url.substringAfter("youtu.be/").substringBefore('?').substringBefore('/')
+                    else null
+            }
+        }
+
         private fun selectedVideoId(track: MusicTrack): String? =
             track.id.removePrefix("yt_").takeIf { track.id.startsWith("yt_") && YouTubeAudioStreamService.isVideoId(it) }
-                ?: YouTubeAudioStreamService.videoIdFromUri(Uri.parse(track.audioUrl))
+                ?: safeVideoIdFromUri(track.audioUrl)
 
         private fun selectedYouTube(track: MusicTrack): Boolean =
             YouTubeAudioStreamService.isYouTubeAudio(track.id, track.audioUrl) ||
                 track.id.startsWith("yt_") && (track.source != "JIOSAAVN" || archiveTransport(track.audioUrl))
 
-        private fun archiveTransport(url: String): Boolean = Uri.parse(url).host?.let {
+        private fun archiveTransport(url: String): Boolean = uriHost(url)?.let {
             it == "archive.org" || it.endsWith(".archive.org")
         } == true
 
@@ -196,20 +226,24 @@ internal class StreamResolver(
             if (!isValidStreamUrl(track.audioUrl)) return true
             // Downloaded files must continue to work offline. Persisted optional upgrades,
             // however, must not become the initial source on a later catalog selection.
-            if (Uri.parse(track.audioUrl).scheme in setOf("file", "content")) return false
+            val scheme = uriScheme(track.audioUrl)
+            if (scheme in setOf("file", "content")) return false
             return selectedYouTube(track) || archiveTransport(track.audioUrl) &&
                 (track.id.startsWith("online_") || track.id.startsWith("yt_"))
         }
 
         internal fun isValidStreamUrl(url: String?): Boolean {
             if (url.isNullOrBlank() || url.contains("placeholder", true) || url.startsWith("yt_")) return false
-            val uri = Uri.parse(url)
-            return when (uri.scheme) {
-                "xtreme-youtube", "xtreme-sabr" -> YouTubeAudioStreamService.videoIdFromUri(uri) != null
-                "https", "http" -> !uri.host.isNullOrBlank() &&
-                    (!(uri.host == "youtube.com" || uri.host?.endsWith(".youtube.com") == true || uri.host == "youtu.be") ||
+            val scheme = uriScheme(url)
+            val host = uriHost(url)
+            val uri = runCatching { Uri.parse(url) }.getOrNull()
+            return when (scheme) {
+                "xtreme-youtube", "xtreme-sabr" -> (uri?.let { YouTubeAudioStreamService.videoIdFromUri(it) != null } ?: false)
+                    || safeVideoIdFromUri(url) != null
+                "https", "http" -> !host.isNullOrBlank() &&
+                    (!(host == "youtube.com" || host.endsWith(".youtube.com") || host == "youtu.be") ||
                         YouTubeAudioStreamService.isMediaUrl(url))
-                "file", "content" -> !uri.path.isNullOrBlank()
+                "file", "content" -> (uri?.path?.isNotBlank() == true) || !url.substringAfter("://", "").isBlank()
                 else -> false
             }
         }
