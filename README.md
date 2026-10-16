@@ -139,12 +139,6 @@
 
 ---
 
-## 🚀 Getting Started
-
-Home recommendations use anonymous YouTube Music metadata through InnerTubeX, local profile/listening signals,
-and verified JioSaavn recording matches. Cached cards render immediately; discovery and matching are bounded,
-viewport-driven background work. No recommendation API key is required.
-Recently Played and Most Listened Artists continue to use local listening history.
 
 ### Prerequisites
 - Android Studio Ladybug (2024.2.1 or newer)
