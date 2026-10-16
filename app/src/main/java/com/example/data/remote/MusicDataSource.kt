@@ -5,7 +5,7 @@ import com.example.data.model.MusicTrack
 object MusicDataSource {
 
     // Curated high-fidelity audio streams (320kbps CBR/VBR audio files with working streaming endpoints and high-res covers)
-    val curatedTracks: List<MusicTrack> = listOf(
+    val curatedTracks: List<MusicTrack> by lazy(LazyThreadSafetyMode.PUBLICATION) { listOf(
         MusicTrack(
             id = "xtreme_01",
             title = "Cybernetic Horizon",
@@ -126,7 +126,7 @@ object MusicDataSource {
             qualityBadge = "HD • 320 kbps",
             genre = "Ambient"
         )
-    )
+    ) }
 
     val genres = listOf(
         "Pop",

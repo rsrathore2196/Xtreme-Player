@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -153,7 +152,7 @@ fun InfiniteRadioHeroCard(
                 horizontalArrangement = Arrangement.Center
             ) {
                 if (radioLoading) {
-                    CircularProgressIndicator(Modifier.size(18.dp), color = buttonForeground, strokeWidth = 2.dp)
+                    VisibleCircularProgressIndicator(Modifier.size(18.dp), color = buttonForeground, strokeWidth = 2.dp)
                     Spacer(Modifier.width(8.dp))
                 } else if (!playbackActive) {
                     Icon(Icons.Default.PlayArrow, contentDescription = null, tint = buttonForeground, modifier = Modifier.size(20.dp))

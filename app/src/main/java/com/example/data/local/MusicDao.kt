@@ -60,6 +60,10 @@ interface MusicDao {
     @Query("SELECT * FROM tracks WHERE isLiked = 1 ORDER BY addedAt DESC")
     fun getFavoriteTracks(): Flow<List<TrackEntity>>
 
+    // Browser status needs identities, not every artwork/stream/metadata column.
+    @Query("SELECT id FROM tracks WHERE isLiked = 1 ORDER BY addedAt DESC")
+    fun observeFavoriteTrackIds(): Flow<List<String>>
+
     @Query("SELECT * FROM tracks WHERE lastPlayedAt > 0 ORDER BY lastPlayedAt DESC LIMIT 20")
     fun getRecentlyPlayedTracks(): Flow<List<TrackEntity>>
 

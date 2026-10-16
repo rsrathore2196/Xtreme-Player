@@ -20,7 +20,9 @@ import java.util.concurrent.TimeUnit
 
 /** Typed browsing through the app's existing catalog provider and stream URL decoder. */
 class CatalogRepository {
-    private val client = OkHttpClient.Builder().connectTimeout(10, TimeUnit.SECONDS).readTimeout(12, TimeUnit.SECONDS).callTimeout(20, TimeUnit.SECONDS).build()
+    // Construct TLS/network resources on the first IO request, not a UI-owned browser constructor.
+    private val client by lazy { OkHttpClient.Builder().connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(12, TimeUnit.SECONDS).callTimeout(20, TimeUnit.SECONDS).build() }
     private val cache = object : android.util.LruCache<String, Pair<Long, String>>(80) {}
     private val locks = Array(8) { Mutex() }
     private suspend fun request(call: String, vararg params: Pair<String, String>, artistBrowse: Boolean = false): JSONObject = withContext(Dispatchers.IO) {

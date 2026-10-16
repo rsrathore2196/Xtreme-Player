@@ -99,12 +99,15 @@ class PlayerViewModel(
     private val application: android.app.Application = com.example.XtremeMusicApp.getInstance()
 ) : ViewModel() {
 
+    private val derivedStateDispatcher = Dispatchers.Default.limitedParallelism(1)
+    private val derivedStateScope = viewModelScope + derivedStateDispatcher
     val playerUiState: StateFlow<PlayerUiState> = playbackManager.uiState
     // Progress has dedicated flows/providers. It must not invalidate the entire navigation tree.
     // Paused positions remain observable so external seeks still update the stationary player.
     val navigationPlayerUiState = playerUiState.map { state ->
         state.copy(currentPositionMs = if (state.isPlaying) 0L else state.currentPositionMs, bufferedPositionMs = 0L)
-    }.distinctUntilChanged().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), playerUiState.value)
+    }.distinctUntilChanged().flowOn(derivedStateDispatcher)
+        .stateIn(derivedStateScope, SharingStarted.WhileSubscribed(5_000L), playerUiState.value)
 
     val playbackPosition: StateFlow<Long> = playbackManager.playbackPosition
     val bufferedPosition: StateFlow<Long> = playbackManager.bufferedPosition
@@ -153,8 +156,10 @@ class PlayerViewModel(
         state.copy(displayDirectTracks = if (state.query.isNotBlank()) direct.take(5) else direct,
             matchingPlaylistGenres = MusicDataSource.genres.filter { it.contains(state.query, ignoreCase = true) }
                 .ifEmpty { MusicDataSource.genres.take(6) })
-    }.flowOn(Dispatchers.Default)
-        .stateIn(viewModelScope + Dispatchers.Default, SharingStarted.WhileSubscribed(5000L), _searchState.value)
+    }.flowOn(derivedStateDispatcher)
+        // Only local transformations; keep the prepared state alive before the first
+        // Search composition. This starts no catalog or recommendation request.
+        .stateIn(derivedStateScope, SharingStarted.Eagerly, _searchState.value)
 
     private val _selectedPlaylistTracks = MutableStateFlow<PlaylistWithTracks?>(null)
     val selectedPlaylistTracks: StateFlow<PlaylistWithTracks?> = _selectedPlaylistTracks.asStateFlow()
@@ -418,10 +423,8 @@ class PlayerViewModel(
             playbackManager.uiState.map { it.selectedQuality }.distinctUntilChanged()
                 .collect(catalogBrowser::setAudioQuality)
         }
-        viewModelScope.launch {
-            favoriteTracks.map { tracks -> tracks.map { it.id }.toSet() }
-                .distinctUntilChanged().flowOn(Dispatchers.Default)
-                .collect { ids -> catalogBrowser.updateFavorites(ids) }
+        derivedStateScope.launch {
+            repository.observeFavoriteTrackIds().collect { ids -> catalogBrowser.updateFavorites(ids) }
         }
         viewModelScope.launch(Dispatchers.IO) {
             _settingsReady.first { it }
@@ -434,9 +437,8 @@ class PlayerViewModel(
     private fun observeCurrentTrackForLyrics() {
         viewModelScope.launch {
             combine(playbackManager.uiState, com.example.performance.BackgroundWorkCoordinator.uiForeground) { state, foreground ->
-                state to foreground
-            }.collect { (state, foreground) ->
-                val track = state.currentTrack
+                Triple(state.currentTrack, state.isPlaying && !state.isLoading, foreground)
+            }.distinctUntilChanged().flowOn(derivedStateDispatcher).collect { (track, ready, foreground) ->
                 val identity = track?.let(SongIdentity::from)
                 if (identity != lastObservedLyricsIdentity) {
                     lastObservedLyricsIdentity = identity
@@ -449,7 +451,7 @@ class PlayerViewModel(
                 }
                 // Start only after audio is playing, so lyrics never delay stream resolution.
                 // Opening the panel then joins this job instead of starting the search again.
-                if (track != null && foreground && state.isPlaying && !state.isLoading &&
+                if (track != null && foreground && ready &&
                     !lyricsPrefetchStarted && !lyricsLookupComplete && lyricsJob?.isActive != true) {
                     lyricsPrefetchStarted = true
                     fetchLyricsForTrack(track, forceRefresh = false)

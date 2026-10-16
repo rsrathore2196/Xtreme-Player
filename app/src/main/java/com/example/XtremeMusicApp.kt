@@ -72,7 +72,7 @@ class XtremeMusicApp : Application(), ImageLoaderFactory {
     override fun onCreate() {
         super.onCreate()
         _instance = this
-        com.example.ui.util.TrackPaletteCache.initialize(this)
+        startupScope.launch { com.example.ui.util.TrackPaletteCache.initialize(this@XtremeMusicApp) }
 
         // Initialize security configuration
         startupScope.launch {

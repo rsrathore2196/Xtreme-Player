@@ -53,3 +53,18 @@ fun rememberVisibleInfiniteFloat(
     }
     return value
 }
+
+/** Retained pager pages keep their layout but must not schedule invisible spinner frames. */
+@Composable
+internal fun VisibleCircularProgressIndicator(
+    modifier: androidx.compose.ui.Modifier,
+    color: androidx.compose.ui.graphics.Color,
+    strokeWidth: androidx.compose.ui.unit.Dp = androidx.compose.material3.ProgressIndicatorDefaults.CircularStrokeWidth
+) {
+    if (LocalVisualEffectsActive.current) {
+        androidx.compose.material3.CircularProgressIndicator(
+            modifier = modifier, color = color, strokeWidth = strokeWidth)
+    } else {
+        androidx.compose.foundation.layout.Spacer(modifier)
+    }
+}

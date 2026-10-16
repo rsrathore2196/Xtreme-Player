@@ -74,6 +74,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.animation.core.updateTransition
@@ -148,6 +149,23 @@ fun MainNavigationScaffold(
         initialPage = selectedTabIndex.coerceIn(0, 2),
         pageCount = { 3 }
     )
+    // Retain only this pager's three pages after initial heavy work is quiet.
+    // Search is prepared once in an idle window, rather than cold-composed during every slide.
+    var retainedPageCount by remember { mutableIntStateOf(0) }
+    LaunchedEffect(Unit) {
+        // Warm one adjacent page per quiet window, avoiding another cold batch
+        // on the first frame. At most the existing three tabs are retained.
+        for (count in 1..2) {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                com.example.performance.BackgroundWorkCoordinator.awaitIdle(
+                    quietMillis = 750L, minimumUptimeMillis = 1_500L)
+                com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
+            }
+            retainedPageCount = count
+            androidx.compose.runtime.withFrameNanos { }
+            androidx.compose.runtime.withFrameNanos { }
+        }
+    }
     val previousTabIndex = remember { mutableIntStateOf(selectedTabIndex) }
     val selectTab: (Int) -> Unit = { index ->
         if (selectedTabIndex != index) {
@@ -204,6 +222,12 @@ fun MainNavigationScaffold(
         com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        // An automatic release check is optional. A fixed startup delay alone
+        // allowed it to compete with the first artwork/Room/recommendation wave.
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            com.example.performance.BackgroundWorkCoordinator.awaitIdle()
+            com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
         }
         com.example.updater.AppUpdateManager.checkForUpdate(context = context)
     }
@@ -335,6 +359,7 @@ fun MainNavigationScaffold(
                                 val catalogSearch by viewModel.catalogBrowser.search.collectAsStateWithLifecycle()
                                 SearchScreen(
                                     searchState = searchState,
+                                    isScreenActive = selectedTabIndex == 1 && !isPlayerExpanded && catalogDetail == null,
                                     listState = searchListState,
                                     catalogState = catalogSearch,
                                     onSelectType = viewModel.catalogBrowser::selectType,
@@ -447,15 +472,23 @@ fun MainNavigationScaffold(
                         } else {
                             HorizontalPager(
                                 state = tabPagerState,
-                                beyondViewportPageCount = 0,
+                                beyondViewportPageCount = retainedPageCount,
                                 userScrollEnabled = false,
                                 key = { it },
                                 modifier = Modifier.fillMaxSize()
                             ) { tabIndex ->
                                 // Move retained display lists; keep foreground pixels
                                 // sharp and the shared glass source live during travel.
-                                Box(Modifier.fillMaxSize().graphicsLayer { clip = false }) {
-                                    tabContent(tabIndex)
+                                val pageCovered = playerCoversContent || catalogDetail != null
+                                val pageVisible by remember(tabPagerState, tabIndex, pageCovered) {
+                                    derivedStateOf {
+                                        !pageCovered && tabPagerState.layoutInfo.visiblePagesInfo.any { it.index == tabIndex }
+                                    }
+                                }
+                                CompositionLocalProvider(LocalVisualEffectsActive provides pageVisible) {
+                                    Box(Modifier.fillMaxSize().graphicsLayer { clip = false }) {
+                                        tabContent(tabIndex)
+                                    }
                                 }
                             }
                         }

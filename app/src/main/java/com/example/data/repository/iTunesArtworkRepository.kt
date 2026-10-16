@@ -207,13 +207,7 @@ class iTunesArtworkRepository(
         return cached(metadata.key)?.url?.let { formatUrl(it, targetDimension) }
     }
 
-    fun formatUrl(url: String, size: Int): String {
-        return when {
-            url.contains("100x100bb") -> url.replace("100x100bb", "${size}x${size}bb")
-            url.contains("100x100") -> url.replace("100x100", "${size}x${size}")
-            else -> url
-        }
-    }
+    fun formatUrl(url: String, size: Int): String = formatArtworkUrl(url, size)
 
     private fun normalized(value: String) = java.text.Normalizer.normalize(value, java.text.Normalizer.Form.NFKC)
         .lowercase(java.util.Locale.ROOT).replace(Regex("[^\\p{L}\\p{M}\\p{N}]"), "")
@@ -254,6 +248,13 @@ class iTunesArtworkRepository(
     }
 
     companion object {
+        /** Pure formatting must never require construction of Room or the HTTP client on Main. */
+        fun formatArtworkUrl(url: String, size: Int): String = when {
+            url.contains("100x100bb") -> url.replace("100x100bb", "${size}x${size}bb")
+            url.contains("100x100") -> url.replace("100x100", "${size}x${size}")
+            else -> url
+        }
+
         @Volatile
         private var INSTANCE: iTunesArtworkRepository? = null
 

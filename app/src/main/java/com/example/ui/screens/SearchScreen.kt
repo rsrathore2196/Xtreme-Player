@@ -1,5 +1,7 @@
 package com.example.ui.screens
 
+import com.example.ui.components.VisibleCircularProgressIndicator
+
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -32,7 +34,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import com.example.ui.theme.LiquidGlass
-import com.example.ui.theme.liquidGlassPill
+import com.example.ui.theme.rememberLiquidGlassPill
 import com.example.ui.theme.bouncyClickable
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextMuted
@@ -47,7 +49,6 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -112,6 +113,7 @@ fun SearchScreen(
     onTrackClick: (MusicTrack, List<MusicTrack>) -> Unit,
     onToggleFavorite: (MusicTrack) -> Unit,
     modifier: Modifier = Modifier,
+    isScreenActive: Boolean = true,
     listState: LazyListState = rememberLazyListState(),
     catalogState: com.example.ui.viewmodel.CatalogSearchState = com.example.ui.viewmodel.CatalogSearchState(),
     onSelectType: (String) -> Unit = {},
@@ -180,13 +182,23 @@ fun SearchScreen(
     }
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
+    var wasScreenActive by remember { mutableStateOf(isScreenActive) }
+    LaunchedEffect(isScreenActive) {
+        // Retention must preserve the old disposal behavior when leaving Search,
+        // without letting an initially hidden page steal another screen's focus.
+        if (wasScreenActive && !isScreenActive) {
+            keyboardController?.hide()
+            focusManager.clearFocus()
+        }
+        wasScreenActive = isScreenActive
+    }
 
     val selectedTypeFilter: String? = catalogState.type.takeUnless { it == "All" }
     // The catalog starts with All. Retain the selected filter on tab return,
     // avoiding a redundant request while the existing transition is running.
 
     // Gracefully handle back press: Return to default "All" genres page rather than closing the app
-    BackHandler(enabled = isGenreActive || hasQuery || selectedTypeFilter != null) {
+    BackHandler(enabled = isScreenActive && (isGenreActive || hasQuery || selectedTypeFilter != null)) {
         keyboardController?.hide()
         focusManager.clearFocus()
         if (selectedTypeFilter != null) {
@@ -199,8 +211,8 @@ fun SearchScreen(
     }
 
     // Automatically close keyboard when user starts scrolling the results list
-    LaunchedEffect(listState.isScrollInProgress) {
-        if (listState.isScrollInProgress) {
+    LaunchedEffect(isScreenActive, listState.isScrollInProgress) {
+        if (isScreenActive && listState.isScrollInProgress) {
             keyboardController?.hide()
             focusManager.clearFocus()
         }
@@ -235,7 +247,7 @@ fun SearchScreen(
             contentPadding = PaddingValues(bottom = 150.dp)
         ) {
         // SEARCH INPUT BAR
-        item {
+        item(key = "search_input", contentType = "search_input") {
             Column(modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 6.dp, bottom = 8.dp)) {
                 Text(
                     text = "Search Online Music",
@@ -278,7 +290,7 @@ fun SearchScreen(
                             modifier = Modifier.padding(end = 6.dp)
                         ) {
                             if (searchState.isSearching || catalogState.loading) {
-                                CircularProgressIndicator(
+                                VisibleCircularProgressIndicator(
                                     modifier = Modifier.size(16.dp),
                                     strokeWidth = 2.dp,
                                     color = appColors.primaryAccent
@@ -423,7 +435,7 @@ fun SearchScreen(
                         val isSelected = catalogState.type == filterName
                         Box(
                             modifier = Modifier
-                                .liquidGlassPill(
+                                .rememberLiquidGlassPill(
                                     colors = appColors,
                                     shape = RoundedCornerShape(20.dp),
                                     isActive = isSelected,
@@ -449,7 +461,7 @@ fun SearchScreen(
 
         // RECENT SEARCHES SECTION (Positioned directly above the genre pills)
         if (!hasQuery && recentSearches.isNotEmpty()) {
-            item {
+            item(key = "recent_searches", contentType = "search_chips") {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -493,7 +505,7 @@ fun SearchScreen(
                         recentSearches.forEach { queryItem ->
                             Box(
                                 modifier = Modifier
-                                    .liquidGlassPill(
+                                    .rememberLiquidGlassPill(
                                         colors = appColors,
                                         shape = RoundedCornerShape(20.dp),
                                         isActive = false,
@@ -543,7 +555,7 @@ fun SearchScreen(
 
         // GENRE QUICK-FILTER CHIPS (Multi-line FlowRow with fixed 8dp spacing)
         if (!hasQuery) {
-            item {
+            item(key = "search_genres", contentType = "search_chips") {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -568,7 +580,7 @@ fun SearchScreen(
                             val isSelected = searchState.selectedGenre.equals(genre, ignoreCase = true)
                             Box(
                                 modifier = Modifier
-                                    .liquidGlassPill(
+                                    .rememberLiquidGlassPill(
                                         colors = appColors,
                                         shape = RoundedCornerShape(23.dp),
                                         isActive = isSelected,
@@ -628,7 +640,7 @@ fun SearchScreen(
                     ) {
                         Box(
                             modifier = Modifier
-                                .liquidGlassPill(
+                                .rememberLiquidGlassPill(
                                     colors = appColors,
                                     shape = RoundedCornerShape(20.dp),
                                     isActive = false,
@@ -663,7 +675,7 @@ fun SearchScreen(
 
                         Box(
                             modifier = Modifier
-                                .liquidGlassPill(
+                                .rememberLiquidGlassPill(
                                     colors = appColors,
                                     shape = RoundedCornerShape(20.dp),
                                     isActive = true,
@@ -796,7 +808,7 @@ fun SearchScreen(
                                         contentAlignment = Alignment.Center
                                     ) {
                                         if (isTopLoading) {
-                                            CircularProgressIndicator(
+                                            VisibleCircularProgressIndicator(
                                                 modifier = Modifier.size(24.dp),
                                                 strokeWidth = 2.5.dp,
                                                 color = appColors.onPrimaryAccent

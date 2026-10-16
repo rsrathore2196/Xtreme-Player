@@ -64,21 +64,35 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
     private var detailJob: Job? = null
     private var favoritesJob: Job? = null
     @Volatile private var favoriteIds: Set<String> = emptySet()
-    private fun liked(tracks: List<MusicTrack>, ids: Set<String> = favoriteIds) =
-        tracks.map { it.copy(isLiked = it.id in ids) }
+    private fun liked(tracks: List<MusicTrack>, ids: Set<String> = favoriteIds): List<MusicTrack> =
+        if (tracks.none { it.isLiked != (it.id in ids) }) tracks else
+            tracks.map { if (it.isLiked == (it.id in ids)) it else it.copy(isLiked = it.id in ids) }
     fun updateFavorites(ids: Set<String>) {
-        if (ids === favoriteIds) return
+        if (ids == favoriteIds) return
         favoriteIds = ids
         favoritesJob?.cancel()
-        val retained = details.toMap()
         favoritesJob = dataScope.launch {
+            val retained = synchronized(details) { details.toMap() }
             ensureActive()
             if (favoriteIds !== ids) return@launch
-            _search.update { it.withPage(it.page.copy(tracks = liked(it.page.tracks, ids))) }
-            val refreshed = retained.mapValues { (_, state) ->
-                state.withTracks(liked(state.tracks, ids), liked(state.pending, ids))
+            _search.update { state ->
+                if (favoriteIds !== ids) return@update state
+                // Favorite flags cannot change search relevance or section membership.
+                // Patch prepared rows instead of rescoring every title/artist again.
+                val tracks = liked(state.page.tracks, ids)
+                if (tracks === state.page.tracks) state else state.copy(
+                    page = state.page.copy(tracks = tracks),
+                    display = state.display.copy(songs = liked(state.display.songs, ids),
+                        top = state.display.top.map { result -> result.track?.let { track ->
+                            result.copy(track = track.copy(isLiked = track.id in ids))
+                        } ?: result }))
             }
-            withContext(Dispatchers.Main.immediate) {
+            val refreshed = retained.mapValues { (_, state) ->
+                val tracks = liked(state.tracks, ids)
+                val pending = liked(state.pending, ids)
+                if (tracks === state.tracks && pending === state.pending) state else state.withTracks(tracks, pending)
+            }
+            synchronized(details) {
                 if (favoriteIds === ids) refreshed.forEach { (key, state) ->
                     // A newly loaded page must not be replaced by an older cache snapshot.
                     if (details[key] === retained[key]) details[key] = state
@@ -87,19 +101,25 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
             // A cached destination may have opened while its cache was being refreshed.
             ensureActive()
             if (favoriteIds === ids) _detail.update {
-                it?.withTracks(liked(it.tracks, ids), liked(it.pending, ids))
+                it?.let { state ->
+                    val tracks = liked(state.tracks, ids)
+                    val pending = liked(state.pending, ids)
+                    if (tracks === state.tracks && pending === state.pending) state else state.withTracks(tracks, pending)
+                }
             }
         }
     }
     private var searchGeneration = 0
     private var detailGeneration = 0
     private val scrollPositions = object : android.util.LruCache<String, Pair<Int, Int>>(20) {}
-    private val detailAliases = object : LinkedHashMap<String, String>(40, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?) = size > 40
-    }
-    private val details = object : LinkedHashMap<String, CatalogDetailState>(12, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, CatalogDetailState>?) = size > 10
-    }
+    private val detailAliases: MutableMap<String, String> = java.util.Collections.synchronizedMap(
+        object : LinkedHashMap<String, String>(40, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?) = size > 40
+        })
+    private val details: MutableMap<String, CatalogDetailState> = java.util.Collections.synchronizedMap(
+        object : LinkedHashMap<String, CatalogDetailState>(12, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, CatalogDetailState>?) = size > 10
+        })
 
     fun queryChanged(query: String) { startSearch(query, _search.value.type, debounce = true) }
     fun selectType(type: String) {
@@ -217,7 +237,7 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
                     initialized = true, error = null, warning = page.warning,
                     artistContinuation = page.artistContinuation).withTracks(liked(state.tracks + added), liked(pending)) }
                 // Store both name-only Home routes and provider-ID routes against the same loaded data.
-                withContext(Dispatchers.Main.immediate) {
+                synchronized(details) {
                     if (generation == _detail.value?.requestId) {
                         detailAliases[state.destination.key] = destination.key
                         _detail.value?.let { details[destination.key] = it }

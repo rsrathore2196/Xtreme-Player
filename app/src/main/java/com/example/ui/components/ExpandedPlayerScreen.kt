@@ -212,7 +212,7 @@ fun ExpandedPlayerScreen(
     val haptic = LocalHapticFeedback.current
     val appColors = LocalAppColors.current
 
-    val itunesRepo = remember { iTunesArtworkRepository.getInstance(context) }
+    val itunesRepo = iTunesArtworkRepository.peekInstance()
     val artworkLoader = remember(context) { context.imageLoader }
     val initialRawCoverUrl = remember(track.coverUrl) {
         val raw = track.coverUrl
@@ -222,8 +222,8 @@ fun ExpandedPlayerScreen(
             raw.contains("hqdefault.jpg") -> raw.replace("hqdefault.jpg", "maxresdefault.jpg")
             raw.contains("mqdefault.jpg") -> raw.replace("mqdefault.jpg", "maxresdefault.jpg")
             raw.contains("default.jpg") && !raw.contains("maxresdefault.jpg") -> raw.replace("default.jpg", "maxresdefault.jpg")
-            raw.contains("100x100bb") -> itunesRepo.formatUrl(raw, ArtworkDimensions.EXPANDED_PLAYER)
-            raw.contains("100x100") -> itunesRepo.formatUrl(raw, ArtworkDimensions.EXPANDED_PLAYER)
+            raw.contains("100x100bb") -> iTunesArtworkRepository.formatArtworkUrl(raw, ArtworkDimensions.EXPANDED_PLAYER)
+            raw.contains("100x100") -> iTunesArtworkRepository.formatArtworkUrl(raw, ArtworkDimensions.EXPANDED_PLAYER)
             else -> raw
         }
     }
@@ -231,8 +231,8 @@ fun ExpandedPlayerScreen(
     val resolvedArtworkRequest = com.example.ui.util.rememberOptimizedImageRequest(
         track = track, targetSize = com.example.ui.util.ImageConfig.PLAYER_SCREEN_SIZE)
     val highResCoverUrl = resolvedArtworkRequest.data as? String ?: ""
-    val memoryItunesUrl = remember(track.id, track.title, track.artist, track.source, track.coverUrl) {
-        itunesRepo.peekMemoryCachedUrl(track.toMediaItem(), ArtworkDimensions.EXPANDED_PLAYER)
+    val memoryItunesUrl = remember(track.id, track.title, track.artist, track.source, track.coverUrl, itunesRepo) {
+        itunesRepo?.peekMemoryCachedUrl(track.toMediaItem(), ArtworkDimensions.EXPANDED_PLAYER)
     }
     val cachedArtworkKey = remember(track.id, track.title, track.artist, track.coverUrl,
         highResCoverUrl, memoryItunesUrl, resolvedArtworkRequest.placeholderMemoryCacheKey) {

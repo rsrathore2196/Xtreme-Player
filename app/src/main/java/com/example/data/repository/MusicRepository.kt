@@ -135,7 +135,7 @@ class MusicRepository(
     private val discoveryBatches = android.util.LruCache<String, DiscoveryCache>(16)
 
     private suspend fun getLikedTrackIds(): Set<String> = withContext(homeDispatcher) {
-        withContext(Dispatchers.IO) { musicDao.getFavoriteTracks().first() }.map { it.id }.toSet()
+        observeFavoriteTrackIds().first()
     }
 
     suspend fun getInitialCatalog(profile: UserProfile? = null): List<MusicTrack> = withContext(homeDispatcher) {
@@ -416,6 +416,9 @@ class MusicRepository(
                 ?.copy(source = "JioSaavn Official Chart")
         }
     }
+
+    fun observeFavoriteTrackIds(): Flow<Set<String>> = musicDao.observeFavoriteTrackIds()
+        .flowOn(Dispatchers.IO).map { it.toSet() }.distinctUntilChanged().flowOn(homeDispatcher)
 
     fun getFavoriteTracks(): Flow<List<MusicTrack>> {
         return musicDao.getFavoriteTracks()

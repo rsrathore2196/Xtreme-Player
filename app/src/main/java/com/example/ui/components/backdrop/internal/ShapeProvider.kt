@@ -20,6 +20,13 @@ import androidx.compose.ui.unit.LayoutDirection
 @Immutable
 internal class ShapeProvider(val shapeBlock: () -> Shape) {
 
+    // The provider is an implementation cache for this shape lambda. Wrapper
+    // allocation must not invalidate backdrop effects on every parent recomposition.
+    override fun equals(other: Any?): Boolean = this === other ||
+        other is ShapeProvider && shapeBlock == other.shapeBlock
+
+    override fun hashCode(): Int = shapeBlock.hashCode()
+
     private var _shape: Shape? = null
     private var _outline: Outline? = null
     private var _size: Size = Size.Unspecified

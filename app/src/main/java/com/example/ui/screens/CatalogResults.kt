@@ -1,5 +1,7 @@
 package com.example.ui.screens
 
+import com.example.ui.components.VisibleCircularProgressIndicator
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -107,7 +109,7 @@ internal fun LazyListScope.catalogSearchResults(
     val message = state.error ?: result.warning
     if (message != null) item("error") { Text(message, color = LocalAppColors.current.textMuted, modifier = Modifier.clickable(onClick = onRetry).padding(20.dp)) }
     if (state.loading || state.loadingMore) item("loading") {
-        Box(Modifier.fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(24.dp), color = LocalAppColors.current.primaryAccent) }
+        Box(Modifier.fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) { VisibleCircularProgressIndicator(Modifier.size(24.dp), color = LocalAppColors.current.primaryAccent) }
     }
     else if (result.nextPage != null) item("more") {
         Text("See More", color = LocalAppColors.current.primaryAccent, modifier = Modifier.fillMaxWidth().clickable(onClick = onMore).padding(20.dp))
