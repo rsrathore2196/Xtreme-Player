@@ -153,18 +153,6 @@ Recently Played and Most Listened Artists continue to use local listening histor
 - Android SDK 26+ (Android 8.0 Oreo or higher)
 - JDK 17+
 
-### Build & Run
-
-```bash
-# Clone the repository
-git clone https://github.com/rsrathore2196/Xtreme-Player.git
-
-# Navigate to the project directory
-cd Xtreme-Player
-
-# Build the debug APK
-./gradlew assembleDebug
-```
 
 ---
 
@@ -178,3 +166,17 @@ Fair Use & API Usage: This software is created solely for personal research, edu
 
 This project is provided for educational and research purposes only. The maintainers do not endorse or facilitate copyright infringement, unauthorized redistribution, or illegal access to media content. Use only in compliance with applicable local laws, platform terms, and licensing requirements.
 
+---
+
+### Build & Run
+
+```bash
+# Clone the repository
+git clone https://github.com/rsrathore2196/Xtreme-Player.git
+
+# Navigate to the project directory
+cd Xtreme-Player
+
+# Build the debug APK
+./gradlew assembleDebug
+```
