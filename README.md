@@ -92,7 +92,7 @@
 ## ✨ Key Features
 
 ### 🎧 Premium Streaming & Audio Engine
-- **Hi-Res Lossless & HQ Listening:** Enjoy FLAC, WAV, AAC, and bitrate tiers from 96 kbps up to 24-bit/192 kHz studio master quality, with adjustable audio quality settings for mobile or high-fidelity listening.
+- **Hi-Res Lossless & HQ Listening:** Enjoy FLAC, WAV, AAC, and bitrate tiers up to 24-bit/192 kHz studio master quality, with adjustable audio quality settings for mobile or high-fidelity listening.
 - **Audio DSP & Equalizer:** Tune playback with a 5-band hardware equalizer, preset modes including Flat, Bass Boost, Studio Master, Vocal Enhance, Electronic, Rock, and Acoustic, plus Crystal Clear engine sharpening for cleaner vocals and percussion.
 - **Gapless, Smooth Playback:** Gapless transitions, 16-bit PCM hardware output, predictive pre-buffering, and a local LRU cache help reduce stutter and lag on weaker connections.
 - **Background & Controls:** Persistent lock screen and notification playback controls keep music playing in the background with AndroidX Media3 support.
