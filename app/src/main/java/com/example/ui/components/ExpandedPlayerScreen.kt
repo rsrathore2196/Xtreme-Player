@@ -15,6 +15,11 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
@@ -66,6 +71,8 @@ import androidx.compose.material.icons.filled.Cast
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.FormatQuote
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -124,9 +131,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.drawWithCache
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.compositeOver
@@ -134,6 +141,9 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -156,7 +166,6 @@ import com.example.data.repository.toMediaItem
 import com.example.playback.PlayerUiState
 import com.example.playback.RepeatMode
 import com.example.ui.theme.LocalAppColors
-import com.example.ui.theme.LiquidGlass
 import com.example.ui.theme.bouncyClickable
 import com.example.ui.components.playerLiquidGlassButton as liquidGlassButton
 import com.example.ui.components.playerPrimaryLiquidGlassButton as primaryLiquidGlassButton
@@ -256,6 +265,16 @@ fun ExpandedPlayerScreen(
     var isSleepTimerOpen by remember { mutableStateOf(false) }
     var isFlipped by remember(track.id) { mutableStateOf(false) }
     var showLyrics by remember(track.id) { mutableStateOf(false) }
+    var maximizeLyrics by remember(track.id) { mutableStateOf(false) }
+    val lyricsExpanded = showLyrics && maximizeLyrics
+    val lyricsExpansion = animateFloatAsState(
+        targetValue = if (lyricsExpanded) 1f else 0f,
+        animationSpec = tween(LYRICS_EXPANSION_MS, easing = FastOutSlowInEasing),
+        label = "lyrics_expansion"
+    )
+    val expandedLyricsVisible by remember { derivedStateOf { lyricsExpansion.value > 0f } }
+    LaunchedEffect(showLyrics) { if (!showLyrics) maximizeLyrics = false }
+    BackHandler(enabled = lyricsExpanded && isScreenVisible) { maximizeLyrics = false }
     val lyricsLifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
     val lyricsVisibilityCallback by rememberUpdatedState(onLyricsVisibilityChanged)
     LaunchedEffect(showLyrics, isScreenVisible, lyricsLifecycle) {
@@ -463,18 +482,17 @@ fun ExpandedPlayerScreen(
 
             if (isLandscape) {
                 // LANDSCAPE DEDICATED TWO-PANE LAYOUT
-                Row(
+                LandscapeLyricsExpansion(
+                    expansion = lyricsExpansion,
                     modifier = Modifier
                         .fillMaxSize()
                         .statusBarsPadding()
                         .navigationBarsPadding()
-                        .padding(horizontal = 24.dp, vertical = 6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(24.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                        .padding(horizontal = 24.dp, vertical = 6.dp)
                 ) {
                     // LEFT PANE: Album Art / Lyrics (Proper Square Shape Guarantee)
                     SharedTransitionLayout(
-                        modifier = Modifier.weight(1f).fillMaxHeight()
+                        modifier = Modifier.fillMaxHeight()
                     ) {
                         AnimatedContent(
                             targetState = showLyrics,
@@ -640,8 +658,12 @@ fun ExpandedPlayerScreen(
                     // RIGHT PANE: Controls & Track Info
                     Column(
                         modifier = Modifier
-                            .weight(1.15f)
-                            .fillMaxHeight(),
+                            .fillMaxHeight()
+                            .graphicsLayer {
+                                alpha = 1f - lyricsExpansion.value
+                                translationY = size.height * lyricsExpansion.value
+                            }
+                            .then(if (lyricsExpanded) Modifier.clearAndSetSemantics { } else Modifier),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.SpaceBetween
                     ) {
@@ -656,14 +678,7 @@ fun ExpandedPlayerScreen(
                             Box(
                                 modifier = Modifier
                                     .size(38.dp)
-                                    .clip(CircleShape)
-                                    .background(
-                                        LiquidGlass.glassBrush(appColors, translucency = 0.82f, tintAccent = false)
-                                    )
-                                    .border(
-                                        BorderStroke(1.dp, LiquidGlass.specularBorderBrush(appColors, highlightAlpha = 0.22f)),
-                                        CircleShape
-                                    )
+                                    .liquidGlassButton(appColors, shape = CircleShape, elevation = 4.dp)
                                     .bouncyClickable { onMinimize() }
                                     .testTag("player_minimize_button"),
                                 contentAlignment = Alignment.Center
@@ -715,14 +730,7 @@ fun ExpandedPlayerScreen(
                                 Box(
                                     modifier = Modifier
                                         .size(38.dp)
-                                        .clip(CircleShape)
-                                        .background(
-                                            LiquidGlass.glassBrush(appColors, translucency = 0.82f, tintAccent = false)
-                                        )
-                                        .border(
-                                            BorderStroke(1.dp, LiquidGlass.specularBorderBrush(appColors, highlightAlpha = 0.22f)),
-                                            CircleShape
-                                        )
+                                        .liquidGlassButton(appColors, shape = CircleShape, elevation = 4.dp)
                                         .bouncyClickable { isMenuOpen = true }
                                         .testTag("player_options_button"),
                                     contentAlignment = Alignment.Center
@@ -805,18 +813,27 @@ fun ExpandedPlayerScreen(
                             }
                         }
 
-                        // Scrubber Timeline
-                        PlayerTimelineSection(
-                            trackId = track.id,
-                            currentPositionProvider = currentPositionProvider,
-                            playbackPositionFlow = playbackPositionFlow,
-                            trackDurationProvider = trackDurationProvider,
-                            qualityChipText = displayedQuality,
-                            onSeekTo = onSeekTo,
-                            isDark = isDark,
-                            isPlaying = uiState.isPlaying,
-                            dominantColor = animatedDominantColor
-                        )
+                        // Keep the normal timeline in place; the expanded footer takes over only in lyrics focus mode.
+                        Column {
+                            if (showLyrics) LyricsExpansionButton(
+                                expanded = lyricsExpanded,
+                                onClick = { maximizeLyrics = !maximizeLyrics },
+                                modifier = Modifier.align(Alignment.End)
+                            )
+                            PlayerTimelineSection(
+                                trackId = track.id,
+                                currentPositionProvider = currentPositionProvider,
+                                playbackPositionFlow = playbackPositionFlow,
+                                trackDurationProvider = trackDurationProvider,
+                                qualityChipText = displayedQuality,
+                                onSeekTo = onSeekTo,
+                                isDark = isDark,
+                                isPlaying = uiState.isPlaying && !lyricsExpanded,
+                                active = !lyricsExpanded,
+                                dominantColor = animatedDominantColor
+                            )
+
+                        }
 
                         // Main Controls (Shuffle, Previous, Play/Pause, Next, Repeat/Replay) in Full Liquid Glass UI
                         Row(
@@ -998,12 +1015,6 @@ fun ExpandedPlayerScreen(
                                 color = Color.Transparent,
                                 modifier = Modifier
                                     .size(44.dp)
-                                    .shadow(
-                                        elevation = if (showLyrics) 8.dp else 4.dp,
-                                        shape = RoundedCornerShape(22.dp),
-                                        spotColor = if (showLyrics) appColors.primaryAccent.copy(alpha = 0.45f) else Color.Black.copy(alpha = if (appColors.isDark) 0.45f else 0.10f),
-                                        ambientColor = Color.Transparent
-                                    )
                                     .clip(RoundedCornerShape(22.dp))
                                     .liquidGlassButton(appColors, shape = RoundedCornerShape(22.dp), elevation = 0.dp, isActive = showLyrics)
                                     .graphicsLayer {
@@ -1037,12 +1048,6 @@ fun ExpandedPlayerScreen(
                                 modifier = Modifier
                                     .height(44.dp)
                                     .padding(horizontal = 8.dp)
-                                    .shadow(
-                                        elevation = if (isLandscapeOutputActive) 8.dp else 4.dp,
-                                        shape = RoundedCornerShape(22.dp),
-                                        spotColor = if (isLandscapeOutputActive) appColors.primaryAccent.copy(alpha = 0.45f) else Color.Black.copy(alpha = if (appColors.isDark) 0.45f else 0.10f),
-                                        ambientColor = Color.Transparent
-                                    )
                                     .clip(RoundedCornerShape(22.dp))
                                     .liquidGlassButton(appColors, shape = RoundedCornerShape(22.dp), elevation = 0.dp, isActive = isLandscapeOutputActive)
                                     .graphicsLayer {
@@ -1096,12 +1101,6 @@ fun ExpandedPlayerScreen(
                                 color = Color.Transparent,
                                 modifier = Modifier
                                     .size(44.dp)
-                                    .shadow(
-                                        elevation = 4.dp,
-                                        shape = RoundedCornerShape(22.dp),
-                                        spotColor = if (appColors.isDark) Color.Black.copy(alpha = 0.45f) else appColors.primaryAccent.copy(alpha = 0.12f),
-                                        ambientColor = if (appColors.isDark) Color.Transparent else Color.Black.copy(alpha = 0.05f)
-                                    )
                                     .clip(RoundedCornerShape(22.dp))
                                     .liquidGlassButton(appColors, shape = RoundedCornerShape(22.dp), elevation = 0.dp, isActive = false)
                                     .graphicsLayer {
@@ -1121,6 +1120,28 @@ fun ExpandedPlayerScreen(
                             }
                         }
                     }
+                    if (expandedLyricsVisible) Column(
+                        modifier = Modifier.fillMaxWidth().graphicsLayer { alpha = lyricsExpansion.value }
+                            .then(if (!lyricsExpanded) Modifier.clearAndSetSemantics { } else Modifier)
+                    ) {
+                        LyricsExpansionButton(
+                            expanded = true,
+                            onClick = { maximizeLyrics = false },
+                            modifier = Modifier.align(Alignment.End)
+                        )
+                        PlayerTimelineSection(
+                            trackId = track.id,
+                            currentPositionProvider = currentPositionProvider,
+                            playbackPositionFlow = playbackPositionFlow,
+                            trackDurationProvider = trackDurationProvider,
+                            qualityChipText = "",
+                            onSeekTo = onSeekTo,
+                            isDark = isDark,
+                            isPlaying = uiState.isPlaying && lyricsExpanded,
+                            active = lyricsExpanded,
+                            dominantColor = animatedDominantColor
+                        )
+                    } else Box(Modifier)
                 }
             } else {
                 Column(
@@ -1564,6 +1585,19 @@ fun ExpandedPlayerScreen(
 
             Spacer(modifier = Modifier.height(if (isLandscape) 4.dp else 14.dp))
 
+            AnimatedVisibility(
+                visible = showLyrics,
+                enter = fadeIn(tween(220)) + expandVertically(tween(LYRICS_EXPANSION_MS)),
+                exit = fadeOut(tween(180)) + shrinkVertically(tween(LYRICS_EXPANSION_MS))
+            ) {
+                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
+                    LyricsExpansionButton(
+                        expanded = lyricsExpanded,
+                        onClick = { maximizeLyrics = !maximizeLyrics }
+                    )
+                }
+            }
+
             // TIMELINE SCRUB BAR (Isolated recomposition)
             PlayerTimelineSection(
                 trackId = track.id,
@@ -1571,12 +1605,21 @@ fun ExpandedPlayerScreen(
                 playbackPositionFlow = playbackPositionFlow,
                 trackDurationProvider = trackDurationProvider,
                 qualityChipText = displayedQuality,
+                showQuality = !lyricsExpanded,
                 onSeekTo = onSeekTo,
                 isDark = isDark,
                 isPlaying = uiState.isPlaying,
                 dominantColor = animatedDominantColor
             )
 
+            AnimatedVisibility(
+                visible = !lyricsExpanded,
+                enter = expandVertically(tween(LYRICS_EXPANSION_MS, easing = FastOutSlowInEasing), expandFrom = Alignment.Top) +
+                    slideInVertically(tween(LYRICS_EXPANSION_MS, easing = FastOutSlowInEasing)) { it } + fadeIn(tween(260)),
+                exit = shrinkVertically(tween(LYRICS_EXPANSION_MS, easing = FastOutSlowInEasing), shrinkTowards = Alignment.Top) +
+                    slideOutVertically(tween(LYRICS_EXPANSION_MS, easing = FastOutSlowInEasing)) { it } + fadeOut(tween(220))
+            ) {
+                Column {
             Spacer(modifier = Modifier.height(if (isLandscape) 4.dp else 14.dp))
 
             // MAIN CONTROL CLUSTER (Shuffle, Prev, Play/Pause, Next, Repeat/Replay) in Full Liquid Glass UI
@@ -1761,12 +1804,6 @@ fun ExpandedPlayerScreen(
                     color = Color.Transparent,
                     modifier = Modifier
                         .size(44.dp)
-                        .shadow(
-                            elevation = if (showLyrics) 8.dp else 4.dp,
-                            shape = RoundedCornerShape(22.dp),
-                            spotColor = if (showLyrics) appColors.primaryAccent.copy(alpha = 0.45f) else (if (appColors.isDark) Color.Black.copy(alpha = 0.45f) else appColors.primaryAccent.copy(alpha = 0.12f)),
-                            ambientColor = if (appColors.isDark) Color.Transparent else Color.Black.copy(alpha = 0.05f)
-                        )
                         .clip(RoundedCornerShape(22.dp))
                         .liquidGlassButton(appColors, shape = RoundedCornerShape(22.dp), elevation = 0.dp, isActive = showLyrics)
                         .graphicsLayer {
@@ -1802,12 +1839,6 @@ fun ExpandedPlayerScreen(
                         .height(44.dp)
                         .weight(1f)
                         .padding(horizontal = 8.dp)
-                        .shadow(
-                            elevation = if (isOutputActive) 8.dp else 4.dp,
-                            shape = RoundedCornerShape(22.dp),
-                            spotColor = if (isOutputActive) appColors.primaryAccent.copy(alpha = 0.45f) else (if (appColors.isDark) Color.Black.copy(alpha = 0.45f) else appColors.primaryAccent.copy(alpha = 0.12f)),
-                            ambientColor = if (appColors.isDark) Color.Transparent else Color.Black.copy(alpha = 0.05f)
-                        )
                         .clip(RoundedCornerShape(22.dp))
                         .liquidGlassButton(appColors, shape = RoundedCornerShape(22.dp), elevation = 0.dp, isActive = isOutputActive)
                         .graphicsLayer {
@@ -1862,12 +1893,6 @@ fun ExpandedPlayerScreen(
                     color = Color.Transparent,
                     modifier = Modifier
                         .size(44.dp)
-                        .shadow(
-                            elevation = 4.dp,
-                            shape = RoundedCornerShape(22.dp),
-                            spotColor = if (appColors.isDark) Color.Black.copy(alpha = 0.45f) else appColors.primaryAccent.copy(alpha = 0.12f),
-                            ambientColor = if (appColors.isDark) Color.Transparent else Color.Black.copy(alpha = 0.05f)
-                        )
                         .clip(RoundedCornerShape(22.dp))
                         .liquidGlassButton(appColors, shape = RoundedCornerShape(22.dp), elevation = 0.dp, isActive = false)
                         .graphicsLayer {
@@ -1885,6 +1910,8 @@ fun ExpandedPlayerScreen(
                             modifier = Modifier.size(20.dp)
                         )
                     }
+                }
+            }
                 }
             }
         }
@@ -1909,6 +1936,64 @@ fun ExpandedPlayerScreen(
     }
 }
 
+}
+
+/** Keep the original two-pane bounds at rest; read expansion only during measurement. */
+@Composable
+private fun LandscapeLyricsExpansion(
+    expansion: State<Float>,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit
+) {
+    Layout(content = content, modifier = modifier.clipToBounds()) { measurables, constraints ->
+        val width = constraints.maxWidth
+        val height = constraints.maxHeight
+        val fraction = expansion.value.coerceIn(0f, 1f)
+        val gap = 24.dp.roundToPx()
+        val normalLeft = ((width - gap).coerceAtLeast(0) / 2.15f).roundToInt()
+        val normalRight = (width - gap - normalLeft).coerceAtLeast(0)
+        val footer = measurables[2].measure(Constraints(maxWidth = width, maxHeight = height))
+        val footerHeight = (footer.height * fraction).roundToInt()
+        val leftWidth = (width - (normalRight + gap) * (1f - fraction)).roundToInt().coerceAtLeast(0)
+        val left = measurables[0].measure(Constraints.fixed(leftWidth, (height - footerHeight).coerceAtLeast(0)))
+        val right = measurables[1].measure(Constraints.fixed(normalRight, height))
+        layout(width, height) {
+            left.placeRelative(0, 0)
+            if (fraction < 1f) right.placeRelative(leftWidth + (gap * (1f - fraction)).roundToInt(), 0)
+            // The focus footer enters from below as the ordinary control pane leaves.
+            if (fraction > 0f) footer.placeRelative(0, height - footerHeight)
+        }
+    }
+}
+
+@Composable
+private fun LyricsExpansionButton(
+    expanded: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val colors = LocalAppColors.current
+    // A compact 36dp glass disk inside an accessible 48dp touch target.
+    Box(modifier.size(48.dp), contentAlignment = Alignment.Center) {
+        Box(Modifier.size(36.dp).liquidGlassButton(colors, elevation = 3.dp))
+        IconButton(
+            onClick = onClick,
+            modifier = Modifier.fillMaxSize().testTag("player_lyrics_expand_button")
+        ) {
+            AnimatedContent(
+                targetState = expanded,
+                transitionSpec = { fadeIn(tween(180)) togetherWith fadeOut(tween(180)) },
+                label = "lyrics_expand_icon"
+            ) { isExpanded ->
+                Icon(
+                    if (isExpanded) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                    contentDescription = if (isExpanded) "Minimize lyrics" else "Maximize lyrics",
+                    tint = colors.textPrimary,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
+    }
 }
 
 private fun formatTime(timeMs: Long): String {
@@ -2324,7 +2409,9 @@ private fun PlayerTimelineSection(
     isDark: Boolean,
     isPlaying: Boolean = false,
     dominantColor: State<Color>,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    showQuality: Boolean = true,
+    active: Boolean = true
 ) {
     val appColors = LocalAppColors.current
     var isUserScrubbing by remember { mutableStateOf(false) }
@@ -2336,7 +2423,8 @@ private fun PlayerTimelineSection(
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val latestPositionProvider by rememberUpdatedState(currentPositionProvider)
     // Same visible cadence, suspended while the activity is not resumed.
-    LaunchedEffect(trackId, isPlaying, playbackPositionFlow, lifecycle) {
+    LaunchedEffect(trackId, isPlaying, playbackPositionFlow, lifecycle, active) {
+        if (!active) return@LaunchedEffect
         lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             if (!isUserScrubbing) livePosition = latestPositionProvider()
             if (isPlaying) while (isActive) {
@@ -2424,7 +2512,10 @@ private fun PlayerTimelineSection(
             )
 
             // Dynamic Quality Chip adapting white or dark color with proper background contrast
-            if (qualityChipText.isNotBlank()) {
+            AnimatedVisibility(
+                visible = showQuality && qualityChipText.isNotBlank(),
+                enter = fadeIn(tween(220)), exit = fadeOut(tween(180))
+            ) {
                 Surface(
                     color = Color.Transparent,
                     border = BorderStroke(1.dp, chipBorderColor),
@@ -2470,6 +2561,7 @@ private fun PlayerTimelineSection(
 }
 
 private const val LYRICS_ARTWORK_TRANSITION_MS = 420
+private const val LYRICS_EXPANSION_MS = 420
 
 /** Keep the content fade alive for the entire shared artwork/header journey. */
 private fun AnimatedContentTransitionScope<Boolean>.lyricsArtworkTransition(): ContentTransform =

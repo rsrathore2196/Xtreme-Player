@@ -61,6 +61,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ClipOp
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ImageBitmap
@@ -70,9 +71,10 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.TransformOrigin
-import androidx.compose.ui.graphics.drawscope.ContentDrawScope
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.style.ResolvedTextDirection
 import androidx.compose.ui.graphics.graphicsLayer
@@ -121,7 +123,7 @@ private data class MeasuredWord(
  * 1. Fluid Karaoke Highlighting & Line Transitions:
  *    - Continuous overlay reveal across the stable existing text.
  *    - Identical glyph positions, font sizing, and line wraps with zero layout recalculation.
- *    - Never replaces strings or moves individual characters.
+ *    - Lifts timed shaped runs in the draw phase without changing wrapping or measurement.
  *
  * 2. Provider-Timed Animation:
  *    - Preserves genuine syllable progression in every language; otherwise uses reliable word timing.
@@ -541,15 +543,23 @@ private fun KaraokeLineItem(
             val units = revealUnits
             val fallbackRows = fallbackRegions
             val completed = Path()
+            val moving = Path()
+            val liftedCompleted = Path()
+            val liftHeight = 4.dp.toPx()
             val feather = 8.dp.toPx()
             val revealPaint = RevealPaint(activeTextColor, glowColor, broadRadius, glyphGlows?.takeIf { layout != null && it.matches(layout) })
             onDrawWithContent {
-                drawContent()
                 // Read focus only while drawing, so the outgoing line's halo fades without relaying out text.
                 val focus = glowFocus.value
-                if ((!isActive && focus <= 0f) || layout == null) return@onDrawWithContent
+                if ((!isActive && focus <= 0f) || layout == null) {
+                    drawContent()
+                    return@onDrawWithContent
+                }
                 val position = latestPosition()
-                if (position < line.timestampMs) return@onDrawWithContent
+                if (position < line.timestampMs) {
+                    drawContent()
+                    return@onDrawWithContent
+                }
                 completed.reset()
                 if (units.isEmpty()) {
                     // Line-only sources cannot locate individual vocals. Preserve a smooth visual
@@ -558,18 +568,47 @@ private fun KaraokeLineItem(
                         ?: nextLine?.timestampMs?.takeIf { it > line.timestampMs }
                         ?: line.endTimeMs.takeIf { it > line.timestampMs } ?: (line.timestampMs + 3_000)
                     val progress = ((position - line.timestampMs).toFloat() / (end - line.timestampMs).coerceAtLeast(1)).coerceIn(0f, 1f)
-                    drawReveal(layout, fallbackRows, progress, activeTextColor, feather, completed, revealPaint,
-                        glow = vocalGlow(position, line.timestampMs, end) * focus)
+                    // A line-only document moves as one unit; no invented word timings.
+                    translate(top = -liftHeight * vocalLift(position, line.timestampMs, end)) {
+                        this@onDrawWithContent.drawContent()
+                        drawReveal(layout, fallbackRows, progress, activeTextColor, feather, completed, revealPaint,
+                            glow = vocalGlow(position, line.timestampMs, end) * focus)
+                        clipPath(completed) { drawText(layout, color = activeTextColor) }
+                    }
                 } else {
+                    // Remove moving runs from the stationary base first. Painting both
+                    // would leave a second, dim copy underneath every lifted word.
+                    moving.reset()
+                    for (unit in units) {
+                        if (vocalLift(position, unit.start, unit.end) > 0f) {
+                            for (region in unit.regions) moving.addRect(region.bounds)
+                        }
+                    }
+                    clipPath(moving, clipOp = ClipOp.Difference) { this@onDrawWithContent.drawContent() }
                     for (unit in units) {
                         if (position < unit.start) continue
                         val progress = ((position - unit.start).toFloat() / (unit.end - unit.start).coerceAtLeast(1)).coerceIn(0f, 1f)
                         val glow = vocalGlow(position, unit.start, unit.end) * focus
-                        drawReveal(layout, unit.regions, progress, activeTextColor, feather, completed, revealPaint, glow)
+                        val lift = vocalLift(position, unit.start, unit.end)
+                        if (lift > 0f) {
+                            liftedCompleted.reset()
+                            translate(top = -liftHeight * lift) {
+                                for (region in unit.regions) {
+                                    val bounds = region.bounds
+                                    clipRect(bounds.left, bounds.top, bounds.right, bounds.bottom) {
+                                        drawText(layout, color = inactiveTextColor)
+                                    }
+                                }
+                                drawReveal(layout, unit.regions, progress, activeTextColor, feather, liftedCompleted, revealPaint, glow)
+                                clipPath(liftedCompleted) { drawText(layout, color = activeTextColor) }
+                            }
+                        } else {
+                            drawReveal(layout, unit.regions, progress, activeTextColor, feather, completed, revealPaint, glow)
+                        }
                     }
+                    // Completed stationary runs stay one draw, even on long lines.
+                    clipPath(completed) { drawText(layout, color = activeTextColor) }
                 }
-                // Completed syllables are one draw, regardless of how many words were sung.
-                clipPath(completed) { drawText(layout, color = activeTextColor) }
             }
         }
     )
@@ -577,6 +616,19 @@ private fun KaraokeLineItem(
 
 private data class RevealRegion(val bounds: Rect, val rtl: Boolean)
 private data class RevealUnit(val start: Long, val end: Long, val regions: List<RevealRegion>)
+
+/** A zero-velocity rise/settle envelope on the provider clock, including pause and seek. */
+private fun vocalLift(position: Long, start: Long, end: Long): Float {
+    if (position <= start || position >= end) return 0f
+    val duration = (end - start).toFloat().coerceAtLeast(1f)
+    val rise = minOf(180f, duration * 0.28f)
+    val settle = minOf(220f, duration * 0.34f)
+    fun smooth(value: Float): Float {
+        val t = value.coerceIn(0f, 1f)
+        return t * t * (3f - 2f * t)
+    }
+    return smooth((position - start) / rise) * smooth((end - position) / settle)
+}
 
 /** Animate illumination only: the reveal edge still follows the provider's exact vocal clock. */
 private fun vocalGlow(position: Long, start: Long, end: Long): Float {
@@ -731,7 +783,7 @@ private fun buildRevealUnits(layout: TextLayoutResult, words: List<MeasuredWord>
     }
 }
 
-private fun ContentDrawScope.drawReveal(
+private fun DrawScope.drawReveal(
     layout: TextLayoutResult, regions: List<RevealRegion>, progress: Float, color: Color,
     feather: Float, completed: Path, paint: RevealPaint, glow: Float
 ) {

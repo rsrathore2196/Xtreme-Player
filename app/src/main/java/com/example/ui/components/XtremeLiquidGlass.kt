@@ -95,7 +95,8 @@ fun Modifier.xtremeLiquidGlassBackground(
     enabled: Boolean = LocalDynamicGlassEnabled.current,
     appColors: AppThemeColors = LocalAppColors.current,
     backdrop: LiquidGlassBackdrop? = LocalLiquidGlassBackdrop.current,
-    stableCaptureWidthPx: Float = 0f
+    stableCaptureWidthPx: Float = 0f,
+    baseFillAlpha: Float? = null
 ): Modifier {
     if (!enabled || !LocalDynamicGlassEnabled.current) return this
         .shadow(elevation, shape)
@@ -136,9 +137,9 @@ fun Modifier.xtremeLiquidGlassBackground(
         ))
     }
     return this
-        .shadow(elevation, shape, clip = false,
+        .then(if (baseFillAlpha == 0f) Modifier else Modifier.shadow(elevation, shape, clip = false,
             spotColor = Color.Black.copy(alpha = if (dark) 0.42f else 0.14f),
-            ambientColor = Color.Black.copy(alpha = 0.08f))
+            ambientColor = Color.Black.copy(alpha = 0.08f)))
         .clip(shape)
         .then(
             if (useBackdrop) Modifier.drawBackdrop(
@@ -164,10 +165,11 @@ fun Modifier.xtremeLiquidGlassBackground(
             val reflection = Brush.radialGradient(
                 listOf(Color.White.copy(alpha = if (dark) 0.065f else 0.18f), Color.Transparent),
                 center = Offset(size.width * 0.72f, size.height * 1.6f), radius = size.width.coerceAtLeast(size.height) * 0.65f)
+            val fillAlpha = baseFillAlpha?.coerceIn(0f, 1f) ?: if (useBackdrop || (backdrop == null && enabled)) {
+                if (dark) 0.50f else 0.64f
+            } else 0.90f
             onDrawWithContent {
-                drawRect(base.copy(alpha = if (useBackdrop || (backdrop == null && enabled)) {
-                    if (dark) 0.50f else 0.64f
-                } else 0.90f))
+                if (fillAlpha > 0f) drawRect(base.copy(alpha = fillAlpha))
                 drawRect(colorWash)
                 drawRect(sheen)
                 drawRect(reflection)
@@ -188,9 +190,12 @@ fun Modifier.playerLiquidGlassButton(
     borderWidth: Dp = 0.8.dp
 ): Modifier = xtremeLiquidGlassBackground(
     shape = shape, elevation = elevation, appColors = colors,
-    tintColor = colors.primaryAccent,
-    surfaceTintAlpha = if (isActive) 0.30f else 0.07f,
-    borderWidth = borderWidth
+    // The live album-colored backdrop supplies the body of player controls.
+    // Keep the lens, sheen and rim, without painting a dark/theme-accent disk over it.
+    tintColor = Color.Transparent,
+    surfaceTintAlpha = 0f,
+    borderWidth = borderWidth,
+    baseFillAlpha = 0f
 )
 
 @Composable
@@ -202,7 +207,8 @@ fun Modifier.playerPrimaryLiquidGlassButton(
     borderWidth: Dp = 1.dp
 ): Modifier = xtremeLiquidGlassBackground(
     shape = shape, elevation = elevation, appColors = colors,
-    tintColor = colors.primaryAccent, surfaceTintAlpha = 0.25f, borderWidth = borderWidth
+    tintColor = Color.Transparent, surfaceTintAlpha = 0f, borderWidth = borderWidth,
+    baseFillAlpha = 0f
 )
 
 /**
