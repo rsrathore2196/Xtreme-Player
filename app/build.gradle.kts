@@ -152,6 +152,8 @@ dependencies {
   implementation(libs.okhttp)
   implementation(libs.innertubex)
   implementation(libs.ktor.client.okhttp)
+  implementation(libs.ktor.client.content.negotiation)
+  implementation(libs.ktor.serialization.kotlinx.json)
   implementation(libs.converter.moshi)
   implementation(libs.firebase.ai)
   // Uncomment to use Firestore:

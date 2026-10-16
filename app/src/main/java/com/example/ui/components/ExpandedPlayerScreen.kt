@@ -1954,7 +1954,6 @@ fun ExpandedPlayerScreen(
             isDark = isDark,
             onSelectDevice = { deviceId ->
                 onSelectAudioDevice(deviceId)
-                AudioDeviceManager.selectDevice(context, deviceId)
             },
             onDismiss = { showSoundOutputDialog = false }
         )

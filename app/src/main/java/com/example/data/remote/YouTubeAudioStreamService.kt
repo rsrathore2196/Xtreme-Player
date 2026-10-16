@@ -31,6 +31,9 @@ import com.metrolist.innertubex.extraction.InnerTubeExtractor
 import com.metrolist.innertubex.extraction.YtConfigParserImpl
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
+import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.serialization.kotlinx.json.json
+import kotlinx.serialization.json.Json
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.HttpTimeoutConfig
 import kotlinx.coroutines.*
@@ -79,6 +82,12 @@ object YouTubeAudioStreamService {
                 preconfigured = network.newBuilder().dispatcher(Dispatcher())
                     .connectionPool(ConnectionPool()).build()
             }
+            // InnerTubeX passes @Serializable PlayerBody/SearchBody/BrowseBody
+            // objects to setBody(). Without this plugin Ktor rejects every typed
+            // request before HTTP, while the separate raw metadata API still works.
+            install(ContentNegotiation) {
+                json(Json { ignoreUnknownKeys = true })
+            }
             install(HttpTimeout) {
                 // SABR responses can remain open while downstream disk buffering applies
                 // backpressure. Bound network inactivity, not the song's playback time.
@@ -92,8 +101,10 @@ object YouTubeAudioStreamService {
         private val cipher = YouTubeCipherService(cipherHttp, config)
         private data class Engine(val http: HttpClient, val innerTube: InnerTube, val extractor: InnerTubeExtractor)
         private val engines = mutableMapOf<String, Engine>()
-        private fun engine(cap: Int, hlsOnly: Boolean?, sabr: Boolean = false): Engine = synchronized(engines) {
-            engines.getOrPut(cap.toString() + ":" + hlsOnly + ":" + sabr) {
+        private fun engine(cap: Int): Engine = synchronized(engines) {
+            // Transport is a per-extraction ContentHints capability, not session identity.
+            // Reuse visitor/config/cipher state across Direct -> HLS -> SABR recovery.
+            engines.getOrPut(cap.toString()) {
                 val network = http.newBuilder().addInterceptor(YouTubeAudioFormatPolicy(cap)).build()
                 val apiHttp = client(network)
                 val innerTube = InnerTube(apiHttp)
@@ -104,12 +115,12 @@ object YouTubeAudioStreamService {
                     cipherService = cipher, innerTube = innerTube))
             }
         }
-        fun extractor(cap: Int, hlsOnly: Boolean?, sabr: Boolean = false): InnerTubeExtractor = engine(cap, hlsOnly, sabr).extractor
+        fun extractor(cap: Int): InnerTubeExtractor = engine(cap).extractor
         fun sabrChunks(bootstrap: SabrBootstrap, startMs: Long): Flow<SabrChunk> =
             SabrAudioStream(sabrHttp, bootstrap, maxRequestsWithoutProgress = 3, initialPlayerTimeMs = startMs).chunks()
 
         suspend fun searchSongs(query: String, continuation: String?): String {
-            val response = engine(320_000, false).innerTube.search(
+            val response = engine(320_000).innerTube.search(
                 client = YouTubeClient.WEB_REMIX, query = query.takeIf { continuation == null },
                 params = "EgWKAQIIAWoKEAkQBRAKEAMQBA==".takeIf { continuation == null },
                 continuation = continuation, setLogin = false)
@@ -120,7 +131,7 @@ object YouTubeAudioStreamService {
         suspend fun discovery(operation: String, value: String, countryCode: String): String {
             // Isolate locale/account state; recommendations must not mutate the playback
             // extractor's session or another concurrent search's regional context.
-            val session = engine(320_000, false).innerTube.createIsolatedSession(includeAccount = false)
+            val session = engine(320_000).innerTube.createIsolatedSession(includeAccount = false)
             try {
                 session.locale = com.metrolist.innertubex.models.YouTubeLocale(
                     gl = countryCode.uppercase(java.util.Locale.ROOT).takeIf { it.matches(Regex("[A-Z]{2}")) }.orEmpty(), hl = "en")
@@ -274,7 +285,7 @@ object YouTubeAudioStreamService {
                     var failure: Exception? = null
                     var lowestAvailable: AudioStream? = null
                     for (transport in transports) {
-                        val budget = if (hlsOnly == true) 33_000L else if (transport) 8_000L else 10_000L
+                        val budget = if (hlsOnly == true) 33_000L else if (transport) 5_000L else 14_000L
                         val result = withTimeoutOrNull(budget) transport@{
                             val excluded = rejectedClients(videoId).toMutableSet().apply {
                                 excludedClient?.let(::add)
@@ -282,7 +293,7 @@ object YouTubeAudioStreamService {
                                     PlaybackTransport.HLS !in it.transports
                                 }.map { it.id })
                             }
-                            val extractor = runtime().extractor(cap, transport)
+                            val extractor = runtime().extractor(cap)
                             val hints = ContentHints(wantVideo = false).withStreamCapabilities(
                                 allowHls = transport, allowSabr = false, allowBoundedRange = true)
                             repeat(3) { attempt ->
@@ -290,7 +301,11 @@ object YouTubeAudioStreamService {
                                 val extracted = try {
                                     extractor.extract(videoId, hints, excludedClients = excluded, audioQuality = YouTubeAudioFormatPolicy.quality(cap, attempt))
                                 } catch (e: CancellationException) { throw e }
-                                catch (e: Exception) { failure = e; return@transport null }
+                                catch (e: Exception) {
+                                    failure = e
+                                    android.util.Log.w("YouTubeAudio", "Native ${if (transport) "HLS" else "direct"} extraction: ${e.javaClass.simpleName}")
+                                    return@transport null
+                                }
                                     ?: return@transport null
                                 if (extracted.videoId != videoId || !isMediaUrl(extracted.audioUrl) || extracted.sabrBootstrap != null) {
                                     excluded.add(extracted.profileId)
@@ -314,7 +329,10 @@ object YouTubeAudioStreamService {
                                 }
                                 val headers = extracted.headers.filter { (name, value) ->
                                     name.lowercase() in mediaHeaders && '\r' !in value && '\n' !in value }
-                                val verified = if (transport == hls && expiry > System.currentTimeMillis() + 15_000L)
+                                // A native HLS-capable retry may recover a direct audio stream.
+                                // Accept it instead of discarding the working representation.
+                                val compatibleTransport = if (hlsOnly == true) hls else !hls || transport
+                                val verified = if (compatibleTransport && expiry > System.currentTimeMillis() + 15_000L)
                                     probeAudio(extracted.audioUrl, headers, hls, cap, selectedCodec) else null
                                 if (verified != null) {
                                     val codec = verified.codec ?: displayCodec(extracted.mimeType, extracted.codecs)
@@ -381,7 +399,7 @@ object YouTubeAudioStreamService {
             }.mapTo(excludedClients.toMutableSet()) { it.id }
             val hints = ContentHints(wantVideo = false, sabrFirst = true).withStreamCapabilities(
                 allowHls = false, allowSabr = true, allowBoundedRange = true)
-            val extractor = runtime().extractor(cap, false, sabr = true)
+            val extractor = runtime().extractor(cap)
             var lowestAvailable: AudioStream? = null
             repeat(3) { attempt ->
                 currentCoroutineContext().ensureActive()

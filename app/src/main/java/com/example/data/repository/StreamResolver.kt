@@ -135,7 +135,11 @@ internal class StreamResolver(
         val resolved = withTimeoutOrNull(65_000L) {
             suspend fun boundedJio(): MusicTrack? {
                 if (preferYouTube) return null
-                val remaining = (deadline - android.os.SystemClock.elapsedRealtime()).coerceIn(0L, 6_000L)
+                // An exact YouTube attempt must not spend the alternate provider's
+                // budget before the first Jio request has even started.
+                val providerDeadline = if (youtubeSelection)
+                    android.os.SystemClock.elapsedRealtime() + 6_000L else deadline
+                val remaining = (providerDeadline - android.os.SystemClock.elapsedRealtime()).coerceIn(0L, 6_000L)
                 if (remaining == 0L) return null
                 // One shared budget includes ID refresh AND alternate Jio searches.
                 return attempt(remaining) { jioExact() ?: standardFallback() }

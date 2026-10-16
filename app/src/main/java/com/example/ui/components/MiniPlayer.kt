@@ -50,6 +50,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.layout
+import kotlin.math.roundToInt
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import com.example.util.AppHaptics
@@ -149,6 +151,16 @@ fun MiniPlayer(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .layout { measurable, constraints ->
+                    // Grow the measured height only, including touch-target/font-scale
+                    // minimums. Artwork, text, controls and horizontal spacing stay intact.
+                    val content = measurable.measure(constraints)
+                    val height = (content.height * 1.15f).roundToInt()
+                        .coerceIn(constraints.minHeight, constraints.maxHeight)
+                    layout(content.width, height) {
+                        content.placeRelative(0, (height - content.height) / 2)
+                    }
+                }
                 .padding(start = 10.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {

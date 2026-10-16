@@ -9,6 +9,8 @@ import android.content.pm.PackageManager
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.os.Build
+import android.graphics.drawable.ColorDrawable
+import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -86,6 +88,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -94,6 +97,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindowProvider
 import androidx.core.content.ContextCompat
 import com.example.playback.AudioDeviceManager
 import com.example.playback.SoundOutputDevice
@@ -204,22 +208,22 @@ fun SoundOutputDeviceDialog(
     val presentation = updateTransition(isPresented, label = "output_dialog_presentation")
 
     val scale by presentation.animateFloat(
-        transitionSpec = { tween(if (targetState) 210 else 150, easing = FastOutSlowInEasing) },
+        transitionSpec = { tween(if (targetState) 300 else 240, easing = FastOutSlowInEasing) },
         label = "dialog_scale"
-    ) { if (it) 1.0f else 0.92f }
+    ) { if (it) 1.0f else 0.96f }
 
     val alpha by presentation.animateFloat(
-        transitionSpec = { tween(if (targetState) 140 else 120, easing = if (targetState) LinearOutSlowInEasing else FastOutLinearInEasing) },
+        transitionSpec = { tween(if (targetState) 220 else 180, easing = if (targetState) LinearOutSlowInEasing else FastOutLinearInEasing) },
         label = "dialog_alpha"
     ) { if (it) 1.0f else 0.0f }
 
     val translateY by presentation.animateFloat(
-        transitionSpec = { tween(if (targetState) 210 else 150, easing = FastOutSlowInEasing) },
+        transitionSpec = { tween(if (targetState) 300 else 240, easing = FastOutSlowInEasing) },
         label = "dialog_translate_y"
-    ) { if (it) 0f else 18f }
+    ) { if (it) 0f else 24f }
 
     val scrimAlpha by presentation.animateFloat(
-        transitionSpec = { tween(if (targetState) 150 else 130, easing = if (targetState) LinearOutSlowInEasing else FastOutLinearInEasing) },
+        transitionSpec = { tween(if (targetState) 240 else 200, easing = if (targetState) LinearOutSlowInEasing else FastOutLinearInEasing) },
         label = "scrim_alpha"
     ) { if (it) 1.0f else 0.0f }
 
@@ -237,6 +241,15 @@ fun SoundOutputDeviceDialog(
             decorFitsSystemWindows = false
         )
     ) {
+        // Android's default dim layer plus our animated scrim used to hide the
+        // player. Keep the dialog window transparent and own just one light scrim.
+        val window = (LocalView.current.parent as? DialogWindowProvider)?.window
+        DisposableEffect(window) {
+            window?.setBackgroundDrawable(ColorDrawable(android.graphics.Color.TRANSPARENT))
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+            window?.setDimAmount(0f)
+            onDispose { }
+        }
         CompositionLocalProvider(
             LocalAppColors provides appColors
         ) {
@@ -244,8 +257,8 @@ fun SoundOutputDeviceDialog(
                 modifier = Modifier
                     .fillMaxSize()
                     .drawBehind {
-                        drawRect(if (isDark) Color.Black.copy(alpha = 0.65f * scrimAlpha)
-                            else Color(0xFF0F172A).copy(alpha = 0.36f * scrimAlpha))
+                        drawRect(if (isDark) Color.Black.copy(alpha = 0.18f * scrimAlpha)
+                            else Color(0xFF0F172A).copy(alpha = 0.12f * scrimAlpha))
                     }
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
@@ -254,7 +267,7 @@ fun SoundOutputDeviceDialog(
                     ),
                 contentAlignment = Alignment.Center
             ) {
-                val dialogShape = RoundedCornerShape(24.dp)
+                val dialogShape = RoundedCornerShape(28.dp)
                 val dialogBaseColor = if (appColors.isAmoled) Color(0xFF000000) else appColors.cardBackground
 
                 val dialogBorderStroke = if (appColors.isAmoled) {
@@ -262,7 +275,10 @@ fun SoundOutputDeviceDialog(
                 } else {
                     BorderStroke(
                         1.dp,
-                        appColors.cardBorder.copy(alpha = if (isDark) 0.55f else 0.70f)
+                        Brush.linearGradient(listOf(
+                            appColors.primaryAccent.copy(alpha = if (isDark) 0.55f else 0.35f),
+                            appColors.cardBorder,
+                            appColors.textPrimary.copy(alpha = 0.12f)))
                     )
                 }
 
@@ -359,7 +375,7 @@ fun SoundOutputDeviceDialog(
                                             color = appColors.textPrimary
                                         )
                                         Text(
-                                            text = "Tap target to route audio instantly",
+                                            text = "Choose where your music plays",
                                             fontSize = 11.5.sp,
                                             color = appColors.textMuted
                                         )
@@ -402,7 +418,7 @@ fun SoundOutputDeviceDialog(
 
                             // 2. Filtered Physical & Wireless Target Devices List
                             Text(
-                                text = "AVAILABLE TARGETS (${devices.size})",
+                                text = "AVAILABLE DEVICES (${devices.size})",
                                 fontSize = 10.5.sp,
                                 fontWeight = FontWeight.Bold,
                                 letterSpacing = 0.8.sp,
@@ -424,7 +440,6 @@ fun SoundOutputDeviceDialog(
                                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                             // Instant Selection: immediately select & route without extra button clicks
                                             onSelectDevice(device.id)
-                                            AudioDeviceManager.selectDevice(context, device.id)
                                         }
                                     )
                                 }

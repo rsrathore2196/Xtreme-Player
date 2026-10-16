@@ -33,12 +33,13 @@ class UnifiedRecommendationEngine(context: Context?,
         val similarArtists: List<MusicTrack> = emptyList(), val inspiredTrack: List<MusicTrack> = emptyList(),
         val chartFetchedAt: Long = 0, val seedKey: String = "", val seedArtist: String = "", val seedTitle: String = "",
         val requested: Set<Shelf> = emptySet(), val fetchedAt: Map<Shelf, Long> = emptyMap())
-    data class Weights(val language: Float = .50f, val country: Float = .25f,
-        val listening: Float = .20f, val discovery: Float = .05f)
+    data class Weights(val language: Float = .50f, val country: Float = .30f,
+        val mood: Float = .15f, val discovery: Float = .05f)
     data class Limits(val matchConcurrency: Int = 3, val candidatesPerShelf: Int = 24,
         val shelfSize: Int = 12, val reserve: Int = 4)
     private data class Candidate(val track: MusicTrack, val language: String = "", val regional: Boolean = false,
-        val related: Boolean = false, val era: Boolean = false, val ordinal: Int = 0)
+        val related: Boolean = false, val era: Boolean = false, val ordinal: Int = 0,
+        val mood: String = "")
     private val cache = context?.let { RecommendationCache.get(it) }
     private val discovery = YouTubeRecommendationDiscovery(cache)
     private val ranking = Dispatchers.Default.limitedParallelism(2)
@@ -81,7 +82,7 @@ class UnifiedRecommendationEngine(context: Context?,
     private fun unavailable(track: MusicTrack) = (failures.value[track.id] ?: 0L) > android.os.SystemClock.elapsedRealtime()
 
     companion object {
-        const val SOURCE = "native-discovery-jio-v1"
+        const val SOURCE = "native-discovery-mood-v2"
         const val CHART_TTL = 3 * 60 * 60_000L
         const val CONTEXT_TTL = 6 * 60 * 60_000L
         private const val MATCH_TTL = 7 * 24 * 60 * 60_000L
@@ -107,6 +108,11 @@ class UnifiedRecommendationEngine(context: Context?,
         val variation = if (force) rotation.incrementAndGet() else rotation.get()
         val seed = current ?: history.firstOrNull()
         val artist = seed?.let(CustomRecommendationQueryWrapper::extractPrimaryArtist).orEmpty()
+        val recent = HomeRecommendationPolicy.Recordings().apply {
+            current?.let { add(it) }
+            history.filter { taste.keyFor(it) in taste.recentRecordings || it.id in taste.topRecentTrackIds }
+                .forEach { add(it) }
+        }
         val ordering = listOf(Shelf.QUICK, Shelf.CHART, Shelf.ERA, Shelf.PERSONALIZED, Shelf.SIMILAR, Shelf.INSPIRED)
         // Only requested/visible shelves are queued. Below-the-fold shelves do no work.
         val cursor = AtomicInteger()
@@ -117,7 +123,9 @@ class UnifiedRecommendationEngine(context: Context?,
                     val shelf = requested.getOrNull(cursor.getAndIncrement()) ?: break
                     try {
                         val candidates = discover(shelf, profile, country, taste, seed, history, favorites, force, variation, false)
-                        resolveBatches(candidates, shelf, profile, taste, known + history + favorites, false).collect { tracks ->
+                            .filterNot { recent.contains(it.track) || taste.keyFor(it.track) in taste.recentRecordings }
+                        resolveBatches(candidates, shelf, profile, taste, known + history + favorites, false,
+                            recent = recent).collect { tracks ->
                             val now = System.currentTimeMillis()
                             send(Batch(quick = tracks.takeIf { shelf == Shelf.QUICK }.orEmpty(),
                                 era = tracks.takeIf { shelf == Shelf.ERA }.orEmpty(),
@@ -159,6 +167,20 @@ class UnifiedRecommendationEngine(context: Context?,
         found.take(limit.coerceAtMost(limits.shelfSize))
     }
 
+    private fun recentMoods(history: List<MusicTrack>, taste: UserTasteProfile): Map<String, Float> {
+        val positions = taste.topRecentTrackIds.withIndex().associate { it.value to it.index }
+        val signals = history.filter { it.id in positions }.sortedBy { positions[it.id] }.take(30)
+        val moods = mutableMapOf<String, Float>()
+        signals.forEachIndexed { index, track ->
+            HomeRecommendationPolicy.moodForTrack(track)?.let { mood ->
+                val skipped = (taste.skipCounts[taste.keyFor(track)] ?: 0) > 0
+                if (!skipped) moods[mood] = (moods[mood] ?: 0f) + 1f / (1f + index * .15f)
+            }
+        }
+        val maximum = moods.values.maxOrNull() ?: return emptyMap()
+        return moods.mapValues { it.value / maximum }
+    }
+
     private suspend fun discover(shelf: Shelf, profile: UserProfile, country: String, taste: UserTasteProfile,
         seed: MusicTrack?, history: List<MusicTrack>, favorites: List<MusicTrack>, force: Boolean,
         variation: Long, essential: Boolean): List<Candidate> {
@@ -166,19 +188,21 @@ class UnifiedRecommendationEngine(context: Context?,
         val gl = profile.countryCode.trim().uppercase(java.util.Locale.ROOT)
         val ttl = if (shelf == Shelf.ERA) 24 * 60 * 60_000L else if (shelf in setOf(Shelf.QUICK, Shelf.CHART)) CHART_TTL else CONTEXT_TTL
         val found = mutableListOf<Candidate>()
+        val moods = recentMoods(history, taste)
+        val mood = moods.maxByOrNull { it.value }?.key.orEmpty()
         suspend fun pool(op: String, query: String, lang: String = "", regional: Boolean = false,
-            related: Boolean = false, era: Boolean = false) {
+            related: Boolean = false, era: Boolean = false, moodHint: String = "") {
             val tracks = discoveryWorkers.withPermit { withTimeoutOrNull(8_000L) {
                 discovery.tracks(op, query, gl, force, essential, ttl)
             }.orEmpty() }
-            tracks.forEachIndexed { index, track -> found.add(Candidate(track, lang, regional, related, era, index)) }
+            tracks.forEachIndexed { index, track -> found.add(Candidate(track, lang, regional, related, era, index, moodHint)) }
         }
         withTimeoutOrNull(12_000L) {
         if (shelf in setOf(Shelf.INSPIRED, Shelf.SIMILAR, Shelf.PERSONALIZED)) {
             val personal = (favorites + history).distinctBy(HomeRecommendationPolicy::metadataKey)
                 .maxByOrNull { track -> HomeRecommendationPolicy.artists(track).maxOfOrNull { taste.artistAffinities[it] ?: 0f } ?: 0f }
             val pivot = if (shelf == Shelf.PERSONALIZED) personal ?: seed else seed
-            if (pivot != null) {
+            if (pivot != null) withTimeoutOrNull(5_000L) {
                 var video = pivot.id.removePrefix("yt_").takeIf { pivot.id.startsWith("yt_") && it.length == 11 }
                 val query = "${StreamResolver.extractCleanTitle(pivot.title, pivot.artist)} ${CustomRecommendationQueryWrapper.extractPrimaryArtist(pivot)}"
                 if (shelf == Shelf.SIMILAR) {
@@ -193,7 +217,24 @@ class UnifiedRecommendationEngine(context: Context?,
                     if (video != null) pool("related", video, related = true)
                 }
             }
-            // Preserve section identity: unrelated search filler is never used here.
+            // Anonymous related/artist browse renderers may be empty. Use a small,
+            // section-specific metadata search instead of leaving the card permanently blank.
+            if (found.size < limits.shelfSize) {
+                val performer = pivot?.let(CustomRecommendationQueryWrapper::extractPrimaryArtist).orEmpty()
+                for (lang in languages.ifEmpty { listOf("") }.take(2)) {
+                    when (shelf) {
+                        Shelf.PERSONALIZED -> pool("search", "$lang $mood songs $country".trim(),
+                            lang, regional = true, moodHint = mood)
+                        Shelf.SIMILAR -> if (performer.isNotBlank()) pool("search", "$lang artists like $performer songs".trim(),
+                            lang, related = true)
+                        Shelf.INSPIRED -> if (pivot != null) pool("search",
+                            "$lang $mood songs like ${StreamResolver.extractCleanTitle(pivot.title, pivot.artist)} $performer".trim(),
+                            lang, related = true, moodHint = mood)
+                        else -> Unit
+                    }
+                    if (found.size >= limits.candidatesPerShelf) break
+                }
+            }
         } else {
             if (shelf == Shelf.CHART) pool("charts", "FEmusic_charts", regional = true)
             val selected = languages.ifEmpty { listOf("") }
@@ -207,12 +248,12 @@ class UnifiedRecommendationEngine(context: Context?,
                     Shelf.CHART -> "$lang popular songs $country"
                     else -> {
                         val genre = taste.genreAffinities.filterValues { it > 0f }.maxByOrNull { it.value }?.key.orEmpty()
-                        val mood = taste.moodAffinities.filterValues { it > 0f }.maxByOrNull { it.value }?.key.orEmpty()
                         val topic = if (variation % 2L == 0L) "new releases" else "original hits"
                         "$lang $genre $mood $topic $country"
                     }
                 }.trim()
-                pool("search", query, lang, regional = true, era = shelf == Shelf.ERA)
+                pool("search", query, lang, regional = true, era = shelf == Shelf.ERA,
+                    moodHint = mood.takeIf { shelf == Shelf.QUICK }.orEmpty())
             }
             // Anonymous editorial discovery is supporting evidence only, never a
             // substitute for selected-language candidates or a claimed official chart.
@@ -220,34 +261,34 @@ class UnifiedRecommendationEngine(context: Context?,
                 pool("browse", "FEmusic_home")
         }
         }
-        return rank(found, shelf, profile, taste, variation)
+        return rank(found, shelf, profile, taste, moods, variation)
     }
 
     private suspend fun rank(pool: List<Candidate>, shelf: Shelf, profile: UserProfile, taste: UserTasteProfile,
-        variation: Long): List<Candidate> = withContext(ranking) {
+        moods: Map<String, Float>, variation: Long): List<Candidate> = withContext(ranking) {
         val selected = profile.languages.map(::language).toSet()
         val seen = HomeRecommendationPolicy.Recordings()
         val merged = pool.groupBy { it.track.id }.values.map { aliases ->
             val first = aliases.first()
             first.copy(language = aliases.firstOrNull { it.language.isNotBlank() }?.language.orEmpty(),
-                regional = aliases.any { it.regional }, related = aliases.any { it.related })
+                regional = aliases.any { it.regional }, related = aliases.any { it.related },
+                mood = aliases.firstOrNull { it.mood.isNotBlank() }?.mood.orEmpty())
         }
         val eligible = merged.filter { candidate ->
             val lang = language(candidate.track.language)
             OriginalMusicFilter.isHomeRecommendation(candidate.track) &&
+                taste.keyFor(candidate.track) !in taste.recentRecordings &&
                 (!HomeRecommendationPolicy.known(lang) || selected.isEmpty() || lang in selected) &&
                 seen.add(candidate.track)
         }
         fun score(c: Candidate): Float {
             val track = c.track
             val lang = language(track.language).takeIf(HomeRecommendationPolicy::known) ?: c.language
-            val artist = HomeRecommendationPolicy.artists(track).maxOfOrNull { taste.artistAffinities[it] ?: 0f } ?: 0f
-            val genre = taste.genreAffinities[HomeRecommendationPolicy.normalize(track.genre)] ?: 0f
-            val mood = HomeRecommendationPolicy.moodForGenre(track.genre)?.let { taste.moodAffinities[it] } ?: 0f
+            val mood = HomeRecommendationPolicy.moodForTrack(track) ?: c.mood
+            val moodAffinity = (moods[mood] ?: 0f).coerceIn(0f, 1f)
             val key = taste.keyFor(track)
-            val listening = (artist * .55f + genre * .2f + mood * .1f + if (c.related) .15f else 0f).coerceIn(0f, 1f)
             return 100 * (weights.language * (if (lang in selected) 1f else 0f) +
-                weights.country * (if (c.regional) 1f else .35f) + weights.listening * listening +
+                weights.country * (if (c.regional) 1f else .35f) + weights.mood * moodAffinity +
                 weights.discovery / (1 + c.ordinal)) - (taste.skipCounts[key] ?: 0) * 20 -
                 minOf(taste.playCounts[key] ?: 0, 10) * 2 - (if (key in taste.recentRecordings) 10 else 0) +
                 (if (variation > 0) ((track.id.hashCode().toLong() xor variation) and 7).toFloat() * .3f else 0f)
@@ -263,7 +304,8 @@ class UnifiedRecommendationEngine(context: Context?,
     }
 
     private fun resolveBatches(candidates: List<Candidate>, shelf: Shelf, profile: UserProfile,
-        taste: UserTasteProfile, known: List<MusicTrack>, essential: Boolean): Flow<List<MusicTrack>> = flow {
+        taste: UserTasteProfile, known: List<MusicTrack>, essential: Boolean,
+        recent: HomeRecommendationPolicy.Recordings? = null): Flow<List<MusicTrack>> = flow {
         val selected = profile.languages.map(::language).toSet()
         val output = mutableListOf<MusicTrack>()
         val seen = HomeRecommendationPolicy.Recordings()
@@ -282,7 +324,9 @@ class UnifiedRecommendationEngine(context: Context?,
         val cached = candidates.map { it to cachedMatch(it.track, knownIndex) }
         fun add(c: Candidate, track: MusicTrack?) {
             val candidateTrack = track ?: c.track.takeIf { verified(it) }
-            if (candidateTrack == null || !verified(candidateTrack) || unavailable(candidateTrack) || seen.contains(candidateTrack)) return
+            if (candidateTrack == null || !verified(candidateTrack) || unavailable(candidateTrack) ||
+                seen.contains(candidateTrack) || recent?.contains(candidateTrack) == true ||
+                recent != null && (taste.keyFor(candidateTrack) in taste.recentRecordings || recent.contains(c.track))) return
             val lang = language(candidateTrack.language)
             if (selected.isNotEmpty() && (if (HomeRecommendationPolicy.known(lang)) lang !in selected else c.language !in selected && !c.related)) return
             if (shelf == Shelf.ERA && candidateTrack.year.toIntOrNull()?.let { it !in 1990..2009 } != false) return
@@ -321,14 +365,6 @@ class UnifiedRecommendationEngine(context: Context?,
                         if (output.size >= limits.shelfSize + limits.reserve) break
                     }
                 } finally { workers.forEach { it.cancel() }; closer.cancel(); results.cancel() }
-            }
-        }
-        if (output.isEmpty() && known.isNotEmpty()) {
-            val fallback = known.filter { verified(it) && !seen.contains(it) }.take(limits.shelfSize)
-            if (fallback.isNotEmpty()) {
-                output.addAll(fallback.map { it.copy(recommendationOnly = true) })
-                emit(output.take(limits.shelfSize).toList())
-                return@flow
             }
         }
         if (output.isNotEmpty() && output.size != published) emit(output.take(limits.shelfSize).toList())

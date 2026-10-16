@@ -60,7 +60,7 @@ object MusicCache {
             .setReadTimeoutMs(readTimeoutMs)
 
         val upstreamFactory = DefaultDataSource.Factory(context, httpDataSourceFactory)
-        val rangedUpstream = DataSource.Factory { YouTubeMediaDataSource(app, upstreamFactory) }
+        val rangedUpstream = DataSource.Factory { YouTubeMediaDataSource(app, upstreamFactory, httpDataSourceFactory) }
 
         // Creating a Media3 factory happens on Main. Cache recovery happens only
         // when its data source opens on Media3's loader thread.

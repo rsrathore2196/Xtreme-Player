@@ -91,6 +91,7 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -431,36 +432,27 @@ fun MainNavigationScaffold(
                     }
                     tabTransition.AnimatedContent(
                         transitionSpec = {
+                            // Expand from the Home settings button with one coordinated
+                            // easing curve. Primary-tab paging is entirely unchanged.
+                            val origin = TransformOrigin(0.94f, 0.04f)
                             (if (targetState == 3) {
-                                // Keep the existing zoom, with a bounded opening duration.
-                                (scaleIn(
-                                    initialScale = 0.88f,
-                                    animationSpec = tween(220, easing = FastOutSlowInEasing)
-                                ) + fadeIn(
-                                    animationSpec = tween(140, easing = LinearOutSlowInEasing)
-                                )).togetherWith(
-                                    scaleOut(
-                                        targetScale = 1.04f,
-                                        animationSpec = tween(130, easing = FastOutLinearInEasing)
-                                    ) + fadeOut(
-                                        animationSpec = tween(100, easing = FastOutLinearInEasing)
-                                    )
-                                )
+                                (scaleIn(initialScale = 0.94f, transformOrigin = origin,
+                                    animationSpec = tween(320, easing = FastOutSlowInEasing)) +
+                                    slideInVertically(initialOffsetY = { -it / 40 },
+                                        animationSpec = tween(320, easing = FastOutSlowInEasing)) +
+                                    fadeIn(tween(240, easing = LinearOutSlowInEasing))).togetherWith(
+                                    scaleOut(targetScale = 0.985f,
+                                        animationSpec = tween(320, easing = FastOutSlowInEasing)) +
+                                    fadeOut(tween(240, easing = FastOutLinearInEasing)))
                             } else {
-                                // Modern, fast, and smooth zoom out closing animation to return from settings
-                                (scaleIn(
-                                    initialScale = 1.04f,
-                                    animationSpec = tween(220, easing = FastOutSlowInEasing)
-                                ) + fadeIn(
-                                    animationSpec = tween(140, easing = LinearOutSlowInEasing)
-                                )).togetherWith(
-                                    scaleOut(
-                                        targetScale = 0.88f,
-                                        animationSpec = tween(130, easing = FastOutLinearInEasing)
-                                    ) + fadeOut(
-                                        animationSpec = tween(100, easing = FastOutLinearInEasing)
-                                    )
-                                )
+                                (scaleIn(initialScale = 0.985f,
+                                    animationSpec = tween(300, easing = FastOutSlowInEasing)) +
+                                    fadeIn(tween(240, easing = LinearOutSlowInEasing))).togetherWith(
+                                    scaleOut(targetScale = 0.94f, transformOrigin = origin,
+                                        animationSpec = tween(300, easing = FastOutSlowInEasing)) +
+                                    slideOutVertically(targetOffsetY = { -it / 40 },
+                                        animationSpec = tween(300, easing = FastOutSlowInEasing)) +
+                                    fadeOut(tween(220, easing = FastOutLinearInEasing)))
                             }).using(null)
                         },
                         modifier = Modifier.fillMaxSize()

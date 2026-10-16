@@ -309,6 +309,20 @@ class HomeViewModel(
     private val recommendationViewports = mutableMapOf<Any, Set<Shelf>>()
     private val shelfLoads = initialCards?.shelfLoads.orEmpty().toMutableMap()
     private val shelfAttempts = mutableMapOf<Shelf, RecommendationShelfLoad>()
+    private val pendingShelfRequests = mutableSetOf<Shelf>()
+    private fun activeRecommendationTrack(): MusicTrack? = recommendationSeed.value
+        ?: recentlyPlayed.value.firstOrNull() ?: cachedHistory.value?.firstOrNull()
+
+    // Hidden, zero-height shelves cannot request themselves. Prefetch only the
+    // next eligible section as it approaches the viewport, never a full fan-out.
+    private fun shelfDemand(): Set<Shelf> {
+        val visible = recommendationViewport.value
+        val next = Shelf.entries.drop((visible.maxOfOrNull { it.ordinal } ?: -1) + 1)
+            .firstOrNull { needsShelfLoad(it) }
+        val bootstrap = if (_ytmCard.value.tracks.isEmpty() && _countryLanguageCard.value.tracks.isEmpty())
+            setOf(Shelf.QUICK, Shelf.CHART) else emptySet()
+        return visible + listOfNotNull(next) + bootstrap
+    }
 
     fun setRecommendationViewport(owner: Any, keys: Set<String>) {
         synchronized(recommendationViewports) {
@@ -319,7 +333,7 @@ class HomeViewModel(
     }
 
     private fun shelfContext(shelf: Shelf): String {
-        val seed = recommendationSeed.value
+        val seed = activeRecommendationTrack()
         val extra = when (shelf) {
             Shelf.SIMILAR, Shelf.INSPIRED -> UnifiedRecommendationEngine.seedKey(seed)
             Shelf.PERSONALIZED -> tasteProfile.value.topRecentTrackIds.joinToString(",") + "|" + favoriteTracks.value.map { it.id }.sorted().joinToString(",")
@@ -330,15 +344,30 @@ class HomeViewModel(
 
     private fun needsShelfLoad(shelf: Shelf): Boolean {
         if (shelf == Shelf.PERSONALIZED && tasteProfile.value.isColdStart) return false
-        if (shelf in setOf(Shelf.SIMILAR, Shelf.INSPIRED) && recommendationSeed.value == null) return false
+        if (shelf in setOf(Shelf.SIMILAR, Shelf.INSPIRED) && activeRecommendationTrack() == null) return false
         val context = shelfContext(shelf)
         val now = System.currentTimeMillis()
         if (shelfAttempts[shelf]?.let { it.context == context && now - it.fetchedAt in 0 until 60_000L } == true) return false
         val ttl = if (shelf in setOf(Shelf.QUICK, Shelf.ERA, Shelf.CHART)) UnifiedRecommendationEngine.CHART_TTL else UnifiedRecommendationEngine.CONTEXT_TTL
         return shelfLoads[shelf.name]?.let { it.context != context || now - it.fetchedAt !in 0 until ttl } ?: true
     }
-    private fun recommendationSnapshot() = RecommendationCards(_ytmCard.value, _eraCard.value,
-        _countryLanguageCard.value, _personalizedCard.value, _similarArtistsCard.value, _inspiredTrackCard.value)
+    private fun recommendationSnapshot(): RecommendationCards = hideRecentRecommendations(
+        RecommendationCards(_ytmCard.value, _eraCard.value, _countryLanguageCard.value,
+            _personalizedCard.value, _similarArtistsCard.value, _inspiredTrackCard.value),
+        recentlyPlayed.value + _listeningHistoryCard.value.tracks + listOfNotNull(activeRecommendationTrack()),
+        tasteProfile.value)
+
+    private fun hideRecentRecommendations(cards: RecommendationCards, recent: List<MusicTrack>,
+        taste: UserTasteProfile): RecommendationCards {
+        val excluded = HomeRecommendationPolicy.Recordings().apply { recent.forEach { add(it) } }
+        fun SectionState.withoutRecent(): SectionState {
+            val visible = tracks.filterNot { excluded.contains(it) || taste.keyFor(it) in taste.recentRecordings }
+            return if (visible.size == tracks.size) this else copy(tracks = visible, isLoaded = visible.isNotEmpty())
+        }
+        return cards.copy(quick = cards.quick.withoutRecent(), era = cards.era.withoutRecent(),
+            chart = cards.chart.withoutRecent(), personalized = cards.personalized.withoutRecent(),
+            similarArtists = cards.similarArtists.withoutRecent(), inspiredTrack = cards.inspiredTrack.withoutRecent())
+    }
 
     // One publication for the coordinated recommendation cards; history/artist updates stay independent.
     private val _recommendationCards = MutableStateFlow(recommendationSnapshot())
@@ -474,9 +503,9 @@ class HomeViewModel(
         if (rankingReady && eventsLoaded.isCompleted) cachedHistory.value = null
         val recentById = metadata.associateBy { it.id }
         val recentSeen = HomeRecommendationPolicy.Recordings()
-        val recent = if (taste.isColdStart) emptyList() else snapshot.events.asSequence()
-            .filter(UserTasteProfile::played).mapNotNull { recentById[it.trackId] }
-            .filter(recentSeen::add).take(30).toList()
+        val recent = (recentlyPlayed.value + listOfNotNull(activeRecommendationTrack()) +
+            snapshot.events.asSequence().filter(UserTasteProfile::played).mapNotNull { recentById[it.trackId] }
+                .take(30).toList()).filter(recentSeen::add)
         val inputs = RenderInputs(pool, taste, snapshot.profile, _catalogTracks.value,
             metadata, snapshot.favorites, recent)
         if (inputs == lastRenderInputs) return@withLock
@@ -503,42 +532,25 @@ class HomeViewModel(
             }
             renderedGeneration = pool.generation
         }
-        val shelves = listOf(HomeShelf("personalized", "Recommended for You", "Based on your listening", pool.personalized))
-            .filter { it.tracks.isNotEmpty() && !taste.isColdStart }
         currentCoroutineContext().ensureActive()
         val seen = HomeRecommendationPolicy.Recordings()
-        val chart = HomeRecommendationPolicy.originals(pool.chart).take(HomeRecommendationPolicy.MAX_SHELF_TRACKS)
+        val excludedRecent = HomeRecommendationPolicy.Recordings().apply { inputs.recent.forEach { add(it) } }
+        fun notRecent(track: MusicTrack) = !excludedRecent.contains(track) &&
+            taste.keyFor(track) !in taste.recentRecordings
+        val chart = HomeRecommendationPolicy.originals(pool.chart).filter(::notRecent)
+            .take(HomeRecommendationPolicy.MAX_SHELF_TRACKS)
         chart.forEach { seen.add(it) } // Charts have priority and retain their source ranking.
         fun fresh(tracks: List<MusicTrack>) = tracks.filter {
-            (taste.skipCounts[taste.keyFor(it)] ?: 0) < 2 || taste.keyFor(it) in taste.favoriteRecordings
+            notRecent(it) && ((taste.skipCounts[taste.keyFor(it)] ?: 0) < 2 ||
+                taste.keyFor(it) in taste.favoriteRecordings)
         }.sortedBy { HomeRecommendationPolicy.metadataKey(it) in previousExposure }
         val era = HomeRecommendationPolicy.diversify(fresh(pool.era), HomeRecommendationPolicy.MAX_SHELF_TRACKS, seen)
-        val plays = snapshot.events.filter(UserTasteProfile::played).distinctBy { it.sessionId to it.trackId }
-        val historyArtists = inputs.history.associate { it.id to HomeRecommendationPolicy.artists(it) }
-        val artistCounts = if (taste.isColdStart) emptyMap() else plays.asSequence().flatMap { event ->
-            historyArtists[event.trackId].orEmpty().asSequence()
-        }.groupingBy { it }.eachCount()
-        val catalogByArtist = mutableMapOf<String, MutableList<MusicTrack>>()
-        for (track in catalog) HomeRecommendationPolicy.artists(track).forEach { artist ->
-            catalogByArtist.getOrPut(artist) { mutableListOf() }.add(track)
-        }
-        // Retain the existing cross-shelf reservations; artist-card updates are independent.
-        val artistReservations = artistCounts.entries.sortedByDescending { it.value }.take(10).mapNotNull { (artist, count) ->
-            currentCoroutineContext().ensureActive()
-            val matches = catalogByArtist[artist].orEmpty()
-            val tracks = HomeRecommendationPolicy.diversify(fresh(matches), 3, seen).ifEmpty {
-                // An artist history card can use its actual played song even when it is in a chart.
-                inputs.recent.filter { artist in HomeRecommendationPolicy.artists(it) }.take(1)
-            }
-            if (tracks.isEmpty()) null else MostListenedArtist(
-                matches.firstOrNull()?.let { track -> (track.artist + "," + track.singers).split(',')
-                    .firstOrNull { HomeRecommendationPolicy.normalize(it) == artist }?.trim() } ?: artist,
-                count, tracks)
-        }
+        // Artist history has its own publisher. It must not reserve recommendation
+        // tracks here and silently empty later shelves through the shared deduper.
         val personalized = if (taste.isColdStart) emptyList() else HomeRecommendationPolicy.diversify(
             fresh(pool.personalized), HomeRecommendationPolicy.MAX_SHELF_TRACKS, seen)
         val quick = HomeRecommendationPolicy.diversify(fresh(pool.quick), HomeRecommendationPolicy.MAX_SHELF_TRACKS, seen)
-        val relevantSeed = pool.seedKey.isNotBlank() && pool.seedKey == UnifiedRecommendationEngine.seedKey(recommendationSeed.value)
+        val relevantSeed = pool.seedKey.isNotBlank() && pool.seedKey == UnifiedRecommendationEngine.seedKey(activeRecommendationTrack())
         val similar = if (relevantSeed) HomeRecommendationPolicy.diversify(fresh(pool.similar), HomeRecommendationPolicy.MAX_SHELF_TRACKS, seen) else emptyList()
         val inspired = if (relevantSeed) HomeRecommendationPolicy.diversify(fresh(pool.inspired), HomeRecommendationPolicy.MAX_SHELF_TRACKS, seen) else emptyList()
         // Cancellation on a tab change must not publish a partially calculated stale shelf set.
@@ -548,7 +560,8 @@ class HomeViewModel(
         withContext(ownerDispatcher) publish@ {
         awaitHomePresentation()
         if (candidates.value != pool || profileKey(inputs.profile) != profileKey()) return@publish
-        _homeShelves.value = shelves
+        _homeShelves.value = listOf(HomeShelf("personalized", "Recommended for You", "Based on your listening", personalized))
+            .filter { it.tracks.isNotEmpty() && !taste.isColdStart }
         // Reranking must retain error/loading updates arriving from the refresh requests.
         if (Shelf.CHART in pool.ready) _countryLanguageCard.update { it.copy(tracks = chart) }
         if (Shelf.ERA in pool.ready) _eraCard.update { it.copy(tracks = era, isLoading = false, isLoaded = era.isNotEmpty()) }
@@ -573,7 +586,7 @@ class HomeViewModel(
             recommendationSource = pool.source, seedKey = pool.seedKey, seedArtist = pool.seedArtist, seedTitle = pool.seedTitle,
             shelfLoads = shelfLoads.toMap(), readyShelves = pool.ready.mapTo(mutableSetOf()) { it.name }))
         if (manualRenderGeneration == pool.generation) manualRenderGeneration = -1L
-        val shown = chart + era + quick + personalized + similar + inspired + artistReservations.flatMap { it.tracks }
+        val shown = chart + era + quick + personalized + similar + inspired + _mostListenedArtists.value.flatMap { it.tracks }
         if (shown.isNotEmpty()) {
             val exposure = shown.map(HomeRecommendationPolicy::metadataKey).toSet()
             withContext(Dispatchers.IO) {
@@ -720,13 +733,18 @@ class HomeViewModel(
             }
         }
         ownerScope.launch {
-            combine(combine(_ytmCard, _eraCard, _countryLanguageCard, _personalizedCard) { quick, era, chart, personalized ->
+            val cards = combine(combine(_ytmCard, _eraCard, _countryLanguageCard, _personalizedCard) { quick, era, chart, personalized ->
                 RecommendationCards(quick, era, chart, personalized)
             }, _similarArtistsCard, _inspiredTrackCard) { base, similar, inspired ->
                 base.copy(similarArtists = similar, inspiredTrack = inspired)
-            }.debounce(32L).collectLatest { cards ->
+            }
+            combine(cards, recentlyPlayed, tasteProfile, recommendationSeed) { snapshot, recent, taste, seed ->
+                withContext(workerDispatcher) {
+                    hideRecentRecommendations(snapshot, recent + _listeningHistoryCard.value.tracks + listOfNotNull(seed), taste)
+                }
+            }.debounce(32L).collectLatest { snapshot ->
                 homeScrolling.first { !it }
-                if (cards == recommendationSnapshot()) _recommendationCards.value = cards
+                if (snapshot == recommendationSnapshot()) _recommendationCards.value = snapshot
             }
         }
         ownerScope.launch {
@@ -844,7 +862,7 @@ class HomeViewModel(
         ownerScope.launch {
             // Observe actual LazyColumn demand, not precomposition or the creation of Home.
             combine(recommendationViewport, recommendationSeed, tasteProfile, _userProfile, favoriteTracks) { visible, seed, taste, profile, favorites ->
-                Triple(visible, UnifiedRecommendationEngine.seedKey(seed),
+                Triple(visible, UnifiedRecommendationEngine.seedKey(seed ?: recentlyPlayed.value.firstOrNull()),
                     "${profileKey(profile)}|${taste.isColdStart}|${taste.topRecentTrackIds}|${favorites.map { it.id }.sorted()}")
             }.distinctUntilChanged().debounce(200L).collectLatest { demand ->
                 restored.await()
@@ -860,8 +878,8 @@ class HomeViewModel(
                     homeRefreshJob?.cancelAndJoin()
                 }
                 homeRefreshJob?.join()
-                val needed = if (pendingExplicitRefresh) recommendationViewport.value
-                    else recommendationViewport.value.filterTo(mutableSetOf(), ::needsShelfLoad)
+                val needed = if (pendingExplicitRefresh) shelfDemand()
+                    else shelfDemand().filterTo(mutableSetOf(), ::needsShelfLoad)
                 if (needed.isNotEmpty()) refreshHome(false, needed)
             }
         }
@@ -894,7 +912,7 @@ class HomeViewModel(
             // Bootstrap only essential discovery; all lower shelves retain on-demand loading.
             val bootstrap = if (_ytmCard.value.tracks.isEmpty() && _countryLanguageCard.value.tracks.isEmpty())
                 setOf(Shelf.QUICK, Shelf.CHART) else emptySet()
-            val demand = recommendationViewport.value + bootstrap
+            val demand = shelfDemand() + bootstrap
             val requested = (requestedShelves ?: demand).intersect(demand)
                 .filterTo(mutableSetOf()) { isExplicitPull || pendingExplicitRefresh || needsShelfLoad(it) }
             if (requested.isEmpty()) {
@@ -902,6 +920,7 @@ class HomeViewModel(
                 return@launch
             }
             if (homeRefreshJob?.isActive == true) {
+                pendingShelfRequests.addAll(requested - activeRecommendationShelves)
                 if (isExplicitPull && refreshWaitingForIdle) {
                     // A user refresh can take over a deferred job before it has made any requests.
                     ++refreshGeneration
@@ -989,6 +1008,12 @@ class HomeViewModel(
                         activeRecommendationSeed = ""
                         refreshWaitingForIdle = false
                         homeRefreshJob = null
+                        // A viewport/listening change during a running pass is demand,
+                        // not a reason to drop the next cards until manual refresh.
+                        val pending = pendingShelfRequests.toSet() + shelfDemand().filter(::needsShelfLoad)
+                        pendingShelfRequests.clear()
+                        if (pending.isNotEmpty() && homeVisible.value)
+                            refreshHome(false, pending)
                     }
                 }
             }
@@ -999,11 +1024,11 @@ class HomeViewModel(
         val profile = _userProfile.value
         val country = resolveCountryDisplayName(profile)
         val title = getAuthoritativeTrendingTitle(country)
-        val seed = recommendationSeed.value ?: historyRows.value.tracks.firstOrNull()
+        val seed = activeRecommendationTrack()
         BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
         val bootstrap = if (_ytmCard.value.tracks.isEmpty() && _countryLanguageCard.value.tracks.isEmpty())
             setOf(Shelf.QUICK, Shelf.CHART) else emptySet()
-        val enabled = requested.intersect(recommendationViewport.value + bootstrap)
+        val enabled = requested.intersect(shelfDemand() + bootstrap)
         if (enabled.isEmpty()) return@withContext
         val contexts = enabled.associateWith(::shelfContext)
         activeRecommendationShelves = enabled
@@ -1017,7 +1042,7 @@ class HomeViewModel(
                 historyRows.value.tracks, favoriteTracks.value, _catalogTracks.value, force, shelves = enabled).collect { batch ->
                 currentCoroutineContext().ensureActive()
                 if (profileKey() != profileKey(profile)) return@collect
-                val sameSeed = UnifiedRecommendationEngine.seedKey(recommendationSeed.value ?: historyRows.value.tracks.firstOrNull()) == batch.seedKey
+                val sameSeed = UnifiedRecommendationEngine.seedKey(activeRecommendationTrack()) == batch.seedKey
                 val results = mapOf(Shelf.QUICK to batch.quick, Shelf.ERA to batch.era, Shelf.CHART to batch.chart.orEmpty(),
                     Shelf.PERSONALIZED to batch.personalized, Shelf.SIMILAR to batch.similarArtists, Shelf.INSPIRED to batch.inspiredTrack)
                     .mapValues { (_, tracks) -> tracks.filter { track ->

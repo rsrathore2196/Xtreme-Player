@@ -16,7 +16,9 @@ import java.io.EOFException
 import java.io.IOException
 
 /** Honors InnerTubeX's bounded-range contract beneath Media3's existing cache. */
-internal class YouTubeMediaDataSource(private val context: Context, private val upstream: DataSource.Factory) : DataSource {
+internal class YouTubeMediaDataSource(private val context: Context, private val upstream: DataSource.Factory,
+    private val audioHttp: DataSource.Factory = upstream) : DataSource {
+    private companion object { val CONTENT_RANGE = Regex("bytes ([0-9]+)-([0-9]+)/([0-9]+)") }
     private var delegate: DataSource? = null
     private val listeners = mutableListOf<TransferListener>()
     private var original: DataSpec? = null
@@ -57,7 +59,7 @@ internal class YouTubeMediaDataSource(private val context: Context, private val 
         val spec = if (stream == null) base else base.buildUpon().setUri(stream.url)
             .setPosition(position).setLength(size).setHttpRequestHeaders(base.httpRequestHeaders + stream.headers +
                 mapOf("Accept-Encoding" to "identity")).build()
-        val source = upstream.createDataSource()
+        val source = (if (stream == null) upstream else audioHttp).createDataSource()
         listeners.forEach(source::addTransferListener)
         delegate = source
         val available = source.open(spec)
@@ -66,18 +68,35 @@ internal class YouTubeMediaDataSource(private val context: Context, private val 
         if (stream?.useRangeChunks == true) {
             val value = source.responseHeaders.entries.firstOrNull { it.key.equals("Content-Range", true) }
                 ?.value?.firstOrNull()
-            val range = value?.let { Regex("bytes ([0-9]+)-([0-9]+)/([0-9]+)").matchEntire(it) }
-                ?: throw IOException("Audio CDN did not honor the requested range")
-            val end = range.groupValues[2].toLong()
-            val total = range.groupValues[3].toLong()
-            if (range.groupValues[1].toLong() != position || end < position || total <= end ||
-                end != minOf(position + size - 1, total - 1) ||
-                stream.contentLength?.let { it != total } == true)
-                throw IOException("Audio CDN returned an inconsistent byte range")
-            // A valid final 206 response can be shorter than the requested chunk,
-            // especially when extraction did not publish a content length.
-            size = end - position + 1
-            if (remaining < 0) remaining = total - position
+            val range = value?.let { CONTENT_RANGE.matchEntire(it) }
+            if (range != null) {
+                if ((source as? HttpDataSource)?.responseCode != 206)
+                    throw IOException("Audio CDN returned an inconsistent range status")
+                val end = range.groupValues[2].toLongOrNull()
+                    ?: throw IOException("Invalid audio range end")
+                val total = range.groupValues[3].toLongOrNull()
+                    ?: throw IOException("Invalid audio content length")
+                if (range.groupValues[1].toLongOrNull() != position || end < position || total <= end ||
+                    end > position + size - 1 || stream.contentLength?.let { it != total } == true)
+                    throw IOException("Audio CDN returned an inconsistent byte range")
+                // HTTP permits a server to cap a valid range below our requested
+                // chunk size. Read exactly those bytes, then request the next range.
+                size = end - position + 1
+                if (remaining < 0) remaining = total - position
+            } else {
+                val declaredLength = source.responseHeaders.entries.firstOrNull {
+                    it.key.equals("Content-Length", true)
+                }?.value?.firstOrNull()?.toLongOrNull()
+                // A 200 full-body response is valid when Range is ignored: Media3's
+                // DefaultHttpDataSource skips spec.position itself. Accept only a
+                // known complete representation; never assume partial bytes start at zero.
+                if ((source as? HttpDataSource)?.responseCode != 200 || stream.contentLength == null ||
+                    declaredLength != stream.contentLength || available < size)
+                    throw IOException("Audio CDN did not honor the requested range")
+                // Reopen at most once with the remaining known length after this
+                // chunk; repeatedly skipping a full body would waste data and CPU.
+                audio = stream.copy(useRangeChunks = false)
+            }
         }
         if (remaining < 0 && available >= 0 && stream?.useRangeChunks != true) remaining = available
         chunkRemaining = if (size >= 0) size else available

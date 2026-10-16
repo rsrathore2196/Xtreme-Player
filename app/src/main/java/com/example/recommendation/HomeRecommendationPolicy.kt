@@ -47,6 +47,21 @@ object HomeRecommendationPolicy {
         else -> null
     }
 
+    private val moodKeywords = listOf(
+        "melancholic" to setOf("sad", "heartbreak", "melancholic", "dard", "judaai", "bewafa"),
+        "romantic" to setOf("romantic", "love", "ishq", "pyaar", "mohabbat"),
+        "energetic" to setOf("party", "dance", "bhangra", "workout", "energetic"),
+        "calm" to setOf("calm", "chill", "ambient", "meditation", "relax"),
+        "devotional" to setOf("devotional", "bhajan", "gurbani", "qawwali", "sufi")
+    )
+
+    /** Conservative metadata hints only; never pretend to measure acoustic features. */
+    fun moodForTrack(track: MusicTrack): String? {
+        moodForGenre(track.genre)?.let { return it }
+        val words = normalize("${track.title} ${track.album} ${track.genre}").split(' ')
+        return moodKeywords.firstOrNull { (_, keywords) -> words.any(keywords::contains) }?.first
+    }
+
     fun rawArtists(track: MusicTrack): List<String> = (track.artist + "," + track.singers)
         .replace(topicSuffix, "")
         .split(artistSeparator)

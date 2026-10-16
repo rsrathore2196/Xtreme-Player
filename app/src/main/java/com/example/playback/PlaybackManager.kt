@@ -1305,11 +1305,11 @@ class PlaybackManager(
             targetQuality = _uiState.value.selectedQuality
             prepared = withContext(Dispatchers.Default) {
                 val tracks = if (autoplayEnabled && !isExplicitPlaylist) {
-                    val contextTracks = queue.filter { it.id != track.id && it.audioUrl.isNotBlank() }.distinctBy { it.id }
+                    val contextTracks = queue.filter { it.id != track.id && it.hasQueueSource() }.distinctBy { it.id }
                     (listOf(track) + contextTracks).toMutableList()
                 } else {
                     (queue.map { if (it.id == track.id) track else it } + track)
-                        .filter { it.audioUrl.isNotBlank() }.distinctBy { it.id }.toMutableList()
+                        .filter { it.hasQueueSource() }.distinctBy { it.id }.toMutableList()
                 }
                 tracks to tracks.map { it.toMediaItem(targetQuality) }
             }
@@ -1576,7 +1576,7 @@ class PlaybackManager(
                     }
                 } else track
                 val fastQueue = withContext(Dispatchers.Default) {
-                    val validContext = searchContextPool.filter { it.id != track.id && it.audioUrl.isNotBlank() }.distinctBy { it.id }
+                    val validContext = searchContextPool.filter { it.id != track.id && it.hasQueueSource() }.distinctBy { it.id }
                     listOf(resolvedTrack) + validContext
                 }
                 if (isActive && ownsSelection(track.id, generation)) {
@@ -2003,6 +2003,11 @@ class PlaybackManager(
             Log.e(TAG, "Error releasing resources: ${e.message}", e)
         }
     }
+
+    // Persisted YouTube metadata intentionally has no signed URL. Keep these
+    // recordings in playlist/search queues; their stable reference resolves on load.
+    private fun MusicTrack.hasQueueSource(): Boolean = audioUrl.isNotBlank() ||
+        id.startsWith("yt_") && com.example.data.remote.YouTubeAudioStreamService.isVideoId(id.removePrefix("yt_"))
 
     private fun MusicTrack.saavnBitrateFor(quality: AudioQuality): Int {
         val supported = bitrateKbps.takeIf { it in 1..320 } ?: 320

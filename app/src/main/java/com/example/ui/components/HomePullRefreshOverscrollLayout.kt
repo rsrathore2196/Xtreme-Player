@@ -1,11 +1,10 @@
 package com.example.ui.components
 
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -52,23 +51,14 @@ fun HomePullRefreshOverscrollLayout(
         if (isRefreshing || showIndicator) {
             Surface(
                 modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 12.dp),
-                shape = RoundedCornerShape(24.dp),
+                shape = CircleShape,
                 color = MaterialTheme.colorScheme.surface,
                 shadowElevation = 4.dp
             ) {
-                Row(
-                    Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    if (isRefreshing) {
-                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                        Spacer(Modifier.width(8.dp))
-                    }
-                    Text(
-                        if (isRefreshing) "Refreshing music…" else if (armed) "Release to refresh" else "Pull to refresh",
-                        style = MaterialTheme.typography.labelMedium
-                    )
-                }
+                CircularProgressIndicator(
+                    modifier = Modifier.padding(12.dp).size(20.dp),
+                    strokeWidth = 2.dp
+                )
             }
         }
     }
