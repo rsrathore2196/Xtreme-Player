@@ -15,8 +15,6 @@ import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearOutSlowInEasing
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -35,6 +33,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.layout.Column
@@ -142,16 +142,38 @@ fun MainNavigationScaffold(
     val homeViewModel: HomeViewModel = viewModel(factory = homeFactory)
 
     var selectedTabIndex by rememberSaveable { mutableIntStateOf(0) }
+    // Like LastWave, one lazy pager owns the page position. Selection changes on
+    // tap, never from currentPage halfway through a slide (which retriggers pills).
+    val tabPagerState = rememberPagerState(
+        initialPage = selectedTabIndex.coerceIn(0, 2),
+        pageCount = { 3 }
+    )
+    val previousTabIndex = remember { mutableIntStateOf(selectedTabIndex) }
     val selectTab: (Int) -> Unit = { index ->
         if (selectedTabIndex != index) {
             com.example.performance.BackgroundWorkCoordinator.navigationInteraction()
             selectedTabIndex = index
         }
     }
-    // Keep optional work out of the incoming tab's first composition/layout.
+    // Retarget a single cancellable page animation on rapid taps. Keep optional
+    // work out of the whole slide, including the incoming page's first layout.
     LaunchedEffect(selectedTabIndex) {
+        val returningFromSettings = previousTabIndex.intValue == 3
+        previousTabIndex.intValue = selectedTabIndex
         val navigation = com.example.performance.BackgroundWorkCoordinator.navigationBusy()
         try {
+            if (selectedTabIndex in 0..2 &&
+                (tabPagerState.currentPage != selectedTabIndex || tabPagerState.currentPageOffsetFraction != 0f)) {
+                if (returningFromSettings) {
+                    // Settings keeps its existing zoom; reveal the destination
+                    // behind it without adding an unrelated horizontal animation.
+                    tabPagerState.scrollToPage(selectedTabIndex)
+                } else {
+                    // Pager's default critically damped spring matches LastWave's
+                    // full-width page slide, without overlapping slide/fade clocks.
+                    tabPagerState.animateScrollToPage(selectedTabIndex)
+                }
+            }
             androidx.compose.runtime.withFrameNanos { }
             androidx.compose.runtime.withFrameNanos { }
         } finally { navigation.close() }
@@ -162,7 +184,9 @@ fun MainNavigationScaffold(
     val homeListState = rememberLazyListState()
     val searchListState = rememberLazyListState()
     val libraryListState = rememberLazyListState()
-    val tabTransition = updateTransition(selectedTabIndex, label = "tab_navigation_transition")
+    // Only Settings uses AnimatedContent. Primary tabs share the pager's one
+    // position/velocity and are composed lazily as they enter the viewport.
+    val tabTransition = updateTransition(if (selectedTabIndex == 3) 3 else 0, label = "settings_navigation_transition")
     var isPlayerExpanded by rememberSaveable { mutableStateOf(false) }
     var isQueueOpen by rememberSaveable { mutableStateOf(false) }
     var isEqualizerOpen by rememberSaveable { mutableStateOf(false) }
@@ -204,7 +228,7 @@ fun MainNavigationScaffold(
     }
     playerVisibility.targetState = isPlayerExpanded && playerUiState.currentTrack != null
     val playerCoversContent = playerVisibility.isIdle && playerVisibility.currentState && playerVisibility.targetState
-    val transitionRunning = !playerVisibility.isIdle || tabTransition.isRunning
+    val transitionRunning = !playerVisibility.isIdle || tabTransition.isRunning || tabPagerState.isScrollInProgress
     DisposableEffect(transitionRunning) {
         if (transitionRunning) com.example.performance.BackgroundWorkCoordinator.interaction()
         val work = if (transitionRunning) com.example.performance.BackgroundWorkCoordinator.navigationBusy() else null
@@ -289,76 +313,7 @@ fun MainNavigationScaffold(
                 }
 
                 if (currentPlaylist == null) {
-                    tabTransition.AnimatedContent(
-                        transitionSpec = {
-                            (if (targetState == 3) {
-                                // Keep the existing zoom, with a bounded opening duration.
-                                (scaleIn(
-                                    initialScale = 0.88f,
-                                    animationSpec = tween(220, easing = FastOutSlowInEasing)
-                                ) + fadeIn(
-                                    animationSpec = tween(140, easing = LinearOutSlowInEasing)
-                                )).togetherWith(
-                                    scaleOut(
-                                        targetScale = 1.04f,
-                                        animationSpec = tween(130, easing = FastOutLinearInEasing)
-                                    ) + fadeOut(
-                                        animationSpec = tween(100, easing = FastOutLinearInEasing)
-                                    )
-                                )
-                            } else if (initialState == 3) {
-                                // Modern, fast, and smooth zoom out closing animation to return from settings
-                                (scaleIn(
-                                    initialScale = 1.04f,
-                                    animationSpec = tween(220, easing = FastOutSlowInEasing)
-                                ) + fadeIn(
-                                    animationSpec = tween(140, easing = LinearOutSlowInEasing)
-                                )).togetherWith(
-                                    scaleOut(
-                                        targetScale = 0.88f,
-                                        animationSpec = tween(130, easing = FastOutLinearInEasing)
-                                    ) + fadeOut(
-                                        animationSpec = tween(100, easing = FastOutLinearInEasing)
-                                    )
-                                )
-                            } else if (targetState > initialState) {
-                                // Preserve the original directional spring travel instead of shortening it.
-                                (slideInHorizontally(
-                                    initialOffsetX = { (it * 0.12f).toInt() },
-                                    animationSpec = spring(dampingRatio = 0.84f, stiffness = 950f)
-                                ) + fadeIn(
-                                    animationSpec = tween(130, easing = LinearOutSlowInEasing)
-                                )).togetherWith(
-                                    slideOutHorizontally(
-                                        targetOffsetX = { (-it * 0.12f).toInt() },
-                                        animationSpec = spring(dampingRatio = 0.84f, stiffness = 950f)
-                                    ) + fadeOut(
-                                        animationSpec = tween(90, easing = FastOutLinearInEasing)
-                                    )
-                                )
-                            } else {
-                                // Use the same coordinated spring when travelling back between tabs.
-                                (slideInHorizontally(
-                                    initialOffsetX = { (-it * 0.12f).toInt() },
-                                    animationSpec = spring(dampingRatio = 0.84f, stiffness = 950f)
-                                ) + fadeIn(
-                                    animationSpec = tween(130, easing = LinearOutSlowInEasing)
-                                )).togetherWith(
-                                    slideOutHorizontally(
-                                        targetOffsetX = { (it * 0.12f).toInt() },
-                                        animationSpec = spring(dampingRatio = 0.84f, stiffness = 950f)
-                                    ) + fadeOut(
-                                        animationSpec = tween(90, easing = FastOutLinearInEasing)
-                                    )
-                                )
-                            }).using(null)
-                        },
-                        modifier = Modifier
-                            .fillMaxSize()
-                    ) { tabIndex ->
-                      // A stable RenderNode retains child display lists while the
-                      // existing slide/fade animates its placement; no raster downsampling.
-                      Box(Modifier.fillMaxSize().graphicsLayer { clip = false }) {
+                    val tabContent: @Composable (Int) -> Unit = { tabIndex ->
                       tabState.SaveableStateProvider(tabIndex) {
                         when (tabIndex) {
                             0 -> HomeScreen(
@@ -448,7 +403,62 @@ fun MainNavigationScaffold(
                             }
                         }
                       }
-                      }
+                    }
+                    tabTransition.AnimatedContent(
+                        transitionSpec = {
+                            (if (targetState == 3) {
+                                // Keep the existing zoom, with a bounded opening duration.
+                                (scaleIn(
+                                    initialScale = 0.88f,
+                                    animationSpec = tween(220, easing = FastOutSlowInEasing)
+                                ) + fadeIn(
+                                    animationSpec = tween(140, easing = LinearOutSlowInEasing)
+                                )).togetherWith(
+                                    scaleOut(
+                                        targetScale = 1.04f,
+                                        animationSpec = tween(130, easing = FastOutLinearInEasing)
+                                    ) + fadeOut(
+                                        animationSpec = tween(100, easing = FastOutLinearInEasing)
+                                    )
+                                )
+                            } else {
+                                // Modern, fast, and smooth zoom out closing animation to return from settings
+                                (scaleIn(
+                                    initialScale = 1.04f,
+                                    animationSpec = tween(220, easing = FastOutSlowInEasing)
+                                ) + fadeIn(
+                                    animationSpec = tween(140, easing = LinearOutSlowInEasing)
+                                )).togetherWith(
+                                    scaleOut(
+                                        targetScale = 0.88f,
+                                        animationSpec = tween(130, easing = FastOutLinearInEasing)
+                                    ) + fadeOut(
+                                        animationSpec = tween(100, easing = FastOutLinearInEasing)
+                                    )
+                                )
+                            }).using(null)
+                        },
+                        modifier = Modifier.fillMaxSize()
+                    ) { tabHost ->
+                        if (tabHost == 3) {
+                            Box(Modifier.fillMaxSize().graphicsLayer { clip = false }) {
+                                tabContent(3)
+                            }
+                        } else {
+                            HorizontalPager(
+                                state = tabPagerState,
+                                beyondViewportPageCount = 0,
+                                userScrollEnabled = false,
+                                key = { it },
+                                modifier = Modifier.fillMaxSize()
+                            ) { tabIndex ->
+                                // Move retained display lists; keep foreground pixels
+                                // sharp and the shared glass source live during travel.
+                                Box(Modifier.fillMaxSize().graphicsLayer { clip = false }) {
+                                    tabContent(tabIndex)
+                                }
+                            }
+                        }
                     }
                 }
 

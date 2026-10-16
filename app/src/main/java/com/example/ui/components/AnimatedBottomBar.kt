@@ -1,6 +1,7 @@
 package com.example.ui.components
 
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.updateTransition
@@ -18,6 +19,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.key
@@ -47,6 +49,7 @@ import androidx.compose.ui.unit.sp
 import com.example.ui.theme.AppThemeColors
 import com.example.ui.theme.LocalAppColors
 import com.example.ui.theme.bouncyClickable
+import com.example.performance.BackgroundWorkCoordinator
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -66,7 +69,7 @@ data class AnimatedBottomBarItem(
  *
  * Key Animation Behaviors:
  * 1. Pill-Style Active Indicator: Active tab is contained within a rounded pill background that
- *    dynamically expands/shrinks and slides horizontally between selected tab items.
+ *    expands/shrinks while the old and new selection backgrounds fade continuously.
  * 2. Label & Icon Visibility State: Unselected items display only their icon; selected item displays
  *    both its icon and animated text label.
  * 3. Smooth Spring / Layout Transition: One selection transition coordinates capsule width and
@@ -102,6 +105,30 @@ fun AnimatedBottomBar(
         targetState = selectedTabIndex,
         label = "bottom_bar_selection"
     )
+    DisposableEffect(selectionTransition.isRunning) {
+        // The page slide may finish before the pill's final spring settle.
+        // Keep optional work deferred until both are finished; disposal always
+        // releases this lease, including when the player hides the dock.
+        val work = if (selectionTransition.isRunning) BackgroundWorkCoordinator.navigationBusy() else null
+        onDispose { work?.close() }
+    }
+    val activePillBrush = remember(appColors.primaryAccent, appColors.isDark, appColors.dynamicGlassEnabled, appColors.bottomBarIndicator) {
+        if (!appColors.dynamicGlassEnabled) Brush.verticalGradient(listOf(appColors.bottomBarIndicator, appColors.bottomBarIndicator))
+        else Brush.verticalGradient(listOf(
+            appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.24f else 0.20f),
+            appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.14f else 0.12f)
+        ))
+    }
+    val activeBorderStroke = remember(appColors.isDark, appColors.dynamicGlassEnabled, appColors.cardBorder) {
+        BorderStroke(0.6.dp, if (!appColors.dynamicGlassEnabled) appColors.cardBorder else Color.White.copy(alpha = if (appColors.isDark) 0.10f else 0.40f))
+    }
+    val specularSheen = remember(appColors.isDark) {
+        Brush.verticalGradient(
+            listOf(Color.White.copy(alpha = if (appColors.isDark) 0.10f else 0.26f), Color.Transparent),
+            startY = 0f,
+            endY = 22f
+        )
+    }
 
     Box(
         modifier = modifier
@@ -140,65 +167,32 @@ fun AnimatedBottomBar(
                     val isSelected = selectedTabIndex == item.index
 
                     val expansion = selectionTransition.animateFloat(
-                        transitionSpec = { spring(dampingRatio = 0.68f, stiffness = 500f) },
+                        // LastWave's spatial spring: a quick response with a visible,
+                        // gently settling bounce, rather than a shortened tween.
+                        transitionSpec = { spring(dampingRatio = 0.65f, stiffness = Spring.StiffnessLow) },
                         label = "tab_expansion_${item.index}"
                     ) { selectedIndex ->
                         if (selectedIndex == item.index) 1f else 0f
                     }
 
-                    val iconScale = selectionTransition.animateFloat(
-                        transitionSpec = { spring(dampingRatio = 0.58f, stiffness = 420f) },
-                        label = "tab_icon_scale_${item.index}"
-                    ) { selectedIndex ->
-                        if (selectedIndex == item.index) 1.12f else 1.0f
-                    }
-
-                    val bounceOffsetY = selectionTransition.animateFloat(
-                        transitionSpec = { spring(dampingRatio = 0.62f, stiffness = 380f) },
-                        label = "tab_bounce_y_${item.index}"
-                    ) { selectedIndex ->
-                        if (selectedIndex == item.index) -1.5f else 0f
-                    }
-
                     val labelAlpha = selectionTransition.animateFloat(
-                        transitionSpec = { tween(if (targetState == item.index) 180 else 140) },
+                        transitionSpec = {
+                            if (targetState == item.index) {
+                                spring(dampingRatio = 0.65f, stiffness = Spring.StiffnessLow)
+                            } else tween(90)
+                        },
                         label = "tab_label_alpha_${item.index}"
                     ) { selectedIndex ->
                         if (selectedIndex == item.index) 1f else 0f
                     }
-
-                    val activePillBrush = remember(appColors.primaryAccent, appColors.isDark, appColors.dynamicGlassEnabled, appColors.bottomBarIndicator) {
-                        if (!appColors.dynamicGlassEnabled) Brush.verticalGradient(listOf(appColors.bottomBarIndicator, appColors.bottomBarIndicator))
-                        else Brush.verticalGradient(listOf(
-                        appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.24f else 0.20f),
-                        appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.14f else 0.12f)
-                    )) }
-                    val activeBorderStroke = remember(appColors.isDark, appColors.dynamicGlassEnabled, appColors.cardBorder) {
-                        BorderStroke(0.6.dp, if (!appColors.dynamicGlassEnabled) appColors.cardBorder else Color.White.copy(alpha = if (appColors.isDark) 0.10f else 0.40f)) }
 
                     // Individual tab item container: Active pill with 3D liquid glass capsule and theme accent blur
                     Box(
                         modifier = Modifier
                             .height(52.dp)
                             .graphicsLayer {
-                                translationY = bounceOffsetY.value
+                                translationY = -1.5f * expansion.value
                             }
-                            .then(
-                                if (isSelected) {
-                                    Modifier
-                                        .shadow(
-                                            elevation = 6.dp,
-                                            shape = CircleShape,
-                                            spotColor = if (!appColors.dynamicGlassEnabled) Color.Black.copy(alpha = 0.15f) else appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.50f else 0.30f),
-                                            ambientColor = Color.Transparent
-                                        )
-                                        .clip(CircleShape)
-                                        .background(activePillBrush)
-                                        .border(activeBorderStroke, CircleShape)
-                                } else {
-                                    Modifier.clip(CircleShape)
-                                }
-                            )
                             .bouncyClickable { onTabSelected(item.index) }
                             .testTag(
                                 if (isSelected) "nav_tab_${item.title.lowercase()}_active"
@@ -206,23 +200,26 @@ fun AnimatedBottomBar(
                             ),
                         contentAlignment = Alignment.Center
                     ) {
-                        if (isSelected && appColors.dynamicGlassEnabled) {
-                            // 3D Liquid Glass Specular Highlight Sheen across top curvature (unblurred)
-                            Box(
-                                modifier = Modifier
-                                    .matchParentSize()
-                                    .clip(CircleShape)
-                                    .background(
-                                        Brush.verticalGradient(
-                                            listOf(
-                                                Color.White.copy(alpha = if (appColors.isDark) 0.10f else 0.26f),
-                                                Color.Transparent
-                                            ),
-                                            startY = 0f,
-                                            endY = 22f
-                                        )
-                                    )
-                            )
+                        // Keep both finishes composed. Their alpha follows the same
+                        // spring as the width, so the outgoing pill no longer disappears
+                        // on the tap before its label and padding have collapsed.
+                        Box(
+                            modifier = Modifier
+                                .matchParentSize()
+                                .graphicsLayer { alpha = expansion.value.coerceIn(0f, 1f) }
+                                .shadow(
+                                    elevation = 6.dp,
+                                    shape = CircleShape,
+                                    spotColor = if (!appColors.dynamicGlassEnabled) Color.Black.copy(alpha = 0.15f) else appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.50f else 0.30f),
+                                    ambientColor = Color.Transparent
+                                )
+                                .clip(CircleShape)
+                                .background(activePillBrush)
+                                .border(activeBorderStroke, CircleShape)
+                        ) {
+                            if (appColors.dynamicGlassEnabled) {
+                                Box(Modifier.matchParentSize().background(specularSheen))
+                            }
                         }
 
                         val selectedTabContentColor = appColors.textPrimary
@@ -230,7 +227,6 @@ fun AnimatedBottomBar(
                         BottomBarTabContent(
                             expansion = expansion,
                             labelAlpha = labelAlpha,
-                            iconScale = iconScale,
                             item = item,
                             isSelected = isSelected,
                             selectedContentColor = selectedTabContentColor,
@@ -251,7 +247,6 @@ fun AnimatedBottomBar(
 private fun BottomBarTabContent(
     expansion: State<Float>,
     labelAlpha: State<Float>,
-    iconScale: State<Float>,
     item: AnimatedBottomBarItem,
     isSelected: Boolean,
     selectedContentColor: Color,
@@ -268,8 +263,10 @@ private fun BottomBarTabContent(
                 modifier = Modifier
                     .size(24.dp)
                     .graphicsLayer {
-                        scaleX = iconScale.value
-                        scaleY = iconScale.value
+                        // Preserve the selected icon's 1.12x size, coordinated with
+                        // the pill instead of running an independent competing spring.
+                        scaleX = 1f + 0.12f * expansion.value
+                        scaleY = scaleX
                     }
             )
 
@@ -329,7 +326,7 @@ private fun BottomBarTabContent(
                 x = (startInset + icon.width + labelGap).roundToInt(),
                 y = (height - label.height) / 2
             ) {
-                alpha = labelAlpha.value
+                alpha = labelAlpha.value.coerceIn(0f, 1f)
                 clip = true
                 shape = androidx.compose.ui.graphics.RectangleShape
             }
