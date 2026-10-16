@@ -104,6 +104,8 @@ class MusicRepository(
         val liked = getLikedTrackIds()
         val cached = memoryCachedCatalog.orEmpty().ifEmpty {
             withContext(Dispatchers.IO) { musicDao.getCachedTracksSync(250) }.map { it.toMusicTrack() }
+        }.ifEmpty {
+            MusicDataSource.curatedTracks
         }
         // Discard legacy fabricated YouTube defaults when reading old recommendation caches.
         val corrected = cached.map { track ->
@@ -290,6 +292,13 @@ class MusicRepository(
             if (track.recommendationOnly) recommendations.markUnavailable(track)
             throw e
         }
+    }
+
+    suspend fun resolveYouTubeFallback(
+        track: MusicTrack,
+        quality: AudioQuality = AudioQuality.ULTRA_HD_320
+    ): MusicTrack? = withContext(Dispatchers.IO) {
+        streamResolver.resolveYouTubeFallback(track, quality)
     }
 
     suspend fun getTracksByGenre(genre: String): List<MusicTrack> = withContext(Dispatchers.Default) {

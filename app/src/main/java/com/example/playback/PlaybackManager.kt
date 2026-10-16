@@ -118,6 +118,7 @@ class PlaybackManager(
     }
     private var losslessFallback: LosslessFallback? = null
     private val recoveryGuard = PlaybackRecoveryGuard()
+    private var jioBufferingWatchdogJob: Job? = null
     private var autoplaySuppressedBySleepTimer = false
     private val sleepExpirationListener: () -> Unit = {
         autoplaySuppressedBySleepTimer = true
@@ -483,6 +484,12 @@ class PlaybackManager(
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (pendingSelectionId != null && player.currentMediaItem?.mediaId != pendingSelectionId) return
                 val isLoading = playbackState == Player.STATE_BUFFERING
+                val currentTrack = _uiState.value.currentTrack
+                if (isLoading && currentTrack != null) {
+                    startJioBufferingWatchdog(player, currentTrack)
+                } else {
+                    cancelJioBufferingWatchdog()
+                }
                 if (playbackState == Player.STATE_READY) confirmLosslessActivation(player)
                 val duration = if (player.duration > 0) player.duration else _uiState.value.durationMs
                 _uiState.update {
@@ -690,6 +697,12 @@ class PlaybackManager(
                 if (!curMediaId.isNullOrBlank() && curMediaId != current.id) return
                 if (restoreLosslessFallback(player, current)) return
                 losslessUpgradeJob?.cancel()
+                cancelJioBufferingWatchdog()
+                if (isJioSaavnTrack(current)) {
+                    Log.w(TAG, "Player error on JioSaavn track '${current.title}'. Falling back to YouTube Music via InnertubeX.")
+                    fallbackToYouTubeMusic(player, current, selectionGeneration)
+                    return
+                }
                 val repo = repository
                 val token = recoveryGuard.claim(current.id)
                 if (repo == null || token == null) {
@@ -763,6 +776,8 @@ class PlaybackManager(
                     } catch (e: Exception) {
                         if (recoveryGuard.isCurrent(current.id, token)) {
                             showPlaybackFailure(e.message ?: "Unable to resolve a playable stream.")
+                            delay(800L)
+                            skipNext()
                         }
                     }
                 }
@@ -1082,10 +1097,97 @@ class PlaybackManager(
         }
     }
 
+    private fun isJioSaavnTrack(track: MusicTrack?): Boolean {
+        if (track == null) return false
+        val url = track.audioUrl
+        val uri = runCatching { Uri.parse(url) }.getOrNull()
+        val isSaavnHost = uri?.host?.contains("saavncdn.com") == true
+        val isJioSource = track.source.equals("JIOSAAVN", true) || track.id.startsWith("online_")
+        val isYouTube = com.example.data.remote.YouTubeAudioStreamService.isYouTubeAudio(track.id, url)
+        return (isSaavnHost || isJioSource) && !isYouTube
+    }
+
+    private fun startJioBufferingWatchdog(player: MediaController, track: MusicTrack) {
+        cancelJioBufferingWatchdog()
+        if (!isJioSaavnTrack(track)) return
+        val expectedId = track.id
+        val generation = selectionGeneration
+        jioBufferingWatchdogJob = scope.launch(Dispatchers.Main) {
+            delay(6_000L)
+            val current = _uiState.value.currentTrack
+            if (current?.id == expectedId && ownsSelection(expectedId, generation) &&
+                player.playbackState == Player.STATE_BUFFERING && !player.isPlaying) {
+                Log.w(TAG, "JioSaavn buffering exceeded 6s threshold for '${track.title}'. Intercepting and initiating YouTube Music (InnertubeX) fallback.")
+                fallbackToYouTubeMusic(player, current, generation)
+            }
+        }
+    }
+
+    private fun cancelJioBufferingWatchdog() {
+        jioBufferingWatchdogJob?.cancel()
+        jioBufferingWatchdogJob = null
+    }
+
+    private fun fallbackToYouTubeMusic(player: MediaController, track: MusicTrack, generation: Long) {
+        val repo = repository ?: run {
+            showPlaybackFailure("Playback unavailable for '${track.title}'.")
+            skipNext()
+            return
+        }
+        cancelJioBufferingWatchdog()
+        recoveryJob?.cancel()
+        _uiState.update { it.copy(isLoading = true, errorMessage = null) }
+        recoveryJob = scope.launch(Dispatchers.Main) {
+            try {
+                val fallback = withContext(Dispatchers.IO) {
+                    repo.resolveYouTubeFallback(track, _uiState.value.selectedQuality)
+                }
+                if (!ownsSelection(track.id, generation) || _uiState.value.currentTrack?.id != track.id) return@launch
+                if (fallback != null && com.example.data.repository.StreamResolver.isValidStreamUrl(fallback.audioUrl)) {
+                    Log.i(TAG, "Seamlessly transitioned track '${track.title}' to YouTube Music (InnertubeX) stream.")
+                    val index = player.currentMediaItemIndex
+                    val position = player.currentPosition.coerceAtLeast(0L)
+                    val resume = player.playWhenReady
+                    val replacement = fallback.toMediaItem(_uiState.value.selectedQuality)
+                    replaceQueueTrack(index, fallback)
+                    player.replaceMediaItem(index, replacement)
+                    player.seekTo(index, position)
+                    player.prepare()
+                    player.playWhenReady = resume
+                    _uiState.update {
+                        it.copy(
+                            currentTrack = fallback,
+                            queue = queueSnapshot(),
+                            isLoading = false,
+                            isPlaying = resume,
+                            errorMessage = null,
+                            qualityBadge = fallback.qualityBadge.ifBlank { "HQ Stream" }
+                        )
+                    }
+                } else {
+                    Log.w(TAG, "Both JioSaavn and YouTube Music failed for '${track.title}'. Progressing to next queue item.")
+                    showPlaybackFailure("Unavailable on both JioSaavn and YouTube Music. Skipping...")
+                    delay(1000L)
+                    if (ownsSelection(track.id, generation)) {
+                        skipNext()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in YouTube fallback for '${track.title}': ${e.message}", e)
+                if (ownsSelection(track.id, generation)) {
+                    showPlaybackFailure("Playback error. Skipping to next song...")
+                    delay(1000L)
+                    skipNext()
+                }
+            }
+        }
+    }
+
     /** Own the requested identity before native callbacks or asynchronous lookup can run. */
     private fun beginSelection(track: MusicTrack, queue: List<MusicTrack>): Long {
         pendingRestoredSession = null
         cancelLosslessUpgrade()
+        cancelJioBufferingWatchdog()
         val generation = ++selectionGeneration
         pendingSelectionId = track.id
         selectionContext = queue.toList()
@@ -1196,7 +1298,18 @@ class PlaybackManager(
             catch (e: Exception) {
                 Log.e(TAG, "Failed resolving track stream: ${e.message}", e)
                 if (ownsSelection(track.id, generation)) {
-                    showPlaybackFailure(e.message ?: "This track is unavailable.")
+                    val fallback = withContext(Dispatchers.IO) {
+                        repo?.resolveYouTubeFallback(track, _uiState.value.selectedQuality)
+                    }
+                    if (fallback != null && com.example.data.repository.StreamResolver.isValidStreamUrl(fallback.audioUrl) && ownsSelection(track.id, generation)) {
+                        playTrackInternal(fallback, queue, isExplicitPlaylist)
+                    } else {
+                        showPlaybackFailure(e.message ?: "This track is unavailable.")
+                        delay(800L)
+                        if (ownsSelection(track.id, generation)) {
+                            skipNext()
+                        }
+                    }
                 }
             }
         }
@@ -1251,6 +1364,7 @@ class PlaybackManager(
                 player.setMediaItems(mediaItems, 0, 0L)
                 player.prepare()
                 player.play()
+                startJioBufferingWatchdog(player, track)
 
                 _playbackPosition.value = 0L
                 _uiState.update {
@@ -1276,6 +1390,7 @@ class PlaybackManager(
                 player.setMediaItems(mediaItems, startIndex, 0L)
                 player.prepare()
                 player.play()
+                startJioBufferingWatchdog(player, track)
 
                 val nextInQueue = activeQueue.getOrNull(startIndex + 1)
 

@@ -87,9 +87,13 @@ class UnifiedRecommendationEngine(context: Context?,
         private const val MATCH_TTL = 7 * 24 * 60 * 60_000L
         private const val MISS_TTL = 30 * 60_000L
         fun seedKey(track: MusicTrack?): String = track?.let { HomeRecommendationPolicy.metadataKey(it) }.orEmpty()
-        fun verified(track: MusicTrack): Boolean = track.id.startsWith("online_") && track.id.length > 7 &&
-            track.source.equals("JIOSAAVN", true) && OriginalMusicFilter.isHomeRecommendation(track) &&
-            StreamResolver.isValidStreamUrl(track.audioUrl)
+        fun verified(track: MusicTrack): Boolean =
+            (track.id.startsWith("online_") && track.id.length > 7 &&
+                track.source.equals("JIOSAAVN", true) && OriginalMusicFilter.isHomeRecommendation(track) &&
+                StreamResolver.isValidStreamUrl(track.audioUrl)) ||
+            (track.id.startsWith("yt_") && track.id.length > 3 &&
+                OriginalMusicFilter.isHomeRecommendation(track)) ||
+            (OriginalMusicFilter.isHomeRecommendation(track) && StreamResolver.isValidStreamUrl(track.audioUrl))
         fun language(value: String): String = when (val name = CatalogNames.normalize(value)) {
             "panjabi", "pa" -> "punjabi"; "hin", "hi" -> "hindi"; "eng", "en" -> "english"
             else -> name
@@ -277,20 +281,21 @@ class UnifiedRecommendationEngine(context: Context?,
         }
         val cached = candidates.map { it to cachedMatch(it.track, knownIndex) }
         fun add(c: Candidate, track: MusicTrack?) {
-            if (track == null || !verified(track) || unavailable(track) || seen.contains(track)) return
-            val lang = language(track.language)
+            val candidateTrack = track ?: c.track.takeIf { verified(it) }
+            if (candidateTrack == null || !verified(candidateTrack) || unavailable(candidateTrack) || seen.contains(candidateTrack)) return
+            val lang = language(candidateTrack.language)
             if (selected.isNotEmpty() && (if (HomeRecommendationPolicy.known(lang)) lang !in selected else c.language !in selected && !c.related)) return
-            if (shelf == Shelf.ERA && track.year.toIntOrNull()?.let { it !in 1990..2009 } != false) return
+            if (shelf == Shelf.ERA && candidateTrack.year.toIntOrNull()?.let { it !in 1990..2009 } != false) return
             val actualLanguage = lang.takeIf(HomeRecommendationPolicy::known) ?: c.language
             if (selected.size > 1 && actualLanguage in selected && (languageCounts[actualLanguage] ?: 0) >= languageQuota) return
-            val key = taste.keyFor(track)
+            val key = taste.keyFor(candidateTrack)
             if ((taste.skipCounts[key] ?: 0) >= 2 && key !in taste.favoriteRecordings) return
-            val artist = HomeRecommendationPolicy.artists(track).firstOrNull().orEmpty()
-            val album = "$artist|${CatalogNames.normalize(track.album)}"
-            if ((artists[artist] ?: 0) >= 2 || HomeRecommendationPolicy.known(track.album) && (albums[album] ?: 0) >= 2) return
-            seen.add(track); artists[artist] = (artists[artist] ?: 0) + 1; albums[album] = (albums[album] ?: 0) + 1
+            val artist = HomeRecommendationPolicy.artists(candidateTrack).firstOrNull().orEmpty()
+            val album = "$artist|${CatalogNames.normalize(candidateTrack.album)}"
+            if ((artists[artist] ?: 0) >= 2 || HomeRecommendationPolicy.known(candidateTrack.album) && (albums[album] ?: 0) >= 2) return
+            seen.add(candidateTrack); artists[artist] = (artists[artist] ?: 0) + 1; albums[album] = (albums[album] ?: 0) + 1
             languageCounts[actualLanguage] = (languageCounts[actualLanguage] ?: 0) + 1
-            output.add(track.copy(recommendationOnly = true))
+            output.add(candidateTrack.copy(recommendationOnly = true))
         }
         cached.forEach { (candidate, track) -> add(candidate, track) }
         if (output.isNotEmpty()) { emit(output.take(limits.shelfSize)); published = output.size }
@@ -316,6 +321,14 @@ class UnifiedRecommendationEngine(context: Context?,
                         if (output.size >= limits.shelfSize + limits.reserve) break
                     }
                 } finally { workers.forEach { it.cancel() }; closer.cancel(); results.cancel() }
+            }
+        }
+        if (output.isEmpty() && known.isNotEmpty()) {
+            val fallback = known.filter { verified(it) && !seen.contains(it) }.take(limits.shelfSize)
+            if (fallback.isNotEmpty()) {
+                output.addAll(fallback.map { it.copy(recommendationOnly = true) })
+                emit(output.take(limits.shelfSize).toList())
+                return@flow
             }
         }
         if (output.isNotEmpty() && output.size != published) emit(output.take(limits.shelfSize).toList())
