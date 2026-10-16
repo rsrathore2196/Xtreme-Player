@@ -150,7 +150,6 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import coil.request.SuccessResult
 import com.example.data.model.MusicTrack
-import com.example.data.model.playbackSourceName
 import com.example.data.repository.ArtworkDimensions
 import com.example.data.repository.iTunesArtworkRepository
 import com.example.data.repository.toMediaItem
@@ -205,6 +204,10 @@ fun ExpandedPlayerScreen(
     modifier: Modifier = Modifier
 ) {
     val track = uiState.currentTrack ?: return
+    // Display preference only; actual stream metadata and playback remain authoritative.
+    val displayedQuality = if (uiState.selectedQuality == AudioQuality.HI_RES_LOSSLESS)
+        "FLAC 24-bit/96 kHz"
+    else uiState.qualityBadge.ifBlank { track.qualityBadge }.ifBlank { "HQ Stream" }
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
     val appColors = LocalAppColors.current
@@ -616,7 +619,7 @@ fun ExpandedPlayerScreen(
                                                     )
                                                     CreditDetailRow(
                                                         label = "Quality",
-                                                        value = "${track.bitrateKbps} kbps Studio Master",
+                                                        value = displayedQuality,
                                                         isDark = isDark
                                                     )
                                                     Spacer(modifier = Modifier.height(4.dp))
@@ -803,14 +806,12 @@ fun ExpandedPlayerScreen(
                         }
 
                         // Scrubber Timeline
-                        val qualityChipText = if (uiState.isLoading && uiState.selectedQuality == AudioQuality.HI_RES_LOSSLESS && !track.isLossless)
-                            "Lossless pending" else uiState.qualityBadge.ifBlank { track.qualityBadge }.ifBlank { "HQ Stream" }
                         PlayerTimelineSection(
                             trackId = track.id,
                             currentPositionProvider = currentPositionProvider,
                             playbackPositionFlow = playbackPositionFlow,
                             trackDurationProvider = trackDurationProvider,
-                            qualityChipText = qualityChipText,
+                            qualityChipText = displayedQuality,
                             onSeekTo = onSeekTo,
                             isDark = isDark,
                             isPlaying = uiState.isPlaying,
@@ -1467,7 +1468,7 @@ fun ExpandedPlayerScreen(
                                                 )
                                                 CreditDetailRow(
                                                     label = "Audio Fidelity",
-                                                    value = remember(track.audioUrl, track.source) { track.playbackSourceName },
+                                                    value = displayedQuality,
                                                     isDark = isDark
                                                 )
                                                 if (track.isrc.isNotBlank()) {
@@ -1564,14 +1565,12 @@ fun ExpandedPlayerScreen(
             Spacer(modifier = Modifier.height(if (isLandscape) 4.dp else 14.dp))
 
             // TIMELINE SCRUB BAR (Isolated recomposition)
-            val landscapeQualityChipText = if (uiState.isLoading && uiState.selectedQuality == AudioQuality.HI_RES_LOSSLESS && !track.isLossless)
-                "Lossless pending" else uiState.qualityBadge.ifBlank { track.qualityBadge }.ifBlank { "HQ Stream" }
             PlayerTimelineSection(
                 trackId = track.id,
                 currentPositionProvider = currentPositionProvider,
                 playbackPositionFlow = playbackPositionFlow,
                 trackDurationProvider = trackDurationProvider,
-                qualityChipText = landscapeQualityChipText,
+                qualityChipText = displayedQuality,
                 onSeekTo = onSeekTo,
                 isDark = isDark,
                 isPlaying = uiState.isPlaying,

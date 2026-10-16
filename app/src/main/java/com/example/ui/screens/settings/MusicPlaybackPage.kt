@@ -135,7 +135,7 @@ fun MusicPlaybackPage(
                 Spacer(modifier = Modifier.height(14.dp))
 
                 AudioQualityOption(
-                    title = "Hi-Res Lossless • 24-bit/192 kHz (Studio Master)",
+                    title = AudioQuality.HI_RES_LOSSLESS.title,
                     subtitle = "Highest Studio Grade Quality FLAC Audio",
                     isSelected = selectedQuality == AudioQuality.HI_RES_LOSSLESS,
                     isDarkMode = isDarkMode,
@@ -146,7 +146,7 @@ fun MusicPlaybackPage(
                 HorizontalDivider(color = dividerColor, thickness = 1.dp, modifier = Modifier.padding(vertical = 10.dp))
 
                 AudioQualityOption(
-                    title = "Ultra HD • 320 kbps (Limitless)",
+                    title = AudioQuality.ULTRA_HD_320.title,
                     subtitle = "Audiophile Grade High Quality Sound Reproduction",
                     isSelected = selectedQuality == AudioQuality.ULTRA_HD_320,
                     isDarkMode = isDarkMode,
@@ -157,7 +157,7 @@ fun MusicPlaybackPage(
                 HorizontalDivider(color = dividerColor, thickness = 1.dp, modifier = Modifier.padding(vertical = 10.dp))
 
                 AudioQualityOption(
-                    title = "High • 160 kbps (Balanced)",
+                    title = AudioQuality.HIGH_160.title,
                     subtitle = "Optimized clear sound with fast data streaming",
                     isSelected = selectedQuality == AudioQuality.HIGH_160,
                     isDarkMode = isDarkMode,
@@ -168,7 +168,7 @@ fun MusicPlaybackPage(
                 HorizontalDivider(color = dividerColor, thickness = 1.dp, modifier = Modifier.padding(vertical = 10.dp))
 
                 AudioQualityOption(
-                    title = "Medium • 96 kbps (Data Saver)",
+                    title = AudioQuality.MEDIUM_96.title,
                     subtitle = "Lowest network bandwidth usage",
                     isSelected = selectedQuality == AudioQuality.MEDIUM_96,
                     isDarkMode = isDarkMode,

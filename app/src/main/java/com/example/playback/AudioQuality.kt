@@ -9,21 +9,21 @@ enum class AudioQuality(
 ) {
     HI_RES_LOSSLESS(
         id = "lossless",
-        title = "Hi-Res Lossless • 24-bit/192 kHz (Studio Master)",
+        title = "Hi-Res Lossless • 24-bit/96 kHz",
         kbps = 9216,
         badge = "Hi-Res Lossless",
         description = "Highest Studio Grade Quality FLAC Audio"
     ),
     ULTRA_HD_320(
         id = "320",
-        title = "Ultra HD • 320 kbps (Limitless)",
+        title = "Ultra HD • 320 kbps",
         kbps = 320,
         badge = "Ultra HD",
         description = "Audiophile Grade High Quality Sound Reproduction"
     ),
     HIGH_160(
         id = "160",
-        title = "High • 160 kbps (Balanced)",
+        title = "High • 160 kbps",
         kbps = 160,
         badge = "HD Audio",
         description = "Optimized clear sound with fast data streaming"
