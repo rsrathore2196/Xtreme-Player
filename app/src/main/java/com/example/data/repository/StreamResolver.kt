@@ -39,7 +39,8 @@ internal class StreamResolver(
 
     suspend fun resolve(track: MusicTrack, quality: AudioQuality, forceRefresh: Boolean = false,
         failedUrl: String? = null, @Suppress("UNUSED_PARAMETER") deferLossless: Boolean = true,
-        preferYouTube: Boolean = false, jioDeadlineMs: Long = 0L, maxBitrateBps: Int = Int.MAX_VALUE
+        preferYouTube: Boolean = false, jioDeadlineMs: Long = 0L, maxBitrateBps: Int = Int.MAX_VALUE,
+        currentSourceOnly: Boolean = false, rejectedUrls: Set<String> = emptySet()
     ): MusicTrack = withContext(Dispatchers.IO) {
         val deadline = jioDeadlineMs.takeIf { it > 0L } ?: (android.os.SystemClock.elapsedRealtime() + 6_000L)
         val key = StreamKey(track.id, quality, track.recommendationOnly, maxBitrateBps)
@@ -78,7 +79,8 @@ internal class StreamResolver(
         catch (e: CancellationException) { throw e }
         catch (_: Exception) { null }
         fun usable(candidate: MusicTrack): Boolean = providerAllowed(candidate) && isValidStreamUrl(candidate.audioUrl) &&
-            candidate.audioUrl != rejected && candidate.audioUrl != failedUrl
+            candidate.audioUrl != rejected && candidate.audioUrl != failedUrl &&
+            candidate.audioUrl !in rejectedUrls && capped(candidate).audioUrl !in rejectedUrls
 
         val triedVideos = mutableSetOf<String>()
         suspend fun youtubeExact(request: MusicTrack): MusicTrack? {
@@ -87,6 +89,9 @@ internal class StreamResolver(
             val resolved = attempt(38_000L) { resolveYouTube(request, quality, forceRefresh) } ?: return null
             if (resolved.id != request.id || !isValidStreamUrl(resolved.audioUrl) ||
                 safeVideoIdFromUri(resolved.audioUrl) != id) return null
+            // A virtual reference can stay stable after client/signed-URL refresh.
+            // Literal failed HTTP URLs must never be replayed as a fresh candidate.
+            if (!YouTubeAudioStreamService.isPlaybackUri(resolved.audioUrl) && resolved.audioUrl in rejectedUrls) return null
             // The stable reference can stay identical after its underlying signed URL is refreshed.
             return resolved.copy(isLossless = false, source = "YouTube Music")
         }
@@ -144,7 +149,9 @@ internal class StreamResolver(
                 // One shared budget includes ID refresh AND alternate Jio searches.
                 return attempt(remaining) { jioExact() ?: standardFallback() }
             }
-            if (youtubeSelection) youtubeExact(track) ?: boundedJio() ?: youtubeFallback()
+            if (currentSourceOnly) {
+                if (youtubeSelection) youtubeExact(track) else attempt(6_000L) { jioExact() }
+            } else if (youtubeSelection) youtubeExact(track) ?: boundedJio() ?: youtubeFallback()
             else boundedJio() ?: youtubeExact(track) ?: youtubeFallback()
         } ?: throw TrackUnavailableException(track.title)
         coroutineContext.ensureActive()
@@ -171,6 +178,7 @@ internal class StreamResolver(
         private val officialSuffix = Regex("(?i)\\s+(?:official\\s+(?:music\\s+)?(?:audio|video)|lyric\\s+video)\\b(?:\\s+(?:hd|4k)\\b)?")
         private val topicSuffix = Regex("(?i)\\s*-\\s*topic\\b")
         private val unknownArtists = Regex("(?i)\\b(?:various\\s+artists|online\\s+artist)\\b")
+        private val unknownArtistNames = setOf("", "unknown", "unknown artist", "various", "various artists", "internet archive")
 
         internal fun matchesLosslessUpgrade(requested: MusicTrack, candidate: MusicTrack): Boolean =
             candidate.isLossless && candidate.audioUrl.startsWith("https://") &&
@@ -251,8 +259,9 @@ internal class StreamResolver(
         internal fun extractCleanTitle(title: String, artist: String = ""): String {
             var cleaned = CatalogNames.clean(title)
             if (cleaned.contains(" - ")) {
+                val artistKey = CatalogNames.normalize(extractCleanArtist(artist))
                 val prefix = cleaned.substringBefore(" - ")
-                if (CatalogNames.normalize(extractCleanArtist(prefix)) == CatalogNames.normalize(extractCleanArtist(artist)))
+                if (artistKey !in unknownArtistNames && CatalogNames.normalize(extractCleanArtist(prefix)) == artistKey)
                     cleaned = cleaned.substringAfter(" - ")
             }
             // Live, remix, acoustic, edits, featured credits and remaster years remain identity.

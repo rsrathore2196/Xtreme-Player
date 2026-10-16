@@ -72,7 +72,7 @@ class iTunesArtworkRepository(
 ) {
     private data class Lookup(val url: String?, val expiresAt: Long)
     private data class Flight(val result: Deferred<Lookup>, var readers: Int = 0)
-    private data class RawMetadata(val title: String, val artist: String?)
+    private data class RawMetadata(val title: String, val artist: String?, val source: AudioSource)
     private data class LookupMetadata(val title: String, val artist: String, val key: String)
     private val metadataCache = LruCache<RawMetadata, LookupMetadata>(256)
     private val whitespace = Regex("\\s+")
@@ -95,10 +95,10 @@ class iTunesArtworkRepository(
 
     // A scrolling card can re-enter composition many times. Parse its unchanged metadata once.
     private fun lookupMetadata(item: MediaItem): LookupMetadata {
-        val raw = RawMetadata(item.rawTitle, item.rawArtist)
+        val raw = RawMetadata(item.rawTitle, item.rawArtist, item.source)
         metadataCache.get(raw)?.let { return it }
-        val title = sanitizeTitle(raw.title, artist = raw.artist)
-        val artist = sanitizeArtist(raw.artist)
+        val title = sanitizeTitle(raw.title, source = raw.source, artist = raw.artist)
+        val artist = sanitizeArtist(raw.artist, source = raw.source)
         return LookupMetadata(title, artist, "${title}_${artist}".lowercase(java.util.Locale.ROOT)).also {
             metadataCache.put(raw, it)
         }
@@ -209,7 +209,7 @@ class iTunesArtworkRepository(
 
     /** UI-safe peek: reuse prepared metadata without sanitizing it or accessing Room/network. */
     fun peekMemoryCachedUrl(item: MediaItem, targetDimension: Int): String? {
-        val metadata = metadataCache.get(RawMetadata(item.rawTitle, item.rawArtist))
+        val metadata = metadataCache.get(RawMetadata(item.rawTitle, item.rawArtist, item.source))
             ?: return null
         return cached(metadata.key)?.url?.let { formatUrl(it, targetDimension) }
     }
@@ -221,21 +221,13 @@ class iTunesArtworkRepository(
             runCatching { Html.fromHtml(title, Html.FROM_HTML_MODE_LEGACY)?.toString() }.getOrNull()
                 ?: title.replace("&quot;", "\"").replace("&amp;", "&").replace("&#039;", "'").replace("&apos;", "'")
         } else title
-
-        if (source == AudioSource.INTERNET_ARCHIVE) {
-            decoded = decoded.replace('_', ' ')
-        }
-
-        if (source == AudioSource.YOUTUBE_MUSIC || artist.isNullOrBlank()) {
-            if (decoded.contains(" - ")) {
-                val prefix = decoded.substringBefore(" - ").trim()
-                if (artist.isNullOrBlank() || CatalogNames.normalize(StreamResolver.extractCleanArtist(prefix)) == CatalogNames.normalize(StreamResolver.extractCleanArtist(artist))) {
-                    decoded = decoded.substringAfter(" - ")
-                }
-            }
-        }
-
-        return StreamResolver.extractCleanTitle(decoded, artist.orEmpty())
+        val sourceTitle = if (source == AudioSource.INTERNET_ARCHIVE) decoded.replace('_', ' ') else decoded
+        val knownArtist = artist?.let(CatalogNames::clean)?.takeIf {
+            CatalogNames.normalize(it) !in unknownArtistNames
+        }.orEmpty()
+        // Missing artist metadata is never evidence that a hyphen separates an
+        // artist prefix. The shared cleaner verifies a real credit before stripping.
+        return StreamResolver.extractCleanTitle(sourceTitle, knownArtist)
             .replace(whitespace, " ").trim()
     }
 
@@ -264,6 +256,7 @@ class iTunesArtworkRepository(
     }
 
     companion object {
+        private val unknownArtistNames = setOf("", "unknown", "unknown artist", "various", "various artists", "internet archive")
         /** Pure formatting must never require construction of Room or the HTTP client on Main. */
         private val appleArtworkSize = Regex("(?<=/)\\d+x\\d+(bb)?(?=\\.(?:jpg|png|webp))", RegexOption.IGNORE_CASE)
         fun formatArtworkUrl(url: String, size: Int): String {

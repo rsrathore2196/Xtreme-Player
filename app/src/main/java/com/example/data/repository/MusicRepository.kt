@@ -282,18 +282,21 @@ class MusicRepository(
         forceRefresh: Boolean = false,
         failedUrl: String? = null,
         preferYouTube: Boolean = false,
-        jioDeadlineMs: Long = 0L
+        jioDeadlineMs: Long = 0L,
+        currentSourceOnly: Boolean = false,
+        rejectedUrls: Set<String> = emptySet()
     ): MusicTrack = withContext(Dispatchers.IO) {
         val quality = context?.let { AudioQualityPreferences.getSelectedQuality(it) }
             ?: AudioQuality.ULTRA_HD_320
         try {
             com.example.recommendation.DiscoveryRequestCoordinator.playback {
                 streamResolver.resolve(track, quality, forceRefresh, failedUrl, preferYouTube = preferYouTube, jioDeadlineMs = jioDeadlineMs,
+                    currentSourceOnly = currentSourceOnly, rejectedUrls = rejectedUrls,
                     maxBitrateBps = context?.let { com.example.playback.NetworkQualityMonitor.getInstance(it).snapshot().effectiveCeiling.maxBitrateBps }
                         ?: Int.MAX_VALUE)
             }
         } catch (e: TrackUnavailableException) {
-            if (track.recommendationOnly) recommendations.markUnavailable(track)
+            if (track.recommendationOnly && !currentSourceOnly) recommendations.markUnavailable(track)
             throw e
         }
     }
