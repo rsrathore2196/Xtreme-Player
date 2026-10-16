@@ -832,6 +832,12 @@ class HomeViewModel(
             }
             if (_ytmCard.value.tracks.isNotEmpty() || _countryLanguageCard.value.tracks.isNotEmpty())
                 startupRecommendationsComplete.complete(Unit)
+            else {
+                // A filtered/empty snapshot is not a completed first shelf, even
+                // if its previous freshness marker has not expired yet.
+                shelfLoads.remove(Shelf.QUICK.name)
+                shelfAttempts.remove(Shelf.QUICK)
+            }
           } finally {
             _currentStage.value = LoadingStage.PRIORITY_2_ESSENTIAL_CONTENT
             restored.complete(Unit)
