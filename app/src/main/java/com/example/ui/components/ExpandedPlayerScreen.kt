@@ -113,6 +113,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.key
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -129,7 +132,6 @@ import kotlinx.coroutines.isActive
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithContent
@@ -138,6 +140,13 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.BlurEffect
+import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.layer.drawLayer
+import androidx.compose.ui.graphics.rememberGraphicsLayer
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.layout
@@ -182,6 +191,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
+import kotlin.math.ceil
 
 @OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
@@ -243,19 +253,25 @@ fun ExpandedPlayerScreen(
     val memoryItunesUrl = remember(track.id, track.title, track.artist, track.source, track.coverUrl, itunesRepo) {
         itunesRepo?.peekMemoryCachedUrl(track.toMediaItem(), ArtworkDimensions.EXPANDED_PLAYER)
     }
-    val cachedArtworkKey = remember(track.id, track.title, track.artist, track.coverUrl,
+    val cachedArtworkKey by key(track.id, track.title, track.artist, track.coverUrl,
         highResCoverUrl, memoryItunesUrl, resolvedArtworkRequest.placeholderMemoryCacheKey) {
-        val urls = mutableSetOf(track.coverUrl, initialRawCoverUrl, highResCoverUrl)
-        memoryItunesUrl?.let { url ->
-            listOf(200, 600, 1200).forEach { size ->
-                urls.add(url.replace(Regex("\\d+x\\d+bb"), "${size}x${size}bb"))
+        produceState(resolvedArtworkRequest.placeholderMemoryCacheKey) {
+            // Scanning Coil's decoded cache and comparing artwork variants is CPU
+            // work. A keyed producer cannot publish a previous song's placeholder.
+            value = withContext(Dispatchers.Default) {
+                val urls = mutableSetOf(track.coverUrl, initialRawCoverUrl, highResCoverUrl)
+                memoryItunesUrl?.let { url ->
+                    val dimensions = Regex("\\d+x\\d+bb")
+                    listOf(200, 600, 1200).forEach { size ->
+                        urls.add(url.replace(dimensions, "${size}x${size}bb"))
+                    }
+                }
+                val cache = artworkLoader.memoryCache
+                cache?.keys?.asSequence()?.filter { it.key in urls }
+                    ?.mapNotNull { cacheKey -> cache[cacheKey]?.bitmap?.let { cacheKey to it.width.toLong() * it.height } }
+                    ?.maxByOrNull { it.second }?.first ?: resolvedArtworkRequest.placeholderMemoryCacheKey
             }
         }
-        val cache = artworkLoader.memoryCache
-        // Reuse already decoded Home/player artwork while the shared iTunes request resolves.
-        cache?.keys?.asSequence()?.filter { it.key in urls }
-            ?.mapNotNull { key -> cache[key]?.bitmap?.let { key to it.width.toLong() * it.height } }
-            ?.maxByOrNull { it.second }?.first ?: resolvedArtworkRequest.placeholderMemoryCacheKey
     }
     val highResImageRequest = remember(resolvedArtworkRequest, cachedArtworkKey) {
         resolvedArtworkRequest.newBuilder().placeholderMemoryCacheKey(cachedArtworkKey).build()
@@ -273,6 +289,14 @@ fun ExpandedPlayerScreen(
         label = "lyrics_expansion"
     )
     val expandedLyricsVisible by remember { derivedStateOf { lyricsExpansion.value > 0f } }
+    val lyricsViewportAnimating by remember(lyricsExpanded) {
+        derivedStateOf { kotlin.math.abs(lyricsExpansion.value - if (lyricsExpanded) 1f else 0f) > 0.001f }
+    }
+    DisposableEffect(lyricsViewportAnimating, isScreenVisible) {
+        val lease = if (lyricsViewportAnimating && isScreenVisible)
+            com.example.performance.BackgroundWorkCoordinator.navigationBusy() else null
+        onDispose { lease?.close() }
+    }
     LaunchedEffect(showLyrics) { if (!showLyrics) maximizeLyrics = false }
     BackHandler(enabled = lyricsExpanded && isScreenVisible) { maximizeLyrics = false }
     val lyricsLifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
@@ -529,7 +553,7 @@ fun ExpandedPlayerScreen(
                                     }
                                 PlayerSyncedLyrics(
                                     lyrics = lyrics,
-                                    currentPositionMs = currentPositionProvider(),
+                                    currentPositionMs = uiState.currentPositionMs,
                                     playbackPositionFlow = playbackPositionFlow,
                                     isPlaying = uiState.isPlaying,
                                     currentPositionProvider = currentPositionProvider,
@@ -538,6 +562,7 @@ fun ExpandedPlayerScreen(
                                     accentColor = animatedAccentColor,
                                     isDark = isDark,
                                     onRetry = onRetryLyrics,
+                                    viewportAnimating = lyricsViewportAnimating,
                                     modifier = Modifier.weight(1f).fillMaxWidth()
                                 )
                                 }
@@ -1121,7 +1146,8 @@ fun ExpandedPlayerScreen(
                         }
                     }
                     if (expandedLyricsVisible) Column(
-                        modifier = Modifier.fillMaxWidth().graphicsLayer { alpha = lyricsExpansion.value }
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+                            .graphicsLayer { alpha = lyricsExpansion.value }
                             .then(if (!lyricsExpanded) Modifier.clearAndSetSemantics { } else Modifier)
                     ) {
                         LyricsExpansionButton(
@@ -1144,16 +1170,16 @@ fun ExpandedPlayerScreen(
                     } else Box(Modifier)
                 }
             } else {
-                Column(
+                PortraitPlayerExpansion(
+                    expansion = lyricsExpansion,
                     modifier = Modifier
                         .fillMaxSize()
                         .statusBarsPadding()
                         .navigationBarsPadding()
                         .padding(horizontal = 24.dp)
-                        .widthIn(max = 500.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.SpaceBetween
+                        .widthIn(max = 500.dp)
                 ) {
+            Column {
             // TOP BAR
             Row(
                 modifier = Modifier
@@ -1258,9 +1284,10 @@ fun ExpandedPlayerScreen(
             }
 
             Spacer(modifier = Modifier.height(8.dp))
+            }
 
             // Shared artwork and metadata travel between their original bounds and the lyrics header.
-            SharedTransitionLayout(Modifier.weight(1f).fillMaxWidth()) {
+            SharedTransitionLayout(Modifier.fillMaxSize()) {
                 AnimatedContent(
                     targetState = showLyrics,
                     transitionSpec = { lyricsArtworkTransition() },
@@ -1332,7 +1359,7 @@ fun ExpandedPlayerScreen(
                             Spacer(Modifier.height(8.dp))
                             PlayerSyncedLyrics(
                                 lyrics = lyrics,
-                                currentPositionMs = currentPositionProvider(),
+                                currentPositionMs = uiState.currentPositionMs,
                                 playbackPositionFlow = playbackPositionFlow,
                                 isPlaying = uiState.isPlaying,
                                 currentPositionProvider = currentPositionProvider,
@@ -1341,6 +1368,7 @@ fun ExpandedPlayerScreen(
                                 accentColor = animatedAccentColor,
                                 isDark = isDark,
                                 onRetry = onRetryLyrics,
+                                viewportAnimating = lyricsViewportAnimating,
                                 modifier = Modifier.weight(1f).fillMaxWidth()
                             )
 
@@ -1583,6 +1611,7 @@ fun ExpandedPlayerScreen(
                 }
             }
 
+            Column(Modifier.fillMaxWidth()) {
             Spacer(modifier = Modifier.height(if (isLandscape) 4.dp else 14.dp))
 
             AnimatedVisibility(
@@ -1606,20 +1635,19 @@ fun ExpandedPlayerScreen(
                 trackDurationProvider = trackDurationProvider,
                 qualityChipText = displayedQuality,
                 showQuality = !lyricsExpanded,
+                qualityFade = lyricsExpansion,
                 onSeekTo = onSeekTo,
                 isDark = isDark,
                 isPlaying = uiState.isPlaying,
                 dominantColor = animatedDominantColor
             )
 
-            AnimatedVisibility(
-                visible = !lyricsExpanded,
-                enter = expandVertically(tween(LYRICS_EXPANSION_MS, easing = FastOutSlowInEasing), expandFrom = Alignment.Top) +
-                    slideInVertically(tween(LYRICS_EXPANSION_MS, easing = FastOutSlowInEasing)) { it } + fadeIn(tween(260)),
-                exit = shrinkVertically(tween(LYRICS_EXPANSION_MS, easing = FastOutSlowInEasing), shrinkTowards = Alignment.Top) +
-                    slideOutVertically(tween(LYRICS_EXPANSION_MS, easing = FastOutSlowInEasing)) { it } + fadeOut(tween(220))
+            }
+            Column(
+                Modifier.fillMaxWidth().collapsingPlayerControls(lyricsExpansion)
+                    .graphicsLayer { alpha = 1f - lyricsExpansion.value }
+                    .then(if (lyricsExpanded) Modifier.clearAndSetSemantics { } else Modifier)
             ) {
-                Column {
             Spacer(modifier = Modifier.height(if (isLandscape) 4.dp else 14.dp))
 
             // MAIN CONTROL CLUSTER (Shuffle, Prev, Play/Pause, Next, Repeat/Replay) in Full Liquid Glass UI
@@ -1912,7 +1940,6 @@ fun ExpandedPlayerScreen(
                     }
                 }
             }
-                }
             }
         }
     }
@@ -1937,6 +1964,47 @@ fun ExpandedPlayerScreen(
 }
 
 }
+
+/** One clock and stable control measurements; only the body bounds/placements animate. */
+@Composable
+private fun PortraitPlayerExpansion(
+    expansion: State<Float>,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit
+) {
+    Layout(content = content, modifier = modifier) { measurables, constraints ->
+        val width = constraints.maxWidth
+        val height = constraints.maxHeight
+        val fraction = expansion.value.coerceIn(0f, 1f)
+        val childConstraints = Constraints(minWidth = width, maxWidth = width, maxHeight = height)
+        val header = measurables[0].measure(childConstraints)
+        val footer = measurables[2].measure(childConstraints.copy(maxHeight = (height - header.height).coerceAtLeast(0)))
+        val controls = measurables[3].measure(childConstraints.copy(
+            maxHeight = (height - header.height - footer.height).coerceAtLeast(0)))
+        // Insets are applied outside this host. Keep an additional breathing room
+        // for time labels when the usual bottom action row is no longer visible.
+        val bottomGap = (12.dp.toPx() * fraction).roundToInt()
+        val visibleControls = controls.height
+        val footerY = (height - footer.height - visibleControls - bottomGap).coerceAtLeast(header.height)
+        val body = measurables[1].measure(Constraints.fixed(width, (footerY - header.height).coerceAtLeast(0)))
+        layout(width, height) {
+            header.placeRelative(0, 0)
+            body.placeRelative(0, header.height)
+            footer.placeRelative(0, footerY)
+            if (fraction < 1f) controls.placeRelative(0, footerY + footer.height + bottomGap)
+        }
+    }
+}
+
+/** Clip only the moving controls, leaving the existing artwork glow unclipped. */
+private fun Modifier.collapsingPlayerControls(expansion: State<Float>): Modifier =
+    clipToBounds().layout { measurable, constraints ->
+        val controls = measurable.measure(constraints)
+        val visibleHeight = (controls.height * (1f - expansion.value.coerceIn(0f, 1f))).roundToInt()
+        layout(controls.width, visibleHeight) {
+            if (visibleHeight > 0) controls.placeRelative(0, 0)
+        }
+    }
 
 /** Keep the original two-pane bounds at rest; read expansion only during measurement. */
 @Composable
@@ -2055,6 +2123,7 @@ private fun PlayerSyncedLyrics(
     accentColor: State<Color>,
     isDark: Boolean,
     onRetry: () -> Unit,
+    viewportAnimating: Boolean,
     modifier: Modifier
 ) {
     // Palette fades only invalidate the lyrics subtree, never the complete player.
@@ -2069,7 +2138,8 @@ private fun PlayerSyncedLyrics(
         accentColor = accentColor.value,
         isDark = isDark,
         onRetry = onRetry,
-        modifier = modifier
+        modifier = modifier,
+        viewportAnimating = viewportAnimating
     )
 }
 
@@ -2098,6 +2168,32 @@ private fun Modifier.animatedFillMaxWidth(fraction: State<Float>): Modifier = la
     } else constraints
     val placeable = measurable.measure(widthConstraints)
     layout(placeable.width, placeable.height) { placeable.placeRelative(0, 0) }
+}
+
+/** Diffuse only the artwork backdrop at 1/4 resolution, retaining the same on-screen blur. */
+@Composable
+private fun Modifier.playerBackdropBlur(radius: Dp): Modifier {
+    val layer = rememberGraphicsLayer()
+    return drawWithCache {
+        val processingScale = 0.25f
+        val bufferSize = IntSize(
+            ceil(size.width * processingScale).toInt().coerceAtLeast(1),
+            ceil(size.height * processingScale).toInt().coerceAtLeast(1)
+        )
+        val blurPx = radius.toPx() * processingScale
+        layer.renderEffect = BlurEffect(radiusX = blurPx, radiusY = blurPx, edgeTreatment = TileMode.Decal)
+        layer.clip = true
+        onDrawWithContent {
+            // One small image node is recorded here, never the foreground player.
+            // Re-recording follows Coil's real image/crossfade updates without a ticker.
+            layer.record(bufferSize) {
+                scale(processingScale, pivot = Offset.Zero) {
+                    this@onDrawWithContent.drawContent()
+                }
+            }
+            scale(1f / processingScale, pivot = Offset.Zero) { drawLayer(layer) }
+        }
+    }
 }
 
 @Composable
@@ -2143,7 +2239,7 @@ private fun PlayerGlassBackground(
                 model = backdropRequest, contentDescription = null, contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
                     .graphicsLayer { scaleX = 1.18f; scaleY = 1.18f; alpha = if (isDark) 0.58f else 0.32f }
-                    .blur(56.dp)
+                    .playerBackdropBlur(56.dp)
             )
         }
         // A broad reflection and neutral veil give gloss without obscuring controls or cover art.
@@ -2411,7 +2507,8 @@ private fun PlayerTimelineSection(
     dominantColor: State<Color>,
     modifier: Modifier = Modifier,
     showQuality: Boolean = true,
-    active: Boolean = true
+    active: Boolean = true,
+    qualityFade: State<Float>? = null
 ) {
     val appColors = LocalAppColors.current
     var isUserScrubbing by remember { mutableStateOf(false) }
@@ -2512,9 +2609,10 @@ private fun PlayerTimelineSection(
             )
 
             // Dynamic Quality Chip adapting white or dark color with proper background contrast
-            AnimatedVisibility(
-                visible = showQuality && qualityChipText.isNotBlank(),
-                enter = fadeIn(tween(220)), exit = fadeOut(tween(180))
+            if (qualityChipText.isNotBlank()) Box(
+                Modifier.graphicsLayer {
+                    alpha = qualityFade?.let { 1f - it.value } ?: if (showQuality) 1f else 0f
+                }.then(if (!showQuality) Modifier.clearAndSetSemantics { } else Modifier)
             ) {
                 Surface(
                     color = Color.Transparent,

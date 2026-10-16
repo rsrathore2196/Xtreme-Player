@@ -149,7 +149,8 @@ fun SyncedLyricsView(
     isDark: Boolean = LocalAppColors.current.isDark,
     onRetry: () -> Unit = {},
     currentPositionProvider: () -> Long = { playbackPositionFlow?.value ?: currentPositionMs },
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    viewportAnimating: Boolean = false
 ) {
     val appColors = LocalAppColors.current
     val haptic = LocalHapticFeedback.current
@@ -213,7 +214,10 @@ fun SyncedLyricsView(
         fontWeight = FontWeight.Medium, textAlign = TextAlign.Start)
     val rowHeights = remember(lyrics?.trackId, lines, viewportSize.width, density, lyricStyle, romanizationStyle) { mutableMapOf<Int, Int>() }
     var hasInitialScrolled by remember(lyrics?.trackId, lines) { mutableStateOf(false) }
-    LaunchedEffect(lyrics?.trackId, lines, activeLineIndex, isSynced, followPlayback, isDragged, viewportSize, rowHeights) {
+    LaunchedEffect(lyrics?.trackId, lines, activeLineIndex, isSynced, followPlayback, isDragged, viewportSize, rowHeights, viewportAnimating) {
+        // Expansion changes viewport bounds every frame. Follow once after it
+        // settles instead of canceling/restarting a 350ms scroll on every resize.
+        if (viewportAnimating) return@LaunchedEffect
         if (!isSynced || lines.isEmpty() || !followPlayback || isDragged) return@LaunchedEffect
         // Before the first vocal, show the first line without marking it active.
         val targetIndex = activeLineIndex.coerceAtLeast(0)
@@ -425,6 +429,7 @@ fun SyncedLyricsView(
                             isPast = isPast,
                             isSynced = isSynced,
                             isPlaying = isPlaying,
+                            viewportAnimating = viewportAnimating,
                             trackLanguage = lyrics.language,
                             trackArtist = lyrics.artist,
                             activeTextColor = activeTextColor,
@@ -456,6 +461,7 @@ private fun KaraokeLineItem(
     isPast: Boolean,
     isSynced: Boolean,
     isPlaying: Boolean,
+    viewportAnimating: Boolean,
     trackLanguage: String?,
     trackArtist: String?,
     activeTextColor: Color,
@@ -506,9 +512,10 @@ private fun KaraokeLineItem(
     val density = LocalDensity.current
     val broadRadius = with(density) { 3.dp.toPx() }
     val coreRadius = with(density) { 1.dp.toPx() }
-    val revealUnits = remember(textLayoutResult, measuredWords) {
-        textLayoutResult?.let { buildRevealUnits(it, measuredWords) } ?: emptyList()
+    val wordRuns = remember(textLayoutResult, measuredWords) {
+        textLayoutResult?.let { buildWordRuns(it, measuredWords) } ?: emptyList()
     }
+    val revealUnits = remember(wordRuns) { wordRuns.flatMap { it.reveals } }
     val fallbackRegions = remember(textLayoutResult, revealUnits) {
         val layout = textLayoutResult
         if (layout == null || revealUnits.isNotEmpty()) emptyList() else
@@ -520,9 +527,11 @@ private fun KaraokeLineItem(
     // Only active lines prepare halos. Keep the finished immutable masks through
     // the outgoing fade; provider-frame updates never restart this preparation.
     var glyphGlows by remember(line.text, measuredWords, density) { mutableStateOf<PreparedGlyphGlows?>(null) }
-    LaunchedEffect(textLayoutResult, isActive, broadRadius, coreRadius) {
+    LaunchedEffect(textLayoutResult, isActive, broadRadius, coreRadius, viewportAnimating) {
         val layout = textLayoutResult ?: return@LaunchedEffect
-        if (!isActive || glyphGlows?.matches(layout) == true) return@LaunchedEffect
+        // Width changes can reshape the paragraph each frame in landscape.
+        // Never allocate new halo bitmaps for intermediate transition geometry.
+        if (viewportAnimating || !isActive || glyphGlows?.matches(layout) == true) return@LaunchedEffect
         val regions = if (revealUnits.isEmpty()) fallbackRegions else revealUnits.flatMap { it.regions }
         glyphGlows = prepareGlyphGlows(layout, regions, broadRadius, coreRadius)
     }
@@ -541,11 +550,12 @@ private fun KaraokeLineItem(
             val layout = textLayoutResult
             // Glyph bounds and wrapped/bidirectional runs are prepared once, not per frame.
             val units = revealUnits
+            val runs = wordRuns
             val fallbackRows = fallbackRegions
             val completed = Path()
             val moving = Path()
             val liftedCompleted = Path()
-            val liftHeight = 4.dp.toPx()
+            val liftHeight = 1.25.dp.toPx()
             val feather = 8.dp.toPx()
             val revealPaint = RevealPaint(activeTextColor, glowColor, broadRadius, glyphGlows?.takeIf { layout != null && it.matches(layout) })
             onDrawWithContent {
@@ -576,34 +586,41 @@ private fun KaraokeLineItem(
                         clipPath(completed) { drawText(layout, color = activeTextColor) }
                     }
                 } else {
-                    // Remove moving runs from the stationary base first. Painting both
-                    // would leave a second, dim copy underneath every lifted word.
+                    // Move whole shaped words, retaining authentic syllable reveal
+                    // inside them. Independent character fragments break joined scripts
+                    // and make fast syllables look detached from their baseline.
                     moving.reset()
-                    for (unit in units) {
-                        if (vocalLift(position, unit.start, unit.end) > 0f) {
-                            for (region in unit.regions) moving.addRect(region.bounds)
+                    for (run in runs) {
+                        if (run.canLift && vocalLift(position, run.start, run.end) > 0.001f) {
+                            for (region in run.regions) moving.addRect(region.bounds)
                         }
                     }
                     clipPath(moving, clipOp = ClipOp.Difference) { this@onDrawWithContent.drawContent() }
-                    for (unit in units) {
-                        if (position < unit.start) continue
-                        val progress = ((position - unit.start).toFloat() / (unit.end - unit.start).coerceAtLeast(1)).coerceIn(0f, 1f)
-                        val glow = vocalGlow(position, unit.start, unit.end) * focus
-                        val lift = vocalLift(position, unit.start, unit.end)
-                        if (lift > 0f) {
+                    for (run in runs) {
+                        if (position < run.start) continue
+                        val lift = if (run.canLift) vocalLift(position, run.start, run.end) else 0f
+                        if (lift > 0.001f) {
                             liftedCompleted.reset()
                             translate(top = -liftHeight * lift) {
-                                for (region in unit.regions) {
+                                for (region in run.regions) {
                                     val bounds = region.bounds
                                     clipRect(bounds.left, bounds.top, bounds.right, bounds.bottom) {
                                         drawText(layout, color = inactiveTextColor)
                                     }
                                 }
-                                drawReveal(layout, unit.regions, progress, activeTextColor, feather, liftedCompleted, revealPaint, glow)
+                                for (unit in run.reveals) {
+                                    val progress = ((position - unit.start).toFloat() / (unit.end - unit.start).coerceAtLeast(1)).coerceIn(0f, 1f)
+                                    drawReveal(layout, unit.regions, progress, activeTextColor, feather, liftedCompleted, revealPaint,
+                                        vocalGlow(position, unit.start, unit.end) * focus)
+                                }
                                 clipPath(liftedCompleted) { drawText(layout, color = activeTextColor) }
                             }
                         } else {
-                            drawReveal(layout, unit.regions, progress, activeTextColor, feather, completed, revealPaint, glow)
+                            for (unit in run.reveals) {
+                                val progress = ((position - unit.start).toFloat() / (unit.end - unit.start).coerceAtLeast(1)).coerceIn(0f, 1f)
+                                drawReveal(layout, unit.regions, progress, activeTextColor, feather, completed, revealPaint,
+                                    vocalGlow(position, unit.start, unit.end) * focus)
+                            }
                         }
                     }
                     // Completed stationary runs stay one draw, even on long lines.
@@ -616,18 +633,20 @@ private fun KaraokeLineItem(
 
 private data class RevealRegion(val bounds: Rect, val rtl: Boolean)
 private data class RevealUnit(val start: Long, val end: Long, val regions: List<RevealRegion>)
+private data class WordRun(
+    val start: Long, val end: Long, val regions: List<RevealRegion>,
+    val reveals: List<RevealUnit>, val canLift: Boolean
+)
 
-/** A zero-velocity rise/settle envelope on the provider clock, including pause and seek. */
+/** Bounded rise and overlapping settle: short vocals never force a two-frame bounce. */
 private fun vocalLift(position: Long, start: Long, end: Long): Float {
-    if (position <= start || position >= end) return 0f
-    val duration = (end - start).toFloat().coerceAtLeast(1f)
-    val rise = minOf(180f, duration * 0.28f)
-    val settle = minOf(220f, duration * 0.34f)
-    fun smooth(value: Float): Float {
-        val t = value.coerceIn(0f, 1f)
-        return t * t * (3f - 2f * t)
-    }
-    return smooth((position - start) / rise) * smooth((end - position) / settle)
+    if (position <= start || position >= end + 280L) return 0f
+    val riseMs = (end - start).coerceIn(180L, 360L).toFloat()
+    val rise = ((position - start) / riseMs).coerceIn(0f, 1f)
+    val inverse = 1f - rise
+    val easedRise = 1f - inverse * inverse * inverse
+    val settle = (1f - (position - end).coerceAtLeast(0L) / 280f).coerceIn(0f, 1f)
+    return easedRise * settle * settle * (3f - 2f * settle)
 }
 
 /** Animate illumination only: the reveal edge still follows the provider's exact vocal clock. */
@@ -744,7 +763,7 @@ private suspend fun prepareGlyphGlows(
     }
 }
 
-private fun buildRevealUnits(layout: TextLayoutResult, words: List<MeasuredWord>): List<RevealUnit> {
+private fun buildWordRuns(layout: TextLayoutResult, words: List<MeasuredWord>): List<WordRun> {
     fun regions(start: Int, end: Int): List<RevealRegion> {
         if (start >= end || end > layout.layoutInput.text.length) return emptyList()
         val result = mutableListOf<RevealRegion>()
@@ -766,13 +785,13 @@ private fun buildRevealUnits(layout: TextLayoutResult, words: List<MeasuredWord>
         }
         return result
     }
-    return words.flatMap { measured ->
+    return words.map { measured ->
         val word = measured.word
         val syllables = word.syllables.takeIf { parts ->
             parts.isNotEmpty() && parts.all { it.isReliableTiming && it.durationMs > 0 } &&
                 parts.joinToString("") { it.text } == word.text
         }
-        if (syllables == null) listOf(RevealUnit(word.timestampMs, word.endTimeMs, regions(measured.charStart, measured.charEnd)))
+        val reveals = if (syllables == null) listOf(RevealUnit(word.timestampMs, word.endTimeMs, regions(measured.charStart, measured.charEnd)))
         else {
             var cursor = measured.charStart
             syllables.map { part ->
@@ -780,6 +799,9 @@ private fun buildRevealUnits(layout: TextLayoutResult, words: List<MeasuredWord>
                 RevealUnit(part.timestampMs, part.endTimeMs, regions(cursor, end)).also { cursor = end }
             }
         }
+        val wordRegions = regions(measured.charStart, measured.charEnd)
+        WordRun(word.timestampMs, word.endTimeMs, wordRegions, reveals,
+            canLift = wordRegions.isNotEmpty() && wordRegions.all { it.bounds.top == wordRegions.first().bounds.top })
     }
 }
 

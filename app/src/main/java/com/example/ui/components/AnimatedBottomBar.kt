@@ -112,11 +112,11 @@ fun AnimatedBottomBar(
         val work = if (selectionTransition.isRunning) BackgroundWorkCoordinator.navigationBusy() else null
         onDispose { work?.close() }
     }
-    val activePillBrush = remember(appColors.primaryAccent, appColors.isDark, appColors.dynamicGlassEnabled, appColors.bottomBarIndicator) {
-        if (!appColors.dynamicGlassEnabled) Brush.verticalGradient(listOf(appColors.bottomBarIndicator, appColors.bottomBarIndicator))
-        else Brush.verticalGradient(listOf(
-            appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.24f else 0.20f),
-            appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.14f else 0.12f)
+    val activePillBrush = remember(appColors.primaryAccent) {
+        // Even a custom accent with alpha must fully cover the shared backdrop.
+        Brush.verticalGradient(listOf(
+            appColors.primaryAccent.copy(alpha = 1f),
+            appColors.primaryAccent.copy(alpha = 1f)
         ))
     }
     val activeBorderStroke = remember(appColors.isDark, appColors.dynamicGlassEnabled, appColors.cardBorder) {
@@ -202,13 +202,12 @@ fun AnimatedBottomBar(
                             ),
                         contentAlignment = Alignment.Center
                     ) {
-                        // Keep both finishes composed. Their alpha follows the same
-                        // spring as the width, so the outgoing pill no longer disappears
-                        // on the tap before its label and padding have collapsed.
+                        // The selected fill stays opaque throughout expansion. Retain
+                        // the outgoing pill's existing fade as its width collapses.
                         Box(
                             modifier = Modifier
                                 .matchParentSize()
-                                .graphicsLayer { alpha = expansion.value.coerceIn(0f, 1f) }
+                                .graphicsLayer { alpha = if (isSelected) 1f else expansion.value.coerceIn(0f, 1f) }
                                 .shadow(
                                     elevation = 6.dp,
                                     shape = CircleShape,
@@ -224,7 +223,7 @@ fun AnimatedBottomBar(
                             }
                         }
 
-                        val selectedTabContentColor = appColors.textPrimary
+                        val selectedTabContentColor = appColors.onPrimaryAccent
 
                         BottomBarTabContent(
                             expansion = expansion,
