@@ -79,8 +79,9 @@ class MusicRepository(
     val lastFmHome by lazy { com.example.recommendation.LastFmHomeRecommendationEngine(this) }
 
     /** Catalogue lookup only: Last.fm, not either catalogue's search ranking, chooses the song. */
-    internal suspend fun lastFmCatalogCandidates(query: String, force: Boolean): List<MusicTrack> = withContext(Dispatchers.IO) {
-        val key = "lastfm-recording:${DiscoveryRequestCoordinator.normalize(query)}"
+    internal suspend fun lastFmCatalogCandidates(query: String, force: Boolean, recordingKey: String = "",
+        accepts: (MusicTrack) -> Boolean = { false }): List<MusicTrack> = withContext(Dispatchers.IO) {
+        val key = "lastfm-recording:$recordingKey:${DiscoveryRequestCoordinator.normalize(query)}"
         val hit = discoveryCache.get(key)
         if (hit != null && System.currentTimeMillis() - hit.fetchedAt < if (force) 15_000L else discoveryTtlMs)
             return@withContext hit.tracks
@@ -95,7 +96,13 @@ class MusicRepository(
                 val youtube = async { try { kotlinx.coroutines.withTimeoutOrNull(5_000L) {
                     YouTubeMusicApiService.searchSongsPage(query, useInnerTubeX = true, forceRefresh = force).tracks.take(10)
                 }.orEmpty() } catch (e: CancellationException) { throw e } catch (_: Exception) { emptyList() } }
-                jio.await() + youtube.await()
+                val primary = jio.await()
+                if (withContext(homeDispatcher) { primary.any(accepts) }) {
+                    // The Last.fm recording is already verified and playable in the
+                    // primary catalog; a slow secondary lookup must not stall its card.
+                    youtube.cancel()
+                    primary
+                } else primary + youtube.await()
             }
             val result = withContext(homeDispatcher) { HomeRecommendationPolicy.originals(found) }
             if (result.isNotEmpty()) discoveryCache.put(key, DiscoveryCache(result, System.currentTimeMillis()))
@@ -574,7 +581,11 @@ class MusicRepository(
             if (missedRecently() || AudioQualityPreferences.getSelectedQuality(context) != AudioQuality.HI_RES_LOSSLESS)
                 return@withLock null
             val result = kotlinx.coroutines.withTimeoutOrNull(8_000L) {
-                val query = "${StreamResolver.extractCleanTitle(track.title, track.artist)} ${StreamResolver.extractCleanArtist(track.artist)}".trim()
+                // Archive often credits only the primary artist. Optional featured
+                // credits must not turn a targeted query into an impossible AND search.
+                val artist = RecordingIdentity.artistNames(track).firstOrNull()
+                    ?: StreamResolver.extractCleanArtist(track.artist)
+                val query = "${StreamResolver.extractCleanTitle(track.title, track.artist)} $artist".trim()
                 val candidates = InternetArchiveApiService.searchLosslessPage(query, pageSize = 6, playableOnly = true).tracks
                 withContext(Dispatchers.Default) { candidates.filter { candidate ->
                     candidate.audioUrl != track.audioUrl && StreamResolver.matchesLosslessUpgrade(track, candidate) &&

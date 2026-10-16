@@ -51,7 +51,7 @@ internal class YouTubeMediaDataSource(private val context: Context, private val 
     private fun openChunk() {
         val base = requireNotNull(original)
         val stream = audio
-        val size = if (stream?.useRangeChunks == true) {
+        var size = if (stream?.useRangeChunks == true) {
             if (remaining < 0) stream.rangeChunkSize else minOf(remaining, stream.rangeChunkSize)
         } else remaining
         val spec = if (stream == null) base else base.buildUpon().setUri(stream.url)
@@ -68,9 +68,16 @@ internal class YouTubeMediaDataSource(private val context: Context, private val 
                 ?.value?.firstOrNull()
             val range = value?.let { Regex("bytes ([0-9]+)-([0-9]+)/([0-9]+)").matchEntire(it) }
                 ?: throw IOException("Audio CDN did not honor the requested range")
-            if (range.groupValues[1].toLong() != position || range.groupValues[2].toLong() != position + size - 1 ||
-                stream.contentLength?.let { it != range.groupValues[3].toLong() } == true)
+            val end = range.groupValues[2].toLong()
+            val total = range.groupValues[3].toLong()
+            if (range.groupValues[1].toLong() != position || end < position || total <= end ||
+                end != minOf(position + size - 1, total - 1) ||
+                stream.contentLength?.let { it != total } == true)
                 throw IOException("Audio CDN returned an inconsistent byte range")
+            // A valid final 206 response can be shorter than the requested chunk,
+            // especially when extraction did not publish a content length.
+            size = end - position + 1
+            if (remaining < 0) remaining = total - position
         }
         if (remaining < 0 && available >= 0 && stream?.useRangeChunks != true) remaining = available
         chunkRemaining = if (size >= 0) size else available
@@ -89,7 +96,9 @@ internal class YouTubeMediaDataSource(private val context: Context, private val 
         if (!expired && !transient) throw error
         closeDelegate()
         if (expired) {
-            val videoId = original?.key?.split(':')?.getOrNull(1).orEmpty()
+            val videoId = stream.videoId
+            val failedRoot = YouTubeAudioStreamService.playbackUri("yt_$videoId", stream.url)
+            YouTubeAudioStreamService.reject(videoId, stream.url, stream.clientId)
             if (!YouTubeAudioStreamService.isVideoId(videoId)) throw error
             val refreshed = try {
                 runBlocking(Dispatchers.IO) {
@@ -106,8 +115,10 @@ internal class YouTubeMediaDataSource(private val context: Context, private val 
             }
             // Cached bytes/extractor offsets are valid only for the same representation.
             // A format change is recovered by the player's existing time-based retry.
-            if (refreshed.isHls || refreshed.isSabr || refreshed.cacheKey != stream.cacheKey)
-                throw IOException("Audio format changed during stream refresh", error)
+            if (refreshed.isHls || refreshed.isSabr || refreshed.cacheKey != stream.cacheKey) {
+                SabrSessionRegistry.recordReplacement(failedRoot, refreshed)
+                throw SabrStreamChangedException(refreshed)
+            }
             audio = refreshed
         } else {
             try { Thread.sleep(200L * recoveries) }

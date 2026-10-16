@@ -20,7 +20,7 @@ class TrackUnavailableException(title: String) : IOException("No matching playab
 /** Selected source first, followed only by verified recordings. Archive is never initial playback. */
 internal class StreamResolver(
     private val searchStandard: suspend (String, Boolean) -> List<MusicTrack> = { query, refresh ->
-        OnlineMusicApiService.searchSongs(query, limit = 10, forceRefresh = refresh)
+        OnlineMusicApiService.searchSongs(query, limit = 20, forceRefresh = refresh)
     },
     // Retain the injection signature for existing callers; quality upgrades have their own lifecycle.
     @Suppress("UNUSED_PARAMETER") searchLossless: suspend (String) -> List<MusicTrack> = { emptyList() },
@@ -54,6 +54,9 @@ internal class StreamResolver(
             }
         }
         val rejected = failedUrl ?: track.audioUrl.takeIf { forceRefresh }
+        if (forceRefresh && failedUrl != null && youtubeSelection) selectedVideoId(track)?.let {
+            YouTubeAudioStreamService.reject(it, rejected)
+        }
         suspend fun <T> attempt(timeoutMs: Long, block: suspend () -> T): T? = try {
             withTimeoutOrNull(timeoutMs) { block() }
         } catch (e: TimeoutCancellationException) { coroutineContext.ensureActive(); null }
@@ -85,7 +88,10 @@ internal class StreamResolver(
         suspend fun standardFallback(): MusicTrack? = attempt(12_000L) {
             for (query in queries) {
                 val candidates = attempt(5_000L) { searchStandard(query, forceRefresh) }.orEmpty()
-                for (candidate in candidates.filter { matches(track, it) }.take(3)) {
+                val ranked = withContext(Dispatchers.Default) { candidates.mapNotNull { candidate ->
+                    RecordingIdentity.fallbackConfidence(track, candidate)?.let { candidate to it }
+                }.sortedByDescending { it.second }.take(8).map { it.first } }
+                for (candidate in ranked) {
                     if (usable(candidate)) return@attempt candidate
                     if (!candidate.id.startsWith("online_") || candidate.audioUrl.isNotBlank()) continue
                     val detailed = attempt(3_000L) { fetchById(candidate.id.removePrefix("online_"), forceRefresh) }
@@ -100,9 +106,12 @@ internal class StreamResolver(
                 val candidates = attempt(6_000L) {
                     YouTubeMusicApiService.searchSongsPage(query, useInnerTubeX = true).tracks
                 }.orEmpty()
-                for (candidate in candidates) {
-                    if (!matches(track, candidate) || selectedVideoId(candidate) in triedVideos) continue
-                    if (extractions++ >= 2) return@attempt null
+                val ranked = withContext(Dispatchers.Default) { candidates.mapNotNull { candidate ->
+                    RecordingIdentity.fallbackConfidence(track, candidate)?.let { candidate to it }
+                }.sortedByDescending { it.second }.take(8).map { it.first } }
+                for (candidate in ranked) {
+                    if (selectedVideoId(candidate) in triedVideos) continue
+                    if (extractions++ >= 3) return@attempt null
                     youtubeExact(candidate)?.let { return@attempt it }
                 }
             }
@@ -137,8 +146,8 @@ internal class StreamResolver(
                 (RecordingIdentity.title(requested) == RecordingIdentity.title(candidate) ||
                     RecordingIdentity.isrc(requested.isrc)?.let { it == RecordingIdentity.isrc(candidate.isrc) } == true &&
                     CatalogNames.spellingEquivalent(RecordingIdentity.title(requested), RecordingIdentity.title(candidate))) &&
-                RecordingIdentity.same(requested, candidate, durationToleranceMs = 2_000L,
-                    requireDuration = true, requireAlbum = true)
+                RecordingIdentity.fallbackConfidence(requested, candidate, durationToleranceMs = 2_000L,
+                    requireDuration = true) != null
 
         private fun selectedVideoId(track: MusicTrack): String? =
             track.id.removePrefix("yt_").takeIf { track.id.startsWith("yt_") && YouTubeAudioStreamService.isVideoId(it) }
@@ -188,6 +197,6 @@ internal class StreamResolver(
         internal fun extractCleanArtist(artist: String): String = artist.replace(topicSuffix, "")
             .replace(unknownArtists, "").trim()
         internal fun matches(requested: MusicTrack, candidate: MusicTrack): Boolean =
-            RecordingIdentity.same(requested, candidate, durationToleranceMs = 5_000L, requireAlbum = true)
+            RecordingIdentity.fallbackConfidence(requested, candidate) != null
     }
 }

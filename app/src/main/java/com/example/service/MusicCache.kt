@@ -112,8 +112,10 @@ object MusicCache {
                     val expectedItag = spec.uri.getQueryParameter("itag")?.toIntOrNull()
                     val expectedLength = spec.uri.getQueryParameter("length")?.toLongOrNull()
                     if (expectedItag != null && expectedItag != audio.itag ||
-                        expectedLength != null && audio.contentLength != null && expectedLength != audio.contentLength)
-                        throw IOException("Audio format changed; reopen the stream at its playback position")
+                        expectedLength != null && audio.contentLength != null && expectedLength != audio.contentLength) {
+                        SabrSessionRegistry.recordReplacement(spec.uri.toString(), audio)
+                        throw SabrStreamChangedException(audio)
+                    }
                 }
                 spec.buildUpon().setUri(audio.url).setKey(if (hls) spec.key else audio.cacheKey)
                     .setHttpRequestHeaders(spec.httpRequestHeaders + audio.headers).build()

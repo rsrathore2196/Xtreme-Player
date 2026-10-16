@@ -61,6 +61,18 @@ class MusicService : MediaLibraryService() {
             player.currentMediaItemIndex.coerceIn(0, checkpointItems.lastIndex), player.currentPosition.coerceAtLeast(0L)))
     }
 
+    /** MediaMetadata.equals compares only whether extras exist, not their values.
+     * Session extras reliably notify connected controllers when actual decoder data changes. */
+    private fun publishAudioProperties(item: MediaItem, audio: Bundle) {
+        val session = mediaLibrarySession ?: return
+        session.setSessionExtras(Bundle(session.sessionExtras).apply {
+            putBundle("active_audio", Bundle(audio).apply {
+                putString("track_id", item.mediaId)
+                putString("active_audio_uri", item.localConfiguration?.uri?.toString())
+            })
+        })
+    }
+
     private fun <T> future(block: suspend () -> T): ListenableFuture<T> {
         val result = SettableFuture.create<T>()
         val job = serviceScope.launch {
@@ -192,6 +204,7 @@ class MusicService : MediaLibraryService() {
                     }
                     player.replaceMediaItem(player.currentMediaItemIndex, item.buildUpon()
                         .setMediaMetadata(item.mediaMetadata.buildUpon().setExtras(extras).build()).build())
+                    publishAudioProperties(item, extras)
                     checkpoint(rebuild = true)
                     return
                 }
@@ -215,6 +228,7 @@ class MusicService : MediaLibraryService() {
                 // Metadata-only replacement retains the same source, seek position and decoder.
                 player.replaceMediaItem(player.currentMediaItemIndex, item.buildUpon()
                     .setMediaMetadata(item.mediaMetadata.buildUpon().setExtras(extras).build()).build())
+                publishAudioProperties(item, extras)
                 checkpoint(rebuild = true)
             }
             override fun onAudioSessionIdChanged(
@@ -338,6 +352,8 @@ class MusicService : MediaLibraryService() {
                                     putBoolean("audio_actual", false)
                                 }
                                 val replacement = item.buildUpon().setUri(resolved.audioUrl)
+                                    .setRequestMetadata(MediaItem.RequestMetadata.Builder()
+                                        .setMediaUri(Uri.parse(resolved.audioUrl)).build())
                                     .setMimeType(if (Uri.parse(resolved.audioUrl).lastPathSegment?.endsWith(".m3u8") == true)
                                         androidx.media3.common.MimeTypes.APPLICATION_M3U8 else null)
                                     .setMediaMetadata(metadata.buildUpon().setExtras(replacementExtras).build()).build()
@@ -599,6 +615,8 @@ class MusicService : MediaLibraryService() {
             return MediaItem.Builder()
                 .setMediaId(id)
                 .setUri(YouTubeAudioStreamService.playbackUri(id, audioUrl))
+                .setRequestMetadata(MediaItem.RequestMetadata.Builder().setMediaUri(
+                    Uri.parse(YouTubeAudioStreamService.playbackUri(id, audioUrl))).build())
                 .setMediaMetadata(
                     MediaMetadata.Builder()
                         .setTitle(title)

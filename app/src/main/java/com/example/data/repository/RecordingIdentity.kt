@@ -8,7 +8,7 @@ import kotlin.math.abs
 internal object RecordingIdentity {
     private val isrcPattern = Regex("[A-Z]{2}[A-Z0-9]{3}[0-9]{7}")
     private val codeSeparators = Regex("[-\\s]")
-    private val artistSeparators = Regex("(?i),|;|•|\\s+(?:&|and|feat\\.?|ft\\.?|featuring|with|x)\\s+")
+    private val artistSeparators = Regex("(?i),|;|•|\\s*&\\s*|\\s+(?:and|feat\\.?|ft\\.?|featuring|with|x)\\s+")
     private val featured = Regex("(?i)\\s*(?:\\(|\\[)?\\b(?:feat\\.?|ft\\.?|featuring)\\s+([^\\)\\]]+)(?:\\)|\\])?\\s*$")
     private val versions = Regex("(?i)\\b(?:live|re[ -]?mix|rmx|remaster(?:ed)?|radio[ -]?edit|acoustic|unplugged|instrumental|karaoke|cover|slowed|reverb|sped[ -]?up|nightcore|extended|demo|mono|stereo|edit)\\b")
     private val albumEdition = Regex("(?i)\\s*(?:\\(|\\[)(?:deluxe|expanded|bonus|anniversary)[^\\)\\]]*(?:\\)|\\])\\s*$")
@@ -22,7 +22,9 @@ internal object RecordingIdentity {
         StreamResolver.extractCleanTitle(track.title, track.artist).replace(featured, ""))
 
     fun artistNames(track: MusicTrack): List<String> {
-        val credits = track.artist.ifBlank { track.singers }
+        val credits = track.artist.takeUnless {
+            CatalogNames.normalize(StreamResolver.extractCleanArtist(it)) in unknown
+        } ?: track.singers
         val feature = featured.find(track.title)?.groupValues?.get(1).orEmpty()
         return (artistSeparators.split(credits) + artistSeparators.split(feature))
             .map { CatalogNames.normalize(StreamResolver.extractCleanArtist(it)) }
@@ -33,7 +35,7 @@ internal object RecordingIdentity {
     private fun compatibleArtists(first: List<String>, second: List<String>): Boolean {
         if (first.isEmpty() || second.isEmpty()) return false
         // A shared guest singer never proves that two different primary artists match.
-        if (first.first() != second.first() && first.toSet() != second.toSet()) return false
+        if (!CatalogNames.spellingEquivalent(first.first(), second.first()) && first.toSet() != second.toSet()) return false
         val guestsA = first.drop(1).toSet(); val guestsB = second.drop(1).toSet()
         return guestsA.isEmpty() || guestsB.isEmpty() || guestsA == guestsB
     }
@@ -79,6 +81,44 @@ internal object RecordingIdentity {
         // Without duration or an ISRC, contradictory release metadata is not enough
         // evidence to collapse distinct songs that happen to share title and artist.
         return sameCode || timed || compatibleAlbums(a.album, b.album)
+    }
+
+    /** Fallback scoring is separate from catalog deduplication and strict Archive validation.
+     * Missing metadata contributes no evidence; conflicting identity is always rejected. */
+    fun fallbackConfidence(requested: MusicTrack, candidate: MusicTrack,
+        durationToleranceMs: Long? = null, requireDuration: Boolean = false): Int? {
+        val a = signature(requested); val b = signature(candidate)
+        if (a.versions != b.versions || a.title.isBlank() || b.title.isBlank()) return null
+        if (a.isrc != null && b.isrc != null && a.isrc != b.isrc) return null
+        val sameCode = a.isrc != null && a.isrc == b.isrc
+        val exactTitle = a.title.replace(" ", "") == b.title.replace(" ", "")
+        if (!exactTitle && !CatalogNames.spellingEquivalent(a.title, b.title)) return null
+        val artistsKnown = a.artists.isNotEmpty() && b.artists.isNotEmpty()
+        val exactArtist = artistsKnown && (a.artists.first() == b.artists.first() || a.artists.toSet() == b.artists.toSet())
+        val closeArtist = artistsKnown && CatalogNames.spellingEquivalent(a.artists.first(), b.artists.first())
+        val primaryCredit = artistsKnown && (a.artists.first() in b.artists || b.artists.first() in a.artists)
+        if (artistsKnown && !exactArtist && !closeArtist && !(sameCode && primaryCredit)) return null
+        if (artistsKnown && a.artists.first() == b.artists.first()) {
+            val guestsA = a.artists.drop(1); val guestsB = b.artists.drop(1)
+            if (guestsA.isNotEmpty() && guestsB.isNotEmpty() && guestsA.none { first ->
+                guestsB.any { second -> CatalogNames.spellingEquivalent(first, second) }
+            }) return null
+        }
+        if (!artistsKnown && !sameCode) return null
+        if (a.language !in unknown && b.language !in unknown && a.language != b.language) return null
+        val timed = a.durationMs > 0 && b.durationMs > 0
+        if (requireDuration && !timed) return null
+        val delta = if (timed) abs(a.durationMs - b.durationMs) else Long.MAX_VALUE
+        val tolerance = durationToleranceMs ?: (a.durationMs / 40).coerceIn(3_000L, 8_000L)
+        if (timed && delta > tolerance) return null
+        // Typos in both title and artist require much stronger independent evidence.
+        if (!exactTitle && !sameCode && (!exactArtist || !timed || delta > 2_000L)) return null
+        if (!exactArtist && !sameCode && (!exactTitle || !timed || delta > 3_000L)) return null
+        if (!timed && !sameCode && (!exactTitle || !exactArtist || a.title.length < 5)) return null
+        return (if (sameCode) 110 else 0) + (if (exactTitle) 45 else 30) +
+            (if (exactArtist) 35 else if (closeArtist) 25 else 0) +
+            (if (timed) 20 - (delta / 1_000L).toInt() else 0) +
+            (if (a.album != null && a.album == b.album) 5 else 0)
     }
 
     fun key(track: MusicTrack): String = listOf(title(track),

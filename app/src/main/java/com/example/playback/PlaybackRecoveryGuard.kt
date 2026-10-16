@@ -4,19 +4,19 @@ package com.example.playback
 internal class PlaybackRecoveryGuard {
     private var trackId: String? = null
     private var generation = 0L
-    private var attempted = false
+    private var attempts = 0
 
     fun select(id: String?, newRequest: Boolean = false) {
         if (newRequest || trackId != id) {
             trackId = id
             generation++
-            attempted = false
+            attempts = 0
         }
     }
 
     fun claim(id: String): Long? {
-        if (trackId != id || attempted) return null
-        attempted = true
+        if (trackId != id || attempts >= 2) return null
+        attempts++
         return generation
     }
 

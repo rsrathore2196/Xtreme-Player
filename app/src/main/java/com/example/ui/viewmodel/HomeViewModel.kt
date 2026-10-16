@@ -47,6 +47,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
@@ -326,7 +327,7 @@ class HomeViewModel(
             Shelf.PERSONALIZED -> tasteProfile.value.topRecentTrackIds.joinToString(",") + "|" + favoriteTracks.value.map { it.id }.sorted().joinToString(",")
             else -> ""
         }
-        return "${profileKey()}|$extra"
+        return "${LastFmHomeRecommendationEngine.SOURCE}|${profileKey()}|$extra"
     }
 
     private fun needsShelfLoad(shelf: Shelf): Boolean {
@@ -881,7 +882,12 @@ class HomeViewModel(
                 if (isExplicitPull) pendingExplicitRefresh = true else pendingSilentRefresh = true
                 return@launch
             }
-            val requested = (requestedShelves ?: recommendationViewport.value).intersect(recommendationViewport.value)
+            // Empty shelves are not necessarily in the viewport yet (hero/onboarding).
+            // Bootstrap only essential discovery; all lower shelves retain on-demand loading.
+            val bootstrap = if (_ytmCard.value.tracks.isEmpty() && _countryLanguageCard.value.tracks.isEmpty())
+                setOf(Shelf.QUICK, Shelf.CHART) else emptySet()
+            val demand = recommendationViewport.value + bootstrap
+            val requested = (requestedShelves ?: demand).intersect(demand)
                 .filterTo(mutableSetOf()) { isExplicitPull || pendingExplicitRefresh || needsShelfLoad(it) }
             if (requested.isEmpty()) {
                 if (isExplicitPull) pendingExplicitRefresh = true
@@ -932,7 +938,12 @@ class HomeViewModel(
                         if (Shelf.QUICK in requested) _ytmCard.update { it.copy(isLoading = it.tracks.isEmpty(), isError = false, errorMessage = "") }
                         if (Shelf.ERA in requested) _eraCard.update { it.copy(isLoading = it.tracks.isEmpty(), isError = false, errorMessage = "") }
                         try {
-                            refreshSuggestions(activeRefreshIsExplicit, requested)
+                            val completed = priority.withBudget(14_000L) {
+                                refreshSuggestions(activeRefreshIsExplicit, requested)
+                                true
+                            }
+                            if (completed == null && generation == refreshGeneration)
+                                _refreshErrorMessage.value = "Refresh took too long. Your existing cards have been kept. Please retry."
                         } catch (e: CancellationException) { throw e }
                         catch (e: Exception) {
                             _refreshErrorMessage.value = e.message ?: "Last.fm recommendations are temporarily unavailable."
@@ -947,7 +958,10 @@ class HomeViewModel(
                         // is ready; do not add the normal idle/debounce delay to a pull.
                         if (activeRefreshIsExplicit) {
                             manualRenderGeneration = candidates.value.generation
-                            renderRecommendations()
+                            // A drag, tab change or delayed taste snapshot must not hold
+                            // the pull indicator indefinitely; the retained render collector
+                            // still publishes the latest complete result when presentation is ready.
+                            withTimeoutOrNull(2_000L) { renderRecommendations() }
                         }
                     }
                 } finally {
@@ -978,7 +992,9 @@ class HomeViewModel(
         val seed = lastFmSeed.value
         BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
         // Recheck demand after waiting for a fling/navigation; precomposed items are not demand.
-        val enabled = requested.intersect(recommendationViewport.value)
+        val bootstrap = if (_ytmCard.value.tracks.isEmpty() && _countryLanguageCard.value.tracks.isEmpty())
+            setOf(Shelf.QUICK, Shelf.CHART) else emptySet()
+        val enabled = requested.intersect(recommendationViewport.value + bootstrap)
         if (enabled.isEmpty()) return@withContext
         val contexts = enabled.associateWith(::shelfContext)
         activeRecommendationShelves = enabled
@@ -989,7 +1005,8 @@ class HomeViewModel(
             tracks = if (sameCountry) it.tracks else emptyList(), isLoading = it.tracks.isEmpty(), isError = false) }
         val batch = repository.lastFmHome.refresh(profile, country, tasteProfile.value, seed,
             historyRows.value.tracks, favoriteTracks.value, _catalogTracks.value, force, shelves = enabled)
-        awaitHomePresentation()
+        // Keep network completion independent of an ongoing drag. Rendering below
+        // already defers the single coherent shelf publication until scrolling settles.
         if (profileKey() != profileKey(profile)) return@withContext
         val sameSeed = LastFmHomeRecommendationEngine.seedKey(lastFmSeed.value) == batch.seedKey
         val results = mapOf(Shelf.QUICK to batch.quick, Shelf.ERA to batch.era, Shelf.CHART to batch.chart.orEmpty(),
@@ -1034,8 +1051,10 @@ class HomeViewModel(
         if (Shelf.CHART in enabled) _countryLanguageCard.update { it.copy(subtitle = "Last.fm listener chart for $country",
             isLoading = false, isError = batch.chart.isNullOrEmpty(),
             errorMessage = if (batch.chart.isNullOrEmpty()) "Last.fm regional charts are temporarily unavailable." else "") }
-        if (!activeRefreshIsExplicit) BackgroundWorkCoordinator.awaitIdle()
-        repository.cacheLastFmTracks(fresh)
+        if (fresh.isNotEmpty()) dataScope.launch {
+            BackgroundWorkCoordinator.awaitIdle(requireForeground = false)
+            repository.cacheLastFmTracks(fresh)
+        }
     }
 
     fun loadEraSectionIfNeeded() {

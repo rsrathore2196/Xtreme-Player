@@ -803,7 +803,8 @@ fun ExpandedPlayerScreen(
                         }
 
                         // Scrubber Timeline
-                        val qualityChipText = uiState.qualityBadge.ifBlank { track.qualityBadge }.ifBlank { "HQ Stream" }
+                        val qualityChipText = if (uiState.isLoading && uiState.selectedQuality == AudioQuality.HI_RES_LOSSLESS && !track.isLossless)
+                            "Lossless pending" else uiState.qualityBadge.ifBlank { track.qualityBadge }.ifBlank { "HQ Stream" }
                         PlayerTimelineSection(
                             trackId = track.id,
                             currentPositionProvider = currentPositionProvider,
@@ -1563,7 +1564,8 @@ fun ExpandedPlayerScreen(
             Spacer(modifier = Modifier.height(if (isLandscape) 4.dp else 14.dp))
 
             // TIMELINE SCRUB BAR (Isolated recomposition)
-            val landscapeQualityChipText = uiState.qualityBadge.ifBlank { track.qualityBadge }.ifBlank { "HQ Stream" }
+            val landscapeQualityChipText = if (uiState.isLoading && uiState.selectedQuality == AudioQuality.HI_RES_LOSSLESS && !track.isLossless)
+                "Lossless pending" else uiState.qualityBadge.ifBlank { track.qualityBadge }.ifBlank { "HQ Stream" }
             PlayerTimelineSection(
                 trackId = track.id,
                 currentPositionProvider = currentPositionProvider,

@@ -62,7 +62,10 @@ internal object SabrSessionRegistry {
     fun cacheKeyFor(bootstrap: SabrBootstrap): String {
         val format = bootstrap.audioFormat
         val identity = listOf(bootstrap.videoId, format.itag, format.lastModified, format.xtags,
-            bootstrap.audioTrackId, bootstrap.isDrc, bootstrap.mimeType, bootstrap.contentLengthBytes).joinToString("\u0000")
+            bootstrap.audioTrackId, bootstrap.isDrc, bootstrap.mimeType, bootstrap.contentLengthBytes,
+            // Without a modification identity, bytes from a renewed client/session
+            // are not proven interchangeable. Force a time-based container reopen.
+            bootstrap.serverAbrStreamingUrl.takeIf { format.lastModified <= 0 }).joinToString("\u0000")
         val digest = MessageDigest.getInstance("SHA-256").digest(identity.toByteArray())
             .joinToString("") { "%02x".format(it) }
         return "youtube-sabr:${bootstrap.videoId}:$digest"
@@ -396,7 +399,10 @@ internal object SabrSessionRegistry {
             // Routine signed-session renewal is not a transport failure. Only
             // failed-client attempts consume the bounded recovery budget.
             if (excludeCurrent && clientRecoveries++ >= 2) throw IOException("SABR client retry limit reached")
-            if (excludeCurrent) excluded.add(audio.clientId)
+            if (excludeCurrent) {
+                excluded.add(audio.clientId)
+                YouTubeAudioStreamService.reject(audio.videoId, audio.url, audio.clientId)
+            } else YouTubeAudioStreamService.invalidate(audio.videoId)
             val refreshed = YouTubeAudioStreamService.resolveSabr(audio.videoId, quality, excluded.toSet())
             if (refreshed.cacheKey != key) {
                 recordReplacement(audio.url, refreshed)

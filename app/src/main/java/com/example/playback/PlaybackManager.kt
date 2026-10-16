@@ -113,7 +113,7 @@ class PlaybackManager(
     private var losslessTransitionId: String? = null
     private data class LosslessFallback(val generation: Long, val original: MusicTrack,
         val upgraded: MusicTrack, var resumePositionMs: Long, var activated: Boolean = false,
-        var audioConfirmed: Boolean = false) {
+        var audioConfirmed: Boolean = false, var confirmedAudio: Bundle? = null) {
         val upgradedUrl: String get() = upgraded.audioUrl
     }
     private var losslessFallback: LosslessFallback? = null
@@ -268,7 +268,12 @@ class PlaybackManager(
         if (controllerReady.isCompleted) controllerReady = CompletableDeferred()
         try {
             val sessionToken = SessionToken(context, ComponentName(context, MusicService::class.java))
-            controllerFuture = MediaController.Builder(context, sessionToken).buildAsync()
+            controllerFuture = MediaController.Builder(context, sessionToken)
+                .setListener(object : MediaController.Listener {
+                    override fun onExtrasChanged(controller: MediaController, extras: Bundle) {
+                        applyActualAudioProperties(controller, extras.getBundle("active_audio"))
+                    }
+                }).buildAsync()
             controllerFuture?.addListener({
                 scope.launch {
                     try {
@@ -284,6 +289,7 @@ class PlaybackManager(
                             hydrateRestoredSession(connected)
                         }
                         setupPlayerListener()
+                        applyActualAudioProperties(connected, connected.sessionExtras.getBundle("active_audio"))
                         controllerReady.complete(connected)
                         Log.i(TAG, "MediaController initialized successfully")
                     } catch (e: Exception) {
@@ -690,8 +696,9 @@ class PlaybackManager(
                     return
                 }
                 recoveryJob?.cancel()
-                val failedUri = player.currentMediaItem?.localConfiguration?.uri
-                val youtubeUri = failedUri?.toString()?.let(com.example.data.remote.YouTubeAudioStreamService::isPlaybackUri) == true
+                val failedUri = player.currentMediaItem?.playbackUri()
+                val youtubeUri = failedUri?.toString()?.let(com.example.data.remote.YouTubeAudioStreamService::isPlaybackUri) == true ||
+                    com.example.data.remote.YouTubeAudioStreamService.isYouTubeAudio(current.id, current.audioUrl)
                 val sabrReplacement = failedUri?.toString()?.let(com.example.service.SabrSessionRegistry::takeReplacement)
                 val initialTransportSelection = sabrReplacement != null && failedUri?.scheme == "xtreme-youtube" &&
                     failedUri.getQueryParameter("itag") == null
@@ -705,7 +712,7 @@ class PlaybackManager(
                 recoveryJob = scope.launch {
                     try {
                         // CDN URLs can stay identical after a temporary connection/server failure.
-                        // The existing guard allows just one retry per selection, never a loop.
+                        // The generation-owned guard bounds retries; rejected YouTube sessions are re-extracted.
                         val resolved = if (sabrReplacement != null) {
                             // Preserve recording metadata/queue identity, and reopen a new
                             // container by playback time rather than reusing old byte offsets.
@@ -716,7 +723,7 @@ class PlaybackManager(
                                 qualityBadge = sabrReplacement.qualityBadge,
                                 isLossless = false
                             )
-                        } else if (transientFailure) {
+                        } else if (transientFailure && !youtubeUri) {
                             delay(300L)
                             current
                         } else withContext(Dispatchers.IO) {
@@ -765,12 +772,11 @@ class PlaybackManager(
                 val player = controller ?: return
                 if (player.currentMediaItem?.mediaId != current.id || !extras.getBoolean("audio_actual")) return
                 val fallback = losslessFallback
-                if (fallback != null && player.currentMediaItem?.localConfiguration?.uri?.toString() == fallback.upgradedUrl) {
-                    fallback.audioConfirmed = extras.getBoolean("isLossless")
-                    confirmLosslessActivation(player)
+                if (fallback != null && player.currentMediaItem?.playbackUri()?.toString() == fallback.upgradedUrl) {
+                    applyActualAudioProperties(player, player.sessionExtras.getBundle("active_audio"))
                     return
                 }
-                val uri = player.currentMediaItem?.localConfiguration?.uri ?: return
+                val uri = player.currentMediaItem?.playbackUri() ?: return
                 val saavn = uri.host == "saavncdn.com" || uri.host?.endsWith(".saavncdn.com") == true
                 if (!saavn && !com.example.data.remote.YouTubeAudioStreamService.isYouTubeAudio(current.id, current.audioUrl)) return
                 // JioSaavn keeps its catalog maximum for later quality changes; the
@@ -784,6 +790,31 @@ class PlaybackManager(
                     queue = queueSnapshot()) }
             }
         })
+    }
+
+    private fun MediaItem.playbackUri(): Uri? = localConfiguration?.uri ?: requestMetadata.mediaUri
+
+    private fun applyActualAudioProperties(player: MediaController, audio: Bundle?) {
+        val extras = audio ?: return
+        val current = _uiState.value.currentTrack ?: return
+        if (!extras.getBoolean("audio_actual") || extras.getString("track_id") != current.id ||
+            player.currentMediaItem?.mediaId != current.id) return
+        val address = extras.getString("active_audio_uri") ?: return
+        if (player.currentMediaItem?.playbackUri()?.toString() != address) return
+        val fallback = losslessFallback
+        if (fallback != null && fallback.upgradedUrl == address) {
+            fallback.audioConfirmed = extras.getBoolean("isLossless")
+            fallback.confirmedAudio = Bundle(extras)
+            confirmLosslessActivation(player)
+            return
+        }
+        if (fallback != null && !fallback.activated) return
+        val updated = current.copy(qualityBadge = extras.getString("qualityBadge").orEmpty(),
+            bitrateKbps = if (address.contains("saavncdn.com")) current.bitrateKbps else extras.getInt("bitrate"),
+            isLossless = extras.getBoolean("isLossless"))
+        if (updated == current) return
+        replaceQueueTrack(player.currentMediaItemIndex, updated)
+        _uiState.update { it.copy(currentTrack = updated, qualityBadge = updated.qualityBadge, queue = queueSnapshot()) }
     }
 
     private fun showPlaybackFailure(message: String) {
@@ -856,7 +887,7 @@ class PlaybackManager(
             val pos = player.currentPosition.coerceAtLeast(0L)
             val upgrade = losslessFallback
             if (upgrade != null && !upgrade.activated &&
-                player.currentMediaItem?.localConfiguration?.uri?.toString() == upgrade.upgradedUrl &&
+                player.currentMediaItem?.playbackUri()?.toString() == upgrade.upgradedUrl &&
                 kotlin.math.abs(pos - upgrade.resumePositionMs) > 2_000L) return
             val dur = if (player.duration > 0) player.duration else _uiState.value.durationMs
             val buf = player.bufferedPosition.coerceAtLeast(0L)
@@ -917,7 +948,13 @@ class PlaybackManager(
                 // A pause/rebuffer cancels this pre-lookup delay and starts it afresh on resume.
                 delay(3_000L)
                 if (!stillCurrent()) return@launch
-                if (player.bufferedPosition - player.currentPosition < 2_000L) return@launch
+                // A short-buffer transport (including SABR) must not permanently disable
+                // upgrades. Wait a bounded interval for healthy playback, then attempt once.
+                val stable = withTimeoutOrNull(6_000L) {
+                    while (stillCurrent() && player.bufferedPosition - player.currentPosition < 1_000L) delay(250L)
+                    stillCurrent()
+                } == true
+                if (!stable) return@launch
                 losslessLookupStarted = true
                 val duration = player.duration.takeIf { it > 0L } ?: original.durationMs
                 if (duration <= 0L) return@launch
@@ -925,7 +962,7 @@ class PlaybackManager(
                 val lossless = withContext(Dispatchers.IO) { repo.findLosslessUpgrade(reference) } ?: return@launch
                 if (!stillCurrent()) return@launch
                 // Optional prefetch must not starve the audible provider on a weak link.
-                if (player.bufferedPosition - player.currentPosition < 6_000L ||
+                if (player.playbackState != Player.STATE_READY ||
                     duration - player.currentPosition < 8_000L) return@launch
                 // Preserve the selected recording's identity, artwork, lyrics and user metadata.
                 val candidate = original.copy(audioUrl = lossless.audioUrl, bitrateKbps = lossless.bitrateKbps,
@@ -965,9 +1002,10 @@ class PlaybackManager(
                 player.seekTo(index, position)
                 player.prepare()
                 player.playWhenReady = resume
-                val activated = withTimeoutOrNull(2_000L) {
+                val activated = withTimeoutOrNull(4_000L) {
                     while (ownsSelection(original.id, generation) &&
-                        player.currentMediaItem?.localConfiguration?.uri?.toString() == replacement.audioUrl) {
+                        player.currentMediaItem?.playbackUri()?.toString() == replacement.audioUrl) {
+                        applyActualAudioProperties(player, player.sessionExtras.getBundle("active_audio"))
                         confirmLosslessActivation(player)
                         if (losslessFallback?.activated == true) return@withTimeoutOrNull true
                         if (player.playerError != null) break
@@ -984,6 +1022,8 @@ class PlaybackManager(
                 val current = _uiState.value.currentTrack
                 if (current != null && ownsSelection(current.id, generation)) restoreLosslessFallback(player, current)
                 Log.d(TAG, "Optional lossless upgrade unavailable: ${e.message}")
+            } finally {
+                if (losslessAttemptKey == key && !losslessLookupStarted) losslessAttemptKey = null
             }
         }
     }
@@ -995,9 +1035,9 @@ class PlaybackManager(
             _uiState.value.selectedQuality != AudioQuality.HI_RES_LOSSLESS ||
             player.currentMediaItem?.mediaId != fallback.original.id || player.playbackState != Player.STATE_READY ||
             kotlin.math.abs(player.currentPosition - fallback.resumePositionMs) > 2_000L ||
-            player.currentMediaItem?.localConfiguration?.uri?.toString() != fallback.upgradedUrl || player.playerError != null) return
+            player.currentMediaItem?.playbackUri()?.toString() != fallback.upgradedUrl || player.playerError != null) return
         val current = _uiState.value.currentTrack?.takeIf { it.id == fallback.original.id } ?: return
-        val extras = player.mediaMetadata.extras ?: return
+        val extras = fallback.confirmedAudio ?: player.mediaMetadata.extras ?: return
         if (!extras.getBoolean("isLossless") || !extras.getBoolean("audio_actual")) return
         val updated = current.copy(audioUrl = fallback.upgradedUrl, bitrateKbps = extras.getInt("bitrate"),
             qualityBadge = extras.getString("qualityBadge") ?: fallback.upgraded.qualityBadge,
@@ -1012,7 +1052,7 @@ class PlaybackManager(
     private fun restoreLosslessFallback(player: MediaController, current: MusicTrack): Boolean {
         val fallback = losslessFallback ?: return false
         if (fallback.generation != selectionGeneration || fallback.original.id != current.id ||
-            fallback.upgradedUrl != player.currentMediaItem?.localConfiguration?.uri?.toString() ||
+            fallback.upgradedUrl != player.currentMediaItem?.playbackUri()?.toString() ||
             player.currentMediaItem?.mediaId != current.id) return false
         losslessFallback = null
         val index = player.currentMediaItemIndex
@@ -1810,7 +1850,7 @@ class PlaybackManager(
                 val updatedTrack = currentTrack.copy(
                     audioUrl = updatedUrl,
                     // Keep the catalog's supported maximum when changing the playback preference.
-                    qualityBadge = if (availableBitrate < 96) "$availableBitrate kbps" else AudioQuality.fromId(availableBitrate.toString()).badge
+                    qualityBadge = com.example.data.remote.YouTubeAudioStreamService.displayQuality("AAC", availableBitrate)
                 )
                 val currentPos = player.currentPosition
                 val wasPlaying = player.isPlaying
@@ -1893,7 +1933,7 @@ class PlaybackManager(
         }
         val effectiveBitrate = if (audioUrl.contains("saavncdn.com")) availableBitrate else bitrateKbps
         val rawBadge = if (audioUrl.contains("saavncdn.com")) {
-            if (availableBitrate < 96) "$availableBitrate kbps" else AudioQuality.fromId(availableBitrate.toString()).badge
+            com.example.data.remote.YouTubeAudioStreamService.displayQuality("AAC", availableBitrate)
         } else qualityBadge.ifBlank { if (isLossless) "Lossless" else "HQ Stream" }
         val effectiveBadge = rawBadge
             .replace("YouTube Music", "HQ Stream", ignoreCase = true)
@@ -1905,6 +1945,8 @@ class PlaybackManager(
         return MediaItem.Builder()
             .setMediaId(id)
             .setUri(com.example.data.remote.YouTubeAudioStreamService.playbackUri(id, effectiveUrl))
+            .setRequestMetadata(MediaItem.RequestMetadata.Builder().setMediaUri(Uri.parse(
+                com.example.data.remote.YouTubeAudioStreamService.playbackUri(id, effectiveUrl))).build())
             .setMediaMetadata(
                 MediaMetadata.Builder()
                     .setTitle(title)
