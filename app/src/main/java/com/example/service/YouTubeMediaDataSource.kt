@@ -30,6 +30,14 @@ internal class YouTubeMediaDataSource(private val context: Context, private val 
         listeners.add(listener); delegate?.addTransferListener(listener)
     }
     override fun open(dataSpec: DataSpec): Long {
+        if (dataSpec.uri.scheme == "xtreme-sabr") {
+            val source = SabrDataSource(context)
+            listeners.forEach(source::addTransferListener)
+            delegate = source
+            original = dataSpec
+            remaining = source.open(dataSpec)
+            return remaining
+        }
         original = dataSpec
         audio = YouTubeAudioStreamService.cachedForUrl(dataSpec.uri.toString())?.takeUnless { it.isHls }
         recoveries = 0
@@ -98,7 +106,8 @@ internal class YouTubeMediaDataSource(private val context: Context, private val 
             }
             // Cached bytes/extractor offsets are valid only for the same representation.
             // A format change is recovered by the player's existing time-based retry.
-            if (refreshed.cacheKey != stream.cacheKey) throw IOException("Audio format changed during stream refresh", error)
+            if (refreshed.isHls || refreshed.isSabr || refreshed.cacheKey != stream.cacheKey)
+                throw IOException("Audio format changed during stream refresh", error)
             audio = refreshed
         } else {
             try { Thread.sleep(200L * recoveries) }
@@ -106,6 +115,7 @@ internal class YouTubeMediaDataSource(private val context: Context, private val 
         }
     }
     override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+        if (original?.uri?.scheme == "xtreme-sabr") return requireNotNull(delegate).read(buffer, offset, length)
         if (length == 0) return 0
         if (remaining == 0L) return C.RESULT_END_OF_INPUT
         while (true) {

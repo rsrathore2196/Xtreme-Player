@@ -13,7 +13,11 @@ import org.json.JSONObject
 import java.io.IOException
 
 /** Host quality/transport policy only. InnerTubeX owns requests, selection and deciphering. */
-internal class YouTubeAudioFormatPolicy(private val maximumBitrate: Int, private val hlsOnly: Boolean?) : Interceptor {
+internal class YouTubeAudioFormatPolicy(
+    private val maximumBitrate: Int,
+    private val hlsOnly: Boolean?,
+    private val sabr: Boolean = false
+) : Interceptor {
     private val json = Json { ignoreUnknownKeys = true; coerceInputValues = true }
 
     override fun intercept(chain: Interceptor.Chain): Response {
@@ -49,6 +53,13 @@ internal class YouTubeAudioFormatPolicy(private val maximumBitrate: Int, private
                     if (hlsOnly != true) for (index in 0 until entries.length()) {
                         val item = entries.optJSONObject(index) ?: continue
                         val format = runCatching { json.decodeFromString(Format.serializer(), item.toString()) }.getOrNull() ?: continue
+                        // InnerTubeX needs the discard-video format's identity to bootstrap
+                        // SABR audio. Retain metadata only; wantVideo remains false and
+                        // SabrAudioStream never requests or emits a video track.
+                        if (sabr && !format.isAudio && format.height != null) {
+                            allowed.put(item)
+                            continue
+                        }
                         val sameVocals = original?.audioTrack?.id?.let { it == format.audioTrack?.id }
                             ?: original?.xtags?.let { it == format.xtags } ?: true
                         val supportedCodec = format.mimeType.contains("mp4a", true) ||

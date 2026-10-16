@@ -46,6 +46,8 @@ class MusicService : MediaLibraryService() {
     private var checkpointJob: Job? = null
     private var checkpointItems: List<MediaItem> = emptyList()
     private var queueGeneration = 0L
+    private var sabrRecoveryTrackId: String? = null
+    private var sabrRecoveryCount = 0
     private val app: XtremeMusicApp get() = application as XtremeMusicApp
 
     private fun checkpoint(rebuild: Boolean = false) {
@@ -172,8 +174,7 @@ class MusicService : MediaLibraryService() {
                 val item = player.currentMediaItem ?: return
                 val uri = item.localConfiguration?.uri ?: return
                 if (!YouTubeAudioStreamService.isYouTubeAudio(item.mediaId, uri.toString())) return
-                val videoId = if (uri.scheme == "xtreme-youtube") uri.pathSegments.firstOrNull().orEmpty()
-                    else item.mediaId.removePrefix("yt_")
+                val videoId = YouTubeAudioStreamService.videoIdFromUri(uri) ?: item.mediaId.removePrefix("yt_")
                 val resolved = YouTubeAudioStreamService.currentStream(videoId,
                     com.example.data.local.AudioQualityPreferences.getSelectedQuality(this@MusicService))
                 val codec = YouTubeAudioStreamService.displayCodec(format.sampleMimeType, format.codecs)
@@ -207,6 +208,10 @@ class MusicService : MediaLibraryService() {
                 if (reason == Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED) queueGeneration++
             }
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                if (sabrRecoveryTrackId != mediaItem?.mediaId) {
+                    sabrRecoveryTrackId = mediaItem?.mediaId
+                    sabrRecoveryCount = 0
+                }
                 val youtube = mediaItem?.let { YouTubeAudioStreamService.isYouTubeAudio(it.mediaId, it.localConfiguration?.uri.toString()) } == true
                 trackSelector.parameters = trackSelector.parameters.buildUpon()
                     .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, youtube)
@@ -247,8 +252,38 @@ class MusicService : MediaLibraryService() {
             }
 
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                // Notification/Android Auto resumption can run without the app's
+                // MediaController. Keep representation recovery on the same player,
+                // on its owning looper, and leave connected-controller recovery alone.
+                if (SabrSessionRegistry.controllerHandlesRecovery?.invoke() != true) {
+                    val item = player.currentMediaItem
+                    val failedUri = item?.localConfiguration?.uri
+                    val next = failedUri?.toString()?.let(SabrSessionRegistry::takeReplacement)
+                    val initialTransportSelection = failedUri?.scheme == "xtreme-youtube" &&
+                        failedUri.getQueryParameter("itag") == null
+                    if (item != null && next != null && (initialTransportSelection || sabrRecoveryCount++ < 1)) {
+                        val index = player.currentMediaItemIndex
+                        val position = player.currentPosition.coerceAtLeast(0L)
+                        val resume = player.playWhenReady
+                        val extras = Bundle(item.mediaMetadata.extras ?: Bundle()).apply {
+                            putInt("bitrate", next.bitrateKbps)
+                            putString("qualityBadge", next.qualityBadge)
+                            putBoolean("isLossless", false)
+                        }
+                        val replacement = item.buildUpon()
+                            .setUri(YouTubeAudioStreamService.playbackUri("yt_${next.videoId}", next.url))
+                            .setMimeType(if (next.isHls) androidx.media3.common.MimeTypes.APPLICATION_M3U8 else null)
+                            .setMediaMetadata(item.mediaMetadata.buildUpon().setExtras(extras).build()).build()
+                        player.replaceMediaItem(index, replacement)
+                        player.seekTo(index, position)
+                        player.prepare()
+                        player.playWhenReady = resume
+                        checkpoint(rebuild = true)
+                        return
+                    }
+                }
                 android.util.Log.w("MusicService", "Player error encountered: ${error.errorCodeName} - ${error.message}")
-                // The controller owns bounded stream recovery. Do not retry indefinitely here.
+                // Other errors keep the controller's existing bounded recovery; no service retry loop.
             }
         })
 

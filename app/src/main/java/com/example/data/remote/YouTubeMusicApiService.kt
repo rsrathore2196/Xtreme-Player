@@ -140,9 +140,8 @@ object YouTubeMusicApiService {
     suspend fun resolveAudio(track: MusicTrack, quality: com.example.playback.AudioQuality,
         forceRefresh: Boolean = false): MusicTrack? {
         val stored = android.net.Uri.parse(track.audioUrl)
-        val videoId = if (stored.scheme == "xtreme-youtube" && stored.host == "audio")
-            stored.pathSegments.firstOrNull().orEmpty() else track.id.removePrefix("yt_")
-        if ((!track.id.startsWith("yt_") && stored.scheme != "xtreme-youtube") ||
+        val videoId = YouTubeAudioStreamService.videoIdFromUri(stored) ?: track.id.removePrefix("yt_")
+        if ((!track.id.startsWith("yt_") && !YouTubeAudioStreamService.isPlaybackUri(track.audioUrl)) ||
             !YouTubeAudioStreamService.isVideoId(videoId)) return null
         val audio = YouTubeAudioStreamService.resolve(videoId, quality, forceRefresh)
         // Persist the resolved source identity, not an expiring signed CDN URL.

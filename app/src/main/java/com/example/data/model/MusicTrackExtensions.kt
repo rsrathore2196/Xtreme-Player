@@ -10,7 +10,7 @@ val MusicTrack.playbackSourceName: String
         val uri = android.net.Uri.parse(audioUrl)
         val host = uri.host.orEmpty().lowercase(Locale.ROOT)
         return when {
-            uri.scheme == "xtreme-youtube" || host == "googlevideo.com" ||
+            uri.scheme == "xtreme-youtube" || uri.scheme == "xtreme-sabr" || host == "googlevideo.com" ||
                 host.endsWith(".googlevideo.com") -> "YouTube Music"
             host == "archive.org" || host.endsWith(".archive.org") -> "Internet Archive"
             host == "saavncdn.com" || host.endsWith(".saavncdn.com") -> "JioSaavn"

@@ -95,6 +95,12 @@ class PlaybackManager(
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private var controller: MediaController? = null
+        set(value) {
+            field = value
+            com.example.service.SabrSessionRegistry.controllerHandlesRecovery = value?.let { connected ->
+                { connected.applicationLooper == android.os.Looper.myLooper() && connected.isConnected }
+            }
+        }
     private var controllerReady = CompletableDeferred<MediaController>()
     private val sessionRestored = CompletableDeferred<Unit>()
     private var pendingRestoredSession: PlaybackSessionStore.Snapshot? = null
@@ -664,7 +670,11 @@ class PlaybackManager(
                 }
                 recoveryJob?.cancel()
                 val failedUri = player.currentMediaItem?.localConfiguration?.uri
-                val failedUrl = if (failedUri?.scheme == "xtreme-youtube") current.audioUrl
+                val youtubeUri = failedUri?.toString()?.let(com.example.data.remote.YouTubeAudioStreamService::isPlaybackUri) == true
+                val sabrReplacement = failedUri?.toString()?.let(com.example.service.SabrSessionRegistry::takeReplacement)
+                val initialTransportSelection = sabrReplacement != null && failedUri?.scheme == "xtreme-youtube" &&
+                    failedUri.getQueryParameter("itag") == null
+                val failedUrl = if (youtubeUri) current.audioUrl
                     else failedUri?.toString() ?: current.audioUrl
                 val transientFailure = error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
                     error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ||
@@ -675,7 +685,17 @@ class PlaybackManager(
                     try {
                         // CDN URLs can stay identical after a temporary connection/server failure.
                         // The existing guard allows just one retry per selection, never a loop.
-                        val resolved = if (transientFailure) {
+                        val resolved = if (sabrReplacement != null) {
+                            // Preserve recording metadata/queue identity, and reopen a new
+                            // container by playback time rather than reusing old byte offsets.
+                            current.copy(
+                                audioUrl = com.example.data.remote.YouTubeAudioStreamService.playbackUri(
+                                    "yt_${sabrReplacement.videoId}", sabrReplacement.url),
+                                bitrateKbps = sabrReplacement.bitrateKbps,
+                                qualityBadge = sabrReplacement.qualityBadge,
+                                isLossless = false
+                            )
+                        } else if (transientFailure) {
                             delay(300L)
                             current
                         } else withContext(Dispatchers.IO) {
@@ -687,7 +707,7 @@ class PlaybackManager(
                         val position = player.currentPosition.coerceAtLeast(0L)
                         val resume = player.playWhenReady
                         val replacement = resolved.toMediaItem()
-                        if (!transientFailure && failedUri?.scheme != "xtreme-youtube" &&
+                        if (!transientFailure && !youtubeUri &&
                             replacement.localConfiguration?.uri?.toString() == failedUrl) {
                             throw TrackUnavailableException(current.title)
                         }
@@ -705,6 +725,10 @@ class PlaybackManager(
                                 errorMessage = null
                             )
                         }
+                        // An unresolved queue item first acquires its concrete
+                        // transport here. That one-time URI change must not spend
+                        // the later network-recovery budget; the new URI is pinned.
+                        if (initialTransportSelection) recoveryGuard.select(current.id, newRequest = true)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -1039,7 +1063,7 @@ class PlaybackManager(
     }
 
     private suspend fun playTrackInternal(track: MusicTrack, queue: List<MusicTrack>, isExplicitPlaylist: Boolean = false) {
-        if (track.audioUrl.isBlank() || Uri.parse(track.audioUrl).scheme !in setOf("http", "https", "file", "content", "xtreme-youtube")) {
+        if (track.audioUrl.isBlank() || Uri.parse(track.audioUrl).scheme !in setOf("http", "https", "file", "content", "xtreme-youtube", "xtreme-sabr")) {
             showPlaybackFailure("No playable stream is available for '${track.title}'.")
             return
         }

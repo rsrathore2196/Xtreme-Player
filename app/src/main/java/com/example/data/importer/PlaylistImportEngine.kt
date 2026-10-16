@@ -1277,7 +1277,7 @@ object PlaylistImportEngine {
         }
         fun playable(track: MusicTrack): Boolean =
             (track.audioUrl.startsWith("https://") || track.audioUrl.startsWith("http://") ||
-                track.audioUrl.startsWith("xtreme-youtube://")) &&
+                YouTubeAudioStreamService.isPlaybackUri(track.audioUrl)) &&
                 !track.audioUrl.contains("soundhelix.com", ignoreCase = true)
 
         val pool = linkedMapOf<String, MusicTrack>()

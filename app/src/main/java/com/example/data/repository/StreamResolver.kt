@@ -81,7 +81,7 @@ internal class StreamResolver(
             if (!isValidStreamUrl(result.audioUrl)) return false
             // A stable URI can stay identical after its signed URL was refreshed
             // and probed. Rejecting it would prevent recovery of the same audio.
-            val refreshed = forceRefresh && result.audioUrl.startsWith("xtreme-youtube://audio/")
+            val refreshed = forceRefresh && com.example.data.remote.YouTubeAudioStreamService.isPlaybackUri(result.audioUrl)
             return refreshed || result.audioUrl != rejectedUrl && result.audioUrl != failedUrl
         }
 
@@ -108,7 +108,7 @@ internal class StreamResolver(
         val standard: suspend (String) -> List<MusicTrack> = { searchStandard(it, forceRefresh) }
         val attemptedYouTubeTracks = mutableSetOf<String>()
         suspend fun exactYouTube(): MusicTrack? {
-            if ((!track.id.startsWith("yt_") && !track.audioUrl.startsWith("xtreme-youtube://audio/")) ||
+            if ((!track.id.startsWith("yt_") && !com.example.data.remote.YouTubeAudioStreamService.isPlaybackUri(track.audioUrl)) ||
                 !attemptedYouTubeTracks.add(track.id)) return null
             val resolved = attempt(40_000L) { resolveYouTube(track, quality, forceRefresh) }
             return resolved?.takeIf { it.id == track.id && usableYouTube(it) }?.copy(source = "Extended Stream")
