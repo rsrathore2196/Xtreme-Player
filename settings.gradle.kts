@@ -28,3 +28,4 @@ dependencyResolutionManagement {
 rootProject.name = "Xtreme Player"
 
 include(":app")
+include(":benchmark")

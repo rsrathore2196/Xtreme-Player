@@ -25,6 +25,9 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import com.example.ui.components.MainNavigationScaffold
@@ -101,6 +104,7 @@ class MainActivity : ComponentActivity() {
         PlayerViewModel.provideFactory(app.repository, app.playbackManager)
     }
 
+    @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -157,6 +161,10 @@ class MainActivity : ComponentActivity() {
             ) {
                 androidx.compose.animation.Crossfade(
                     targetState = isOnboardingCompleted,
+                    // Export existing tags only in the profile-generation variant; release semantics stay unchanged.
+                    modifier = if (BuildConfig.BUILD_TYPE.startsWith("nonMinified")) Modifier.semantics {
+                        testTagsAsResourceId = true
+                    } else Modifier,
                     label = "onboarding_crossfade"
                 ) { completed ->
                     if (completed) {

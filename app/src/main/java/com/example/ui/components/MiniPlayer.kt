@@ -45,7 +45,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -309,7 +308,10 @@ fun MiniPlayer(
                             border = playPauseMatteBorder,
                             modifier = Modifier
                                 .size(44.dp)
-                                .scale(playPauseScale)
+                                .graphicsLayer {
+                                    scaleX = playPauseScale
+                                    scaleY = playPauseScale
+                                }
                                 .shadow(
                                     elevation = if (isPlaying) 8.dp else 4.dp,
                                     shape = CircleShape,

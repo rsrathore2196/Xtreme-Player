@@ -3,6 +3,7 @@ package com.example
 import android.app.Application
 import coil.ImageLoader
 import coil.ImageLoaderFactory
+import coil.imageLoader
 import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import coil.request.CachePolicy
@@ -98,7 +99,12 @@ class XtremeMusicApp : Application(), ImageLoaderFactory {
             com.example.data.cache.SmartCacheManager.configure(this@XtremeMusicApp, repository)
             com.example.data.cache.HomeCardCache.preloadAsync(this@XtremeMusicApp,
                 "${profile.countryCode}|${profile.languages.joinToString(",")}")
+            // Construct Coil and its local disk cache on IO before the first AsyncImage composition.
+            // This performs no image fetch or decode and leaves all request/caching policies intact.
+            runCatching { imageLoader }
+                .onFailure { android.util.Log.w("XtremeMusicApp", "Image loader prewarm unavailable", it) }
             _startupReady.value = true
+            com.example.performance.BackgroundWorkCoordinator.awaitIdle(minimumUptimeMillis = 2_500L)
             com.example.data.repository.ArtistPhotoRepository.prewarm(this@XtremeMusicApp)
         }
 
@@ -112,6 +118,7 @@ class XtremeMusicApp : Application(), ImageLoaderFactory {
             com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle()
             runCatching { com.example.playback.AudioDeviceManager.init(this@XtremeMusicApp) }
                 .onFailure { android.util.Log.w("XtremeMusicApp", "Audio devices unavailable", it) }
+            com.example.performance.BackgroundWorkCoordinator.awaitIdle(minimumUptimeMillis = 5_000L)
             runCatching { com.example.data.cache.SmartCacheManager.initialize(this@XtremeMusicApp, repository) }
                 .onFailure { android.util.Log.w("XtremeMusicApp", "Cache maintenance unavailable", it) }
         }

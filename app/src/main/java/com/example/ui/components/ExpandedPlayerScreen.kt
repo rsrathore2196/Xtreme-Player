@@ -121,6 +121,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
@@ -580,13 +581,8 @@ fun ExpandedPlayerScreen(
                                                     .fillMaxSize()
                                                     .graphicsLayer { rotationY = 180f }
                                                     .background(if (appColors.isAmoled) Color(0xFF000000) else appColors.cardBackground)
-                                                    .border(
-                                                        BorderStroke(
-                                                            1.5.dp,
-                                                            if (isDark) animatedAccentColor.value.copy(alpha = 0.65f) else appColors.cardBorder
-                                                        ),
-                                                        RoundedCornerShape(22.dp)
-                                                    )
+                                                    .animatedArtworkBorder(animatedAccentColor, isDark,
+                                                        appColors.cardBorder, RoundedCornerShape(22.dp))
                                                     .padding(14.dp),
                                                 contentAlignment = Alignment.Center
                                             ) {
@@ -1401,13 +1397,8 @@ fun ExpandedPlayerScreen(
                                             .fillMaxSize()
                                             .graphicsLayer { rotationY = 180f }
                                             .background(if (appColors.isAmoled) Color(0xFF000000) else appColors.cardBackground)
-                                            .border(
-                                                BorderStroke(
-                                                    1.5.dp,
-                                                    if (isDark) animatedAccentColor.value.copy(alpha = 0.65f) else appColors.cardBorder
-                                                ),
-                                                RoundedCornerShape(24.dp)
-                                            )
+                                            .animatedArtworkBorder(animatedAccentColor, isDark,
+                                                appColors.cardBorder, RoundedCornerShape(24.dp))
                                             .padding(20.dp),
                                             contentAlignment = Alignment.Center
                                         ) {
@@ -2010,6 +2001,12 @@ private fun PlayerSyncedLyrics(
         onRetry = onRetry,
         modifier = modifier
     )
+}
+
+/** Keep Foundation's exact border rendering while isolating palette reads to its modifier scope. */
+private fun Modifier.animatedArtworkBorder(accent: State<Color>, dark: Boolean, fallback: Color,
+    shape: androidx.compose.ui.graphics.Shape): Modifier = composed {
+    border(BorderStroke(1.5.dp, if (dark) accent.value.copy(alpha = 0.65f) else fallback), shape)
 }
 
 private fun Modifier.animatedArtworkShadow(accent: State<Color>, shape: androidx.compose.ui.graphics.Shape): Modifier =

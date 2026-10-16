@@ -32,6 +32,7 @@ object ImageConfig {
  * In-memory thread-safe cache for extracted palette color schemes by track ID.
  * Once a track's colors are extracted, re-playing that track never re-triggers processing.
  */
+@androidx.compose.runtime.Immutable
 data class ExtractedTrackColors(
     val dominantColor: Color,
     val accentColor: Color,

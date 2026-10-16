@@ -8,6 +8,7 @@ import com.example.data.model.MusicTrack
 /** Provider IDs are kept separate from display names and from TheAudioDB IDs. */
 data class CatalogArtist(val id: String, val name: String, val musicBrainzId: String = "", val aliases: List<String> = emptyList(), val image: String = "")
 data class CatalogAlbum(val id: String, val title: String, val artists: List<CatalogArtist>, val image: String, val year: String)
+@androidx.compose.runtime.Immutable
 data class CatalogPlaylist(val id: String, val title: String, val image: String)
 /** Independent song-provider cursors and results waiting for the next ten rows. */
 data class TrackSearchContinuation(
@@ -17,6 +18,7 @@ data class TrackSearchContinuation(
     val includeLossless: Boolean = false
 )
 /** Opaque YouTube Music cursor, kept independent of JioSaavn's numeric pages. */
+@androidx.compose.runtime.Immutable
 data class ArtistCatalogContinuation(val query: String, val token: String)
 data class CatalogPage(
     val tracks: List<MusicTrack> = emptyList(), val albums: List<CatalogAlbum> = emptyList(),

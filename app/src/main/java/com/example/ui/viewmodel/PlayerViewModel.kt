@@ -37,6 +37,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.emitAll
 import androidx.compose.runtime.Immutable
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -178,8 +179,12 @@ class PlayerViewModel(
     // Suspend observation in the background without clearing the retained Library content.
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     val playlists: StateFlow<List<PlaylistEntity>> = com.example.performance.BackgroundWorkCoordinator.uiForeground
-        .flatMapLatest { foreground -> if (foreground) repository.getAllPlaylists() else emptyFlow() }
-        .stateIn(libraryDataScope, SharingStarted.Eagerly, emptyList())
+        .flatMapLatest { foreground -> if (foreground) kotlinx.coroutines.flow.flow {
+            com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
+            emitAll(repository.getAllPlaylists())
+        } else emptyFlow() }
+        // Start on the first Library/dialog subscriber, then retain the foreground observer.
+        .stateIn(libraryDataScope, SharingStarted.Lazily, emptyList())
 
     private val initialSettings = (application as? com.example.XtremeMusicApp)?.startupSettings
         ?: com.example.data.local.StartupSettings()
