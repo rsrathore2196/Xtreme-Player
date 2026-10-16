@@ -18,8 +18,8 @@
 
   <!-- Badges -->
   <p>
-    <a href="https://github.com/rsrathore2196/Xtreme-Player/releases"><img src="https://img.shields.io/github/v/release/rsrathore2196/Xtreme-Player?style=flat-square&logo=github&label=Release&color=orange" alt="Release Version"></a>
-    <a href="https://github.com/rsrathore2196/Xtreme-Player/releases/latest"><img src="https://img.shields.io/github/v/release/rsrathore2196/Xtreme-Player?style=flat-square&logo=android&label=Download%20APK&color=brightgreen" alt="Download Latest APK"></a>
+    <a href="https://github.com/rsrathore2196/Xtreme-Player/releases"><img src="https://img.shields.io/github/v/release/rsrathore2196/Xtreme-Player?style=flat-square&logo=github&label=Release&color=brightgreen" alt="Release"></a>
+    <a href="https://github.com/rsrathore2196/Xtreme-Player/releases/latest"><img src="https://img.shields.io/github/v/release/rsrathore2196/Xtreme-Player?style=flat-square&logo=android&label=Download" alt="Latest Release"></a>
     <a href="#"><img src="https://img.shields.io/badge/Android-8.0%2B-blue?style=flat-square&logo=android" alt="Android Version"></a>
   </p>
 
@@ -91,32 +91,38 @@
 
 ## ✨ Key Features
 
-### 🎧 High-Fidelity Audio Streaming
-- **True Lossless and 320 kbps HQ Audio:** Stream crystal-clear, high-bitrate music (WAV, AAC, FLAC) with minimal compression.
-- **Smart Caching & Zero Buffering:** Intelligent pre-caching ensures uninterrupted playback even on unstable connections.
-- **Background Playback & Media Controls:** Persistent Android 13+ lock screen and notification controls powered by AndroidX Media3.
-- **Music & Playlists:** Import playlists from Spotify, Apple Music, Amazon Music, or custom local files.
-- **Better Recommendations:** Cleaner regional song recommendations without repetitive country tags.
-- **Fresh Genre Playlists:** Fixed shuffle logic to load new, randomized songs every time you open a genre.
+### 🎧 Premium Streaming & Audio Engine
+- **Hi-Res Lossless & HQ Listening:** Enjoy FLAC, WAV, AAC, and bitrate tiers from 96 kbps up to 24-bit/192 kHz studio master quality, with adjustable audio quality settings for mobile or high-fidelity listening.
+- **Audio DSP & Equalizer:** Tune playback with a 5-band hardware equalizer, preset modes including Flat, Bass Boost, Studio Master, Vocal Enhance, Electronic, Rock, and Acoustic, plus Crystal Clear engine sharpening for cleaner vocals and percussion.
+- **Gapless, Smooth Playback:** Gapless transitions, 16-bit PCM hardware output, predictive pre-buffering, and a local LRU cache help reduce stutter and lag on weaker connections.
+- **Background & Controls:** Persistent lock screen and notification playback controls keep music playing in the background with AndroidX Media3 support.
+- **Smart Recommendations:** Discover more relevant tracks, regional chart hits, personalized mixes, and artist-based suggestions without repetitive country tags.
+- **Fresh Genre Discovery:** Shuffle through curated genre sessions with better track rotation and new recommendations every time you open a section.
 
-### 🎨 Clean & Modern Material UI
-- **Material 3 Design:** Sleek, minimalistic aesthetic with dynamic AMOLED dark mode or Material light mode and fluid animations.
-- **Modern Full-Screen Player:** Ambient artwork glow, dynamic color palette matching, real-time waveform scrubbing, and tactile haptic controls.
-- **Persistent Mini-Player:** Floating mini-player with swipe-to-skip gestures and seamless bottom-sheet expansion.
-- **Visuals & Customization:**
-  - **10 Curated Themes:** Added 5 Dark and 5 Light presets with full color palette controls.
-  - **Granular Color Picker:** Customize Accent, Canvas, and Card colors with live swatches and weight options.
-  - **Custom Gradients:** Fine-tune Background, Card, and Bottom Sheet gradients with new visual presets.
-  - **Text & UI Scaling:** Flexible 7-level scaling options for both typography and full interface density.
+### 🎨 Material You Interface & Customization
+- **Modern Material 3 UI:** Clean, glass-inspired layouts with dynamic AMOLED dark mode, light mode, or system theme matching.
+- **Custom Themes & Colors:** Choose from 10 curated presets and fine-tune accent, canvas, card, and gradient colors with live visual changes.
+- **Player UX & Visuals:** Ambient album glow, dynamic blur/liquid glass effects, high-contrast typography, full-screen player polish, and tactile haptic feedback.
+- **Text & Layout Controls:** Adjust text size, UI density, theme mode, and mini-player actions like the favorite heart and next-track control.
+- **Adaptive Personalization:** Save your preferred playback and visual settings for a consistent, tailored listening experience.
 
-### 🔍 Discovery & Music Management
-- **Instant Online Search:** Fast, debounced search engine for tracks, artists, top hits, and albums.
-- **Personalized Library:** Save favorites, organize custom playlists, and view listening history.
-- **Queue & Playlists:** Drag-and-drop track reordering, shuffle modes, and smart loop controls.
+### 🔍 Search, Library & Discovery
+- **Instant Online Search:** Search tracks, artists, albums, and top hits with a fast, debounced engine.
+- **Personalized Library:** Save favorites, track listening history, revisit recently played music, and follow most-listened artists and curated recommendations.
+- **Playlists & Queue:** Create and manage playlists, reorder tracks, shuffle, loop, and resume playback without interruption.
+- **Import from Other Services:** Import playlists from Spotify, Apple Music, Amazon Music, and custom local music sources.
+- **Home & Discovery Cards:** Explore trending tracks, personalized mixes, country/language recommendations, and inspired song sections from the Home screen.
+
+### 🧰 Smart Settings, Backup & Privacy
+- **Smart Storage & Cache:** Clear cache, smart auto-trim, configure cache quotas, and run one-tap optimization to keep storage under control.
+- **Backup & Restore:** Create backups of playlists, library entries, and preferences, restore them from phone storage, and automate backups to a chosen folder.
+- **Privacy & Proxy Controls:** Use proxy settings and privacy-conscious preferences without invasive tracking or unnecessary permissions.
+- **Accessibility & Comfort:** Scale text and app density to fit your screen and preference, with extra UI personalization and haptic feedback.
 
 ### 🔓 100% Free & Open Source
 - **No Ads, No Paywalls:** Pure music streaming without sponsored interruptions.
-- **Privacy-First:** No invasive tracking, profiling, or unnecessary background permissions.
+- **No Subscription Lock-in:** Full access to the app without monthly fees or premium gates.
+- **Privacy-First Design:** No invasive tracking, profiling, or unnecessary permissions.
 - **Community-Driven:** Fully open-source codebase open for contributions and audits.
 
 ---
