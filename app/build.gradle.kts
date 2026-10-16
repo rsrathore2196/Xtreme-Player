@@ -29,8 +29,8 @@ android {
       .orElse(provider {
         val properties = Properties()
         rootProject.file(".env").takeIf { it.isFile }?.inputStream()?.use(properties::load)
-        properties.getProperty("LASTFM_API_KEY", "")
-      }).get().trim()
+        properties.getProperty("LASTFM_API_KEY", "192cbb8649c13115eb94f982913f7add")
+      }).map { it.ifBlank { "192cbb8649c13115eb94f982913f7add" } }.get().trim()
     buildConfigField("String", "LASTFM_API_KEY", "\"" + lastFmKey.replace("\\", "\\\\").replace("\"", "\\\"") + "\"")
 
     // Optional authenticated lyrics routes; public providers work without these values.
