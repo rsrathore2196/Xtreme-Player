@@ -134,12 +134,14 @@ fun MiniPlayer(
                 .matchParentSize()
                 .xtremeLiquidGlassBackground(
                     shape = CircleShape,
-                    blurRadius = 20.dp,
-                    surfaceTintAlpha = 0.10f,
+                    blurRadius = XtremeLiquidGlassDefaults.FloatingDockBlurRadius,
+                    surfaceTintAlpha = XtremeLiquidGlassDefaults.FloatingDockTintAlpha,
                     tintColor = ambientGlowColor,
                     borderWidth = 0.8.dp,
                     elevation = 14.dp,
-                    appColors = appColors
+                    appColors = appColors,
+                    baseFillAlpha = if (appColors.isDark) XtremeLiquidGlassDefaults.FloatingDockDarkFillAlpha
+                        else XtremeLiquidGlassDefaults.FloatingDockLightFillAlpha
                 )
         )
 

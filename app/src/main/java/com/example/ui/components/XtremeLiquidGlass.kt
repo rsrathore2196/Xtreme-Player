@@ -57,6 +57,12 @@ fun rememberLiquidGlassBackdrop(captureVisibleRegions: Boolean = false): LiquidG
 
 object XtremeLiquidGlassDefaults {
     val BlurRadius: Dp = 20.dp
+    // Floating chrome needs a clearer backdrop than large frosted surfaces.
+    // Keep the same lens/rim finish, with LastWave's neutral 8dp blur balance.
+    val FloatingDockBlurRadius: Dp = 8.dp
+    const val FloatingDockTintAlpha: Float = 0.04f
+    const val FloatingDockDarkFillAlpha: Float = 0.24f
+    const val FloatingDockLightFillAlpha: Float = 0.28f
     const val SurfaceTintAlpha: Float = 0.12f
     val RimBorderWidth: Dp = 0.8.dp
     val PillShape: Shape = CircleShape
