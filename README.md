@@ -141,11 +141,9 @@
 
 ## 🚀 Getting Started
 
-Home discovery uses Last.fm metadata and matches suggestions to the existing music catalog for playback.
-Create your own API key at https://www.last.fm/api/account/create and set `LASTFM_API_KEY` in the ignored
-root `.env` file, a Gradle property, or the build environment before building. No Last.fm login or
-scrobbling permission is required. Without a configured key, existing cached Home cards remain visible
-and the refresh banner explains the missing configuration; unrelated catalog recommendations are not substituted.
+Home recommendations use anonymous YouTube Music metadata through InnerTubeX, local profile/listening signals,
+and verified JioSaavn recording matches. Cached cards render immediately; discovery and matching are bounded,
+viewport-driven background work. No recommendation API key is required.
 Recently Played and Most Listened Artists continue to use local listening history.
 
 ### Prerequisites

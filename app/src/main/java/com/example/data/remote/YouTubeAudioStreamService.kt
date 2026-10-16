@@ -116,6 +116,25 @@ object YouTubeAudioStreamService {
             if (response.status.value !in 200..299) throw IOException("YouTube Music search is unavailable")
             return body
         }
+        suspend fun discovery(operation: String, value: String, countryCode: String): String {
+            // Isolate locale/account state; recommendations must not mutate the playback
+            // extractor's session or another concurrent search's regional context.
+            val session = engine(320_000, false).innerTube.createIsolatedSession(includeAccount = false)
+            try {
+                session.locale = com.metrolist.innertubex.models.YouTubeLocale(
+                    gl = countryCode.uppercase(java.util.Locale.ROOT).takeIf { it.matches(Regex("[A-Z]{2}")) }.orEmpty(), hl = "en")
+                session.regionOverrideActive = true
+                val response = when (operation) {
+                    "related" -> session.next(client = YouTubeClient.WEB_REMIX, videoId = value)
+                    "browse" -> session.browse(client = YouTubeClient.WEB_REMIX, browseId = value, setLogin = false)
+                    else -> session.search(client = YouTubeClient.WEB_REMIX, query = value,
+                        params = "EgWKAQIIAWoKEAkQBRAKEAMQBA==", setLogin = false)
+                }
+                val body = response.bodyAsTextLimited(4 * 1024 * 1024)
+                if (response.status.value !in 200..299) throw IOException("Music discovery is temporarily unavailable")
+                return body
+            } finally { session.close() }
+        }
         suspend fun close() {
             synchronized(engines) { engines.values.toList().also { engines.clear() } }.forEach {
                 it.innerTube.close(); it.http.close()
@@ -128,6 +147,9 @@ object YouTubeAudioStreamService {
     /** Import uses the same InnerTubeX session/client stack as audio extraction. */
     internal suspend fun searchSongsResponse(query: String, continuation: String?): String =
         withContext(Dispatchers.IO) { runtime().searchSongs(query, continuation) }
+
+    internal suspend fun discoveryResponse(operation: String, value: String, countryCode: String): String =
+        withContext(Dispatchers.IO) { runtime().discovery(operation, value, countryCode) }
 
     fun isVideoId(value: String) = videoIdPattern.matches(value)
     fun isMediaUrl(value: String): Boolean = value.toHttpUrlOrNull()?.let {

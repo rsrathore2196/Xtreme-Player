@@ -24,15 +24,6 @@ android {
     versionCode = 9
     versionName = "1.9.0"
 
-    val lastFmKey = providers.gradleProperty("LASTFM_API_KEY")
-      .orElse(providers.environmentVariable("LASTFM_API_KEY"))
-      .orElse(provider {
-        val properties = Properties()
-        rootProject.file(".env").takeIf { it.isFile }?.inputStream()?.use(properties::load)
-        properties.getProperty("LASTFM_API_KEY", "192cbb8649c13115eb94f982913f7add")
-      }).map { it.ifBlank { "192cbb8649c13115eb94f982913f7add" } }.get().trim()
-    buildConfigField("String", "LASTFM_API_KEY", "\"" + lastFmKey.replace("\\", "\\\\").replace("\"", "\\\"") + "\"")
-
     // Optional authenticated lyrics routes; public providers work without these values.
     for (keyName in listOf("PAXSENIX_API_KEY", "MUSIXMATCH_API_KEY")) {
       val value = providers.gradleProperty(keyName).orElse(providers.environmentVariable(keyName)).orElse("").get()
@@ -118,7 +109,6 @@ secrets {
   propertiesFileName = ".env"
   defaultPropertiesFileName = ".env.example"
   ignoreList.add("FIREBASE_APPCHECK_DEBUG_TOKEN")
-  ignoreList.add("LASTFM_API_KEY")
 }
 
 googleServices { missingGoogleServicesStrategy = MissingGoogleServicesStrategy.WARN }

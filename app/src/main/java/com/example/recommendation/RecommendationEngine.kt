@@ -29,10 +29,6 @@ class RecommendationEngine {
     // Collaborative Filtering: Co-listening transition frequency matrix [TrackA -> Map<TrackB, Count>]
     private val coListeningMatrix = mutableMapOf<String, MutableMap<String, Int>>()
 
-    init {
-        seedCoListeningMatrix()
-    }
-
     data class ScoredCandidate(
         val track: MusicTrack,
         val totalScore: Double,
@@ -46,32 +42,6 @@ class RecommendationEngine {
         val candidateMoodTags: Set<String>,
         val matchingMoodTags: Set<String>
     )
-
-    /**
-     * Seeds initial co-listening transition graph based on curated tracks and natural listener flow.
-     */
-    private fun seedCoListeningMatrix() {
-        fun link(from: String, to: String, weight: Int = 10) {
-            coListeningMatrix.getOrPut(from) { mutableMapOf() }[to] = weight
-            coListeningMatrix.getOrPut(to) { mutableMapOf() }[from] = (weight * 0.8f).toInt()
-        }
-
-        // Synthwave & Retrowave cluster
-        link("xtreme_01", "xtreme_02", 15)
-        link("xtreme_01", "xtreme_03", 18)
-        link("xtreme_02", "xtreme_05", 14)
-        link("xtreme_03", "xtreme_06", 12)
-
-        // Chillhop, Lofi, Jazz cluster
-        link("xtreme_04", "xtreme_08", 16)
-        link("xtreme_04", "xtreme_10", 14)
-        link("xtreme_08", "xtreme_09", 11)
-
-        // Energy Electronic & Rock cluster
-        link("xtreme_05", "xtreme_06", 16)
-        link("xtreme_05", "xtreme_07", 13)
-        link("xtreme_06", "xtreme_07", 12)
-    }
 
     /**
      * Records a track played by the user into the sliding session memory (last 10 tracks),
@@ -455,39 +425,16 @@ class RecommendationEngine {
         alreadyQueuedTracks: List<MusicTrack> = emptyList(),
         tasteProfile: UserTasteProfile = UserTasteProfile.COLD_START_PROFILE
     ): List<MusicTrack> {
-        // Only the session snapshot takes the lock: expensive ranking never blocks Main's player callbacks.
-        val session = getSessionTracks()
+        // UnifiedRecommendationEngine owns selection and scoring. This final gate
+        // preserves its order and only removes queued/session duplicates or failures.
         val seen = HomeRecommendationPolicy.Recordings()
-        (session + alreadyQueuedTracks + currentTrack).forEach { seen.add(it) }
-        val seedArtists = HomeRecommendationPolicy.artists(currentTrack).toSet()
-        val seedLanguage = HomeRecommendationPolicy.normalize(currentTrack.language)
-        val seedGenre = HomeRecommendationPolicy.normalize(currentTrack.genre)
-        val seedYear = currentTrack.year.toIntOrNull()
-        val seedMood = HomeRecommendationPolicy.moodForGenre(currentTrack.genre)
-        val ranked = HomeRecommendationPolicy.originals(candidatePool).filter {
-            it.id !in alreadyQueuedIds && !seen.contains(it) &&
-                ((tasteProfile.skipCounts[tasteProfile.keyFor(it)] ?: 0) < 2 || tasteProfile.keyFor(it) in tasteProfile.favoriteRecordings)
-        }.shuffled().map { track ->
-            val artists = HomeRecommendationPolicy.artists(track)
-            val language = HomeRecommendationPolicy.normalize(track.language)
-            val genre = HomeRecommendationPolicy.normalize(track.genre)
-            val year = track.year.toIntOrNull()
-            val key = tasteProfile.keyFor(track)
-            val continuity = (if (artists.any { it in seedArtists }) 22f else 0f) +
-                (if (HomeRecommendationPolicy.known(currentTrack.language) && HomeRecommendationPolicy.known(track.language)) {
-                    if (seedLanguage == language) 18f else -18f
-                } else 0f) +
-                (if (HomeRecommendationPolicy.known(currentTrack.genre) && genre == seedGenre) 16f else 0f) +
-                (if (seedYear != null && year != null && abs(seedYear - year) <= 5) 4f else 0f) +
-                (if (seedMood != null && seedMood == HomeRecommendationPolicy.moodForGenre(track.genre)) 4f else 0f)
-            val taste = (artists.maxOfOrNull { tasteProfile.artistAffinities[it] ?: 0f } ?: 0f) * 12 +
-                (tasteProfile.genreAffinities[genre] ?: 0f) * 8 + (tasteProfile.languageAffinities[language] ?: 0f) * 8
-            val feedback = (if (track.isLiked || key in tasteProfile.favoriteRecordings) 5f else 0f) -
-                (tasteProfile.skipCounts[key] ?: 0) * 18 - minOf(tasteProfile.playCounts[key] ?: 0, 10) * 2 -
-                (if (key in tasteProfile.recentRecordings) 12 else 0)
-            track to (continuity + taste + feedback)
-        }.sortedByDescending { it.second }.map { it.first }
-        return HomeRecommendationPolicy.diversify(ranked, limit, seen)
+        (getSessionTracks() + alreadyQueuedTracks + currentTrack).forEach { seen.add(it) }
+        return candidatePool.asSequence().filter { track ->
+            track.recommendationOnly && UnifiedRecommendationEngine.verified(track) &&
+                track.id !in alreadyQueuedIds &&
+                ((tasteProfile.skipCounts[tasteProfile.keyFor(track)] ?: 0) < 2 ||
+                    tasteProfile.keyFor(track) in tasteProfile.favoriteRecordings) && seen.add(track)
+        }.take(limit).toList()
     }
 
     companion object {

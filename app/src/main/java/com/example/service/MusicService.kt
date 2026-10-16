@@ -333,7 +333,8 @@ class MusicService : MediaLibraryService() {
                             player.duration.takeIf { it > 0L } ?: extras?.getLong("duration", 0L) ?: 0L,
                             metadata.artworkUri?.toString().orEmpty(), failedUri.toString(),
                             source = extras?.getString("media_source").orEmpty(),
-                            isrc = extras?.getString("isrc").orEmpty())
+                            isrc = extras?.getString("isrc").orEmpty(),
+                            recommendationOnly = extras?.getBoolean("recommendation_only", false) == true)
                         sourceRecoveryJob = serviceScope.launch {
                             try {
                                 val resolved = withContext(Dispatchers.IO) {
@@ -604,6 +605,7 @@ class MusicService : MediaLibraryService() {
             val extras = Bundle().apply {
                 putInt("androidx.media.contentstyle.CONTENT_STYLE_PLAYABLE_HINT", 2)
                 putString("media_source", source)
+                putBoolean("recommendation_only", recommendationOnly)
                 putInt("bitrate", bitrateKbps)
                 putString("qualityBadge", qualityBadge)
                 putString("genre", genre)
@@ -743,7 +745,8 @@ class MusicService : MediaLibraryService() {
                             if (PlaybackSessionStore.isReal(item) && controller.packageName == packageName) return@async item
                             val known = app.database.musicDao().getTrackById(item.mediaId)?.toMusicTrack()
                             if (known != null && realTrack(known)) {
-                                app.repository.resolvePlayableTrack(known).toMediaItem()
+                                app.repository.resolvePlayableTrack(known.copy(recommendationOnly =
+                                    item.mediaMetadata.extras?.getBoolean("recommendation_only", false) == true)).toMediaItem()
                             } else if (PlaybackSessionStore.isReal(item)) item
                             else throw IllegalArgumentException("No real track found for this media ID")
                         } catch (e: CancellationException) { throw e }

@@ -34,6 +34,10 @@ fun MusicTrack.toMediaItem(): MediaItem {
         .setArtist(this.artist)
         .setAlbumTitle(this.album)
         .setGenre(this.genre)
+        .setExtras(android.os.Bundle().apply {
+            putBoolean("recommendation_only", recommendationOnly)
+            putString("media_source", source)
+        })
         .setArtworkUri(
             if (this.coverUrl.isNotBlank()) {
                 android.net.Uri.parse(this.coverUrl)

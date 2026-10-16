@@ -6,10 +6,6 @@ import com.example.data.local.ListeningEventDao
 import com.example.data.model.MusicTrack
 import com.example.data.model.toMediaItem
 import com.example.data.repository.MusicRepository
-import com.example.recommendation.AcousticFeatures
-import com.example.recommendation.CustomRecommendationQueryWrapper
-import com.example.recommendation.MoodVibeAnalyzer
-import com.example.recommendation.RecommendationEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -24,7 +20,7 @@ import kotlinx.coroutines.withContext
  * Extends the playback queue continuously in the background:
  * - Trigger Condition: Evaluates when remaining queue length <= 3 or on track transitions.
  * - Extracts seed metadata (artist, genre, language, acoustic features).
- * - Queries targeted candidates via YouTube Music API exclusively per architectural rules.
+ * - Uses the unified YouTube Music discovery and verified JioSaavn matching pipeline.
  * - Deduplicates against the current session history in [ListeningEventDao].
  * - Appends top 5 diverse recommended tracks to the queue without stutter or UI stalls.
  * - Completely decoupled from progress ticker updates.
@@ -90,38 +86,17 @@ class AutomixQueueManager(
                     val excludedIds = sessionPlayedIds + existingQueueIds + setOf(currentTrack.id)
 
                     // 2. Fetch targeted candidates using CustomRecommendationQueryWrapper (YouTube Music API)
-                    val targetedCandidates = CustomRecommendationQueryWrapper.fetchTargetedRecommendations(
-                        currentTrack = currentTrack,
-                        limit = 20
-                    )
+                    val targetedCandidates = repository?.recommendationRadio(currentTrack, currentQueue, 12).orEmpty()
 
-                    val pool = (targetedCandidates + candidatePool).distinctBy { it.id }
+                    val pool = (targetedCandidates + candidatePool.filter { it.recommendationOnly }).distinctBy { it.id }
 
-                    // 3. Rank and score candidates using acoustic and vibe similarity on Dispatchers.Default
-                    val rankedCandidates: List<MusicTrack> = withContext(Dispatchers.Default) {
-                        val seedMood = MoodVibeAnalyzer.analyzeMood(currentTrack)
-                        val seedAcoustic = AcousticFeatures.forTrack(currentTrack)
-
-                        pool.filter { candidate ->
-                            !excludedIds.contains(candidate.id) &&
-                            candidate.id != currentTrack.id &&
-                            !RecommendationEngine.isSameSongOrVariant(candidate.title, currentTrack.title) &&
-                            currentQueue.none { RecommendationEngine.isSameSongOrVariant(candidate.title, it.title) }
-                        }.map { candidate: MusicTrack ->
-                            val candMood = MoodVibeAnalyzer.analyzeMood(candidate)
-                            val candAcoustic = AcousticFeatures.forTrack(candidate)
-
-                            val vibeResult = MoodVibeAnalyzer.computeVibeMatch(seedMood, candMood)
-                            val acousticSim = AcousticFeatures.calculateAcousticSimilarity(seedAcoustic, candAcoustic)
-
-                            val artistBonus = if (candidate.artist.equals(currentTrack.artist, ignoreCase = true)) 15.0 else 0.0
-                            val langBonus = if (candidate.language.equals(currentTrack.language, ignoreCase = true)) 10.0 else 0.0
-
-                            val totalScore = vibeResult.vibeScore + vibeResult.bpmScore + (acousticSim * 20.0) + artistBonus + langBonus
-                            Pair(candidate, totalScore)
-                        }.sortedByDescending { it.second }
-                        .map { it.first }
-                        .take(5)
+                    // The unified engine already ranked these recordings. Keep that
+                    // order; this layer only guards queue/session identity and availability.
+                    val rankedCandidates = withContext(Dispatchers.Default) {
+                        val seen = com.example.recommendation.HomeRecommendationPolicy.Recordings()
+                        (currentQueue + currentTrack).forEach { seen.add(it) }
+                        pool.filter { candidate -> candidate.id !in excludedIds && candidate.recommendationOnly &&
+                            com.example.recommendation.UnifiedRecommendationEngine.verified(candidate) && seen.add(candidate) }.take(5)
                     }
 
                     if (rankedCandidates.isEmpty()) {

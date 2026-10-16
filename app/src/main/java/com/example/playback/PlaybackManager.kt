@@ -383,7 +383,8 @@ class PlaybackManager(
             language = extras?.getString("language") ?: "Unknown", year = extras?.getString("year").orEmpty(),
             isrc = extras?.getString("isrc").orEmpty(),
             source = source.ifBlank { if (item.mediaId.startsWith("yt_")) "Extended Stream" else "HD Stream" },
-            isLossless = item.mediaId.startsWith("ia_") || extras?.getBoolean("isLossless", false) == true)
+            isLossless = item.mediaId.startsWith("ia_") || extras?.getBoolean("isLossless", false) == true,
+            recommendationOnly = extras?.getBoolean("recommendation_only", false) == true)
     }
 
     private fun synchronizeControllerQueue(player: MediaController): Boolean {
@@ -930,6 +931,7 @@ class PlaybackManager(
         // This controller is built on Main; all native reads and mutations stay on its owner.
         if (player.applicationLooper != android.os.Looper.getMainLooper() || !player.isPlaying) return
         val original = state.currentTrack ?: return
+        if (original.recommendationOnly) return
         if (player.currentMediaItem?.mediaId != original.id ||
             original.isLossless && original.qualityBadge.startsWith("Hi-Res", ignoreCase = true)) return
         val repo = repository ?: return
@@ -1422,13 +1424,13 @@ class PlaybackManager(
                 }
 
                 val seed = _uiState.value.currentTrack ?: track
-                val local = candidateCatalogPool
+                val local = candidateCatalogPool.filter { it.recommendationOnly &&
+                    com.example.recommendation.UnifiedRecommendationEngine.verified(it) }
                 val queued = queueSnapshot()
                 val needed = (upcomingQueueTarget - remaining).coerceAtLeast(1)
                 val discovery = async(Dispatchers.IO) {
                     withTimeoutOrNull(15_000) {
-                        CustomRecommendationQueryWrapper.fetchTargetedRecommendations(seed, limit = 60,
-                            alreadyQueued = queued, minimumUsable = needed)
+                        repository?.recommendationRadio(seed, alreadyQueued = queued, limit = needed, taste = taste).orEmpty()
                     }.orEmpty()
                 }
                 // Keep an exhausted queue moving while discovery runs; do not fill all slots with generic catalog tracks.
@@ -1959,6 +1961,7 @@ class PlaybackManager(
                         putString("qualityBadge", effectiveBadge)
                         putString("genre", genre)
                         putString("media_source", source)
+                        putBoolean("recommendation_only", recommendationOnly)
                         putLong("duration", durationMs)
                         putBoolean("isLiked", isLiked)
                         putBoolean("isLossless", isLossless)

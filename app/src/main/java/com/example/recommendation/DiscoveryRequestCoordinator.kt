@@ -10,7 +10,7 @@ import kotlin.coroutines.AbstractCoroutineContextElement
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
 
-/** Shared discovery work: one optional slot, or two during an explicit Home refresh. */
+/** Shared discovery work: two bounded optional slots and a reserved urgent lane. */
 internal object DiscoveryRequestCoordinator {
     /** A pull can promote its existing refresh without launching another pass. */
     class HomeRefresh(requested: Boolean) : AbstractCoroutineContextElement(Key) {
@@ -113,7 +113,7 @@ internal object DiscoveryRequestCoordinator {
                     // settling scroll. A third slot remains available to radio;
                     // selected-track resolution still takes priority over Home.
                     val homeAllowed = resolving.value == 0 && if (requested.value)
-                        optionalRunning < 2 else optionalRunning == 0 && !scrolling.value
+                        optionalRunning < 2 else optionalRunning < 2 && !scrolling.value
                     if (running < 3 && (urgent.value || homeAllowed)) {
                         optional = !urgent.value
                         running++

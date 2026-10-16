@@ -32,22 +32,27 @@ internal class StreamResolver(
     }
 ) {
     private data class CachedStream(val track: MusicTrack, val expiresAt: Long)
-    private val cache = LinkedHashMap<Pair<String, AudioQuality>, CachedStream>(128, 0.75f, true)
+    private val cache = LinkedHashMap<Triple<String, AudioQuality, Boolean>, CachedStream>(128, 0.75f, true)
     val cacheSize: Int get() = synchronized(cache) { cache.size }
     fun clear() = synchronized(cache) { cache.clear() }
 
     suspend fun resolve(track: MusicTrack, quality: AudioQuality, forceRefresh: Boolean = false,
         failedUrl: String? = null, @Suppress("UNUSED_PARAMETER") deferLossless: Boolean = true
     ): MusicTrack = withContext(Dispatchers.IO) {
-        val key = track.id to quality
-        val youtubeSelection = selectedYouTube(track)
+        val key = Triple(track.id, quality, track.recommendationOnly)
+        if (track.recommendationOnly && (!track.id.startsWith("online_") || !track.source.equals("JIOSAAVN", true)))
+            throw TrackUnavailableException(track.title)
+        val youtubeSelection = !track.recommendationOnly && selectedYouTube(track)
+        fun providerAllowed(candidate: MusicTrack) = !track.recommendationOnly ||
+            candidate.source.equals("JIOSAAVN", true) &&
+                !YouTubeAudioStreamService.isYouTubeAudio(candidate.id, candidate.audioUrl) && !archiveTransport(candidate.audioUrl)
         if (forceRefresh) synchronized(cache) { cache.keys.removeAll { it.first == track.id } }
         else {
             // A working selected provider must not be displaced by an older cached fallback.
-            if (isValidStreamUrl(track.audioUrl) && track.audioUrl != failedUrl && !needsResolution(track))
+            if (providerAllowed(track) && isValidStreamUrl(track.audioUrl) && track.audioUrl != failedUrl && !needsResolution(track))
                 return@withContext track
             val cached = synchronized(cache) { cache[key]?.takeIf { it.expiresAt > System.currentTimeMillis() }?.track }
-            if (cached != null && cached.audioUrl != failedUrl && isValidStreamUrl(cached.audioUrl) &&
+            if (cached != null && providerAllowed(cached) && cached.audioUrl != failedUrl && isValidStreamUrl(cached.audioUrl) &&
                 youtubeSelection == YouTubeAudioStreamService.isYouTubeAudio(cached.id, cached.audioUrl)) {
                 // Signed URL lifetimes and transport compatibility remain authoritative in InnerTubeX.
                 if (!youtubeSelection) return@withContext withStream(track, cached)
@@ -62,7 +67,7 @@ internal class StreamResolver(
         } catch (e: TimeoutCancellationException) { coroutineContext.ensureActive(); null }
         catch (e: CancellationException) { throw e }
         catch (_: Exception) { null }
-        fun usable(candidate: MusicTrack): Boolean = isValidStreamUrl(candidate.audioUrl) &&
+        fun usable(candidate: MusicTrack): Boolean = providerAllowed(candidate) && isValidStreamUrl(candidate.audioUrl) &&
             candidate.audioUrl != rejected && candidate.audioUrl != failedUrl
 
         val triedVideos = mutableSetOf<String>()
@@ -119,7 +124,7 @@ internal class StreamResolver(
         }
         val resolved = withTimeoutOrNull(65_000L) {
             val selected = if (youtubeSelection) youtubeExact(track) else jioExact()
-            selected ?: standardFallback() ?: youtubeFallback()
+            selected ?: standardFallback() ?: if (!track.recommendationOnly) youtubeFallback() else null
         } ?: throw TrackUnavailableException(track.title)
         coroutineContext.ensureActive()
         val result = withStream(track, resolved)
@@ -170,7 +175,7 @@ internal class StreamResolver(
                 (track.id.startsWith("online_") || track.id.startsWith("yt_"))
         }
 
-        private fun isValidStreamUrl(url: String?): Boolean {
+        internal fun isValidStreamUrl(url: String?): Boolean {
             if (url.isNullOrBlank() || url.contains("placeholder", true) || url.startsWith("yt_")) return false
             val uri = Uri.parse(url)
             return when (uri.scheme) {

@@ -23,7 +23,8 @@ data class ArtworkRequestMetadata(
     val trackId: String? = null,
     val album: String? = null,
     val preferStableArtwork: Boolean = false,
-    val targetSize: Int = sourceDimension
+    val targetSize: Int = sourceDimension,
+    val providerArtworkOnly: Boolean = false
 )
 
 /** One visible decode; enrichment only fills the existing verified URL/Room cache. */
@@ -59,7 +60,7 @@ class ArtworkResolutionInterceptor : Interceptor {
             }
         }
         val item = metadata.item
-        val repository = item?.let { iTunesArtworkRepository.getInstance(request.context) }
+        val repository = item?.takeUnless { metadata.providerArtworkOnly }?.let { iTunesArtworkRepository.getInstance(request.context) }
         val cached = item?.let { repository?.getMemoryCachedResolvedUrl(it, sourceDimension) }
         load(cached)?.let { return it }
         val lookupKnown = item != null && repository?.getMemoryCachedUrl(item, sourceDimension) != null

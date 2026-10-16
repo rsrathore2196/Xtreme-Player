@@ -724,7 +724,7 @@ object YouTubeMusicApiService {
         }
     }
 
-    private fun parseAnyRenderer(item: JSONObject): MusicTrack? {
+    internal fun parseAnyRenderer(item: JSONObject): MusicTrack? {
         val r = item.optJSONObject("musicResponsiveListItemRenderer")
         if (r != null) return parseListItemRenderer(r)
 

@@ -47,6 +47,7 @@ internal object PlaybackSessionStore {
                                 listOf("singers", "writer", "language", "year", "isrc").forEach { key -> put(key, extras?.getString(key).orEmpty()) }
                                 put("isLiked", extras?.getBoolean("isLiked", false) ?: false)
                                 put("isLossless", extras?.getBoolean("isLossless", false) ?: false)
+                                put("recommendationOnly", extras?.getBoolean("recommendation_only", false) ?: false)
                             })
                     }
                     val json = JSONObject().put("version", 1).put("index", snapshot.index)
@@ -104,6 +105,7 @@ internal object PlaybackSessionStore {
                             listOf("singers", "writer", "language", "year", "isrc").forEach { key -> putString(key, entry.optString(key)) }
                             putBoolean("isLiked", known[id]?.isLiked ?: entry.optBoolean("isLiked"))
                             putBoolean("isLossless", entry.optBoolean("isLossless"))
+                            putBoolean("recommendation_only", entry.optBoolean("recommendationOnly"))
                         }).build()
                     MediaItem.Builder().setMediaId(id).setUri(url).setMediaMetadata(metadata).build()
                 }

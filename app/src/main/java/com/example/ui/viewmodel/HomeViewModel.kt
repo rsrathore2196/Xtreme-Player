@@ -12,10 +12,9 @@ import com.example.data.local.MusicDatabase
 import com.example.data.local.ListeningEventEntity
 import com.example.data.model.CountryData
 import com.example.data.model.MusicTrack
-import com.example.data.remote.LastFmApiService
-import com.example.recommendation.LastFmHomeRecommendationEngine
-import com.example.recommendation.LastFmHomeRecommendationEngine.Shelf
-import com.example.data.cache.LastFmShelfLoad
+import com.example.recommendation.UnifiedRecommendationEngine
+import com.example.recommendation.UnifiedRecommendationEngine.Shelf
+import com.example.data.cache.RecommendationShelfLoad
 import com.example.recommendation.HomeRecommendationPolicy
 import com.example.recommendation.DiscoveryRequestCoordinator
 import com.example.recommendation.UserTasteProfile
@@ -37,7 +36,6 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import com.example.data.repository.MusicRepository
 import com.example.playback.PlaybackManager
-import com.example.recommendation.PersonalizedHomeRecommendationEngine
 import com.example.ui.ai.HomeShelf
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -153,7 +151,6 @@ class HomeViewModel(
 
     private val database by lazy { MusicDatabase.getDatabase(application) }
     private val listeningEventDao by lazy { database.listeningEventDao() }
-    private val personalizedEngine by lazy { PersonalizedHomeRecommendationEngine(listeningEventDao, workerDispatcher) }
     val favoriteTracks = repository.getFavoriteTracks().onEach { favoritesLoaded.complete(Unit) }
         .flowOn(dataDispatcher).stateIn(dataScope, SharingStarted.Eagerly, emptyList())
     private val historyLimit = MutableStateFlow(300)
@@ -269,7 +266,7 @@ class HomeViewModel(
 
     // Card 2: YouTube Music Home Screen-Based Card
     private val _ytmCard = MutableStateFlow(
-        initialCards?.quick?.limitShelf() ?: SectionState(title = "Quick Picks", subtitle = "Last.fm discoveries for your listening taste", isLoading = true)
+        initialCards?.quick?.limitShelf() ?: SectionState(title = "Quick Picks", subtitle = "Discoveries for your languages and listening taste", isLoading = true)
     )
     val ytmCard: StateFlow<SectionState> = _ytmCard.asStateFlow()
 
@@ -306,11 +303,11 @@ class HomeViewModel(
         ?: SectionState(title = "More from Similar Artists"))
     private val _inspiredTrackCard = MutableStateFlow(initialCards?.inspiredTrack?.limitShelf()
         ?: SectionState(title = "Inspired by this Track"))
-    private val lastFmSeed = MutableStateFlow<MusicTrack?>(playbackManager.uiState.value.currentTrack)
+    private val recommendationSeed = MutableStateFlow<MusicTrack?>(playbackManager.uiState.value.currentTrack)
     private val recommendationViewport = MutableStateFlow<Set<Shelf>>(emptySet())
     private val recommendationViewports = mutableMapOf<Any, Set<Shelf>>()
-    private val lastFmLoads = initialCards?.lastFmLoads.orEmpty().toMutableMap()
-    private val shelfAttempts = mutableMapOf<Shelf, LastFmShelfLoad>()
+    private val shelfLoads = initialCards?.shelfLoads.orEmpty().toMutableMap()
+    private val shelfAttempts = mutableMapOf<Shelf, RecommendationShelfLoad>()
 
     fun setRecommendationViewport(owner: Any, keys: Set<String>) {
         synchronized(recommendationViewports) {
@@ -321,23 +318,23 @@ class HomeViewModel(
     }
 
     private fun shelfContext(shelf: Shelf): String {
-        val seed = lastFmSeed.value
+        val seed = recommendationSeed.value
         val extra = when (shelf) {
-            Shelf.SIMILAR, Shelf.INSPIRED -> LastFmHomeRecommendationEngine.seedKey(seed)
+            Shelf.SIMILAR, Shelf.INSPIRED -> UnifiedRecommendationEngine.seedKey(seed)
             Shelf.PERSONALIZED -> tasteProfile.value.topRecentTrackIds.joinToString(",") + "|" + favoriteTracks.value.map { it.id }.sorted().joinToString(",")
             else -> ""
         }
-        return "${LastFmHomeRecommendationEngine.SOURCE}|${profileKey()}|$extra"
+        return "${UnifiedRecommendationEngine.SOURCE}|${profileKey()}|$extra"
     }
 
     private fun needsShelfLoad(shelf: Shelf): Boolean {
         if (shelf == Shelf.PERSONALIZED && tasteProfile.value.isColdStart) return false
-        if (shelf in setOf(Shelf.SIMILAR, Shelf.INSPIRED) && lastFmSeed.value == null) return false
+        if (shelf in setOf(Shelf.SIMILAR, Shelf.INSPIRED) && recommendationSeed.value == null) return false
         val context = shelfContext(shelf)
         val now = System.currentTimeMillis()
         if (shelfAttempts[shelf]?.let { it.context == context && now - it.fetchedAt in 0 until 60_000L } == true) return false
-        val ttl = if (shelf in setOf(Shelf.QUICK, Shelf.ERA, Shelf.CHART)) LastFmApiService.CHART_TTL else LastFmApiService.CONTEXT_TTL
-        return lastFmLoads[shelf.name]?.let { it.context != context || now - it.fetchedAt !in 0 until ttl } ?: true
+        val ttl = if (shelf in setOf(Shelf.QUICK, Shelf.ERA, Shelf.CHART)) UnifiedRecommendationEngine.CHART_TTL else UnifiedRecommendationEngine.CONTEXT_TTL
+        return shelfLoads[shelf.name]?.let { it.context != context || now - it.fetchedAt !in 0 until ttl } ?: true
     }
     private fun recommendationSnapshot() = RecommendationCards(_ytmCard.value, _eraCard.value,
         _countryLanguageCard.value, _personalizedCard.value, _similarArtistsCard.value, _inspiredTrackCard.value)
@@ -359,14 +356,14 @@ class HomeViewModel(
         val similar: List<MusicTrack> = emptyList(),
         val inspired: List<MusicTrack> = emptyList(),
         val source: String = "", val seedKey: String = "", val seedArtist: String = "", val seedTitle: String = "",
-        val ready: Set<Shelf> = emptySet()
+        val ready: Set<Shelf> = emptySet(), val contextKey: String = ""
     )
     private fun restoredCandidates(cards: SavedHomeCards) = Candidates(cards.quickCandidates,
         cards.eraCandidates, cards.chartCandidates, cards.generation, cards.personalizedCandidates,
         cards.similarArtistCandidates, cards.inspiredTrackCandidates, cards.recommendationSource,
         cards.seedKey, cards.seedArtist, cards.seedTitle,
         Shelf.entries.filterTo(mutableSetOf()) { it.name in cards.readyShelves }.ifEmpty {
-            if (cards.recommendationSource == LastFmHomeRecommendationEngine.SOURCE) Shelf.entries.toSet() else emptySet() })
+            if (cards.recommendationSource == UnifiedRecommendationEngine.SOURCE) Shelf.entries.toSet() else emptySet() }, cards.profileKey)
     private val candidates = MutableStateFlow(initialCards?.let {
         restoredCandidates(it)
     } ?: Candidates())
@@ -458,11 +455,10 @@ class HomeViewModel(
     private suspend fun renderRecommendations() = withContext(workerDispatcher) { renderMutex.withLock {
         restored.await()
         eventsLoaded.await(); favoritesLoaded.await()
-        // A refresh owns one complete candidate snapshot. Do not rerank on individual
-        // chart/discovery arrivals or on metadata writes made by that same refresh.
-        refreshCandidatesPending.first { !it }
+        // Batches are verified snapshots. Presentation below defers replacements
+        // during scrolling/navigation without holding up background matching.
         val pool = candidates.value
-        if (pool.source != LastFmHomeRecommendationEngine.SOURCE) return@withLock
+        if (pool.source != UnifiedRecommendationEngine.SOURCE || pool.contextKey != profileKey()) return@withLock
         // Observe all generations together. An explicit render is not canceled
         // by collectLatest, so it must never wait for an obsolete captured ID list.
         val snapshot = combine(actualPlays, historyRows, favoriteTracks, _userProfile, tasteSnapshot) { events, rows, favorites, profile, taste ->
@@ -495,7 +491,7 @@ class HomeViewModel(
         if (!activeRefreshIsExplicit && pool.generation != manualRenderGeneration)
             awaitHomeIdle()
         awaitHomePresentation()
-        if (refreshCandidatesPending.value || candidates.value != pool) return@withLock
+        if (candidates.value != pool) return@withLock
         val rendering = BackgroundWorkCoordinator.busy()
         try {
         currentCoroutineContext().ensureActive()
@@ -507,8 +503,8 @@ class HomeViewModel(
             }
             renderedGeneration = pool.generation
         }
-        val shelves = personalizedEngine.generateHomeShelves(pool.personalized, inputs.profile,
-            favorites = inputs.favorites, taste = taste)
+        val shelves = listOf(HomeShelf("personalized", "Recommended for You", "Based on your listening", pool.personalized))
+            .filter { it.tracks.isNotEmpty() && !taste.isColdStart }
         currentCoroutineContext().ensureActive()
         val seen = HomeRecommendationPolicy.Recordings()
         val chart = HomeRecommendationPolicy.originals(pool.chart).take(HomeRecommendationPolicy.MAX_SHELF_TRACKS)
@@ -539,14 +535,10 @@ class HomeViewModel(
                     .firstOrNull { HomeRecommendationPolicy.normalize(it) == artist }?.trim() } ?: artist,
                 count, tracks)
         }
-        val personalizedRanked = if (taste.isColdStart) emptyList() else
-            personalizedEngine.scoreAndRankCandidates(pool.personalized, taste,
-                limit = pool.personalized.size, variationSeed = pool.generation)
-        val personalized = HomeRecommendationPolicy.diversify(fresh(personalizedRanked), HomeRecommendationPolicy.MAX_SHELF_TRACKS, seen)
-        val quickRanked = personalizedEngine.scoreAndRankCandidates(pool.quick, taste,
-            limit = pool.quick.size, variationSeed = pool.generation)
-        val quick = HomeRecommendationPolicy.diversify(fresh(quickRanked), HomeRecommendationPolicy.MAX_SHELF_TRACKS, seen)
-        val relevantSeed = pool.seedKey.isNotBlank() && pool.seedKey == LastFmHomeRecommendationEngine.seedKey(lastFmSeed.value)
+        val personalized = if (taste.isColdStart) emptyList() else HomeRecommendationPolicy.diversify(
+            fresh(pool.personalized), HomeRecommendationPolicy.MAX_SHELF_TRACKS, seen)
+        val quick = HomeRecommendationPolicy.diversify(fresh(pool.quick), HomeRecommendationPolicy.MAX_SHELF_TRACKS, seen)
+        val relevantSeed = pool.seedKey.isNotBlank() && pool.seedKey == UnifiedRecommendationEngine.seedKey(recommendationSeed.value)
         val similar = if (relevantSeed) HomeRecommendationPolicy.diversify(fresh(pool.similar), HomeRecommendationPolicy.MAX_SHELF_TRACKS, seen) else emptyList()
         val inspired = if (relevantSeed) HomeRecommendationPolicy.diversify(fresh(pool.inspired), HomeRecommendationPolicy.MAX_SHELF_TRACKS, seen) else emptyList()
         // Cancellation on a tab change must not publish a partially calculated stale shelf set.
@@ -555,7 +547,7 @@ class HomeViewModel(
         rendering.close()
         withContext(ownerDispatcher) publish@ {
         awaitHomePresentation()
-        if (refreshCandidatesPending.value || candidates.value != pool || profileKey(inputs.profile) != profileKey()) return@publish
+        if (candidates.value != pool || profileKey(inputs.profile) != profileKey()) return@publish
         _homeShelves.value = shelves
         // Reranking must retain error/loading updates arriving from the refresh requests.
         if (Shelf.CHART in pool.ready) _countryLanguageCard.update { it.copy(tracks = chart) }
@@ -564,9 +556,9 @@ class HomeViewModel(
         if (Shelf.PERSONALIZED in pool.ready) _personalizedCard.value = _personalizedCard.value.copy(tracks = personalized,
             isLoading = false, isLoaded = personalized.isNotEmpty())
         if (Shelf.SIMILAR in pool.ready) _similarArtistsCard.update { it.copy(tracks = similar, isLoading = false, isLoaded = similar.isNotEmpty(),
-            subtitle = "Related to ${pool.seedArtist} • Last.fm") }
+            subtitle = "Related to ${pool.seedArtist}") }
         if (Shelf.INSPIRED in pool.ready) _inspiredTrackCard.update { it.copy(tracks = inspired, isLoading = false, isLoaded = inspired.isNotEmpty(),
-            subtitle = "Inspired by ${pool.seedTitle} • Last.fm") }
+            subtitle = "Inspired by ${pool.seedTitle}") }
         _recommendationCards.value = recommendationSnapshot()
         lastRenderInputs = inputs
         _currentStage.value = LoadingStage.PRIORITY_3_BACKGROUND_ENRICHED
@@ -579,7 +571,7 @@ class HomeViewModel(
             inspiredTrack = _inspiredTrackCard.value, personalizedCandidates = pool.personalized,
             similarArtistCandidates = pool.similar, inspiredTrackCandidates = pool.inspired,
             recommendationSource = pool.source, seedKey = pool.seedKey, seedArtist = pool.seedArtist, seedTitle = pool.seedTitle,
-            lastFmLoads = lastFmLoads.toMap(), readyShelves = pool.ready.mapTo(mutableSetOf()) { it.name }))
+            shelfLoads = shelfLoads.toMap(), readyShelves = pool.ready.mapTo(mutableSetOf()) { it.name }))
         if (manualRenderGeneration == pool.generation) manualRenderGeneration = -1L
         val shown = chart + era + quick + personalized + similar + inspired + artistReservations.flatMap { it.tracks }
         if (shown.isNotEmpty()) {
@@ -641,7 +633,7 @@ class HomeViewModel(
 
     fun loadRegionalTrending(country: String, countryCode: String = "IN", forceRefresh: Boolean = false,
         alreadyIdle: Boolean = false) {
-        // All discovery now has one Last.fm refresh owner and cache publication.
+        // All discovery now has one unified refresh owner and cache publication.
         refreshHome(isExplicitPull = forceRefresh)
     }
 
@@ -678,7 +670,6 @@ class HomeViewModel(
     private var lastAttemptProfile: String? = null
     @Volatile private var manualRenderGeneration = -1L
     private var pendingSilentRefresh = false
-    private val refreshCandidatesPending = MutableStateFlow(false)
     private var startupRefreshScheduled = false
     private var lastDiscoverySignal: Pair<Set<String>, Set<String>>? = null
 
@@ -706,8 +697,8 @@ class HomeViewModel(
             var wasPlaying = false
             playbackManager.listeningState.collect { state ->
                 val track = state.track
-                if (track != null && LastFmHomeRecommendationEngine.seedKey(track) !=
-                    LastFmHomeRecommendationEngine.seedKey(lastFmSeed.value)) lastFmSeed.value = track
+                if (track != null && UnifiedRecommendationEngine.seedKey(track) !=
+                    UnifiedRecommendationEngine.seedKey(recommendationSeed.value)) recommendationSeed.value = track
                 val newSession = state.playSessionId != lastCardPlaySession
                 if (state.isPlaying && track != null && state.playSessionId.isNotBlank() &&
                     (newSession || !wasPlaying)) {
@@ -735,7 +726,6 @@ class HomeViewModel(
                 base.copy(similarArtists = similar, inspiredTrack = inspired)
             }.debounce(32L).collectLatest { cards ->
                 homeScrolling.first { !it }
-                refreshCandidatesPending.first { !it }
                 if (cards == recommendationSnapshot()) _recommendationCards.value = cards
             }
         }
@@ -744,10 +734,7 @@ class HomeViewModel(
                 listOf(quick, era, chart).filter { it.isError && !it.isLoading }.map { it.title }
             }.distinctUntilChanged().collect { failed ->
                 _refreshErrorMessage.value = failed.takeIf { it.isNotEmpty() }?.let {
-                    if (!LastFmApiService.isConfigured) LastFmApiService.CONFIGURATION_ERROR
-                    else listOf(_ytmCard.value, _eraCard.value, _countryLanguageCard.value)
-                        .firstOrNull { card -> card.errorMessage.contains("API key") }?.errorMessage
-                        ?: "${it.joinToString(", ")} couldn't load from Last.fm. Tap Retry to try again."
+                    "${it.joinToString(", ")} couldn't load recommendations. Tap Retry to try again."
                 }
             }
         }
@@ -773,9 +760,9 @@ class HomeViewModel(
                 candidates.value = restoredCandidates(cached)
                 savedCandidates = candidates.value
                 lastDiscoveryRefresh = cached.refreshedAt.takeIf {
-                    cached.recommendationSource == LastFmHomeRecommendationEngine.SOURCE } ?: 0L
+                    cached.recommendationSource == UnifiedRecommendationEngine.SOURCE } ?: 0L
                 lastRegionalRefresh = cached.chartRefreshedAt
-                lastFmLoads.clear(); lastFmLoads.putAll(cached.lastFmLoads)
+                shelfLoads.clear(); shelfLoads.putAll(cached.shelfLoads)
                 playbackManager.setCandidatePool(cached.catalog)
             }
             val initial = if (cached == null) repository.getInitialCatalog(_userProfile.value) else emptyList()
@@ -812,9 +799,8 @@ class HomeViewModel(
         ownerScope.launch {
             combine(candidates, tasteProfile, favoriteTracks, _userProfile, recentlyPlayed) { pool, taste, favorites, profile, recent ->
                 RenderTrigger(pool, taste, favorites, profile, recent)
-            }.combine(refreshCandidatesPending) { input, pending -> if (pending) null else input }
-                .distinctUntilChanged().debounce(300L).collectLatest { input ->
-                    if (input != null) renderRecommendations()
+            }.distinctUntilChanged().debounce(300L).collectLatest {
+                    renderRecommendations()
                 }
         }
         ownerScope.launch {
@@ -834,9 +820,31 @@ class HomeViewModel(
             }
         }
         ownerScope.launch {
+            repository.recommendations.unavailable.collectLatest { failures ->
+                if (failures.isEmpty()) return@collectLatest
+                restored.await()
+                awaitHomePresentation()
+                val failed = failures.filterValues { it > android.os.SystemClock.elapsedRealtime() }.keys
+                val old = candidates.value
+                val affected = mapOf(Shelf.QUICK to old.quick, Shelf.ERA to old.era, Shelf.CHART to old.chart,
+                    Shelf.PERSONALIZED to old.personalized, Shelf.SIMILAR to old.similar, Shelf.INSPIRED to old.inspired)
+                    .filterValues { tracks -> tracks.any { it.id in failed } }.keys
+                if (affected.isEmpty()) return@collectLatest
+                fun usable(tracks: List<MusicTrack>) = tracks.filterNot { it.id in failed }
+                candidates.update { pool -> pool.copy(quick = usable(pool.quick), era = usable(pool.era), chart = usable(pool.chart),
+                    personalized = usable(pool.personalized), similar = usable(pool.similar), inspired = usable(pool.inspired)) }
+                _catalogTracks.update { tracks -> tracks.filterNot { it.recommendationOnly && it.id in failed } }
+                playbackManager.setCandidatePool(_catalogTracks.value)
+                affected.forEach { shelfLoads.remove(it.name); shelfAttempts.remove(it) }
+                // Replace only affected visible cards from their existing discovery pool.
+                // History, artist counts and the active player/queue are never edited.
+                refreshHome(false, affected)
+            }
+        }
+        ownerScope.launch {
             // Observe actual LazyColumn demand, not precomposition or the creation of Home.
-            combine(recommendationViewport, lastFmSeed, tasteProfile, _userProfile, favoriteTracks) { visible, seed, taste, profile, favorites ->
-                Triple(visible, LastFmHomeRecommendationEngine.seedKey(seed),
+            combine(recommendationViewport, recommendationSeed, tasteProfile, _userProfile, favoriteTracks) { visible, seed, taste, profile, favorites ->
+                Triple(visible, UnifiedRecommendationEngine.seedKey(seed),
                     "${profileKey(profile)}|${taste.isColdStart}|${taste.topRecentTrackIds}|${favorites.map { it.id }.sorted()}")
             }.distinctUntilChanged().debounce(200L).collectLatest { demand ->
                 restored.await()
@@ -932,7 +940,6 @@ class HomeViewModel(
                         }
                         lastDiscoveryAttempt = System.currentTimeMillis()
                         lastAttemptProfile = profileKey()
-                        refreshCandidatesPending.value = true
                         _isRefreshing.value = activeRefreshIsExplicit
                         _refreshErrorMessage.value = null
                         if (Shelf.QUICK in requested) _ytmCard.update { it.copy(isLoading = it.tracks.isEmpty(), isError = false, errorMessage = "") }
@@ -946,14 +953,13 @@ class HomeViewModel(
                                 _refreshErrorMessage.value = "Refresh took too long. Your existing cards have been kept. Please retry."
                         } catch (e: CancellationException) { throw e }
                         catch (e: Exception) {
-                            _refreshErrorMessage.value = e.message ?: "Last.fm recommendations are temporarily unavailable."
+                            _refreshErrorMessage.value = e.message ?: "Recommendations are temporarily unavailable."
                             if (Shelf.CHART in requested) _countryLanguageCard.update { it.copy(isLoading = false, isError = true, errorMessage = e.message.orEmpty()) }
                             if (Shelf.QUICK in requested) _ytmCard.update { it.copy(isLoading = false, isError = true,
                                 errorMessage = "Quick Picks are temporarily unavailable.") }
                             if (Shelf.ERA in requested) _eraCard.update { it.copy(isLoading = false, isError = true,
                                 errorMessage = "Era hits are temporarily unavailable.") }
                         }
-                        refreshCandidatesPending.value = false
                         // Finish the visible refresh only after the coherent shelf set
                         // is ready; do not add the normal idle/debounce delay to a pull.
                         if (activeRefreshIsExplicit) {
@@ -975,7 +981,6 @@ class HomeViewModel(
                         activeRefreshPriority = null
                         activeRecommendationShelves = emptySet()
                         activeRecommendationSeed = ""
-                        refreshCandidatesPending.value = false
                         refreshWaitingForIdle = false
                         homeRefreshJob = null
                     }
@@ -988,72 +993,86 @@ class HomeViewModel(
         val profile = _userProfile.value
         val country = resolveCountryDisplayName(profile)
         val title = getAuthoritativeTrendingTitle(country)
-        val sameCountry = _countryLanguageCard.value.title == title
-        val seed = lastFmSeed.value
+        val seed = recommendationSeed.value ?: historyRows.value.tracks.firstOrNull()
         BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
-        // Recheck demand after waiting for a fling/navigation; precomposed items are not demand.
         val bootstrap = if (_ytmCard.value.tracks.isEmpty() && _countryLanguageCard.value.tracks.isEmpty())
             setOf(Shelf.QUICK, Shelf.CHART) else emptySet()
         val enabled = requested.intersect(recommendationViewport.value + bootstrap)
         if (enabled.isEmpty()) return@withContext
         val contexts = enabled.associateWith(::shelfContext)
         activeRecommendationShelves = enabled
-        activeRecommendationSeed = LastFmHomeRecommendationEngine.seedKey(seed)
+        activeRecommendationSeed = UnifiedRecommendationEngine.seedKey(seed)
         val startedAt = System.currentTimeMillis()
-        enabled.forEach { shelfAttempts[it] = LastFmShelfLoad(contexts.getValue(it), startedAt) }
-        if (Shelf.CHART in enabled) _countryLanguageCard.update { it.copy(title = title,
-            tracks = if (sameCountry) it.tracks else emptyList(), isLoading = it.tracks.isEmpty(), isError = false) }
-        val batch = repository.lastFmHome.refresh(profile, country, tasteProfile.value, seed,
-            historyRows.value.tracks, favoriteTracks.value, _catalogTracks.value, force, shelves = enabled)
-        // Keep network completion independent of an ongoing drag. Rendering below
-        // already defers the single coherent shelf publication until scrolling settles.
-        if (profileKey() != profileKey(profile)) return@withContext
-        val sameSeed = LastFmHomeRecommendationEngine.seedKey(lastFmSeed.value) == batch.seedKey
-        val results = mapOf(Shelf.QUICK to batch.quick, Shelf.ERA to batch.era, Shelf.CHART to batch.chart.orEmpty(),
-            Shelf.PERSONALIZED to batch.personalized, Shelf.SIMILAR to batch.similarArtists, Shelf.INSPIRED to batch.inspiredTrack)
-        val successful = enabled.filterTo(mutableSetOf()) { results.getValue(it).isNotEmpty() &&
-            (it !in setOf(Shelf.SIMILAR, Shelf.INSPIRED) || sameSeed) }
-        val fresh = withContext(workerDispatcher) { HomeRecommendationPolicy.originals(successful.flatMap { results.getValue(it) }) }
-        if (fresh.isNotEmpty()) {
-            successful.forEach { lastFmLoads[it.name] = LastFmShelfLoad(contexts.getValue(it),
-                batch.fetchedAt[it] ?: System.currentTimeMillis()) }
-            _catalogTracks.value = withContext(workerDispatcher) {
-                HomeRecommendationPolicy.originals(fresh + _catalogTracks.value).take(300) }
-            playbackManager.setCandidatePool(_catalogTracks.value)
-            if (batch.quick.isNotEmpty() || batch.era.isNotEmpty()) lastDiscoveryRefresh = System.currentTimeMillis()
-            if (Shelf.CHART in successful) lastRegionalRefresh = batch.chartFetchedAt
-            val updatesSeed = sameSeed && (Shelf.SIMILAR in successful || Shelf.INSPIRED in successful)
-            val incrementsGeneration = successful.any { it != Shelf.SIMILAR && it != Shelf.INSPIRED }
-            val nextGeneration = candidates.value.generation + if (incrementsGeneration) 1 else 0
-            if (force || activeRefreshIsExplicit) manualRenderGeneration = nextGeneration
-            candidates.update { old ->
-                val trusted = old.source == LastFmHomeRecommendationEngine.SOURCE
-                fun retain(shelf: Shelf, previous: List<MusicTrack>) = if (shelf in successful) results.getValue(shelf)
-                    else previous.takeIf { trusted }.orEmpty()
-                val keepRelated = !updatesSeed || old.seedKey == batch.seedKey
-                old.copy(quick = retain(Shelf.QUICK, old.quick), era = retain(Shelf.ERA, old.era),
-                    chart = retain(Shelf.CHART, old.chart.takeIf { sameCountry || Shelf.CHART !in enabled }.orEmpty()),
-                    personalized = retain(Shelf.PERSONALIZED, old.personalized),
-                    similar = retain(Shelf.SIMILAR, old.similar.takeIf { keepRelated }.orEmpty()),
-                    inspired = retain(Shelf.INSPIRED, old.inspired.takeIf { keepRelated }.orEmpty()),
-                    generation = nextGeneration, source = LastFmHomeRecommendationEngine.SOURCE,
-                    seedKey = if (updatesSeed) batch.seedKey else old.seedKey,
-                    seedArtist = if (updatesSeed) batch.seedArtist else old.seedArtist,
-                    seedTitle = if (updatesSeed) batch.seedTitle else old.seedTitle,
-                    ready = old.ready.takeIf { trusted }.orEmpty() + successful)
+        val nextGeneration = candidates.value.generation + 1
+        enabled.forEach { shelfAttempts[it] = RecommendationShelfLoad(contexts.getValue(it), startedAt) }
+        val fresh = linkedMapOf<String, MusicTrack>()
+        try {
+            repository.recommendations.refresh(profile, country, tasteProfile.value, seed,
+                historyRows.value.tracks, favoriteTracks.value, _catalogTracks.value, force, shelves = enabled).collect { batch ->
+                currentCoroutineContext().ensureActive()
+                if (profileKey() != profileKey(profile)) return@collect
+                val sameSeed = UnifiedRecommendationEngine.seedKey(recommendationSeed.value ?: historyRows.value.tracks.firstOrNull()) == batch.seedKey
+                val results = mapOf(Shelf.QUICK to batch.quick, Shelf.ERA to batch.era, Shelf.CHART to batch.chart.orEmpty(),
+                    Shelf.PERSONALIZED to batch.personalized, Shelf.SIMILAR to batch.similarArtists, Shelf.INSPIRED to batch.inspiredTrack)
+                    .mapValues { (_, tracks) -> tracks.filter { track ->
+                        (repository.recommendations.unavailable.value[track.id] ?: 0L) <= android.os.SystemClock.elapsedRealtime() } }
+                val successful = batch.requested.filterTo(mutableSetOf()) { results.getValue(it).isNotEmpty() &&
+                    (it !in setOf(Shelf.SIMILAR, Shelf.INSPIRED) || sameSeed) }
+                if (successful.isEmpty()) return@collect
+                successful.forEach { shelf ->
+                    shelfLoads[shelf.name] = RecommendationShelfLoad(contexts.getValue(shelf), batch.fetchedAt[shelf] ?: startedAt)
+                    results.getValue(shelf).forEach { fresh[it.id] = it }
+                }
+                if (Shelf.QUICK in successful || Shelf.ERA in successful) lastDiscoveryRefresh = System.currentTimeMillis()
+                if (Shelf.CHART in successful) lastRegionalRefresh = batch.chartFetchedAt
+                // One generation for the whole pass: appending a small batch never
+                // changes the shuffle seed or reranks already published positions.
+                if (force || activeRefreshIsExplicit) manualRenderGeneration = nextGeneration
+                candidates.update { old ->
+                    val trusted = old.source == UnifiedRecommendationEngine.SOURCE && old.contextKey == profileKey(profile)
+                    fun retain(shelf: Shelf, previous: List<MusicTrack>) = if (shelf in successful) results.getValue(shelf)
+                        else previous.takeIf { trusted }.orEmpty()
+                    val updatesSeed = sameSeed && successful.any { it == Shelf.SIMILAR || it == Shelf.INSPIRED }
+                    val keepRelated = !updatesSeed || old.seedKey == batch.seedKey
+                    old.copy(quick = retain(Shelf.QUICK, old.quick), era = retain(Shelf.ERA, old.era),
+                        chart = retain(Shelf.CHART, old.chart), personalized = retain(Shelf.PERSONALIZED, old.personalized),
+                        similar = retain(Shelf.SIMILAR, old.similar.takeIf { keepRelated }.orEmpty()),
+                        inspired = retain(Shelf.INSPIRED, old.inspired.takeIf { keepRelated }.orEmpty()),
+                        generation = nextGeneration, source = UnifiedRecommendationEngine.SOURCE,
+                        seedKey = if (updatesSeed) batch.seedKey else old.seedKey,
+                        seedArtist = if (updatesSeed) batch.seedArtist else old.seedArtist,
+                        seedTitle = if (updatesSeed) batch.seedTitle else old.seedTitle,
+                        ready = old.ready.takeIf { trusted }.orEmpty() + successful, contextKey = profileKey(profile))
+                }
+                if (Shelf.CHART in successful) _countryLanguageCard.update { it.copy(title = title,
+                    subtitle = "Popular in $country • your selected languages", isLoading = false, isError = false) }
+                if (Shelf.QUICK in successful) _ytmCard.update { it.copy(subtitle = "Discoveries for your languages and listening taste", isLoading = false, isError = false) }
+                if (Shelf.ERA in successful) _eraCard.update { it.copy(subtitle = "Verified 1990s & 2000s recordings", isLoading = false, isError = false) }
+                if (Shelf.PERSONALIZED in successful) _personalizedCard.update { it.copy(subtitle = "Inspired by your listening", isLoading = false, isError = false) }
             }
-        }
-        if (Shelf.QUICK in enabled) _ytmCard.update { it.copy(subtitle = "Last.fm discoveries for your listening taste", isLoading = false,
-            isError = batch.quick.isEmpty(), errorMessage = if (batch.quick.isEmpty()) "Last.fm Quick Picks are temporarily unavailable." else "") }
-        if (Shelf.ERA in enabled) _eraCard.update { it.copy(subtitle = "1990s & 2000s picks from Last.fm", isLoading = false,
-            isError = batch.era.isEmpty(), errorMessage = if (batch.era.isEmpty()) "Last.fm era hits are temporarily unavailable." else "") }
-        if (Shelf.PERSONALIZED in enabled) _personalizedCard.update { it.copy(subtitle = "Last.fm similarities tailored to your listening", isLoading = false) }
-        if (Shelf.CHART in enabled) _countryLanguageCard.update { it.copy(subtitle = "Last.fm listener chart for $country",
-            isLoading = false, isError = batch.chart.isNullOrEmpty(),
-            errorMessage = if (batch.chart.isNullOrEmpty()) "Last.fm regional charts are temporarily unavailable." else "") }
-        if (fresh.isNotEmpty()) dataScope.launch {
-            BackgroundWorkCoordinator.awaitIdle(requireForeground = false)
-            repository.cacheLastFmTracks(fresh)
+            // Empty provider results leave valid cached cards intact. Expose recovery
+            // only for a requested section that has no usable snapshot at all.
+            fun failed(state: SectionState) = if (state.tracks.isEmpty()) state.copy(isLoading = false,
+                isError = true, errorMessage = "Recommendations are temporarily unavailable. Tap Retry to try again.") else state
+            if (Shelf.QUICK in enabled) _ytmCard.update(::failed)
+            if (Shelf.ERA in enabled) _eraCard.update(::failed)
+            if (Shelf.CHART in enabled) _countryLanguageCard.update(::failed)
+            if (Shelf.PERSONALIZED in enabled) _personalizedCard.update(::failed)
+            if (Shelf.SIMILAR in enabled) _similarArtistsCard.update(::failed)
+            if (Shelf.INSPIRED in enabled) _inspiredTrackCard.update(::failed)
+        } finally {
+            // At most one library transaction for this pass; no per-song Room
+            // invalidation storm. Snapshot/mapping caches have their own batch writers.
+            if (fresh.isNotEmpty()) {
+                val verified = fresh.values.toList()
+                dataScope.launch {
+                    BackgroundWorkCoordinator.awaitIdle(requireForeground = false)
+                    repository.cacheRecommendationTracks(verified)
+                }
+                _catalogTracks.value = withContext(workerDispatcher) {
+                    HomeRecommendationPolicy.originals(verified + _catalogTracks.value).take(300) }
+                playbackManager.setCandidatePool(_catalogTracks.value)
+            }
         }
     }
 

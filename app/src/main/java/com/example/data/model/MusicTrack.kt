@@ -23,7 +23,9 @@ data class MusicTrack(
     val source: String = "JIOSAAVN",
     val isrc: String = "",
     val isLossless: Boolean = false,
-    val motionArtworkUrl: String? = null
+    val motionArtworkUrl: String? = null,
+    /** Request policy for recommendation queues, not persisted over library metadata. */
+    val recommendationOnly: Boolean = false
 ) {
     val streamUrl: String get() = audioUrl
     val coverArtUrl: String get() = coverUrl

@@ -32,6 +32,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
@@ -71,47 +72,15 @@ class MusicRepository(
     private val musicDao: MusicDao,
     private val context: Context? = null
 ) {
-    init { context?.let(com.example.data.remote.LastFmApiService::initialize) }
 
     val catalogBrowser = CatalogRepository()
     // Home's owners and workers share this cap, including discovery ranking.
     internal val homeDispatcher = Dispatchers.Default.limitedParallelism(2)
-    val lastFmHome by lazy { com.example.recommendation.LastFmHomeRecommendationEngine(this) }
+    val recommendations by lazy { com.example.recommendation.UnifiedRecommendationEngine(context) }
 
-    /** Catalogue lookup only: Last.fm, not either catalogue's search ranking, chooses the song. */
-    internal suspend fun lastFmCatalogCandidates(query: String, force: Boolean, recordingKey: String = "",
-        accepts: (MusicTrack) -> Boolean = { false }): List<MusicTrack> = withContext(Dispatchers.IO) {
-        val key = "lastfm-recording:$recordingKey:${DiscoveryRequestCoordinator.normalize(query)}"
-        val hit = discoveryCache.get(key)
-        if (hit != null && System.currentTimeMillis() - hit.fetchedAt < if (force) 15_000L else discoveryTtlMs)
-            return@withContext hit.tracks
-        DiscoveryRequestCoordinator.shared(key, essential = false) {
-            val existing = discoveryCache.get(key)
-            if (existing != null && System.currentTimeMillis() - existing.fetchedAt < if (force) 15_000L else discoveryTtlMs)
-                return@shared existing.tracks
-            val found = coroutineScope {
-                val jio = async { try { kotlinx.coroutines.withTimeoutOrNull(5_000L) {
-                    OnlineMusicApiService.searchSongs(query, limit = 8, forceRefresh = force)
-                }.orEmpty() } catch (e: CancellationException) { throw e } catch (_: Exception) { emptyList() } }
-                val youtube = async { try { kotlinx.coroutines.withTimeoutOrNull(5_000L) {
-                    YouTubeMusicApiService.searchSongsPage(query, useInnerTubeX = true, forceRefresh = force).tracks.take(10)
-                }.orEmpty() } catch (e: CancellationException) { throw e } catch (_: Exception) { emptyList() } }
-                val primary = jio.await()
-                if (withContext(homeDispatcher) { primary.any(accepts) }) {
-                    // The Last.fm recording is already verified and playable in the
-                    // primary catalog; a slow secondary lookup must not stall its card.
-                    youtube.cancel()
-                    primary
-                } else primary + youtube.await()
-            }
-            val result = withContext(homeDispatcher) { HomeRecommendationPolicy.originals(found) }
-            if (result.isNotEmpty()) discoveryCache.put(key, DiscoveryCache(result, System.currentTimeMillis()))
-            result.ifEmpty { existing?.tracks.orEmpty() }
-        }
-    }
-
-    internal suspend fun cacheLastFmTracks(tracks: List<MusicTrack>) = withContext(homeDispatcher) {
-        val rows = tracks.distinctBy { it.id }.map { TrackEntity.fromMusicTrack(it).copy(isCached = true) }
+    internal suspend fun cacheRecommendationTracks(tracks: List<MusicTrack>) = withContext(homeDispatcher) {
+        val rows = tracks.filter(com.example.recommendation.UnifiedRecommendationEngine::verified)
+            .distinctBy { it.id }.map { TrackEntity.fromMusicTrack(it).copy(isCached = true) }
         if (rows.isNotEmpty()) withContext(Dispatchers.IO) { musicDao.mergeTracksMetadata(rows) }
     }
 
@@ -126,13 +95,6 @@ class MusicRepository(
     companion object {
         @Volatile private var memoryCachedCatalog: List<MusicTrack>? = null
     }
-
-    private data class DiscoveryCache(val tracks: List<MusicTrack>, val fetchedAt: Long)
-    private val discoveryCache = android.util.LruCache<String, DiscoveryCache>(80)
-    private val queryLocks = Array(16) { Mutex() }
-    private val discoveryTtlMs = 10 * 60_000L
-    private val discoveryOwners = Array(8) { Mutex() }
-    private val discoveryBatches = android.util.LruCache<String, DiscoveryCache>(16)
 
     private suspend fun getLikedTrackIds(): Set<String> = withContext(homeDispatcher) {
         observeFavoriteTrackIds().first()
@@ -155,266 +117,44 @@ class MusicRepository(
         context?.let { UserProfilePreferences.getUserProfile(it) } ?: UserProfile()
     }
 
-    private suspend fun discoveryQueries(profile: UserProfile, era: Boolean = false): List<String> = withContext(homeDispatcher) {
-        val favoriteTracks = withContext(Dispatchers.IO) { musicDao.getFavoriteTracks().first() }.map { it.toMusicTrack() }
-        val playedIds = withContext(Dispatchers.IO) {
-            context?.let { MusicDatabase.getDatabase(it).listeningEventDao().getRecentActualTrackIds() }.orEmpty()
+    /** Compatibility entry points delegate to the same engine; no independent discovery. */
+    private suspend fun recommendationShelf(profile: UserProfile, shelf: com.example.recommendation.UnifiedRecommendationEngine.Shelf,
+        limit: Int, force: Boolean = false): List<MusicTrack> {
+        var result = emptyList<MusicTrack>()
+        kotlinx.coroutines.withTimeoutOrNull(20_000L) {
+            recommendations.refresh(profile, profile.country, UserTasteProfile.COLD_START_PROFILE,
+                null, emptyList(), emptyList(), getInitialCatalog(profile), force, setOf(shelf)).collect { batch ->
+                result = when (shelf) {
+                    com.example.recommendation.UnifiedRecommendationEngine.Shelf.ERA -> batch.era
+                    com.example.recommendation.UnifiedRecommendationEngine.Shelf.CHART -> batch.chart.orEmpty()
+                    else -> batch.quick
+                }
+            }
         }
-        val listened = withContext(Dispatchers.IO) { musicDao.getTracksByIds(playedIds) }.map { it.toMusicTrack() }
-        val seeds = (favoriteTracks + listened).filter { HomeRecommendationPolicy.known(it.artist) }
-        val artists = seeds.flatMap(HomeRecommendationPolicy::artists).distinct().shuffled().take(2)
-        val languages = (profile.languages + seeds.map { it.language }).filter(HomeRecommendationPolicy::known).distinct().shuffled().take(2)
-        val genres = seeds.map { it.genre }.filter(HomeRecommendationPolicy::known).distinct().shuffled().take(1)
-        val queries = if (era) {
-            val decades = listOf("1990s", "2000s").shuffled()
-            languages.flatMap { language -> decades.map { "$language $it original songs" } }
-        } else {
-            val year = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
-            artists.map { "$it ${listOf("songs", "singles", "collaborations", "album").random()}" } +
-                languages.map { "$it ${genres.firstOrNull().orEmpty()} ${listOf("new releases $year", "original songs", "new artists").random()}" } +
-                genres.map { "$it ${profile.country} original songs" }
-        }
-        queries.ifEmpty { listOf("${profile.country} ${if (era) "1990s original songs" else "new music releases"}") }.distinct().take(4)
+        return result.take(limit)
     }
-
-    private suspend fun discoverySearch(query: String, force: Boolean, era: Boolean): List<MusicTrack> {
-        val key = "$era:${com.example.recommendation.DiscoveryRequestCoordinator.normalize(query)}"
-        return queryLocks[(key.hashCode() and Int.MAX_VALUE) % queryLocks.size].withLock {
-            val cached = discoveryCache.get(key)
-            val age = System.currentTimeMillis() - (cached?.fetchedAt ?: 0)
-            // Coalesce simultaneous card requests, even during an explicit refresh.
-            if (cached != null && age < if (force) 30_000L else discoveryTtlMs) return@withLock cached.tracks
-            val result = try {
-                val tracks = com.example.recommendation.CustomRecommendationQueryWrapper.searchDiscovery(query, limit = 35,
-                    era = era, forceRefresh = force)
-                withContext(homeDispatcher) { HomeRecommendationPolicy.originals(tracks)
-                    .filter { !era || (it.year.toIntOrNull() ?: 0) in 1990..2009 } }
-            } catch (e: CancellationException) { throw e } catch (_: Exception) { emptyList() }
-            if (result.isNotEmpty()) {
-                discoveryCache.put(key, DiscoveryCache(result, System.currentTimeMillis()))
-                result
-            } else cached?.tracks.orEmpty()
-        }
-    }
-
-    private suspend fun discover(profile: UserProfile, era: Boolean, limit: Int, force: Boolean,
-        deferRoomMergeUntilIdle: Boolean = false): List<MusicTrack> = withContext(homeDispatcher) {
-      val liked = getLikedTrackIds()
-      val recent = withContext(Dispatchers.IO) { context?.let {
-          MusicDatabase.getDatabase(it).listeningEventDao().getRecentActualTrackIds()
-      }.orEmpty() }
-      val key = "$era|${profile.countryCode}|${profile.languages}|${liked.sorted()}|$recent"
-      var freshForRoom = emptyList<TrackEntity>()
-      val ranked = discoveryOwners[(key.hashCode() and Int.MAX_VALUE) % discoveryOwners.size].withLock {
-        val previous = discoveryBatches.get(key)
-        val now = System.currentTimeMillis()
-        if (previous != null && now - previous.fetchedAt < if (force) 1_000L else discoveryTtlMs)
-            return@withLock previous.tracks.take(limit).map { it.copy(isLiked = it.id in liked) }
-        coroutineScope {
-        val queries = discoveryQueries(profile, era)
-        val groups = arrayOfNulls<List<MusicTrack>>(queries.size)
-        val searches = queries.mapIndexed { index, query -> launch {
-            groups[index] = discoverySearch(query, force, era)
-        } }
-        try {
-            val refresh = currentCoroutineContext()[com.example.recommendation.DiscoveryRequestCoordinator.HomeRefresh]
-            if (refresh != null) {
-                // One slow query must not hold every refreshed card hostage. Keep
-                // completed groups, and cancel only this refresh's unfinished readers.
-                refresh.withBudget(12_000L) { searches.joinAll() }
-            } else searches.joinAll()
-        } finally {
-            searches.forEach { if (!it.isCompleted) it.cancel() }
-            searches.joinAll()
-        }
-        val fresh = HomeRecommendationPolicy.originals(HomeRecommendationPolicy.interleave(groups.map { it.orEmpty() }))
-        freshForRoom = fresh.map { TrackEntity.fromMusicTrack(it).copy(isCached = true, isLiked = it.id in liked) }
-        val cached = getInitialCatalog(profile).filter { !era || (it.year.toIntOrNull() ?: 0) in 1990..2009 }
-        val ranked = HomeRecommendationPolicy.diversify(fresh.ifEmpty { cached }.shuffled(), 160)
-            .map { it.copy(isLiked = it.id in liked) }
-        if (ranked.isNotEmpty()) discoveryBatches.put(key, DiscoveryCache(ranked, System.currentTimeMillis()))
-        ranked.take(limit)
-        }
-      }
-      if (freshForRoom.isNotEmpty()) {
-          // Release discovery ownership before optional persistence waits. Radio
-          // can reuse the completed batch immediately, including the same key.
-          // Home's caller holds no busy lease here; a pull can bypass idle.
-          if (deferRoomMergeUntilIdle) {
-              val refresh = currentCoroutineContext()[DiscoveryRequestCoordinator.HomeRefresh]
-              BackgroundWorkCoordinator.awaitIdle(userRequested = { refresh?.requested?.value == true })
-          }
-          withContext(Dispatchers.IO) { musicDao.mergeTracksMetadata(freshForRoom) }
-      }
-      ranked
-    }
-
-    suspend fun syncOnlineCatalog(profile: UserProfile? = null): List<MusicTrack> = withContext(Dispatchers.IO) {
-        val fresh = discover(homeProfile(profile), era = false, limit = 120, force = false)
-        if (fresh.isNotEmpty()) memoryCachedCatalog = fresh
-        fresh.ifEmpty { getInitialCatalog(profile) }
-    }
-
-    suspend fun getPunjabiHits(limit: Int = 15): List<MusicTrack> = getCountryAndLanguageHits(
-        homeProfile().copy(languages = listOf("Punjabi")), limit)
-
+    suspend fun syncOnlineCatalog(profile: UserProfile? = null): List<MusicTrack> =
+        getYtmQuickPicks().ifEmpty { getInitialCatalog(profile) }
+    suspend fun getPunjabiHits(limit: Int = 15): List<MusicTrack> = getCountryAndLanguageHits(homeProfile(), limit)
     suspend fun getEraHits(limit: Int = 15, forceRefresh: Boolean = false,
-        deferRoomMergeUntilIdle: Boolean = false): List<MusicTrack> = withContext(Dispatchers.IO) {
-        discover(homeProfile(), era = true, limit = limit, force = forceRefresh,
-            deferRoomMergeUntilIdle = deferRoomMergeUntilIdle)
-    }
-
+        @Suppress("UNUSED_PARAMETER") deferRoomMergeUntilIdle: Boolean = false): List<MusicTrack> =
+        recommendationShelf(homeProfile(), com.example.recommendation.UnifiedRecommendationEngine.Shelf.ERA, limit, forceRefresh)
     suspend fun getYtmQuickPicks(limit: Int = 15, forceRefresh: Boolean = false,
-        deferRoomMergeUntilIdle: Boolean = false): List<MusicTrack> = withContext(Dispatchers.IO) {
-        discover(homeProfile(), era = false, limit = limit, force = forceRefresh,
-            deferRoomMergeUntilIdle = deferRoomMergeUntilIdle)
-    }
+        @Suppress("UNUSED_PARAMETER") deferRoomMergeUntilIdle: Boolean = false): List<MusicTrack> =
+        recommendationShelf(homeProfile(), com.example.recommendation.UnifiedRecommendationEngine.Shelf.QUICK, limit, forceRefresh)
+    suspend fun getCountryAndLanguageHits(profile: UserProfile?, limit: Int = 15, forceRefresh: Boolean = false): List<MusicTrack> =
+        recommendationShelf(homeProfile(profile), com.example.recommendation.UnifiedRecommendationEngine.Shelf.CHART, limit, forceRefresh)
 
-    suspend fun getCountryAndLanguageHits(profile: UserProfile?, limit: Int = 15,
-        forceRefresh: Boolean = false): List<MusicTrack> = withContext(Dispatchers.IO) {
-        discover(homeProfile(profile), era = false, limit = limit, force = forceRefresh)
-    }
-
-    private val regionalFetchedAt = ConcurrentHashMap<String, Long>()
-    private val regionalTrendingCache = ConcurrentHashMap<String, List<MusicTrack>>()
-    private val regionalOwners = Array(8) { Mutex() }
-
-    private val chartPreferences by lazy { context?.getSharedPreferences("home_chart_cache_v2", Context.MODE_PRIVATE) }
-
-    private suspend fun saveChart(key: String, tracks: List<MusicTrack>) {
-        if (tracks.isEmpty()) return
-        regionalTrendingCache[key] = tracks
-        val now = System.currentTimeMillis()
-        regionalFetchedAt[key] = now
-        musicDao.mergeTracksMetadata(tracks.map { TrackEntity.fromMusicTrack(it).copy(isCached = true) })
-        chartPreferences?.edit()?.putString(key, org.json.JSONArray(tracks.map { it.id }).toString())
-            ?.putLong("${key}_time", now)?.apply()
-    }
-
-    fun getCachedRegionalTrending(country: String): List<MusicTrack>? {
-        val cleanCountry = country.trim().ifBlank { "India" }
-        return regionalTrendingCache[cleanCountry.lowercase()]?.takeIf { it.isNotEmpty() && System.currentTimeMillis() - (regionalFetchedAt[cleanCountry.lowercase()] ?: 0L) < 30 * 60_000L }
-    }
-
-    fun getRegionalTrendingFetchedAt(country: String): Long =
-        regionalFetchedAt[country.trim().ifBlank { "India" }.lowercase()] ?: 0L
-
-    /**
-     * Genuine regional trending / chart source for selected country.
-     * When selected country is India: fetches JioSaavn's official editorial chart "India Superhits Top 50" (50 ranked songs).
-     * For other countries: resolves the published Apple Music regional chart to playable recordings.
-     * Preserves provider's ranking, excludes filler, separates caches per country.
-     */
-    suspend fun getRegionalTrending(
-        country: String,
-        countryCode: String = "IN",
-        limit: Int = 20,
-        forceRefresh: Boolean = false
-    ): List<MusicTrack> = withContext(Dispatchers.IO) {
-        val cleanCountry = country.trim().ifBlank { "India" }
-        val cacheKey = cleanCountry.lowercase()
-      regionalOwners[(cacheKey.hashCode() and Int.MAX_VALUE) % regionalOwners.size].withLock {
-        if (regionalTrendingCache[cacheKey].isNullOrEmpty()) {
-            val saved = chartPreferences?.getString(cacheKey, null)
-            if (saved != null) try {
-                val ids = org.json.JSONArray(saved)
-                val orderedIds = (0 until ids.length()).map { ids.getString(it) }
-                val byId = musicDao.getTracksByIds(orderedIds).associateBy { it.id }
-                regionalTrendingCache[cacheKey] = HomeRecommendationPolicy.originals(orderedIds.mapNotNull { byId[it]?.toMusicTrack() })
-                regionalFetchedAt[cacheKey] = chartPreferences?.getLong("${cacheKey}_time", 0L) ?: 0L
-            } catch (e: CancellationException) { throw e } catch (_: Exception) { }
-        }
-
-        if (!forceRefresh) {
-            getCachedRegionalTrending(cleanCountry)?.let { cached ->
-                if (cached.isNotEmpty()) return@withContext cached.take(limit)
-            }
-        }
-
-        val isIndia = cleanCountry.equals("India", ignoreCase = true) || countryCode.equals("IN", ignoreCase = true)
-        val likedIds = getLikedTrackIds()
-
-        if (isIndia) {
-            // Priority 1: Genuine JioSaavn "India Superhits Top 50" editorial chart
-            try {
-                val chartSongs = com.example.recommendation.DiscoveryRequestCoordinator.shared("chart:jio:IN", essential = false) {
-                    fetchJioSaavnIndiaSuperhitsChart(forceRefresh)
-                }
-                if (chartSongs.isNotEmpty()) {
-                    val result = HomeRecommendationPolicy.originals(chartSongs).map { it.copy(isLiked = likedIds.contains(it.id)) }
-                    saveChart(cacheKey, result)
-                    return@withContext result.take(limit)
-                }
-            } catch (e: CancellationException) { throw e } catch (e: Exception) {
-                Log.w("MusicRepository", "Failed to fetch JioSaavn India Superhits chart: ${e.message}")
-            }
-
-        }
-        // India needs the same genuine-chart fallback as other regions when its
-        // editorial playlist is unavailable. Never substitute generic search hits.
-        run {
-            // A search result is not a ranked chart. Use the country's published RSS chart.
-            try {
-                val code = countryCode.lowercase(java.util.Locale.ROOT).takeIf { it.matches(Regex("[a-z]{2}")) }
-                if (code != null) {
-                    val request = Request.Builder().url("https://rss.marketingtools.apple.com/api/v2/$code/music/most-played/50/songs.json").build()
-                    val body = com.example.recommendation.DiscoveryRequestCoordinator.network { chartClient.catalogRequest(request) }
-                    val entries = withContext(homeDispatcher) { JSONObject(body).optJSONObject("feed")?.optJSONArray("results") }
-                    val ranked = coroutineScope { (0 until minOf(entries?.length() ?: 0, limit)).chunked(4).flatMap { batch ->
-                        batch.map { index -> async {
-                        val entry = entries?.optJSONObject(index) ?: return@async null
-                        val title = entry.optString("name")
-                        val artist = entry.optString("artistName")
-                        // Resolve provider playback IDs while preserving chart order and exact recording identity.
-                        val candidates = discoverySearch("$title $artist", forceRefresh, era = false)
-                        candidates.firstOrNull {
-                            HomeRecommendationPolicy.normalize(it.cleanTitle) == HomeRecommendationPolicy.normalize(title) &&
-                                HomeRecommendationPolicy.artists(it).contains(HomeRecommendationPolicy.normalize(artist))
-                        }
-                        } }.awaitAll().filterNotNull()
-                    } }
-                    if (ranked.isNotEmpty()) {
-                        val result = HomeRecommendationPolicy.originals(ranked).take(limit)
-                        saveChart(cacheKey, result)
-                        return@withContext result
-                    }
-                }
-            } catch (e: CancellationException) { throw e } catch (_: Exception) { }
-        }
-        // Transient failures retain the last genuine chart for this country only.
-        regionalTrendingCache[cacheKey].orEmpty().take(limit)
-      }
-    }
-
-    private suspend fun fetchJioSaavnIndiaSuperhitsChart(forceRefresh: Boolean): List<MusicTrack> {
-        // JioSaavn Editorial Chart ID for "India Superhits Top 50"
-        val chartId = "1134543272"
-        val url = "https://www.jiosaavn.com/api.php".toHttpUrl().newBuilder()
-            .addQueryParameter("__call", "playlist.getDetails").addQueryParameter("_format", "json")
-            .addQueryParameter("_marker", "0").addQueryParameter("api_version", "4")
-            .addQueryParameter("ctx", "web6dot0").addQueryParameter("cc", "in")
-            .addQueryParameter("listid", chartId).addQueryParameter("p", "1").addQueryParameter("n", "50").build()
-        val request = Request.Builder()
-            .url(url)
-            .apply { if (forceRefresh) cacheControl(CacheControl.FORCE_NETWORK) }
-            .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-            .addHeader("Accept", "application/json")
-            .build()
-        val body = chartClient.catalogRequest(request)
-        val response = JSONObject(body)
-        val json = response.optJSONObject("data") ?: response
-        val returnedId = json.optString("id").ifBlank { json.optString("listid") }
-        val title = CatalogNames.normalize(json.optString("title").ifBlank { json.optString("listname") })
-        if (returnedId.isNotBlank() && returnedId != chartId ||
-            !title.contains("india") || !(title.contains("superhits") || title.contains("top 50"))) return emptyList()
-        val songs = json.optJSONArray("list") ?: json.optJSONArray("songs") ?: return emptyList()
-        // The shared v4 parser reads real song IDs and credits, nested
-        // metadata and full audio, and leaves missing streams resolvable by exact ID.
-        // Preserve the playlist's order and its native, resolvable playback IDs.
-        return (0 until songs.length()).mapNotNull { index ->
-            songs.optJSONObject(index)?.let { OnlineMusicApiService.parseSong(it, allowMissingStream = true) }
-                ?.copy(source = "JioSaavn Official Chart")
-        }
+    suspend fun recommendationRadio(seed: MusicTrack, alreadyQueued: List<MusicTrack>, limit: Int,
+        taste: UserTasteProfile? = null): List<MusicTrack> = withContext(homeDispatcher) {
+        val profile = homeProfile()
+        val actualTaste = taste ?: context?.let {
+            val events = withContext(Dispatchers.IO) { MusicDatabase.getDatabase(it).listeningEventDao().getActualPlays(250) }
+            val ids = events.map { event -> event.trackId }.distinct()
+            val metadata = withContext(Dispatchers.IO) { musicDao.getTracksByIds(ids) }.map { row -> row.toMusicTrack() }
+            UserTasteProfile.fromEvents(events, metadata, getFavoriteTracks().first())
+        } ?: UserTasteProfile.COLD_START_PROFILE
+        recommendations.radio(seed, profile, actualTaste, alreadyQueued, limit)
     }
 
     fun observeFavoriteTrackIds(): Flow<Set<String>> = musicDao.observeFavoriteTrackIds()
@@ -542,8 +282,13 @@ class MusicRepository(
     ): MusicTrack = withContext(Dispatchers.IO) {
         val quality = context?.let { AudioQualityPreferences.getSelectedQuality(it) }
             ?: AudioQuality.ULTRA_HD_320
-        com.example.recommendation.DiscoveryRequestCoordinator.playback {
-            streamResolver.resolve(track, quality, forceRefresh, failedUrl)
+        try {
+            com.example.recommendation.DiscoveryRequestCoordinator.playback {
+                streamResolver.resolve(track, quality, forceRefresh, failedUrl)
+            }
+        } catch (e: TrackUnavailableException) {
+            if (track.recommendationOnly) recommendations.markUnavailable(track)
+            throw e
         }
     }
 
@@ -575,6 +320,7 @@ class MusicRepository(
     }
 
     suspend fun findLosslessUpgrade(track: MusicTrack): MusicTrack? = withContext(Dispatchers.IO) {
+        if (track.recommendationOnly) return@withContext null
         if (context == null || AudioQualityPreferences.getSelectedQuality(context) != AudioQuality.HI_RES_LOSSLESS) return@withContext null
         val key = withContext(Dispatchers.Default) { RecordingIdentity.key(track) }
         fun missedRecently() = losslessMisses.get(key)?.let { android.os.SystemClock.elapsedRealtime() < it } == true
@@ -607,11 +353,10 @@ class MusicRepository(
 
     fun clearSearchCache() {
         searchCache.evictAll()
-        discoveryCache.evictAll()
         streamResolver.clear()
     }
 
     fun getSearchCacheEntryCount(): Int {
-        return searchCache.size() + discoveryCache.size() + streamResolver.cacheSize
+        return searchCache.size() + streamResolver.cacheSize
     }
 }

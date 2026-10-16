@@ -141,7 +141,7 @@ fun rememberOptimizedImageRequest(
     // Transport URL/bitrate changes do not change artwork. Metadata edits and a larger
     // destination do create a new request, including when a recycled row keeps its ID.
     return remember(context, url, track?.id, track?.title, track?.artist, track?.album,
-        track?.source, track?.coverUrl, targetSize, crossfadeEnabled, preferStableArtwork, decodeSize) {
+        track?.source, track?.coverUrl, track?.recommendationOnly, targetSize, crossfadeEnabled, preferStableArtwork, decodeSize) {
         val metadata = ArtworkRequestMetadata(
             item = track?.toMediaItem(),
             trackId = track?.id,
@@ -149,11 +149,12 @@ fun rememberOptimizedImageRequest(
             providerUrl = url,
             sourceDimension = mapTargetSizeToArtworkDimension(targetSize),
             preferStableArtwork = preferStableArtwork,
-            targetSize = targetSize
+            targetSize = targetSize,
+            providerArtworkOnly = track?.recommendationOnly == true
         )
         // Re-entering cards can start on a prepared resolved URL without constructing the
         // repository or sanitizing metadata on Main. The interceptor retains raw fallbacks.
-        val initialUrl = metadata.item?.let {
+        val initialUrl = metadata.item?.takeUnless { metadata.providerArtworkOnly }?.let {
             iTunesArtworkRepository.peekInstance()?.peekMemoryCachedUrl(it, metadata.sourceDimension)
         }?.takeIf { it.isNotBlank() } ?: url
         ImageRequest.Builder(context)

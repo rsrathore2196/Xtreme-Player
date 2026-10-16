@@ -606,8 +606,9 @@ class PlayerViewModel(
         activePlaybackLaunchJob = viewModelScope.launch(Dispatchers.Default) {
             val candidates = (_catalogTracks.value + recentlyPlayed.value + favoriteTracks.value + listOfNotNull(seedTrack))
                 .distinctBy { it.id }
-                .filterNot { it.audioUrl.contains("soundhelix.com", ignoreCase = true) }
-            // Resolve online candidates if the home catalog has not loaded yet.
+                .filter { com.example.recommendation.UnifiedRecommendationEngine.verified(it) }
+                .map { it.copy(recommendationOnly = true) }
+            // Seed Infinite Radio only from the same verified recommendation catalog.
             val pool = candidates.ifEmpty { repository.getYtmQuickPicks(limit = 30) }
             val alternatives = pool.filter { it.id != state.currentTrack?.id }
             val randomized = alternatives.ifEmpty { pool }.shuffled()
