@@ -14,7 +14,6 @@ import kotlinx.coroutines.flow.map
 
 object AudioQualityPreferences {
     private const val PREFS_NAME = "xtreme_audio_quality_prefs"
-    private const val KEY_AUDIO_QUALITY_ID = "selected_audio_quality_id"
     private const val KEY_WIFI_CEILING = "wifi_quality_ceiling"
     private const val KEY_CELLULAR_CEILING = "cellular_quality_ceiling"
     private const val KEY_METERED_WIFI = "treat_metered_wifi_as_cellular"
@@ -23,17 +22,21 @@ object AudioQualityPreferences {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
 
+    /** The active network profile is the only quality preference; old saved IDs cannot cap it. */
     fun getSelectedQuality(context: Context): AudioQuality {
-        val savedId = getPrefs(context).getString(KEY_AUDIO_QUALITY_ID, null)
-        return if (savedId != null) {
-            AudioQuality.fromId(savedId)
-        } else {
-            AudioQuality.ULTRA_HD_320
-        }
+        val monitor = com.example.playback.NetworkQualityMonitor.getInstance(context)
+        return if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) monitor.currentAudioQuality
+            else monitor.snapshot().effectiveCeiling.audioQuality
     }
 
     fun setSelectedQuality(context: Context, quality: AudioQuality) {
-        getPrefs(context).edit().putString(KEY_AUDIO_QUALITY_ID, quality.id).apply()
+        val ceiling = when (quality) {
+            AudioQuality.HI_RES_LOSSLESS -> AudioQualityCeiling.MAX
+            AudioQuality.ULTRA_HD_320 -> AudioQualityCeiling.HIGH
+            AudioQuality.HIGH_160 -> AudioQualityCeiling.NORMAL
+            AudioQuality.MEDIUM_96 -> AudioQualityCeiling.DATA_SAVER
+        }
+        com.example.playback.NetworkQualityMonitor.getInstance(context).setActiveCeiling(ceiling)
     }
 
     fun getNetworkSettings(context: Context): NetworkAudioPreferences = getPrefs(context).let { prefs ->

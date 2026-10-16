@@ -9,6 +9,14 @@ enum class AudioQualityCeiling(val maxBitrateBps: Int, val label: String, val de
     HIGH(256_000, "High (~256–320 kbps)", "Best lossy quality (Opus/AAC)"),
     MAX(Int.MAX_VALUE, "Maximum / Lossless", "Uncapped bitrate — highest available source stream");
 
+    /** Existing playback/Archive policy consumes this enum; profiles now own the preference. */
+    val audioQuality: AudioQuality get() = when (this) {
+        DATA_SAVER -> AudioQuality.MEDIUM_96
+        NORMAL -> AudioQuality.HIGH_160
+        HIGH -> AudioQuality.ULTRA_HD_320
+        MAX -> AudioQuality.HI_RES_LOSSLESS
+    }
+
     companion object {
         fun fromName(value: String?, fallback: AudioQualityCeiling): AudioQualityCeiling =
             entries.firstOrNull { it.name == value } ?: fallback

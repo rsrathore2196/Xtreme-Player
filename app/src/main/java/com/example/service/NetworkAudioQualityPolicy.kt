@@ -14,7 +14,8 @@ internal object NetworkAudioQualityPolicy {
         if (!uri.isHierarchical) return item
         if (uri.scheme in setOf("file", "content")) return item
         val extras = item.mediaMetadata.extras
-        val requestedKbps = extras?.getInt("requested_audio_kbps", 320)?.takeIf { it > 0 } ?: 320
+        // Ignore legacy per-item global settings, including restored queues.
+        val requestedKbps = 320
         val host = uri.host.orEmpty()
         val saavn = host == "saavncdn.com" || host.endsWith(".saavncdn.com")
         var target = uri

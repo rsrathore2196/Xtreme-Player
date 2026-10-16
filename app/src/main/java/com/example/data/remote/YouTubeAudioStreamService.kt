@@ -264,7 +264,10 @@ object YouTubeAudioStreamService {
     private fun selectionCap(quality: AudioQuality, pinnedCap: Int?): Int {
         val network = pinnedCap ?: com.example.playback.NetworkQualityMonitor.getInstance(
             com.example.XtremeMusicApp.getInstance()).snapshot().effectiveCeiling.maxBitrateBps
-        return minOf(minOf(quality.kbps, 320) * 1000, network.coerceAtLeast(1))
+        // A loader's explicit cap pins its representation across seeks/renewals.
+        // Do not silently apply a newly selected profile to an already-audible source.
+        return minOf(if (pinnedCap != null) 320_000 else minOf(quality.kbps, 320) * 1000,
+            network.coerceAtLeast(1))
     }
 
     suspend fun resolve(videoId: String, quality: AudioQuality, forceRefresh: Boolean = false,

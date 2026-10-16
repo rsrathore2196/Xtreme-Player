@@ -150,7 +150,7 @@ fun rememberOptimizedImageRequest(
             sourceDimension = mapTargetSizeToArtworkDimension(targetSize),
             preferStableArtwork = preferStableArtwork,
             targetSize = targetSize,
-            providerArtworkOnly = track?.recommendationOnly == true
+            providerArtworkOnly = false
         )
         // Re-entering cards can start on a prepared resolved URL without constructing the
         // repository or sanitizing metadata on Main. The interceptor retains raw fallbacks.
@@ -166,7 +166,7 @@ fun rememberOptimizedImageRequest(
             .crossfade(if (crossfadeEnabled) 200 else 0)
             .allowHardware(true)
             .bitmapConfig(android.graphics.Bitmap.Config.HARDWARE)
-            .allowRgb565(true)
+            .allowRgb565(false)
             .memoryCachePolicy(CachePolicy.ENABLED)
             .diskCachePolicy(CachePolicy.ENABLED)
             .networkCachePolicy(CachePolicy.ENABLED)

@@ -68,7 +68,6 @@ import com.example.data.local.AppThemeMode
 import com.example.data.local.UserProfile
 import com.example.data.model.CountryData
 import com.example.playback.AudioEffectsState
-import com.example.playback.AudioQuality
 import com.example.playback.PlayerUiState
 import com.example.ui.screens.settings.AboutPage
 import com.example.ui.screens.settings.BackupRestorePage
@@ -85,7 +84,6 @@ import com.example.util.AppHaptics
 
 @Composable
 fun SettingsScreen(
-    selectedQuality: AudioQuality = AudioQuality.ULTRA_HD_320,
     effectsState: AudioEffectsState,
     isDarkMode: Boolean,
     themeMode: AppThemeMode,
@@ -93,7 +91,6 @@ fun SettingsScreen(
     onUpdateProfile: (UserProfile) -> Unit = {},
     onSelectThemeMode: (AppThemeMode) -> Unit,
     onToggleDarkMode: () -> Unit,
-    onAudioQualitySelected: (AudioQuality) -> Unit,
     onCrystalClarityToggle: (Boolean) -> Unit,
     onToggleEqualizer: (Boolean) -> Unit,
     onOpenEqualizer: () -> Unit,
@@ -254,10 +251,8 @@ fun SettingsScreen(
                     }
                     SettingsCategory.MUSIC_PLAYBACK -> {
                         MusicPlaybackPage(
-                            selectedQuality = selectedQuality,
                             effectsState = effectsState,
                             isDarkMode = isDarkMode,
-                            onAudioQualitySelected = onAudioQualitySelected,
                             onCrystalClarityToggle = onCrystalClarityToggle,
                             onToggleEqualizer = onToggleEqualizer,
                             onOpenEqualizer = onOpenEqualizer,

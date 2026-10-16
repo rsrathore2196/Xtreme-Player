@@ -208,14 +208,29 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Di
             }.toMap() }.orEmpty(),
             root.optJSONArray("readyShelves")?.let { a -> (0 until a.length()).map { a.optString(it) }.toSet() }.orEmpty())
         fun verified(list: List<MusicTrack>) = list.filter(UnifiedRecommendationEngine::verified).map { it.copy(recommendationOnly = true) }
-        fun clean(section: SectionState) = section.copy(tracks = verified(section.tracks), isLoaded = verified(section.tracks).isNotEmpty())
+        fun clean(section: SectionState): SectionState {
+            val tracks = verified(section.tracks)
+            return section.copy(tracks = tracks, isLoaded = tracks.isNotEmpty())
+        }
+        val rejectedShelves = mapOf(
+            UnifiedRecommendationEngine.Shelf.QUICK.name to saved.quick,
+            UnifiedRecommendationEngine.Shelf.ERA.name to saved.era,
+            UnifiedRecommendationEngine.Shelf.CHART.name to saved.chart,
+            UnifiedRecommendationEngine.Shelf.PERSONALIZED.name to saved.personalized,
+            UnifiedRecommendationEngine.Shelf.SIMILAR.name to saved.similarArtists,
+            UnifiedRecommendationEngine.Shelf.INSPIRED.name to saved.inspiredTrack
+        ).filterValues { section -> section.tracks.any { !UnifiedRecommendationEngine.verified(it) } }.keys
         return if (saved.recommendationSource == UnifiedRecommendationEngine.SOURCE) saved.copy(
             quick = clean(saved.quick), era = clean(saved.era), chart = clean(saved.chart),
             personalized = clean(saved.personalized), similarArtists = clean(saved.similarArtists), inspiredTrack = clean(saved.inspiredTrack),
             quickCandidates = verified(saved.quickCandidates), eraCandidates = verified(saved.eraCandidates),
             chartCandidates = verified(saved.chartCandidates), personalizedCandidates = verified(saved.personalizedCandidates),
             similarArtistCandidates = verified(saved.similarArtistCandidates), inspiredTrackCandidates = verified(saved.inspiredTrackCandidates),
-            catalog = verified(saved.catalog)) else saved.copy(
+            catalog = verified(saved.catalog),
+            // Keep usable cached Jio tracks visible, but refill shelves whose old
+            // snapshots included unsupported provider candidates on next demand.
+            shelfLoads = saved.shelfLoads - rejectedShelves,
+            readyShelves = saved.readyShelves - rejectedShelves) else saved.copy(
                 quick = SectionState(title = "Quick Picks"), era = SectionState(title = "Era-Specific Hits"),
                 chart = SectionState(title = saved.chart.title), personalized = SectionState(title = "Recommended for You"),
                 similarArtists = SectionState(title = "More from Similar Artists"), inspiredTrack = SectionState(title = "Inspired by this Track"),

@@ -397,13 +397,11 @@ fun MainNavigationScaffold(
                                 )
                             }
                             3 -> {
-                                val selectedQuality by viewModel.selectedQuality.collectAsStateWithLifecycle()
                                 val effectsState by viewModel.effectsState.collectAsStateWithLifecycle()
                                 val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
                                 val customThemeState by viewModel.customThemeState.collectAsStateWithLifecycle()
                                 val userProfile by viewModel.userProfile.collectAsStateWithLifecycle()
                                 SettingsScreen(
-                                    selectedQuality = selectedQuality,
                                     effectsState = effectsState,
                                     isDarkMode = isDarkMode,
                                     themeMode = themeMode,
@@ -415,7 +413,6 @@ fun MainNavigationScaffold(
                                     onUpdateProfile = { updated -> viewModel.updateUserProfile(updated) },
                                     onSelectThemeMode = { mode -> viewModel.setThemeMode(mode) },
                                     onToggleDarkMode = { viewModel.toggleDarkMode() },
-                                    onAudioQualitySelected = { quality -> viewModel.setAudioQuality(quality) },
                                     onCrystalClarityToggle = { enabled -> viewModel.setCrystalClarityEnabled(enabled) },
                                     onToggleEqualizer = { enabled -> viewModel.setEqualizerEnabled(enabled) },
                                     onOpenEqualizer = { isEqualizerOpen = true },
@@ -495,7 +492,12 @@ fun MainNavigationScaffold(
                             state = detail, player = playerUiState,
                             onBack = viewModel.catalogBrowser::close,
                             onMore = viewModel.catalogBrowser::loadMoreDetail,
-                            onPlay = { track, queue -> viewModel.playTrack(track, queue) },
+                            onPlay = { track, queue ->
+                                if (detail.destination is com.example.data.repository.CatalogDestination.Album ||
+                                    detail.destination is com.example.data.repository.CatalogDestination.Playlist)
+                                    viewModel.playCatalogCollection(track, detail)
+                                else viewModel.playTrack(track, queue)
+                            },
                             onFavorite = { viewModel.toggleLike(it) },
                             onScroll = viewModel.catalogBrowser::rememberScroll,
                             handleBack = !isPlayerExpanded

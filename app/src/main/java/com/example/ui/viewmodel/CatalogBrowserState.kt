@@ -191,6 +191,16 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
             requestId = detailGeneration) } ?: CatalogDetailState(destination, requestId = detailGeneration)
         if (_detail.value?.initialized != true) loadMoreDetail()
     }
+    /** Playback continuation captures catalog identity only; closing the page cannot cancel music. */
+    fun playlistPlaybackContinuation(state: CatalogDetailState): com.example.playback.CollectionPlaybackContinuation? {
+        val playlist = (state.destination as? CatalogDestination.Playlist)?.playlist ?: return null
+        val page = state.nextPage ?: return null
+        val catalog = repository
+        return com.example.playback.CollectionPlaybackContinuation(page) { cursor ->
+            catalog.playlistSongs(playlist, cursor)
+        }
+    }
+
     fun close() { saveDetail(); detailJob?.cancel(); detailGeneration++; _detail.value = null }
     private fun saveDetail() { _detail.value?.let { details[it.destination.key] = it.copy(loading = false) } }
     fun rememberScroll(index: Int, offset: Int) {

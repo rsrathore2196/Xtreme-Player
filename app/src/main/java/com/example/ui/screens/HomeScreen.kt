@@ -657,8 +657,6 @@ fun HomeScreenContent(
                                     Text(artist.name, color = textPrimaryColor, fontWeight = FontWeight.SemiBold,
                                         modifier = Modifier.fillMaxWidth().basicMarquee(iterations = Int.MAX_VALUE),
                                         maxLines = 1, softWrap = false, textAlign = TextAlign.Center)
-                                    Text("${artist.playCount} plays", color = textMutedColor,
-                                        style = MaterialTheme.typography.labelSmall)
                                 }
                             }
                         }

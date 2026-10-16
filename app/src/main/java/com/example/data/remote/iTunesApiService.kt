@@ -12,7 +12,9 @@ import java.util.concurrent.TimeUnit
 data class iTunesSongResult(
     val artworkUrl100: String? = null,
     val trackName: String? = null,
-    val artistName: String? = null
+    val artistName: String? = null,
+    val collectionName: String? = null,
+    val durationMs: Long = 0L
 )
 
 data class iTunesSearchResponse(
@@ -53,7 +55,9 @@ class iTunesApiServiceImpl(
                         iTunesSongResult(
                             artworkUrl100 = obj.optString("artworkUrl100").takeIf { it.isNotBlank() },
                             trackName = obj.optString("trackName").takeIf { it.isNotBlank() },
-                            artistName = obj.optString("artistName").takeIf { it.isNotBlank() }
+                            artistName = obj.optString("artistName").takeIf { it.isNotBlank() },
+                            collectionName = obj.optString("collectionName").takeIf { it.isNotBlank() },
+                            durationMs = obj.optLong("trackTimeMillis", 0L)
                         )
                     )
                 }

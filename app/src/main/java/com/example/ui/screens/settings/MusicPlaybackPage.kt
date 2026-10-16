@@ -24,9 +24,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.filled.GraphicEq
-import androidx.compose.material.icons.filled.HighQuality
-import androidx.compose.material.icons.filled.RadioButtonChecked
-import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Waves
@@ -54,7 +51,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.playback.AudioEffectsState
-import com.example.playback.AudioQuality
 import com.example.playback.PlayerUiState
 import com.example.ui.theme.LocalAppColors
 import com.example.ui.theme.LiquidGlass
@@ -67,10 +63,8 @@ import com.example.ui.theme.bouncyClickable
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun MusicPlaybackPage(
-    selectedQuality: AudioQuality = AudioQuality.ULTRA_HD_320,
     effectsState: AudioEffectsState,
     isDarkMode: Boolean,
-    onAudioQualitySelected: (AudioQuality) -> Unit,
     onCrystalClarityToggle: (Boolean) -> Unit,
     onToggleEqualizer: (Boolean) -> Unit,
     onOpenEqualizer: () -> Unit,
@@ -95,92 +89,6 @@ fun MusicPlaybackPage(
             .padding(16.dp)
     ) {
         NetworkStreamingQualitySection()
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // 1. Audio Quality & Streaming Card
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = true)
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier
-                            .size(30.dp)
-                            .clip(CircleShape)
-                            .background(accentColor.copy(alpha = 0.12f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.HighQuality,
-                            contentDescription = null,
-                            tint = accentColor,
-                            modifier = Modifier.size(16.dp)
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Column {
-                        Text(
-                            text = "Audio Quality & Bitrate",
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = textPrimary
-                        )
-                        Text(
-                            text = "Lossless streaming & Nyquist filter tuning",
-                            fontSize = 11.5.sp,
-                            color = textMuted
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(14.dp))
-
-                AudioQualityOption(
-                    title = AudioQuality.HI_RES_LOSSLESS.title,
-                    subtitle = "Highest Studio Grade Quality FLAC Audio",
-                    isSelected = selectedQuality == AudioQuality.HI_RES_LOSSLESS,
-                    isDarkMode = isDarkMode,
-                    accentColor = accentColor,
-                    onClick = { onAudioQualitySelected(AudioQuality.HI_RES_LOSSLESS) }
-                )
-
-                HorizontalDivider(color = dividerColor, thickness = 1.dp, modifier = Modifier.padding(vertical = 10.dp))
-
-                AudioQualityOption(
-                    title = AudioQuality.ULTRA_HD_320.title,
-                    subtitle = "Audiophile Grade High Quality Sound Reproduction",
-                    isSelected = selectedQuality == AudioQuality.ULTRA_HD_320,
-                    isDarkMode = isDarkMode,
-                    accentColor = accentColor,
-                    onClick = { onAudioQualitySelected(AudioQuality.ULTRA_HD_320) }
-                )
-
-                HorizontalDivider(color = dividerColor, thickness = 1.dp, modifier = Modifier.padding(vertical = 10.dp))
-
-                AudioQualityOption(
-                    title = AudioQuality.HIGH_160.title,
-                    subtitle = "Optimized clear sound with fast data streaming",
-                    isSelected = selectedQuality == AudioQuality.HIGH_160,
-                    isDarkMode = isDarkMode,
-                    accentColor = accentColor,
-                    onClick = { onAudioQualitySelected(AudioQuality.HIGH_160) }
-                )
-
-                HorizontalDivider(color = dividerColor, thickness = 1.dp, modifier = Modifier.padding(vertical = 10.dp))
-
-                AudioQualityOption(
-                    title = AudioQuality.MEDIUM_96.title,
-                    subtitle = "Lowest network bandwidth usage",
-                    isSelected = selectedQuality == AudioQuality.MEDIUM_96,
-                    isDarkMode = isDarkMode,
-                    accentColor = accentColor,
-                    onClick = { onAudioQualitySelected(AudioQuality.MEDIUM_96) }
-                )
-            }
-        }
-
         Spacer(modifier = Modifier.height(16.dp))
 
         // 2. Hardware Equalizer & Soundstage Card
@@ -512,54 +420,5 @@ fun MusicPlaybackPage(
         }
 
         Spacer(modifier = Modifier.height(24.dp))
-    }
-}
-
-@Composable
-private fun AudioQualityOption(
-    title: String,
-    subtitle: String,
-    isSelected: Boolean,
-    isDarkMode: Boolean,
-    accentColor: Color,
-    onClick: () -> Unit
-) {
-    val appColors = LocalAppColors.current
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
-        modifier = Modifier
-            .fillMaxWidth()
-            .bouncyClickable { onClick() }
-            .then(
-                if (isSelected) {
-                    Modifier
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(accentColor.copy(alpha = if (appColors.isDark) 0.14f else 0.09f))
-                        .padding(horizontal = 10.dp, vertical = 6.dp)
-                } else {
-                    Modifier.padding(horizontal = 6.dp, vertical = 6.dp)
-                }
-            )
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = title,
-                fontSize = 13.5.sp,
-                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
-                color = if (isSelected) accentColor else appColors.textPrimary
-            )
-            Text(
-                text = subtitle,
-                fontSize = 11.sp,
-                color = appColors.textMuted
-            )
-        }
-        Icon(
-            imageVector = if (isSelected) Icons.Default.RadioButtonChecked else Icons.Default.RadioButtonUnchecked,
-            contentDescription = null,
-            tint = if (isSelected) accentColor else appColors.textMuted.copy(alpha = 0.6f),
-            modifier = Modifier.size(20.dp)
-        )
     }
 }

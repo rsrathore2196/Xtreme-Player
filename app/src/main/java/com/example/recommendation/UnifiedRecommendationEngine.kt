@@ -1,6 +1,7 @@
 package com.example.recommendation
 
 import android.content.Context
+import android.net.Uri
 import com.example.data.cache.RecommendationCache
 import com.example.data.cache.RecommendationTrackCodec
 import com.example.data.local.UserProfile
@@ -88,13 +89,16 @@ class UnifiedRecommendationEngine(context: Context?,
         private const val MATCH_TTL = 7 * 24 * 60 * 60_000L
         private const val MISS_TTL = 30 * 60_000L
         fun seedKey(track: MusicTrack?): String = track?.let { HomeRecommendationPolicy.metadataKey(it) }.orEmpty()
-        fun verified(track: MusicTrack): Boolean =
-            (track.id.startsWith("online_") && track.id.length > 7 &&
-                track.source.equals("JIOSAAVN", true) && OriginalMusicFilter.isHomeRecommendation(track) &&
-                StreamResolver.isValidStreamUrl(track.audioUrl)) ||
-            (track.id.startsWith("yt_") && track.id.length > 3 &&
-                OriginalMusicFilter.isHomeRecommendation(track)) ||
-            (OriginalMusicFilter.isHomeRecommendation(track) && StreamResolver.isValidStreamUrl(track.audioUrl))
+        fun verified(track: MusicTrack): Boolean {
+            if (!track.id.startsWith("online_") || track.id.length <= 7 ||
+                !track.source.equals("JIOSAAVN", true) || track.isLossless ||
+                !OriginalMusicFilter.isHomeRecommendation(track) ||
+                !StreamResolver.isValidStreamUrl(track.audioUrl)) return false
+            val uri = Uri.parse(track.audioUrl)
+            val host = uri.host.orEmpty().lowercase(java.util.Locale.ROOT)
+            return uri.scheme in setOf("https", "http") &&
+                (host == "saavncdn.com" || host.endsWith(".saavncdn.com"))
+        }
         fun language(value: String): String = when (val name = CatalogNames.normalize(value)) {
             "panjabi", "pa" -> "punjabi"; "hin", "hi" -> "hindi"; "eng", "en" -> "english"
             else -> name
@@ -384,8 +388,13 @@ class UnifiedRecommendationEngine(context: Context?,
     private suspend fun cachedMatch(seed: MusicTrack, known: Map<String, List<MusicTrack>>): MusicTrack? {
         val now = System.currentTimeMillis()
         val entry = cache?.get(mappingKey(seed))
-        if (entry != null && now < entry.expiresAt) return RecommendationTrackCodec.decode(entry.body).firstOrNull {
-            verified(it) && confidence(seed, it) != null }
+        if (entry != null && now < entry.expiresAt) {
+            val tracks = RecommendationTrackCodec.decode(entry.body)
+            tracks.firstOrNull { verified(it) && confidence(seed, it) != null }?.let { return it }
+            if (tracks.isEmpty()) return null // Keep genuine negative-cache entries.
+            // Older builds cached YouTube-only candidates as verified matches.
+            // Do not let those entries suppress a real JioSaavn lookup.
+        }
         val local = known["title:" + RecordingIdentity.title(seed).replace(" ", "")].orEmpty() +
             RecordingIdentity.isrc(seed.isrc)?.let { known["isrc:$it"] }.orEmpty()
         return local.firstOrNull { confidence(seed, it) != null }
@@ -394,14 +403,18 @@ class UnifiedRecommendationEngine(context: Context?,
     private suspend fun match(seed: MusicTrack, essential: Boolean): MusicTrack? {
         val key = mappingKey(seed)
         val hit = cache?.get(key)
-        if (hit != null && System.currentTimeMillis() < hit.expiresAt)
-            return RecommendationTrackCodec.decode(hit.body).firstOrNull { verified(it) &&
-                confidence(seed, it) != null }
+        if (hit != null && System.currentTimeMillis() < hit.expiresAt) {
+            val tracks = RecommendationTrackCodec.decode(hit.body)
+            tracks.firstOrNull { verified(it) && confidence(seed, it) != null }?.let { return it }
+            if (tracks.isEmpty()) return null
+        }
         return DiscoveryRequestCoordinator.shared(key, essential, network = false) {
             val latest = cache?.get(key)
-            if (latest != null && System.currentTimeMillis() < latest.expiresAt)
-                return@shared RecommendationTrackCodec.decode(latest.body).filter { verified(it) &&
-                    confidence(seed, it) != null }
+            if (latest != null && System.currentTimeMillis() < latest.expiresAt) {
+                val tracks = RecommendationTrackCodec.decode(latest.body)
+                val verified = tracks.filter { verified(it) && confidence(seed, it) != null }
+                if (verified.isNotEmpty() || tracks.isEmpty()) return@shared verified
+            }
             matching.withPermit {
                 val queries = listOf("${StreamResolver.extractCleanTitle(seed.title, seed.artist)} ${CustomRecommendationQueryWrapper.extractPrimaryArtist(seed)}",
                     romanized(seed).let { translated -> "${StreamResolver.extractCleanTitle(translated.title, translated.artist)} ${CustomRecommendationQueryWrapper.extractPrimaryArtist(translated)}" },

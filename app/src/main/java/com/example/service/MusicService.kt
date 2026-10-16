@@ -59,12 +59,10 @@ class MusicService : MediaLibraryService() {
 
     private fun applyAudioCeiling(selector: DefaultTrackSelector, player: Player) {
         val item = player.currentMediaItem
-        val requested = item?.mediaMetadata?.extras?.getInt("requested_audio_kbps", 0)?.takeIf { it > 0 }
         val youtube = item?.let { YouTubeAudioStreamService.isYouTubeAudio(it.mediaId, it.localConfiguration?.uri.toString()) } == true
-        val userCap = requested?.let { (it.toLong() * 1000).coerceAtMost(Int.MAX_VALUE.toLong()).toInt() } ?: Int.MAX_VALUE
         selector.parameters = selector.buildUponParameters()
             .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, youtube)
-            .setMaxAudioBitrate(minOf(networkQuality.currentMaxBitrateBps, userCap, if (youtube) 320_000 else Int.MAX_VALUE))
+            .setMaxAudioBitrate(minOf(networkQuality.currentMaxBitrateBps, if (youtube) 320_000 else Int.MAX_VALUE))
             .setExceedAudioConstraintsIfNecessary(true).build()
     }
 
@@ -89,11 +87,7 @@ class MusicService : MediaLibraryService() {
                     if (networkQuality.activeQualityCeiling.value.connectionType == com.example.playback.NetworkConnectionType.OFFLINE) continue
                     // Select a real transport/itag before changing an upcoming media
                     // source: a SABR-only song must not masquerade as progressive.
-                    val quality = when (before.mediaMetadata.extras?.getInt("requested_audio_kbps", 320) ?: 320) {
-                        in 1..96 -> com.example.playback.AudioQuality.MEDIUM_96
-                        in 97..160 -> com.example.playback.AudioQuality.HIGH_160
-                        else -> com.example.playback.AudioQuality.ULTRA_HD_320
-                    }
+                    val quality = networkQuality.currentAudioQuality
                     val audio = withTimeoutOrNull(12_000L) {
                         try { withContext(Dispatchers.IO) {
                             YouTubeAudioStreamService.resolve(video, quality, maxBitrateBps = ceiling)

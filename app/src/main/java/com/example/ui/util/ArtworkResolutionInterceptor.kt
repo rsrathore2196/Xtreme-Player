@@ -10,8 +10,7 @@ import com.example.data.repository.MediaItem
 import com.example.data.repository.iTunesArtworkRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withTimeoutOrNull
 
 const val ARTWORK_METADATA_PARAMETER = "com.example.artwork.metadata"
 
@@ -27,7 +26,7 @@ data class ArtworkRequestMetadata(
     val providerArtworkOnly: Boolean = false
 )
 
-/** One visible decode; enrichment only fills the existing verified URL/Room cache. */
+/** Resolve once inside Coil before the final decode; no Compose URL swaps or per-card jobs. */
 class ArtworkResolutionInterceptor : Interceptor {
     override suspend fun intercept(chain: Interceptor.Chain): ImageResult {
         val metadata = chain.request.parameters.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER)
@@ -63,50 +62,28 @@ class ArtworkResolutionInterceptor : Interceptor {
         val repository = item?.takeUnless { metadata.providerArtworkOnly }?.let { iTunesArtworkRepository.getInstance(request.context) }
         val cached = item?.let { repository?.getMemoryCachedResolvedUrl(it, sourceDimension) }
         load(cached)?.let { return it }
-        val lookupKnown = item != null && repository?.getMemoryCachedUrl(item, sourceDimension) != null
-        val minimum = minOf(200,
-            (chain.size.width as? Dimension.Pixels)?.px ?: 200,
-            (chain.size.height as? Dimension.Pixels)?.px ?: 200)
+        // Recommendation cards used to opt out entirely. A successful 200px provider
+        // decode also returned before iTunes could improve a full-screen cover.
+        // Resolve in this cancellable Coil request so the visible image receives the
+        // verified high-resolution result, not just a future memory-cache warmup.
+        if (item != null && repository != null) {
+            val resolved = withTimeoutOrNull(5_000L) { repository.resolveArtwork(item, sourceDimension) }
+            if (!resolved.isNullOrBlank() && resolved !in providerUrls) load(resolved)?.let { return it }
+        }
         var smallFallback: SuccessResult? = null
-        // A 480/500px source is useful even when the source-resolution hint is 600/1200.
-        // Never decode another successful candidate to satisfy that hint. Small displayed
-        // images also remain bounded by Coil's measured size rather than a 200px minimum.
+        val requiredWidth = (chain.size.width as? Dimension.Pixels)?.px ?: sourceDimension
+        val requiredHeight = (chain.size.height as? Dimension.Pixels)?.px ?: sourceDimension
         for (url in providerUrls) {
             val result = load(url) ?: continue
             val bitmap = (result.drawable as? BitmapDrawable)?.bitmap
-            val shortest = minOf(bitmap?.width ?: result.drawable.intrinsicWidth,
-                bitmap?.height ?: result.drawable.intrinsicHeight)
-            if (shortest >= minimum) {
-                if (item != null && repository != null && !lookupKnown) warm(repository, item, sourceDimension)
-                return result
-            }
-            // Only a genuinely undersized/missing cover needs inline recovery;
-            // never decode all provider variants after one has already succeeded.
-            smallFallback = result
-            break
-        }
-        // Only a missing/failed provider blocks on an enrichment lookup.
-        if (item != null && repository != null) {
-            load(repository.resolveArtwork(item, sourceDimension))?.let { return it }
+            val width = bitmap?.width ?: result.drawable.intrinsicWidth
+            val height = bitmap?.height ?: result.drawable.intrinsicHeight
+            if (width >= requiredWidth && height >= requiredHeight) return result
+            if (smallFallback == null || width.toLong() * height >
+                smallFallback.drawable.intrinsicWidth.toLong() * smallFallback.drawable.intrinsicHeight)
+                smallFallback = result
         }
         return smallFallback ?: lastError ?: chain.proceed(request)
-    }
-
-    private fun warm(repository: iTunesArtworkRepository, item: MediaItem, dimension: Int) {
-        val key = "${item.rawTitle}|${item.rawArtist}"
-        synchronized(warmups) {
-            if (warmups[key]?.isActive == true || warmups.size >= 64) return
-            val job = enrichmentScope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
-                try {
-                    com.example.performance.BackgroundWorkCoordinator.awaitIdle(minimumUptimeMillis = 3_500L)
-                    enrichmentSlots.withPermit { repository.resolveArtwork(item, dimension) }
-                } catch (e: kotlinx.coroutines.CancellationException) { throw e }
-                catch (_: Exception) { /* Visible provider artwork remains valid. */ }
-            }
-            warmups[key] = job
-            job.invokeOnCompletion { synchronized(warmups) { if (warmups[key] === job) warmups.remove(key) } }
-            job.start()
-        }
     }
 
     private fun upgradeProviderUrl(url: String, sourceDimension: Int): String = when {
@@ -120,8 +97,5 @@ class ArtworkResolutionInterceptor : Interceptor {
 
     private companion object {
         val youtubeThumbnail = Regex("/(?:default|mqdefault|hqdefault|sddefault)\\.jpg")
-        val enrichmentScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
-        val enrichmentSlots = kotlinx.coroutines.sync.Semaphore(4)
-        val warmups = mutableMapOf<String, kotlinx.coroutines.Job>()
     }
 }

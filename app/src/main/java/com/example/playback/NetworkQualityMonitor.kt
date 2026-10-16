@@ -28,6 +28,9 @@ class NetworkQualityMonitor private constructor(context: Context) {
     private val preferenceWrites = Dispatchers.IO.limitedParallelism(1)
     @Volatile private var latest = ActiveQualityState()
     val currentMaxBitrateBps: Int get() = latest.effectiveCeiling.maxBitrateBps
+    val currentAudioQuality: AudioQuality get() = latest.effectiveCeiling.audioQuality
+    val allowsLosslessUpgrade: Boolean get() = latest.effectiveCeiling == AudioQualityCeiling.MAX &&
+        latest.connectionType != NetworkConnectionType.OFFLINE
 
     val preferences: StateFlow<NetworkAudioPreferences> = AudioQualityPreferences.observeNetworkSettings(app)
         .distinctUntilChanged().stateIn(scope, SharingStarted.WhileSubscribed(5_000), NetworkAudioPreferences())
@@ -90,6 +93,16 @@ class NetworkQualityMonitor private constructor(context: Context) {
     fun setWifiCeiling(ceiling: AudioQualityCeiling) { scope.launch(preferenceWrites) { AudioQualityPreferences.setWifiQualityCeiling(app, ceiling) } }
     fun setCellularCeiling(ceiling: AudioQualityCeiling) { scope.launch(preferenceWrites) { AudioQualityPreferences.setCellularQualityCeiling(app, ceiling) } }
     fun setProtectHotspots(enabled: Boolean) { scope.launch(preferenceWrites) { AudioQualityPreferences.setTreatMeteredWifiAsCellular(app, enabled) } }
+
+    /** Compatibility entry point for former global-quality callers. No hidden global cap. */
+    fun setActiveCeiling(ceiling: AudioQualityCeiling) { scope.launch(preferenceWrites) {
+        val active = snapshot()
+        val prefs = AudioQualityPreferences.getNetworkSettings(app)
+        val wifi = active.connectionType == NetworkConnectionType.UNMETERED_WIFI_OR_ETHERNET ||
+            active.connectionType == NetworkConnectionType.METERED_WIFI && !prefs.treatMeteredWifiAsCellular
+        if (wifi) AudioQualityPreferences.setWifiQualityCeiling(app, ceiling)
+        else AudioQualityPreferences.setCellularQualityCeiling(app, ceiling)
+    } }
 
     private fun policy(type: NetworkConnectionType, prefs: NetworkAudioPreferences) = ActiveQualityState(
         when (type) {

@@ -2,9 +2,12 @@ package com.example.ui.screens.settings
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -35,6 +38,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
@@ -102,26 +107,44 @@ internal fun NetworkStreamingQualitySection() {
             Switch(checked = prefs.treatMeteredWifiAsCellular, onCheckedChange = protectHotspots,
                 colors = liquidGlassSwitchColors(colors))
         }
-        Text("The existing audio-quality setting also applies. Limits apply to the next track. Current progressive playback continues uninterrupted. " +
-            "If no stream fits, the lowest available rate is used.", color = colors.textMuted, fontSize = 11.sp, lineHeight = 15.sp)
+        Text("These profiles control streaming quality. Maximum / Lossless enables verified background lossless upgrades. " +
+            "Current playback continues while new bitrate limits apply to upcoming tracks. If no stream fits, the lowest available rate is used.", color = colors.textMuted, fontSize = 11.sp, lineHeight = 15.sp)
     }
 
     editingWifi?.let { wifi ->
         val selected = if (wifi) prefs.wifiQualityCeiling else prefs.cellularQualityCeiling
         AlertDialog(
             onDismissRequest = { editingWifi = null }, containerColor = colors.bottomSheetBackground,
+            shape = RoundedCornerShape(30.dp),
+            icon = {
+                Box(Modifier.size(48.dp).clip(RoundedCornerShape(16.dp))
+                    .background(colors.primaryAccent.copy(alpha = 0.12f)), contentAlignment = Alignment.Center) {
+                    Icon(if (wifi) Icons.Default.Wifi else Icons.Default.SignalCellularAlt,
+                        contentDescription = null, tint = colors.primaryAccent, modifier = Modifier.size(25.dp))
+                }
+            },
             titleContentColor = colors.textPrimary, textContentColor = colors.textSecondary,
-            title = { Text(if (wifi) "Wi-Fi Streaming Quality" else "Mobile Data Streaming Quality") },
+            title = { Text(if (wifi) "Wi-Fi Streaming Quality" else "Mobile Data Streaming Quality",
+                fontWeight = FontWeight.Bold, fontSize = 20.sp) },
             text = {
-                Column(Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState())) {
+                Column(Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                    Text("Choose the highest quality this connection may use.", color = colors.textMuted,
+                        fontSize = 12.sp, lineHeight = 17.sp, modifier = Modifier.padding(bottom = 4.dp))
                     AudioQualityCeiling.entries.forEach { ceiling ->
-                        Row(Modifier.fillMaxWidth().selectable(selected = ceiling == selected, role = Role.RadioButton,
-                            onClick = {
+                        val checked = ceiling == selected
+                        val shape = RoundedCornerShape(18.dp)
+                        Row(Modifier.fillMaxWidth().clip(shape)
+                            .background(Brush.verticalGradient(listOf(
+                                if (checked) colors.primaryAccent.copy(alpha = 0.14f) else colors.cardBackground,
+                                if (checked) colors.primaryAccent.copy(alpha = 0.06f) else colors.cardBackground)))
+                            .border(1.dp, if (checked) colors.primaryAccent.copy(alpha = 0.7f) else colors.cardBorder, shape)
+                            .selectable(selected = checked, role = Role.RadioButton, onClick = {
                                 if (wifi) monitor.setWifiCeiling(ceiling) else monitor.setCellularCeiling(ceiling)
                                 editingWifi = null
-                            }).padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically,
+                            }).padding(horizontal = 10.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            RadioButton(selected = ceiling == selected, onClick = null,
+                            RadioButton(selected = checked, onClick = null,
                                 colors = RadioButtonDefaults.colors(selectedColor = colors.primaryAccent,
                                     unselectedColor = colors.textMuted))
                             Column(Modifier.weight(1f)) {

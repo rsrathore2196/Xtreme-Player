@@ -579,6 +579,15 @@ class PlayerViewModel(
         }
     }
 
+    fun playCatalogCollection(track: MusicTrack, state: CatalogDetailState) {
+        val queue = (state.tracks + state.pending).distinctBy { it.id }.ifEmpty { listOf(track) }
+        val more = catalogBrowser.playlistPlaybackContinuation(state)
+        activePlaybackLaunchJob?.cancel()
+        activePlaybackLaunchJob = viewModelScope.launch(Dispatchers.Main.immediate) {
+            playbackManager.playTrack(track, queue, isExplicitPlaylist = true, collectionLoader = more)
+        }
+    }
+
     /**
      * Plays a track selected from search results.
      * Prioritizes the same singer/artist's other songs and matching genre/type

@@ -32,10 +32,11 @@ internal class JioSaavnPlaybackFallback(
 
     companion object {
         fun handles(item: MediaItem?): Boolean {
-            if (item == null ||
-                !item.mediaId.startsWith("online_")) return false
+            // Library/imported tracks and verified cross-provider matches can keep
+            // their original IDs. Detect the active Jio transport, not an ID prefix.
+            if (item == null) return false
             val uri = item.localConfiguration?.uri ?: item.requestMetadata.mediaUri ?: return false
-            val host = uri.host.orEmpty()
+            val host = uri.host.orEmpty().lowercase(java.util.Locale.ROOT)
             return uri.scheme in setOf("https", "http") && !YouTubeAudioStreamService.isYouTubeAudio(item.mediaId, uri.toString()) &&
                 host != "archive.org" && !host.endsWith(".archive.org") &&
                 (host == "saavncdn.com" || host.endsWith(".saavncdn.com") ||

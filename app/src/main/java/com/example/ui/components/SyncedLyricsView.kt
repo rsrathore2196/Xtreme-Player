@@ -555,7 +555,7 @@ private fun KaraokeLineItem(
             val completed = Path()
             val moving = Path()
             val liftedCompleted = Path()
-            val liftHeight = 1.25.dp.toPx()
+            val liftHeight = 2.dp.toPx()
             val feather = 8.dp.toPx()
             val revealPaint = RevealPaint(activeTextColor, glowColor, broadRadius, glyphGlows?.takeIf { layout != null && it.matches(layout) })
             onDrawWithContent {
@@ -643,8 +643,8 @@ private fun vocalLift(position: Long, start: Long, end: Long): Float {
     if (position <= start || position >= end + 280L) return 0f
     val riseMs = (end - start).coerceIn(180L, 360L).toFloat()
     val rise = ((position - start) / riseMs).coerceIn(0f, 1f)
-    val inverse = 1f - rise
-    val easedRise = 1f - inverse * inverse * inverse
+    // Zero velocity at both ends keeps the larger lift smooth at vocal boundaries.
+    val easedRise = rise * rise * (3f - 2f * rise)
     val settle = (1f - (position - end).coerceAtLeast(0L) / 280f).coerceIn(0f, 1f)
     return easedRise * settle * settle * (3f - 2f * settle)
 }

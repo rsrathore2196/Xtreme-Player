@@ -31,7 +31,9 @@ data class MediaItem(
     val rawTitle: String,
     val rawArtist: String?,
     val source: AudioSource,
-    val sourceArtworkUrl: String
+    val sourceArtworkUrl: String,
+    val durationMs: Long = 0L,
+    val album: String = ""
 )
 
 object ArtworkDimensions {
@@ -52,7 +54,9 @@ fun MusicTrack.toMediaItem(): MediaItem {
         rawTitle = title,
         rawArtist = artist,
         source = src,
-        sourceArtworkUrl = coverUrl
+        sourceArtworkUrl = coverUrl,
+        durationMs = durationMs,
+        album = album
     )
 }
 
@@ -116,7 +120,7 @@ class iTunesArtworkRepository(
         val flight = synchronized(inFlight) {
             inFlight.getOrPut(cacheKey) {
                 Flight(lookupScope.async(start = CoroutineStart.LAZY) {
-                    lookup(cacheKey, cleanedTitle, cleanedArtist).also { memoryCache.put(cacheKey, it) }
+                    lookup(cacheKey, cleanedTitle, cleanedArtist, item.durationMs, item.album).also { memoryCache.put(cacheKey, it) }
                 })
             }.also { it.readers++ }
         }
@@ -137,7 +141,8 @@ class iTunesArtworkRepository(
         if (it.expiresAt > System.currentTimeMillis()) it else { memoryCache.remove(key); null }
     } }
 
-    private suspend fun lookup(cacheKey: String, cleanedTitle: String, cleanedArtist: String): Lookup {
+    private suspend fun lookup(cacheKey: String, cleanedTitle: String, cleanedArtist: String,
+        durationMs: Long, album: String): Lookup {
         // Another caller may have completed just before this flight was registered.
         cached(cacheKey)?.let { return it }
 
@@ -155,24 +160,26 @@ class iTunesArtworkRepository(
 
         // 3. Network Fetch iTunes API (Offloaded to Dispatchers.IO)
         return try {
-            val queryTerm = if (cleanedArtist.isNotBlank()) "$cleanedTitle $cleanedArtist" else cleanedTitle
-            val response = networkSlots.withPermit {
-                apiService.searchSong(term = queryTerm, media = "music", limit = 4)
+            val reference = MusicTrack(id = "artwork", title = cleanedTitle, artist = cleanedArtist,
+                album = album, durationMs = durationMs, coverUrl = "", audioUrl = "")
+            val queries = listOf("$cleanedTitle $cleanedArtist".trim(), cleanedTitle).distinct()
+            var matchedResult: com.example.data.remote.iTunesSongResult? = null
+            for (queryTerm in queries) {
+                val response = networkSlots.withPermit {
+                    apiService.searchSong(term = queryTerm, media = "music", limit = 15)
+                }
+                matchedResult = withContext(Dispatchers.Default) { response.results.mapNotNull { res ->
+                    if (res.trackName.isNullOrBlank() || res.artistName.isNullOrBlank() || res.artworkUrl100.isNullOrBlank()) null
+                    else {
+                        val candidate = reference.copy(title = sanitizeTitle(res.trackName, artist = res.artistName),
+                            artist = res.artistName, album = res.collectionName.orEmpty(), durationMs = res.durationMs)
+                        val confidence = RecordingIdentity.fallbackConfidence(reference, candidate)
+                            ?: 75.takeIf { RecordingIdentity.same(reference, candidate, requireAlbum = true) }
+                        confidence?.let { res to it }
+                    }
+                }.maxByOrNull { it.second }?.first }
+                if (matchedResult != null) break
             }
-
-            // Verify title and artist matching to avoid showing incorrect artwork covers
-            val matchedResult = withContext(Dispatchers.Default) { response.results.firstOrNull { res ->
-                val trackName = res.trackName?.trim().orEmpty()
-                val artistName = res.artistName?.trim().orEmpty()
-                if (trackName.isBlank() || res.artworkUrl100.isNullOrBlank()) return@firstOrNull false
-
-                val titleMatch = normalized(com.example.data.repository.StreamResolver.extractCleanTitle(trackName, artistName)) == normalized(cleanedTitle)
-                val artistMatch = if (cleanedArtist.isNotBlank() && artistName.isNotBlank()) {
-                    artistName.split(",", "&", ";", "feat.", "ft.").any { normalized(it) == normalized(cleanedArtist) }
-                } else false
-
-                titleMatch && artistMatch
-            } }
 
             val rawUrl = matchedResult?.artworkUrl100
 
@@ -208,9 +215,6 @@ class iTunesArtworkRepository(
     }
 
     fun formatUrl(url: String, size: Int): String = formatArtworkUrl(url, size)
-
-    private fun normalized(value: String) = java.text.Normalizer.normalize(value, java.text.Normalizer.Form.NFKC)
-        .lowercase(java.util.Locale.ROOT).replace(Regex("[^\\p{L}\\p{M}\\p{N}]"), "")
 
     fun sanitizeTitle(title: String, source: AudioSource? = null, artist: String? = null): String {
         val decoded = if (title.contains('&')) {
@@ -249,10 +253,13 @@ class iTunesArtworkRepository(
 
     companion object {
         /** Pure formatting must never require construction of Room or the HTTP client on Main. */
-        fun formatArtworkUrl(url: String, size: Int): String = when {
-            url.contains("100x100bb") -> url.replace("100x100bb", "${size}x${size}bb")
-            url.contains("100x100") -> url.replace("100x100", "${size}x${size}")
-            else -> url
+        private val appleArtworkSize = Regex("(?<=/)\\d+x\\d+(bb)?(?=\\.(?:jpg|png|webp))", RegexOption.IGNORE_CASE)
+        fun formatArtworkUrl(url: String, size: Int): String {
+            val dimension = size.coerceIn(1, 3_000)
+            // Reformat any cached Apple size (200/600 included), not only 100x100.
+            return appleArtworkSize.replace(url) { match ->
+                "${dimension}x${dimension}" + match.groupValues[1]
+            }
         }
 
         @Volatile
