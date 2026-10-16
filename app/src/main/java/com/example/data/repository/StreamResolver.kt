@@ -37,19 +37,26 @@ internal class StreamResolver(
     fun clear() = synchronized(cache) { cache.clear() }
 
     suspend fun resolve(track: MusicTrack, quality: AudioQuality, forceRefresh: Boolean = false,
-        failedUrl: String? = null, @Suppress("UNUSED_PARAMETER") deferLossless: Boolean = true
+        failedUrl: String? = null, @Suppress("UNUSED_PARAMETER") deferLossless: Boolean = true,
+        preferYouTube: Boolean = false, jioDeadlineMs: Long = 0L
     ): MusicTrack = withContext(Dispatchers.IO) {
+        val deadline = jioDeadlineMs.takeIf { it > 0L } ?: (android.os.SystemClock.elapsedRealtime() + 6_000L)
         val key = Triple(track.id, quality, track.recommendationOnly)
-        val youtubeSelection = !track.recommendationOnly && selectedYouTube(track)
-        fun providerAllowed(candidate: MusicTrack) = true
-        if (forceRefresh) synchronized(cache) { cache.keys.removeAll { it.first == track.id } }
+        // A persisted fallback URL must not permanently turn an imported Jio
+        // recording into a YouTube-first selection. Recovery stays on its active source.
+        val youtubeSelection = selectedYouTube(track) &&
+            (!track.id.startsWith("online_") || forceRefresh || preferYouTube)
+        fun providerAllowed(candidate: MusicTrack) = isValidStreamUrl(candidate.audioUrl)
+        if (forceRefresh || preferYouTube) synchronized(cache) { cache.keys.removeAll { it.first == track.id } }
         else {
             // A working selected provider must not be displaced by an older cached fallback.
-            if (isValidStreamUrl(track.audioUrl) && track.audioUrl != failedUrl && !needsResolution(track))
+            if (providerAllowed(track) && isValidStreamUrl(track.audioUrl) && track.audioUrl != failedUrl && !needsResolution(track))
                 return@withContext track
             val cached = synchronized(cache) { cache[key]?.takeIf { it.expiresAt > System.currentTimeMillis() }?.track }
-            if (cached != null && providerAllowed(cached) && cached.audioUrl != failedUrl && isValidStreamUrl(cached.audioUrl)) {
-                return@withContext withStream(track, cached)
+            if (cached != null && providerAllowed(cached) && cached.audioUrl != failedUrl && isValidStreamUrl(cached.audioUrl) &&
+                youtubeSelection == YouTubeAudioStreamService.isYouTubeAudio(cached.id, cached.audioUrl)) {
+                // Signed URL lifetimes and transport compatibility remain authoritative in InnerTubeX.
+                if (!youtubeSelection) return@withContext withStream(track, cached)
             }
         }
         val rejected = failedUrl ?: track.audioUrl.takeIf { forceRefresh }
@@ -68,14 +75,15 @@ internal class StreamResolver(
         suspend fun youtubeExact(request: MusicTrack): MusicTrack? {
             val id = selectedVideoId(request) ?: return null
             if (!triedVideos.add(id)) return null
-            val resolved = attempt(15_000L) { resolveYouTube(request, quality, forceRefresh) } ?: return null
+            val resolved = attempt(38_000L) { resolveYouTube(request, quality, forceRefresh) } ?: return null
             if (resolved.id != request.id || !isValidStreamUrl(resolved.audioUrl) ||
                 YouTubeAudioStreamService.videoIdFromUri(Uri.parse(resolved.audioUrl)) != id) return null
+            // The stable reference can stay identical after its underlying signed URL is refreshed.
             return resolved.copy(isLossless = false, source = "YouTube Music")
         }
         suspend fun jioExact(): MusicTrack? {
             if (!track.id.startsWith("online_")) return null
-            return attempt(5_000L) { fetchById(track.id.removePrefix("online_"), forceRefresh) }
+            return attempt(8_000L) { fetchById(track.id.removePrefix("online_"), forceRefresh) }
                 ?.takeIf { it.id == track.id && usable(it) }
         }
         val title = extractCleanTitle(track.title, track.artist)
@@ -83,32 +91,31 @@ internal class StreamResolver(
         val primary = RecordingIdentity.artistNames(track).firstOrNull().orEmpty()
         val queries = listOf("$title $artist".trim(), "$title $primary".trim(), title)
             .filter(String::isNotBlank).distinctBy(CatalogNames::normalize).take(3)
-        suspend fun standardFallback(): MusicTrack? = attempt(6_000L) {
+        suspend fun standardFallback(): MusicTrack? = attempt(12_000L) {
             for (query in queries) {
-                val candidates = attempt(3_500L) { searchStandard(query, forceRefresh) }.orEmpty()
+                val candidates = attempt(5_000L) { searchStandard(query, forceRefresh) }.orEmpty()
                 val ranked = withContext(Dispatchers.Default) { candidates.mapNotNull { candidate ->
                     RecordingIdentity.fallbackConfidence(track, candidate)?.let { candidate to it }
                 }.sortedByDescending { it.second }.take(8).map { it.first } }
                 for (candidate in ranked) {
                     if (usable(candidate)) return@attempt candidate
                     if (!candidate.id.startsWith("online_") || candidate.audioUrl.isNotBlank()) continue
-                    val detailed = attempt(2_500L) { fetchById(candidate.id.removePrefix("online_"), forceRefresh) }
+                    val detailed = attempt(3_000L) { fetchById(candidate.id.removePrefix("online_"), forceRefresh) }
                     if (detailed != null && matches(track, detailed) && usable(detailed)) return@attempt detailed
                 }
             }
             null
         }
-        suspend fun youtubeFallback(): MusicTrack? = attempt(15_000L) {
+        suspend fun youtubeFallback(): MusicTrack? = attempt(40_000L) {
             var extractions = 0
             for (query in queries.take(2)) {
-                val candidates = attempt(5_000L) {
+                val candidates = attempt(6_000L) {
                     YouTubeMusicApiService.searchSongsPage(query, useInnerTubeX = true).tracks
                 }.orEmpty()
                 val ranked = withContext(Dispatchers.Default) { candidates.mapNotNull { candidate ->
                     RecordingIdentity.fallbackConfidence(track, candidate)?.let { candidate to it }
                 }.sortedByDescending { it.second }.take(8).map { it.first } }
-                val targetCandidates = if (ranked.isNotEmpty()) ranked else candidates.take(3)
-                for (candidate in targetCandidates) {
+                for (candidate in ranked) {
                     if (selectedVideoId(candidate) in triedVideos) continue
                     if (extractions++ >= 3) return@attempt null
                     youtubeExact(candidate)?.let { return@attempt it }
@@ -116,17 +123,17 @@ internal class StreamResolver(
             }
             null
         }
-        val resolved = if (youtubeSelection) {
-            youtubeExact(track) ?: youtubeFallback()
-        } else {
-            // 1. Maintain JioSaavn as primary source within strict 6-second window
-            val jioResult = attempt(6_000L) {
-                jioExact() ?: standardFallback()
+        val resolved = withTimeoutOrNull(65_000L) {
+            suspend fun boundedJio(): MusicTrack? {
+                if (preferYouTube) return null
+                val remaining = (deadline - android.os.SystemClock.elapsedRealtime()).coerceIn(0L, 6_000L)
+                if (remaining == 0L) return null
+                // One shared budget includes ID refresh AND alternate Jio searches.
+                return attempt(remaining) { jioExact() ?: standardFallback() }
             }
-            // 2. If JioSaavn is unavailable, restricted or fails within 6s, fallback to YouTube Music via InnertubeX
-            jioResult ?: youtubeFallback()
+            if (youtubeSelection) youtubeExact(track) ?: boundedJio() ?: youtubeFallback()
+            else boundedJio() ?: youtubeExact(track) ?: youtubeFallback()
         } ?: throw TrackUnavailableException(track.title)
-
         coroutineContext.ensureActive()
         val result = withStream(track, resolved)
         synchronized(cache) {
@@ -136,47 +143,10 @@ internal class StreamResolver(
         result
     }
 
-    suspend fun resolveYouTubeFallback(track: MusicTrack, quality: AudioQuality = AudioQuality.ULTRA_HD_320): MusicTrack? = withContext(Dispatchers.IO) {
-        val title = extractCleanTitle(track.title, track.artist)
-        val artist = extractCleanArtist(track.artist)
-        val primary = RecordingIdentity.artistNames(track).firstOrNull().orEmpty()
-        val queries = listOf("$title $artist".trim(), "$title $primary".trim(), title)
-            .filter(String::isNotBlank).distinctBy(CatalogNames::normalize).take(2)
-
-        for (query in queries) {
-            val candidates = try {
-                withTimeoutOrNull(5_000L) {
-                    YouTubeMusicApiService.searchSongsPage(query, useInnerTubeX = true).tracks
-                }
-            } catch (e: CancellationException) { throw e } catch (_: Exception) { null }.orEmpty()
-
-            val ranked = withContext(Dispatchers.Default) {
-                candidates.mapNotNull { candidate ->
-                    RecordingIdentity.fallbackConfidence(track, candidate)?.let { candidate to it }
-                }.sortedByDescending { it.second }.take(5).map { it.first }
-            }
-            val targetCandidates = if (ranked.isNotEmpty()) ranked else candidates.take(3)
-
-            for (candidate in targetCandidates) {
-                val resolved = try {
-                    withTimeoutOrNull(6_000L) {
-                        resolveYouTube(candidate, quality, false)
-                    }
-                } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
-
-                if (resolved != null && isValidStreamUrl(resolved.audioUrl)) {
-                    return@withContext track.copy(
-                        audioUrl = resolved.audioUrl,
-                        bitrateKbps = resolved.bitrateKbps,
-                        qualityBadge = resolved.qualityBadge.ifBlank { "HQ Stream" },
-                        isLossless = false,
-                        source = "YouTube Music"
-                    )
-                }
-            }
-        }
-        null
-    }
+    suspend fun resolveYouTubeFallback(track: MusicTrack, quality: AudioQuality = AudioQuality.ULTRA_HD_320): MusicTrack? = try {
+        resolve(track, quality, forceRefresh = true, failedUrl = track.audioUrl, preferYouTube = true)
+    } catch (e: CancellationException) { throw e }
+    catch (_: TrackUnavailableException) { null }
 
     private fun withStream(track: MusicTrack, stream: MusicTrack) = track.copy(audioUrl = stream.audioUrl,
         bitrateKbps = stream.bitrateKbps, qualityBadge = stream.qualityBadge,

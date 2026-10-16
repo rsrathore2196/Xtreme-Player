@@ -315,7 +315,7 @@ class UnifiedRecommendationEngine(context: Context?,
                 try {
                     for ((candidate, track) in results) {
                         add(candidate, track)
-                        if (output.size >= published + (if (published == 0) 2 else 4)) {
+                        if (output.size >= published + (if (published == 0) 1 else 3)) {
                             emit(output.take(limits.shelfSize).toList()); published = output.size
                         }
                         if (output.size >= limits.shelfSize + limits.reserve) break

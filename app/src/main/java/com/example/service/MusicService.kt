@@ -49,6 +49,7 @@ class MusicService : MediaLibraryService() {
     private var sabrRecoveryTrackId: String? = null
     private var sabrRecoveryCount = 0
     private var sourceRecoveryJob: Job? = null
+    private var jioFallback: JioSaavnPlaybackFallback? = null
     private val app: XtremeMusicApp get() = application as XtremeMusicApp
 
     private fun checkpoint(rebuild: Boolean = false) {
@@ -241,6 +242,12 @@ class MusicService : MediaLibraryService() {
             }
         })
 
+        jioFallback = JioSaavnPlaybackFallback(player, serviceScope,
+            resolve = { track, failedUrl -> app.repository.resolvePlayableTrack(track, forceRefresh = true,
+                failedUrl = failedUrl, preferYouTube = true) },
+            status = { status -> mediaLibrarySession?.let { session ->
+                session.setSessionExtras(Bundle(session.sessionExtras).apply { putBundle("jio_fallback_status", status) })
+            } }, changed = { checkpoint(rebuild = true) })
         player.addListener(object : Player.Listener {
             override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
                 if (reason == Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED) queueGeneration++
@@ -275,6 +282,7 @@ class MusicService : MediaLibraryService() {
             }
 
             override fun onEvents(player: Player, events: Player.Events) {
+                jioFallback?.update()
                 val queueChanged = events.contains(Player.EVENT_TIMELINE_CHANGED)
                 if (queueChanged || events.contains(Player.EVENT_MEDIA_ITEM_TRANSITION) ||
                     events.contains(Player.EVENT_POSITION_DISCONTINUITY) || events.contains(Player.EVENT_PLAY_WHEN_READY_CHANGED)) {
@@ -292,6 +300,7 @@ class MusicService : MediaLibraryService() {
             }
 
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                if (jioFallback?.onError() == true) return
                 // Notification/Android Auto resumption can run without the app's
                 // MediaController. Keep representation recovery on the same player,
                 // on its owning looper, and leave connected-controller recovery alone.
@@ -367,6 +376,11 @@ class MusicService : MediaLibraryService() {
                         return
                     }
                 }
+                if (SabrSessionRegistry.controllerHandlesRecovery?.invoke() != true &&
+                    player.currentMediaItem?.mediaMetadata?.extras?.getBoolean("jio_youtube_fallback") == true && player.hasNextMediaItem()) {
+                    player.seekToNextMediaItem(); player.prepare(); player.play()
+                    return
+                }
                 android.util.Log.w("MusicService", "Player error encountered: ${error.errorCodeName} - ${error.message}")
                 // Other errors keep the controller's existing bounded recovery; no service retry loop.
             }
@@ -398,6 +412,7 @@ class MusicService : MediaLibraryService() {
         _liveSession.value = false
         checkpoint()
         checkpointJob?.cancel()
+        jioFallback?.cancel(); jioFallback = null
         serviceScope.cancel()
         exoPlayer?.let(com.example.playback.SleepTimerManager::detach)
         com.example.playback.AudioEffectsManager.detachAudioSession()

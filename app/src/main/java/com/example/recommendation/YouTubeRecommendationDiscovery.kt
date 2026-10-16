@@ -25,7 +25,16 @@ internal class YouTubeRecommendationDiscovery(private val cache: RecommendationC
             if (latest != null && time < latest.expiresAt && (!force || time - latest.fetchedAt < 30_000L))
                 return@shared RecommendationTrackCodec.decode(latest.body)
             try {
-                val root = response(operation, value, country, essential)
+                // Leave time for the established metadata endpoint when an anonymous
+                // InnerTubeX session times out or returns an empty renderer variant.
+                val root = withTimeoutOrNull(if (operation == "search") 3_500L else 5_000L) {
+                    try { response(operation, value, country, essential) }
+                    catch (e: CancellationException) { throw e }
+                    catch (e: Exception) {
+                        android.util.Log.w("HomeDiscovery", "Native metadata unavailable: ${e.javaClass.simpleName}")
+                        JSONObject()
+                    }
+                } ?: JSONObject()
                 var found = withContext(Dispatchers.Default) { if (operation in setOf("similar", "charts")) emptyList() else parse(root) }
                 // The related tab is returned by next as a browse endpoint on some
                 // anonymous clients. Follow the real endpoint, never invent a radio ID.
@@ -48,6 +57,12 @@ internal class YouTubeRecommendationDiscovery(private val cache: RecommendationC
                     if (playlist != null) found = response("browse", playlist, country, essential)
                         .let { withContext(Dispatchers.Default) { parse(it) } }
                 }
+                if (operation == "search" && found.isEmpty()) {
+                    found = withTimeoutOrNull(3_500L) { DiscoveryRequestCoordinator.network(essential) {
+                        YouTubeMusicApiService.searchSongsPage(value, useInnerTubeX = false,
+                            forceRefresh = force, countryCode = country).tracks
+                    } }.orEmpty()
+                }
                 val result = withContext(Dispatchers.Default) {
                     HomeRecommendationPolicy.originals(found).filter { it.id.startsWith("yt_") &&
                         HomeRecommendationPolicy.known(it.artist) }.take(48)
@@ -55,7 +70,10 @@ internal class YouTubeRecommendationDiscovery(private val cache: RecommendationC
                 if (result.isNotEmpty()) cache?.put(key, result, ttl)
                 result.ifEmpty { latest?.let { RecommendationTrackCodec.decode(it.body) }.orEmpty() }
             } catch (e: CancellationException) { throw e }
-            catch (_: Exception) { latest?.let { RecommendationTrackCodec.decode(it.body) }.orEmpty() }
+            catch (e: Exception) {
+                android.util.Log.w("HomeDiscovery", "Keeping cached discovery after ${e.javaClass.simpleName}")
+                latest?.let { RecommendationTrackCodec.decode(it.body) }.orEmpty()
+            }
         }
     }
     private suspend fun response(operation: String, value: String, country: String, essential: Boolean): JSONObject =

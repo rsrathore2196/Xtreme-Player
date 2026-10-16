@@ -182,7 +182,8 @@ class HomeViewModel(
                 rows.forEach { retainedEvents[it.id] = it }
                 lastEventStamps.clear(); stamps.forEach { lastEventStamps[it.id] = it }
                 emit(retainedEvents.values.sortedByDescending { it.timestamp }.take(5000))
-                if (limit >= 5000 || count <= limit) historyReadyForRanking.value = true
+                // The bounded initial history is sufficient; long-term expansion is optional.
+                historyReadyForRanking.value = true
                 if (stamps.isEmpty()) { cachedHero.value = null; cachedHistory.value = null }
                 eventsLoaded.complete(Unit)
             }
@@ -454,30 +455,23 @@ class HomeViewModel(
 
     private suspend fun renderRecommendations() = withContext(workerDispatcher) { renderMutex.withLock {
         restored.await()
-        eventsLoaded.await(); favoritesLoaded.await()
+        // General verified cards are independent of slow Room/taste initialization.
         // Batches are verified snapshots. Presentation below defers replacements
         // during scrolling/navigation without holding up background matching.
         val pool = candidates.value
         if (pool.source != UnifiedRecommendationEngine.SOURCE || pool.contextKey != profileKey()) return@withLock
-        val snapshot = withTimeoutOrNull(2_500L) {
-            combine(actualPlays, historyRows, favoriteTracks, _userProfile, tasteSnapshot) { events, rows, favorites, profile, taste ->
-                ReadyHomeInputs(events, rows, favorites, profile, taste)
-            }.first { snapshot ->
-                snapshot.events.isEmpty() || (snapshot.rows.ids == snapshot.events.map { it.trackId }.distinct() &&
-                    snapshot.taste.inputs?.let { input -> input.events == snapshot.events &&
-                        input.tracks == snapshot.rows.tracks && input.favorites == snapshot.favorites &&
-                        input.preferences == snapshot.profile } == true)
-            }
-        } ?: ReadyHomeInputs(
-            events = actualPlays.value,
-            rows = historyRows.value,
-            favorites = favoriteTracks.value,
-            profile = _userProfile.value,
-            taste = tasteSnapshot.value
-        )
+        // Never make verified general shelves wait for the long-term history
+        // expansion/idle gate. Personalized cards keep their previous snapshot
+        // until a coherent taste generation becomes available.
+        val snapshot = ReadyHomeInputs(actualPlays.value, historyRows.value, favoriteTracks.value,
+            _userProfile.value, tasteSnapshot.value)
+        val rankingReady = snapshot.rows.ids == snapshot.events.map { it.trackId }.distinct() &&
+            snapshot.taste.inputs?.let { input -> input.events == snapshot.events &&
+                input.tracks == snapshot.rows.tracks && input.favorites == snapshot.favorites &&
+                input.preferences == snapshot.profile } == true
         val metadata = snapshot.rows.tracks
         val taste = snapshot.taste.taste
-        cachedHistory.value = null
+        if (rankingReady && eventsLoaded.isCompleted) cachedHistory.value = null
         val recentById = metadata.associateBy { it.id }
         val recentSeen = HomeRecommendationPolicy.Recordings()
         val recent = if (taste.isColdStart) emptyList() else snapshot.events.asSequence()
@@ -555,12 +549,16 @@ class HomeViewModel(
         awaitHomePresentation()
         if (candidates.value != pool || profileKey(inputs.profile) != profileKey()) return@publish
         _homeShelves.value = shelves
-        if (chart.isNotEmpty() || Shelf.CHART in pool.ready) _countryLanguageCard.update { it.copy(tracks = chart, isLoading = false, isLoaded = chart.isNotEmpty()) }
-        if (era.isNotEmpty() || Shelf.ERA in pool.ready) _eraCard.update { it.copy(tracks = era, isLoading = false, isLoaded = era.isNotEmpty()) }
-        if (quick.isNotEmpty() || Shelf.QUICK in pool.ready) _ytmCard.update { it.copy(tracks = quick, isLoading = false, isLoaded = quick.isNotEmpty()) }
-        if (personalized.isNotEmpty() || Shelf.PERSONALIZED in pool.ready) _personalizedCard.update { it.copy(tracks = personalized, isLoading = false, isLoaded = personalized.isNotEmpty()) }
-        if (similar.isNotEmpty() || Shelf.SIMILAR in pool.ready) _similarArtistsCard.update { it.copy(tracks = similar, isLoading = false, isLoaded = similar.isNotEmpty(), subtitle = "Related to ${pool.seedArtist}") }
-        if (inspired.isNotEmpty() || Shelf.INSPIRED in pool.ready) _inspiredTrackCard.update { it.copy(tracks = inspired, isLoading = false, isLoaded = inspired.isNotEmpty(), subtitle = "Inspired by ${pool.seedTitle}") }
+        // Reranking must retain error/loading updates arriving from the refresh requests.
+        if (Shelf.CHART in pool.ready) _countryLanguageCard.update { it.copy(tracks = chart) }
+        if (Shelf.ERA in pool.ready) _eraCard.update { it.copy(tracks = era, isLoading = false, isLoaded = era.isNotEmpty()) }
+        if (Shelf.QUICK in pool.ready) _ytmCard.update { it.copy(tracks = quick, isLoading = false, isLoaded = quick.isNotEmpty()) }
+        if (rankingReady && Shelf.PERSONALIZED in pool.ready) _personalizedCard.value = _personalizedCard.value.copy(tracks = personalized,
+            isLoading = false, isLoaded = personalized.isNotEmpty())
+        if (Shelf.SIMILAR in pool.ready) _similarArtistsCard.update { it.copy(tracks = similar, isLoading = false, isLoaded = similar.isNotEmpty(),
+            subtitle = "Related to ${pool.seedArtist}") }
+        if (Shelf.INSPIRED in pool.ready) _inspiredTrackCard.update { it.copy(tracks = inspired, isLoading = false, isLoaded = inspired.isNotEmpty(),
+            subtitle = "Inspired by ${pool.seedTitle}") }
         _recommendationCards.value = recommendationSnapshot()
         lastRenderInputs = inputs
         _currentStage.value = LoadingStage.PRIORITY_3_BACKGROUND_ENRICHED
@@ -605,33 +603,31 @@ class HomeViewModel(
     // Navigation admission ignores our rendering lease. Retain completed work
     // across hidden tabs rather than discarding it and reranking on the return.
     private suspend fun awaitHomePresentation() {
-        withTimeoutOrNull(3_000L) {
-            while (true) {
-                homeVisible.first { it }
-                homeScrolling.first { !it }
-                BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = false)
-                if (homeVisible.value && !homeScrolling.value) return@withTimeoutOrNull
-            }
+        while (true) {
+            homeVisible.first { it }
+            homeScrolling.first { !it }
+            BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
+            if (homeVisible.value && !homeScrolling.value) return
         }
     }
 
     private suspend fun awaitHomeIdle(allowWhenEmpty: Boolean = true, quietMillis: Long = 2_500L) {
         restored.await()
-        withTimeoutOrNull(4_000L) {
-            while (true) {
-                homeVisible.first { it }
-                homeScrolling.first { !it }
-                BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = false)
-                if (!homeVisible.value || homeScrolling.value) continue
-                val essential = _ytmCard.value.tracks.isEmpty() || _countryLanguageCard.value.tracks.isEmpty()
-                if (allowWhenEmpty && essential) return@withTimeoutOrNull
-                BackgroundWorkCoordinator.awaitIdle(quietMillis = quietMillis,
-                    minimumUptimeMillis = 2_000L,
-                    requireForeground = false,
-                    userRequested = { _isRefreshing.value || manualRenderGeneration == candidates.value.generation })
-                BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = false)
-                if (homeVisible.value && !homeScrolling.value) return@withTimeoutOrNull
-            }
+        while (true) {
+            homeVisible.first { it }
+            homeScrolling.first { !it }
+            BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
+            if (!homeVisible.value || homeScrolling.value) continue
+            val essential = _ytmCard.value.tracks.isEmpty() || _countryLanguageCard.value.tracks.isEmpty()
+            // Empty Home content is essential loading, not optional revalidation.
+            // Startup work and shimmer frames must not postpone its IO/Default work
+            // indefinitely. The existing refresh owner still permits only one pass.
+            if (allowWhenEmpty && essential) return
+            BackgroundWorkCoordinator.awaitIdle(quietMillis = quietMillis,
+                minimumUptimeMillis = 6_000L,
+                userRequested = { _isRefreshing.value || manualRenderGeneration == candidates.value.generation })
+            BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
+            if (homeVisible.value && !homeScrolling.value) return
         }
     }
 
@@ -894,19 +890,13 @@ class HomeViewModel(
                 if (isExplicitPull) pendingExplicitRefresh = true else pendingSilentRefresh = true
                 return@launch
             }
-            val allHomeShelves = setOf(Shelf.QUICK, Shelf.CHART, Shelf.ERA, Shelf.PERSONALIZED, Shelf.SIMILAR, Shelf.INSPIRED)
-            val emptyShelves = allHomeShelves.filterTo(mutableSetOf()) { shelf ->
-                when (shelf) {
-                    Shelf.QUICK -> _ytmCard.value.tracks.isEmpty()
-                    Shelf.ERA -> _eraCard.value.tracks.isEmpty()
-                    Shelf.CHART -> _countryLanguageCard.value.tracks.isEmpty()
-                    Shelf.PERSONALIZED -> _personalizedCard.value.tracks.isEmpty() && !tasteProfile.value.isColdStart
-                    Shelf.SIMILAR -> _similarArtistsCard.value.tracks.isEmpty() && recommendationSeed.value != null
-                    Shelf.INSPIRED -> _inspiredTrackCard.value.tracks.isEmpty() && recommendationSeed.value != null
-                }
-            }
-            val demand = if (recommendationViewport.value.isEmpty()) allHomeShelves else (recommendationViewport.value + emptyShelves)
-            val requested = (requestedShelves ?: demand).filterTo(mutableSetOf()) { isExplicitPull || pendingExplicitRefresh || needsShelfLoad(it) }
+            // Empty shelves are not necessarily in the viewport yet (hero/onboarding).
+            // Bootstrap only essential discovery; all lower shelves retain on-demand loading.
+            val bootstrap = if (_ytmCard.value.tracks.isEmpty() && _countryLanguageCard.value.tracks.isEmpty())
+                setOf(Shelf.QUICK, Shelf.CHART) else emptySet()
+            val demand = recommendationViewport.value + bootstrap
+            val requested = (requestedShelves ?: demand).intersect(demand)
+                .filterTo(mutableSetOf()) { isExplicitPull || pendingExplicitRefresh || needsShelfLoad(it) }
             if (requested.isEmpty()) {
                 if (isExplicitPull) pendingExplicitRefresh = true
                 return@launch
@@ -940,6 +930,11 @@ class HomeViewModel(
             _isRefreshing.value = initialExplicit
             if (initialExplicit) _refreshErrorMessage.value = null
             homeRefreshJob = ownerScope.launch {
+                val indicatorDeadline = launch {
+                    priority.requested.first { it }
+                    delay(12_000L)
+                    if (generation == refreshGeneration) _isRefreshing.value = false
+                }
                 try {
                     withContext(priority) {
                         restored.await()
@@ -955,7 +950,7 @@ class HomeViewModel(
                         if (Shelf.QUICK in requested) _ytmCard.update { it.copy(isLoading = it.tracks.isEmpty(), isError = false, errorMessage = "") }
                         if (Shelf.ERA in requested) _eraCard.update { it.copy(isLoading = it.tracks.isEmpty(), isError = false, errorMessage = "") }
                         try {
-                            val completed = priority.withBudget(14_000L) {
+                            val completed = withTimeoutOrNull(40_000L) {
                                 refreshSuggestions(activeRefreshIsExplicit, requested)
                                 true
                             }
@@ -981,6 +976,7 @@ class HomeViewModel(
                         }
                     }
                 } finally {
+                    indicatorDeadline.cancel()
                     // A canceled request must not hide the spinner or clear ownership of its replacement.
                     if (generation == refreshGeneration) {
                         _isRefreshing.value = false
@@ -1004,20 +1000,10 @@ class HomeViewModel(
         val country = resolveCountryDisplayName(profile)
         val title = getAuthoritativeTrendingTitle(country)
         val seed = recommendationSeed.value ?: historyRows.value.tracks.firstOrNull()
-        BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = false)
-        val allHomeShelves = setOf(Shelf.QUICK, Shelf.CHART, Shelf.ERA, Shelf.PERSONALIZED, Shelf.SIMILAR, Shelf.INSPIRED)
-        val emptyShelves = allHomeShelves.filterTo(mutableSetOf()) { shelf ->
-            when (shelf) {
-                Shelf.QUICK -> _ytmCard.value.tracks.isEmpty()
-                Shelf.ERA -> _eraCard.value.tracks.isEmpty()
-                Shelf.CHART -> _countryLanguageCard.value.tracks.isEmpty()
-                Shelf.PERSONALIZED -> _personalizedCard.value.tracks.isEmpty() && !tasteProfile.value.isColdStart
-                Shelf.SIMILAR -> _similarArtistsCard.value.tracks.isEmpty() && recommendationSeed.value != null
-                Shelf.INSPIRED -> _inspiredTrackCard.value.tracks.isEmpty() && recommendationSeed.value != null
-            }
-        }
-        val demand = if (recommendationViewport.value.isEmpty()) allHomeShelves else (recommendationViewport.value + emptyShelves)
-        val enabled = if (requested.isNotEmpty()) requested else demand
+        BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
+        val bootstrap = if (_ytmCard.value.tracks.isEmpty() && _countryLanguageCard.value.tracks.isEmpty())
+            setOf(Shelf.QUICK, Shelf.CHART) else emptySet()
+        val enabled = requested.intersect(recommendationViewport.value + bootstrap)
         if (enabled.isEmpty()) return@withContext
         val contexts = enabled.associateWith(::shelfContext)
         activeRecommendationShelves = enabled

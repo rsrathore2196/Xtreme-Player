@@ -39,9 +39,9 @@ object YouTubeMusicApiService {
 
     /** Incremental songs-only fallback for artist pages; never loads an entire discography. */
     suspend fun searchSongsPage(query: String, continuation: String? = null,
-        useInnerTubeX: Boolean = false, forceRefresh: Boolean = false): SongSearchPage = withContext(Dispatchers.IO) {
+        useInnerTubeX: Boolean = false, forceRefresh: Boolean = false, countryCode: String? = null): SongSearchPage = withContext(Dispatchers.IO) {
         if (query.isBlank()) return@withContext SongSearchPage(emptyList(), null)
-        val key = "${query.trim().lowercase(java.util.Locale.ROOT)}|${continuation.orEmpty()}|$useInnerTubeX"
+        val key = "${query.trim().lowercase(java.util.Locale.ROOT)}|${continuation.orEmpty()}|$useInnerTubeX|${countryCode.orEmpty()}"
         artistSearchLocks[(key.hashCode() and Int.MAX_VALUE) % artistSearchLocks.size].withLock {
             if (forceRefresh) artistSearchCache.remove(key)
             artistSearchCache.get(key)?.takeIf { System.currentTimeMillis() - it.first < 300_000L }
@@ -61,7 +61,7 @@ object YouTubeMusicApiService {
             val profile = YouTubeClient.WEB_REMIX
             val payload = JSONObject().put("context", JSONObject().put("client", JSONObject()
                 .put("clientName", profile.clientName).put("clientVersion", profile.clientVersion)
-                .put("hl", "en").put("gl", "US")))
+                .put("hl", "en").put("gl", countryCode?.takeIf { it.matches(Regex("[A-Za-z]{2}")) }?.uppercase(java.util.Locale.ROOT) ?: "US")))
             if (continuation == null) payload.put("query", query.trim()).put("params", "EgWKAQIIAWoKEAkQBRAKEAMQBA==")
             // Search continuations are URL parameters, as in InnerTubeX's search API.
             val url = "https://music.youtube.com/youtubei/v1/search".toHttpUrl().newBuilder().apply {

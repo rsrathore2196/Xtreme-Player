@@ -280,13 +280,15 @@ class MusicRepository(
     suspend fun resolvePlayableTrack(
         track: MusicTrack,
         forceRefresh: Boolean = false,
-        failedUrl: String? = null
+        failedUrl: String? = null,
+        preferYouTube: Boolean = false,
+        jioDeadlineMs: Long = 0L
     ): MusicTrack = withContext(Dispatchers.IO) {
         val quality = context?.let { AudioQualityPreferences.getSelectedQuality(it) }
             ?: AudioQuality.ULTRA_HD_320
         try {
             com.example.recommendation.DiscoveryRequestCoordinator.playback {
-                streamResolver.resolve(track, quality, forceRefresh, failedUrl)
+                streamResolver.resolve(track, quality, forceRefresh, failedUrl, preferYouTube = preferYouTube, jioDeadlineMs = jioDeadlineMs)
             }
         } catch (e: TrackUnavailableException) {
             if (track.recommendationOnly) recommendations.markUnavailable(track)
