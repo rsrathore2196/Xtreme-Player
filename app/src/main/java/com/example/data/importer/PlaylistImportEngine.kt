@@ -2,7 +2,6 @@ package com.example.data.importer
 
 import android.util.Log
 import com.example.data.model.MusicTrack
-import com.example.data.remote.InternetArchiveApiService
 import com.example.data.remote.OnlineMusicApiService
 import com.example.data.remote.YouTubeMusicApiService
 import com.example.data.remote.YouTubeAudioStreamService
@@ -1285,10 +1284,9 @@ object PlaylistImportEngine {
             val candidates = if (youtubeOnly) youtube(query) else coroutineScope {
                 val jio = async { search("JioSaavn") { OnlineMusicApiService.searchSongs(query, limit = 20) } }
                 val youtube = async { youtube(query) }
-                val archive = if (index == 0) async { search("Internet Archive") {
-                    InternetArchiveApiService.searchLosslessPage(query, pageSize = 6).tracks
-                } } else null
-                jio.await() + youtube.await() + archive?.await().orEmpty()
+                // Imports retain catalog sources; Archive is exclusively an optional
+                // quality upgrade after the selected song is actually playing.
+                jio.await() + youtube.await()
             }
             val selected = withContext(Dispatchers.Default) {
                 candidates.filter { verifyStrictMatch(original, it, coreTitle, primaryArtist, isExplicitAlt) }

@@ -109,8 +109,6 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
     fun setAudioQuality(quality: AudioQuality) {
         if (quality == audioQuality) return
         audioQuality = quality
-        if (_search.value.query.isNotBlank() && _search.value.type in setOf("All", "Tracks"))
-            startSearch(_search.value.query, _search.value.type, debounce = false)
     }
     private fun startSearch(query: String, type: String, debounce: Boolean) {
         val generation = ++searchGeneration
@@ -142,8 +140,7 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
                 val result = repository.search(state.query.trim(), state.type, page, quality, state.page)
                 if (generation != _search.value.requestId) return@launch
                 val tracks = withContext(Dispatchers.Default) {
-                    repository.uniqueTracks(state.page.tracks + result.tracks,
-                        preferLossless = quality == AudioQuality.HI_RES_LOSSLESS)
+                    com.example.data.remote.AudioRoutingService.mergeTracks(state.page.tracks + result.tracks)
                 }
                 if (generation != _search.value.requestId) return@launch
                 val merged = CatalogPage(

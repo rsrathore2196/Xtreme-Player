@@ -11,6 +11,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -52,7 +54,9 @@ object OnlineMusicApiService {
         }
     }
 
-    private val memoryQueryCache = object : android.util.LruCache<String, Pair<Long, List<MusicTrack>>>(60) {}
+    data class SongSearchPage(val tracks: List<MusicTrack>, val nextPage: Int?)
+    private val memoryQueryCache = object : android.util.LruCache<String, Pair<Long, SongSearchPage>>(60) {}
+    private val queryLocks = Array(16) { Mutex() }
 
     private val httpClientDelegate = lazy {
         val cache = context?.let { ctx ->
@@ -149,22 +153,31 @@ object OnlineMusicApiService {
     /**
      * Search songs online across JioSaavn's comprehensive global and Indian library.
      */
-    suspend fun searchSongs(query: String, limit: Int = 30, page: Int = 1, forceRefresh: Boolean = false): List<MusicTrack> = withContext(Dispatchers.IO) {
-        val trimmed = query.trim()
-        if (trimmed.isBlank()) return@withContext emptyList()
+    suspend fun searchSongs(query: String, limit: Int = 30, page: Int = 1, forceRefresh: Boolean = false): List<MusicTrack> = try {
+        searchSongPage(query, limit, page, forceRefresh).tracks
+    } catch (e: CancellationException) { throw e }
+    catch (e: Exception) { Log.w(TAG, "Online search failed: ${e.message}"); emptyList() }
 
-        val cacheKey = "${trimmed.lowercase()}_${page}_$limit"
+    /** The same cached request serves paged search, imports and legacy song lookups. */
+    suspend fun searchSongPage(query: String, limit: Int = 30, page: Int = 1,
+        forceRefresh: Boolean = false): SongSearchPage = withContext(Dispatchers.IO) {
+        val trimmed = query.trim()
+        if (trimmed.isBlank()) return@withContext SongSearchPage(emptyList(), null)
+        val rows = limit.coerceIn(1, 50)
+        val cacheKey = "${trimmed.lowercase(java.util.Locale.ROOT)}_${page}_$rows"
+        queryLocks[(cacheKey.hashCode() and Int.MAX_VALUE) % queryLocks.size].withLock {
         synchronized(memoryQueryCache) {
             if (forceRefresh) memoryQueryCache.remove(cacheKey)
             else memoryQueryCache.get(cacheKey)?.let {
-                if (System.currentTimeMillis() - it.first < 300_000L) return@withContext it.second
+                val ttl = if (it.second.tracks.isEmpty()) 30_000L else 300_000L
+                if (System.currentTimeMillis() - it.first < ttl) return@withLock it.second
                 memoryQueryCache.remove(cacheKey)
             }
         }
 
         try {
             val encodedQuery = URLEncoder.encode(trimmed, "UTF-8")
-            val url = "https://www.jiosaavn.com/api.php?__call=search.getResults&_format=json&_marker=0&api_version=4&ctx=web6dot0&cc=in&includeMetaTags=1&p=$page&n=$limit&q=$encodedQuery"
+            val url = "https://www.jiosaavn.com/api.php?__call=search.getResults&_format=json&_marker=0&api_version=4&ctx=web6dot0&cc=in&includeMetaTags=1&p=$page&n=$rows&q=$encodedQuery"
 
             val request = Request.Builder()
                 .url(url)
@@ -174,16 +187,22 @@ object OnlineMusicApiService {
                 .build()
 
             val bodyString = httpClient.catalogRequest(request)
-            val parsed = parseSongsJson(bodyString)
-            if (parsed.isNotEmpty()) {
-                synchronized(memoryQueryCache) {
-                    memoryQueryCache.put(cacheKey, System.currentTimeMillis() to parsed)
+            val parsed = withContext(Dispatchers.Default) {
+                val root = JSONObject(bodyString)
+                val results = root.optJSONArray("results") ?: throw java.io.IOException("Invalid song catalogue response")
+                val tracks = (0 until results.length()).mapNotNull { index ->
+                    results.optJSONObject(index)?.let { parseSong(it, allowMissingStream = true) }
                 }
+                val more = results.length() > 0 && if (root.has("total"))
+                    page.toLong() * rows < root.optLong("total") else results.length() >= rows
+                SongSearchPage(tracks, if (more) page + 1 else null)
             }
+            synchronized(memoryQueryCache) { memoryQueryCache.put(cacheKey, System.currentTimeMillis() to parsed) }
             parsed
         } catch (e: CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "Online search failed: ${e.message}")
-            emptyList()
+            throw e
+        }
         }
     }
 
@@ -323,13 +342,6 @@ object OnlineMusicApiService {
         }
 
         com.example.recommendation.AlbumArtDeduplicator.interleaveAndDiversify(queryResults, limit)
-    }
-
-    private fun parseSongsJson(jsonString: String): List<MusicTrack> {
-        val results = JSONObject(jsonString).optJSONArray("results") ?: return emptyList()
-        return (0 until results.length()).mapNotNull { index ->
-            results.optJSONObject(index)?.let { parseSong(it) }
-        }
     }
 
     /** Both legacy search and v4 catalog responses describe the same real song IDs. */

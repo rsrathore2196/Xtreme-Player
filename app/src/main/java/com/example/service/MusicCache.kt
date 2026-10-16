@@ -35,12 +35,13 @@ object MusicCache {
         } }
     }
 
-    fun createCacheDataSourceFactory(context: Context): DataSource.Factory {
+    fun createCacheDataSourceFactory(context: Context, connectTimeoutMs: Int = 15000,
+        readTimeoutMs: Int = 15000): DataSource.Factory {
         val app = context.applicationContext
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
             .setAllowCrossProtocolRedirects(true)
-            .setConnectTimeoutMs(15000)
-            .setReadTimeoutMs(15000)
+            .setConnectTimeoutMs(connectTimeoutMs)
+            .setReadTimeoutMs(readTimeoutMs)
 
         val upstreamFactory = DefaultDataSource.Factory(context, httpDataSourceFactory)
         val rangedUpstream = DataSource.Factory { YouTubeMediaDataSource(app, upstreamFactory) }

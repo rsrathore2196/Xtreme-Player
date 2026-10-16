@@ -803,15 +803,7 @@ fun ExpandedPlayerScreen(
                         }
 
                         // Scrubber Timeline
-                        val qualityChipText = when (uiState.selectedQuality) {
-                            AudioQuality.HI_RES_LOSSLESS -> {
-                                val isArchiveLossless = track.isLossless && (track.audioUrl.contains("archive.org") || track.source.equals("INTERNET_ARCHIVE", ignoreCase = true) || track.id.startsWith("ia_"))
-                                if (isArchiveLossless) "Hi-Res Lossless" else "Lossless"
-                            }
-                            AudioQuality.ULTRA_HD_320 -> "Ultra HD"
-                            AudioQuality.HIGH_160 -> "HD Audio"
-                            AudioQuality.MEDIUM_96 -> "Data Saver"
-                        }
+                        val qualityChipText = uiState.qualityBadge.ifBlank { track.qualityBadge }.ifBlank { "HQ Stream" }
                         PlayerTimelineSection(
                             trackId = track.id,
                             currentPositionProvider = currentPositionProvider,
@@ -1571,15 +1563,7 @@ fun ExpandedPlayerScreen(
             Spacer(modifier = Modifier.height(if (isLandscape) 4.dp else 14.dp))
 
             // TIMELINE SCRUB BAR (Isolated recomposition)
-            val landscapeQualityChipText = when (uiState.selectedQuality) {
-                AudioQuality.HI_RES_LOSSLESS -> {
-                    val isArchiveLossless = track.isLossless && (track.audioUrl.contains("archive.org") || track.source.equals("INTERNET_ARCHIVE", ignoreCase = true) || track.id.startsWith("ia_"))
-                    if (isArchiveLossless) "Hi-Res Lossless" else "Lossless"
-                }
-                AudioQuality.ULTRA_HD_320 -> "Ultra HD"
-                AudioQuality.HIGH_160 -> "HD Audio"
-                AudioQuality.MEDIUM_96 -> "Data Saver"
-            }
+            val landscapeQualityChipText = uiState.qualityBadge.ifBlank { track.qualityBadge }.ifBlank { "HQ Stream" }
             PlayerTimelineSection(
                 trackId = track.id,
                 currentPositionProvider = currentPositionProvider,

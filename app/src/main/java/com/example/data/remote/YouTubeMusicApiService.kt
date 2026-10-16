@@ -41,17 +41,22 @@ object YouTubeMusicApiService {
     suspend fun searchSongsPage(query: String, continuation: String? = null,
         useInnerTubeX: Boolean = false, forceRefresh: Boolean = false): SongSearchPage = withContext(Dispatchers.IO) {
         if (query.isBlank()) return@withContext SongSearchPage(emptyList(), null)
-        val key = "$query|${continuation.orEmpty()}|$useInnerTubeX"
+        val key = "${query.trim().lowercase(java.util.Locale.ROOT)}|${continuation.orEmpty()}|$useInnerTubeX"
         artistSearchLocks[(key.hashCode() and Int.MAX_VALUE) % artistSearchLocks.size].withLock {
             if (forceRefresh) artistSearchCache.remove(key)
             artistSearchCache.get(key)?.takeIf { System.currentTimeMillis() - it.first < 300_000L }
                 ?.let { return@withLock it.second }
             if (useInnerTubeX) {
-                val body = YouTubeAudioStreamService.searchSongsResponse(query.trim(), continuation)
-                val page = withContext(Dispatchers.Default) { parseSongSearchPage(body) }
-                val result = page.copy(continuation = page.continuation?.takeUnless { it == continuation })
-                artistSearchCache.put(key, System.currentTimeMillis() to result)
-                return@withLock result
+                val page = try {
+                    val body = YouTubeAudioStreamService.searchSongsResponse(query.trim(), continuation)
+                    withContext(Dispatchers.Default) { parseSongSearchPage(body) }
+                } catch (e: CancellationException) { throw e }
+                catch (_: Exception) { null }
+                if (page != null) {
+                    val result = page.copy(continuation = page.continuation?.takeUnless { it == continuation })
+                    artistSearchCache.put(key, System.currentTimeMillis() to result)
+                    return@withLock result
+                }
             }
             val profile = YouTubeClient.WEB_REMIX
             val payload = JSONObject().put("context", JSONObject().put("client", JSONObject()
@@ -140,10 +145,13 @@ object YouTubeMusicApiService {
     suspend fun resolveAudio(track: MusicTrack, quality: com.example.playback.AudioQuality,
         forceRefresh: Boolean = false): MusicTrack? {
         val stored = android.net.Uri.parse(track.audioUrl)
-        val videoId = YouTubeAudioStreamService.videoIdFromUri(stored) ?: track.id.removePrefix("yt_")
+        val videoId = track.id.removePrefix("yt_").takeIf {
+            track.id.startsWith("yt_") && YouTubeAudioStreamService.isVideoId(it)
+        } ?: YouTubeAudioStreamService.videoIdFromUri(stored).orEmpty()
         if ((!track.id.startsWith("yt_") && !YouTubeAudioStreamService.isPlaybackUri(track.audioUrl)) ||
             !YouTubeAudioStreamService.isVideoId(videoId)) return null
         val audio = YouTubeAudioStreamService.resolve(videoId, quality, forceRefresh)
+        if (audio.videoId != videoId) throw IOException("YouTube returned a different recording")
         // Persist the resolved source identity, not an expiring signed CDN URL.
         return track.copy(audioUrl = YouTubeAudioStreamService.playbackUri("yt_$videoId", audio.url), bitrateKbps = audio.bitrateKbps,
             qualityBadge = audio.qualityBadge,
@@ -373,7 +381,7 @@ object YouTubeMusicApiService {
                     ?.optJSONObject("watchEndpoint")
                     ?.optString("videoId", "") ?: ""
             }
-            if (videoId.isBlank()) return null
+            if (!YouTubeAudioStreamService.isVideoId(videoId)) return null
 
             // Thumbnail
             var thumbUrl = ""
@@ -405,9 +413,9 @@ object YouTubeMusicApiService {
                 album = cleanAlbum,
                 durationMs = durationMs,
                 coverUrl = thumbUrl,
-                audioUrl = "", // Populated via Unified Audio Layer fallback/stream resolver
-                bitrateKbps = 256,
-                qualityBadge = "HQ • 256 kbps",
+                audioUrl = YouTubeAudioStreamService.playbackUri("yt_$videoId", ""),
+                bitrateKbps = 0,
+                qualityBadge = "HQ Stream",
                 genre = r.optString("genre", "Unknown").ifBlank { "Unknown" },
                 language = r.optString("language", "Unknown").ifBlank { "Unknown" },
                 year = releaseYear,
@@ -731,7 +739,7 @@ object YouTubeMusicApiService {
             val thumbs = pvr.optJSONObject("thumbnail")?.optJSONArray("thumbnails")
             val thumbUrl = if (thumbs != null && thumbs.length() > 0) thumbs.getJSONObject(thumbs.length() - 1).optString("url", "") else ""
 
-            if (rawTitle.isNotBlank() && rawTitle != "Private video" && rawTitle != "Deleted video") {
+            if (YouTubeAudioStreamService.isVideoId(vid) && rawTitle.isNotBlank() && rawTitle != "Private video" && rawTitle != "Deleted video") {
                 val cleanTitle = cleanTitle(rawTitle)
                 val cleanArtist = rawArtist.ifBlank { "YouTube Artist" }
                 return MusicTrack(
@@ -741,9 +749,9 @@ object YouTubeMusicApiService {
                     album = if (item.has("playlistPanelVideoRenderer")) "Unknown" else "YouTube Playlist",
                     durationMs = if (durSec > 0) durSec * 1000L else parseDurationText(pvr.optJSONObject("lengthText")?.optString("simpleText").orEmpty()),
                     coverUrl = thumbUrl.ifBlank { "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=800&q=80" },
-                    audioUrl = "",
-                    bitrateKbps = 256,
-                    qualityBadge = "HQ • 256 kbps",
+                    audioUrl = YouTubeAudioStreamService.playbackUri("yt_$vid", ""),
+                    bitrateKbps = 0,
+                    qualityBadge = "HQ Stream",
                     genre = "Unknown",
                     source = "Extended Stream"
                 )
@@ -758,7 +766,7 @@ object YouTubeMusicApiService {
             val lines = meta?.optJSONObject("metadata")?.optJSONArray("lines")
             val rawArtist = lines?.optJSONObject(0)?.optJSONArray("runs")?.optJSONObject(0)?.optString("text", "YouTube Artist").orEmpty()
 
-            if (rawTitle.isNotBlank() && rawTitle != "Private video" && rawTitle != "Deleted video") {
+            if (YouTubeAudioStreamService.isVideoId(vid) && rawTitle.isNotBlank() && rawTitle != "Private video" && rawTitle != "Deleted video") {
                 val cleanTitle = cleanTitle(rawTitle)
                 val cleanArtist = rawArtist.ifBlank { "YouTube Artist" }
                 return MusicTrack(
@@ -768,9 +776,9 @@ object YouTubeMusicApiService {
                     album = "YouTube Playlist",
                     durationMs = 0L,
                     coverUrl = "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=800&q=80",
-                    audioUrl = "",
-                    bitrateKbps = 256,
-                    qualityBadge = "HQ • 256 kbps",
+                    audioUrl = YouTubeAudioStreamService.playbackUri("yt_$vid", ""),
+                    bitrateKbps = 0,
+                    qualityBadge = "HQ Stream",
                     genre = "Unknown",
                     source = "Extended Stream"
                 )

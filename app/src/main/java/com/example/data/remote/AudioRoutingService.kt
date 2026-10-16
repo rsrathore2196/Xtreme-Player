@@ -1,106 +1,93 @@
 package com.example.data.remote
 
 import android.content.Context
-import com.example.data.local.AudioQualityPreferences
 import com.example.data.model.MusicTrack
-import com.example.playback.AudioQuality
-import kotlinx.coroutines.Dispatchers
+import com.example.data.repository.CatalogNames
+import com.example.data.repository.RecordingIdentity
+import com.example.data.repository.StreamResolver
+import com.example.recommendation.OriginalMusicFilter
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.coroutineContext
 
-data class RoutedSearchResult(
-    val tracks: List<MusicTrack>,
-    val isLossless: Boolean
-)
+data class RoutedSearchResult(val tracks: List<MusicTrack>, val isLossless: Boolean)
 
-/**
- * Audio Routing Service implementing 3-Tier Multi-Source Search & Playback Fallback Routing:
- *
- * SCENARIO A: User Settings = "Hi-Res Lossless"
- *   1. Primary Source (Internet Archive API):
- *      - Strict Lossless format verification (FLAC, WAV, AIFF, ALAC, APE, WavPack, DSD).
- *      - If valid streamable lossless audio verified, returns lossless stream and isLossless = true.
- *   2. Secondary Source (JioSaavn API Fallback):
- *      - Triggered if Internet Archive has no lossless files, times out, or fails.
- *      - Returns the matching available JioSaavn recording.
- *   3. Tertiary Source (YouTube Music API Fallback):
- *      - Triggered if JioSaavn has no matching results or fails.
- *
- * SCENARIO B: User Settings != "Hi-Res Lossless" (Standard / High / Ultra HD)
- *   1. Primary Source: JioSaavn API (highest available quality stream, e.g. 320kbps).
- *   2. Secondary Source Fallback: YouTube Music API.
- *   (Internet Archive API is bypassed completely).
- * Search returns catalog metadata. Playback resolves the exact selected YouTube video
- * through YouTubeMusicApiService.resolveAudio when the other sources have no match.
- */
+/** One metadata-only search policy, independent of playback quality. Archive is upgrade-only. */
 object AudioRoutingService {
+    private val requests = Semaphore(2)
+    data class SearchPage(
+        val tracks: List<MusicTrack>, val standardNext: Int?, val youtubeNext: String?,
+        val standardFailed: Boolean = false, val youtubeFailed: Boolean = false
+    )
 
-    suspend fun resolveSearchTracks(
-        context: Context,
-        query: String,
-        limit: Int = 25
-    ): RoutedSearchResult = withContext(Dispatchers.IO) {
-        val quality = AudioQualityPreferences.getSelectedQuality(context)
-
-        if (quality == AudioQuality.HI_RES_LOSSLESS) {
-            // ============================================================
-            // SCENARIO A: Hi-Res Lossless Mode Enabled
-            // ============================================================
-
-            // 1. Primary Source: Internet Archive API (Lossless verification)
-            try {
-                val losslessTracks = InternetArchiveApiService.searchLosslessTracks(query, maxResults = limit)
-                if (losslessTracks.isNotEmpty()) {
-                    return@withContext RoutedSearchResult(tracks = losslessTracks, isLossless = true)
-                }
-            } catch (e: CancellationException) { throw e } catch (_: Exception) {
-                // Tier 1 timeout or failure -> Fallback to Tier 2
-            }
-
-            // 2. Secondary Source Fallback: JioSaavn API
-            try {
-                val jioTracks = OnlineMusicApiService.searchSongs(query, limit = limit)
-                if (jioTracks.isNotEmpty()) {
-                    return@withContext RoutedSearchResult(tracks = jioTracks, isLossless = false)
-                }
-            } catch (e: CancellationException) { throw e } catch (_: Exception) {
-                // Tier 2 failure -> Fallback to Tier 3
-            }
-
-            // 3. Tertiary Source Fallback: YouTube Music API
-            try {
-                val ytTracks = YouTubeMusicApiService.searchSongs(query, limit = limit)
-                if (ytTracks.isNotEmpty()) {
-                    return@withContext RoutedSearchResult(tracks = ytTracks, isLossless = false)
-                }
-            } catch (e: CancellationException) { throw e } catch (_: Exception) {
-                // Exhausted all tiers
-            }
-
-            RoutedSearchResult(tracks = emptyList(), isLossless = false)
-        } else {
-            // ============================================================
-            // SCENARIO B: Standard / High / Ultra HD (Lossy Streaming)
-            // Internet Archive is completely bypassed
-            // ============================================================
-
-            // 1. Primary Source: JioSaavn API
-            try {
-                val jioTracks = OnlineMusicApiService.searchSongs(query, limit = limit)
-                if (jioTracks.isNotEmpty()) {
-                    return@withContext RoutedSearchResult(tracks = jioTracks, isLossless = false)
-                }
-            } catch (e: CancellationException) { throw e } catch (_: Exception) {
-                // Tier 1 failure -> Fallback to Tier 2
-            }
-
-            // 2. Secondary Source Fallback: YouTube Music API
-            try {
-                val ytTracks = YouTubeMusicApiService.searchSongs(query, limit = limit)
-                return@withContext RoutedSearchResult(tracks = ytTracks, isLossless = false)
-            } catch (e: CancellationException) { throw e } catch (_: Exception) {
-                RoutedSearchResult(tracks = emptyList(), isLossless = false)
-            }
+    suspend fun searchPage(query: String, standardPage: Int? = 1,
+        youtubeContinuation: String? = null, fetchYouTube: Boolean = true, limit: Int = 10
+    ): SearchPage = withContext(Dispatchers.Default) {
+        val cleaned = StreamResolver.extractCleanTitle(query).trim()
+        if (cleaned.isBlank()) return@withContext SearchPage(emptyList(), null, null)
+        supervisorScope {
+            suspend fun <T> request(block: suspend () -> T): T? = try {
+                withTimeoutOrNull(12_000L) { requests.withPermit { block() } }
+            } catch (e: TimeoutCancellationException) { coroutineContext.ensureActive(); null }
+            catch (e: CancellationException) { throw e }
+            catch (_: Exception) { null }
+            val jio = standardPage?.let { page -> async {
+                request { OnlineMusicApiService.searchSongPage(cleaned, limit = limit, page = page) }
+            } }
+            val youtube = if (fetchYouTube) async {
+                request { YouTubeMusicApiService.searchSongsPage(cleaned, youtubeContinuation, useInnerTubeX = true) }
+            } else null
+            val standard = jio?.await(); val extended = youtube?.await()
+            SearchPage(rankTracks(query, standard?.tracks.orEmpty() + extended?.tracks.orEmpty()),
+                standard?.nextPage, extended?.continuation, jio != null && standard == null,
+                youtube != null && extended == null)
         }
     }
+
+    @Suppress("UNUSED_PARAMETER") // Existing callers need no quality-specific route.
+    suspend fun resolveSearchTracks(context: Context?, query: String, limit: Int = 25): RoutedSearchResult {
+        val page = searchPage(query, limit = limit)
+        return RoutedSearchResult(page.tracks, isLossless = false)
+    }
+
+    private fun providerRank(track: MusicTrack): Int = when {
+        track.id.startsWith("online_") -> 0
+        track.id.startsWith("yt_") -> 1
+        else -> 2
+    }
+
+    /** Replace an equivalent upload at its existing position; never replace a distinct song. */
+    fun mergeTracks(tracks: List<MusicTrack>): List<MusicTrack> {
+        val result = mutableListOf<MusicTrack>()
+        val identities = mutableListOf<RecordingIdentity.Signature>()
+        for (track in tracks) {
+            if (track.id.startsWith("ia_") || track.source.equals("INTERNET_ARCHIVE", true) ||
+                track.id.startsWith("xtreme_") || track.audioUrl.contains("soundhelix", true)) continue
+            val identity = RecordingIdentity.signature(track)
+            val existing = result.indices.firstOrNull { result[it].id == track.id ||
+                RecordingIdentity.same(identities[it], identity, requireAlbum = true) }
+            if (existing == null) { result.add(track); identities.add(identity) }
+            else if (providerRank(track) < providerRank(result[existing])) {
+                result[existing] = track; identities[existing] = identity
+            }
+        }
+        return result
+    }
+
+    fun rankTracks(query: String, tracks: List<MusicTrack>): List<MusicTrack> = mergeTracks(tracks)
+        .mapNotNull { track ->
+            val relevance = maxOf(CatalogNames.score(query, track.title, listOf(track.artist, track.album)),
+                CatalogNames.score(StreamResolver.extractCleanTitle(query),
+                    StreamResolver.extractCleanTitle(track.title, track.artist), listOf(track.artist, track.album)))
+            if (relevance <= 0) null else track to (relevance * 10 + OriginalMusicFilter.searchPreferenceScore(track, query))
+        }.sortedWith(compareByDescending<Pair<MusicTrack, Int>> { it.second }
+            .thenBy { providerRank(it.first) }).map { it.first }
 }

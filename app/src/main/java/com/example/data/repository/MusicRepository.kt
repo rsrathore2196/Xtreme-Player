@@ -109,7 +109,9 @@ class MusicRepository(
     }
 
     // LRU / in-memory cache to avoid duplicate network calls and prevent rate limiting
-    private val searchCache = android.util.LruCache<String, SearchResultCategory>(80)
+    private val searchCache = android.util.LruCache<String, Pair<Long, SearchResultCategory>>(80)
+    private val losslessMisses = android.util.LruCache<String, Long>(128)
+    private val losslessLookup = kotlinx.coroutines.sync.Mutex()
     private val streamResolver = StreamResolver()
     private val chartClient by lazy { OkHttpClient.Builder().connectTimeout(8, TimeUnit.SECONDS).readTimeout(10, TimeUnit.SECONDS).build() }
 
@@ -496,219 +498,33 @@ class MusicRepository(
         musicDao.removeTrackFromPlaylist(playlistId, trackId)
     }
 
+    /** User search returns matching catalog entities; discovery remains in its own flows. */
     suspend fun search(query: String, context: android.content.Context? = null): SearchResultCategory = withContext(Dispatchers.Default) {
         val trimmed = query.trim()
-        if (trimmed.isBlank()) {
-            return@withContext SearchResultCategory()
-        }
-
-        val cacheKey = trimmed.lowercase()
-        searchCache.get(cacheKey)?.let { return@withContext it }
-
-        val likedEntities = try {
-            withContext(Dispatchers.IO) { musicDao.getFavoriteTracks().first() }
-        } catch (e: CancellationException) { throw e } catch (e: Exception) {
-            emptyList()
-        }
-        val likedIds = likedEntities.map { it.id }.toSet()
-
-        val (routedOnlineTracks, ytTracks) = coroutineScope {
-            val routedDeferred = async(Dispatchers.IO) {
-                val ctx = context ?: this@MusicRepository.context
-                if (ctx != null) {
-                    try {
-                        val routed = com.example.data.remote.AudioRoutingService.resolveSearchTracks(ctx, trimmed, limit = 25)
-                        routed.tracks
-                    } catch (e: CancellationException) { throw e } catch (e: Exception) {
-                        OnlineMusicApiService.searchSongs(trimmed, limit = 25)
-                    }
-                } else {
-                    try {
-                        OnlineMusicApiService.searchSongs(trimmed, limit = 25)
-                    } catch (e: CancellationException) { throw e } catch (e: Exception) {
-                        emptyList()
-                    }
-                }
-            }
-            val ytDeferred = async(Dispatchers.IO) {
-                try {
-                    YouTubeMusicApiService.searchSongs(trimmed, limit = 25)
-                } catch (e: CancellationException) { throw e } catch (e: Exception) {
-                    emptyList()
-                }
-            }
-            Pair(routedDeferred.await(), ytDeferred.await())
-        }
-
-        val onlineJioTracks = routedOnlineTracks
-
-        // 2. Search local curated catalog as well
-        val q = trimmed.lowercase()
-        val localMatches = MusicDataSource.curatedTracks.filter {
-            it.title.lowercase().contains(q) ||
-            it.artist.lowercase().contains(q) ||
-            it.singers.lowercase().contains(q) ||
-            it.album.lowercase().contains(q) ||
-            it.genre.lowercase().contains(q)
-        }
-
-        // Interleave JioSaavn and YouTube Music results so both platforms are represented
-        val mixedOnline = mutableListOf<MusicTrack>()
-        val maxLen = maxOf(onlineJioTracks.size, ytTracks.size)
-        for (idx in 0 until maxLen) {
-            if (idx < onlineJioTracks.size) mixedOnline.add(onlineJioTracks[idx])
-            if (idx < ytTracks.size) mixedOnline.add(ytTracks[idx])
-        }
-
-        // Apply originality verification and scoring BEFORE deduplication
-        // so an unofficial remix/bootleg cannot overshadow or replace the genuine original recording
-        val isExplicitAlt = com.example.recommendation.OriginalMusicFilter.isExplicitAlternativeQuery(trimmed)
-        val allRawDirect = (mixedOnline + localMatches).filter {
-            // Exclude demo tracks completely
-            !it.id.startsWith("xtreme_") && !it.title.contains("SoundHelix", ignoreCase = true)
-        }
-
-        // Sort by originality score descending (highest quality genuine studio recording first)
-        val sortedDirect = allRawDirect.sortedWith(
-            compareByDescending<MusicTrack> { track ->
-                var score = com.example.recommendation.OriginalMusicFilter.calculateOriginalityScore(track, trimmed)
-                val trackTitleLower = track.title.lowercase(java.util.Locale.ROOT)
-                val trackArtistLower = track.artist.lowercase(java.util.Locale.ROOT)
-                // Exact title query bonus
-                if (trackTitleLower == q) score += 40.0
-                else if (trackTitleLower.startsWith(q) || q.startsWith(trackTitleLower)) score += 20.0
-                // Artist match bonus
-                if (trackArtistLower.contains(q)) score += 15.0
-                score
-            }
-        )
-
-        // Deduplicate using clean title and primary artist AFTER sorting by originality
-        val allDirect = sortedDirect
-            .distinctBy {
-                val cleanTitleKey = it.cleanTitle.lowercase(java.util.Locale.ROOT).trim()
-                val primaryArtistKey = it.artist.split(",", "&", "feat.", "ft.", "•", "/").first().trim().lowercase(java.util.Locale.ROOT)
-                "${cleanTitleKey}_$primaryArtistKey"
-            }
-            .map { it.copy(isLiked = likedIds.contains(it.id)) }
-
-        val top = allDirect.firstOrNull()
-
-        // Exact name/title matches
-        val exactMatches = allDirect.filter {
-            it.title.lowercase(java.util.Locale.ROOT).contains(q) || q.contains(it.title.lowercase(java.util.Locale.ROOT))
-        }.ifEmpty { allDirect.take(10) }
-
-        val taggedJioMatches = onlineJioTracks.map { it.copy(isLiked = likedIds.contains(it.id)) }
-        val taggedYtMatches = ytTracks.map { it.copy(isLiked = likedIds.contains(it.id)) }
-
-        // 3. Fetch same singer / artist's other songs
-        val primaryArtist = top?.singers?.ifBlank { top.artist } ?: ""
-        var artistSongs = emptyList<MusicTrack>()
-        var matchedArtistName = ""
-        if (primaryArtist.isNotBlank()) {
-            val singerQuery = primaryArtist.split(",", "&", "feat.", "ft.", "•", "/").first().trim()
-            matchedArtistName = singerQuery
-            val onlineArtistTracks = try {
-                OnlineMusicApiService.searchSongs(singerQuery, limit = 15)
-                } catch (e: CancellationException) { throw e } catch (e: Exception) {
-                emptyList()
-            }
-            val localArtistTracks = MusicDataSource.curatedTracks.filter {
-                it.artist.contains(singerQuery, ignoreCase = true) || it.singers.contains(singerQuery, ignoreCase = true)
-            }
-            artistSongs = (onlineArtistTracks + localArtistTracks)
-                .filter { it.id != top?.id }
-                .distinctBy { "${it.title.lowercase()}_${it.artist.lowercase()}" }
-                .map { it.copy(isLiked = likedIds.contains(it.id)) }
-                .take(12)
-        }
-
-        // 4. Fetch same type / genre / vibe songs
-        val genre = top?.genre?.ifBlank { "Pop" } ?: "Pop"
-        val onlineGenreTracks = try {
-            OnlineMusicApiService.getSongsByGenre(genre, limit = 15)
-        } catch (e: Exception) {
-            emptyList()
-        }
-        val localGenreTracks = MusicDataSource.curatedTracks.filter {
-            it.genre.equals(genre, ignoreCase = true)
-        }
-        val existingIds = (allDirect.map { it.id } + artistSongs.map { it.id }).toSet()
-        val similarTypeSongs = (onlineGenreTracks + localGenreTracks)
-            .filter { !existingIds.contains(it.id) }
-            .distinctBy { "${it.title.lowercase()}_${it.artist.lowercase()}" }
-            .map { it.copy(isLiked = likedIds.contains(it.id)) }
-            .take(12)
-
-        // Merged list of all distinct songs found in search
-        val allSongs = (allDirect + artistSongs + similarTypeSongs)
-            .distinctBy { "${it.title.lowercase()}_${it.artist.lowercase()}" }
-
-        val albums = allSongs.map { it.album }
-            .filter { it.isNotBlank() && it != "Single" && it != "Online Stream" && it != "YouTube Music" && it != "Extended Stream" }
-            .distinct()
-        val artists = allSongs.map { it.artist }
-            .filter { it.isNotBlank() && it != "Unknown Artist" && it != "YouTube Artist" && it != "Online Artist" }
-            .distinct()
-
-        // 5. Intelligent Recommendations based on search query/top track:
-        // Recommends 5 to 6 songs according to mood, language, genre, vibe and artist,
-        // strictly avoiding same song names or duplicates as requested by user.
-        val targetTrack = top ?: exactMatches.firstOrNull() ?: allSongs.firstOrNull()
-        val recommendedTracks = if (targetTrack != null) {
-            val engine = com.example.recommendation.RecommendationEngine()
-            val candidatePool = (similarTypeSongs + artistSongs + allSongs + MusicDataSource.curatedTracks).distinctBy { it.id }
-            val excluded = (exactMatches.map { it.id } + targetTrack.id).toSet()
-
-            val scored = engine.evaluateAndScoreCandidates(
-                currentTrack = targetTrack,
-                candidatePool = candidatePool,
-                excludedIds = excluded
-            )
-
-            scored.map { it.track }
-                .filter { cand ->
-                    cand.id != targetTrack.id &&
-                    !com.example.recommendation.RecommendationEngine.isSameSongOrVariant(cand.title, targetTrack.title) &&
-                    exactMatches.none { com.example.recommendation.RecommendationEngine.isSameSongOrVariant(cand.title, it.title) }
-                }
-                .take(6)
-        } else {
-            emptyList()
-        }
-
-        val categoryResult = SearchResultCategory(
-            topResult = top,
-            exactMatches = exactMatches,
-            recommendedTracks = recommendedTracks,
-            jioMatches = taggedJioMatches,
-            ytMatches = taggedYtMatches,
-            artistSongs = artistSongs,
-            matchedArtistName = matchedArtistName,
-            similarTypeSongs = similarTypeSongs,
-            matchedGenreOrType = genre,
-            songs = allSongs,
-            albums = albums,
-            artists = artists
-        )
-
-        searchCache.put(cacheKey, categoryResult)
-        categoryResult
+        if (trimmed.isBlank()) return@withContext SearchResultCategory()
+        val cacheKey = trimmed.lowercase(java.util.Locale.ROOT)
+        searchCache.get(cacheKey)?.takeIf { System.currentTimeMillis() - it.first < 300_000L }
+            ?.let { return@withContext it.second }
+        val likedIds = try {
+            withContext(Dispatchers.IO) { musicDao.getFavoriteTracks().first() }.mapTo(mutableSetOf()) { it.id }
+        } catch (e: CancellationException) { throw e }
+        catch (_: Exception) { emptySet<String>() }
+        val tracks = AudioRoutingService.resolveSearchTracks(context ?: this@MusicRepository.context,
+            trimmed, limit = 25).tracks.map { it.copy(isLiked = it.id in likedIds) }
+        val exact = tracks.filter { CatalogNames.score(trimmed,
+            StreamResolver.extractCleanTitle(it.title, it.artist)) >= 55 }.ifEmpty { tracks.take(10) }
+        val result = SearchResultCategory(topResult = tracks.firstOrNull(), exactMatches = exact,
+            jioMatches = tracks.filter { it.id.startsWith("online_") },
+            ytMatches = tracks.filter { it.id.startsWith("yt_") }, songs = tracks,
+            albums = tracks.map { it.album }.filter { CatalogNames.normalize(it) !in
+                setOf("", "unknown", "single", "online stream", "extended stream", "youtube music") }.distinct(),
+            artists = tracks.map { it.artist }.filter { CatalogNames.normalize(it) !in
+                setOf("", "unknown", "unknown artist", "various artists", "online artist", "youtube artist") }.distinct())
+        searchCache.put(cacheKey, System.currentTimeMillis() to result)
+        result
     }
 
-    /**
-     * Unified Audio Layer: Resolves a playable stream URL enforcing the 3-Tier source fallback routing:
-     *
-     * SCENARIO A (Hi-Res Lossless Enabled):
-     *   Tier 1: Internet Archive API (verified lossless FLAC/WAV/AIFF/ALAC/APE/WavPack/DSD stream)
-     *   Tier 2: JioSaavn API (320kbps CD-quality stream)
-     *   Tier 3: YouTube Music / audio fallback stream
-     *
-     * SCENARIO B (Lossy Streaming):
-     *   Tier 1: JioSaavn API (320kbps stream)
-     *   Tier 2: YouTube Music / audio fallback stream
-     */
+    /** Start the selected catalog source first. Lossless discovery is never on this path. */
     suspend fun resolvePlayableTrack(
         track: MusicTrack,
         forceRefresh: Boolean = false,
@@ -717,8 +533,7 @@ class MusicRepository(
         val quality = context?.let { AudioQualityPreferences.getSelectedQuality(it) }
             ?: AudioQuality.ULTRA_HD_320
         com.example.recommendation.DiscoveryRequestCoordinator.playback {
-            streamResolver.resolve(track, quality, forceRefresh, failedUrl,
-                deferLossless = quality == AudioQuality.HI_RES_LOSSLESS)
+            streamResolver.resolve(track, quality, forceRefresh, failedUrl)
         }
     }
 
@@ -751,14 +566,29 @@ class MusicRepository(
 
     suspend fun findLosslessUpgrade(track: MusicTrack): MusicTrack? = withContext(Dispatchers.IO) {
         if (context == null || AudioQualityPreferences.getSelectedQuality(context) != AudioQuality.HI_RES_LOSSLESS) return@withContext null
-        kotlinx.coroutines.withTimeoutOrNull(8_000L) {
-            val query = "${StreamResolver.extractCleanTitle(track.title, track.artist)} ${StreamResolver.extractCleanArtist(track.artist)}".trim()
-            val candidates = InternetArchiveApiService.searchLosslessPage(query, pageSize = 8, playableOnly = true).tracks
-            withContext(Dispatchers.Default) { candidates.filter { candidate ->
-                candidate.audioUrl != track.audioUrl && StreamResolver.matchesLosslessUpgrade(track, candidate) &&
-                    (!track.isLossless || !track.qualityBadge.startsWith("Hi-Res") && candidate.qualityBadge.startsWith("Hi-Res"))
-            }.sortedByDescending { it.qualityBadge.startsWith("Hi-Res") }.firstOrNull() }
+        val key = withContext(Dispatchers.Default) { RecordingIdentity.key(track) }
+        fun missedRecently() = losslessMisses.get(key)?.let { android.os.SystemClock.elapsedRealtime() < it } == true
+        if (missedRecently()) return@withContext null
+        // One optional Archive lookup at a time, and recheck after waiting for its permit.
+        losslessLookup.withLock {
+            if (missedRecently() || AudioQualityPreferences.getSelectedQuality(context) != AudioQuality.HI_RES_LOSSLESS)
+                return@withLock null
+            val result = kotlinx.coroutines.withTimeoutOrNull(8_000L) {
+                val query = "${StreamResolver.extractCleanTitle(track.title, track.artist)} ${StreamResolver.extractCleanArtist(track.artist)}".trim()
+                val candidates = InternetArchiveApiService.searchLosslessPage(query, pageSize = 6, playableOnly = true).tracks
+                withContext(Dispatchers.Default) { candidates.filter { candidate ->
+                    candidate.audioUrl != track.audioUrl && StreamResolver.matchesLosslessUpgrade(track, candidate) &&
+                        (!track.isLossless || !track.qualityBadge.startsWith("Hi-Res") && candidate.qualityBadge.startsWith("Hi-Res"))
+                }.sortedByDescending { it.qualityBadge.startsWith("Hi-Res") }.firstOrNull() }
+            }
+            if (result == null) losslessMisses.put(key, android.os.SystemClock.elapsedRealtime() + 180_000L)
+            result
         }
+    }
+
+    internal suspend fun rejectLosslessUpgrade(track: MusicTrack) = withContext(Dispatchers.Default) {
+        losslessMisses.put(RecordingIdentity.key(track), android.os.SystemClock.elapsedRealtime() + 180_000L)
+        Unit
     }
 
     fun clearSearchCache() {

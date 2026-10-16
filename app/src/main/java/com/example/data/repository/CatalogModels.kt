@@ -12,10 +12,9 @@ data class CatalogAlbum(val id: String, val title: String, val artists: List<Cat
 data class CatalogPlaylist(val id: String, val title: String, val image: String)
 /** Independent song-provider cursors and results waiting for the next ten rows. */
 data class TrackSearchContinuation(
-    val query: String, val standardPage: Int? = null, val archivePage: Int? = null,
+    val query: String, val standardPage: Int? = null,
     val pendingTracks: List<MusicTrack> = emptyList(),
-    val youtubeContinuation: String? = null, val youtubeHasMore: Boolean = true,
-    val includeLossless: Boolean = false
+    val youtubeContinuation: String? = null, val youtubeHasMore: Boolean = true
 )
 /** Opaque YouTube Music cursor, kept independent of JioSaavn's numeric pages. */
 @androidx.compose.runtime.Immutable

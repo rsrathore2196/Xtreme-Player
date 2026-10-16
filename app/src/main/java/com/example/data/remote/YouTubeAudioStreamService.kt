@@ -158,7 +158,12 @@ object YouTubeAudioStreamService {
         if (isPlaybackUri(url)) return url
         // An exact matching JioSaavn/FLAC fallback keeps its own transport, even if the
         // catalog identity is a YouTube video. Never reroute another provider's URL.
-        if (url.isNotBlank() && !url.startsWith("yt_") && !isMediaUrl(url)) return url
+        val address = url.toHttpUrlOrNull()
+        val youtubePage = trackId.startsWith("yt_") && address?.let {
+            it.host == "youtu.be" || it.host == "youtube.com" || it.host.endsWith(".youtube.com")
+        } == true
+        if (url.isNotBlank() && !url.startsWith("yt_") && !url.contains("placeholder", true) &&
+            !isMediaUrl(url) && !youtubePage) return url
         val resolved = cachedForUrl(url)
         val id = resolved?.videoId?.takeIf(::isVideoId)
             ?: trackId.removePrefix("yt_").takeIf { trackId.startsWith("yt_") && isVideoId(it) }.orEmpty()

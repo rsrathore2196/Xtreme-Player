@@ -18,6 +18,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.json.JSONObject
 import java.text.Normalizer
 import java.util.Locale
@@ -46,6 +47,8 @@ object InternetArchiveApiService {
     private val metadataRequests = Semaphore(4)
     private val pageLocks = Array(16) { Mutex() }
     private val itemLocks = Array(16) { Mutex() }
+    private val reuseLicense = Regex("/(?:licenses/(?:by|by-sa|by-nd|by-nc|by-nc-sa|by-nc-nd)/[1-4]\\.0(?:/.*)?|publicdomain/(?:zero|mark)/1\\.0(?:/.*)?)")
+    private val genericTitle = Regex("(?i)^(?:track|audio|cd|disc|unknown)[ ._-]*[0-9]*$")
     private val pageCache = object : LruCache<String, Pair<Long, LosslessSearchPage>>(640) {
         override fun sizeOf(key: String, value: Pair<Long, LosslessSearchPage>): Int =
             value.second.tracks.size.coerceAtLeast(1)
@@ -277,6 +280,24 @@ object InternetArchiveApiService {
         else -> ""
     }
 
+    /** Public accessibility alone is not a playback license. Require an explicit reuse grant. */
+    private fun authorized(metadata: JSONObject?): Boolean {
+        if (metadata == null || metadata.optBoolean("access-restricted-item", false) ||
+            metadata.optBoolean("is_dark", false)) return false
+        val rights = text(metadata, "rights").lowercase(Locale.ROOT)
+        if (rights.contains("all rights reserved")) return false
+        val licenses = when (val value = metadata.opt("licenseurl")) {
+            is org.json.JSONArray -> (0 until value.length()).map { value.optString(it) }
+            is String -> listOf(value)
+            else -> emptyList()
+        }
+        return licenses.any { license ->
+            val url = license.toHttpUrlOrNull()
+            url != null && url.host in setOf("creativecommons.org", "www.creativecommons.org") &&
+                reuseLicense.matches(url.encodedPath)
+        } || rights.trim() == "public domain"
+    }
+
     private fun durationMillis(value: String): Long {
         val seconds = if (value.contains(':')) value.split(':').fold(0.0) { total, part ->
             val amount = part.toDoubleOrNull() ?: return 0L
@@ -297,6 +318,7 @@ object InternetArchiveApiService {
             val root = JSONObject(httpClient.catalogRequest(request))
             if (root.optBoolean("is_dark", false)) return emptyList()
             val metadata = root.optJSONObject("metadata")
+            if (!authorized(metadata)) return emptyList()
             val files = root.optJSONArray("files") ?: throw java.io.IOException("Missing Archive file metadata")
             val lossless = (0 until files.length()).mapNotNull { files.optJSONObject(it) }.filter {
                 isLosslessAudioFile(text(it, "name"), text(it, "format")) &&
@@ -312,18 +334,20 @@ object InternetArchiveApiService {
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 val name = text(file, "name")
                 if (name.isBlank() || name.split('/').any { it == ".." }) return@mapNotNull null
-                // A filename is file-specific metadata; never substitute the album/concert title.
+                // Names such as track01.flac cannot establish recording identity. Only a
+                // single-file item's real title can substitute for missing embedded tags.
                 val fileTitle = text(file, "title").ifBlank {
-                    name.substringAfterLast('/').substringBeforeLast('.')
-                        .replace(Regex("^\\d{1,3}[._ -]+"), "").replace('_', ' ').trim()
+                    if (lossless.size == 1 && !isConcert) text(metadata, "title") else ""
                 }
-                if (fileTitle.isBlank()) return@mapNotNull null
+                if (fileTitle.isBlank() || genericTitle.matches(fileTitle.trim())) return@mapNotNull null
                 val artist = text(file, "artist").ifBlank { text(file, "creator") }
                     .ifBlank { text(metadata, "creator") }.ifBlank { text(doc, "creator") }.ifBlank { "Unknown Artist" }
                 val album = text(file, "album").ifBlank { text(metadata, "album") }
                     .ifBlank { text(doc, "album") }
                     .ifBlank { if (lossless.size > 1) text(metadata, "title") else "Unknown" }
                 val duration = durationMillis(text(file, "length"))
+                if (duration <= 0L || artist.equals("Unknown Artist", true) || artist.equals("Various Artists", true))
+                    return@mapNotNull null
                 val reportedBitrate = text(file, "bitrate").toDoubleOrNull()?.takeIf { it.isFinite() && it > 0 }?.toInt()
                 val bitrate = reportedBitrate ?: if (duration > 0L) {
                     ((text(file, "size").toLongOrNull() ?: 0L) * 8L / duration).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()

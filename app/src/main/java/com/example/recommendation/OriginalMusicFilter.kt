@@ -20,6 +20,31 @@ import java.util.Locale
  * Note: A track is NOT considered original merely because its title contains "Official".
  */
 object OriginalMusicFilter {
+    private val searchVersions = Regex("(?i)\\b(?:live|remix|re-mix|rmx|remaster(?:ed)?|acoustic|unplugged|radio edit|extended|instrumental|cover|karaoke|slowed|reverb|nightcore|sped up)\\b")
+    private val unofficialUpload = Regex("(?i)\\b(?:unofficial|bootleg|fan[ -]made|ai[ -](?:cover|generated)|tribute|karaoke|mashup|slowed|reverb|nightcore|sped up|bass boosted)\\b")
+    private val presentationUpload = Regex("(?i)\\b(?:lyric(?:s| video)?|8d audio|4k|fan video)\\b")
+    private val searchUnofficialArtist = Regex("(?i)\\b(?:karaoke|tribute band|cover artist|remix channel|unknown artist|various artists)\\b")
+    private val searchIsrc = Regex("(?i)[A-Z]{2}[A-Z0-9]{3}[0-9]{7}")
+
+    /** Search-only preference: Home and playlist policies retain their existing behavior. */
+    fun searchPreferenceScore(track: MusicTrack, query: String): Int {
+        val requested = searchVersions.findAll(query).map { it.value.lowercase(Locale.ROOT).replace("remastered", "remaster") }.toSet()
+        val actual = searchVersions.findAll(track.title).map { it.value.lowercase(Locale.ROOT).replace("remastered", "remaster") }.toSet()
+        var score = when {
+            requested.isNotEmpty() && actual.containsAll(requested) -> 180
+            requested.isNotEmpty() -> -250
+            actual.isNotEmpty() -> -180
+            else -> 120
+        }
+        if (unofficialUpload.containsMatchIn(track.title) && requested.isEmpty()) score -= 700
+        if (searchUnofficialArtist.containsMatchIn(track.artist)) score -= 250
+        if (presentationUpload.containsMatchIn(track.title)) score -= 80
+        if (track.id.startsWith("online_")) score += 35
+        if (searchIsrc.matches(track.isrc)) score += 25
+        if (track.album.isNotBlank() && !track.album.equals("Unknown", true) &&
+            !track.album.equals("Single", true) && !track.album.equals("YouTube Music", true)) score += 15
+        return score
+    }
 
     /** Home-only policy leaves explicit search and playback filtering behavior intact. */
     fun isHomeRecommendation(track: MusicTrack): Boolean {
