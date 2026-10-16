@@ -12,6 +12,19 @@ import java.util.concurrent.atomic.AtomicLong
 
 /** Coordinates optional work; never drives frames or controls the audio engine. */
 object BackgroundWorkCoordinator {
+    private val firstFrame = kotlinx.coroutines.CompletableDeferred<Unit>()
+    private val homeReady = kotlinx.coroutines.CompletableDeferred<Unit>()
+    fun firstFrameRendered() { firstFrame.complete(Unit) }
+    fun homeContentReady() { homeReady.complete(Unit) }
+    suspend fun awaitFirstFrame() { firstFrame.await() }
+    suspend fun awaitHomeContent() { homeReady.await() }
+    /** Readiness fences, followed by actual quiet; no fixed startup wake-up timer. */
+    suspend fun awaitStartupIdle() {
+        awaitFirstFrame()
+        awaitHomeContent()
+        awaitIdle(quietMillis = 750L, minimumUptimeMillis = 0L)
+        awaitNavigationIdle(requireForeground = true)
+    }
     private val startedAt = SystemClock.elapsedRealtime()
     private val foreground = AtomicBoolean(false)
     private val _uiForeground = MutableStateFlow(false)

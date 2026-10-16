@@ -43,8 +43,8 @@ object AppUpdateManager {
     private const val LATEST = "https://api.github.com/repos/rsrathore2196/Xtreme-Player/releases/latest"
     private const val ASSET_PATH = "/rsrathore2196/Xtreme-Player/releases/download/"
     private const val MAX_AGE = 24 * 60 * 60 * 1000L
-    private val client = OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS).callTimeout(30, TimeUnit.SECONDS).build()
+    private val client by lazy { OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS).callTimeout(30, TimeUnit.SECONDS).build() }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val operations = Mutex()
     private val _updateStatus = MutableStateFlow<UpdateStatus>(UpdateStatus.Idle)

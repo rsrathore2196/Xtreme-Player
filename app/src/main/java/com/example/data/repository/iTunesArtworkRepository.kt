@@ -83,6 +83,7 @@ class iTunesArtworkRepository(
     init {
         lookupScope.launch {
             try {
+                com.example.performance.BackgroundWorkCoordinator.awaitStartupIdle()
                 cacheDao.getNewest(limit = 2048).asReversed().forEach { entry ->
                     if (entry.rawArtworkUrl.isNotBlank()) synchronized(memoryCache) {
                         if (memoryCache.get(entry.cacheKey) == null)

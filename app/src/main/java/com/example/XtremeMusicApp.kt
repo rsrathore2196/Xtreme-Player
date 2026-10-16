@@ -21,7 +21,9 @@ class XtremeMusicApp : Application(), ImageLoaderFactory {
     private val startupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     val database: MusicDatabase by lazy { MusicDatabase.getDatabase(this) }
-    val repository: MusicRepository by lazy { MusicRepository(database.musicDao(), this) }
+    val repository: MusicRepository by lazy {
+        MusicRepository(this).also { com.example.data.cache.SmartCacheManager.configure(this, it) }
+    }
     @Volatile var startupSettings: com.example.data.local.StartupSettings? = null
         private set
     private val startupSettingsClaimed = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -32,7 +34,11 @@ class XtremeMusicApp : Application(), ImageLoaderFactory {
 
     val playbackManager: PlaybackManager by lazy {
         PlaybackManager(this, repository).also {
-            com.example.recommendation.RecommendationListeningObserver(database.listeningEventDao(), database.musicDao()).start(it)
+            val player = it
+            startupScope.launch {
+                // The observer is essential to playback, but acquiring its DAOs is not UI work.
+                com.example.recommendation.RecommendationListeningObserver(database.listeningEventDao(), database.musicDao()).start(player)
+            }
         }
     }
 
@@ -72,55 +78,40 @@ class XtremeMusicApp : Application(), ImageLoaderFactory {
     override fun onCreate() {
         super.onCreate()
         _instance = this
-        startupScope.launch { com.example.ui.util.TrackPaletteCache.initialize(this@XtremeMusicApp) }
-
-        // Initialize security configuration
+        // Only the local appearance/profile snapshot gates the first themed frame.
         startupScope.launch {
-            com.example.performance.BackgroundWorkCoordinator.work {
-                runCatching { SecurityConfig.getDESKey(this@XtremeMusicApp) }
-            }
-        }
-
-        // Initialize API service with application context
-        try {
-            OnlineMusicApiService.initialize(this)
-        } catch (e: Exception) {
-            android.util.Log.e("XtremeMusicApp", "Failed to initialize OnlineMusicApiService: ${e.message}")
-        }
-
-        // Prepare local dependencies/preferences off Main, before the first screen uses them.
-        // This never waits for a network request or creates the audio service.
-        startupScope.launch {
-            repository
             startupSettings = com.example.data.local.StartupSettings.read(this@XtremeMusicApp)
-            val profile = requireNotNull(startupSettings).profile
-            // Context registration is cheap; explicit cache controls must work even
-            // before the optional maintenance job is admitted below.
-            com.example.data.cache.SmartCacheManager.configure(this@XtremeMusicApp, repository)
-            com.example.data.cache.HomeCardCache.preloadAsync(this@XtremeMusicApp,
-                "${profile.countryCode}|${profile.languages.joinToString(",")}")
-            // Construct Coil and its local disk cache on IO before the first AsyncImage composition.
-            // This performs no image fetch or decode and leaves all request/caching policies intact.
-            runCatching { imageLoader }
-                .onFailure { android.util.Log.w("XtremeMusicApp", "Image loader prewarm unavailable", it) }
             _startupReady.value = true
-            com.example.performance.BackgroundWorkCoordinator.awaitIdle(minimumUptimeMillis = 2_500L)
-            com.example.data.repository.ArtistPhotoRepository.prewarm(this@XtremeMusicApp)
         }
 
-        // Construct the shared resolver off Main and warm its URL cache from Room.
-        startupScope.launch {
-            com.example.data.repository.iTunesArtworkRepository.getInstance(this@XtremeMusicApp)
-        }
+        // Context registration does not read storage or initialize the network client.
+        OnlineMusicApiService.initialize(this)
 
+        // One sequential optional pipeline replaces competing prewarm coroutines.
+        // On-demand image/playback paths remain available before this work is admitted.
         startupScope.launch {
-            kotlinx.coroutines.delay(2_500L)
-            com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle()
-            runCatching { com.example.playback.AudioDeviceManager.init(this@XtremeMusicApp) }
-                .onFailure { android.util.Log.w("XtremeMusicApp", "Audio devices unavailable", it) }
-            com.example.performance.BackgroundWorkCoordinator.awaitIdle(minimumUptimeMillis = 5_000L)
-            runCatching { com.example.data.cache.SmartCacheManager.initialize(this@XtremeMusicApp, repository) }
-                .onFailure { android.util.Log.w("XtremeMusicApp", "Cache maintenance unavailable", it) }
+            val coordinator = com.example.performance.BackgroundWorkCoordinator
+            coordinator.awaitStartupIdle()
+            coordinator.work { runCatching { com.example.ui.util.TrackPaletteCache.initialize(this@XtremeMusicApp) }
+                .onFailure { android.util.Log.w("XtremeMusicApp", "Palette prewarm unavailable", it) } }
+            coordinator.awaitStartupIdle()
+            coordinator.work { runCatching { imageLoader }
+                .onFailure { android.util.Log.w("XtremeMusicApp", "Image loader prewarm unavailable", it) } }
+            coordinator.awaitStartupIdle()
+            coordinator.work { runCatching { com.example.data.repository.iTunesArtworkRepository.getInstance(this@XtremeMusicApp) }
+                .onFailure { android.util.Log.w("XtremeMusicApp", "Artwork prewarm unavailable", it) } }
+            coordinator.awaitStartupIdle()
+            coordinator.work { runCatching { SecurityConfig.getDESKey(this@XtremeMusicApp) } }
+            coordinator.awaitStartupIdle()
+            coordinator.work { runCatching { com.example.data.repository.ArtistPhotoRepository.prewarm(this@XtremeMusicApp) }
+                .onFailure { android.util.Log.w("XtremeMusicApp", "Artist prewarm unavailable", it) } }
+            coordinator.awaitStartupIdle()
+            coordinator.work { runCatching { com.example.playback.AudioDeviceManager.init(this@XtremeMusicApp) }
+                .onFailure { android.util.Log.w("XtremeMusicApp", "Audio devices unavailable", it) } }
+            coordinator.awaitStartupIdle()
+            com.example.data.cache.SmartCacheManager.configure(this@XtremeMusicApp, repository)
+            coordinator.work { runCatching { com.example.data.cache.SmartCacheManager.initialize(this@XtremeMusicApp, repository) }
+                .onFailure { android.util.Log.w("XtremeMusicApp", "Cache maintenance unavailable", it) } }
         }
     }
 

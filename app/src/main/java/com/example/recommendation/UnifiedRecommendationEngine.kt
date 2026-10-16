@@ -108,7 +108,7 @@ class UnifiedRecommendationEngine(context: Context?,
     /** Each emission changes one shelf, in stable batches. Nothing waits for all cards. */
     fun refresh(profile: UserProfile, country: String, taste: UserTasteProfile, current: MusicTrack?,
         history: List<MusicTrack>, favorites: List<MusicTrack>, known: List<MusicTrack>, force: Boolean,
-        shelves: Set<Shelf> = Shelf.entries.toSet()): Flow<Batch> = channelFlow {
+        shelves: Set<Shelf> = Shelf.entries.toSet(), startupBatch: Boolean = false): Flow<Batch> = channelFlow {
         val variation = if (force) rotation.incrementAndGet() else rotation.get()
         val seed = current ?: history.firstOrNull()
         val artist = seed?.let(CustomRecommendationQueryWrapper::extractPrimaryArtist).orEmpty()
@@ -122,14 +122,15 @@ class UnifiedRecommendationEngine(context: Context?,
         val cursor = AtomicInteger()
         val requested = ordering.filter { it in shelves }
         coroutineScope {
-            repeat(minOf(2, requested.size)) { launch {
+            repeat(minOf(if (startupBatch) 1 else 2, requested.size)) { launch {
                 while (true) {
                     val shelf = requested.getOrNull(cursor.getAndIncrement()) ?: break
                     try {
                         val candidates = discover(shelf, profile, country, taste, seed, history, favorites, force, variation, false)
                             .filterNot { recent.contains(it.track) || taste.keyFor(it.track) in taste.recentRecordings }
                         resolveBatches(candidates, shelf, profile, taste, known + history + favorites, false,
-                            recent = recent).collect { tracks ->
+                            recent = recent, maxResults = if (startupBatch) 3 else limits.shelfSize + limits.reserve,
+                            concurrency = if (startupBatch) 1 else limits.matchConcurrency).collect { tracks ->
                             val now = System.currentTimeMillis()
                             send(Batch(quick = tracks.takeIf { shelf == Shelf.QUICK }.orEmpty(),
                                 era = tracks.takeIf { shelf == Shelf.ERA }.orEmpty(),
@@ -309,7 +310,9 @@ class UnifiedRecommendationEngine(context: Context?,
 
     private fun resolveBatches(candidates: List<Candidate>, shelf: Shelf, profile: UserProfile,
         taste: UserTasteProfile, known: List<MusicTrack>, essential: Boolean,
-        recent: HomeRecommendationPolicy.Recordings? = null): Flow<List<MusicTrack>> = flow {
+        recent: HomeRecommendationPolicy.Recordings? = null,
+        maxResults: Int = limits.shelfSize + limits.reserve,
+        concurrency: Int = limits.matchConcurrency): Flow<List<MusicTrack>> = flow {
         val selected = profile.languages.map(::language).toSet()
         val output = mutableListOf<MusicTrack>()
         val seen = HomeRecommendationPolicy.Recordings()
@@ -325,8 +328,9 @@ class UnifiedRecommendationEngine(context: Context?,
                 RecordingIdentity.isrc(track.isrc)?.let { getOrPut("isrc:$it") { mutableListOf() }.add(track) }
             }
         }
-        val cached = candidates.map { it to cachedMatch(it.track, knownIndex) }
+        val cached = mutableListOf<Pair<Candidate, MusicTrack?>>()
         fun add(c: Candidate, track: MusicTrack?) {
+            if (output.size >= maxResults) return
             val candidateTrack = track ?: c.track.takeIf { verified(it) }
             if (candidateTrack == null || !verified(candidateTrack) || unavailable(candidateTrack) ||
                 seen.contains(candidateTrack) || recent?.contains(candidateTrack) == true ||
@@ -345,15 +349,20 @@ class UnifiedRecommendationEngine(context: Context?,
             languageCounts[actualLanguage] = (languageCounts[actualLanguage] ?: 0) + 1
             output.add(candidateTrack.copy(recommendationOnly = true))
         }
-        cached.forEach { (candidate, track) -> add(candidate, track) }
+        for (candidate in candidates) {
+            val track = cachedMatch(candidate.track, knownIndex)
+            cached.add(candidate to track)
+            add(candidate, track)
+            if (output.size >= maxResults) break
+        }
         if (output.isNotEmpty()) { emit(output.take(limits.shelfSize)); published = output.size }
-        if (output.size >= limits.shelfSize + limits.reserve) return@flow
+        if (output.size >= maxResults) return@flow
         withTimeoutOrNull(if (essential) 14_000L else 25_000L) {
             coroutineScope {
                 val cursor = AtomicInteger()
                 val missing = cached.filter { it.second == null }
-                val results = Channel<Pair<Candidate, MusicTrack?>>(limits.matchConcurrency)
-                val workers = List(minOf(limits.matchConcurrency, missing.size)) { launch(Dispatchers.IO) {
+                val results = Channel<Pair<Candidate, MusicTrack?>>(concurrency.coerceIn(1, limits.matchConcurrency))
+                val workers = List(minOf(concurrency.coerceIn(1, limits.matchConcurrency), missing.size)) { launch(Dispatchers.IO) {
                     while (isActive) {
                         val candidate = missing.getOrNull(cursor.getAndIncrement())?.first ?: break
                         results.send(candidate to match(candidate.track, essential))
@@ -366,7 +375,7 @@ class UnifiedRecommendationEngine(context: Context?,
                         if (output.size >= published + (if (published == 0) 1 else 3)) {
                             emit(output.take(limits.shelfSize).toList()); published = output.size
                         }
-                        if (output.size >= limits.shelfSize + limits.reserve) break
+                        if (output.size >= maxResults) break
                     }
                 } finally { workers.forEach { it.cancel() }; closer.cancel(); results.cancel() }
             }

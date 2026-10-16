@@ -28,15 +28,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
-import androidx.lifecycle.lifecycleScope
-import kotlinx.coroutines.launch
 import com.example.ui.components.MainNavigationScaffold
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.viewmodel.PlayerViewModel
 
 class MainActivity : ComponentActivity() {
     private var initialContentReady = false
-    private var updateResumeJob: kotlinx.coroutines.Job? = null
     private var lastInteractionMs = 0L
     private var frameThread: HandlerThread? = null
     private var frameListener: Window.OnFrameMetricsAvailableListener? = null
@@ -126,7 +123,7 @@ class MainActivity : ComponentActivity() {
         // a frame of onboarding/default colours for a returning user.
         window.decorView.viewTreeObserver.addOnPreDrawListener(object : android.view.ViewTreeObserver.OnPreDrawListener {
             override fun onPreDraw(): Boolean {
-                val ready = app.startupReady.value && playerViewModel.settingsReady.value && initialContentReady
+                val ready = initialContentReady
                 if (ready) window.decorView.viewTreeObserver.removeOnPreDrawListener(this)
                 return ready
             }
@@ -137,6 +134,11 @@ class MainActivity : ComponentActivity() {
             val settingsReady by playerViewModel.settingsReady.collectAsStateWithLifecycle()
             if (!settingsReady) return@setContent
             androidx.compose.runtime.SideEffect { initialContentReady = true }
+            androidx.compose.runtime.LaunchedEffect(Unit) {
+                androidx.compose.runtime.withFrameNanos { }
+                androidx.compose.runtime.withFrameNanos { }
+                com.example.performance.BackgroundWorkCoordinator.firstFrameRendered()
+            }
             val themeMode by playerViewModel.themeMode.collectAsStateWithLifecycle()
             val customThemeState by playerViewModel.customThemeState.collectAsStateWithLifecycle()
             val textScale by playerViewModel.textScale.collectAsStateWithLifecycle()
@@ -191,15 +193,12 @@ class MainActivity : ComponentActivity() {
         uiResumed = true
         updateRefreshRate()
         com.example.performance.BackgroundWorkCoordinator.foreground(true)
-        updateResumeJob?.cancel()
-        updateResumeJob = lifecycleScope.launch {
-            kotlinx.coroutines.delay(3_500L)
-            if (uiResumed) com.example.updater.AppUpdateManager.onForeground(this@MainActivity)
-        }
+        // Recover an existing verified download/install session immediately. This
+        // does not perform the optional GitHub release check.
+        com.example.updater.AppUpdateManager.onForeground(this)
     }
 
     override fun onPause() {
-        updateResumeJob?.cancel()
         uiResumed = false
         updateRefreshRate()
         com.example.performance.BackgroundWorkCoordinator.foreground(false)

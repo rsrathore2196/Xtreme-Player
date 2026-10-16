@@ -288,8 +288,8 @@ class PlaybackManager(
             MusicService.liveSession.collect { alive -> if (alive) ensureMediaControllerConnected() }
         }
         scope.launch {
-            delay(4_000L)
-            com.example.performance.BackgroundWorkCoordinator.awaitIdle(minimumUptimeMillis = 4_000L)
+            sessionRestored.await()
+            com.example.performance.BackgroundWorkCoordinator.awaitStartupIdle()
             if (_uiState.value.currentTrack != null || MusicService.liveSession.value)
                 ensureMediaControllerConnected()
         }

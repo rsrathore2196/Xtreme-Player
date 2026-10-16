@@ -191,9 +191,9 @@ class PlayerViewModel(
         // Start on the first Library/dialog subscriber, then retain the foreground observer.
         .stateIn(libraryDataScope, SharingStarted.Lazily, emptyList())
 
-    private val initialSettings = (application as? com.example.XtremeMusicApp)?.startupSettings
-        ?: com.example.data.local.StartupSettings()
-    private val _settingsReady = MutableStateFlow(false)
+    private val preparedSettings = (application as? com.example.XtremeMusicApp)?.takeInitialStartupSettings()
+    private val initialSettings = preparedSettings ?: com.example.data.local.StartupSettings()
+    private val _settingsReady = MutableStateFlow(preparedSettings != null)
     val settingsReady: StateFlow<Boolean> = _settingsReady.asStateFlow()
     private val initialThemeMode = initialSettings.themeMode
     private val _themeMode = MutableStateFlow(initialThemeMode)
@@ -213,6 +213,44 @@ class PlayerViewModel(
 
     private val _isDynamicGlassEnabled = MutableStateFlow(initialSettings.dynamicGlass)
     val isDynamicGlassEnabled: StateFlow<Boolean> = _isDynamicGlassEnabled.asStateFlow()
+
+    private var searchDataStarted = false
+    private var catalogFavoritesStarted = false
+    fun prepareCatalogUi(searchVisible: Boolean, detailVisible: Boolean) {
+        if (searchVisible && !searchDataStarted) {
+            searchDataStarted = true
+            viewModelScope.launch(recentSearchDispatcher) {
+                com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle()
+                val recent = com.example.data.local.RecentSearchPreferences.getRecentSearches(application)
+                _searchState.update { it.copy(recentSearches = recent) }
+            }
+        }
+        if ((searchVisible || detailVisible) && !catalogFavoritesStarted) {
+            catalogFavoritesStarted = true
+            derivedStateScope.launch {
+                com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle()
+                repository.observeFavoriteTrackIds().collect { catalogBrowser.updateFavorites(it) }
+            }
+        }
+    }
+
+    // Activity-retained startup requests survive navigation and configuration changes.
+    private var notificationPermissionRequested = false
+    private val notificationPermissionPending = MutableStateFlow(false)
+    private var automaticUpdateRequested = false
+    fun beginNotificationPermissionRequest(): Boolean {
+        if (notificationPermissionRequested) return false
+        notificationPermissionRequested = true
+        notificationPermissionPending.value = true
+        return true
+    }
+    fun finishNotificationPermissionRequest() { notificationPermissionPending.value = false }
+    suspend fun awaitNotificationPermissionResult() { notificationPermissionPending.first { !it } }
+    fun beginAutomaticUpdateCheck(): Boolean {
+        if (automaticUpdateRequested) return false
+        automaticUpdateRequested = true
+        return true
+    }
 
     fun setDynamicGlassEnabled(enabled: Boolean) {
         com.example.data.local.OtherSettingsPreferences.setDynamicGlassEnabled(application, enabled)
@@ -375,9 +413,9 @@ class PlayerViewModel(
 
     init {
         viewModelScope.launch(Dispatchers.IO) {
+            if (preparedSettings != null) return@launch
             try {
-                val settings = (application as? com.example.XtremeMusicApp)?.takeInitialStartupSettings()
-                    ?: com.example.data.local.StartupSettings.read(application)
+                val settings = com.example.data.local.StartupSettings.read(application)
                 _themeMode.value = settings.themeMode
                 _isDarkMode.value = when (settings.themeMode) {
                     com.example.data.local.AppThemeMode.DARK -> true
@@ -394,10 +432,6 @@ class PlayerViewModel(
                 _userProfile.value = settings.profile
                 _isOnboardingCompleted.value = settings.profile.isOnboardingCompleted
             } finally { _settingsReady.value = true }
-        }
-        viewModelScope.launch(recentSearchDispatcher) {
-            val recent = com.example.data.local.RecentSearchPreferences.getRecentSearches(application)
-            _searchState.update { it.copy(recentSearches = recent) }
         }
         viewModelScope.launch(Dispatchers.Default) {
             com.example.updater.AppUpdateManager.updateStatus.map { status ->
@@ -423,12 +457,9 @@ class PlayerViewModel(
             playbackManager.uiState.map { it.selectedQuality }.distinctUntilChanged()
                 .collect(catalogBrowser::setAudioQuality)
         }
-        derivedStateScope.launch {
-            repository.observeFavoriteTrackIds().collect { ids -> catalogBrowser.updateFavorites(ids) }
-        }
         viewModelScope.launch(Dispatchers.IO) {
             _settingsReady.first { it }
-            com.example.performance.BackgroundWorkCoordinator.awaitIdle(minimumUptimeMillis = 2_500L)
+            com.example.performance.BackgroundWorkCoordinator.awaitStartupIdle()
             loadCatalog()
         }
         observeCurrentTrackForLyrics()

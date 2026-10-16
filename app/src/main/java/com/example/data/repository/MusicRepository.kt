@@ -34,6 +34,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOn
@@ -68,10 +70,15 @@ data class SearchResultCategory(
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
-class MusicRepository(
-    private val musicDao: MusicDao,
-    private val context: Context? = null
+class MusicRepository private constructor(
+    private val daoProvider: () -> MusicDao,
+    private val context: Context?
 ) {
+    constructor(musicDao: MusicDao, context: Context? = null) : this({ musicDao }, context)
+    constructor(context: Context) : this({ MusicDatabase.getDatabase(context.applicationContext).musicDao() }, context.applicationContext)
+    // Constructing the UI's repository never opens Room. Cold flows acquire it on IO.
+    private val musicDao: MusicDao by lazy(daoProvider)
+    private val initialCatalogMutex = Mutex()
 
     val catalogBrowser = CatalogRepository()
     // Home's owners and workers share this cap, including discovery ranking.
@@ -102,8 +109,11 @@ class MusicRepository(
 
     suspend fun getInitialCatalog(profile: UserProfile? = null): List<MusicTrack> = withContext(homeDispatcher) {
         val liked = getLikedTrackIds()
-        val cached = memoryCachedCatalog.orEmpty().ifEmpty {
-            withContext(Dispatchers.IO) { musicDao.getCachedTracksSync(250) }.map { it.toMusicTrack() }
+        val cached = initialCatalogMutex.withLock {
+            memoryCachedCatalog.orEmpty().ifEmpty {
+                withContext(Dispatchers.IO) { musicDao.getCachedTracksSync(250) }.map { it.toMusicTrack() }
+                    .also { if (it.isNotEmpty() && memoryCachedCatalog.isNullOrEmpty()) memoryCachedCatalog = it }
+            }
         }.ifEmpty {
             MusicDataSource.curatedTracks
         }
@@ -159,11 +169,11 @@ class MusicRepository(
         recommendations.radio(seed, profile, actualTaste, alreadyQueued, limit)
     }
 
-    fun observeFavoriteTrackIds(): Flow<Set<String>> = musicDao.observeFavoriteTrackIds()
+    fun observeFavoriteTrackIds(): Flow<Set<String>> = flow { emitAll(musicDao.observeFavoriteTrackIds()) }
         .flowOn(Dispatchers.IO).map { it.toSet() }.distinctUntilChanged().flowOn(homeDispatcher)
 
     fun getFavoriteTracks(): Flow<List<MusicTrack>> {
-        return musicDao.getFavoriteTracks()
+        return flow { emitAll(musicDao.getFavoriteTracks()) }
             .flowOn(Dispatchers.IO)
             // Room invalidates this query for any track write, including unrelated playback updates.
             .distinctUntilChanged()
@@ -173,19 +183,19 @@ class MusicRepository(
     }
 
     fun getRecentlyPlayedTracks(): Flow<List<MusicTrack>> {
-        return musicDao.getRecentlyPlayedTracks().flowOn(Dispatchers.IO).distinctUntilChanged()
+        return flow { emitAll(musicDao.getRecentlyPlayedTracks()) }.flowOn(Dispatchers.IO).distinctUntilChanged()
             .map { list -> list.map { it.toMusicTrack() } }.flowOn(Dispatchers.Default)
     }
 
     fun getAllPlaylists(): Flow<List<PlaylistEntity>> {
-        return musicDao.getAllPlaylists()
+        return flow { emitAll(musicDao.getAllPlaylists()) }
             .flowOn(Dispatchers.IO)
             .distinctUntilChanged()
             .flowOn(Dispatchers.Default)
     }
 
     fun getPlaylistWithTracks(playlistId: Long): Flow<PlaylistWithTracks?> {
-        return musicDao.getPlaylistWithTracks(playlistId)
+        return flow { emitAll(musicDao.getPlaylistWithTracks(playlistId)) }
             .flowOn(Dispatchers.IO).distinctUntilChanged()
             .map { content -> content?.also { it.musicTracks } }.flowOn(Dispatchers.Default)
     }

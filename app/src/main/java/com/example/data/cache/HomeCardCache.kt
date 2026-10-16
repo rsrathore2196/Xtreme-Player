@@ -51,6 +51,7 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Di
         private const val MAX_CANDIDATE_TRACKS = 60
         private val memory = AtomicReference<Retained?>(null)
         private val fileMutex = Mutex()
+        private val readMutex = Mutex()
         private val preloadScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         private val preloads = mutableMapOf<String, Deferred<SavedHomeCards?>>()
         private fun preloadKey(context: Context, profile: String) = "${context.filesDir.path}|$profile"
@@ -112,7 +113,10 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Di
         val loading = synchronized(preloads) { preloads["${file.baseFile.parentFile!!.path}|$profile"] }
         return loading?.await() ?: readDisk(profile)
     }
-    private suspend fun readDisk(profile: String): SavedHomeCards? = withContext(Dispatchers.IO) {
+    private suspend fun readDisk(profile: String): SavedHomeCards? = readMutex.withLock {
+        readDiskOnce(profile)
+    }
+    private suspend fun readDiskOnce(profile: String): SavedHomeCards? = withContext(Dispatchers.IO) {
         peek(profile)?.let { return@withContext it }
         val before = memory.get()
         try {

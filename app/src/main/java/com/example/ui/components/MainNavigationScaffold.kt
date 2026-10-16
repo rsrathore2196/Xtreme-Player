@@ -150,23 +150,8 @@ fun MainNavigationScaffold(
         initialPage = selectedTabIndex.coerceIn(0, 2),
         pageCount = { 3 }
     )
-    // Retain only this pager's three pages after initial heavy work is quiet.
-    // Search is prepared once in an idle window, rather than cold-composed during every slide.
-    var retainedPageCount by remember { mutableIntStateOf(0) }
-    LaunchedEffect(Unit) {
-        // Warm one adjacent page per quiet window, avoiding another cold batch
-        // on the first frame. At most the existing three tabs are retained.
-        for (count in 1..2) {
-            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-                com.example.performance.BackgroundWorkCoordinator.awaitIdle(
-                    quietMillis = 750L, minimumUptimeMillis = 1_500L)
-                com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
-            }
-            retainedPageCount = count
-            androidx.compose.runtime.withFrameNanos { }
-            androidx.compose.runtime.withFrameNanos { }
-        }
-    }
+    // Destinations are composed on demand, including during startup. The pager
+    // still composes incoming pages for its existing slide; there is no idle prewarm.
     val previousTabIndex = remember { mutableIntStateOf(selectedTabIndex) }
     val selectTab: (Int) -> Unit = { index ->
         if (selectedTabIndex != index) {
@@ -197,6 +182,9 @@ fun MainNavigationScaffold(
             androidx.compose.runtime.withFrameNanos { }
         } finally { navigation.close() }
     }
+    LaunchedEffect(viewModel, selectedTabIndex, catalogDetail != null) {
+        viewModel.prepareCatalogUi(searchVisible = selectedTabIndex == 1, detailVisible = catalogDetail != null)
+    }
     val tabState = rememberSaveableStateHolder()
     // Allocate these outside AnimatedContent; tab disposal never serializes or
     // reconstructs the visible lists' scroll state during a slide.
@@ -216,21 +204,32 @@ fun MainNavigationScaffold(
     // Request notification permission for Android 13+ (API 33)
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
-    ) { _ -> }
+    ) { _ -> viewModel.finishNotificationPermissionRequest() }
 
-    LaunchedEffect(Unit) {
-        kotlinx.coroutines.delay(3_500L)
-        com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+    val startupLifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(viewModel, startupLifecycle) {
+      startupLifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.RESUMED) {
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            com.example.performance.BackgroundWorkCoordinator.awaitStartupIdle()
         }
+        com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            androidx.core.content.ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+                android.content.pm.PackageManager.PERMISSION_GRANTED && viewModel.beginNotificationPermissionRequest()) {
+            try { notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) }
+            catch (e: Exception) { viewModel.finishNotificationPermissionRequest() }
+        }
+        // The OS dialog may pause this lifecycle. Its result is retained by the VM
+        // so the next resumed pass continues instead of requesting permission again.
+        viewModel.awaitNotificationPermissionResult()
         // An automatic release check is optional. A fixed startup delay alone
         // allowed it to compete with the first artwork/Room/recommendation wave.
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            com.example.performance.BackgroundWorkCoordinator.awaitIdle()
-            com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
+            com.example.performance.BackgroundWorkCoordinator.awaitStartupIdle()
         }
-        com.example.updater.AppUpdateManager.checkForUpdate(context = context)
+        if (viewModel.beginAutomaticUpdateCheck())
+            com.example.updater.AppUpdateManager.checkForUpdate(context = context)
+      }
     }
 
     // Handle Back Press gracefully across the app
@@ -461,7 +460,7 @@ fun MainNavigationScaffold(
                         } else {
                             HorizontalPager(
                                 state = tabPagerState,
-                                beyondViewportPageCount = retainedPageCount,
+                                beyondViewportPageCount = 0,
                                 userScrollEnabled = false,
                                 key = { it },
                                 modifier = Modifier.fillMaxSize()
