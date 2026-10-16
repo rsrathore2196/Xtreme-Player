@@ -160,9 +160,9 @@ Recently Played and Most Listened Artists continue to use local listening histor
 
 Xtreme Player is an independent, community-driven third-party audio player and client. It is not associated with Google LLC, YouTube Music, Telegram, or any of their parent companies.
 
-**No Media Hosting:** Xtreme Player does not host, upload, or store copyrighted music files. It operates strictly as an interface to scan local device storage or stream media directly from public, public-facing, or user-authenticated APIs.
+- **No Media Hosting:** Xtreme Player does not host, upload, or store copyrighted music files. It operates strictly as an interface to scan local device storage or stream media directly from public, public-facing, or user-authenticated APIs.
 
-**Fair Use & API Usage:** This software is created solely for personal research, educational, and fair-use purposes. The user is entirely responsible for ensuring their usage aligns with their local copyright laws and YouTube Terms of Service.
+- **Fair Use & API Usage:** This software is created solely for personal research, educational, and fair-use purposes. The user is entirely responsible for ensuring their usage aligns with their local copyright laws and YouTube Terms of Service.
 
 **This project is provided for educational and research purposes only. The maintainers do not endorse or facilitate copyright infringement, unauthorized redistribution, or illegal access to media content. Use only in compliance with applicable local laws, platform terms, and licensing requirements.**
 
