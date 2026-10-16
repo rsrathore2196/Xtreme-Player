@@ -164,7 +164,7 @@ Xtreme Player is an independent, community-driven third-party audio player and c
 
 **Fair Use & API Usage:** This software is created solely for personal research, educational, and fair-use purposes. The user is entirely responsible for ensuring their usage aligns with their local copyright laws and YouTube Terms of Service.
 
-## This project is provided for educational and research purposes only. The maintainers do not endorse or facilitate copyright infringement, unauthorized redistribution, or illegal access to media content. Use only in compliance with applicable local laws, platform terms, and licensing requirements.
+**This project is provided for educational and research purposes only. The maintainers do not endorse or facilitate copyright infringement, unauthorized redistribution, or illegal access to media content. Use only in compliance with applicable local laws, platform terms, and licensing requirements.**
 
 ---
 
