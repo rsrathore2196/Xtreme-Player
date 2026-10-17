@@ -777,9 +777,9 @@ class PlaybackManager(
                     (error.cause as? androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException)
                         ?.responseCode?.let { it in 500..599 } == true
                 _uiState.update { it.copy(isLoading = true, errorMessage = null) }
-                val recoveryToken = token
+                val recoveryToken: Long = token
                 recoveryJob = scope.launch {
-                    var activeToken = recoveryToken
+                    var activeToken: Long = recoveryToken
                     var transport = sabrReplacement
                     while (isActive && recoveryGuard.isCurrent(current.id, activeToken)) {
                         val stage = recoveryGuard.stage(current.id, activeToken)
