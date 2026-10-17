@@ -160,10 +160,12 @@ object YouTubeMusicApiService {
 
     /** Only an exact, unique artist entity can supply a portrait; song thumbnails are not portraits. */
     suspend fun artistPhoto(name: String): String? = withContext(Dispatchers.IO) {
-        if (name.isBlank()) return@withContext null
+        val normalizedName = com.example.data.repository.CatalogNames.normalize(name).replace(" ", "")
+        if (normalizedName.isBlank()) return@withContext null
+        val profile = YouTubeClient.WEB_REMIX
         val payload = JSONObject().apply {
-            put("context", JSONObject().put("client", JSONObject().put("clientName", "WEB_REMIX")
-                .put("clientVersion", "1.20231204.01.00").put("hl", "en").put("gl", "US")))
+            put("context", JSONObject().put("client", JSONObject().put("clientName", profile.clientName)
+                .put("clientVersion", profile.clientVersion).put("hl", "en").put("gl", "US")))
             put("query", name)
             put("params", "EgWKAQIgAWoKEAkQChAFEAMQBA==")
         }
@@ -174,18 +176,24 @@ object YouTubeMusicApiService {
         fun visit(node: Any?) {
             when (node) {
                 is JSONObject -> {
-                    node.optJSONObject("musicResponsiveListItemRenderer")?.let { item ->
+                    (node.optJSONObject("musicResponsiveListItemRenderer") ?: node.optJSONObject("musicTwoRowItemRenderer"))?.let { item ->
+                        val runs = item.optJSONObject("title")?.optJSONArray("runs") ?: item.optJSONArray("flexColumns")?.optJSONObject(0)
+                            ?.optJSONObject("musicResponsiveListItemFlexColumnRenderer")?.optJSONObject("text")?.optJSONArray("runs")
                         val browse = item.optJSONObject("navigationEndpoint")?.optJSONObject("browseEndpoint")
+                            ?: runs?.optJSONObject(0)?.optJSONObject("navigationEndpoint")?.optJSONObject("browseEndpoint")
                         val id = browse?.optString("browseId").orEmpty()
                         val type = browse?.optJSONObject("browseEndpointContextSupportedConfigs")
                             ?.optJSONObject("browseEndpointContextMusicConfig")?.optString("pageType")
-                        val runs = item.optJSONArray("flexColumns")?.optJSONObject(0)
-                            ?.optJSONObject("musicResponsiveListItemFlexColumnRenderer")?.optJSONObject("text")?.optJSONArray("runs")
                         val title = (0 until (runs?.length() ?: 0)).joinToString("") { runs?.optJSONObject(it)?.optString("text").orEmpty() }
-                        if (id.startsWith("UC") && type == "MUSIC_PAGE_TYPE_ARTIST" &&
-                            com.example.data.repository.CatalogNames.same(name, title)) {
+                        // In an artists-filtered response, some valid UC artist
+                        // endpoints omit pageType. Reject explicit non-artist types.
+                        if (id.startsWith("UC") && (type.isNullOrBlank() || type == "MUSIC_PAGE_TYPE_ARTIST") &&
+                            normalizedName ==
+                            com.example.data.repository.CatalogNames.normalize(title).replace(" ", "")) {
                             val thumbs = item.optJSONObject("thumbnail")?.optJSONObject("musicThumbnailRenderer")
                                 ?.optJSONObject("thumbnail")?.optJSONArray("thumbnails")
+                                ?: item.optJSONObject("thumbnailRenderer")?.optJSONObject("musicThumbnailRenderer")
+                                    ?.optJSONObject("thumbnail")?.optJSONArray("thumbnails")
                             (0 until (thumbs?.length() ?: 0)).mapNotNull { thumbs?.optJSONObject(it) }
                                 .filter { it.optString("url").startsWith("https://") }
                                 .maxByOrNull { it.optInt("width") }?.optString("url")?.let { matches[id] = it }

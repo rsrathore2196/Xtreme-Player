@@ -8,6 +8,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.Semaphore
@@ -16,6 +18,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.update
 import java.util.concurrent.ConcurrentHashMap
 import okhttp3.OkHttpClient
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -31,8 +39,35 @@ object ArtistPhotoRepository {
     private val rateLock = Mutex()
     private var nextRequestAt = 0L
     @Volatile private var audioDbBackoffUntil = 0L
-    private val memory = object : android.util.LruCache<String, Pair<Long, String?>>(512) {}
-    private val negatives = ConcurrentHashMap<String, Long>()
+    private const val PHOTO_VERSION = 3
+    private data class Photo(val expires: Long, val url: String?, val source: String,
+        val musicBrainzId: String = "", val catalogId: String = "", val albumArtwork: String? = null)
+    private val memory = object : android.util.LruCache<String, Photo>(512) {}
+    private val rejectedImages = ConcurrentHashMap<String, Long>()
+    private val photoRevision = MutableStateFlow(0L)
+    private fun key(artist: CatalogArtist) = "portrait:${CatalogNames.normalize(artist.name)}"
+    private fun compatible(photo: Photo, artist: CatalogArtist): Boolean {
+        if (photo.musicBrainzId.isNotBlank() && artist.musicBrainzId.isNotBlank())
+            return photo.musicBrainzId.equals(artist.musicBrainzId, true)
+        val sameProvider = photo.catalogId.isNotBlank() && artist.id.isNotBlank() &&
+            (photo.catalogId.all(Char::isDigit) && artist.id.all(Char::isDigit) ||
+                photo.catalogId.startsWith("UC") && artist.id.startsWith("UC"))
+        return !sameProvider || photo.catalogId == artist.id
+    }
+    fun cachedPhoto(artist: CatalogArtist): String? = memory.get(key(artist))
+        ?.takeIf { compatible(it, artist) }?.url?.let(::image)
+    fun initialPhoto(artist: CatalogArtist): String? = cachedPhoto(artist) ?: image(artist.image)
+    fun observePhoto(artist: CatalogArtist): Flow<String?> = photoRevision.map { cachedPhoto(artist) }
+        .distinctUntilChanged().flowOn(Dispatchers.IO)
+
+    /** A failed image URL is not a failed artist: try the next verified photograph. */
+    fun rejectPhoto(url: String) {
+        val now = System.currentTimeMillis()
+        if ((rejectedImages[url] ?: 0L) > now) return
+        if (rejectedImages.size >= 512) rejectedImages.keys.firstOrNull()?.let(rejectedImages::remove)
+        rejectedImages[url] = now + 3_600_000L
+        photoRevision.update { it + 1L }
+    }
     private val photoScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val photoSlots = Semaphore(3)
     private var warmup: Deferred<Unit>? = null
@@ -43,69 +78,125 @@ object ArtistPhotoRepository {
         val now = System.currentTimeMillis()
         val prefs = context.applicationContext.getSharedPreferences("artist_images_v2", Context.MODE_PRIVATE)
         prefs.all.forEach { (key, value) ->
+            if (!key.startsWith("portrait:")) return@forEach
             val stored = (value as? String)?.let { runCatching { JSONObject(it) }.getOrNull() } ?: return@forEach
+            // Old entries mixed album covers and portraits and included provider IDs
+            // in their keys. They must not suppress the newly shared artist lookup.
+            if (stored.optInt("version") != PHOTO_VERSION || !key.startsWith("portrait:")) return@forEach
             val expires = stored.optLong("expires")
             val url = image(stored.optString("image"))
-            if (url != null) memory.put(key, expires to url)
-            else if (expires > now) negatives[key] = expires
+            if (expires > now || url != null) memory.put(key, Photo(expires, url, stored.optString("source"),
+                stored.optString("mbid"), stored.optString("catalogId"), image(stored.optString("albumArtwork"))))
         }
+        photoRevision.update { it + 1L }
     }.also { warmup = it }
     private val identityMemory = android.util.LruCache<String, Pair<Long, JSONObject?>>(100)
     private val identityLocks = Array(8) { Mutex() }
 
     private fun image(value: String?): String? = value?.takeIf {
-        (it.startsWith("https://") || it.startsWith("http://")) &&
-            !placeholderImage.containsMatchIn(it)
-    }?.replaceFirst("http://", "https://")
+        (it.startsWith("https://") || it.startsWith("http://")) && !placeholderImage.containsMatchIn(it)
+    }?.replaceFirst("http://", "https://")?.takeIf { (rejectedImages[it] ?: 0L) <= System.currentTimeMillis() }
 
     suspend fun photo(context: Context, artist: CatalogArtist, fallbackArtwork: String? = null): String? = withContext(Dispatchers.IO) {
-        image(artist.image)?.let { return@withContext it }
         val name = CatalogNames.normalize(artist.name)
         if (name.isBlank() || name in setOf("unknown", "unknown artist", "various artists")) return@withContext null
-        val key = "$name:${artist.musicBrainzId}:${artist.id}"
-        memory.get(key)?.takeIf { it.first > System.currentTimeMillis() }?.second?.let { return@withContext it }
+        val key = key(artist)
         prewarm(context).await()
         locks[(key.hashCode() and Int.MAX_VALUE) % locks.size].withLock {
             val now = System.currentTimeMillis()
-            memory.get(key)?.takeIf { it.first > now }?.let { return@withLock it.second ?: image(fallbackArtwork) }
-            negatives[key]?.let { if (it > now) return@withLock image(fallbackArtwork) else negatives.remove(key) }
-            val prefs = context.applicationContext.getSharedPreferences("artist_images_v2", Context.MODE_PRIVATE)
-            val stale = memory.get(key)?.second
-            com.example.performance.BackgroundWorkCoordinator.awaitIdle(minimumUptimeMillis = 3_500L)
+            val cached = memory.get(key)?.takeIf { compatible(it, artist) }
+            val provided = image(artist.image)
+            val newIdentity = artist.musicBrainzId.isNotBlank() && cached?.musicBrainzId.isNullOrBlank()
+            val newCatalogPhoto = provided != null && cached?.source == "catalog" && cached.url != provided
+            if (cached != null && cached.expires > now && !newIdentity && !newCatalogPhoto) {
+                image(cached.url)?.let { return@withLock it }
+                // A newly available artist-entity image supersedes a negative/fallback
+                // entry. Failed photo URLs also need another source immediately.
+                if (cached.url == null && provided == null)
+                    return@withLock image(cached.albumArtwork) ?: image(fallbackArtwork)
+            }
+            if (provided != null && image(cached?.url) == null) {
+                // Share a known artist-entity portrait immediately while preferred
+                // providers run. Expiry zero keeps this from bypassing TheAudioDB.
+                memory.put(key, Photo(0L, provided, "catalog", artist.musicBrainzId, artist.id))
+                photoRevision.update { it + 1L }
+            }
+            // Visible portraits are demand-driven UI content. Waiting for global
+            // idle here starved them behind ongoing artwork downloads/animations.
+            com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle()
             photoSlots.withPermit {
-            var failed = false
-            suspend fun attempt(load: suspend () -> String?): String? = try { image(load()) }
-                catch (e: CancellationException) { throw e }
-                catch (_: Exception) { failed = true; null }
-
-            var result = attempt { audioDb(artist) }
-            var resolved: CatalogArtist? = null
-            if (result == null) result = attempt {
-                resolved = catalog.resolveArtist(artist)
-                resolved?.image
-            }
-            if (result == null) result = attempt { YouTubeMusicApiService.artistPhoto(artist.name) }
-            // Keep a previously verified image through temporary provider failures.
-            if (result == null && failed) result = stale
-            val hasPortrait = result != null
-            if (result == null) result = image(fallbackArtwork)
-            if (result == null && resolved != null) result = attempt {
-                catalog.artistSongs(requireNotNull(resolved), 0).tracks.firstOrNull { image(it.coverUrl) != null }?.coverUrl
-            }
-            val expires = System.currentTimeMillis() + when {
-                failed -> 60_000L
-                hasPortrait -> 7 * 86_400_000L
-                result != null -> 12 * 3_600_000L
-                else -> 3_600_000L
-            }
-            memory.put(key, expires to result)
-            if (result == null) {
-                negatives.entries.removeAll { it.value <= System.currentTimeMillis() }
-                if (negatives.size >= 512) negatives.keys.firstOrNull()?.let(negatives::remove)
-                negatives[key] = expires
-            } else negatives.remove(key)
-            prefs.edit().putString(key, JSONObject().put("image", result.orEmpty()).put("expires", expires).toString()).apply()
-            result
+                var failed = false
+                suspend fun attempt(load: suspend () -> String?): String? = try { withTimeout(6_000L) { image(load()) } }
+                    catch (_: TimeoutCancellationException) { failed = true; null }
+                    catch (e: CancellationException) { throw e }
+                    catch (_: Exception) { failed = true; null }
+                var source = "audiodb"
+                var result = attempt { audioDb(artist) }
+                if (result == null) {
+                    source = "youtube"
+                    for (query in (listOf(artist.name) + artist.aliases).filter(String::isNotBlank).distinct().take(2)) {
+                        result = attempt { YouTubeMusicApiService.artistPhoto(query) }
+                        if (result != null) break
+                    }
+                }
+                var resolved: CatalogArtist? = null
+                if (result == null) {
+                    // Resolve an exact catalogue entity/verified alias, never a loose
+                    // song-title match. This also repairs stage-name differences.
+                    resolved = try { catalog.resolveArtist(artist) }
+                        catch (e: CancellationException) { throw e }
+                        catch (_: Exception) { failed = true; null }
+                    if (resolved != null && (resolved.name != artist.name || resolved.aliases != artist.aliases ||
+                            resolved.musicBrainzId != artist.musicBrainzId)) {
+                        source = "audiodb"
+                        result = attempt { audioDb(requireNotNull(resolved)) }
+                        if (result == null) {
+                            source = "youtube"
+                            result = attempt { YouTubeMusicApiService.artistPhoto(requireNotNull(resolved).name) }
+                        }
+                    }
+                }
+                if (result == null) {
+                    source = "catalog"
+                    result = image(provided) ?: image(resolved?.image)
+                }
+                // Preserve a previously verified portrait through temporary outages.
+                if (result == null && failed) image(cached?.url)?.let { result = it; source = cached!!.source }
+                var album = image(cached?.albumArtwork) ?: image(fallbackArtwork)
+                if (result == null && album == null && resolved != null) album = attempt {
+                    catalog.artistSongs(requireNotNull(resolved), 0).tracks.firstOrNull { image(it.coverUrl) != null }?.coverUrl
+                }
+                val expires = System.currentTimeMillis() + when {
+                    failed -> 60_000L
+                    result != null -> 7 * 86_400_000L
+                    else -> 3_600_000L
+                }
+                val selected = resolved ?: artist
+                val photo = Photo(expires, result, source, selected.musicBrainzId, selected.id,
+                    albumArtwork = album.takeIf { result == null })
+                // Same normalized artist identity for Home, search and detail. Album
+                // fallback is marked separately and never cached as a real portrait.
+                val aliases = (listOf(artist.name, selected.name) + selected.aliases).map(CatalogNames::normalize)
+                    .filter(String::isNotBlank).distinct()
+                val edit = context.applicationContext.getSharedPreferences("artist_images_v2", Context.MODE_PRIVATE).edit()
+                val json = JSONObject().put("version", PHOTO_VERSION).put("image", result.orEmpty())
+                    .put("source", source).put("expires", expires).put("mbid", photo.musicBrainzId)
+                    .put("catalogId", photo.catalogId).put("albumArtwork", photo.albumArtwork.orEmpty()).toString()
+                fun priority(value: Photo) = when (value.source) { "audiodb" -> 3; "youtube" -> 2; "catalog" -> 1; else -> 0 }
+                    .takeIf { value.url != null } ?: 0
+                for (alias in aliases) {
+                    val aliasKey = "portrait:$alias"
+                    val previous = memory.get(aliasKey)
+                    if (previous != null && previous.expires > System.currentTimeMillis() && image(previous.url) != null &&
+                        priority(previous) > priority(photo)) continue
+                    if (previous == null || compatible(previous, selected)) {
+                        memory.put(aliasKey, photo)
+                        edit.putString(aliasKey, json)
+                    }
+                }
+                edit.apply()
+                photoRevision.update { it + 1L }
+                cachedPhoto(artist) ?: result ?: album
             }
         }
     }

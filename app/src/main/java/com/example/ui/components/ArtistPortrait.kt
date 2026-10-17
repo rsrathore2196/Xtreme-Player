@@ -16,19 +16,42 @@ import coil.compose.AsyncImage
 import com.example.data.repository.ArtistPhotoRepository
 import com.example.data.repository.CatalogArtist
 import com.example.ui.theme.XtremeLightBlue
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.flow.collect
 
 @Composable
 fun ArtistPortrait(artist: CatalogArtist, modifier: Modifier = Modifier, fallbackArtwork: String? = null) {
     val context = LocalContext.current.applicationContext
-    val photo by produceState<String?>(artist.image.takeIf { it.isNotBlank() }, artist.name, artist.musicBrainzId, artist.id, artist.image, fallbackArtwork) {
-        value = artist.image.takeIf { it.isNotBlank() }
-        value = ArtistPhotoRepository.photo(context, artist, fallbackArtwork)
+    var retries by remember(artist.name, artist.id, artist.musicBrainzId) { mutableIntStateOf(0) }
+    var failedUrls by remember(artist.name, artist.id, artist.musicBrainzId) { mutableStateOf(emptySet<String>()) }
+    val photo by produceState(ArtistPhotoRepository.initialPhoto(artist), artist, fallbackArtwork, retries) {
+        value = ArtistPhotoRepository.initialPhoto(artist)
+        coroutineScope {
+            // An enriched detail identity can improve a Home portrait while Home
+            // remains composed underneath the destination. Observe that same cache.
+            launch { ArtistPhotoRepository.observePhoto(artist).collect { resolved ->
+                if (resolved != null) value = resolved
+            } }
+            val resolved = ArtistPhotoRepository.photo(context, artist, fallbackArtwork)
+            value = ArtistPhotoRepository.cachedPhoto(artist) ?: resolved
+            awaitCancellation()
+        }
     }
-    var photoFailed by remember(photo) { mutableStateOf(false) }
+    val displayed = photo?.takeUnless { it in failedUrls } ?: fallbackArtwork?.takeUnless { it in failedUrls }
     Box(modifier.background(Color(0xFF163255)), contentAlignment = Alignment.Center) {
         Icon(Icons.Default.Person, contentDescription = null, tint = XtremeLightBlue, modifier = Modifier.fillMaxSize(0.55f))
-        AsyncImage(model = if (photoFailed) fallbackArtwork else photo ?: fallbackArtwork,
+        AsyncImage(model = displayed,
             contentDescription = artist.name, contentScale = ContentScale.Crop,
-            onError = { photoFailed = true }, modifier = Modifier.fillMaxSize())
+            onError = {
+                if (displayed != null) {
+                    failedUrls = failedUrls + displayed
+                    if (displayed == ArtistPhotoRepository.cachedPhoto(artist)) {
+                        ArtistPhotoRepository.rejectPhoto(displayed)
+                        if (retries < 2) retries++
+                    }
+                }
+            }, modifier = Modifier.fillMaxSize())
     }
 }
