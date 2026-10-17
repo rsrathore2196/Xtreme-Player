@@ -186,17 +186,6 @@ fun HomeScreen(
     listState: LazyListState = rememberLazyListState(),
     onOpenArtist: (com.example.data.repository.CatalogArtist) -> Unit = {}
 ) {
-    val heroSeedTrack by homeViewModel.heroSeedTrack.collectAsStateWithLifecycle()
-    val recommendationCards by homeViewModel.recommendationCards.collectAsStateWithLifecycle()
-    val ytmCard = recommendationCards.quick
-    val eraCard = recommendationCards.era
-    val countryLanguageCard = recommendationCards.chart
-    val listeningHistoryCard by homeViewModel.listeningHistoryCard.collectAsStateWithLifecycle()
-    val personalizedCard = recommendationCards.personalized
-    val similarArtistsCard = recommendationCards.similarArtists
-    val inspiredTrackCard = recommendationCards.inspiredTrack
-    val mostListenedArtists by homeViewModel.mostListenedArtists.collectAsStateWithLifecycle()
-    val userProfile by homeViewModel.userProfile.collectAsStateWithLifecycle()
     val isRefreshing by homeViewModel.isRefreshing.collectAsStateWithLifecycle()
     val refreshErrorMessage by homeViewModel.refreshErrorMessage.collectAsStateWithLifecycle()
     val scrollMonitor: (Any, Boolean) -> Unit = remember(homeViewModel) {
@@ -229,21 +218,11 @@ fun HomeScreen(
             modifier = modifier.fillMaxSize()
         ) { contentOffset ->
             HomeScreenContent(
-                heroSeedTrack = heroSeedTrack,
+                homeViewModel = homeViewModel,
                 listState = listState,
-                pillsCardTracks = listeningHistoryCard.tracks.take(6),
-                ytmCard = ytmCard,
-                eraCard = eraCard,
-                countryLanguageCard = countryLanguageCard,
-                listeningHistoryCard = listeningHistoryCard,
-                personalizedCard = personalizedCard,
-                similarArtistsCard = similarArtistsCard,
-                inspiredTrackCard = inspiredTrackCard,
-                mostListenedArtists = mostListenedArtists,
                 onOpenArtist = onOpenArtist,
                 isRadioSession = playerUiState?.isInfiniteRadio == true,
                 isRadioLoading = playerUiState?.isLoading == true,
-                userProfile = userProfile,
                 currentTrack = currentTrack ?: playerUiState?.currentTrack,
                 isPlaying = isPlaying,
                 isAutoplayEnabled = isAutoplayEnabled,
@@ -316,13 +295,13 @@ fun HomeScreen(
 @Composable
 fun HomeScreenContent(
     heroSeedTrack: MusicTrack? = null,
-    pillsCardTracks: List<MusicTrack>,
-    ytmCard: SectionState,
-    eraCard: SectionState,
-    countryLanguageCard: SectionState,
-    listeningHistoryCard: SectionState,
-    personalizedCard: SectionState,
-    userProfile: UserProfile?,
+    pillsCardTracks: List<MusicTrack> = emptyList(),
+    ytmCard: SectionState = SectionState(),
+    eraCard: SectionState = SectionState(),
+    countryLanguageCard: SectionState = SectionState(),
+    listeningHistoryCard: SectionState = SectionState(),
+    personalizedCard: SectionState = SectionState(),
+    userProfile: UserProfile? = null,
     currentTrack: MusicTrack? = null,
     isPlaying: Boolean = false,
     isAutoplayEnabled: Boolean = true,
@@ -343,8 +322,15 @@ fun HomeScreenContent(
     onDismissRefreshError: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
     listState: LazyListState = rememberLazyListState(),
-    onOpenArtist: (com.example.data.repository.CatalogArtist) -> Unit = {}
+    onOpenArtist: (com.example.data.repository.CatalogArtist) -> Unit = {},
+    homeViewModel: HomeViewModel? = null
 ) {
+    // Only structural visibility is observed by the lazy-list owner. Section
+    // contents are collected inside the corresponding lazy item below.
+    val hasRecent = homeViewModel?.hasRecentlyPlayed?.collectAsStateWithLifecycle()?.value
+        ?: pillsCardTracks.isNotEmpty()
+    val hasArtists = homeViewModel?.hasListenedArtists?.collectAsStateWithLifecycle()?.value
+        ?: mostListenedArtists.isNotEmpty()
     val greeting = rememberGreeting()
     val resolvedCurrentTrack = currentTrack
     val currentPlayingId = currentPlayingTrackId ?: resolvedCurrentTrack?.id
@@ -379,6 +365,7 @@ fun HomeScreenContent(
         ) {
             // HEADER BAR: Dynamic App Logo, XTREME PLAYER Title, Greeting & Settings Icon (Preserved)
             item(key = "header_bar", contentType = "header") {
+                val profile = homeViewModel?.userProfile?.collectAsStateWithLifecycle()?.value ?: userProfile
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -431,7 +418,7 @@ fun HomeScreenContent(
 
                     Spacer(modifier = Modifier.height(10.dp))
 
-                    val userName = userProfile?.name?.trim()?.takeIf { it.isNotBlank() } ?: "Listener"
+                    val userName = profile?.name?.trim()?.takeIf { it.isNotBlank() } ?: "Listener"
 
                     Column(
                         modifier = Modifier
@@ -511,8 +498,9 @@ fun HomeScreenContent(
             // Always visible even when user has no listening history.
             // =========================================================================
             item(key = "hero_infinite_radio_card", contentType = "hero") {
+                val seed = homeViewModel?.heroSeedTrack?.collectAsStateWithLifecycle()?.value ?: heroSeedTrack
                 InfiniteRadioHeroCard(
-                    seedTrack = currentTrack ?: heroSeedTrack,
+                    seedTrack = currentTrack ?: seed,
                     currentPlayingTrackId = currentPlayingId,
                     isPlaying = isPlaying,
                     isLoading = isRadioLoading,
@@ -526,9 +514,11 @@ fun HomeScreenContent(
             // CARD 1: Recently Played (2 Columns Grid Layout, up to 6 items from real listening history)
             // Rendered only when pillsCardTracks contains genuine recently played tracks.
             // When history is empty, completely hide heading, card, placeholder message, and extra spacing.
-            val pillsTracks = pillsCardTracks.take(6)
-            if (pillsTracks.isNotEmpty()) {
+            if (hasRecent) {
                 item(key = "card_1_recently_played_grid", contentType = "recent_grid") {
+                    val history = homeViewModel?.listeningHistoryCard?.collectAsStateWithLifecycle()?.value
+                    val pillsTracks = history?.tracks?.take(6) ?: pillsCardTracks.take(6)
+                    if (pillsTracks.isEmpty()) return@item
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -591,8 +581,10 @@ fun HomeScreenContent(
 
             // CARD 2: YouTube Music Home Screen-Based Card ("Quick Picks")
             item(key = "card_2_ytm_dynamic_feed", contentType = "song_shelf") {
+                val section = homeViewModel?.sectionState(com.example.recommendation.UnifiedRecommendationEngine.Shelf.QUICK)
+                    ?.collectAsStateWithLifecycle()?.value ?: ytmCard
                 SectionCardLayout(
-                    state = ytmCard,
+                    state = section,
                     currentPlayingId = currentPlayingId,
                     cardBg = cardBg,
                     cardBorderColor = cardBorderColor,
@@ -602,13 +594,15 @@ fun HomeScreenContent(
                 )
             }
 
-            if (mostListenedArtists.isNotEmpty()) {
+            if (hasArtists) {
                 item(key = "most_listened_artists", contentType = "artist_shelf") {
-                    var artistPage by rememberSaveable(mostListenedArtists.firstOrNull()?.name) { mutableIntStateOf(0) }
-                    val pageCount = (mostListenedArtists.size + 14) / 15
+                    val artists = homeViewModel?.mostListenedArtists?.collectAsStateWithLifecycle()?.value ?: mostListenedArtists
+                    if (artists.isEmpty()) return@item
+                    var artistPage by rememberSaveable(artists.firstOrNull()?.name) { mutableIntStateOf(0) }
+                    val pageCount = (artists.size + 14) / 15
                     val page = artistPage.coerceIn(0, pageCount - 1)
-                    val visibleArtists = remember(mostListenedArtists, page) {
-                        mostListenedArtists.drop(page * 15).take(15)
+                    val visibleArtists = remember(artists, page) {
+                        artists.drop(page * 15).take(15)
                     }
                     val artistListState = rememberLazyListState()
                     ObserveHomeScroll(artistListState)
@@ -666,8 +660,10 @@ fun HomeScreenContent(
 
             // CARD 3: Era-Specific Hits Card (90s Hits, 2000s Nostalgia, Retro Classics)
             item(key = "card_3_era_specific_hits", contentType = "song_shelf") {
+                val section = homeViewModel?.sectionState(com.example.recommendation.UnifiedRecommendationEngine.Shelf.ERA)
+                    ?.collectAsStateWithLifecycle()?.value ?: eraCard
                 SectionCardLayout(
-                    state = eraCard,
+                    state = section,
                     currentPlayingId = currentPlayingId,
                     cardBg = cardBg,
                     cardBorderColor = cardBorderColor,
@@ -679,8 +675,10 @@ fun HomeScreenContent(
 
             // CARD 4: User Selected Country & Language Card (Dynamically powered by user prefs)
             item(key = "card_4_country_language_hits", contentType = "song_shelf") {
+                val section = homeViewModel?.sectionState(com.example.recommendation.UnifiedRecommendationEngine.Shelf.CHART)
+                    ?.collectAsStateWithLifecycle()?.value ?: countryLanguageCard
                 SectionCardLayout(
-                    state = countryLanguageCard,
+                    state = section,
                     currentPlayingId = currentPlayingId,
                     cardBg = cardBg,
                     cardBorderColor = cardBorderColor,
@@ -692,8 +690,10 @@ fun HomeScreenContent(
 
             // CARD 5: Fully Personalized Recommendation Card (PersonalizedHomeRecommendationEngine)
             item(key = "card_6_personalized_recommendation", contentType = "song_shelf") {
+                val section = homeViewModel?.sectionState(com.example.recommendation.UnifiedRecommendationEngine.Shelf.PERSONALIZED)
+                    ?.collectAsStateWithLifecycle()?.value ?: personalizedCard
                 SectionCardLayout(
-                    state = personalizedCard,
+                    state = section,
                     currentPlayingId = currentPlayingId,
                     cardBg = cardBg,
                     cardBorderColor = cardBorderColor,
@@ -703,12 +703,16 @@ fun HomeScreenContent(
                 )
             }
             item(key = "card_7_similar_artists", contentType = "song_shelf") {
-                SectionCardLayout(state = similarArtistsCard, currentPlayingId = currentPlayingId,
+                val section = homeViewModel?.sectionState(com.example.recommendation.UnifiedRecommendationEngine.Shelf.SIMILAR)
+                    ?.collectAsStateWithLifecycle()?.value ?: similarArtistsCard
+                SectionCardLayout(state = section, currentPlayingId = currentPlayingId,
                     cardBg = cardBg, cardBorderColor = cardBorderColor, textPrimaryColor = textPrimaryColor,
                     textMutedColor = textMutedColor, onTrackClick = onTrackClick)
             }
             item(key = "card_8_inspired_by_track", contentType = "song_shelf") {
-                SectionCardLayout(state = inspiredTrackCard, currentPlayingId = currentPlayingId,
+                val section = homeViewModel?.sectionState(com.example.recommendation.UnifiedRecommendationEngine.Shelf.INSPIRED)
+                    ?.collectAsStateWithLifecycle()?.value ?: inspiredTrackCard
+                SectionCardLayout(state = section, currentPlayingId = currentPlayingId,
                     cardBg = cardBg, cardBorderColor = cardBorderColor, textPrimaryColor = textPrimaryColor,
                     textMutedColor = textMutedColor, onTrackClick = onTrackClick)
             }

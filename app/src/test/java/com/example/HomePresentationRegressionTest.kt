@@ -1,0 +1,68 @@
+package com.example
+
+import com.example.data.model.MusicTrack
+import com.example.recommendation.UnifiedRecommendationEngine.Shelf
+import com.example.ui.viewmodel.RecommendationCards
+import com.example.ui.viewmodel.SectionState
+import com.example.ui.viewmodel.enrichFromCache
+import com.example.ui.viewmodel.finishPreparation
+import com.example.ui.viewmodel.withSection
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
+import org.junit.Test
+
+class HomePresentationRegressionTest {
+    private fun section(id: String, cover: String = "cover") = SectionState(title = id,
+        tracks = listOf(MusicTrack(id, id, "Artist", "Album", 180_000, cover, "https://audio")), isLoaded = true)
+    private fun cards(quick: SectionState = section("quick"), era: SectionState = SectionState()) =
+        RecommendationCards(quick, era, SectionState(), SectionState())
+
+    @Test fun lateFullCacheFillsAnUntouchedShelfWithoutReplacingNewerLiveTracks() {
+        val preview = cards()
+        val live = preview.copy(quick = section("new-selection"))
+        val full = preview.copy(era = section("era"))
+        val enriched = live.enrichFromCache(full, preview)
+        assertSame(live.quick, enriched.quick)
+        assertSame(full.era, enriched.era)
+    }
+
+    @Test fun identicalFullCacheRetainsTheEntireSnapshotAndArtworkIdentity() {
+        val preview = cards()
+        val decodedAgain = preview.copy(quick = preview.quick.copy(tracks = preview.quick.tracks.toList()))
+        assertSame(preview, preview.enrichFromCache(decodedAgain, preview))
+    }
+
+    @Test fun anEmptyCacheSectionCannotClearAPopulatedShelf() {
+        val preview = cards(era = section("era"))
+        assertSame(preview, preview.enrichFromCache(cards(quick = SectionState()), preview))
+    }
+
+    @Test fun verifiedCoverMetadataEnrichesAnUntouchedTrackWithoutChangingItsId() {
+        val preview = cards()
+        val full = cards(quick = section("quick", "verified-high-resolution-cover"))
+        val result = preview.enrichFromCache(full, preview)
+        assertEquals(preview.quick.tracks.single().id, result.quick.tracks.single().id)
+        assertEquals("verified-high-resolution-cover", result.quick.tracks.single().coverUrl)
+    }
+
+    @Test fun oneSectionUpdateRetainsAllOtherSectionReferences() {
+        val original = cards(era = section("era"))
+        val next = original.withSection(Shelf.QUICK, section("next"))
+        assertSame(original.era, next.era)
+        assertSame(original.chart, next.chart)
+        assertSame(original.personalized, next.personalized)
+        assertSame(original, original.withSection(Shelf.QUICK, original.quick.copy()))
+    }
+
+    @Test fun firstInstallVerificationKeepsTheSkeletonUntilItsFirstSnapshotIsPresented() {
+        val loading = SectionState(title = "Quick Picks", isLoading = true)
+        assertSame(loading, loading.finishPreparation(hasVerifiedCandidate = true))
+        val staleError = loading.copy(isError = true, errorMessage = "old failure")
+        assertEquals(loading, staleError.finishPreparation(hasVerifiedCandidate = true))
+    }
+
+    @Test fun aFailedRefreshRetainsUsableCachedTracks() {
+        val cached = section("cached")
+        assertSame(cached, cached.finishPreparation(hasVerifiedCandidate = false))
+    }
+}

@@ -46,9 +46,13 @@ class XtremeMusicApp : Application(), ImageLoaderFactory {
         }
     }
 
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     override fun newImageLoader(): ImageLoader {
         return ImageLoader.Builder(this)
             .components { add(com.example.ui.util.ArtworkResolutionInterceptor()) }
+            // Bound actual decode work, without putting instant memory-cache hits
+            // behind slow network requests in the artwork interceptor.
+            .decoderDispatcher(Dispatchers.Default.limitedParallelism(2))
             .okHttpClient(okhttp3.OkHttpClient.Builder()
                 .dispatcher(okhttp3.Dispatcher().apply { maxRequests = 24; maxRequestsPerHost = 6 })
                 .eventListenerFactory { object : okhttp3.EventListener() {

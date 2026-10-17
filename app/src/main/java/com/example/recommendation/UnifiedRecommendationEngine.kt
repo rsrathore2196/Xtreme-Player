@@ -2,6 +2,7 @@ package com.example.recommendation
 
 import android.content.Context
 import android.net.Uri
+import com.example.performance.BackgroundWorkCoordinator
 import com.example.data.cache.RecommendationCache
 import com.example.data.cache.RecommendationTrackCodec
 import com.example.data.local.UserProfile
@@ -105,6 +106,12 @@ class UnifiedRecommendationEngine(context: Context?,
         }
     }
 
+    private suspend fun yieldHomeWork() {
+        val priority = currentCoroutineContext()[DiscoveryRequestCoordinator.HomeRefresh]
+        BackgroundWorkCoordinator.yieldToInteraction(requireForeground = true,
+            bypass = { priority?.requested?.value == true })
+    }
+
     /** Each emission changes one shelf, in stable batches. Nothing waits for all cards. */
     fun refresh(profile: UserProfile, country: String, taste: UserTasteProfile, current: MusicTrack?,
         history: List<MusicTrack>, favorites: List<MusicTrack>, known: List<MusicTrack>, force: Boolean,
@@ -126,11 +133,13 @@ class UnifiedRecommendationEngine(context: Context?,
                 while (true) {
                     val shelf = requested.getOrNull(cursor.getAndIncrement()) ?: break
                     try {
-                        val candidates = discover(shelf, profile, country, taste, seed, history, favorites, force, variation, false)
+                        yieldHomeWork()
+                        val candidates = discover(shelf, profile, country, taste, seed, history, favorites, force, variation, false,
+                            initialBatch = startupBatch)
                             .filterNot { recent.contains(it.track) || taste.keyFor(it.track) in taste.recentRecordings }
                         resolveBatches(candidates, shelf, profile, taste, known + history + favorites, false,
                             recent = recent, maxResults = if (startupBatch) 3 else limits.shelfSize + limits.reserve,
-                            concurrency = if (startupBatch) 1 else limits.matchConcurrency).collect { tracks ->
+                            concurrency = if (startupBatch) minOf(2, limits.matchConcurrency) else limits.matchConcurrency).collect { tracks ->
                             val now = System.currentTimeMillis()
                             send(Batch(quick = tracks.takeIf { shelf == Shelf.QUICK }.orEmpty(),
                                 era = tracks.takeIf { shelf == Shelf.ERA }.orEmpty(),
@@ -188,7 +197,7 @@ class UnifiedRecommendationEngine(context: Context?,
 
     private suspend fun discover(shelf: Shelf, profile: UserProfile, country: String, taste: UserTasteProfile,
         seed: MusicTrack?, history: List<MusicTrack>, favorites: List<MusicTrack>, force: Boolean,
-        variation: Long, essential: Boolean): List<Candidate> {
+        variation: Long, essential: Boolean, initialBatch: Boolean = false): List<Candidate> {
         val languages = profile.languages.map(::language).filter(HomeRecommendationPolicy::known).distinct()
         val gl = profile.countryCode.trim().uppercase(java.util.Locale.ROOT)
         val ttl = if (shelf == Shelf.ERA) 24 * 60 * 60_000L else if (shelf in setOf(Shelf.QUICK, Shelf.CHART)) CHART_TTL else CONTEXT_TTL
@@ -197,6 +206,7 @@ class UnifiedRecommendationEngine(context: Context?,
         val mood = moods.maxByOrNull { it.value }?.key.orEmpty()
         suspend fun pool(op: String, query: String, lang: String = "", regional: Boolean = false,
             related: Boolean = false, era: Boolean = false, moodHint: String = "") {
+            if (!essential) yieldHomeWork()
             val tracks = discoveryWorkers.withPermit { withTimeoutOrNull(8_000L) {
                 discovery.tracks(op, query, gl, force, essential, ttl)
             }.orEmpty() }
@@ -259,6 +269,9 @@ class UnifiedRecommendationEngine(context: Context?,
                 }.trim()
                 pool("search", query, lang, regional = true, era = shelf == Shelf.ERA,
                     moodHint = mood.takeIf { shelf == Shelf.QUICK }.orEmpty())
+                // First installation needs a usable first shelf, not the whole
+                // multilingual pool. The normal follow-up resumes all preferences.
+                if (initialBatch && found.size >= limits.shelfSize) break
             }
             // Anonymous editorial discovery is supporting evidence only, never a
             // substitute for selected-language candidates or a claimed official chart.
@@ -349,7 +362,8 @@ class UnifiedRecommendationEngine(context: Context?,
             languageCounts[actualLanguage] = (languageCounts[actualLanguage] ?: 0) + 1
             output.add(candidateTrack.copy(recommendationOnly = true))
         }
-        for (candidate in candidates) {
+        for ((index, candidate) in candidates.withIndex()) {
+            if (!essential && index % 4 == 0) yieldHomeWork()
             val track = cachedMatch(candidate.track, knownIndex)
             cached.add(candidate to track)
             add(candidate, track)
@@ -365,12 +379,15 @@ class UnifiedRecommendationEngine(context: Context?,
                 val workers = List(minOf(concurrency.coerceIn(1, limits.matchConcurrency), missing.size)) { launch(Dispatchers.IO) {
                     while (isActive) {
                         val candidate = missing.getOrNull(cursor.getAndIncrement())?.first ?: break
+                        if (!essential) yieldHomeWork()
                         results.send(candidate to match(candidate.track, essential))
                     }
                 } }
                 val closer = launch { workers.joinAll(); results.close() }
                 try {
                     for ((candidate, track) in results) {
+                        // Retain completed matches immediately. Presentation is
+                        // gated separately; only admitting the next lookup yields.
                         add(candidate, track)
                         if (output.size >= published + (if (published == 0) 1 else 3)) {
                             emit(output.take(limits.shelfSize).toList()); published = output.size

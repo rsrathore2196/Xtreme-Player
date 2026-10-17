@@ -5,6 +5,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.util.concurrent.atomic.AtomicBoolean
@@ -87,9 +88,11 @@ object BackgroundWorkCoordinator {
                         if (it.priority == StartupPriority.MAINTENANCE && now - it.queuedAt >= 30_000L)
                             StartupPriority.DEFERRED.ordinal else it.priority.ordinal
                     }
-                    val quiet = jobs.get() == 0 && navigationJobs.get() == 0 && now >= navigationUntil.get() &&
-                        now - maxOf(lastInteraction.get(), lastSlowFrame.get(), lastWork.get()) >= 750L
-                    if (next === ticket && (if (essential) !essentialActive else !optionalActive && !essentialActive && quiet)) {
+                    val interacting = scrolling.get() || navigationJobs.get() != 0 || now < navigationUntil.get()
+                    val quiet = jobs.get() == 0 && !interacting &&
+                        now - maxOf(lastInteraction.get(), lastSlowFrame.get()) >= 250L
+                    if (next === ticket && (if (essential) !essentialActive && !interacting
+                        else !optionalActive && !essentialActive && quiet)) {
                         waiting.remove(ticket)
                         if (essential) essentialActive = true else optionalActive = true
                         true
@@ -110,11 +113,14 @@ object BackgroundWorkCoordinator {
     }
 
     /** Pause a long maintenance/batch loop for interaction, without waiting on its own lease. */
-    suspend fun yieldToInteraction(requireForeground: Boolean = false) {
+    suspend fun yieldToInteraction(requireForeground: Boolean = false, bypass: () -> Boolean = { false }) {
+        // A fast batch must also give other coroutines a turn, even when no gesture
+        // is active. This gate never waits for jobs == 0 (the caller may own a lease).
+        yield()
         while (true) {
             currentCoroutineContext().ensureActive()
             val now = SystemClock.elapsedRealtime()
-            if ((!requireForeground || foreground.get()) && navigationJobs.get() == 0 &&
+            if (bypass() || (!requireForeground || foreground.get()) && !scrolling.get() && navigationJobs.get() == 0 &&
                 now >= navigationUntil.get() && now - maxOf(lastInteraction.get(), lastSlowFrame.get()) >= 250L) return
             delay(50L)
         }
@@ -129,6 +135,12 @@ object BackgroundWorkCoordinator {
     private val jobs = AtomicInteger(0)
     private val navigationJobs = AtomicInteger(0)
     private val navigationUntil = AtomicLong(0L)
+    private val scrolling = AtomicBoolean(false)
+
+    fun scrolling(active: Boolean) {
+        scrolling.set(active)
+        interaction()
+    }
 
     /** Called before changing the selected tab, so worker admission closes immediately. */
     fun navigationInteraction() {

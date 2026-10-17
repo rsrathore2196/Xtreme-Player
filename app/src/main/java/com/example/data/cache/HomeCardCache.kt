@@ -45,7 +45,8 @@ data class SavedHomeCards(
 
 @OptIn(FlowPreview::class, ExperimentalCoroutinesApi::class)
 class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Dispatchers.Default) {
-    private val file = AtomicFile(File(context.applicationContext.filesDir, "home_cards_v1.json"))
+    private val appContext = context.applicationContext
+    private val file = AtomicFile(File(appContext.filesDir, "home_cards_v1.json"))
     private data class Retained(val path: String, val cards: SavedHomeCards)
     companion object {
         private const val MAX_TRACKS_PER_LIST = 40
@@ -185,6 +186,24 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Di
         else -> reader.nextString()
     }
 
+    /** Full snapshots can be megabytes; tokenize in bounded, cancellable batches. */
+    private suspend fun readPreparedJson(reader: JsonReader, tokens: IntArray): Any {
+        if (++tokens[0] % 256 == 0) BackgroundWorkCoordinator.yieldToInteraction()
+        return when (reader.peek()) {
+            JsonToken.BEGIN_OBJECT -> JSONObject().apply {
+                reader.beginObject()
+                while (reader.hasNext()) put(reader.nextName(), readPreparedJson(reader, tokens))
+                reader.endObject()
+            }
+            JsonToken.BEGIN_ARRAY -> JSONArray().apply {
+                reader.beginArray()
+                while (reader.hasNext()) put(readPreparedJson(reader, tokens))
+                reader.endArray()
+            }
+            else -> readJson(reader)
+        }
+    }
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val serializationDispatcher = workerDispatcher.limitedParallelism(1)
     private val writes = Channel<SavedHomeCards>(Channel.CONFLATED)
@@ -227,23 +246,25 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Di
         writes.close()
         writer.invokeOnCompletion { scope.cancel() }
     }
-    suspend fun read(profile: String): SavedHomeCards? {
-        peekFull(profile)?.let { return it }
-        val loading = synchronized(preloads) { preloads["${file.baseFile.parentFile!!.path}|$profile"] }
-        return loading?.await() ?: readDisk(profile)
-    }
-    private suspend fun readDisk(profile: String): SavedHomeCards? = readMutex.withLock {
-        readDiskOnce(profile)
-    }
+    suspend fun read(profile: String): SavedHomeCards? =
+        peekFull(profile) ?: preloadAsync(appContext, profile).await()
+
+    private suspend fun readDisk(profile: String): SavedHomeCards? = readDiskOnce(profile)
     private suspend fun readDiskOnce(profile: String): SavedHomeCards? = withContext(Dispatchers.IO) {
         peekFull(profile)?.let { return@withContext it }
         val before = memory.get()
         try {
-            val bytes = fileMutex.withLock {
+            val bytes = readMutex.withLock { fileMutex.withLock {
                 if (!file.baseFile.exists() || file.baseFile.length() > 4_000_000L) return@withContext null
                 file.openRead().use { it.readBytes() }
+            } }
+            // No disk/cache lock is held while optional decoding yields to touch.
+            val decoded = withContext(serializationDispatcher) {
+                BackgroundWorkCoordinator.yieldToInteraction()
+                JsonReader(String(bytes).reader()).use { reader ->
+                    decode(readPreparedJson(reader, intArrayOf(0)) as JSONObject, profile, cooperative = true)
+                }
             }
-            val decoded = withContext(serializationDispatcher) { decode(JSONObject(String(bytes)), profile) }
             decoded?.let {
                 memory.compareAndSet(before, Retained(file.baseFile.path, it))
                 previews.set(null)
@@ -251,7 +272,7 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Di
             peekFull(profile) ?: decoded
         } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
     }
-    private fun encode(s: SavedHomeCards, includePreview: Boolean = true): JSONObject {
+    private suspend fun encode(s: SavedHomeCards, includePreview: Boolean = true): JSONObject {
         val tracks = (s.catalog.take(MAX_POOL_TRACKS) + s.quickCandidates.take(MAX_CANDIDATE_TRACKS) +
             s.eraCandidates.take(MAX_CANDIDATE_TRACKS) + s.chartCandidates.take(MAX_CANDIDATE_TRACKS) +
             s.quick.tracks.take(MAX_TRACKS_PER_LIST) + s.era.tracks.take(MAX_TRACKS_PER_LIST) +
@@ -278,7 +299,9 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Di
         return root.put("profile", s.profileKey).put("signal", s.signal)
             .put("generation", s.generation).put("refreshedAt", s.refreshedAt)
             .put("chartRefreshedAt", s.chartRefreshedAt)
-            .put("tracks", JSONArray(tracks.map { t -> JSONObject()
+            .put("tracks", JSONArray(tracks.mapIndexed { index, t ->
+                if (index % 64 == 0) BackgroundWorkCoordinator.yieldToInteraction(bypass = { closing.get() })
+                JSONObject()
                 .put("id", t.id).put("title", t.title).put("artist", t.artist).put("album", t.album)
                 .put("duration", t.durationMs).put("cover", t.coverUrl)
                 .put("audio", if (t.id.startsWith("yt_")) "" else t.audioUrl)
@@ -305,11 +328,12 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Di
             .put("chartCandidates", ids(s.chartCandidates.take(MAX_CANDIDATE_TRACKS)))
             .put("catalog", ids(s.catalog.take(MAX_POOL_TRACKS)))
     }
-    private fun decode(root: JSONObject, profile: String): SavedHomeCards? {
+    private suspend fun decode(root: JSONObject, profile: String, cooperative: Boolean = false): SavedHomeCards? {
         if (root.optInt("version") !in 1..3 || root.optString("profile") != profile) return null
         val array = root.getJSONArray("tracks")
         if (array.length() > 1500) return null
         val records = (0 until array.length()).mapNotNull { i ->
+            if (cooperative && i % 64 == 0) BackgroundWorkCoordinator.yieldToInteraction()
             val t = array.getJSONObject(i)
             val id = t.getString("id"); val title = t.getString("title"); val artist = t.getString("artist")
             if (id.isBlank() || title.isBlank() || artist.isBlank()) return@mapNotNull null
