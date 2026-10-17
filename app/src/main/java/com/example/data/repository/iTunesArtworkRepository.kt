@@ -83,11 +83,13 @@ class iTunesArtworkRepository(
     init {
         lookupScope.launch {
             try {
-                com.example.performance.BackgroundWorkCoordinator.awaitStartupIdle()
-                cacheDao.getNewest(limit = 2048).asReversed().forEach { entry ->
-                    if (entry.rawArtworkUrl.isNotBlank()) synchronized(memoryCache) {
-                        if (memoryCache.get(entry.cacheKey) == null)
-                            memoryCache.put(entry.cacheKey, Lookup(entry.rawArtworkUrl, Long.MAX_VALUE))
+                com.example.performance.BackgroundWorkCoordinator.startup(
+                    com.example.performance.BackgroundWorkCoordinator.StartupPriority.DEFERRED) {
+                    cacheDao.getNewest(limit = 2048).asReversed().forEach { entry ->
+                        if (entry.rawArtworkUrl.isNotBlank()) synchronized(memoryCache) {
+                            if (memoryCache.get(entry.cacheKey) == null)
+                                memoryCache.put(entry.cacheKey, Lookup(entry.rawArtworkUrl, Long.MAX_VALUE))
+                        }
                     }
                 }
             } catch (e: CancellationException) { throw e } catch (_: Exception) { /* Live lookup remains available. */ }

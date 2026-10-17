@@ -261,9 +261,7 @@ fun SettingsScreen(
                     }
                     SettingsCategory.OTHER_SETTINGS -> {
                         OtherSettingsPage(
-                            isDarkMode = isDarkMode,
-                            onTextScaleChanged = onTextScaleChanged,
-                            onUiScaleChanged = onUiScaleChanged
+                            isDarkMode = isDarkMode
                         )
                     }
                     SettingsCategory.BACKUP_RESTORE -> {

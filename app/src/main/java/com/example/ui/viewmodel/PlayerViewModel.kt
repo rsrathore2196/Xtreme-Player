@@ -459,10 +459,28 @@ class PlayerViewModel(
         }
         viewModelScope.launch(Dispatchers.IO) {
             _settingsReady.first { it }
-            com.example.performance.BackgroundWorkCoordinator.awaitStartupIdle()
-            loadCatalog()
+            loadCatalog(com.example.performance.BackgroundWorkCoordinator.StartupPriority.DEFERRED)
         }
         observeCurrentTrackForLyrics()
+        viewModelScope.launch {
+            var previousProvider: String? = null
+            com.example.data.local.OtherSettingsPreferences.observeLyricsSettings(application).collect { settings ->
+                if (!settings.ready) return@collect
+                val changed = previousProvider != null && previousProvider != settings.provider
+                previousProvider = settings.provider
+                if (changed) {
+                    lyricsRequestGeneration.incrementAndGet()
+                    lyricsJob?.cancel()
+                    _currentLyrics.value = null
+                    lyricsLookupComplete = false
+                    lyricsPrefetchStarted = false
+                    val track = playbackManager.uiState.value.currentTrack
+                    if (track != null && (lyricsVisible ||
+                            com.example.performance.BackgroundWorkCoordinator.uiForeground.value && playbackManager.uiState.value.isPlaying))
+                        fetchLyricsForTrack(track, forceRefresh = false)
+                }
+            }
+        }
     }
 
     private fun observeCurrentTrackForLyrics() {
@@ -548,12 +566,14 @@ class PlayerViewModel(
         }
     }
 
-    private fun loadCatalog() {
+    private fun loadCatalog(priority: com.example.performance.BackgroundWorkCoordinator.StartupPriority =
+        com.example.performance.BackgroundWorkCoordinator.StartupPriority.CRITICAL) {
         viewModelScope.launch(Dispatchers.IO) {
-            // Room/cache work must not compete with the player's first composition and transition.
-            val initial = repository.getInitialCatalog(_userProfile.value)
-            _catalogTracks.value = initial
-            playbackManager.setCandidatePool(initial)
+            com.example.performance.BackgroundWorkCoordinator.startup(priority) {
+                val initial = repository.getInitialCatalog(_userProfile.value)
+                _catalogTracks.value = initial
+                playbackManager.setCandidatePool(initial)
+            }
 
             // Home owns optional discovery refreshes. Playback can use this real local
             // pool immediately, without launching a competing discovery pass at startup.

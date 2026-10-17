@@ -3,7 +3,19 @@ package com.example.data.local
 import android.content.Context
 import android.content.SharedPreferences
 import java.io.File
+import androidx.compose.runtime.Immutable
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
+@Immutable
+data class LyricsSettings(val provider: String = "Auto", val textSizeSp: Int = 28, val ready: Boolean = false)
+
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 object OtherSettingsPreferences {
     private const val PREFS_NAME = "xtreme_other_settings"
 
@@ -16,6 +28,43 @@ object OtherSettingsPreferences {
     // Text Size & App UI Size keys
     private const val KEY_TEXT_SIZE_INDEX = "text_size_index"
     private const val KEY_UI_SIZE_INDEX = "ui_size_index"
+    private const val KEY_LYRICS_PROVIDER = "lyrics_provider"
+    private const val KEY_LYRICS_TEXT_SIZE = "lyrics_text_size_sp"
+    val LYRICS_PROVIDERS = listOf("Auto", "lrc.red", "BiniLyrics", "BetterLyrics", "PaxSenix", "LyricsPlus", "Unison",
+        "BetterLyrics Portato", "PaxSenix: Spotify", "PaxSenix: Musixmatch", "Musixmatch", "KuGou",
+        "YouTube captions", "LRCLIB", "YouTube Music", "Genius")
+    private val lyricsScope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(1))
+    private val lyricsStarted = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val lyricsState = MutableStateFlow(LyricsSettings())
+    private var lyricsListener: SharedPreferences.OnSharedPreferenceChangeListener? = null
+
+    fun observeLyricsSettings(context: Context): StateFlow<LyricsSettings> {
+        if (lyricsStarted.compareAndSet(false, true)) lyricsScope.launch {
+            val prefs = getPrefs(context.applicationContext)
+            fun publish() {
+                lyricsState.value = LyricsSettings(prefs.getString(KEY_LYRICS_PROVIDER, "Auto")
+                    ?.takeIf { it in LYRICS_PROVIDERS } ?: "Auto", prefs.getInt(KEY_LYRICS_TEXT_SIZE, 28).coerceIn(18, 44), true)
+            }
+            lyricsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+                if (key == KEY_LYRICS_PROVIDER || key == KEY_LYRICS_TEXT_SIZE) publish()
+            }.also(prefs::registerOnSharedPreferenceChangeListener)
+            publish()
+        }
+        return lyricsState.asStateFlow()
+    }
+    fun getLyricsProvider(context: Context): String = getPrefs(context).getString(KEY_LYRICS_PROVIDER, "Auto")
+        ?.takeIf { it in LYRICS_PROVIDERS } ?: "Auto"
+    fun setLyricsProvider(context: Context, provider: String) {
+        if (provider !in LYRICS_PROVIDERS) return
+        val app = context.applicationContext
+        observeLyricsSettings(app)
+        lyricsScope.launch { getPrefs(app).edit().putString(KEY_LYRICS_PROVIDER, provider).apply() }
+    }
+    fun setLyricsTextSize(context: Context, sizeSp: Int) {
+        val app = context.applicationContext
+        observeLyricsSettings(app)
+        lyricsScope.launch { getPrefs(app).edit().putInt(KEY_LYRICS_TEXT_SIZE, sizeSp.coerceIn(18, 44)).apply() }
+    }
 
     // Usage Statistics keys
     private const val KEY_TOTAL_PLAYED_COUNT = "total_played_count"

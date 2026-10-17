@@ -11,6 +11,15 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.yield
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.CancellationException
 import com.example.performance.BackgroundWorkCoordinator
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -51,7 +60,7 @@ data class CacheStats(
     val formattedFreeDisk: String get() = SmartCacheManager.formatBytes(freeDiskSpaceBytes)
 }
 
-@OptIn(coil.annotation.ExperimentalCoilApi::class)
+@OptIn(coil.annotation.ExperimentalCoilApi::class, kotlinx.coroutines.FlowPreview::class)
 object SmartCacheManager {
     private const val TAG = "SmartCacheManager"
     private const val PREFS_NAME = "xtreme_smart_cache_preferences"
@@ -59,6 +68,12 @@ object SmartCacheManager {
     private const val KEY_SMART_AUTO_TRIM = "key_smart_auto_trim"
     private const val KEY_AUTO_PRECACHE = "key_auto_precache"
     private const val KEY_WIFI_ONLY = "key_wifi_only"
+    private const val STATS_MAX_AGE_MS = 12 * 60 * 60_000L
+    private val initialized = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val lastReconciliation = java.util.concurrent.atomic.AtomicLong(0L)
+    private val legacyImageBytes = java.util.concurrent.atomic.AtomicLong(0L)
+    private val jobLock = Any()
+    private var statisticsRequestedByUser = false
 
     const val QUOTA_LEAN = 40L * 1024L * 1024L // 40 MB Lean
     const val QUOTA_BALANCED = 60L * 1024L * 1024L // 60 MB Balanced (Default)
@@ -66,8 +81,13 @@ object SmartCacheManager {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val maintenanceMutex = Mutex()
-    private suspend fun <T> maintainCache(action: () -> T): T = withContext(Dispatchers.IO) {
-        BackgroundWorkCoordinator.work { maintenanceMutex.withLock { action() } }
+    private suspend fun <T> maintainCache(action: suspend () -> T): T = withContext(Dispatchers.IO) {
+        // Explicit storage actions preempt optional reconciliation, not playback.
+        val pending = synchronized(jobLock) { listOfNotNull(maintenanceJob, statisticsJob) }
+        pending.forEach { it.cancelAndJoin() }
+        BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.CRITICAL) {
+            maintenanceMutex.withLock { action() }
+        }
     }
     private var appContext: Context? = null
     private var repositoryRef: MusicRepository? = null
@@ -84,95 +104,134 @@ object SmartCacheManager {
 
     fun initialize(context: Context, repository: MusicRepository? = null) {
         configure(context, repository)
-        smartAutoTrim()
+        if (!initialized.compareAndSet(false, true)) return
+        val prefs = getPrefs()
+        lastReconciliation.set(prefs?.getLong("stats_checked_at", 0L) ?: 0L)
+        legacyImageBytes.set(prefs?.getLong("stats_legacy_images", 0L) ?: 0L)
+        val audio = MusicCache.peekCacheUsage()
+        val image = (context.applicationContext as? com.example.XtremeMusicApp)?.initializedImageDiskCache?.size
+        val audioBytes = audio?.first ?: prefs?.getLong("stats_audio", 0L) ?: 0L
+        val imageBytes = (image?.plus(legacyImageBytes.get())) ?: prefs?.getLong("stats_images", 0L) ?: 0L
+        val lyrics = prefs?.getLong("stats_lyrics", 0L) ?: 0L
+        val metadata = prefs?.getLong("stats_metadata", 0L) ?: 0L
+        _stats.value = CacheStats(audioBytes + imageBytes + lyrics + metadata, audioBytes, imageBytes,
+            lyrics, metadata, audio?.second ?: prefs?.getInt("stats_audio_count", 0) ?: 0,
+            prefs?.getLong(KEY_MAX_QUOTA, QUOTA_BALANCED) ?: QUOTA_BALANCED,
+            prefs?.getBoolean(KEY_SMART_AUTO_TRIM, true) ?: true,
+            prefs?.getBoolean(KEY_AUTO_PRECACHE, true) ?: true,
+            prefs?.getBoolean(KEY_WIFI_ONLY, false) ?: false, context.cacheDir.freeSpace)
+        // No directory traversal and no forced Media3/Coil cache construction.
+        if (System.currentTimeMillis() - lastReconciliation.get() !in 0 until STATS_MAX_AGE_MS)
+            refreshStats(userRequested = false)
+        else if (audioBytes + imageBytes > _stats.value.maxQuotaBytes) smartAutoTrim()
     }
 
     private fun getPrefs(): SharedPreferences? {
         return appContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
 
-    fun refreshStats() {
-        val ctx = appContext ?: return
-        if (statisticsJob?.isActive == true) return
-        statisticsJob = scope.launch {
-          BackgroundWorkCoordinator.awaitIdle(requireForeground = false)
-          BackgroundWorkCoordinator.work {
-            val prefs = getPrefs()
-            val savedQuota = prefs?.getLong(KEY_MAX_QUOTA, QUOTA_BALANCED) ?: QUOTA_BALANCED
-            val autoTrim = prefs?.getBoolean(KEY_SMART_AUTO_TRIM, true) ?: true
-            val autoPreCache = prefs?.getBoolean(KEY_AUTO_PRECACHE, true) ?: true
-            val wifiOnly = prefs?.getBoolean(KEY_WIFI_ONLY, false) ?: false
-
-            val audioBytes = MusicCache.getCacheSize(ctx)
-            val audioCount = MusicCache.getCachedTrackCount(ctx)
-            val imageBytes = calculateImageCacheBytes(ctx)
-            val lyricsBytes = LyricsProvider.getCacheSize()
-            val metadataBytes = calculateMetadataCacheBytes(ctx)
-            val total = audioBytes + imageBytes + lyricsBytes + metadataBytes
-            val freeSpace = ctx.cacheDir.freeSpace
-
-            _stats.value = CacheStats(
-                totalBytes = total,
-                audioBytes = audioBytes,
-                imageBytes = imageBytes,
-                lyricsBytes = lyricsBytes,
-                metadataBytes = metadataBytes,
-                audioTrackCount = audioCount,
-                maxQuotaBytes = savedQuota,
-                autoTrimEnabled = autoTrim,
-                autoPreCacheEnabled = autoPreCache,
-                cacheOnWifiOnly = wifiOnly,
-                freeDiskSpaceBytes = freeSpace
-            )
-          }
+    private val checkpoints = Channel<Unit>(Channel.CONFLATED)
+    private val checkpointWriter = scope.launch {
+        checkpoints.receiveAsFlow().debounce(2_000L).collect {
+            BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.MAINTENANCE,
+                requireForeground = false) {
+                val value = _stats.value
+                getPrefs()?.edit()?.putLong("stats_audio", value.audioBytes)?.putLong("stats_images", value.imageBytes)
+                    ?.putLong("stats_lyrics", value.lyricsBytes)?.putLong("stats_metadata", value.metadataBytes)
+                    ?.putInt("stats_audio_count", value.audioTrackCount)?.putLong("stats_checked_at", lastReconciliation.get())
+                    ?.putLong("stats_legacy_images", legacyImageBytes.get())?.apply()
+            }
         }
     }
 
-    /**
-     * Smart Auto-Trim: Automatically detects if cache has grown beyond limits
-     * and smartly clears oldest audio blocks, orphaned cover art, and temp files.
-     */
+    /** Owner-reported committed sizes; no filesystem walks, decoding or disk writes here. */
+    fun cacheUsageChanged(audioBytes: Long? = null, audioTrackCount: Int? = null, imageBytes: Long? = null) {
+        val before = _stats.value
+        _stats.update { value ->
+            val audio = audioBytes ?: value.audioBytes
+            val image = imageBytes?.plus(legacyImageBytes.get()) ?: value.imageBytes
+            if (audio == value.audioBytes && image == value.imageBytes &&
+                (audioTrackCount == null || audioTrackCount == value.audioTrackCount)) value else
+                value.copy(audioBytes = audio, imageBytes = image, audioTrackCount = audioTrackCount ?: value.audioTrackCount,
+                    totalBytes = audio + image + value.lyricsBytes + value.metadataBytes)
+        }
+        if (_stats.value != before) {
+            checkpoints.trySend(Unit)
+            if (initialized.get() && _stats.value.autoTrimEnabled &&
+                _stats.value.audioBytes + _stats.value.imageBytes > _stats.value.maxQuotaBytes)
+                smartAutoTrim()
+        }
+    }
+
+    fun refreshStats(userRequested: Boolean = true) {
+        val ctx = appContext ?: return
+        synchronized(jobLock) {
+            if (statisticsJob?.isActive == true) {
+                if (!userRequested || statisticsRequestedByUser) return
+                statisticsJob?.cancel()
+            }
+            statisticsRequestedByUser = userRequested
+            statisticsJob = scope.launch {
+              try {
+                BackgroundWorkCoordinator.startup(if (userRequested) BackgroundWorkCoordinator.StartupPriority.CRITICAL
+                    else BackgroundWorkCoordinator.StartupPriority.MAINTENANCE, requireForeground = false) {
+                    maintenanceMutex.withLock { reconcileStats(ctx) }
+                }
+                if (_stats.value.audioBytes + _stats.value.imageBytes > _stats.value.maxQuotaBytes) smartAutoTrim()
+              } catch (e: CancellationException) { throw e }
+              catch (e: Exception) { Log.w(TAG, "Cache statistics unavailable: ${e.message}") }
+            }
+        }
+    }
+
+    private suspend fun reconcileStats(ctx: Context) {
+        val prefs = getPrefs()
+        val audioOwner = MusicCache.getSimpleCache(ctx)
+        val audio = audioOwner.cacheSpace
+        val count = audioOwner.keys.size
+        val images = calculateImageCacheBytes(ctx)
+        val lyrics = LyricsProvider.getCacheSize()
+        val metadata = calculateMetadataCacheBytes(ctx)
+        _stats.value = CacheStats(audio + images + lyrics + metadata, audio, images, lyrics, metadata, count,
+            prefs?.getLong(KEY_MAX_QUOTA, QUOTA_BALANCED) ?: QUOTA_BALANCED,
+            prefs?.getBoolean(KEY_SMART_AUTO_TRIM, true) ?: true,
+            prefs?.getBoolean(KEY_AUTO_PRECACHE, true) ?: true,
+            prefs?.getBoolean(KEY_WIFI_ONLY, false) ?: false, ctx.cacheDir.freeSpace)
+        lastReconciliation.set(System.currentTimeMillis())
+        checkpoints.trySend(Unit)
+    }
+
+    /** Quota decisions always re-read cache owners; persisted estimates never authorize deletion. */
     fun smartAutoTrim(context: Context? = appContext) {
         val ctx = context ?: appContext ?: return
-        if (maintenanceJob?.isActive == true) return
-        maintenanceJob = scope.launch {
-          BackgroundWorkCoordinator.awaitIdle(requireForeground = false)
-          BackgroundWorkCoordinator.work { maintenanceMutex.withLock {
-            try {
-                val prefs = getPrefs()
-                val autoTrim = prefs?.getBoolean(KEY_SMART_AUTO_TRIM, true) ?: true
-                if (!autoTrim) { refreshStats(); return@launch }
-
-                val quota = prefs?.getLong(KEY_MAX_QUOTA, QUOTA_BALANCED) ?: QUOTA_BALANCED
-                val audioBytes = MusicCache.getCacheSize(ctx)
-                val imageBytes = calculateImageCacheBytes(ctx)
-                val total = audioBytes + imageBytes
-
-                // Keep useful artwork until the actual quota is exceeded. Maintenance
-                // remains bounded and never clears entries just because the app reopened.
-                if (total > quota) {
-                    Log.i(TAG, "Smart auto-trim activated: cache exceeded quota")
-                    // 1. Delete temporary files
-                    ctx.cacheDir.listFiles()?.forEach { file ->
-                        if (file.isFile && file.lastModified() < System.currentTimeMillis() - 24 * 60 * 60_000L &&
-                            (file.name.endsWith(".tmp") || file.name.startsWith("temp_"))) {
-                            file.delete()
-                        }
-                    }
-                    // 2. Trim complete image entries through the cache owner.
-                    if (imageBytes > 0L) {
-                        trimImageCache(ctx, (quota - audioBytes).coerceAtLeast(0L))
-                    }
-                    // 3. Compact audio cache
-                    if (audioBytes > (quota * 0.70f)) {
-                        MusicCache.trimAudioCache(ctx, (quota * 0.50).toLong())
+        synchronized(jobLock) {
+            if (maintenanceJob?.isActive == true) return
+            maintenanceJob = scope.launch {
+                BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.MAINTENANCE,
+                    requireForeground = false) {
+                    maintenanceMutex.withLock {
+                        try {
+                            val prefs = getPrefs()
+                            if (prefs?.getBoolean(KEY_SMART_AUTO_TRIM, true) == false) return@withLock
+                            val quota = prefs?.getLong(KEY_MAX_QUOTA, QUOTA_BALANCED) ?: QUOTA_BALANCED
+                            val audio = MusicCache.getSimpleCache(ctx).cacheSpace
+                            val images = calculateImageCacheBytes(ctx)
+                            if (audio + images > quota) {
+                                ctx.cacheDir.listFiles()?.forEachIndexed { index, file ->
+                                    if (index % 64 == 0) scanCheckpoint()
+                                    if (file.isFile && file.lastModified() < System.currentTimeMillis() - 24 * 60 * 60_000L &&
+                                        (file.name.endsWith(".tmp") || file.name.startsWith("temp_"))) file.delete()
+                                }
+                                if (images > 0L) trimImageCache(ctx, (quota - audio).coerceAtLeast(0L))
+                                if (audio > quota * 0.70f) MusicCache.trimAudioCache(ctx, (quota * 0.50).toLong())
+                            }
+                            val usage = MusicCache.peekCacheUsage()
+                            cacheUsageChanged(usage?.first, usage?.second, ctx.imageLoader.diskCache?.size)
+                        } catch (e: CancellationException) { throw e }
+                        catch (e: Exception) { Log.w(TAG, "Smart auto-trim error: ${e.message}") }
                     }
                 }
-            } catch (e: CancellationException) { throw e } catch (e: Exception) {
-                Log.w(TAG, "Smart auto-trim error: ${e.message}")
             }
-          } }
-          refreshStats()
         }
     }
 
@@ -244,7 +303,7 @@ object SmartCacheManager {
             // 2. Prune complete HTTP entries through OkHttp's journal-aware API.
             val httpMusicCache = File(ctx.cacheDir, "http_music_cache")
             if (httpMusicCache.exists()) {
-                freed += OnlineMusicApiService.trimNetworkCache(getFolderSize(httpMusicCache) * 2 / 3)
+                freed += OnlineMusicApiService.trimNetworkCache((OnlineMusicApiService.peekNetworkCacheSize() ?: getFolderSize(httpMusicCache)) * 2 / 3)
             }
 
             // 3/4. Keep recent artwork while removing only complete Coil entries.
@@ -264,14 +323,14 @@ object SmartCacheManager {
             refreshStats()
             val reportedFreed = if (freed > 0L) formatBytes(freed) else "1.4 MB"
             Pair(freed, "Cache optimized! Freed $reportedFreed and defragmented storage.")
-        } catch (e: Exception) {
+        } catch (e: CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "smartOptimize error: ${e.message}")
             refreshStats()
             Pair(0L, "Cache optimized and audio buffers defragmented.")
         }
     }
 
-    private fun trimImageCache(ctx: Context, targetBytes: Long): Long =
+    private suspend fun trimImageCache(ctx: Context, targetBytes: Long): Long =
         (ctx.imageLoader.diskCache as? ManagedImageDiskCache)?.trimToSize(targetBytes) ?: 0L
 
     fun setQuota(quotaBytes: Long) {
@@ -296,16 +355,17 @@ object SmartCacheManager {
         _stats.value = _stats.value.copy(cacheOnWifiOnly = enabled)
     }
 
-    private fun calculateImageCacheBytes(ctx: Context): Long {
+    private suspend fun calculateImageCacheBytes(ctx: Context): Long {
         var size = ctx.imageLoader.diskCache?.size ?: 0L
         val coilDir = File(ctx.cacheDir, "image_manager_disk_cache")
         if (coilDir.exists()) size += getFolderSize(coilDir)
         val coilDefault = File(ctx.cacheDir, "image_cache_default")
         if (coilDefault.exists()) size += getFolderSize(coilDefault)
+        legacyImageBytes.set((size - (ctx.imageLoader.diskCache?.size ?: 0L)).coerceAtLeast(0L))
         return size
     }
 
-    private fun calculateMetadataCacheBytes(ctx: Context): Long {
+    private suspend fun calculateMetadataCacheBytes(ctx: Context): Long {
         var size = 0L
         val httpCache = File(ctx.cacheDir, "http_cache")
         if (httpCache.exists()) size += getFolderSize(httpCache)
@@ -319,7 +379,8 @@ object SmartCacheManager {
             "image_manager_disk_cache",
             "image_cache_default",
             "http_cache",
-            "okhttp_cache"
+            "okhttp_cache",
+            "http_music_cache"
         )
         ctx.cacheDir.listFiles()?.forEach { file ->
             if (file.name !in knownNames) {
@@ -334,16 +395,37 @@ object SmartCacheManager {
             }
         }
 
+        size += OnlineMusicApiService.peekNetworkCacheSize()
+            ?: File(ctx.cacheDir, "http_music_cache").takeIf { it.exists() }?.let { getFolderSize(it) } ?: 0L
         val entryCount = repositoryRef?.getSearchCacheEntryCount() ?: 0
         size += (entryCount * 1024L) // approx 1KB per cached search model
         return size
     }
 
-    private fun getFolderSize(file: File): Long {
+    private suspend fun scanCheckpoint() {
+        currentCoroutineContext().ensureActive()
+        yield()
+        BackgroundWorkCoordinator.yieldToInteraction()
+    }
+
+    private suspend fun getFolderSize(file: File): Long {
+        // Iterative and cancellable; never recurse through symlink cycles or
+        // leave another scan running when the user requests storage maintenance.
+        val directories = java.util.ArrayDeque<File>()
+        val visited = mutableSetOf<String>()
+        val root = file.canonicalPath
+        directories.add(file)
         var size = 0L
-        val children = file.listFiles() ?: return 0L
-        for (child in children) {
-            size += if (child.isDirectory) getFolderSize(child) else child.length()
+        var entries = 0
+        while (directories.isNotEmpty()) {
+            val directory = directories.removeFirst()
+            val path = directory.canonicalPath
+            if (path != root && !path.startsWith(root + File.separator) || !visited.add(path)) continue
+            val children = directory.listFiles() ?: continue
+            for (child in children) {
+                if (++entries % 64 == 0) scanCheckpoint()
+                if (child.isDirectory) directories.add(child) else size += child.length()
+            }
         }
         return size
     }

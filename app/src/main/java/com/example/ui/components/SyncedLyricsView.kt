@@ -7,6 +7,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.runtime.withFrameMillis
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -81,6 +82,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextLayoutResult
@@ -153,6 +155,11 @@ fun SyncedLyricsView(
     viewportAnimating: Boolean = false
 ) {
     val appColors = LocalAppColors.current
+    val context = LocalContext.current
+    val lyricsPreferences = remember(context) { com.example.data.local.OtherSettingsPreferences.observeLyricsSettings(context) }
+    val lyricsSettings by lyricsPreferences.collectAsStateWithLifecycle()
+    val lyricsTextSize = lyricsSettings.textSizeSp
+    val lyricsTextScale = lyricsTextSize / 28f
     val haptic = LocalHapticFeedback.current
     val listState = rememberLazyListState()
 
@@ -208,9 +215,9 @@ fun SyncedLyricsView(
     val viewportSize by remember { derivedStateOf { listState.layoutInfo.viewportSize } }
     val density = LocalDensity.current
     val textMeasurer = rememberTextMeasurer()
-    val lyricStyle = LocalTextStyle.current.copy(fontSize = 28.sp, lineHeight = 40.sp,
+    val lyricStyle = LocalTextStyle.current.copy(fontSize = lyricsTextSize.sp, lineHeight = (40 * lyricsTextScale).sp,
         fontWeight = FontWeight.ExtraBold, fontFamily = FontFamily.SansSerif, textAlign = TextAlign.Start)
-    val romanizationStyle = LocalTextStyle.current.copy(fontSize = 14.sp, lineHeight = 18.sp,
+    val romanizationStyle = LocalTextStyle.current.copy(fontSize = (14 * lyricsTextScale).sp, lineHeight = (18 * lyricsTextScale).sp,
         fontWeight = FontWeight.Medium, textAlign = TextAlign.Start)
     val rowHeights = remember(lyrics?.trackId, lines, viewportSize.width, density, lyricStyle, romanizationStyle) { mutableMapOf<Int, Int>() }
     var hasInitialScrolled by remember(lyrics?.trackId, lines) { mutableStateOf(false) }
@@ -412,9 +419,9 @@ fun SyncedLyricsView(
                         if (!item.romanization.isNullOrBlank()) {
                             Text(
                                 text = item.romanization,
-                                fontSize = 14.sp,
+                                fontSize = romanizationStyle.fontSize,
                                 fontWeight = FontWeight.Medium,
-                                lineHeight = 18.sp,
+                                lineHeight = romanizationStyle.lineHeight,
                                 color = if (isActive) activeTextColor.copy(alpha = 0.85f) else inactiveTextColor.copy(alpha = 0.55f),
                                 textAlign = TextAlign.Start,
                                 modifier = Modifier.fillMaxWidth()
@@ -423,6 +430,7 @@ fun SyncedLyricsView(
 
                         // 2. Karaoke Line Text Composable
                         KaraokeLineItem(
+                            textSizeSp = lyricsTextSize,
                             line = item,
                             nextLine = lines.getOrNull(index + 1),
                             isActive = isActive,
@@ -455,6 +463,7 @@ fun SyncedLyricsView(
  */
 @Composable
 private fun KaraokeLineItem(
+    textSizeSp: Int,
     line: LyricLine,
     nextLine: LyricLine?,
     isActive: Boolean,
@@ -471,9 +480,9 @@ private fun KaraokeLineItem(
 ) {
     // Keep line wrapping and row height fixed as activity changes. Emphasis is a
     // top-anchored graphics transform, so it cannot invalidate the centering target.
-    val fontSize = 28.sp
+    val fontSize = textSizeSp.sp
     val fontWeight = FontWeight.ExtraBold
-    val lineHeight = 40.sp
+    val lineHeight = (textSizeSp * 40f / 28f).sp
     val glowFocus = animateFloatAsState(
         targetValue = if (isActive) 1f else 0f,
         animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing),

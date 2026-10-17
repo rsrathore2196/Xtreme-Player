@@ -39,6 +39,11 @@ object MusicCache {
     @Volatile
     private var simpleCacheInstance: SimpleCache? = null
 
+    /** Read an existing owner's index without opening/scanning a cache at startup. */
+    fun peekCacheUsage(): Pair<Long, Int>? = runCatching {
+        simpleCacheInstance?.let { it.cacheSpace to it.keys.size }
+    }.getOrNull()
+
     fun getSimpleCache(context: Context): SimpleCache {
         simpleCacheInstance?.let { return it }
         return synchronized(this) { simpleCacheInstance ?: run {
@@ -82,7 +87,14 @@ object MusicCache {
                 checkNotNull(delegate).read(buffer, offset, length)
             override fun getUri() = delegate?.uri
             override fun getResponseHeaders(): Map<String, List<String>> = delegate?.responseHeaders.orEmpty()
-            override fun close() { try { delegate?.close() } finally { delegate = null } }
+            override fun close() {
+                try { delegate?.close() } finally {
+                    delegate = null
+                    peekCacheUsage()?.let { (bytes, count) ->
+                        com.example.data.cache.SmartCacheManager.cacheUsageChanged(audioBytes = bytes, audioTrackCount = count)
+                    }
+                }
+            }
         } }
         // Media3 calls this on its loader thread. Refresh signed video URLs at load time,
         // including restored queues, without holding the UI thread or storing stale URLs.
@@ -206,6 +218,8 @@ object MusicCache {
                 if (cache.cacheSpace <= targetBytes.coerceAtLeast(0L)) break
                 cache.removeSpan(span)
             }
+            com.example.data.cache.SmartCacheManager.cacheUsageChanged(audioBytes = cache.cacheSpace,
+                audioTrackCount = cache.keys.size)
             (before - cache.cacheSpace).coerceAtLeast(0L)
         } catch (e: Exception) {
             android.util.Log.w("MusicCache", "Cache trim error: ${e.message}")

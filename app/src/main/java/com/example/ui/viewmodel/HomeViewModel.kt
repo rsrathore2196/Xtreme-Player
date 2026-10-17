@@ -52,6 +52,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -139,6 +140,7 @@ class HomeViewModel(
         com.example.recommendation.DiscoveryRequestCoordinator.homeScrolling(active)
     }
     private val restored = CompletableDeferred<Unit>()
+    private val additionalCacheRestored = CompletableDeferred<Unit>()
     private val essentialsLoaded = CompletableDeferred<Unit>()
     private val listeningCardsReady = CompletableDeferred<Unit>()
     private val startupRecommendationsComplete = CompletableDeferred<Unit>()
@@ -147,6 +149,7 @@ class HomeViewModel(
     private val favoritesLoaded = CompletableDeferred<Unit>()
     private var savedSignal: String? = initialCards?.signal
     private var savedGeneration = initialCards?.generation ?: -1L
+    private var restoredCatalogTracks = initialCards?.catalog
     private val lastEventStamps = mutableMapOf<Long, com.example.data.local.ActualPlayStamp>()
     private val retainedEvents = mutableMapOf<Long, ListeningEventEntity>()
     private fun profileKey(profile: UserProfile = _userProfile.value) = "${profile.countryCode}|${profile.languages.joinToString(",")}"
@@ -161,31 +164,32 @@ class HomeViewModel(
         repository.getFavoriteTracks().collect { emit(it) }
     }.onEach { favoritesLoaded.complete(Unit) }
         .flowOn(dataDispatcher).stateIn(dataScope, SharingStarted.Eagerly, emptyList())
-    private val historyLimit = MutableStateFlow(300)
+    private val historicalReload = MutableStateFlow(0L)
+    @Volatile private var historicalLoadFailed = false
     private val historyReadyForRanking = MutableStateFlow(false)
     private val actualPlays = flow {
             restored.await()
             favoritesLoaded.await()
             BackgroundWorkCoordinator.awaitFirstFrame()
             var previousCount = -1
-            var previousLimit = -1
             var previousIds: Set<Long>? = null
             combine(listeningEventDao.observeActualPlayStamps(),
-                listeningEventDao.observeActualPlayCount().distinctUntilChanged(), historyLimit) { stamps, count, limit -> Triple(stamps, count, limit) }
-                .flowOn(Dispatchers.IO).collect { (stamps, count, limit) ->
+                listeningEventDao.observeActualPlayCount().distinctUntilChanged()) { stamps, count -> stamps to count }
+                .flowOn(Dispatchers.IO).collect { (stamps, count) ->
                 val ids = stamps.mapTo(mutableSetOf()) { it.id }
-                val reloadHistory = previousIds != ids || previousCount != count || previousLimit != limit
-                // Restore the long-term window once, and on structural history changes only.
-                // Playback milestones update at most 250 rows without truncating older preferences.
+                val reloadHistory = previousIds != ids || previousCount != count
+                val rebuildOlder = previousCount >= 0 && (count < previousCount || count > previousCount + 1 ||
+                    count == previousCount && previousIds != ids || historicalLoadFailed && count != previousCount)
+                // Only the visible recent window is reactive. Older personalization
+                // data is loaded separately, in cancellable keyset batches.
                 if (reloadHistory) {
                     val history = withContext(Dispatchers.IO) {
-                        BackgroundWorkCoordinator.work { listeningEventDao.getActualPlays(limit) }
+                        BackgroundWorkCoordinator.work { listeningEventDao.getActualPlays(300) }
                     }
                     retainedEvents.clear()
                     history.forEach { retainedEvents[it.id] = it }
                     previousIds = ids
                     previousCount = count
-                    previousLimit = limit
                     lastEventStamps.clear()
                 }
                 val changed = if (reloadHistory) emptyList() else stamps.filter { lastEventStamps[it.id] != it }.map { it.id }
@@ -193,11 +197,12 @@ class HomeViewModel(
                 val rows = withContext(Dispatchers.IO) { pages.flatMap { listeningEventDao.getEventsByIds(it) } }
                 rows.forEach { retainedEvents[it.id] = it }
                 lastEventStamps.clear(); stamps.forEach { lastEventStamps[it.id] = it }
-                emit(withContext(workerDispatcher) { retainedEvents.values.sortedByDescending { it.timestamp }.take(5000) })
-                // The bounded initial history is sufficient; long-term expansion is optional.
+                emit(withContext(workerDispatcher) { retainedEvents.values.sortedWith(compareByDescending<ListeningEventEntity> { it.timestamp }.thenByDescending { it.id }).take(300) })
+                // Visible history is ready independently of long-term preparation.
                 historyReadyForRanking.value = true
                 if (stamps.isEmpty()) { cachedHero.value = null; cachedHistory.value = null }
                 eventsLoaded.complete(Unit)
+                if (rebuildOlder) historicalReload.update { it + 1L }
             }
     }.flowOn(dataDispatcher).stateIn(dataScope, SharingStarted.Eagerly, emptyList())
     private data class HistoryRows(val ids: List<String> = emptyList(), val tracks: List<MusicTrack> = emptyList())
@@ -209,23 +214,85 @@ class HomeViewModel(
             withContext(workerDispatcher) { HistoryRows(ids, groups.flatMap { rows -> rows.map { it.toMusicTrack() } }) }
         }
     }.flowOn(dataDispatcher).stateIn(dataScope, SharingStarted.Eagerly, HistoryRows())
+    private data class PersonalizationHistory(val events: List<ListeningEventEntity> = emptyList(),
+        val tracks: List<MusicTrack> = emptyList(), val ready: Boolean = false)
+    private val historicalRows = MutableStateFlow(PersonalizationHistory())
+    // Long-term rows never expand the visible Room observer or its metadata query.
+    // Reuse old metadata and merge only the changed recent window on milestones.
+    private val personalizationHistory = flow {
+        var source: PersonalizationHistory? = null
+        var recentIds: List<Long> = emptyList()
+        var recentTrackIds: List<String> = emptyList()
+        var tail = emptyList<ListeningEventEntity>()
+        var trackTail = emptyList<MusicTrack>()
+        var retained = PersonalizationHistory()
+        combine(actualPlays, historyRows, historicalRows, historyReadyForRanking) { recent, rows, older, ready ->
+            if (!ready || rows.ids != recent.map { it.trackId }.distinct()) return@combine null
+            withContext(workerDispatcher) {
+                val ids = recent.map { it.id }
+                val tracks = rows.tracks.map { it.id }
+                if (older !== source || ids != recentIds) {
+                    val liveIds = ids.toHashSet()
+                    // Carry plays that age out of the 300-row observer forward,
+                    // and rebuild the old tail only when membership really changes.
+                    val base = if (older !== source) older.events else retained.events
+                    tail = base.filterNot { it.id in liveIds }.take((5000 - recent.size).coerceAtLeast(0))
+                }
+                if (older !== source || tracks != recentTrackIds || ids != recentIds) {
+                    val liveIds = tracks.toHashSet()
+                    val activeIds = (recent.asSequence() + tail.asSequence()).map { it.trackId }.toHashSet()
+                    val base = if (older !== source) older.tracks else retained.tracks
+                    trackTail = base.filter { it.id !in liveIds && it.id in activeIds }
+                }
+                source = older; recentIds = ids; recentTrackIds = tracks
+                PersonalizationHistory(recent + tail, rows.tracks + trackTail, true).also { retained = it }
+            }
+        }.filterNotNull().collect { emit(it) }
+    }.flowOn(dataDispatcher).stateIn(dataScope, SharingStarted.Eagerly, PersonalizationHistory())
+
+    private suspend fun loadHistoricalPersonalization() {
+        val recent = combine(actualPlays, historyRows) { events, rows -> events to rows }
+            .first { (events, rows) -> eventsLoaded.isCompleted && rows.ids == events.map { it.trackId }.distinct() }
+            .let { (events, rows) -> PersonalizationHistory(events, rows.tracks, true) }
+        val events = recent.events.associateByTo(linkedMapOf()) { it.id }
+        val metadata = recent.tracks.associateByTo(linkedMapOf()) { it.id }
+        var cursor = recent.events.lastOrNull()
+        while (cursor != null && events.size < 5000) {
+            val before = cursor
+            val batch = BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.DEFERRED) {
+                val page = listeningEventDao.getActualPlaysBefore(before.timestamp, before.id,
+                    minOf(200, 5000 - events.size))
+                val missing = page.map { it.trackId }.distinct().filterNot(metadata::containsKey)
+                val tracks = if (missing.isEmpty()) emptyList() else database.musicDao().getTracksByIds(missing)
+                page to withContext(workerDispatcher) { tracks.map { it.toMusicTrack() } }
+            }
+            if (batch.first.isEmpty()) break
+            batch.first.forEach { events[it.id] = it }
+            batch.second.forEach { metadata[it.id] = it }
+            cursor = batch.first.last()
+        }
+        currentCoroutineContext().ensureActive()
+        // One publication, not one taste/ranking/render pass per history page.
+        historicalRows.value = PersonalizationHistory(events.values.toList(), metadata.values.toList(), true)
+    }
+
     private data class TasteInputs(val events: List<ListeningEventEntity>, val tracks: List<MusicTrack>,
         val favorites: List<MusicTrack>, val preferences: UserProfile)
     private data class TasteSnapshot(val inputs: TasteInputs? = null,
         val taste: UserTasteProfile = UserTasteProfile.COLD_START_PROFILE)
     private var lastTasteInputs: TasteInputs? = null
     private var retainedTaste = UserTasteProfile.COLD_START_PROFILE
-    private val tasteSnapshot = combine(actualPlays, historyRows, favoriteTracks, _userProfile, historyReadyForRanking) { events, rows, favorites, preferences, ready ->
-        if (ready && rows.ids == events.map { it.trackId }.distinct())
-            TasteInputs(events, rows.tracks, favorites, preferences) else null
-    }.filterNotNull().distinctUntilChanged().mapLatest { inputs ->
+    private val tasteSnapshot = combine(personalizationHistory, favoriteTracks, _userProfile) { history, favorites, preferences ->
+        if (history.ready) TasteInputs(history.events, history.tracks, favorites, preferences) else null
+    }.filterNotNull().distinctUntilChanged().debounce(300L).mapLatest { inputs ->
         restored.await()
         eventsLoaded.await(); favoritesLoaded.await()
         // Restarting a screen subscription is not a new listening signal. Keep the same decay
         // snapshot until real data changes, rather than reshuffling on every tab return.
         if (inputs != lastTasteInputs) {
             awaitHomeIdle()
-            BackgroundWorkCoordinator.work {
+            BackgroundWorkCoordinator.startup(if (!deferredHomeReady) BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI
+                else BackgroundWorkCoordinator.StartupPriority.DEFERRED) {
                 val taste = withContext(workerDispatcher) {
                     UserTasteProfile.fromEvents(inputs.events, inputs.tracks, inputs.favorites)
                 }
@@ -240,12 +307,12 @@ class HomeViewModel(
     }.flowOn(dataDispatcher).stateIn(dataScope, SharingStarted.WhileSubscribed(5000L), TasteSnapshot())
     private val tasteProfile = tasteSnapshot.map { it.taste }
         .stateIn(dataScope, SharingStarted.WhileSubscribed(5000L), UserTasteProfile.COLD_START_PROFILE)
-    val recentlyPlayed: StateFlow<List<MusicTrack>> = combine(actualPlays, historyRows, cachedHistory) { events, rows, cached ->
-        if (!eventsLoaded.isCompleted || rows.ids != events.map { it.trackId }.distinct() || events.none(UserTasteProfile::played)) cached.orEmpty() else {
-            val byId = rows.tracks.associateBy { it.id }
+    val recentlyPlayed: StateFlow<List<MusicTrack>> = combine(personalizationHistory, cachedHistory) { history, cached ->
+        if (!eventsLoaded.isCompleted || !history.ready || history.events.none(UserTasteProfile::played)) cached.orEmpty() else {
+            val byId = history.tracks.associateBy { it.id }
             val seen = HomeRecommendationPolicy.Recordings()
             // The DAO already orders newest first; stop once the visible history is filled.
-            events.asSequence().filter(UserTasteProfile::played)
+            history.events.asSequence().filter(UserTasteProfile::played)
                 .mapNotNull { byId[it.trackId] }.filter { seen.add(it) }.take(30).toList()
         }
     }.flowOn(dataDispatcher).stateIn(dataScope, SharingStarted.WhileSubscribed(5000L), cachedHistory.value.orEmpty())
@@ -436,16 +503,17 @@ class HomeViewModel(
         // before Room commits it, without re-querying all history and metadata.
         restored.await()
         eventsLoaded.await()
-        val (events, rows) = combine(actualPlays, historyRows) { events, rows -> events to rows }
+        val (_, rows) = combine(actualPlays, historyRows) { events, rows -> events to rows }
             .first { (events, rows) -> rows.ids == events.map { it.trackId }.distinct() }
+        val longTerm = personalizationHistory.first { it.ready }
         val pending = pendingCardPlays.toMap()
         val (recent, artists, committed) = withContext(workerDispatcher) {
-            val played = events.filter(UserTasteProfile::played)
+            val played = longTerm.events.filter(UserTasteProfile::played)
             val recorded = played.mapTo(mutableSetOf()) { it.sessionId to it.trackId }
             val uncommitted = pending.filter { (session, track) -> (session to track.id) !in recorded }
             val liveTracks = uncommitted.values.toList().asReversed()
             val metadata = rows.tracks
-            val tracks = (liveTracks + metadata).distinctBy { it.id }
+            val tracks = (liveTracks + metadata + longTerm.tracks).distinctBy { it.id }
             val byId = tracks.associateBy { it.id }
             val seen = HomeRecommendationPolicy.Recordings()
             val recentTracks = (liveTracks.asSequence() +
@@ -455,39 +523,62 @@ class HomeViewModel(
             Triple(recentTracks, rankListenedArtists(plays, tracks), recorded)
         }
         currentCoroutineContext().ensureActive()
+        if (pending.isEmpty() && historicalRows.value.ready) {
+            homeScrolling.first { !it }
+            BackgroundWorkCoordinator.awaitNavigationIdle()
+        }
         listeningCardsPublished = true
         val changed = _listeningHistoryCard.value.tracks != recent || _mostListenedArtists.value != artists
         _listeningHistoryCard.update { it.copy(tracks = recent, isLoaded = recent.isNotEmpty(), isLoading = false) }
         _mostListenedArtists.value = artists
         pendingCardPlays.entries.removeAll { (it.key to it.value.id) in committed }
         listeningCardsReady.complete(Unit)
-        if (changed) shelfCache.peek(profileKey())?.let { saved ->
+        if (changed && additionalCacheRestored.isCompleted) shelfCache.peekFull(profileKey())?.let { saved ->
             shelfCache.save(saved.copy(history = _listeningHistoryCard.value, artists = artists.take(20)))
         }
     }
 
+    private data class ArtistCredits(val artist: String, val singers: String, val keys: List<String>, val names: Map<String, String>)
+    private var rankedArtistCredits: Map<String, ArtistCredits> = emptyMap()
+    private var countedArtistPlays: Map<Pair<String, String>, List<String>> = emptyMap()
+    private var artistPlayCounts: Map<String, Int> = emptyMap()
     private suspend fun rankListenedArtists(plays: List<Pair<String, String>>, tracks: List<MusicTrack>) =
         withContext(workerDispatcher) {
             val byId = tracks.associateBy { it.id }
-            val counts = linkedMapOf<String, Int>()
-            val names = mutableMapOf<String, String>()
+            val credits = byId.mapValues { (id, track) ->
+                rankedArtistCredits[id]?.takeIf { it.artist == track.artist && it.singers == track.singers } ?: run {
+                    val keys = HomeRecommendationPolicy.artists(track)
+                    val display = keys.associateWith { key -> (track.artist + "," + track.singers).split(',')
+                        .firstOrNull { HomeRecommendationPolicy.normalize(it) == key }?.trim() ?: key }
+                    ArtistCredits(track.artist, track.singers, keys, display)
+                }
+            }
+            val current = linkedMapOf<Pair<String, String>, List<String>>()
+            plays.forEach { play -> credits[play.second]?.let { current.putIfAbsent(play, it.keys) } }
+            val counts = artistPlayCounts.toMutableMap()
+            // Only new/removed sessions or changed artist credits adjust totals.
+            countedArtistPlays.forEach { (play, keys) -> if (current[play] != keys)
+                keys.forEach { counts[it] = (counts[it] ?: 0) - 1 } }
+            current.forEach { (play, keys) -> if (countedArtistPlays[play] != keys)
+                keys.forEach { counts[it] = (counts[it] ?: 0) + 1 } }
+            val names = linkedMapOf<String, String>()
             val artistTracks = mutableMapOf<String, MutableList<MusicTrack>>()
-            val sessions = mutableSetOf<Pair<String, String>>()
-            for (play in plays) {
+            current.forEach { (play, keys) ->
                 currentCoroutineContext().ensureActive()
-                if (!sessions.add(play)) continue
-                val track = byId[play.second] ?: continue
-                for (artist in HomeRecommendationPolicy.artists(track)) {
-                    counts[artist] = (counts[artist] ?: 0) + 1
-                    names.putIfAbsent(artist, (track.artist + "," + track.singers).split(',')
-                        .firstOrNull { HomeRecommendationPolicy.normalize(it) == artist }?.trim() ?: artist)
+                val track = byId.getValue(play.second)
+                val display = credits.getValue(play.second).names
+                keys.forEach { artist ->
+                    names.putIfAbsent(artist, display.getValue(artist))
                     val songs = artistTracks.getOrPut(artist) { mutableListOf() }
                     if (songs.size < 3 && songs.none { it.id == track.id }) songs.add(track)
                 }
             }
-            counts.entries.sortedByDescending { it.value }.take(20).map { (artist, count) ->
-                MostListenedArtist(names.getValue(artist), count, artistTracks.getValue(artist).toList())
+            val result = names.keys.sortedByDescending { counts[it] ?: 0 }.take(20).map { artist ->
+                MostListenedArtist(names.getValue(artist), counts.getValue(artist), artistTracks.getValue(artist).toList())
             }
+            currentCoroutineContext().ensureActive()
+            rankedArtistCredits = credits; countedArtistPlays = current; artistPlayCounts = counts.filterValues { it > 0 }
+            result
         }
     private val renderMutex = Mutex()
     private var renderedGeneration = -1L
@@ -503,6 +594,7 @@ class HomeViewModel(
 
     private suspend fun renderRecommendations() = withContext(workerDispatcher) { renderMutex.withLock {
         restored.await()
+        additionalCacheRestored.await()
         // General verified cards are independent of slow Room/taste initialization.
         // Batches are verified snapshots. Presentation below defers replacements
         // during scrolling/navigation without holding up background matching.
@@ -511,8 +603,9 @@ class HomeViewModel(
         // Never make verified general shelves wait for the long-term history
         // expansion/idle gate. Personalized cards keep their previous snapshot
         // until a coherent taste generation becomes available.
-        val snapshot = ReadyHomeInputs(actualPlays.value, historyRows.value, favoriteTracks.value,
-            _userProfile.value, tasteSnapshot.value)
+        val history = personalizationHistory.value
+        val snapshot = ReadyHomeInputs(history.events, HistoryRows(history.events.map { it.trackId }.distinct(), history.tracks),
+            favoriteTracks.value, _userProfile.value, tasteSnapshot.value)
         val rankingReady = snapshot.rows.ids == snapshot.events.map { it.trackId }.distinct() &&
             snapshot.taste.inputs?.let { input -> input.events == snapshot.events &&
                 input.tracks == snapshot.rows.tracks && input.favorites == snapshot.favorites &&
@@ -719,6 +812,36 @@ class HomeViewModel(
       }
     }
 
+    private fun restoreCachedCards(cached: SavedHomeCards, additional: Boolean) {
+        if (cached.profileKey != profileKey()) return
+        savedSignal = cached.signal; savedGeneration = cached.generation
+        _ytmCard.value = cached.quick.limitShelf(); _eraCard.value = cached.era.limitShelf()
+        _countryLanguageCard.value = cached.chart.limitShelf(); _personalizedCard.value = cached.personalized.limitShelf()
+        _similarArtistsCard.value = cached.similarArtists.limitShelf(); _inspiredTrackCard.value = cached.inspiredTrack.limitShelf()
+        // Room/live playback wins over a late full-cache restore.
+        if (!listeningCardsPublished) {
+            _listeningHistoryCard.value = cached.history
+            _mostListenedArtists.value = cached.artists.take(20)
+            cachedHero.value = cached.history.tracks.firstOrNull() ?: cached.catalog.firstOrNull()
+            cachedHistory.value = cached.history.tracks
+        }
+        if (!additional || _catalogTracks.value.isEmpty() || _catalogTracks.value == restoredCatalogTracks)
+            _catalogTracks.value = cached.catalog
+        if (!additional) restoredCatalogTracks = cached.catalog
+        candidates.value = restoredCandidates(cached)
+        savedCandidates = candidates.value
+        lastDiscoveryRefresh = cached.refreshedAt.takeIf { cached.recommendationSource == UnifiedRecommendationEngine.SOURCE } ?: 0L
+        lastRegionalRefresh = cached.chartRefreshedAt
+        shelfLoads.clear(); shelfLoads.putAll(cached.shelfLoads)
+        if (_ytmCard.value.tracks.isEmpty() && _countryLanguageCard.value.tracks.isEmpty()) {
+            shelfLoads.remove(Shelf.QUICK.name); shelfAttempts.remove(Shelf.QUICK)
+        }
+        playbackManager.setCandidatePool(_catalogTracks.value)
+        // Public recommendation consumers receive one coherent, equality-checked value.
+        val snapshot = recommendationSnapshot()
+        if (_recommendationCards.value != snapshot) _recommendationCards.value = snapshot
+    }
+
     init {
         ownerScope.launch {
             restored.await()
@@ -726,15 +849,18 @@ class HomeViewModel(
             eventsLoaded.await()
             listeningCardsReady.await()
             essentialsLoaded.complete(Unit)
+            BackgroundWorkCoordinator.homeContentReady()
             // Cached cards or a small completed bootstrap are sufficient for the
             // first Home. Deeper rankings/discovery follow a real idle window.
             startupRecommendationsComplete.await()
+            BackgroundWorkCoordinator.optionalRecommendationsReady()
             awaitHomeIdle(allowWhenEmpty = false, quietMillis = 750L)
             deferredHomeReady = true
             _currentStage.value = LoadingStage.PRIORITY_3_BACKGROUND_ENRICHED
-            BackgroundWorkCoordinator.homeContentReady()
             if (_catalogTracks.value.isEmpty()) {
-                val initial = repository.getInitialCatalog(_userProfile.value)
+                val initial = BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.DEFERRED) {
+                    repository.getInitialCatalog(_userProfile.value)
+                }
                 if (_catalogTracks.value.isEmpty()) _catalogTracks.value = initial
                 playbackManager.setCandidatePool(_catalogTracks.value)
             }
@@ -744,9 +870,29 @@ class HomeViewModel(
                 shelfAttempts.remove(Shelf.QUICK)
             }
             refreshHome(false)
-            dataScope.launch {
-                awaitHomeIdle(allowWhenEmpty = false)
-                historyLimit.value = 5000
+        }
+        dataScope.launch {
+            essentialsLoaded.await()
+            historicalReload.collectLatest {
+                // Rebuild older pages only after structural import/deletion changes;
+                // normal playback milestones merge into the retained long-term window.
+                historicalLoadFailed = false
+                for (attempt in 0..1) {
+                    try {
+                        loadHistoricalPersonalization()
+                        historicalLoadFailed = false
+                        break
+                    } catch (e: CancellationException) { throw e }
+                    catch (e: Exception) {
+                        if (attempt == 1) historicalLoadFailed = true
+                        android.util.Log.w("HomeViewModel", "Historical personalization unavailable", e)
+                    }
+                }
+            }
+        }
+        dataScope.launch {
+            BackgroundWorkCoordinator.uiForeground.collect { visible ->
+                if (visible && historicalLoadFailed) historicalReload.update { it + 1L }
             }
         }
         ownerScope.launch {
@@ -804,44 +950,40 @@ class HomeViewModel(
         }
         ownerScope.launch {
           try {
-            BackgroundWorkCoordinator.awaitFirstFrame()
-            val cached = initialCards ?: shelfCache.read(profileKey())
-            if (cached != null) {
-                savedSignal = cached.signal; savedGeneration = cached.generation
-                _ytmCard.value = cached.quick.limitShelf(); _eraCard.value = cached.era.limitShelf()
-                _countryLanguageCard.value = cached.chart.limitShelf()
-                _personalizedCard.value = cached.personalized.limitShelf()
-                _similarArtistsCard.value = cached.similarArtists.limitShelf()
-                _inspiredTrackCard.value = cached.inspiredTrack.limitShelf()
-                _recommendationCards.value = recommendationSnapshot()
-                // A late cache restore must not overwrite a confirmed playback-start update.
-                if (!listeningCardsPublished) {
-                    _listeningHistoryCard.value = cached.history
-                    _mostListenedArtists.value = cached.artists.take(20)
-                }
-                _catalogTracks.value = cached.catalog
-                cachedHero.value = cached.history.tracks.firstOrNull() ?: cached.catalog.firstOrNull()
-                cachedHistory.value = cached.history.tracks
-                candidates.value = restoredCandidates(cached)
-                savedCandidates = candidates.value
-                lastDiscoveryRefresh = cached.refreshedAt.takeIf {
-                    cached.recommendationSource == UnifiedRecommendationEngine.SOURCE } ?: 0L
-                lastRegionalRefresh = cached.chartRefreshedAt
-                shelfLoads.clear(); shelfLoads.putAll(cached.shelfLoads)
-                playbackManager.setCandidatePool(cached.catalog)
+            val cached = BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI) {
+                initialCards ?: shelfCache.readInitial(profileKey())
             }
+            if (cached != null) restoreCachedCards(cached, additional = false)
             if (_ytmCard.value.tracks.isNotEmpty() || _countryLanguageCard.value.tracks.isNotEmpty())
                 startupRecommendationsComplete.complete(Unit)
             else {
-                // A filtered/empty snapshot is not a completed first shelf, even
-                // if its previous freshness marker has not expired yet.
                 shelfLoads.remove(Shelf.QUICK.name)
                 shelfAttempts.remove(Shelf.QUICK)
             }
           } finally {
             _currentStage.value = LoadingStage.PRIORITY_2_ESSENTIAL_CONTENT
             restored.complete(Unit)
+            BackgroundWorkCoordinator.cachedHomeRestored()
           }
+        }
+        ownerScope.launch {
+            restored.await()
+            essentialsLoaded.await()
+            val key = profileKey()
+            try {
+                val cached = shelfCache.peekFull(key) ?: BackgroundWorkCoordinator.startup(
+                    BackgroundWorkCoordinator.StartupPriority.DEFERRED,
+                    urgent = { pendingExplicitRefresh }) { shelfCache.read(key) }
+                if (cached != null && key == profileKey()) {
+                    awaitHomePresentation()
+                    restoreCachedCards(cached, additional = true)
+                    if (listeningCardsPublished) shelfCache.save(cached.copy(history = _listeningHistoryCard.value,
+                        artists = _mostListenedArtists.value.take(20)))
+                }
+            } finally {
+                // Partial first-read snapshots must never overwrite full disk pools.
+                additionalCacheRestored.complete(Unit)
+            }
         }
         ownerScope.launch {
             val profiles = withContext(Dispatchers.IO) { UserProfilePreferences.getUserProfileFlow(getApplication()) }
@@ -854,15 +996,10 @@ class HomeViewModel(
         ownerScope.launch {
             restored.await()
             eventsLoaded.await()
-            val artistHistory = actualPlays.map { events -> ArtistHistory(
-                events.asSequence().filter(UserTasteProfile::played)
-                    .map { it.sessionId to it.trackId }.distinct().toList(),
-                events.map { it.trackId }.distinct())
-            }.distinctUntilChanged()
-            combine(artistHistory, historyRows) { history, rows -> history to rows }
-                .distinctUntilChanged().collect { (history, rows) ->
-                    if (rows.ids == history.trackIds) listeningCardRequests.update { it + 1 }
-                }
+            personalizationHistory.filter { it.ready }.map { history ->
+                ArtistHistory(history.events.asSequence().filter(UserTasteProfile::played)
+                    .map { it.sessionId to it.trackId }.distinct().toList(), history.tracks.map { it.id }) to history.tracks
+            }.distinctUntilChanged().collect { listeningCardRequests.update { it + 1 } }
         }
         ownerScope.launch {
             combine(candidates, tasteProfile, favoriteTracks, _userProfile, recentlyPlayed) { pool, taste, favorites, profile, recent ->
@@ -955,6 +1092,9 @@ class HomeViewModel(
     fun refreshHome(isExplicitPull: Boolean = true, requestedShelves: Set<Shelf>? = null) {
         // Request ownership and short publication blocks share the IO owner.
         ownerScope.launch {
+            restored.await()
+            if (isExplicitPull && !additionalCacheRestored.isCompleted) pendingExplicitRefresh = true
+            additionalCacheRestored.await()
             if (!homeVisible.value) {
                 if (isExplicitPull) pendingExplicitRefresh = true else pendingSilentRefresh = true
                 return@launch
@@ -1023,9 +1163,15 @@ class HomeViewModel(
                         if (Shelf.QUICK in requested) _ytmCard.update { it.copy(isLoading = it.tracks.isEmpty(), isError = false, errorMessage = "") }
                         if (Shelf.ERA in requested) _eraCard.update { it.copy(isLoading = it.tracks.isEmpty(), isError = false, errorMessage = "") }
                         try {
-                            val completed = withTimeoutOrNull(40_000L) {
-                                refreshSuggestions(activeRefreshIsExplicit, requested, startupBatch && !activeRefreshIsExplicit)
-                                true
+                            val completed = BackgroundWorkCoordinator.startup(
+                                if (activeRefreshIsExplicit) BackgroundWorkCoordinator.StartupPriority.CRITICAL
+                                else if (startupBatch) BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI
+                                else BackgroundWorkCoordinator.StartupPriority.DEFERRED,
+                                urgent = { activeRefreshIsExplicit }) {
+                                withTimeoutOrNull(40_000L) {
+                                    refreshSuggestions(activeRefreshIsExplicit, requested, startupBatch && !activeRefreshIsExplicit)
+                                    true
+                                }
                             }
                             if (completed == null && generation == refreshGeneration)
                                 _refreshErrorMessage.value = "Refresh took too long. Your existing cards have been kept. Please retry."
@@ -1094,7 +1240,7 @@ class HomeViewModel(
         val fresh = linkedMapOf<String, MusicTrack>()
         try {
             repository.recommendations.refresh(profile, country, tasteProfile.value, seed,
-                historyRows.value.tracks, favoriteTracks.value, _catalogTracks.value, force, shelves = enabled, startupBatch = startupBatch).collect { batch ->
+                personalizationHistory.value.tracks, favoriteTracks.value, _catalogTracks.value, force, shelves = enabled, startupBatch = startupBatch).collect { batch ->
                 currentCoroutineContext().ensureActive()
                 if (profileKey() != profileKey(profile)) return@collect
                 val sameSeed = UnifiedRecommendationEngine.seedKey(activeRecommendationTrack()) == batch.seedKey
@@ -1152,8 +1298,8 @@ class HomeViewModel(
             if (fresh.isNotEmpty()) {
                 val verified = fresh.values.toList()
                 dataScope.launch {
-                    BackgroundWorkCoordinator.awaitIdle(requireForeground = false)
-                    repository.cacheRecommendationTracks(verified)
+                    BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.DEFERRED,
+                        requireForeground = false) { repository.cacheRecommendationTracks(verified) }
                 }
                 _catalogTracks.value = withContext(workerDispatcher) {
                     HomeRecommendationPolicy.originals(verified + _catalogTracks.value).take(300) }

@@ -59,6 +59,7 @@ object AppUpdateManager {
     private var receiver: BroadcastReceiver? = null
     private var polling: Job? = null
     private var checking: Job? = null
+    @Volatile private var manualCheckRequested = false
     private var installing = false
     private data class Session(val id: Long, val info: UpdateInfo, val name: String, val created: Long,
         val ready: Boolean = false, val installRequested: Boolean = true, val waitingPermission: Boolean = false)
@@ -118,23 +119,42 @@ object AppUpdateManager {
     fun onBackground() { foreground = false; polling?.cancel(); polling = null }
 
     fun checkForUpdate(context: Context, isManual: Boolean = false, onResult: ((UpdateStatus) -> Unit)? = null) {
-        if (checking?.isActive == true) return
+        if (checking?.isActive == true) {
+            if (isManual) manualCheckRequested = true
+            return
+        }
+        manualCheckRequested = isManual
         val app = context.applicationContext
-        checking = scope.launch { operations.withLock {
+        checking = scope.launch {
             try {
-                restore(app)
-                if (session != null) { inspect(app); startMonitoring(app); onResult?.invoke(_updateStatus.value); return@withLock }
-                _updateStatus.value = UpdateStatus.Checking
-                val result = withContext(Dispatchers.IO) { latestRelease() }
-                _updateStatus.value = result
-                if (isManual) _isDismissedForSession.value = false
-                onResult?.invoke(result)
+                val recovering = operations.withLock {
+                    restore(app)
+                    if (session != null) {
+                        inspect(app); startMonitoring(app); onResult?.invoke(_updateStatus.value); true
+                    } else false
+                }
+                if (recovering) return@launch
+                // Never hold the download/installer lock while waiting for optional
+                // startup admission. Recovery and manual checks remain immediate.
+                com.example.performance.BackgroundWorkCoordinator.startup(
+                    if (isManual) com.example.performance.BackgroundWorkCoordinator.StartupPriority.CRITICAL
+                    else com.example.performance.BackgroundWorkCoordinator.StartupPriority.MAINTENANCE,
+                    urgent = { manualCheckRequested }) {
+                    operations.withLock {
+                        if (session != null) { inspect(app); startMonitoring(app); return@withLock }
+                        _updateStatus.value = UpdateStatus.Checking
+                        val result = withContext(Dispatchers.IO) { latestRelease() }
+                        _updateStatus.value = result
+                        if (manualCheckRequested) _isDismissedForSession.value = false
+                        onResult?.invoke(result)
+                    }
+                }
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) {
                 val error = UpdateStatus.Error(e.message ?: "Could not check for updates.")
                 _updateStatus.value = error; onResult?.invoke(error)
             }
-        } }
+        }
     }
     private fun get(url: String, maxBytes: Long = 2_000_000): String = client.newCall(Request.Builder().url(url)
         .header("Accept", "application/vnd.github+json").header("User-Agent", "Xtreme-Player-Android/${BuildConfig.VERSION_NAME}").build())

@@ -66,8 +66,10 @@ object LyricsProvider {
     private val lookups = mutableMapOf<String, LyricsFlight>()
     private var lastDiskTrimAt = 0L
 
-    private fun cacheLyrics(trackId: String, lyrics: TrackLyrics, complete: Boolean = true) {
-        if (trackId.isNotBlank()) lyricsCache.put(trackId, MemoryLyrics(lyrics, System.currentTimeMillis(), complete))
+    private fun providerKey(provider: String) = if (provider == "Auto") "" else "provider_${safeHash(provider)}_"
+    private fun cacheLyrics(trackId: String, lyrics: TrackLyrics, complete: Boolean = true, provider: String = "Auto") {
+        if (trackId.isNotBlank()) lyricsCache.put(providerKey(provider) + trackId,
+            MemoryLyrics(lyrics, System.currentTimeMillis(), complete))
     }
 
     private fun getDiskCacheDir(): File? {
@@ -181,10 +183,10 @@ object LyricsProvider {
         }
     }
 
-    private fun getCachedLyrics(identity: SongIdentity, cleanTitle: String, primaryArtist: String, allowStale: Boolean = false): TrackLyrics? {
+    private fun getCachedLyrics(identity: SongIdentity, cleanTitle: String, primaryArtist: String, allowStale: Boolean = false, provider: String = "Auto"): TrackLyrics? {
         val trackId = identity.trackId ?: ""
         if (trackId.isNotBlank()) {
-            lyricsCache.get(trackId)?.let {
+            lyricsCache.get(providerKey(provider) + trackId)?.let {
                 if (!allowStale && !it.complete) return null
                 if (it.lyrics.lines.isNotEmpty() && (allowStale || it.complete && System.currentTimeMillis() - it.cachedAt < CACHE_TTL_MS)) return it.lyrics
             }
@@ -193,10 +195,10 @@ object LyricsProvider {
         val dir = getDiskCacheDir() ?: return null
 
         if (trackId.isNotBlank()) {
-            val trackFile = File(dir, "trk_${safeHash(trackId)}.json")
+            val trackFile = File(dir, "${providerKey(provider)}trk_${safeHash(trackId)}.json")
             loadFromDisk(trackFile, allowStale)?.let {
                 if (!allowStale) {
-                    cacheLyrics(trackId, it)
+                    cacheLyrics(trackId, it, provider = provider)
                 }
                 Log.i(TAG, "Hit disk lyrics cache for '${identity.title}' (track ID)")
                 return it
@@ -205,10 +207,10 @@ object LyricsProvider {
 
         val isrcKey = identity.isrc?.trim()?.uppercase() ?: ""
         if (isrcKey.isNotBlank()) {
-            val isrcFile = File(dir, "isrc_${safeHash(isrcKey)}.json")
+            val isrcFile = File(dir, "${providerKey(provider)}isrc_${safeHash(isrcKey)}.json")
             loadFromDisk(isrcFile, allowStale)?.let {
                 val mapped = if (trackId.isNotBlank()) it.copy(trackId = trackId) else it
-                if (!allowStale) cacheLyrics(trackId, mapped)
+                if (!allowStale) cacheLyrics(trackId, mapped, provider = provider)
                 Log.i(TAG, "Hit disk lyrics cache for '${identity.title}' (ISRC $isrcKey)")
                 return mapped
             }
@@ -216,10 +218,10 @@ object LyricsProvider {
 
         val metaKey = "${normalizeForLookup(identity.title)}_${normalizeForLookup(primaryArtist)}_${(identity.durationMs ?: 0L) / 1000}"
         if (metaKey.length > 2) {
-            val metaFile = File(dir, "meta_${safeHash(metaKey)}.json")
+            val metaFile = File(dir, "${providerKey(provider)}meta_${safeHash(metaKey)}.json")
             loadFromDisk(metaFile, allowStale)?.let {
                 val mapped = if (trackId.isNotBlank()) it.copy(trackId = trackId) else it
-                if (!allowStale) cacheLyrics(trackId, mapped)
+                if (!allowStale) cacheLyrics(trackId, mapped, provider = provider)
                 Log.i(TAG, "Hit disk lyrics cache for '${identity.title}' (metadata)")
                 return mapped
             }
@@ -234,10 +236,11 @@ object LyricsProvider {
         cleanTitle: String,
         primaryArtist: String,
         lyrics: TrackLyrics,
-        isrc: String = ""
+        isrc: String = "",
+        provider: String = "Auto"
     ) {
         val trackId = identity.trackId ?: lyrics.trackId
-        cacheLyrics(trackId, lyrics)
+        cacheLyrics(trackId, lyrics, provider = provider)
         if (lyrics.lines.isEmpty()) return
 
         val dir = getDiskCacheDir() ?: return
@@ -297,19 +300,19 @@ object LyricsProvider {
             val content = json.toString()
 
             if (trackId.isNotBlank()) {
-                val trackFile = File(dir, "trk_${safeHash(trackId)}.json")
+                val trackFile = File(dir, "${providerKey(provider)}trk_${safeHash(trackId)}.json")
                 trackFile.writeText(content, Charsets.UTF_8)
             }
 
             val effectiveIsrc = isrc.ifBlank { identity.isrc ?: "" }.trim().uppercase()
             if (effectiveIsrc.isNotBlank()) {
-                val isrcFile = File(dir, "isrc_${safeHash(effectiveIsrc)}.json")
+                val isrcFile = File(dir, "${providerKey(provider)}isrc_${safeHash(effectiveIsrc)}.json")
                 isrcFile.writeText(content, Charsets.UTF_8)
             }
 
             val metaKey = "${normalizeForLookup(identity.title)}_${normalizeForLookup(primaryArtist)}_${(identity.durationMs ?: 0L) / 1000}"
             if (metaKey.length > 2) {
-                val metaFile = File(dir, "meta_${safeHash(metaKey)}.json")
+                val metaFile = File(dir, "${providerKey(provider)}meta_${safeHash(metaKey)}.json")
                 metaFile.writeText(content, Charsets.UTF_8)
             }
             // Freshness expiry is independent of storage limits; retain recent stale lyrics for outages.
@@ -343,11 +346,15 @@ object LyricsProvider {
 
     @Synchronized
     fun clearCacheForTrack(trackId: String) {
-        lyricsCache.remove(trackId)
+        com.example.data.local.OtherSettingsPreferences.LYRICS_PROVIDERS.forEach { provider ->
+            lyricsCache.remove(providerKey(provider) + trackId)
+        }
         try {
             val dir = getDiskCacheDir()
-            val file = File(dir, "trk_${safeHash(trackId)}.json")
-            if (file.exists()) file.delete()
+            com.example.data.local.OtherSettingsPreferences.LYRICS_PROVIDERS.forEach { provider ->
+                val file = File(dir, "${providerKey(provider)}trk_${safeHash(trackId)}.json")
+                if (file.exists()) file.delete()
+            }
         } catch (_: Exception) {}
         Log.d(TAG, "Cleared lyrics cache for track: $trackId")
     }
@@ -404,27 +411,30 @@ object LyricsProvider {
         forceRefresh: Boolean = false,
         onUpdate: (TrackLyrics) -> Unit = {}
     ): TrackLyrics = withContext(Dispatchers.Default) {
+        val provider = withContext(Dispatchers.IO) {
+            com.example.data.local.OtherSettingsPreferences.getLyricsProvider(XtremeMusicApp.instance)
+        }
         val (cleanTitle, _) = sanitizeTitle(identity.title)
         val (primaryArtist, _) = sanitizeArtist(identity.artist.orEmpty(), rawTrack?.singers.orEmpty())
-        val fresh = withContext(Dispatchers.IO) { getCachedLyrics(identity, cleanTitle, primaryArtist) }
+        val fresh = withContext(Dispatchers.IO) { getCachedLyrics(identity, cleanTitle, primaryArtist, provider = provider) }
             ?.takeIf { LyricsDocuments.verified(identity, it) }
         if (fresh != null && !forceRefresh) return@withContext fresh
-        val cached = fresh ?: withContext(Dispatchers.IO) { getCachedLyrics(identity, cleanTitle, primaryArtist, allowStale = true) }
+        val cached = fresh ?: withContext(Dispatchers.IO) { getCachedLyrics(identity, cleanTitle, primaryArtist, allowStale = true, provider = provider) }
             ?.takeIf { LyricsDocuments.verified(identity, it) }
         cached?.let(onUpdate)
         val isrc = identity.isrc.orEmpty().replace("-", "").uppercase().takeIf { it.matches(Regex("[A-Z]{2}[A-Z0-9]{3}[0-9]{7}")) }
         val versionedTitle = com.example.data.repository.StreamResolver.extractCleanTitle(identity.title, identity.artist.orEmpty())
-        val key = "${isrc.orEmpty()}|${normalizeForLookup(versionedTitle)}|${normalizeForLookup(identity.artist.orEmpty())}|${identity.durationMs ?: 0}"
+        val key = "$provider|${isrc.orEmpty()}|${normalizeForLookup(versionedTitle)}|${normalizeForLookup(identity.artist.orEmpty())}|${identity.durationMs ?: 0}"
         val flight = synchronized(lookups) {
             lookups.getOrPut(key) {
                 val updates = MutableStateFlow(cached)
                 LyricsFlight(updates, lookupScope.async(start = CoroutineStart.LAZY) {
                     val updateLock = Any()
-                    val best = LyricsSources(identity).lookup(cached) { candidate ->
+                    val best = LyricsSources(identity).lookup(cached, provider) { candidate ->
                         synchronized(updateLock) {
                             if (LyricsDocuments.meaningfulUpgrade(candidate, updates.value)) {
                                 updates.value = candidate
-                                cacheLyrics(identity.trackId.orEmpty(), candidate, complete = false)
+                                cacheLyrics(identity.trackId.orEmpty(), candidate, complete = false, provider = provider)
                             }
                         }
                     }
@@ -432,7 +442,7 @@ object LyricsProvider {
                     val published = updates.value
                     val selected = if (best != null && LyricsDocuments.meaningfulUpgrade(best, published)) best else published ?: best
                     if (selected != null) {
-                        withContext(Dispatchers.IO) { persistLyrics(identity, cleanTitle, primaryArtist, selected, identity.isrc.orEmpty()) }
+                        withContext(Dispatchers.IO) { persistLyrics(identity, cleanTitle, primaryArtist, selected, identity.isrc.orEmpty(), provider) }
                         selected
                     } else TrackLyrics(identity.trackId.orEmpty(), identity.title, identity.artist.orEmpty(), false, emptyList())
                 })

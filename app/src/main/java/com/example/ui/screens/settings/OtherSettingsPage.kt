@@ -25,7 +25,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.CheckCircle
@@ -58,6 +57,9 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.RadioButtonDefaults
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -91,8 +93,6 @@ import com.example.ui.theme.bouncyClickable
 @Composable
 fun OtherSettingsPage(
     isDarkMode: Boolean,
-    onTextScaleChanged: (Int) -> Unit = {},
-    onUiScaleChanged: (Int) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -126,13 +126,9 @@ fun OtherSettingsPage(
         SmartCacheManager.refreshStats()
     }
 
-    // Text Size & App UI Size states
-    var selectedTextSizeIndex by remember {
-        mutableIntStateOf(OtherSettingsPreferences.getTextSizeIndex(context))
-    }
-    var selectedUiSizeIndex by remember {
-        mutableIntStateOf(OtherSettingsPreferences.getUiSizeIndex(context))
-    }
+    val lyricsPreferences = remember(context) { OtherSettingsPreferences.observeLyricsSettings(context) }
+    val lyricsSettings by lyricsPreferences.collectAsStateWithLifecycle()
+    var showLyricsProviders by remember { mutableStateOf(false) }
     var isHapticsEnabled by remember {
         mutableStateOf(OtherSettingsPreferences.isHapticsEnabled(context))
     }
@@ -450,530 +446,38 @@ fun OtherSettingsPage(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // 2. Text Size Setting Card
-        val textOptions = OtherSettingsPreferences.TEXT_SIZE_OPTIONS
-        val currentTextOption = textOptions.getOrElse(selectedTextSizeIndex) { textOptions[OtherSettingsPreferences.DEFAULT_TEXT_SIZE_INDEX] }
-
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = true)
-                .testTag("card_text_size_setting")
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                        Box(
-                            modifier = Modifier
-                                .size(32.dp)
-                                .clip(CircleShape)
-                                .background(accentColor.copy(alpha = 0.12f)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.FormatSize,
-                                contentDescription = null,
-                                tint = accentColor,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column {
-                            Text(
-                                text = "Text Size",
-                                fontSize = 15.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = appColors.textPrimary
-                            )
-                            Text(
-                                text = "Scale font size throughout the app",
-                                fontSize = 11.5.sp,
-                                color = appColors.textMuted
-                            )
-                        }
+        Box(modifier = Modifier.fillMaxWidth().liquidGlassCard(appColors,
+            shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = true)) {
+            Column(Modifier.padding(16.dp)) {
+                Row(Modifier.fillMaxWidth().clickable { showLyricsProviders = true }.padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.MusicNote, contentDescription = null, tint = accentColor, modifier = Modifier.size(24.dp))
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("Lyrics Provider", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = appColors.textPrimary)
+                        Text(lyricsSettings.provider, fontSize = 12.sp, color = appColors.textSecondary)
                     }
-
-                    // Badge showing current selection
-                    Box(
-                        modifier = Modifier.liquidGlassPill(
-                            colors = appColors,
-                            shape = RoundedCornerShape(20.dp),
-                            isActive = true,
-                            elevation = 2.dp
-                        )
-                    ) {
-                        Text(
-                            text = "${currentTextOption.label} (${currentTextOption.badge})",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = if (appColors.isAmoled) Color.White else (if (appColors.isDark) Color.White else appColors.primaryAccent),
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                        )
-                    }
+                    Text("›", fontSize = 24.sp, color = appColors.textMuted)
                 }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Stepper Row (- and + controls with visual indicator dots)
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(inputBg)
-                        .border(1.dp, cardBorder, RoundedCornerShape(12.dp))
-                        .padding(horizontal = 8.dp, vertical = 6.dp)
-                ) {
-                    IconButton(
-                        onClick = {
-                            if (selectedTextSizeIndex > 0) {
-                                val newIdx = selectedTextSizeIndex - 1
-                                selectedTextSizeIndex = newIdx
-                                OtherSettingsPreferences.setTextSizeIndex(context, newIdx)
-                                onTextScaleChanged(newIdx)
-                            }
-                        },
-                        enabled = selectedTextSizeIndex > 0,
-                        modifier = Modifier.size(36.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Remove,
-                            contentDescription = "Decrease Text Size",
-                            tint = if (selectedTextSizeIndex > 0) accentColor else appColors.textMuted.copy(alpha = 0.4f),
-                            modifier = Modifier.size(18.dp)
-                        )
+                HorizontalDivider(Modifier.padding(vertical = 12.dp), color = dividerColor)
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Lyrics Text Size", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = appColors.textPrimary)
+                        Text("Adjust lyrics only", fontSize = 11.5.sp, color = appColors.textMuted)
                     }
-
-                    // Step Indicator Dots
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        textOptions.forEachIndexed { index, opt ->
-                            val isSelected = index == selectedTextSizeIndex
-                            val isDefault = index == OtherSettingsPreferences.DEFAULT_TEXT_SIZE_INDEX
-                            Box(
-                                modifier = Modifier
-                                    .size(if (isSelected) 14.dp else if (isDefault) 10.dp else 8.dp)
-                                    .clip(CircleShape)
-                                    .background(
-                                        when {
-                                            isSelected -> accentColor
-                                            isDefault -> accentColor.copy(alpha = 0.45f)
-                                            else -> appColors.cardBorder
-                                        }
-                                    )
-                                    .clickable {
-                                        selectedTextSizeIndex = index
-                                        OtherSettingsPreferences.setTextSizeIndex(context, index)
-                                        onTextScaleChanged(index)
-                                    }
-                            )
-                        }
+                    IconButton(onClick = { OtherSettingsPreferences.setLyricsTextSize(context, lyricsSettings.textSizeSp - 2) },
+                        enabled = lyricsSettings.textSizeSp > 18) {
+                        Icon(Icons.Default.Remove, contentDescription = "Decrease lyrics text size", tint = appColors.textPrimary)
                     }
-
-                    IconButton(
-                        onClick = {
-                            if (selectedTextSizeIndex < textOptions.lastIndex) {
-                                val newIdx = selectedTextSizeIndex + 1
-                                selectedTextSizeIndex = newIdx
-                                OtherSettingsPreferences.setTextSizeIndex(context, newIdx)
-                                onTextScaleChanged(newIdx)
-                            }
-                        },
-                        enabled = selectedTextSizeIndex < textOptions.lastIndex,
-                        modifier = Modifier.size(36.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Add,
-                            contentDescription = "Increase Text Size",
-                            tint = if (selectedTextSizeIndex < textOptions.lastIndex) accentColor else appColors.textMuted.copy(alpha = 0.4f),
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Quick Selection Chips: 3 Decrease, 1 Default, 3 Increase
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    textOptions.forEachIndexed { index, option ->
-                        val isSelected = index == selectedTextSizeIndex
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = if (isSelected) accentColor else inputBg,
-                            border = BorderStroke(
-                                1.dp,
-                                if (isSelected) accentColor else cardBorder
-                            ),
-                            modifier = Modifier
-                                .weight(1f)
-                                .clickable {
-                                    selectedTextSizeIndex = index
-                                    OtherSettingsPreferences.setTextSizeIndex(context, index)
-                                    onTextScaleChanged(index)
-                                }
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(vertical = 6.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                Text(
-                                    text = when (index) {
-                                        0 -> "Min"
-                                        1 -> "-16%"
-                                        2 -> "-8%"
-                                        3 -> "Std"
-                                        4 -> "+10%"
-                                        5 -> "+20%"
-                                        6 -> "Max"
-                                        else -> "${index}"
-                                    },
-                                    fontSize = 10.sp,
-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                    color = if (isSelected) pillActiveTextColor else appColors.textPrimary
-                                )
-                            }
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(14.dp))
-
-                // Live Preview Container for Text
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = inputBg,
-                    border = BorderStroke(1.dp, cardBorder),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(
-                                text = "LIVE TYPOGRAPHY PREVIEW",
-                                fontSize = 9.5.sp,
-                                fontWeight = FontWeight.Bold,
-                                letterSpacing = 0.8.sp,
-                                color = accentColor
-                            )
-                            Text(
-                                text = "Scale: ${(currentTextOption.scale * 100).toInt()}%",
-                                fontSize = 9.5.sp,
-                                color = appColors.textMuted
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = "Blinding Lights • The Weeknd",
-                            fontSize = (15 * currentTextOption.scale).sp,
-                            fontWeight = FontWeight.Bold,
-                            color = appColors.textPrimary
-                        )
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = "After Hours • Hi-Res FLAC 24-bit/96kHz Lossless Master",
-                            fontSize = (12 * currentTextOption.scale).sp,
-                            color = appColors.textSecondary
-                        )
+                    Text("${lyricsSettings.textSizeSp} sp", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = accentColor)
+                    IconButton(onClick = { OtherSettingsPreferences.setLyricsTextSize(context, lyricsSettings.textSizeSp + 2) },
+                        enabled = lyricsSettings.textSizeSp < 44) {
+                        Icon(Icons.Default.Add, contentDescription = "Increase lyrics text size", tint = appColors.textPrimary)
                     }
                 }
             }
         }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // 3. App UI Size Setting Card
-        val uiOptions = OtherSettingsPreferences.UI_SIZE_OPTIONS
-        val currentUiOption = uiOptions.getOrElse(selectedUiSizeIndex) { uiOptions[OtherSettingsPreferences.DEFAULT_UI_SIZE_INDEX] }
-
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = true)
-                .testTag("card_ui_size_setting")
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                        Box(
-                            modifier = Modifier
-                                .size(32.dp)
-                                .clip(CircleShape)
-                                .background(accentColor.copy(alpha = 0.12f)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.AspectRatio,
-                                contentDescription = null,
-                                tint = accentColor,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column {
-                            Text(
-                                text = "App UI Size",
-                                fontSize = 15.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = appColors.textPrimary
-                            )
-                            Text(
-                                text = "Scale interface elements, buttons & density",
-                                fontSize = 11.5.sp,
-                                color = appColors.textMuted
-                            )
-                        }
-                    }
-
-                    // Badge showing current selection
-                    Surface(
-                        shape = RoundedCornerShape(20.dp),
-                        color = accentColor.copy(alpha = 0.14f),
-                        border = BorderStroke(1.dp, accentColor.copy(alpha = 0.35f))
-                    ) {
-                        Text(
-                            text = "${currentUiOption.label} (${currentUiOption.badge})",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = accentColor,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Stepper Row (- and + controls with visual indicator dots)
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(inputBg)
-                        .border(1.dp, cardBorder, RoundedCornerShape(12.dp))
-                        .padding(horizontal = 8.dp, vertical = 6.dp)
-                ) {
-                    IconButton(
-                        onClick = {
-                            if (selectedUiSizeIndex > 0) {
-                                val newIdx = selectedUiSizeIndex - 1
-                                selectedUiSizeIndex = newIdx
-                                OtherSettingsPreferences.setUiSizeIndex(context, newIdx)
-                                onUiScaleChanged(newIdx)
-                            }
-                        },
-                        enabled = selectedUiSizeIndex > 0,
-                        modifier = Modifier.size(36.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Remove,
-                            contentDescription = "Decrease UI Size",
-                            tint = if (selectedUiSizeIndex > 0) accentColor else appColors.textMuted.copy(alpha = 0.4f),
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-
-                    // Step Indicator Dots: 3 decrease, 1 default, 3 increase
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        uiOptions.forEachIndexed { index, _ ->
-                            val isSelected = index == selectedUiSizeIndex
-                            val isDefault = index == OtherSettingsPreferences.DEFAULT_UI_SIZE_INDEX
-                            Box(
-                                modifier = Modifier
-                                    .size(if (isSelected) 14.dp else if (isDefault) 10.dp else 8.dp)
-                                    .clip(CircleShape)
-                                    .background(
-                                        when {
-                                            isSelected -> accentColor
-                                            isDefault -> accentColor.copy(alpha = 0.45f)
-                                            else -> appColors.cardBorder
-                                        }
-                                    )
-                                    .clickable {
-                                        selectedUiSizeIndex = index
-                                        OtherSettingsPreferences.setUiSizeIndex(context, index)
-                                        onUiScaleChanged(index)
-                                    }
-                            )
-                        }
-                    }
-
-                    IconButton(
-                        onClick = {
-                            if (selectedUiSizeIndex < uiOptions.lastIndex) {
-                                val newIdx = selectedUiSizeIndex + 1
-                                selectedUiSizeIndex = newIdx
-                                OtherSettingsPreferences.setUiSizeIndex(context, newIdx)
-                                onUiScaleChanged(newIdx)
-                            }
-                        },
-                        enabled = selectedUiSizeIndex < uiOptions.lastIndex,
-                        modifier = Modifier.size(36.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Add,
-                            contentDescription = "Increase UI Size",
-                            tint = if (selectedUiSizeIndex < uiOptions.lastIndex) accentColor else appColors.textMuted.copy(alpha = 0.4f),
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Quick Selection Chips: 3 Decrease, 1 Default, 3 Increase
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    uiOptions.forEachIndexed { index, _ ->
-                        val isSelected = index == selectedUiSizeIndex
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = if (isSelected) accentColor else inputBg,
-                            border = BorderStroke(
-                                1.dp,
-                                if (isSelected) accentColor else cardBorder
-                            ),
-                            modifier = Modifier
-                                .weight(1f)
-                                .clickable {
-                                    selectedUiSizeIndex = index
-                                    OtherSettingsPreferences.setUiSizeIndex(context, index)
-                                    onUiScaleChanged(index)
-                                }
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(vertical = 6.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                Text(
-                                    text = when (index) {
-                                        0 -> "Min"
-                                        1 -> "-12%"
-                                        2 -> "-6%"
-                                        3 -> "Std"
-                                        4 -> "+6%"
-                                        5 -> "+12%"
-                                        6 -> "Max"
-                                        else -> "${index}"
-                                    },
-                                    fontSize = 10.sp,
-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                    color = if (isSelected) pillActiveTextColor else appColors.textPrimary
-                                )
-                            }
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(14.dp))
-
-                // Live Preview Container for UI Elements
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = inputBg,
-                    border = BorderStroke(1.dp, cardBorder),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(
-                                text = "LIVE UI DENSITY PREVIEW",
-                                fontSize = 9.5.sp,
-                                fontWeight = FontWeight.Bold,
-                                letterSpacing = 0.8.sp,
-                                color = accentColor
-                            )
-                            Text(
-                                text = "Density: ${(currentUiOption.scale * 100).toInt()}%",
-                                fontSize = 9.5.sp,
-                                color = appColors.textMuted
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy((10 * currentUiOption.scale).dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            // Mini Art Box
-                            Box(
-                                modifier = Modifier
-                                    .size((40 * currentUiOption.scale).dp)
-                                    .clip(RoundedCornerShape((8 * currentUiOption.scale).dp))
-                                    .background(accentColor.copy(alpha = 0.2f)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.MusicNote,
-                                    contentDescription = null,
-                                    tint = accentColor,
-                                    modifier = Modifier.size((20 * currentUiOption.scale).dp)
-                                )
-                            }
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "Compact Component",
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = appColors.textPrimary
-                                )
-                                Text(
-                                    text = "Adaptive scale factor ${currentUiOption.scale}x",
-                                    fontSize = 11.sp,
-                                    color = appColors.textMuted
-                                )
-                            }
-                            // Mini Action Button
-                            Surface(
-                                shape = RoundedCornerShape((16 * currentUiOption.scale).dp),
-                                color = accentColor,
-                                modifier = Modifier.size(
-                                    width = (48 * currentUiOption.scale).dp,
-                                    height = (32 * currentUiOption.scale).dp
-                                )
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        imageVector = Icons.Default.PlayArrow,
-                                        contentDescription = null,
-                                        tint = appColors.onPrimaryAccent,
-                                        modifier = Modifier.size((16 * currentUiOption.scale).dp)
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(Modifier.height(16.dp))
 
         // 3.5. Haptic Feedback Setting Card
         Box(
@@ -1076,6 +580,35 @@ fun OtherSettingsPage(
         )
 
         Spacer(modifier = Modifier.height(24.dp))
+    }
+
+    if (showLyricsProviders) {
+        AlertDialog(
+            onDismissRequest = { showLyricsProviders = false },
+            title = { Text("Lyrics Provider", color = appColors.textPrimary) },
+            containerColor = appColors.cardBackground,
+            shape = RoundedCornerShape(28.dp),
+            text = {
+                Column(Modifier.fillMaxWidth().heightIn(max = 440.dp).verticalScroll(rememberScrollState())) {
+                    OtherSettingsPreferences.LYRICS_PROVIDERS.forEach { provider ->
+                        Row(Modifier.fillMaxWidth().clickable {
+                            OtherSettingsPreferences.setLyricsProvider(context, provider)
+                            showLyricsProviders = false
+                        }.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(selected = lyricsSettings.provider == provider, onClick = null,
+                                colors = RadioButtonDefaults.colors(selectedColor = accentColor, unselectedColor = appColors.textMuted))
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f).padding(vertical = 10.dp)) {
+                                Text(provider, color = appColors.textPrimary, fontSize = 14.sp)
+                                if (provider == "Auto") Text("Automatically choose the best available lyrics",
+                                    color = appColors.textMuted, fontSize = 11.sp)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showLyricsProviders = false }) { Text("Close", color = accentColor) } }
+        )
     }
 
     if (showClearCacheDialog) {

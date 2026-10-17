@@ -9,6 +9,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import java.io.File
 
@@ -20,15 +22,20 @@ class ManagedImageDiskCache(private val delegate: DiskCache, private val keyFile
     private val accesses = LinkedHashMap<String, Long>()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val keysLoaded = CompletableDeferred<Unit>()
+    private val keyLoadMutex = Mutex()
     private var saveScheduled = false
     private var generation = 0
     private var accessRevision = 0L
 
     init {
-        scope.launch { loadKeys() }
+        scope.launch {
+            BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.DEFERRED,
+                requireForeground = false) { loadKeys() }
+        }
     }
 
-    private suspend fun loadKeys() {
+    private suspend fun loadKeys() = keyLoadMutex.withLock {
+        if (keysLoaded.isCompleted) return@withLock
         val version = synchronized(lock) { generation }
         try {
             val text = synchronized(diskWriteLock) {
@@ -80,7 +87,8 @@ class ManagedImageDiskCache(private val delegate: DiskCache, private val keyFile
             keysLoaded.await()
             while (true) {
                 delay(25_000)
-                BackgroundWorkCoordinator.awaitIdle(requireForeground = false)
+                val revision = BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.MAINTENANCE,
+                    requireForeground = false) {
                 val (version, revision, snapshot) = synchronized(lock) {
                     Triple(generation, accessRevision, accesses.toList())
                 }
@@ -98,6 +106,8 @@ class ManagedImageDiskCache(private val delegate: DiskCache, private val keyFile
                         }
                     }
                 }
+                revision
+                }
                 val saved = synchronized(lock) {
                     if (revision == accessRevision) { saveScheduled = false; true } else false
                 }
@@ -106,8 +116,27 @@ class ManagedImageDiskCache(private val delegate: DiskCache, private val keyFile
         }
     }
 
-    override fun openSnapshot(key: String): DiskCache.Snapshot? = delegate.openSnapshot(key)?.also { accessed(key) }
-    override fun openEditor(key: String): DiskCache.Editor? = delegate.openEditor(key)?.also { accessed(key) }
+    override fun openSnapshot(key: String): DiskCache.Snapshot? = delegate.openSnapshot(key)?.also {
+        accessed(key)
+        SmartCacheManager.cacheUsageChanged(imageBytes = delegate.size)
+    }
+    override fun openEditor(key: String): DiskCache.Editor? = delegate.openEditor(key)?.let { editor ->
+        accessed(key)
+        object : DiskCache.Editor by editor {
+            override fun commit() {
+                editor.commit()
+                SmartCacheManager.cacheUsageChanged(imageBytes = delegate.size)
+            }
+            override fun commitAndOpenSnapshot(): DiskCache.Snapshot? = editor.commitAndOpenSnapshot().also {
+                SmartCacheManager.cacheUsageChanged(imageBytes = delegate.size)
+            }
+            @Suppress("OVERRIDE_DEPRECATION")
+            override fun commitAndGet(): DiskCache.Snapshot? = commitAndOpenSnapshot()
+        }
+    }
+    override fun remove(key: String): Boolean = delegate.remove(key).also { removed ->
+        if (removed) SmartCacheManager.cacheUsageChanged(imageBytes = delegate.size)
+    }
     @Suppress("OVERRIDE_DEPRECATION")
     override fun get(key: String): DiskCache.Snapshot? = openSnapshot(key)
     @Suppress("OVERRIDE_DEPRECATION")
@@ -115,6 +144,7 @@ class ManagedImageDiskCache(private val delegate: DiskCache, private val keyFile
 
     override fun clear() {
         delegate.clear()
+        SmartCacheManager.cacheUsageChanged(imageBytes = delegate.size)
         synchronized(diskWriteLock) {
             synchronized(lock) {
                 generation++
@@ -126,7 +156,10 @@ class ManagedImageDiskCache(private val delegate: DiskCache, private val keyFile
     }
 
     /** Unknown legacy entries stay under Coil's own size limit; never delete its journal/data files. */
-    fun trimToSize(targetBytes: Long): Long {
+    suspend fun trimToSize(targetBytes: Long): Long {
+        // Explicit maintenance must not await a deferred job while holding its
+        // own admission lease; share the same bounded key initialization instead.
+        loadKeys()
         val before = delegate.size
         val keys = synchronized(lock) { accesses.entries.sortedBy { it.value }.map { it.key } }
         for (key in keys) {
@@ -137,6 +170,7 @@ class ManagedImageDiskCache(private val delegate: DiskCache, private val keyFile
                 scheduleSave()
             }
         }
+        SmartCacheManager.cacheUsageChanged(imageBytes = delegate.size)
         return (before - delegate.size).coerceAtLeast(0L)
     }
 }

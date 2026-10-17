@@ -12,6 +12,8 @@ import com.example.data.local.MusicDatabase
 import com.example.data.repository.MusicRepository
 import com.example.data.remote.OnlineMusicApiService
 import com.example.playback.PlaybackManager
+import com.example.performance.BackgroundWorkCoordinator
+import com.example.performance.BackgroundWorkCoordinator.StartupPriority
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.Dispatchers
@@ -19,6 +21,8 @@ import kotlinx.coroutines.launch
 
 class XtremeMusicApp : Application(), ImageLoaderFactory {
     private val startupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    @Volatile internal var initializedImageDiskCache: DiskCache? = null
+        private set
 
     val database: MusicDatabase by lazy { MusicDatabase.getDatabase(this) }
     val repository: MusicRepository by lazy {
@@ -64,6 +68,7 @@ class XtremeMusicApp : Application(), ImageLoaderFactory {
                     .maxSizeBytes(60L * 1024 * 1024) // 60 MB high-speed disk cache
                     .build()
                 com.example.data.cache.ManagedImageDiskCache(diskCache, cacheDir.resolve("artwork_cache_keys.json"))
+                    .also { initializedImageDiskCache = it }
             }
             .bitmapConfig(android.graphics.Bitmap.Config.HARDWARE)
             .allowHardware(true)
@@ -87,30 +92,23 @@ class XtremeMusicApp : Application(), ImageLoaderFactory {
         // Context registration does not read storage or initialize the network client.
         OnlineMusicApiService.initialize(this)
 
-        // One sequential optional pipeline replaces competing prewarm coroutines.
-        // On-demand image/playback paths remain available before this work is admitted.
+        // Every heavy prewarm competes in the same admission queue as catalog,
+        // history and cache work. On-demand playback/images bypass this queue.
         startupScope.launch {
-            val coordinator = com.example.performance.BackgroundWorkCoordinator
-            coordinator.awaitStartupIdle()
-            coordinator.work { runCatching { com.example.ui.util.TrackPaletteCache.initialize(this@XtremeMusicApp) }
+            val coordinator = BackgroundWorkCoordinator
+            coordinator.startup(StartupPriority.DEFERRED) { runCatching { com.example.ui.util.TrackPaletteCache.initialize(this@XtremeMusicApp) }
                 .onFailure { android.util.Log.w("XtremeMusicApp", "Palette prewarm unavailable", it) } }
-            coordinator.awaitStartupIdle()
-            coordinator.work { runCatching { imageLoader }
+            coordinator.startup(StartupPriority.DEFERRED) { runCatching { imageLoader }
                 .onFailure { android.util.Log.w("XtremeMusicApp", "Image loader prewarm unavailable", it) } }
-            coordinator.awaitStartupIdle()
-            coordinator.work { runCatching { com.example.data.repository.iTunesArtworkRepository.getInstance(this@XtremeMusicApp) }
+            coordinator.startup(StartupPriority.DEFERRED) { runCatching { com.example.data.repository.iTunesArtworkRepository.getInstance(this@XtremeMusicApp) }
                 .onFailure { android.util.Log.w("XtremeMusicApp", "Artwork prewarm unavailable", it) } }
-            coordinator.awaitStartupIdle()
-            coordinator.work { runCatching { SecurityConfig.getDESKey(this@XtremeMusicApp) } }
-            coordinator.awaitStartupIdle()
-            coordinator.work { runCatching { com.example.data.repository.ArtistPhotoRepository.prewarm(this@XtremeMusicApp) }
+            coordinator.startup(StartupPriority.DEFERRED) { runCatching { SecurityConfig.getDESKey(this@XtremeMusicApp) } }
+            coordinator.startup(StartupPriority.DEFERRED) { runCatching { com.example.data.repository.ArtistPhotoRepository.prewarm(this@XtremeMusicApp).await() }
                 .onFailure { android.util.Log.w("XtremeMusicApp", "Artist prewarm unavailable", it) } }
-            coordinator.awaitStartupIdle()
-            coordinator.work { runCatching { com.example.playback.AudioDeviceManager.init(this@XtremeMusicApp) }
+            coordinator.startup(StartupPriority.DEFERRED) { runCatching { com.example.playback.AudioDeviceManager.init(this@XtremeMusicApp) }
                 .onFailure { android.util.Log.w("XtremeMusicApp", "Audio devices unavailable", it) } }
-            coordinator.awaitStartupIdle()
             com.example.data.cache.SmartCacheManager.configure(this@XtremeMusicApp, repository)
-            coordinator.work { runCatching { com.example.data.cache.SmartCacheManager.initialize(this@XtremeMusicApp, repository) }
+            coordinator.startup(StartupPriority.MAINTENANCE, requireForeground = false) { runCatching { com.example.data.cache.SmartCacheManager.initialize(this@XtremeMusicApp, repository) }
                 .onFailure { android.util.Log.w("XtremeMusicApp", "Cache maintenance unavailable", it) } }
         }
     }

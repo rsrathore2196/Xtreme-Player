@@ -280,7 +280,10 @@ class PlaybackManager(
                         currentPositionMs = saved.positionMs, durationMs = current.durationMs,
                         qualityBadge = current.qualityBadge.ifBlank { it.selectedQuality.badge }) }
                 }
-            } finally { sessionRestored.complete(Unit) }
+            } finally {
+                sessionRestored.complete(Unit)
+                com.example.performance.BackgroundWorkCoordinator.playbackSessionRestored()
+            }
         }
         scope.launch {
             // A service started by a headset/Auto is already paying initialization
@@ -289,9 +292,15 @@ class PlaybackManager(
         }
         scope.launch {
             sessionRestored.await()
-            com.example.performance.BackgroundWorkCoordinator.awaitStartupIdle()
-            if (_uiState.value.currentTrack != null || MusicService.liveSession.value)
-                ensureMediaControllerConnected()
+            // Restoring a paused session depends on the first UI frame/lifecycle,
+            // never on recommendation discovery or Home cache availability.
+            val coordinator = com.example.performance.BackgroundWorkCoordinator
+            coordinator.awaitFirstFrame()
+            coordinator.uiForeground.first { it }
+            coordinator.startup(com.example.performance.BackgroundWorkCoordinator.StartupPriority.CRITICAL) {
+                if (_uiState.value.currentTrack != null || MusicService.liveSession.value)
+                    ensureMediaControllerConnected()
+            }
         }
         scope.launch {
             com.example.performance.BackgroundWorkCoordinator.uiForeground.collect { visible ->

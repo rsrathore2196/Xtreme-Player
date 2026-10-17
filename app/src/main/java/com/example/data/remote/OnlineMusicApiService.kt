@@ -77,6 +77,10 @@ object OnlineMusicApiService {
     }
     private val httpClient by httpClientDelegate
 
+    /** Journal-owned statistics, without initializing the HTTP cache for Home. */
+    fun peekNetworkCacheSize(): Long? = if (httpClientDelegate.isInitialized())
+        runCatching { httpClient.cache?.size() }.getOrNull() else null
+
     /** Maintenance stays with OkHttp, including open responses and the disk journal. */
     fun trimNetworkCache(targetBytes: Long): Long {
         if (!httpClientDelegate.isInitialized()) return 0L

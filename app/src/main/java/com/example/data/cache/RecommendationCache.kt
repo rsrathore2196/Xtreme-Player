@@ -47,18 +47,21 @@ internal class RecommendationCache private constructor(context: Context) {
         scope.launch {
             // Retire only the previous provider's disposable database. Never open,
             // migrate destructively, or reset the user's MusicDatabase here.
-            app.deleteDatabase("lastfm_recommendations.db")
+            BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.MAINTENANCE,
+                requireForeground = false) { app.deleteDatabase("lastfm_recommendations.db") }
         }
         scope.launch {
             var lastWrite = 0L
             writes.receiveAsFlow().debounce(2_000L).collect {
                 // Slow lookups must not turn the debounce into one disk commit per song.
                 delay((10_000L - (android.os.SystemClock.elapsedRealtime() - lastWrite)).coerceAtLeast(0))
-                BackgroundWorkCoordinator.awaitIdle(requireForeground = false)
+                BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.DEFERRED,
+                    requireForeground = false) {
                 val batch = synchronized(pending) { pending.values.toList().also { pending.clear() } }
                 try { if (batch.isNotEmpty()) { database.entries().put(batch); lastWrite = android.os.SystemClock.elapsedRealtime() } }
                 catch (e: CancellationException) { throw e }
                 catch (_: Exception) { /* Memory remains usable; a failed cache write is not a song failure. */ }
+                }
             }
         }
     }

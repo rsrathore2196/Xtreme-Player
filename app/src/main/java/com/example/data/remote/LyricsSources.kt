@@ -34,7 +34,7 @@ internal class LyricsSources(private val identity: SongIdentity) {
     private val videoId = identity.trackId.orEmpty().removePrefix("yt_").takeIf { identity.trackId?.startsWith("yt_") == true && it.matches(Regex("[A-Za-z0-9_-]{11}")) }
     private data class Source(val name: String, val fetch: suspend () -> TrackLyrics?)
 
-    suspend fun lookup(initial: TrackLyrics?, onCandidate: (TrackLyrics) -> Unit): TrackLyrics? = supervisorScope {
+    suspend fun lookup(initial: TrackLyrics?, preferredProvider: String = "Auto", onCandidate: (TrackLyrics) -> Unit): TrackLyrics? = supervisorScope {
         var best = initial
         val rich = listOf(
             Source("lrc.red") { lrcRed(this@supervisorScope) },
@@ -57,6 +57,18 @@ internal class LyricsSources(private val identity: SongIdentity) {
         // LRCLIB (then exact-video lyrics) supply usable text while timing upgrades race.
         val latest = AtomicReference(initial)
         try {
+            if (preferredProvider != "Auto") {
+                val selected = (rich + word + listOf(Source("LRCLIB") { lrclib() },
+                    Source("YouTube Music") { youtubeMusic() }, Source("Genius") { genius() }))
+                    .firstOrNull { it.name == preferredProvider }
+                val candidate = selected?.let { source -> safely { withTimeoutOrNull(12_000L) { source.fetch() } } }
+                    ?.takeIf { LyricsDocuments.verified(identity, it) }
+                if (candidate != null && LyricsDocuments.meaningfulUpgrade(candidate, best)) {
+                    best = candidate
+                    onCandidate(candidate)
+                }
+                return@supervisorScope best
+            }
             withTimeoutOrNull(18_000L) {
                 channelFlow {
                     suspend fun publish(source: Source) {

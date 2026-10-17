@@ -45,8 +45,13 @@ interface ListeningEventDao {
     @Query("SELECT * FROM listening_events WHERE eventType = 'ACTUAL_PLAY' ORDER BY timestamp DESC LIMIT 250")
     fun observeActualPlays(): Flow<List<ListeningEventEntity>>
 
-    @Query("SELECT * FROM listening_events WHERE eventType = 'ACTUAL_PLAY' ORDER BY timestamp DESC LIMIT :limit")
+    @Query("SELECT * FROM listening_events WHERE eventType = 'ACTUAL_PLAY' ORDER BY timestamp DESC, id DESC LIMIT :limit")
     suspend fun getActualPlays(limit: Int = 300): List<ListeningEventEntity>
+
+    // Keyset paging avoids repeatedly decoding/skipping the whole long-term
+    // window. The (timestamp, id) cursor also handles plays with equal timestamps.
+    @Query("SELECT * FROM listening_events WHERE eventType = 'ACTUAL_PLAY' AND (timestamp < :beforeTimestamp OR (timestamp = :beforeTimestamp AND id < :beforeId)) ORDER BY timestamp DESC, id DESC LIMIT :limit")
+    suspend fun getActualPlaysBefore(beforeTimestamp: Long, beforeId: Long, limit: Int): List<ListeningEventEntity>
 
     @Query("SELECT trackId FROM listening_events WHERE eventType = 'ACTUAL_PLAY' AND playedDurationMs > 0 GROUP BY trackId ORDER BY MAX(timestamp) DESC LIMIT 20")
     suspend fun getRecentActualTrackIds(): List<String>
