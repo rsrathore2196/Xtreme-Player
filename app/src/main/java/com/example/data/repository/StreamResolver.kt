@@ -29,6 +29,9 @@ internal class StreamResolver(
     },
     private val resolveYouTube: suspend (MusicTrack, AudioQuality, Boolean) -> MusicTrack? = { track, quality, refresh ->
         YouTubeMusicApiService.resolveAudio(track, quality, refresh)
+    },
+    private val searchYouTube: suspend (String) -> List<MusicTrack> = { query ->
+        YouTubeMusicApiService.searchSongsPage(query, useInnerTubeX = true).tracks
     }
 ) {
     private data class CachedStream(val track: MusicTrack, val expiresAt: Long)
@@ -124,7 +127,7 @@ internal class StreamResolver(
             var extractions = 0
             for (query in queries.take(2)) {
                 val candidates = attempt(6_000L) {
-                    YouTubeMusicApiService.searchSongsPage(query, useInnerTubeX = true).tracks
+                    searchYouTube(query)
                 }.orEmpty()
                 val ranked = withContext(Dispatchers.Default) { candidates.mapNotNull { candidate ->
                     RecordingIdentity.fallbackConfidence(track, candidate)?.let { candidate to it }

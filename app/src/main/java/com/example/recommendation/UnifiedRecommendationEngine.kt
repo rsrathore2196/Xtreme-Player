@@ -91,8 +91,11 @@ class UnifiedRecommendationEngine(context: Context?,
         private const val MISS_TTL = 30 * 60_000L
         fun seedKey(track: MusicTrack?): String = track?.let { HomeRecommendationPolicy.metadataKey(it) }.orEmpty()
         fun verified(track: MusicTrack): Boolean {
+            // Room historically stores JioSaavn's source as this display label.
+            // The stable catalog ID and actual CDN below still prove the provider.
+            val jioSource = track.source.equals("JIOSAAVN", true) || track.source.equals("HD Stream", true)
             if (!track.id.startsWith("online_") || track.id.length <= 7 ||
-                !track.source.equals("JIOSAAVN", true) || track.isLossless ||
+                !jioSource || track.isLossless ||
                 !OriginalMusicFilter.isHomeRecommendation(track) ||
                 !StreamResolver.isValidStreamUrl(track.audioUrl)) return false
             val uri = Uri.parse(track.audioUrl)
@@ -360,7 +363,7 @@ class UnifiedRecommendationEngine(context: Context?,
             if ((artists[artist] ?: 0) >= 2 || HomeRecommendationPolicy.known(candidateTrack.album) && (albums[album] ?: 0) >= 2) return
             seen.add(candidateTrack); artists[artist] = (artists[artist] ?: 0) + 1; albums[album] = (albums[album] ?: 0) + 1
             languageCounts[actualLanguage] = (languageCounts[actualLanguage] ?: 0) + 1
-            output.add(candidateTrack.copy(recommendationOnly = true))
+            output.add(candidateTrack.copy(source = "JIOSAAVN", recommendationOnly = true))
         }
         for ((index, candidate) in candidates.withIndex()) {
             if (!essential && index % 4 == 0) yieldHomeWork()

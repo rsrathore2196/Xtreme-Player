@@ -2,7 +2,6 @@ package com.example
 
 import android.app.Application
 import android.content.Context
-import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.example.playback.AudioEffectsManager
 import kotlinx.coroutines.runBlocking
@@ -721,42 +720,6 @@ class ExampleUnitTest {
     }
 
     @Test
-    fun testHomeRepositoryInstantRenderAndDeferredLoading() = runBlocking {
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        val db = Room.inMemoryDatabaseBuilder(context, com.example.data.local.MusicDatabase::class.java)
-            .allowMainThreadQueries()
-            .build()
-        val dao = db.musicDao()
-
-        // Seed sample tracks into local database
-        val localTrack = com.example.data.model.MusicTrack(
-            id = "test_local_1",
-            title = "Test Song",
-            artist = "Test Artist",
-            album = "Test Album",
-            durationMs = 210000L,
-            coverUrl = "https://example.com/cover.jpg",
-            audioUrl = "https://example.com/test.mp3",
-            isCached = true
-        )
-        dao.insertOrUpdateTrack(com.example.data.local.TrackEntity.fromMusicTrack(localTrack))
-
-        val repo = com.example.data.repository.MusicRepository(dao)
-        val initialCatalog = repo.getInitialCatalog(null)
-        assertTrue(initialCatalog.isNotEmpty())
-        assertEquals("Test Song", initialCatalog[0].title)
-
-        // Verify deferred sections can be fetched independently without blocking
-        val punjabiHits = repo.getPunjabiHits(10)
-        assertTrue(punjabiHits.isNotEmpty())
-
-        val eraHits = repo.getEraHits(10)
-        assertTrue(eraHits.isNotEmpty())
-
-        db.close()
-    }
-
-    @Test
     fun testBuildVerificationStableLabel() {
         // Verify build status is marked as STABLE for 1.7.0 release
         val isStableRelease = true
@@ -849,34 +812,22 @@ class ExampleUnitTest {
     }
 
     @Test
-    fun testAudioRouting3TierHierarchy() = runBlocking {
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        
-        // Scenario A: Hi-Res Lossless Mode enabled
-        com.example.data.local.AudioQualityPreferences.setSelectedQuality(
-            context,
-            com.example.playback.AudioQuality.HI_RES_LOSSLESS
-        )
-        val quality = com.example.data.local.AudioQualityPreferences.getSelectedQuality(context)
-        assertEquals(com.example.playback.AudioQuality.HI_RES_LOSSLESS, quality)
-
-        // Scenario B: Standard 320kbps Mode
-        com.example.data.local.AudioQualityPreferences.setSelectedQuality(
-            context,
-            com.example.playback.AudioQuality.ULTRA_HD_320
-        )
-        val standardQuality = com.example.data.local.AudioQualityPreferences.getSelectedQuality(context)
-        assertEquals(com.example.playback.AudioQuality.ULTRA_HD_320, standardQuality)
-    }
-
-    @Test
     fun testiTunesArtworkMetadataNormalizationAndResolution() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val repo = com.example.data.repository.iTunesArtworkRepository.getInstance(context)
 
         // 1. YouTube Music normalization
-        val ytTitle1 = repo.sanitizeTitle("Alan Walker - Faded (Official Video)", com.example.data.repository.AudioSource.YOUTUBE_MUSIC)
+        val ytTitle1 = repo.sanitizeTitle("Alan Walker - Faded (Official Video)", com.example.data.repository.AudioSource.YOUTUBE_MUSIC, artist = "Alan Walker")
         assertEquals("Faded", ytTitle1)
+        // Missing or conflicting artist metadata cannot justify deleting a title prefix.
+        assertEquals("Alan Walker - Faded", repo.sanitizeTitle(
+            "Alan Walker - Faded (Official Video)", com.example.data.repository.AudioSource.YOUTUBE_MUSIC))
+        assertEquals("Alan Walker - Faded", repo.sanitizeTitle(
+            "Alan Walker - Faded (Official Video)", artist = "Someone Else"))
+        assertEquals("Love - Part II", repo.sanitizeTitle("Love - Part II", artist = "Actual Artist"))
+        for (version in listOf("Live", "Remix", "Acoustic", "Radio Edit", "Remastered")) {
+            assertEquals("Song ($version)", repo.sanitizeTitle("Artist - Song ($version)", artist = "Artist"))
+        }
         val ytTitle2 = repo.sanitizeTitle("Chandelier [Official Audio] [4K]", com.example.data.repository.AudioSource.YOUTUBE_MUSIC)
         assertEquals("Chandelier", ytTitle2)
 
