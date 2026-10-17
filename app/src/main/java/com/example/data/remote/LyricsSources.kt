@@ -36,31 +36,44 @@ internal class LyricsSources(private val identity: SongIdentity) {
 
     suspend fun lookup(initial: TrackLyrics?, preferredProvider: String = "Auto", onCandidate: (TrackLyrics) -> Unit): TrackLyrics? = supervisorScope {
         var best = initial
-        val rich = listOf(
-            Source("lrc.red") { lrcRed(this@supervisorScope) },
-            Source("BiniLyrics") { bini(this@supervisorScope) },
-            Source("BetterLyrics") { better("getLyrics", "BetterLyrics") },
+        // 1st preference: PaxSenix (Apple, Spotify, Musixmatch endpoints)
+        val pref1PaxSenix = listOf(
             Source("PaxSenix") { paxApple() },
+            Source("PaxSenix: Spotify") { pax("spotify") },
+            Source("PaxSenix: Musixmatch") { pax("musixmatch") }
+        )
+        // 2nd preference: BetterLyrics & BetterLyrics Portato (potato)
+        val pref2BetterLyrics = listOf(
+            Source("BetterLyrics") { better("getLyrics", "BetterLyrics") },
+            Source("BetterLyrics Portato") { better("qq/getLyrics", "BetterLyrics Portato") }
+        )
+        // 3rd preference: BiniLyrics & LyricsPlus (along with lrc.red / Unison)
+        val pref3BiniAndPlus = listOf(
+            Source("BiniLyrics") { bini(this@supervisorScope) },
             Source("LyricsPlus") { plus() },
+            Source("lrc.red") { lrcRed(this@supervisorScope) },
             Source("Unison") { unison() }
         )
-        val word = listOf(
-            Source("BetterLyrics Portato") { better("qq/getLyrics", "BetterLyrics Portato") },
-            Source("PaxSenix: Spotify") { pax("spotify") },
-            Source("PaxSenix: Musixmatch") { pax("musixmatch") },
-            Source("Musixmatch") { musixmatch() },
-            Source("KuGou") { kugou() },
-            Source("YouTube captions") { captions() }
+        // 5th preference: Musixmatch
+        val pref5Musixmatch = listOf(
+            Source("Musixmatch") { musixmatch() }
         )
-        // A quick, verified fallback must not wait for every rich provider to time out.
-        // Two rolling workers retain rich/word priority; the third HTTP slot lets
-        // LRCLIB (then exact-video lyrics) supply usable text while timing upgrades race.
+        // 6th preference: LRCLIB (used for instant fast availability)
+        val pref6LrcLib = listOf(
+            Source("LRCLIB") { lrclib() }
+        )
+        // 7th preference: Remaining options (YouTube captions, KuGou, YouTube Music)
+        val pref7Remaining = listOf(
+            Source("YouTube captions") { captions() },
+            Source("KuGou") { kugou() },
+            Source("YouTube Music") { youtubeMusic() }
+        )
         val latest = AtomicReference(initial)
         try {
             if (preferredProvider != "Auto") {
-                val selected = (rich + word + listOf(Source("LRCLIB") { lrclib() },
-                    Source("YouTube Music") { youtubeMusic() }, Source("Genius") { genius() }))
-                    .firstOrNull { it.name == preferredProvider }
+                val allSources = pref1PaxSenix + pref2BetterLyrics + pref3BiniAndPlus +
+                    pref5Musixmatch + pref6LrcLib + pref7Remaining + listOf(Source("Genius") { genius() })
+                val selected = allSources.firstOrNull { it.name == preferredProvider }
                 val candidate = selected?.let { source -> safely { withTimeoutOrNull(12_000L) { source.fetch() } } }
                     ?.takeIf { LyricsDocuments.verified(identity, it) }
                 if (candidate != null && LyricsDocuments.meaningfulUpgrade(candidate, best)) {
@@ -91,18 +104,23 @@ internal class LyricsSources(private val identity: SongIdentity) {
                             }
                         }
                     }
+                    // Fast availability channel: LRCLIB responds instantly (<300ms) for immediate display
                     val fastFallback = launch {
                         publish(Source("LRCLIB") { lrclib() })
                         if (videoId != null && latest.get()?.let { LyricsDocuments.quality(it) >= 1 } != true) {
                             publish(Source("YouTube Music") { youtubeMusic() })
                         }
                     }
-                    prioritized(rich, 8_000L)
-                    prioritized(word, 6_000L)
+                    // Flow follows preference order strictly: PaxSenix -> BetterLyrics -> Bini/Plus -> Musixmatch
+                    prioritized(pref1PaxSenix, 5_500L)
+                    prioritized(pref2BetterLyrics, 4_500L)
+                    prioritized(pref3BiniAndPlus, 3_500L)
+                    prioritized(pref5Musixmatch, 3_000L)
                     fastFallback.join()
-                    // Plain-text scraping only helps when no timed lyrics were found.
+                    // 7th preference fallback: captions, kugou, genius
                     if (latest.get()?.let { LyricsDocuments.quality(it) >= 1 } != true) {
-                        withTimeoutOrNull(4_000L) { publish(Source("Genius") { genius() }) }
+                        prioritized(pref7Remaining, 3_000L)
+                        withTimeoutOrNull(3_000L) { publish(Source("Genius") { genius() }) }
                     }
                 }.firstOrNull { candidate ->
                     if (LyricsDocuments.meaningfulUpgrade(candidate, best)) {
@@ -110,8 +128,12 @@ internal class LyricsSources(private val identity: SongIdentity) {
                         latest.set(candidate)
                         onCandidate(candidate)
                     }
-                    // Stopping collection cancels the producer and all unfinished providers.
-                    best?.let { LyricsDocuments.assessment(it).let { timing -> timing.tier == 3 && timing.complete } } == true
+                    val timing = best?.let { LyricsDocuments.assessment(it) }
+                    val isTopPref = best?.provider?.let {
+                        val p = it.lowercase()
+                        p.contains("paxsenix") || p.contains("pax") || p.contains("betterlyrics")
+                    } == true
+                    timing?.tier == 3 && timing.complete && isTopPref
                 }
             }
         } finally { documents.values.forEach { if (!it.isCompleted) it.cancel() } }

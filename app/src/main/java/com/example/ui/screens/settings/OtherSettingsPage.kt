@@ -583,31 +583,13 @@ fun OtherSettingsPage(
     }
 
     if (showLyricsProviders) {
-        AlertDialog(
-            onDismissRequest = { showLyricsProviders = false },
-            title = { Text("Lyrics Provider", color = appColors.textPrimary) },
-            containerColor = appColors.cardBackground,
-            shape = RoundedCornerShape(28.dp),
-            text = {
-                Column(Modifier.fillMaxWidth().heightIn(max = 440.dp).verticalScroll(rememberScrollState())) {
-                    OtherSettingsPreferences.LYRICS_PROVIDERS.forEach { provider ->
-                        Row(Modifier.fillMaxWidth().clickable {
-                            OtherSettingsPreferences.setLyricsProvider(context, provider)
-                            showLyricsProviders = false
-                        }.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                            RadioButton(selected = lyricsSettings.provider == provider, onClick = null,
-                                colors = RadioButtonDefaults.colors(selectedColor = accentColor, unselectedColor = appColors.textMuted))
-                            Spacer(Modifier.width(12.dp))
-                            Column(Modifier.weight(1f).padding(vertical = 10.dp)) {
-                                Text(provider, color = appColors.textPrimary, fontSize = 14.sp)
-                                if (provider == "Auto") Text("Automatically choose the best available lyrics",
-                                    color = appColors.textMuted, fontSize = 11.sp)
-                            }
-                        }
-                    }
-                }
+        com.example.ui.components.LyricsProviderSelectionPopup(
+            currentProvider = lyricsSettings.provider,
+            onSelectProvider = { provider ->
+                OtherSettingsPreferences.setLyricsProvider(context, provider)
             },
-            confirmButton = { TextButton(onClick = { showLyricsProviders = false }) { Text("Close", color = accentColor) } }
+            onDismissRequest = { showLyricsProviders = false },
+            appColors = appColors
         )
     }
 

@@ -308,6 +308,11 @@ fun ExpandedPlayerScreen(
         }
     }
     var showSoundOutputDialog by remember { mutableStateOf(false) }
+    var showLyricsTextSizePopup by remember { mutableStateOf(false) }
+    var showLyricsProviderPopup by remember { mutableStateOf(false) }
+    val lyricsPreferences = remember(context) { com.example.data.local.OtherSettingsPreferences.observeLyricsSettings(context) }
+    val lyricsSettings by lyricsPreferences.collectAsStateWithLifecycle()
+    val displayedLyricsProvider = lyrics?.provider?.takeIf { it.isNotBlank() } ?: lyricsSettings.provider
 
     val fallbackDevices by AudioDeviceManager.availableDevices.collectAsStateWithLifecycle()
     val effectiveDevices = if (availableAudioDevices.isNotEmpty()) availableAudioDevices else fallbackDevices
@@ -418,6 +423,22 @@ fun ExpandedPlayerScreen(
         animationSpec = tween(650, easing = LinearOutSlowInEasing),
         label = "vibrant_color"
     )
+
+    val isEffectivelyDark by remember(isDark, appColors.isDark, appColors.isAmoled, animatedDominantColor, appColors.scaffoldBackground) { derivedStateOf {
+        val color = animatedDominantColor.value
+        if (isDark || appColors.isDark || appColors.isAmoled) {
+            true
+        } else if (color != Color.Unspecified) {
+            val base = appColors.scaffoldBackground
+            val blendedRed = color.red * 0.25f + base.red * 0.75f
+            val blendedGreen = color.green * 0.25f + base.green * 0.75f
+            val blendedBlue = color.blue * 0.25f + base.blue * 0.75f
+            val lum = 0.299f * blendedRed + 0.587f * blendedGreen + 0.114f * blendedBlue
+            lum < 0.50f
+        } else {
+            false
+        }
+    } }
 
     val albumArtScale = animateFloatAsState(
         targetValue = if (uiState.isPlaying) 1.0f else 0.88f,
@@ -840,11 +861,28 @@ fun ExpandedPlayerScreen(
 
                         // Keep the normal timeline in place; the expanded footer takes over only in lyrics focus mode.
                         Column {
-                            if (showLyrics) LyricsExpansionButton(
-                                expanded = lyricsExpanded,
-                                onClick = { maximizeLyrics = !maximizeLyrics },
-                                modifier = Modifier.align(Alignment.End)
-                            )
+                            if (showLyrics) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(bottom = 2.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    LyricsTextSizeButton(
+                                        onClick = { showLyricsTextSizePopup = true }
+                                    )
+                                    LyricsProviderPill(
+                                        providerName = displayedLyricsProvider,
+                                        onClick = { showLyricsProviderPopup = true },
+                                        isEffectivelyDark = isEffectivelyDark
+                                    )
+                                    LyricsExpansionButton(
+                                        expanded = lyricsExpanded,
+                                        onClick = { maximizeLyrics = !maximizeLyrics }
+                                    )
+                                }
+                            }
                             PlayerTimelineSection(
                                 trackId = track.id,
                                 currentPositionProvider = currentPositionProvider,
@@ -1150,11 +1188,26 @@ fun ExpandedPlayerScreen(
                             .graphicsLayer { alpha = lyricsExpansion.value }
                             .then(if (!lyricsExpanded) Modifier.clearAndSetSemantics { } else Modifier)
                     ) {
-                        LyricsExpansionButton(
-                            expanded = true,
-                            onClick = { maximizeLyrics = false },
-                            modifier = Modifier.align(Alignment.End)
-                        )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 2.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            LyricsTextSizeButton(
+                                onClick = { showLyricsTextSizePopup = true }
+                            )
+                            LyricsProviderPill(
+                                providerName = displayedLyricsProvider,
+                                onClick = { showLyricsProviderPopup = true },
+                                isEffectivelyDark = isEffectivelyDark
+                            )
+                            LyricsExpansionButton(
+                                expanded = true,
+                                onClick = { maximizeLyrics = false }
+                            )
+                        }
                         PlayerTimelineSection(
                             trackId = track.id,
                             currentPositionProvider = currentPositionProvider,
@@ -1619,7 +1672,21 @@ fun ExpandedPlayerScreen(
                 enter = fadeIn(tween(220)) + expandVertically(tween(LYRICS_EXPANSION_MS)),
                 exit = fadeOut(tween(180)) + shrinkVertically(tween(LYRICS_EXPANSION_MS))
             ) {
-                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 2.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    LyricsTextSizeButton(
+                        onClick = { showLyricsTextSizePopup = true }
+                    )
+                    LyricsProviderPill(
+                        providerName = displayedLyricsProvider,
+                        onClick = { showLyricsProviderPopup = true },
+                        isEffectivelyDark = isEffectivelyDark
+                    )
                     LyricsExpansionButton(
                         expanded = lyricsExpanded,
                         onClick = { maximizeLyrics = !maximizeLyrics }
@@ -1956,6 +2023,27 @@ fun ExpandedPlayerScreen(
                 onSelectAudioDevice(deviceId)
             },
             onDismiss = { showSoundOutputDialog = false }
+        )
+    }
+    if (showLyricsTextSizePopup) {
+        LyricsTextSizePopup(
+            currentSizeSp = lyricsSettings.textSizeSp,
+            onSizeChange = { newSize ->
+                com.example.data.local.OtherSettingsPreferences.setLyricsTextSize(context, newSize)
+            },
+            onDismissRequest = { showLyricsTextSizePopup = false },
+            appColors = appColors
+        )
+    }
+    if (showLyricsProviderPopup) {
+        LyricsProviderSelectionPopup(
+            currentProvider = lyricsSettings.provider,
+            onSelectProvider = { provider ->
+                com.example.data.local.OtherSettingsPreferences.setLyricsProvider(context, provider)
+                onRetryLyrics()
+            },
+            onDismissRequest = { showLyricsProviderPopup = false },
+            appColors = appColors
         )
     }
         }
@@ -2324,41 +2412,6 @@ private fun PlayerOptionsMenu(
                 .padding(vertical = 4.dp, horizontal = 4.dp)
         ) {
             val itemIconBg = if (appColors.isAmoled) Color(0xFF141414) else if (isDark) appColors.cardBorder.copy(alpha = 0.35f) else appColors.chipBackground
-
-            // Action 0: View Now Playing & Queue
-            DropdownMenuItem(
-                text = {
-                    Text(
-                        text = "Now Playing & Queue",
-                        style = MaterialTheme.typography.bodyMedium.copy(
-                            fontWeight = FontWeight.SemiBold,
-                            color = appColors.textPrimary
-                        )
-                    )
-                },
-                leadingIcon = {
-                    Box(
-                        modifier = Modifier
-                            .size(34.dp)
-                            .clip(CircleShape)
-                            .background(itemIconBg),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.QueueMusic,
-                            contentDescription = null,
-                            tint = appColors.primaryAccent,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-                },
-                onClick = {
-                    AppHaptics.performTap(context)
-                    onDismissRequest()
-                    onOpenQueue()
-                },
-                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-            )
 
             listOf(Triple("Sleep Mode", Icons.Default.Timer, onOpenSleepTimer),
                 Triple("Equalizer", Icons.Default.Equalizer, onOpenEqualizer)).forEach { (title, icon, action) ->

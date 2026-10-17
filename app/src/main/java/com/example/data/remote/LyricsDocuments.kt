@@ -174,11 +174,31 @@ internal object LyricsDocuments {
         return assessment(lyrics).tier
     }
 
+    fun providerPreferenceRank(provider: String): Int {
+        val p = provider.lowercase()
+        return when {
+            p.contains("paxsenix") || p.contains("pax") -> 100
+            p.contains("betterlyrics") || p.contains("portato") || p.contains("potato") -> 90
+            p.contains("binilyrics") || p.contains("bini") || p.contains("lyricsplus") || p.contains("lrc.red") || p.contains("unison") -> 80
+            p.contains("musixmatch") -> 60
+            p.contains("lrclib") -> 50
+            p.contains("youtube") || p.contains("caption") || p.contains("kugou") -> 30
+            p.contains("genius") -> 10
+            else -> 40
+        }
+    }
+
     fun meaningfulUpgrade(candidate: TrackLyrics, current: TrackLyrics?): Boolean {
         if (current == null) return candidate.lines.isNotEmpty()
         val next = assessment(candidate); val old = assessment(current)
-        return next.tier > old.tier || next.tier == old.tier &&
-            (next.coverage >= old.coverage + 0.05 || next.textLength >= old.textLength * 1.15 && next.coverage >= old.coverage)
+        if (next.tier > old.tier) return true
+        if (next.tier < old.tier) return false
+        val nextRank = providerPreferenceRank(candidate.provider)
+        val oldRank = providerPreferenceRank(current.provider)
+        if (nextRank > oldRank) return true
+        if (nextRank < oldRank) return false
+        return next.coverage >= old.coverage + 0.05 ||
+            (next.textLength >= old.textLength * 1.15 && next.coverage >= old.coverage)
     }
 
     fun words(runs: List<Run>, explicitSpacing: Boolean): List<LyricWord> {
