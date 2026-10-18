@@ -17,13 +17,14 @@ import kotlin.coroutines.coroutineContext
 
 class TrackUnavailableException(title: String) : IOException("No matching playable stream is available for '$title'.")
 
-/** Selected source first, followed only by verified recordings. Archive is never initial playback. */
+/** Quality-tier routing; every remote substitution must verify the same recording. */
 internal class StreamResolver(
     private val searchStandard: suspend (String, Boolean) -> List<MusicTrack> = { query, refresh ->
         OnlineMusicApiService.searchSongs(query, limit = 20, forceRefresh = refresh)
     },
-    // Retain the injection signature for existing callers; quality upgrades have their own lifecycle.
-    @Suppress("UNUSED_PARAMETER") searchLossless: suspend (String) -> List<MusicTrack> = { emptyList() },
+    private val searchLossless: suspend (String) -> List<MusicTrack> = { query ->
+        com.example.data.remote.InternetArchiveApiService.searchLosslessPage(query, pageSize = 4, playableOnly = true).tracks
+    },
     private val fetchById: suspend (String, Boolean) -> MusicTrack? = { id, refresh ->
         OnlineMusicApiService.fetchSongDetails(id, refresh)
     },
@@ -32,21 +33,49 @@ internal class StreamResolver(
     },
     private val searchYouTube: suspend (String) -> List<MusicTrack> = { query ->
         YouTubeMusicApiService.searchSongsPage(query, useInnerTubeX = true).tracks
+    },
+    private val supportsLossless: suspend (MusicTrack) -> Boolean = { track ->
+        withContext(Dispatchers.IO) {
+            val path = Uri.parse(track.audioUrl).path.orEmpty().lowercase(java.util.Locale.ROOT)
+            val mime = when {
+                path.endsWith(".flac") -> androidx.media3.common.MimeTypes.AUDIO_FLAC
+                path.endsWith(".m4a") -> androidx.media3.common.MimeTypes.AUDIO_ALAC
+                else -> null
+            }
+            path.endsWith(".wav") || mime != null && runCatching {
+                androidx.media3.exoplayer.mediacodec.MediaCodecUtil.getDecoderInfos(mime, false, false).isNotEmpty()
+            }.getOrDefault(false)
+        }
     }
 ) {
     private data class CachedStream(val track: MusicTrack, val expiresAt: Long)
-    private data class StreamKey(val id: String, val quality: AudioQuality, val recommendation: Boolean, val cap: Int)
+    private data class StreamKey(val id: String, val quality: AudioQuality, val recommendation: Boolean, val cap: Int, val recording: String)
+    private val archiveAttempts = LinkedHashMap<String, Long>()
+    suspend fun hasRecentLosslessAttempt(track: MusicTrack): Boolean = withContext(Dispatchers.Default) {
+        val key = RecordingIdentity.key(track)
+        synchronized(archiveAttempts) { (archiveAttempts[key] ?: 0L) > android.os.SystemClock.elapsedRealtime() }
+    }
+    private val archiveMisses = LinkedHashMap<String, Long>()
     private val cache = LinkedHashMap<StreamKey, CachedStream>(128, 0.75f, true)
     val cacheSize: Int get() = synchronized(cache) { cache.size }
-    fun clear() = synchronized(cache) { cache.clear() }
+    fun clear() {
+        synchronized(cache) { cache.clear() }
+        synchronized(archiveMisses) { archiveMisses.clear() }
+        synchronized(archiveAttempts) { archiveAttempts.clear() }
+    }
+
+    suspend fun resolve(track: MusicTrack, preference: com.example.playback.AudioQualityPreference): MusicTrack =
+        resolve(track, preference.legacy)
 
     suspend fun resolve(track: MusicTrack, quality: AudioQuality, forceRefresh: Boolean = false,
         failedUrl: String? = null, @Suppress("UNUSED_PARAMETER") deferLossless: Boolean = true,
         preferYouTube: Boolean = false, jioDeadlineMs: Long = 0L, maxBitrateBps: Int = Int.MAX_VALUE,
         currentSourceOnly: Boolean = false, rejectedUrls: Set<String> = emptySet()
     ): MusicTrack = withContext(Dispatchers.IO) {
-        val deadline = jioDeadlineMs.takeIf { it > 0L } ?: (android.os.SystemClock.elapsedRealtime() + 6_000L)
-        val key = StreamKey(track.id, quality, track.recommendationOnly, maxBitrateBps)
+        val deadline = jioDeadlineMs.takeIf { it > 0L } ?: (android.os.SystemClock.elapsedRealtime() + 6_000L +
+            if (quality == AudioQuality.HI_RES_LOSSLESS && maxBitrateBps == Int.MAX_VALUE) LOSSLESS_LOOKUP_TIMEOUT_MS else 0L)
+        val recordingKey = withContext(Dispatchers.Default) { RecordingIdentity.key(track) }
+        val key = StreamKey(track.id, quality, track.recommendationOnly, maxBitrateBps, recordingKey)
         fun capped(candidate: MusicTrack): MusicTrack {
             val host = uriHost(candidate.audioUrl).orEmpty()
             if (host != "saavncdn.com" && !host.endsWith(".saavncdn.com")) return candidate
@@ -60,17 +89,14 @@ internal class StreamResolver(
         val youtubeSelection = selectedYouTube(track) &&
             (!track.id.startsWith("online_") || forceRefresh || preferYouTube)
         fun providerAllowed(candidate: MusicTrack) = isValidStreamUrl(candidate.audioUrl)
+        // Local/downloaded audio remains usable offline and never needs provider substitution.
+        if (uriScheme(track.audioUrl) in setOf("file", "content")) return@withContext track
         if (forceRefresh || preferYouTube) synchronized(cache) { cache.keys.removeAll { it.id == track.id } }
         else {
-            // A working selected provider must not be displaced by an older cached fallback.
-            if (providerAllowed(track) && isValidStreamUrl(track.audioUrl) && track.audioUrl != failedUrl && !needsResolution(track))
-                return@withContext capped(track)
             val cached = synchronized(cache) { cache[key]?.takeIf { it.expiresAt > System.currentTimeMillis() }?.track }
-            if (cached != null && providerAllowed(cached) && cached.audioUrl != failedUrl && isValidStreamUrl(cached.audioUrl) &&
-                youtubeSelection == YouTubeAudioStreamService.isYouTubeAudio(cached.id, cached.audioUrl)) {
-                // Signed URL lifetimes and transport compatibility remain authoritative in InnerTubeX.
-                if (!youtubeSelection) return@withContext withStream(track, cached)
-            }
+            if (cached != null && providerAllowed(cached) && cached.audioUrl != failedUrl &&
+                cached.audioUrl !in rejectedUrls && !YouTubeAudioStreamService.isYouTubeAudio(cached.id, cached.audioUrl))
+                return@withContext withStream(track, capped(cached))
         }
         val rejected = failedUrl ?: track.audioUrl.takeIf { forceRefresh }
         if (forceRefresh && failedUrl != null && youtubeSelection) selectedVideoId(track)?.let {
@@ -99,6 +125,8 @@ internal class StreamResolver(
             return resolved.copy(isLossless = false, source = "YouTube Music")
         }
         suspend fun jioExact(): MusicTrack? {
+            val already = track.takeIf { !forceRefresh && !selectedYouTube(it) && !archiveTransport(it.audioUrl) && usable(it) }
+            if (already != null) return already
             if (!track.id.startsWith("online_")) return null
             return attempt(8_000L) { fetchById(track.id.removePrefix("online_"), forceRefresh) }
                 ?.takeIf { it.id == track.id && usable(it) }
@@ -140,22 +168,39 @@ internal class StreamResolver(
             }
             null
         }
+        suspend fun archive(): MusicTrack? {
+            if (quality != AudioQuality.HI_RES_LOSSLESS || maxBitrateBps != Int.MAX_VALUE ||
+                forceRefresh || currentSourceOnly || preferYouTube || track.durationMs <= 0L ||
+                title.isBlank() || primary.isBlank()) return null
+            val identity = recordingKey
+            if (synchronized(archiveMisses) { (archiveMisses[identity] ?: 0L) > android.os.SystemClock.elapsedRealtime() }) return null
+            synchronized(archiveAttempts) {
+                archiveAttempts[identity] = android.os.SystemClock.elapsedRealtime() + 180_000L
+                while (archiveAttempts.size > 128) archiveAttempts.remove(archiveAttempts.keys.first())
+            }
+            // This is one TOTAL deadline, including search, item metadata and matching.
+            val found = attempt(LOSSLESS_LOOKUP_TIMEOUT_MS) {
+                val candidates = searchLossless("$title ${primary.ifBlank { artist }}".trim())
+                withContext(Dispatchers.Default) { candidates.firstOrNull { usable(it) && matchesInitialLossless(track, it) && supportsLossless(it) } }
+            }
+            if (found == null) synchronized(archiveMisses) {
+                archiveMisses[identity] = android.os.SystemClock.elapsedRealtime() + 180_000L
+                while (archiveMisses.size > 128) archiveMisses.remove(archiveMisses.keys.first())
+            }
+            return found
+        }
         val resolved = withTimeoutOrNull(65_000L) {
             suspend fun boundedJio(): MusicTrack? {
                 if (preferYouTube) return null
-                // An exact YouTube attempt must not spend the alternate provider's
-                // budget before the first Jio request has even started.
-                val providerDeadline = if (youtubeSelection)
-                    android.os.SystemClock.elapsedRealtime() + 6_000L else deadline
-                val remaining = (providerDeadline - android.os.SystemClock.elapsedRealtime()).coerceIn(0L, 6_000L)
+                // Archive has its own budget; it cannot consume the Jio fallback budget.
+                val remaining = (deadline - android.os.SystemClock.elapsedRealtime()).coerceIn(0L, 6_000L)
                 if (remaining == 0L) return null
-                // One shared budget includes ID refresh AND alternate Jio searches.
                 return attempt(remaining) { jioExact() ?: standardFallback() }
             }
             if (currentSourceOnly) {
-                if (youtubeSelection) youtubeExact(track) else attempt(6_000L) { jioExact() }
-            } else if (youtubeSelection) youtubeExact(track) ?: boundedJio() ?: youtubeFallback()
-            else boundedJio() ?: youtubeExact(track) ?: youtubeFallback()
+                if (archiveTransport(track.audioUrl)) null
+                else if (youtubeSelection) youtubeExact(track) else attempt(6_000L) { jioExact() }
+            } else archive() ?: boundedJio() ?: youtubeExact(track) ?: youtubeFallback()
         } ?: throw TrackUnavailableException(track.title)
         coroutineContext.ensureActive()
         val result = withStream(track, capped(resolved))
@@ -176,12 +221,23 @@ internal class StreamResolver(
         isLossless = stream.isLossless, source = stream.source)
 
     companion object {
+        const val LOSSLESS_LOOKUP_TIMEOUT_MS = 2_500L
         private val presentation = Regex("(?i)\\s*[\\[(](?:official\\s+)?(?:music\\s+)?(?:video|audio|lyric\\s+video|lyrics|visualizer|hd|4k|full\\s+song|from\\s+\"[^\"]+\")[)\\]]")
         private val presentationSuffix = Regex("(?i)\\s*[-|•]\\s*(?:official\\s+)?(?:music\\s+)?(?:video|audio|lyric\\s+video|lyrics|visualizer|hd|4k)\\b(?=\\s*(?:$|[-|•\\[(]))")
         private val officialSuffix = Regex("(?i)\\s+(?:official\\s+(?:music\\s+)?(?:audio|video)|lyric\\s+video)\\b(?:\\s+(?:hd|4k)\\b)?")
         private val topicSuffix = Regex("(?i)\\s*-\\s*topic\\b")
         private val unknownArtists = Regex("(?i)\\b(?:various\\s+artists|online\\s+artist)\\b")
         private val unknownArtistNames = setOf("", "unknown", "unknown artist", "various", "various artists", "internet archive")
+
+        internal fun matchesInitialLossless(requested: MusicTrack, candidate: MusicTrack): Boolean =
+            candidate.isLossless && candidate.audioUrl.startsWith("https://") && archiveTransport(candidate.audioUrl) &&
+                uriPath(candidate.audioUrl).let { path -> path.endsWith(".flac") || path.endsWith(".wav") || path.endsWith(".m4a") } &&
+                RecordingIdentity.title(requested) == RecordingIdentity.title(candidate) &&
+                RecordingIdentity.artistNames(requested).firstOrNull()?.let { primary ->
+                    primary == RecordingIdentity.artistNames(candidate).firstOrNull()
+                } == true &&
+                RecordingIdentity.fallbackConfidence(requested, candidate, durationToleranceMs = 5_000L,
+                    requireDuration = true) != null
 
         internal fun matchesLosslessUpgrade(requested: MusicTrack, candidate: MusicTrack): Boolean =
             candidate.isLossless && candidate.audioUrl.startsWith("https://") &&
@@ -190,6 +246,8 @@ internal class StreamResolver(
                     CatalogNames.spellingEquivalent(RecordingIdentity.title(requested), RecordingIdentity.title(candidate))) &&
                 RecordingIdentity.fallbackConfidence(requested, candidate, durationToleranceMs = 2_000L,
                     requireDuration = true) != null
+
+        private fun uriPath(url: String): String = runCatching { Uri.parse(url).path.orEmpty().lowercase(java.util.Locale.ROOT) }.getOrDefault("")
 
         private fun uriHost(url: String?): String? {
             if (url.isNullOrBlank()) return null
@@ -239,8 +297,7 @@ internal class StreamResolver(
             // however, must not become the initial source on a later catalog selection.
             val scheme = uriScheme(track.audioUrl)
             if (scheme in setOf("file", "content")) return false
-            return selectedYouTube(track) || archiveTransport(track.audioUrl) &&
-                (track.id.startsWith("online_") || track.id.startsWith("yt_"))
+            return true // Every remote entry point must apply the currently active quality tier.
         }
 
         internal fun isValidStreamUrl(url: String?): Boolean {

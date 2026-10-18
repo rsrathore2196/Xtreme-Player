@@ -1,9 +1,5 @@
 package com.example.playback
 
-import android.media.audiofx.BassBoost
-import android.media.audiofx.Equalizer
-import android.media.audiofx.LoudnessEnhancer
-import android.media.audiofx.Virtualizer
 import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -75,8 +71,8 @@ data class AudioEffectsState(
 object AudioEffectsManager {
     private const val TAG = "AudioEffectsManager"
 
-    // UI mutations only hold this lock for small immutable-state updates. Native
-    // audiofx calls are owned exclusively by the IO worker and never hold it.
+    // UI mutations only hold this lock for small immutable-state updates. DSP
+    // snapshots are published by the worker without invoking native audio effects.
     private val stateLock = Any()
     private var revision = 0L
     private data class Request(val revision: Long, val state: AudioEffectsState)
@@ -133,17 +129,11 @@ object AudioEffectsManager {
     fun applyPreset(presetName: String) { updateDesired { presetState(it, presetName) } }
     fun setCrystalClarityEnabled(enabled: Boolean) { updateDesired {
         if (it.crystalClarityEnabled == enabled) it
-        else presetState(it, if (enabled) "Crystal Clarity" else "Flat")
+        else it.copy(crystalClarityEnabled = enabled, isEnabled = it.isEnabled || enabled)
     } }
     fun resetAll(enabled: Boolean? = null) { updateDesired { state ->
         presetState(state, "Flat").copy(isEnabled = enabled ?: state.isEnabled)
     } }
-
-    private var currentSessionId: Int = 0
-    private var equalizer: Equalizer? = null
-    private var bassBoost: BassBoost? = null
-    private var virtualizer: Virtualizer? = null
-    private var loudnessEnhancer: LoudnessEnhancer? = null
 
     private val defaultFrequencies = listOf(60, 230, 910, 3600, 14000)
 
@@ -162,120 +152,14 @@ object AudioEffectsManager {
     )
     val effectsState: StateFlow<AudioEffectsState> = _effectsState.asStateFlow()
 
-    private var sessionBands: List<BandState> = emptyList()
-    private var appliedState: AudioEffectsState? = null
-    private var initialized = false
-
-    private fun current(request: Request): Boolean = synchronized(stateLock) { revision == request.revision }
-
-    /** Reconcile a complete snapshot, never an obsolete individual slider/preset command. */
+    // The render thread reads one complete immutable snapshot at buffer boundaries.
+    // Coalescing keeps rapid slider changes cheap; obsolete worker states never win.
     private fun reconcile(request: Request) {
-        if (!current(request)) return
-        val desired = request.state
-        if (desired.audioSessionId != currentSessionId) {
-            releaseEffects()
-            currentSessionId = desired.audioSessionId
-        }
-        if (!current(request)) return
-        if (!desired.isEnabled || currentSessionId <= 0) {
-            releaseEffects()
-            return
-        }
-        if (!initialized) {
-            initEffectsForSession(currentSessionId)
-            initialized = true
-        }
-        if (!current(request)) return
-        val previous = appliedState
-        // Any interruption requires the next snapshot to reconcile all native values.
-        appliedState = null
-        val bands = if (sessionBands.isEmpty()) desired.bands else if (desired.selectedPreset != "Custom") {
-            presetState(desired.copy(bands = sessionBands), desired.selectedPreset).bands
-        } else sessionBands.map { band ->
-            val points = desired.bands.sortedBy { it.centerFreqHz }
-            val lower = points.lastOrNull { it.centerFreqHz <= band.centerFreqHz } ?: points.firstOrNull()
-            val upper = points.firstOrNull { it.centerFreqHz >= band.centerFreqHz } ?: points.lastOrNull()
-            val level = if (lower == null || upper == null) 0 else if (lower.centerFreqHz == upper.centerFreqHz) lower.levelMb.toInt()
-            else {
-                val fraction = ((ln(band.centerFreqHz.coerceAtLeast(1).toDouble()) - ln(lower.centerFreqHz.coerceAtLeast(1).toDouble())) /
-                    (ln(upper.centerFreqHz.coerceAtLeast(1).toDouble()) - ln(lower.centerFreqHz.coerceAtLeast(1).toDouble()))).coerceIn(0.0, 1.0)
-                (lower.levelMb + (upper.levelMb - lower.levelMb) * fraction).toInt()
-            }
-            band.copy(levelMb = level.coerceIn(band.minLevelMb.toInt(), band.maxLevelMb.toInt()).toShort())
-        }
-        val actualBands = ArrayList<BandState>(bands.size)
-        for (band in bands) {
-            if (!current(request)) return
-            val eq = equalizer
-            val prior = previous?.bands?.firstOrNull { it.index == band.index }
-            var actual = band
-            if (eq != null && prior != band) {
-                effect("Equalizer band") { eq.setBandLevel(band.index, band.levelMb) }
-                effect("Read equalizer band") { actual = band.copy(levelMb = eq.getBandLevel(band.index)) }
-            }
-            actualBands.add(actual)
-        }
-        var actual = desired.copy(bands = actualBands)
-        if (!current(request)) return
-        if (previous?.bassBoostStrength != desired.bassBoostStrength) bassBoost?.let { bb ->
-            effect("Bass boost") { bb.setStrength(desired.bassBoostStrength.toShort()) }
-            effect("Read bass boost") { actual = actual.copy(bassBoostStrength = bb.roundedStrength.toInt()) }
-        }
-        if (!current(request)) return
-        if (previous?.virtualizerStrength != desired.virtualizerStrength) virtualizer?.let { virt ->
-            effect("Virtualizer") { virt.setStrength(desired.virtualizerStrength.toShort()) }
-            effect("Read virtualizer") { actual = actual.copy(virtualizerStrength = virt.roundedStrength.toInt()) }
-        }
-        if (!current(request)) return
-        if (previous?.loudnessGainMb != desired.loudnessGainMb) loudnessEnhancer?.let { loudness ->
-            effect("Loudness") { loudness.setTargetGain(desired.loudnessGainMb) }
-            effect("Read loudness") { actual = actual.copy(loudnessGainMb = loudness.targetGain.toInt()) }
-        }
-        if (!current(request)) return
-        if (previous == null) {
-            effect("Enable equalizer") { equalizer?.enabled = true }
-            if (!current(request)) return
-            effect("Enable bass boost") { bassBoost?.enabled = true }
-            if (!current(request)) return
-            effect("Enable virtualizer") { virtualizer?.enabled = true }
-            if (!current(request)) return
-            effect("Enable loudness") { loudnessEnhancer?.enabled = true }
-        }
         synchronized(stateLock) {
-            if (revision == request.revision) {
-                appliedState = actual
-                if (_effectsState.value != actual) _effectsState.value = actual
-            }
-        }
-    }
-
-    private fun effect(name: String, operation: () -> Unit) {
-        try { operation() }
-        catch (e: Exception) { Log.w(TAG, "$name could not be applied: ${e.message}") }
-    }
-
-    private fun initEffectsForSession(sessionId: Int) {
-        effect("Equalizer initialization") {
-            equalizer = Equalizer(0, sessionId)
-            val eq = equalizer ?: return@effect
-            eq.enabled = false
-            val range = eq.bandLevelRange
-            sessionBands = (0 until eq.numberOfBands.toInt()).map { i ->
-                BandState(i.toShort(), eq.getCenterFreq(i.toShort()) / 1000, 0,
-                    range.getOrElse(0) { -1500 }, range.getOrElse(1) { 1500 })
-            }
-        }
-        effect("BassBoost initialization") {
-            val bb = BassBoost(0, sessionId)
-            if (bb.strengthSupported) { bassBoost = bb; bb.enabled = false } else bb.release()
-        }
-        effect("Virtualizer initialization") {
-            val virt = Virtualizer(0, sessionId)
-            if (virt.strengthSupported) { virtualizer = virt; virt.enabled = false } else virt.release()
-        }
-        effect("LoudnessEnhancer initialization") {
-            loudnessEnhancer = LoudnessEnhancer(sessionId)
-            loudnessEnhancer?.enabled = false
+            if (revision != request.revision) return
+            PsychoacousticAudioProcessor.settings.set(request.state)
+            AudioSignalPath.update { it.copy(clarityEnabled = request.state.crystalClarityEnabled,
+                dspActive = request.state.isEnabled && !it.directApproved) }
         }
     }
 
@@ -422,14 +306,4 @@ object AudioEffectsManager {
         )
     }
 
-    private fun releaseEffects() {
-        // Clear ownership before native release, even when a vendor implementation throws.
-        val effects = listOfNotNull<android.media.audiofx.AudioEffect>(equalizer, bassBoost, virtualizer, loudnessEnhancer)
-        equalizer = null; bassBoost = null; virtualizer = null; loudnessEnhancer = null
-        sessionBands = emptyList(); appliedState = null; initialized = false
-        effects.forEach { value ->
-            effect("Disable audio effect") { value.enabled = false }
-            effect("Release audio effect") { value.release() }
-        }
-    }
 }

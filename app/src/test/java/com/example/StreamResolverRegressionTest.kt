@@ -30,7 +30,7 @@ class StreamResolverRegressionTest {
 
     // Every provider boundary is controlled; these checks never need live APIs.
     private fun resolver(search: suspend (String, Boolean) -> List<MusicTrack>) = StreamResolver(
-        searchStandard = search, fetchById = { _, _ -> null },
+        searchStandard = search, searchLossless = { emptyList() }, fetchById = { _, _ -> null },
         resolveYouTube = { _, _, _ -> null }, searchYouTube = { emptyList() })
 
     @Test fun unavailableSongNeverReceivesDemoAudioOrCacheEntry() = runBlocking {
@@ -104,15 +104,15 @@ class StreamResolverRegressionTest {
             selection.cancelAndJoin()
             assertTrue(selection.isCancelled)
             assertTrue(stopped.isCompleted)
-            assertEquals(0, standardCalls.get())
-            assertEquals(0, archiveCalls.get())
+            assertTrue(standardCalls.get() > 0)
+            assertEquals(1, archiveCalls.get())
             assertEquals(0, resolver.cacheSize)
         } finally { selection.cancelAndJoin() }
     }
 
     @Test fun providerCancellationIsPropagatedWithoutFallback() = runBlocking {
         val resolver = StreamResolver(
-            searchStandard = { _, _ -> fail("Cancellation must not trigger Jio fallback"); emptyList() },
+            searchStandard = { _, _ -> emptyList() },
             resolveYouTube = { _, _, _ -> throw CancellationException("selected track changed") },
             searchYouTube = { fail("Cancellation must not trigger YouTube search"); emptyList() })
         try {
@@ -124,9 +124,9 @@ class StreamResolverRegressionTest {
         assertEquals(0, resolver.cacheSize)
     }
 
-    @Test fun exactYouTubeSelectionDoesNotSearchAnotherProvider() = runBlocking {
+    @Test fun exactYouTubeSelectionPlaysWhenJioIsUnavailable() = runBlocking {
         val resolver = StreamResolver(
-            searchStandard = { _, _ -> fail("Exact video is playable"); emptyList() },
+            searchStandard = { _, _ -> emptyList() },
             resolveYouTube = { track, selectedQuality, _ ->
                 assertEquals(youtube.id, track.id)
                 assertEquals(quality, selectedQuality)

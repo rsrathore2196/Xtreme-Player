@@ -56,22 +56,23 @@ object AudioDeviceManager {
     @Synchronized
     fun init(context: Context) {
         if (isInitialized) return
-        val am = context.applicationContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        val app = context.applicationContext
+        val am = app.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
         audioManager = am
         isInitialized = true
 
-        refreshDevices(context)
+        refreshDevices(app)
 
         try {
             am?.registerAudioDeviceCallback(object : AudioDeviceCallback() {
                 override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
                     Log.d(TAG, "Audio device connected: ${addedDevices?.size} devices")
-                    refreshDevices(context)
+                    refreshDevices(app)
                 }
 
                 override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) {
                     Log.d(TAG, "Audio device disconnected: ${removedDevices?.size} devices")
-                    refreshDevices(context)
+                    refreshDevices(app)
                 }
             }, Handler(android.os.Looper.getMainLooper()))
         } catch (e: Exception) {

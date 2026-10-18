@@ -4,9 +4,9 @@ import androidx.compose.runtime.Immutable
 
 @Immutable
 enum class AudioQualityCeiling(val maxBitrateBps: Int, val label: String, val description: String) {
-    DATA_SAVER(64_000, "Data Saver (~64 kbps)", "Lowest data usage for slow connections"),
-    NORMAL(128_000, "Standard (~128 kbps)", "Balanced audio quality and data efficiency"),
-    HIGH(256_000, "High (~256–320 kbps)", "Best lossy quality (Opus/AAC)"),
+    DATA_SAVER(96_000, "Data Saver (~96 kbps)", "Lowest data usage for slow connections"),
+    NORMAL(160_000, "Standard (~160 kbps)", "Balanced audio quality and data efficiency"),
+    HIGH(320_000, "High (~320 kbps)", "Best lossy quality (Opus/AAC)"),
     MAX(Int.MAX_VALUE, "Maximum / Lossless", "Uncapped bitrate — highest available source stream");
 
     /** Existing playback/Archive policy consumes this enum; profiles now own the preference. */

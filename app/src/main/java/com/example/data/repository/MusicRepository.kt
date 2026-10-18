@@ -308,7 +308,7 @@ class MusicRepository private constructor(
         result
     }
 
-    /** Start the selected catalog source first. Lossless discovery is never on this path. */
+    /** Apply the active quality tier consistently to every playback entry point. */
     suspend fun resolvePlayableTrack(
         track: MusicTrack,
         forceRefresh: Boolean = false,
@@ -318,14 +318,15 @@ class MusicRepository private constructor(
         currentSourceOnly: Boolean = false,
         rejectedUrls: Set<String> = emptySet()
     ): MusicTrack = withContext(Dispatchers.IO) {
-        val quality = context?.let { AudioQualityPreferences.getSelectedQuality(it) }
-            ?: AudioQuality.ULTRA_HD_320
+        val profile = context?.let { com.example.playback.NetworkQualityMonitor.getInstance(it).snapshot() }
+        val preference = com.example.playback.AudioQualityPreference.from(profile?.effectiveCeiling?.audioQuality
+            ?: AudioQuality.ULTRA_HD_320)
+        val quality = preference.legacy
         try {
             com.example.recommendation.DiscoveryRequestCoordinator.playback {
                 streamResolver.resolve(track, quality, forceRefresh, failedUrl, preferYouTube = preferYouTube, jioDeadlineMs = jioDeadlineMs,
                     currentSourceOnly = currentSourceOnly, rejectedUrls = rejectedUrls,
-                    maxBitrateBps = context?.let { com.example.playback.NetworkQualityMonitor.getInstance(it).snapshot().effectiveCeiling.maxBitrateBps }
-                        ?: Int.MAX_VALUE)
+                    maxBitrateBps = profile?.effectiveCeiling?.maxBitrateBps ?: Int.MAX_VALUE)
             }
         } catch (e: TrackUnavailableException) {
             if (track.recommendationOnly && !currentSourceOnly) recommendations.markUnavailable(track)
@@ -366,6 +367,8 @@ class MusicRepository private constructor(
             .map { it.copy(isLiked = likedIds.contains(it.id)) }
             .shuffled()
     }
+
+    internal suspend fun hasRecentLosslessAttempt(track: MusicTrack) = streamResolver.hasRecentLosslessAttempt(track)
 
     suspend fun findLosslessUpgrade(track: MusicTrack): MusicTrack? = withContext(Dispatchers.IO) {
         val monitor = context?.let(com.example.playback.NetworkQualityMonitor::getInstance)

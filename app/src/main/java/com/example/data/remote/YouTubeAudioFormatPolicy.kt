@@ -55,7 +55,7 @@ internal class YouTubeAudioFormatPolicy(private val maxBitrateBps: Int = Int.MAX
     companion object {
         private const val MAX_PLAYER_BYTES = 4L * 1024 * 1024
         fun quality(@Suppress("UNUSED_PARAMETER") cap: Int, attempt: Int): AudioQuality = when {
-            attempt == 0 -> AudioQuality.HIGH
+            attempt == 0 -> AudioQuality.AUTO
             attempt == 1 -> AudioQuality.MP4
             else -> AudioQuality.LOW
         }

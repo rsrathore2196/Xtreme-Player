@@ -55,6 +55,8 @@ class MusicService : MediaLibraryService() {
     private val networkQuality by lazy { com.example.playback.NetworkQualityMonitor.getInstance(this) }
     private var networkQueueJob: Job? = null
     private var applyingNetworkPolicy = false
+    private var volumeObserver: android.database.ContentObserver? = null
+    private var volumeJob: Job? = null
     private val app: XtremeMusicApp get() = application as XtremeMusicApp
 
     private fun applyAudioCeiling(selector: DefaultTrackSelector, player: Player) {
@@ -81,27 +83,44 @@ class MusicService : MediaLibraryService() {
                 if (index <= player.currentMediaItemIndex) continue
                 val before = player.getMediaItemAt(index)
                 var after = NetworkAudioQualityPolicy.constrain(before, ceiling)
-                if (after === before) continue
-                val video = YouTubeAudioStreamService.videoIdFromUri(before.localConfiguration?.uri ?: Uri.EMPTY)
-                if (video != null) {
-                    if (networkQuality.activeQualityCeiling.value.connectionType == com.example.playback.NetworkConnectionType.OFFLINE) continue
-                    // Select a real transport/itag before changing an upcoming media
-                    // source: a SABR-only song must not masquerade as progressive.
-                    val quality = networkQuality.currentAudioQuality
-                    val audio = withTimeoutOrNull(12_000L) {
-                        try { withContext(Dispatchers.IO) {
-                            YouTubeAudioStreamService.resolve(video, quality, maxBitrateBps = ceiling)
-                        } } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
-                    } ?: continue
-                    val uri = Uri.parse(YouTubeAudioStreamService.playbackUri("yt_$video", audio.url))
-                    val extras = Bundle(after.mediaMetadata.extras ?: Bundle()).apply {
-                        putInt("bitrate", audio.bitrateKbps); putString("qualityBadge", audio.qualityBadge)
-                        putBoolean("isLossless", false); putBoolean("audio_actual", false)
+                val address = before.localConfiguration?.uri ?: Uri.EMPTY
+                val extras = before.mediaMetadata.extras
+                val checked = extras?.getString("audio_policy_tier") == networkQuality.currentAudioQuality.name &&
+                    System.currentTimeMillis() - (extras?.getLong("audio_policy_checked_at", 0L) ?: 0L) in 0L..300_000L
+                val archive = address.host.orEmpty().let { it == "archive.org" || it.endsWith(".archive.org") }
+                // Only the next item gets Archive prefetch; never resolve an entire playlist.
+                // New quality settings apply ahead of playback, never to the audible item.
+                val needsProvider = !checked && address.scheme !in setOf("file", "content") &&
+                    ((ceiling == Int.MAX_VALUE && index == start) ||
+                        YouTubeAudioStreamService.isYouTubeAudio(before.mediaId, address.toString()) ||
+                        (archive && ceiling != Int.MAX_VALUE))
+                if (needsProvider && networkQuality.activeQualityCeiling.value.connectionType != com.example.playback.NetworkConnectionType.OFFLINE) {
+                    val metadata = before.mediaMetadata
+                    val selected = MusicTrack(before.mediaId, metadata.title?.toString().orEmpty(),
+                        metadata.artist?.toString().orEmpty(), metadata.albumTitle?.toString().orEmpty(),
+                        extras?.getLong("duration", 0L) ?: 0L, metadata.artworkUri?.toString().orEmpty(), address.toString(),
+                        bitrateKbps = extras?.getInt("bitrate", 0) ?: 0,
+                        source = extras?.getString("media_source").orEmpty(), isrc = extras?.getString("isrc").orEmpty(),
+                        isLossless = extras?.getBoolean("isLossless") == true,
+                        recommendationOnly = extras?.getBoolean("recommendation_only") == true)
+                    val resolved = try { app.repository.resolvePlayableTrack(selected) }
+                        catch (e: CancellationException) { throw e } catch (_: Exception) { null }
+                    if (resolved != null) {
+                        val uri = Uri.parse(YouTubeAudioStreamService.playbackUri(resolved.id, resolved.audioUrl))
+                        val updated = Bundle(after.mediaMetadata.extras ?: Bundle()).apply {
+                            putInt("bitrate", resolved.bitrateKbps); putString("qualityBadge", resolved.qualityBadge)
+                            putString("media_source", resolved.source); putBoolean("isLossless", resolved.isLossless)
+                            putBoolean("audio_actual", false)
+                            putString("audio_policy_tier", networkQuality.currentAudioQuality.name)
+                            putLong("audio_policy_checked_at", System.currentTimeMillis())
+                        }
+                        after = after.buildUpon().setUri(uri).setCustomCacheKey(null)
+                            .setMimeType(if (uri.lastPathSegment?.endsWith(".m3u8") == true) androidx.media3.common.MimeTypes.APPLICATION_M3U8 else null)
+                            .setRequestMetadata(after.requestMetadata.buildUpon().setMediaUri(uri).build())
+                            .setMediaMetadata(after.mediaMetadata.buildUpon().setExtras(updated).build()).build()
                     }
-                    after = after.buildUpon().setUri(uri).setMimeType(if (audio.isHls) androidx.media3.common.MimeTypes.APPLICATION_M3U8 else null)
-                        .setRequestMetadata(after.requestMetadata.buildUpon().setMediaUri(uri).build())
-                        .setMediaMetadata(after.mediaMetadata.buildUpon().setExtras(extras).build()).build()
                 }
+                if (after === before) continue
                 ensureActive()
                 // Navigation/advance or another policy update always wins over this result.
                 if (ceiling != networkQuality.currentMaxBitrateBps || index <= player.currentMediaItemIndex ||
@@ -205,6 +224,30 @@ class MusicService : MediaLibraryService() {
 
         // 3. Audio-only Renderers Factory: suppresses video codecs and uses software-prioritized selector
         val audioOnlyRenderersFactory = object : DefaultRenderersFactory(this) {
+            override fun buildAudioSink(context: android.content.Context, enableFloatOutput: Boolean,
+                enableAudioTrackPlaybackParams: Boolean): androidx.media3.exoplayer.audio.AudioSink =
+                com.example.playback.BitPerfectAudioSink(context)
+            override fun buildAudioRenderers(context: android.content.Context, extensionRendererMode: Int,
+                mediaCodecSelector: MediaCodecSelector, enableDecoderFallback: Boolean,
+                audioSink: androidx.media3.exoplayer.audio.AudioSink, eventHandler: android.os.Handler,
+                eventListener: androidx.media3.exoplayer.audio.AudioRendererEventListener, out: java.util.ArrayList<Renderer>) {
+                // Request native integer decoding only for an exact supported USB profile.
+                // All other routes retain Media3's high-precision float preference.
+                out.add(object : androidx.media3.exoplayer.audio.MediaCodecAudioRenderer(context, codecAdapterFactory,
+                    mediaCodecSelector, enableDecoderFallback, eventHandler, eventListener, audioSink) {
+                    override fun getMediaFormat(format: Format, codecMimeType: String, codecMaxInputSize: Int,
+                        codecOperatingRate: Float): android.media.MediaFormat =
+                        super.getMediaFormat(format, codecMimeType, codecMaxInputSize, codecOperatingRate).apply {
+                            (audioSink as? com.example.playback.BitPerfectAudioSink)?.preferredPcmEncoding(format)?.let {
+                                setInteger(android.media.MediaFormat.KEY_PCM_ENCODING, it)
+                            }
+                        }
+                    override fun onOutputFormatChanged(format: Format, mediaFormat: android.media.MediaFormat?) {
+                        (audioSink as? com.example.playback.BitPerfectAudioSink)?.sourceFormat(format)
+                        super.onOutputFormatChanged(format, mediaFormat)
+                    }
+                })
+            }
             override fun buildVideoRenderers(
                 context: android.content.Context,
                 extensionRendererMode: Int,
@@ -221,7 +264,8 @@ class MusicService : MediaLibraryService() {
             .setMediaCodecSelector(softwarePrioritizedCodecSelector)
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF)
             .setEnableDecoderFallback(true)
-            .setEnableAudioFloatOutput(false)
+            .setEnableAudioFloatOutput(true)
+            .setEnableAudioTrackPlaybackParams(true)
 
         // 4. High-Fidelity 320kbps Audio Pipeline with Caching
         val cacheDataSourceFactory = MusicCache.createCacheDataSourceFactory(this)
@@ -240,6 +284,20 @@ class MusicService : MediaLibraryService() {
             .build()
 
         exoPlayer = player
+        val audioManager = getSystemService(android.media.AudioManager::class.java)
+        fun publishVolume() {
+            volumeJob?.cancel()
+            volumeJob = serviceScope.launch(Dispatchers.IO) {
+                val current = audioManager?.getStreamVolume(android.media.AudioManager.STREAM_MUSIC) ?: 0
+                val max = audioManager?.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC) ?: 0
+                ensureActive()
+                com.example.playback.AudioSignalPath.update { it.copy(systemVolume = current, systemVolumeMax = max) }
+            }
+        }
+        volumeObserver = object : android.database.ContentObserver(android.os.Handler(mainLooper)) {
+            override fun onChange(selfChange: Boolean) { publishVolume() }
+        }.also { contentResolver.registerContentObserver(android.provider.Settings.System.CONTENT_URI, true, it) }
+        publishVolume()
         serviceScope.launch {
             networkQuality.activeQualityCeiling.map { it.effectiveCeiling }.distinctUntilChanged().collect {
                 // Updating ABR constraints cannot re-prepare a progressive source.
@@ -261,15 +319,19 @@ class MusicService : MediaLibraryService() {
                 if (!eventTime.timeline.isEmpty && eventTime.windowIndex in 0 until eventTime.timeline.windowCount &&
                     eventTime.timeline.getWindow(eventTime.windowIndex, androidx.media3.common.Timeline.Window())
                         .mediaItem.localConfiguration?.uri != uri) return
+                publishSignalSource(item)
+                com.example.playback.AudioSignalPath.format(item.mediaId, format,
+                    item.mediaMetadata.extras?.getInt("bitrate", 0) ?: 0)
                 val host = uri.host.orEmpty().lowercase(java.util.Locale.ROOT)
                 if ((host == "archive.org" || host.endsWith(".archive.org")) &&
                     item.mediaMetadata.extras?.getBoolean("isLossless") == true) {
                     val before = item.mediaMetadata.extras
                     val audio = com.example.playback.LosslessStreamPrebuffer.audioInfo(format,
                         before?.getInt("bitrate", 0) ?: 0) ?: return
-                    if (before?.getBoolean("audio_actual") == true && before.getString("qualityBadge") == audio.badge) return
+                    val actualBadge = com.example.playback.StreamQualityBadge.from(format, audio.bitrateKbps).label
+                    if (before?.getBoolean("audio_actual") == true && before.getString("qualityBadge") == actualBadge) return
                     val extras = Bundle(before ?: Bundle()).apply {
-                        putInt("bitrate", audio.bitrateKbps); putString("qualityBadge", audio.badge)
+                        putInt("bitrate", audio.bitrateKbps); putString("qualityBadge", actualBadge)
                         putInt("sample_rate", audio.sampleRate); putInt("bit_depth", audio.bitDepth)
                         putString("audio_codec", audio.codec)
                         putBoolean("isLossless", true); putBoolean("audio_actual", true)
@@ -292,7 +354,10 @@ class MusicService : MediaLibraryService() {
                     .ifBlank { resolved?.codec.orEmpty() }
                 val bitrate = format.averageBitrate.takeIf { it > 0 }?.div(1000)
                     ?: resolved?.bitrateKbps ?: item.mediaMetadata.extras?.getInt("bitrate", 0) ?: 0
-                val badge = YouTubeAudioStreamService.displayQuality(codec, bitrate)
+                com.example.playback.AudioSignalPath.format(item.mediaId, format, bitrate)
+                val badge = com.example.playback.StreamQualityBadge.from(format, bitrate).let {
+                    if (it.codec.isBlank()) it.copy(codec = codec) else it
+                }.label
                 val before = item.mediaMetadata.extras
                 if (before?.getString("qualityBadge") == badge && before.getBoolean("audio_actual")) return
                 val extras = Bundle(before ?: Bundle()).apply {
@@ -329,6 +394,7 @@ class MusicService : MediaLibraryService() {
                 }
             }
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                publishSignalSource(mediaItem)
                 if (sabrRecoveryTrackId != mediaItem?.mediaId) {
                     sourceRecoveryJob?.cancel()
                     sabrRecoveryTrackId = mediaItem?.mediaId
@@ -349,6 +415,8 @@ class MusicService : MediaLibraryService() {
             }
 
             override fun onEvents(player: Player, events: Player.Events) {
+                publishSignalSource(player.currentMediaItem)
+                com.example.playback.AudioSignalPath.update { it.copy(buffering = player.playbackState == Player.STATE_BUFFERING) }
                 jioFallback?.update()
                 val queueChanged = events.contains(Player.EVENT_TIMELINE_CHANGED)
                 if (queueChanged || events.contains(Player.EVENT_MEDIA_ITEM_TRANSITION) ||
@@ -475,7 +543,23 @@ class MusicService : MediaLibraryService() {
         return mediaLibrarySession
     }
 
+    private fun publishSignalSource(item: MediaItem?) {
+        if (item == null) return
+        val uri = item.localConfiguration?.uri ?: return
+        val host = uri.host.orEmpty()
+        val provider = when {
+            YouTubeAudioStreamService.isYouTubeAudio(item.mediaId, uri.toString()) -> "YouTube Music"
+            host == "archive.org" || host.endsWith(".archive.org") -> "Archive.org"
+            host == "saavncdn.com" || host.endsWith(".saavncdn.com") -> "JioSaavn"
+            uri.scheme in setOf("file", "content") -> "Local audio"
+            else -> item.mediaMetadata.extras?.getString("media_source").orEmpty().ifBlank { "Audio stream" }
+        }
+        com.example.playback.AudioSignalPath.source(item.mediaId, provider)
+    }
+
     override fun onDestroy() {
+        volumeObserver?.let(contentResolver::unregisterContentObserver)
+        volumeObserver = null
         _liveSession.value = false
         checkpoint()
         checkpointJob?.cancel()
@@ -489,6 +573,7 @@ class MusicService : MediaLibraryService() {
             mediaLibrarySession = null
         }
         exoPlayer = null
+        com.example.playback.AudioSignalPath.reset()
         YouTubeAudioStreamService.releaseResources()
         super.onDestroy()
     }

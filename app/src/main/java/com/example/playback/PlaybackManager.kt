@@ -635,9 +635,13 @@ class PlaybackManager(
                     val shouldRecordPlayback = player.isPlaying || player.playWhenReady
                     if (activeQueue.size != player.mediaItemCount || activeQueue.getOrNull(player.currentMediaItemIndex)?.id != trackId)
                         synchronizeControllerQueue(player)
-                    val matchedTrack = if (serviceSourceTransition) controllerTrack(mediaItem).copy(isLiked = oldTrack?.isLiked ?: false)
-                        else activeQueue.getOrNull(player.currentMediaItemIndex)?.takeIf { it.id == trackId } ?: controllerTrack(mediaItem)
-                    if (serviceSourceTransition) replaceQueueTrack(player.currentMediaItemIndex, matchedTrack)
+                    val queuedTrack = activeQueue.getOrNull(player.currentMediaItemIndex)?.takeIf { it.id == trackId }
+                    val policyTransition = mediaItem.mediaMetadata.extras?.containsKey("audio_policy_tier") == true &&
+                        queuedTrack?.audioUrl != mediaItem.localConfiguration?.uri?.toString()
+                    val matchedTrack = if (serviceSourceTransition || policyTransition)
+                        controllerTrack(mediaItem).copy(isLiked = queuedTrack?.isLiked ?: oldTrack?.isLiked ?: false)
+                        else queuedTrack ?: controllerTrack(mediaItem)
+                    if (serviceSourceTransition || policyTransition) replaceQueueTrack(player.currentMediaItemIndex, matchedTrack)
                     val index = player.currentMediaItemIndex.takeIf {
                         it in activeQueue.indices && activeQueue[it].id == trackId
                     } ?: activeQueue.indexOfFirst { it.id == trackId }.coerceAtLeast(0)
@@ -1069,6 +1073,9 @@ class PlaybackManager(
             _uiState.value.currentTrack?.audioUrl == original.audioUrl
         losslessUpgradeJob = scope.launch {
             try {
+                // A fresh selection already tried Archive within the resolver's 2.5s budget.
+                // Retain upgrade support for a profile changed to MAX during an existing session.
+                if (repo.hasRecentLosslessAttempt(original)) return@launch
                 // Let the chosen provider establish playback and its initial buffer first.
                 // A pause/rebuffer cancels this pre-lookup delay and starts it afresh on resume.
                 delay(3_000L)
@@ -1211,7 +1218,10 @@ class PlaybackManager(
         cancelLosslessUpgrade()
         val generation = ++selectionGeneration
         pendingSelectionId = track.id
-        initialJioDeadlineMs = android.os.SystemClock.elapsedRealtime() + 6_000L
+        // Archive's bounded primary attempt must not spend Jio's recovery window.
+        initialJioDeadlineMs = android.os.SystemClock.elapsedRealtime() + 6_000L +
+            if (NetworkQualityMonitor.getInstance(context).currentAudioQuality == AudioQuality.HI_RES_LOSSLESS)
+                com.example.data.repository.StreamResolver.LOSSLESS_LOOKUP_TIMEOUT_MS else 0L
         selectionContext = queue.toList()
         val previous = _uiState.value.currentTrack
         if (previous != null && previous.id != track.id && controller?.currentMediaItem?.mediaId == previous.id) {

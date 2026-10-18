@@ -140,7 +140,7 @@ object OnlineMusicApiService {
     fun formatUrlForQuality(rawUrl: String, quality: String): String {
         if (quality == "original" || !saavnCdnPattern.containsMatchIn(rawUrl)) return rawUrl
         val q = when (quality.lowercase().trim()) {
-            "lossless", "hires", "flac" -> "320" // Highest available studio master bit-stream
+            "lossless", "hires", "flac" -> "320" // Highest available lossy AAC stream; this is not lossless.
             "320", "ultrahd" -> "320"
             "160", "high" -> "160"
             "96", "medium", "standard", "datasaver" -> "96"

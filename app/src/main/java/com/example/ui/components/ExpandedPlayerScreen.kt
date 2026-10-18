@@ -223,10 +223,8 @@ fun ExpandedPlayerScreen(
     modifier: Modifier = Modifier
 ) {
     val track = uiState.currentTrack ?: return
-    // Display preference only; actual stream metadata and playback remain authoritative.
-    val displayedQuality = if (uiState.selectedQuality == AudioQuality.HI_RES_LOSSLESS)
-        "FLAC 24-bit/96 kHz"
-    else uiState.qualityBadge.ifBlank { track.qualityBadge }.ifBlank { "HQ Stream" }
+    // A preference is a ceiling, never evidence of the format actually playing.
+    val displayedQuality = uiState.qualityBadge.ifBlank { track.qualityBadge }.ifBlank { "Resolving audio" }
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
     val appColors = LocalAppColors.current
@@ -2666,37 +2664,8 @@ private fun PlayerTimelineSection(
                     alpha = qualityFade?.let { 1f - it.value } ?: if (showQuality) 1f else 0f
                 }.then(if (!showQuality) Modifier.clearAndSetSemantics { } else Modifier)
             ) {
-                Surface(
-                    color = Color.Transparent,
-                    border = BorderStroke(1.dp, chipBorderColor),
-                    shape = RoundedCornerShape(10.dp),
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(chipBgColor)
-                        .padding(horizontal = 2.dp)
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(6.dp)
-                                .clip(CircleShape)
-                                .background(chipContentColor)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = qualityChipText,
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                color = chipContentColor,
-                                fontWeight = FontWeight.ExtraBold,
-                                fontSize = 10.sp,
-                                letterSpacing = 0.5.sp
-                            )
-                        )
-                    }
-                }
+                AudioQualityBadge(trackId = trackId, fallbackText = qualityChipText,
+                    background = chipBgColor, border = chipBorderColor, content = chipContentColor, enabled = showQuality && active)
             }
 
             Text(
