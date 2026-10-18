@@ -1,6 +1,0 @@
-{
-  "summary": "Revised implementation plan incorporating sequential one-by-one execution of background tasks with breathing gaps after the 15-second idle gate, along with strict dispatcher isolation (Dispatchers.IO for storage/network, Dispatchers.Default for CPU math/sorting, and minimal Dispatchers.Main strictly for UI StateFlow emission).",
-  "updatedAt": "2026-10-18T04:14:32.617460178Z",
-  "requestFeedback": true,
-  "userFacing": true
-}
