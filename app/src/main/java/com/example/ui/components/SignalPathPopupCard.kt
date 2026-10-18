@@ -28,7 +28,6 @@ import com.example.playback.AudioEffectsManager
 import com.example.playback.AudioSignalPath
 import com.example.playback.SignalPathState
 import com.example.ui.theme.LocalAppColors
-import com.example.ui.theme.liquidGlassCard
 import java.util.Locale
 import kotlin.math.log10
 
@@ -80,44 +79,61 @@ fun AudioQualityBadge(trackId: String, fallbackText: String, background: Color, 
 fun SignalPathPopupCard(state: SignalPathState, onClarityChange: (Boolean) -> Unit, modifier: Modifier = Modifier) {
     val colors = LocalAppColors.current
     val rate: (Int) -> String = { if (it > 0) String.format(Locale.ROOT, "%.1f kHz", it / 1000.0) else "Not reported" }
-    Column(modifier.widthIn(max = 350.dp).width(330.dp).heightIn(max = 450.dp)
-        .liquidGlassCard(colors, RoundedCornerShape(24.dp), elevation = 8.dp)
-        .verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween,
-            modifier = Modifier.fillMaxWidth()) {
-            Text("Signal Path", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = colors.textPrimary)
-            Surface(shape = CircleShape, color = colors.primaryAccent.copy(alpha = 0.18f)) {
-                Text(state.status, Modifier.padding(horizontal = 9.dp, vertical = 4.dp), color = colors.primaryAccent,
-                    style = MaterialTheme.typography.labelSmall)
+    val solidCardBg = if (colors.isAmoled) Color(0xFF141414) else colors.cardBackground
+    val solidCardBorder = colors.cardBorder.copy(alpha = if (colors.isDark) 0.5f else 0.7f)
+
+    Surface(
+        modifier = modifier
+            .widthIn(max = 350.dp)
+            .width(330.dp)
+            .heightIn(max = 450.dp),
+        shape = RoundedCornerShape(24.dp),
+        color = solidCardBg,
+        border = BorderStroke(1.2.dp, solidCardBorder),
+        shadowElevation = 16.dp
+    ) {
+        Column(
+            modifier = Modifier
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()) {
+                Text("Signal Path", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = colors.textPrimary)
+                Surface(shape = CircleShape, color = colors.primaryAccent.copy(alpha = 0.18f)) {
+                    Text(state.status, Modifier.padding(horizontal = 9.dp, vertical = 4.dp), color = colors.primaryAccent,
+                        style = MaterialTheme.typography.labelSmall)
+                }
             }
+            SignalNode("Source", "${state.source} • ${state.quality.label}")
+            SignalNode("App Resampler", when {
+                state.inputRateHz <= 0 || state.outputRateHz <= 0 -> "Awaiting audio format"
+                state.appResampling -> "Active — Playback speed / pitch processing"
+                state.inputRateHz == state.outputRateHz -> "Bypassed — ${rate(state.inputRateHz)} / ${rate(state.outputRateHz)}"
+                else -> "Active — ${rate(state.inputRateHz)} → ${rate(state.outputRateHz)}"
+            })
+            SignalNode("DSP Chain", when {
+                state.bitPerfect -> "Bypassed (Bit-Perfect)"
+                state.directApproved -> "Bypassed (Direct PCM)"
+                state.dspActive -> "Active — Custom EQ & Clarity"
+                else -> "Bypassed (Pure)"
+            })
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Clarity Enhancer", color = colors.textPrimary, style = MaterialTheme.typography.labelMedium)
+                Switch(checked = state.clarityEnabled, onCheckedChange = onClarityChange, enabled = !state.directApproved)
+            }
+            val gain = if (state.appVolume > 0f) String.format(Locale.ROOT, "%.1f dB", 20 * log10(state.appVolume.toDouble())) else "Muted"
+            SignalNode("Volume / Gain", "App: $gain${if (state.appVolume == 1f) " (Unity)" else ""}\n" +
+                "System: ${state.systemVolume}/${state.systemVolumeMax} (Digital Attenuation)")
+            SignalNode("Android Mixer", if (state.bitPerfect) "Bit-Perfect Direct" else if (state.directApproved)
+                "Direct PCM • ${rate(state.outputRateHz)}" else "Shared AudioTrack • ${rate(state.outputRateHz)} (client)")
+            SignalNode("Output Device", "${state.outputDevice} • ${state.outputType}")
+            HorizontalDivider(color = colors.textPrimary.copy(alpha = 0.12f))
+            Text("Mode: ${state.mode}  •  Buffer: ${if (state.buffering) "Buffering" else "Healthy"}  •  Glitches: ${state.glitches}",
+                color = colors.textSecondary, style = MaterialTheme.typography.labelSmall)
         }
-        SignalNode("Source", "${state.source} • ${state.quality.label}")
-        SignalNode("App Resampler", when {
-            state.inputRateHz <= 0 || state.outputRateHz <= 0 -> "Awaiting audio format"
-            state.appResampling -> "Active — Playback speed / pitch processing"
-            state.inputRateHz == state.outputRateHz -> "Bypassed — ${rate(state.inputRateHz)} / ${rate(state.outputRateHz)}"
-            else -> "Active — ${rate(state.inputRateHz)} → ${rate(state.outputRateHz)}"
-        })
-        SignalNode("DSP Chain", when {
-            state.bitPerfect -> "Bypassed (Bit-Perfect)"
-            state.directApproved -> "Bypassed (Direct PCM)"
-            state.dspActive -> "Active — Custom EQ & Clarity"
-            else -> "Bypassed (Pure)"
-        })
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("Clarity Enhancer", color = colors.textPrimary, style = MaterialTheme.typography.labelMedium)
-            Switch(checked = state.clarityEnabled, onCheckedChange = onClarityChange, enabled = !state.directApproved)
-        }
-        val gain = if (state.appVolume > 0f) String.format(Locale.ROOT, "%.1f dB", 20 * log10(state.appVolume.toDouble())) else "Muted"
-        SignalNode("Volume / Gain", "App: $gain${if (state.appVolume == 1f) " (Unity)" else ""}\n" +
-            "System: ${state.systemVolume}/${state.systemVolumeMax} (Digital Attenuation)")
-        SignalNode("Android Mixer", if (state.bitPerfect) "Bit-Perfect Direct" else if (state.directApproved)
-            "Direct PCM • ${rate(state.outputRateHz)}" else "Shared AudioTrack • ${rate(state.outputRateHz)} (client)")
-        SignalNode("Output Device", "${state.outputDevice} • ${state.outputType}")
-        HorizontalDivider(color = colors.textPrimary.copy(alpha = 0.12f))
-        Text("Mode: ${state.mode}  •  Buffer: ${if (state.buffering) "Buffering" else "Healthy"}  •  Glitches: ${state.glitches}",
-            color = colors.textSecondary, style = MaterialTheme.typography.labelSmall)
     }
 }
 
