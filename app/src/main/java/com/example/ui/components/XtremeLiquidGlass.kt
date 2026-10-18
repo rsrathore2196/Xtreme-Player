@@ -19,9 +19,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.isSpecified
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -102,7 +105,8 @@ fun Modifier.xtremeLiquidGlassBackground(
     appColors: AppThemeColors = LocalAppColors.current,
     backdrop: LiquidGlassBackdrop? = LocalLiquidGlassBackdrop.current,
     stableCaptureWidthPx: Float = 0f,
-    baseFillAlpha: Float? = null
+    baseFillAlpha: Float? = null,
+    interaction: DockGlassInteraction? = null
 ): Modifier {
     if (!enabled || !LocalDynamicGlassEnabled.current) return this
         .shadow(elevation, shape)
@@ -115,14 +119,19 @@ fun Modifier.xtremeLiquidGlassBackground(
     val processingScale = backdrop?.sampleScale ?: XtremeLiquidGlassDefaults.BackdropSampleScale
     val useBackdrop = backdrop != null && radius > 0f && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
     val lensSize = with(density) { 24.dp.toPx() } * processingScale
+    val pressDepth = with(density) { 2.dp.toPx() } * processingScale
     val effects: com.example.ui.components.backdrop.BackdropEffectScope.() -> Unit =
-        remember(radius, processingScale, lensSize, shape) {
+        remember(radius, processingScale, lensSize, pressDepth, shape, interaction) {
             {
-                blur(radius * processingScale)
+                // The same small touch response as LastWave; at rest the
+                // existing blur/lens recipe is unchanged. These reads belong
+                // to the backdrop node, not the screen's composition.
+                val press = interaction?.pressProgress?.coerceAtLeast(0f) ?: 0f
+                blur(radius * processingScale + pressDepth * press)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && shape is CornerBasedShape) {
                     try {
                         lens(
-                            refractionHeight = lensSize,
+                            refractionHeight = lensSize + pressDepth * press,
                             refractionAmount = lensSize,
                             depthEffect = true,
                             chromaticAberration = true
@@ -171,6 +180,12 @@ fun Modifier.xtremeLiquidGlassBackground(
             val reflection = Brush.radialGradient(
                 listOf(Color.White.copy(alpha = if (dark) 0.065f else 0.18f), Color.Transparent),
                 center = Offset(size.width * 0.72f, size.height * 1.6f), radius = size.width.coerceAtLeast(size.height) * 0.65f)
+            // Cache the brush at the origin. Move the canvas, rather than
+            // allocating a radial brush for every pointer/animation frame.
+            val touchRadius = size.minDimension * 1.2f
+            val touchGlow = if (interaction != null && touchRadius > 0f) Brush.radialGradient(
+                listOf(Color.White, Color.Transparent), center = Offset.Zero, radius = touchRadius
+            ) else null
             val fillAlpha = baseFillAlpha?.coerceIn(0f, 1f) ?: if (useBackdrop || (backdrop == null && enabled)) {
                 if (dark) 0.50f else 0.64f
             } else 0.90f
@@ -179,6 +194,16 @@ fun Modifier.xtremeLiquidGlassBackground(
                 drawRect(colorWash)
                 drawRect(sheen)
                 drawRect(reflection)
+                if (touchGlow != null && interaction != null) {
+                    val press = interaction.pressProgress.coerceIn(0f, 1f)
+                    val touch = interaction.touchPosition
+                    if (press > 0f && touch.isSpecified) {
+                        translate(touch.x, touch.y) {
+                            drawCircle(touchGlow, radius = touchRadius, center = Offset.Zero,
+                                alpha = 0.18f * press, blendMode = BlendMode.Plus)
+                        }
+                    }
+                }
                 drawContent()
             }
         }

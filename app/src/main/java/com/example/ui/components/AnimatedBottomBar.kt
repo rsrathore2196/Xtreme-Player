@@ -8,6 +8,8 @@ import androidx.compose.animation.core.updateTransition
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -39,6 +41,9 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.LayoutDirection
@@ -105,6 +110,9 @@ fun AnimatedBottomBar(
         targetState = selectedTabIndex,
         label = "bottom_bar_selection"
     )
+    val glassInteraction = if (appColors.dynamicGlassEnabled && LocalDynamicGlassEnabled.current) {
+        rememberDockGlassInteraction()
+    } else null
     DisposableEffect(selectionTransition.isRunning) {
         // The page slide may finish before the pill's final spring settle.
         // Keep optional work deferred until both are finished; disposal always
@@ -132,6 +140,15 @@ fun AnimatedBottomBar(
 
     Box(
         modifier = modifier
+            // One hardware-layer transform moves the outer rim, glass, pill
+            // and crisp foreground together. Resting layout/hit targets retain
+            // their existing dimensions; pressing does not remeasure the dock.
+            .graphicsLayer {
+                val scale = glassInteraction?.scale ?: 1f
+                scaleX = scale
+                scaleY = scale
+            }
+            .observeDockGlassTouches(glassInteraction)
             .testTag("floating_bottom_navigation_bar")
             .wrapContentWidth()
             .height(64.dp),
@@ -151,7 +168,8 @@ fun AnimatedBottomBar(
                     appColors = appColors,
                     baseFillAlpha = if (appColors.isDark) XtremeLiquidGlassDefaults.FloatingDockDarkFillAlpha
                         else XtremeLiquidGlassDefaults.FloatingDockLightFillAlpha,
-                    stableCaptureWidthPx = captureWidth
+                    stableCaptureWidthPx = captureWidth,
+                    interaction = glassInteraction
                 )
         )
 
@@ -195,7 +213,15 @@ fun AnimatedBottomBar(
                             .graphicsLayer {
                                 translationY = -1.5f * expansion.value
                             }
-                            .bouncyClickable { onTabSelected(item.index) }
+                            .then(
+                                if (glassInteraction != null) Modifier.clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                    role = Role.Tab,
+                                    onClick = { onTabSelected(item.index) }
+                                ) else Modifier.bouncyClickable { onTabSelected(item.index) }
+                            )
+                            .semantics { selected = isSelected }
                             .testTag(
                                 if (isSelected) "nav_tab_${item.title.lowercase()}_active"
                                 else "nav_tab_${item.title.lowercase()}_inactive"

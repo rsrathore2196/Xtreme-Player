@@ -78,7 +78,10 @@ class FeedNavigationIsolationTest {
         } }
         compose.waitForIdle()
         compose.runOnIdle { assertEquals(setOf(0), mounted) }
-        compose.onNodeWithTag("feed").performTouchInput { swipeUp() }
+        // Start in the visible feed, above the floating dock. Its outer glass
+        // now observes touches too, so a gesture beginning behind the dock is
+        // a dock interaction rather than a feed scroll.
+        compose.onNodeWithTag("feed").performTouchInput { swipeUp(startY = height * 0.7f) }
         compose.mainClock.advanceTimeBy(1200)
         val retainedIndex = compose.runOnIdle { homeScroll.firstVisibleItemIndex }
         assertTrue(retainedIndex > 0)
