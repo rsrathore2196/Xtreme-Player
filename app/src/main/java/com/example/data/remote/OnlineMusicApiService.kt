@@ -1,5 +1,7 @@
 package com.example.data.remote
 
+import com.example.performance.AppDispatchers
+
 import android.content.Context
 import android.text.Html
 import android.util.Log
@@ -191,7 +193,7 @@ object OnlineMusicApiService {
                 .build()
 
             val bodyString = httpClient.catalogRequest(request)
-            val parsed = withContext(Dispatchers.Default) {
+            val parsed = withContext(AppDispatchers.CpuBounded) {
                 val root = JSONObject(bodyString)
                 val results = root.optJSONArray("results") ?: throw java.io.IOException("Invalid song catalogue response")
                 val tracks = (0 until results.length()).mapNotNull { index ->

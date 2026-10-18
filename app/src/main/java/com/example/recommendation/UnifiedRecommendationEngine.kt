@@ -1,5 +1,7 @@
 package com.example.recommendation
 
+import com.example.performance.AppDispatchers
+
 import android.content.Context
 import android.net.Uri
 import com.example.performance.BackgroundWorkCoordinator
@@ -45,7 +47,7 @@ class UnifiedRecommendationEngine(context: Context?,
     private val cache = context?.let { RecommendationCache.get(it) }
     private val discovery = YouTubeRecommendationDiscovery(cache)
     private val ranking = BackgroundWorkCoordinator.optionalCpuDispatcher
-    private val urgentRanking = Dispatchers.Default.limitedParallelism(1)
+    private val urgentRanking = AppDispatchers.CpuBounded
     private val matching = Semaphore(limits.matchConcurrency.coerceIn(1, 4))
     private val discoveryWorkers = Semaphore(2)
     private val starts = Mutex()

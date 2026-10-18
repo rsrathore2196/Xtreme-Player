@@ -1,5 +1,7 @@
 package com.example.data.remote
 
+import com.example.performance.AppDispatchers
+
 import android.os.SystemClock
 import android.util.Log
 import android.util.LruCache
@@ -146,7 +148,7 @@ object InternetArchiveApiService {
         page: Int = 1,
         pageSize: Int = 10,
         playableOnly: Boolean = true
-    ): LosslessSearchPage = withContext(Dispatchers.IO) {
+    ): LosslessSearchPage = withContext(AppDispatchers.CpuBounded) {
         val terms = normalized(query).split(' ').filter(String::isNotBlank).take(12)
         if (terms.isEmpty()) return@withContext LosslessSearchPage()
         val requestedPage = page.coerceAtLeast(1)
@@ -325,12 +327,12 @@ object InternetArchiveApiService {
     }
 
     /** Interpret actual per-file tags, without borrowing a collection's title/duration. */
-    internal suspend fun parseLosslessItem(doc: JSONObject, root: JSONObject): List<MusicTrack> {
+    internal suspend fun parseLosslessItem(doc: JSONObject, root: JSONObject): List<MusicTrack> = withContext(AppDispatchers.CpuBounded) {
             val identifier = text(doc, "identifier")
-            if (identifier.isBlank()) return emptyList()
-            if (root.optBoolean("is_dark", false)) return emptyList()
+            if (identifier.isBlank()) return@withContext emptyList()
+            if (root.optBoolean("is_dark", false)) return@withContext emptyList()
             val metadata = root.optJSONObject("metadata")
-            if (!authorized(metadata)) return emptyList()
+            if (!authorized(metadata)) return@withContext emptyList()
             val files = root.optJSONArray("files") ?: throw java.io.IOException("Missing Archive file metadata")
             val lossless = (0 until files.length()).mapNotNull { files.optJSONObject(it) }.filter {
                 isLosslessAudioFile(text(it, "name"), text(it, "format")) &&
@@ -342,7 +344,7 @@ object InternetArchiveApiService {
                 else -> emptyList()
             }
             val isConcert = collections.any { it.equals("etree", true) }
-            return lossless.mapNotNull { file ->
+            return@withContext lossless.mapNotNull { file ->
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 val name = text(file, "name")
                 if (name.isBlank() || name.split('/').any { it == ".." }) return@mapNotNull null

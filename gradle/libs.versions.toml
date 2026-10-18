@@ -48,9 +48,12 @@ paletteKtx = "1.0.0"
 securityCrypto = "1.1.0-alpha06"
 benchmark = "1.5.0"
 uiautomator = "2.4.0"
+work = "2.10.1"
 
 
 [libraries]
+androidx-work-runtime = { module = "androidx.work:work-runtime-ktx", version.ref = "work" }
+androidx-work-testing = { module = "androidx.work:work-testing", version.ref = "work" }
 innertubex = { module = "com.github.MetrolistGroup.innertubex:innertubex", version.ref = "innertubex" }
 ktor-client-okhttp = { module = "io.ktor:ktor-client-okhttp", version.ref = "ktor" }
 ktor-client-content-negotiation = { module = "io.ktor:ktor-client-content-negotiation", version.ref = "ktor" }

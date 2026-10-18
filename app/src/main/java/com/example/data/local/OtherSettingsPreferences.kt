@@ -74,7 +74,7 @@ object OtherSettingsPreferences {
     private const val KEY_DYNAMIC_GLASS_ENABLED = "dynamic_glass_enabled"
 
     private fun getPrefs(context: Context): SharedPreferences {
-        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return ReactiveSettingsRepository.preferences(context, PREFS_NAME)
     }
 
     // --- Dynamic Blur & Liquid Glass Settings ---

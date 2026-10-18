@@ -606,7 +606,7 @@ object ThemePreferences {
     private const val KEY_CURRENT_THEME = "custom_theme_name"
 
     private fun getPrefs(context: Context): SharedPreferences {
-        return context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return ReactiveSettingsRepository.preferences(context, PREFS_NAME)
     }
 
     fun getThemeMode(context: Context): AppThemeMode {

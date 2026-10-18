@@ -1,5 +1,7 @@
 package com.example.ui.viewmodel
 
+import com.example.performance.AppDispatchers
+
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -99,7 +101,7 @@ class PlayerViewModel(
     private val application: android.app.Application = com.example.XtremeMusicApp.getInstance()
 ) : ViewModel() {
 
-    private val derivedStateDispatcher = Dispatchers.Default.limitedParallelism(1)
+    private val derivedStateDispatcher = AppDispatchers.CpuBounded
     private val derivedStateScope = viewModelScope + derivedStateDispatcher
     val playerUiState: StateFlow<PlayerUiState> = playbackManager.uiState
     // Progress has dedicated flows/providers. It must not invalidate the entire navigation tree.
@@ -130,6 +132,7 @@ class PlayerViewModel(
     private var lastObservedLyricsIdentity: SongIdentity? = null
     private val lyricsRequestGeneration = AtomicLong()
     private var lyricsPrefetchStarted = false
+    private var lyricsPrefetchAdmission: Job? = null
     @Volatile private var lyricsLookupComplete = false
     private var lyricsVisible = false
 
@@ -404,7 +407,7 @@ class PlayerViewModel(
         _catalogTracks,
         _userProfile
     ) { currentTrack, recent, favs, catalog, profile ->
-        withContext(Dispatchers.Default) {
+        withContext(AppDispatchers.CpuBounded) {
             com.example.ui.ai.AiMoodEngine.generatePersonalizedShelves(
                 lastPlayedTrack = currentTrack,
                 recentlyPlayed = recent,
@@ -413,8 +416,8 @@ class PlayerViewModel(
                 userProfile = profile
             )
         }
-    }.flowOn(Dispatchers.Default).stateIn(
-        viewModelScope + Dispatchers.Default,
+    }.flowOn(AppDispatchers.CpuBounded).stateIn(
+        viewModelScope + AppDispatchers.CpuBounded,
         SharingStarted.WhileSubscribed(5000L),
         emptyList()
     ) }
@@ -442,7 +445,7 @@ class PlayerViewModel(
                 _isOnboardingCompleted.value = settings.profile.isOnboardingCompleted
             } finally { _settingsReady.value = true }
         }
-        viewModelScope.launch(Dispatchers.Default) {
+        viewModelScope.launch(AppDispatchers.CpuBounded) {
             com.example.updater.AppUpdateManager.updateStatus.map { status ->
                 status is com.example.updater.UpdateStatus.Checking ||
                     status is com.example.updater.UpdateStatus.Downloading &&
@@ -454,7 +457,7 @@ class PlayerViewModel(
                 }
             }
         }
-        viewModelScope.launch(Dispatchers.Default) {
+        viewModelScope.launch(AppDispatchers.CpuBounded) {
             playbackManager.uiState.map { it.isLoading }.distinctUntilChanged().collectLatest { loading ->
                 if (loading) {
                     val work = com.example.performance.BackgroundWorkCoordinator.busy()
@@ -484,8 +487,7 @@ class PlayerViewModel(
                     lyricsLookupComplete = false
                     lyricsPrefetchStarted = false
                     val track = playbackManager.uiState.value.currentTrack
-                    if (track != null && (lyricsVisible ||
-                            com.example.performance.BackgroundWorkCoordinator.uiForeground.value && playbackManager.uiState.value.isPlaying))
+                    if (track != null && lyricsVisible)
                         fetchLyricsForTrack(track, forceRefresh = false)
                 }
             }
@@ -500,6 +502,8 @@ class PlayerViewModel(
                 val identity = track?.let(SongIdentity::from)
                 if (identity != lastObservedLyricsIdentity) {
                     lastObservedLyricsIdentity = identity
+                    lyricsPrefetchAdmission?.cancel()
+                    lyricsPrefetchAdmission = null
                     lyricsRequestGeneration.incrementAndGet()
                     lyricsJob?.cancel()
                     _currentLyrics.value = null
@@ -507,12 +511,31 @@ class PlayerViewModel(
                     lyricsPrefetchStarted = false
                     if (track != null && lyricsVisible) fetchLyricsForTrack(track, forceRefresh = false)
                 }
-                // Start only after audio is playing, so lyrics never delay stream resolution.
-                // Opening the panel then joins this job instead of starting the search again.
-                if (track != null && foreground && ready &&
-                    !lyricsPrefetchStarted && !lyricsLookupComplete && lyricsJob?.isActive != true) {
-                    lyricsPrefetchStarted = true
-                    fetchLyricsForTrack(track, forceRefresh = false)
+                // Hidden lyrics are optional work. Stability is tied to this recording,
+                // playback readiness and foreground state, never process uptime.
+                if (track == null || !ready || !foreground || lyricsVisible) {
+                    lyricsPrefetchAdmission?.cancel()
+                    lyricsPrefetchAdmission = null
+                } else if (!lyricsLookupComplete && !lyricsPrefetchStarted &&
+                    lyricsJob?.isActive != true && lyricsPrefetchAdmission?.isActive != true) {
+                    lyricsPrefetchAdmission = viewModelScope.launch(Dispatchers.IO) {
+                        kotlinx.coroutines.delay(10_000L)
+                        com.example.performance.BackgroundWorkCoordinator.startup(
+                            com.example.performance.BackgroundWorkCoordinator.StartupPriority.DEFERRED,
+                            label = "Idle lyrics prefetch") {
+                            val prefetch = withContext(Dispatchers.Main.immediate) {
+                                val state = playbackManager.uiState.value
+                                if (!lyricsVisible && state.isPlaying && !state.isLoading &&
+                                    state.currentTrack?.let(SongIdentity::from) == identity &&
+                                    !lyricsLookupComplete && lyricsJob?.isActive != true) {
+                                    lyricsPrefetchStarted = true
+                                    fetchLyricsForTrack(track, forceRefresh = false)
+                                    lyricsJob
+                                } else null
+                            }
+                            prefetch?.join()
+                        }
+                    }
                 }
             }
         }
@@ -521,6 +544,8 @@ class PlayerViewModel(
     fun setLyricsVisible(visible: Boolean) {
         if (lyricsVisible == visible) return
         lyricsVisible = visible
+        lyricsPrefetchAdmission?.cancel()
+        lyricsPrefetchAdmission = null
         if (visible) {
             if (lyricsJob?.isActive != true && !lyricsLookupComplete) {
                 playbackManager.uiState.value.currentTrack?.let { fetchLyricsForTrack(it, forceRefresh = false) }
@@ -590,7 +615,7 @@ class PlayerViewModel(
     }
 
     fun renamePlaylist(playlistId: Long, newTitle: String) {
-        viewModelScope.launch(Dispatchers.Default) {
+        viewModelScope.launch(AppDispatchers.CpuBounded) {
             withContext(Dispatchers.IO) { repository.renamePlaylist(playlistId, newTitle) }
             val current = _selectedPlaylistTracks.value
             if (current != null && current.playlist.playlistId == playlistId) {
@@ -672,7 +697,7 @@ class PlayerViewModel(
         val state = playbackManager.uiState.value
         if (state.isInfiniteRadio && (state.isPlaying || state.isLoading)) return
         activePlaybackLaunchJob?.cancel()
-        activePlaybackLaunchJob = viewModelScope.launch(Dispatchers.Default) {
+        activePlaybackLaunchJob = viewModelScope.launch(AppDispatchers.CpuBounded) {
             val candidates = (_catalogTracks.value + recentlyPlayed.value + favoriteTracks.value + listOfNotNull(seedTrack))
                 .distinctBy { it.id }
                 .filter { com.example.recommendation.UnifiedRecommendationEngine.verified(it) }
@@ -718,7 +743,7 @@ class PlayerViewModel(
     }
 
     fun toggleLike(track: MusicTrack) {
-        viewModelScope.launch(Dispatchers.Default) {
+        viewModelScope.launch(AppDispatchers.CpuBounded) {
           favoriteUpdateMutex.withLock {
             val newLikedStatus = withContext(Dispatchers.IO) { repository.toggleFavorite(track) }
             withContext(Dispatchers.Main.immediate) { playbackManager.updateFavoriteStatus(track.id, newLikedStatus) }
@@ -742,7 +767,7 @@ class PlayerViewModel(
         val query = _searchState.value.query
         _searchState.update { it.copy(selectedGenre = genre, isSearching = true, requestId = generation) }
         searchJob?.cancel()
-        searchJob = viewModelScope.launch(Dispatchers.Default) {
+        searchJob = viewModelScope.launch(AppDispatchers.CpuBounded) {
             val allGenres = genre.equals("All", ignoreCase = true)
             val results = if (allGenres) {
                 repository.search(query, application)
@@ -800,7 +825,7 @@ class PlayerViewModel(
     }
 
     fun refreshCatalog() {
-        viewModelScope.launch(Dispatchers.Default) {
+        viewModelScope.launch(AppDispatchers.CpuBounded) {
             val freshCatalog = repository.getInitialCatalog()
             _catalogTracks.value = freshCatalog
         }
@@ -836,7 +861,7 @@ class PlayerViewModel(
 
     fun openPlaylist(playlistId: Long) {
         playlistTracksJob?.cancel()
-        playlistTracksJob = viewModelScope.launch(Dispatchers.Default) {
+        playlistTracksJob = viewModelScope.launch(AppDispatchers.CpuBounded) {
             repository.getPlaylistWithTracks(playlistId).collect {
                 // Publication belongs to the selected-page state machine; all row preparation
                 // has already completed on the repository's Default dispatcher.
@@ -990,7 +1015,7 @@ class PlayerViewModel(
 
         importJob?.cancel()
         cancelImportRetries()
-        importJob = viewModelScope.launch(Dispatchers.Default) {
+        importJob = viewModelScope.launch(AppDispatchers.CpuBounded) {
             val work = com.example.performance.BackgroundWorkCoordinator.busy()
             try {
                 val platform = currentState.selectedPlatform
@@ -1071,7 +1096,7 @@ class PlayerViewModel(
                 it.originalIndex == index && it.original == item.original
             }) return
         val generation = importGeneration.get()
-        val job = viewModelScope.launch(Dispatchers.Default, start = kotlinx.coroutines.CoroutineStart.LAZY) {
+        val job = viewModelScope.launch(AppDispatchers.CpuBounded, start = kotlinx.coroutines.CoroutineStart.LAZY) {
             val work = com.example.performance.BackgroundWorkCoordinator.busy()
             try {
                 val result = PlaylistImportEngine.retryOnYouTube(item.original).copy(originalIndex = index)
@@ -1117,10 +1142,10 @@ class PlayerViewModel(
         val summary = (snapshot.step as? PlaylistImportStep.Summary)?.summary ?: return
         _importState.update { it.copy(step = PlaylistImportStep.Saving(summary.playlistTitle)) }
 
-        viewModelScope.launch(Dispatchers.Default) {
+        viewModelScope.launch(AppDispatchers.CpuBounded) {
             val work = com.example.performance.BackgroundWorkCoordinator.busy()
             try {
-                val matchedTracks = withContext(Dispatchers.Default) {
+                val matchedTracks = withContext(AppDispatchers.CpuBounded) {
                     // Native IDs reconcile with the existing library; keep the first playlist position.
                     summary.matchedItems.mapNotNull { it.matchedTrack }.distinctBy { it.id }
                 }

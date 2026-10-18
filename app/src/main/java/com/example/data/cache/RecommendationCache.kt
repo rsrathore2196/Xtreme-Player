@@ -45,12 +45,6 @@ internal class RecommendationCache private constructor(context: Context) {
         "recommendation_cache.db").build() }
     init {
         scope.launch {
-            // Retire only the previous provider's disposable database. Never open,
-            // migrate destructively, or reset the user's MusicDatabase here.
-            BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.MAINTENANCE,
-                requireForeground = false) { app.deleteDatabase("lastfm_recommendations.db") }
-        }
-        scope.launch {
             var lastWrite = 0L
             writes.receiveAsFlow().debounce(2_000L).collect {
                 // Slow lookups must not turn the debounce into one disk commit per song.
@@ -69,9 +63,10 @@ internal class RecommendationCache private constructor(context: Context) {
         try { database.entries().get(key)?.also { memory.put(key, it) } }
         catch (e: CancellationException) { throw e } catch (_: Exception) { null }
     }
-    fun put(key: String, tracks: List<MusicTrack>, ttl: Long) {
+    suspend fun put(key: String, tracks: List<MusicTrack>, ttl: Long) {
         val now = System.currentTimeMillis()
-        val entry = RecommendationCacheEntry(key, RecommendationTrackCodec.encode(tracks), now, now + ttl)
+        val body = withContext(com.example.performance.AppDispatchers.CpuBounded) { RecommendationTrackCodec.encode(tracks) }
+        val entry = RecommendationCacheEntry(key, body, now, now + ttl)
         memory.put(key, entry)
         synchronized(pending) {
             pending[key] = entry

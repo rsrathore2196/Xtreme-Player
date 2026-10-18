@@ -1,5 +1,7 @@
 package com.example.data.repository
 
+import com.example.performance.AppDispatchers
+
 import android.net.Uri
 import com.example.data.model.MusicTrack
 import com.example.data.remote.OnlineMusicApiService
@@ -53,7 +55,7 @@ internal class StreamResolver(
     private data class CachedStream(val track: MusicTrack, val expiresAt: Long)
     private data class StreamKey(val id: String, val quality: AudioQuality, val recommendation: Boolean, val cap: Int, val recording: String)
     private val archiveAttempts = LinkedHashMap<String, Long>()
-    suspend fun hasRecentLosslessAttempt(track: MusicTrack): Boolean = withContext(Dispatchers.Default) {
+    suspend fun hasRecentLosslessAttempt(track: MusicTrack): Boolean = withContext(AppDispatchers.CpuBounded) {
         val key = RecordingIdentity.key(track)
         synchronized(archiveAttempts) { (archiveAttempts[key] ?: 0L) > android.os.SystemClock.elapsedRealtime() }
     }
@@ -76,7 +78,7 @@ internal class StreamResolver(
     ): MusicTrack = withContext(Dispatchers.IO) {
         val deadline = jioDeadlineMs.takeIf { it > 0L } ?: (android.os.SystemClock.elapsedRealtime() + 6_000L +
             if (quality == AudioQuality.HI_RES_LOSSLESS && maxBitrateBps == Int.MAX_VALUE) LOSSLESS_LOOKUP_TIMEOUT_MS else 0L)
-        val recordingKey = withContext(Dispatchers.Default) { RecordingIdentity.key(track) }
+        val recordingKey = withContext(AppDispatchers.CpuBounded) { RecordingIdentity.key(track) }
         val key = StreamKey(track.id, quality, track.recommendationOnly, maxBitrateBps, recordingKey)
         fun capped(candidate: MusicTrack): MusicTrack {
             val host = uriHost(candidate.audioUrl).orEmpty()
@@ -141,7 +143,7 @@ internal class StreamResolver(
         suspend fun standardFallback(): MusicTrack? = attempt(12_000L) {
             for (query in queries) {
                 val candidates = attempt(5_000L) { searchStandard(query, forceRefresh) }.orEmpty()
-                val ranked = withContext(Dispatchers.Default) { candidates.mapNotNull { candidate ->
+                val ranked = withContext(AppDispatchers.CpuBounded) { candidates.mapNotNull { candidate ->
                     RecordingIdentity.fallbackConfidence(track, candidate)?.let { candidate to it }
                 }.sortedByDescending { it.second }.take(8).map { it.first } }
                 for (candidate in ranked) {
@@ -159,7 +161,7 @@ internal class StreamResolver(
                 val candidates = attempt(6_000L) {
                     searchYouTube(query)
                 }.orEmpty()
-                val ranked = withContext(Dispatchers.Default) { candidates.mapNotNull { candidate ->
+                val ranked = withContext(AppDispatchers.CpuBounded) { candidates.mapNotNull { candidate ->
                     RecordingIdentity.fallbackConfidence(track, candidate)?.let { candidate to it }
                 }.sortedByDescending { it.second }.take(8).map { it.first } }
                 for (candidate in ranked) {
@@ -180,7 +182,7 @@ internal class StreamResolver(
             // This is one TOTAL deadline, including search, item metadata and matching.
             val found = attempt(LOSSLESS_LOOKUP_TIMEOUT_MS) {
                 val candidates = searchLossless("$title ${primary.ifBlank { artist }}".trim())
-                withContext(Dispatchers.Default) { candidates.firstOrNull { usable(it) && matchesInitialLossless(track, it) && supportsLossless(it) } }
+                withContext(AppDispatchers.CpuBounded) { candidates.firstOrNull { usable(it) && matchesInitialLossless(track, it) && supportsLossless(it) } }
                     .also { completed = true }
             }
             // A timeout/partial response is not proof of absence. Only a successful

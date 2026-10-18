@@ -9,7 +9,7 @@ object RecentSearchPreferences {
     private const val MAX_RECENT_SEARCHES = 5
 
     fun getRecentSearches(context: Context): List<String> {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val prefs = ReactiveSettingsRepository.preferences(context, PREFS_NAME)
         val jsonString = prefs.getString(KEY_RECENT_SEARCHES, null) ?: return emptyList()
         return try {
             val jsonArray = JSONArray(jsonString)
@@ -51,12 +51,12 @@ object RecentSearchPreferences {
     }
 
     fun clearRecentSearches(context: Context) {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val prefs = ReactiveSettingsRepository.preferences(context, PREFS_NAME)
         prefs.edit().remove(KEY_RECENT_SEARCHES).apply()
     }
 
     private fun saveRecentSearches(context: Context, list: List<String>) {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val prefs = ReactiveSettingsRepository.preferences(context, PREFS_NAME)
         val jsonArray = JSONArray()
         list.forEach { jsonArray.put(it) }
         prefs.edit().putString(KEY_RECENT_SEARCHES, jsonArray.toString()).apply()

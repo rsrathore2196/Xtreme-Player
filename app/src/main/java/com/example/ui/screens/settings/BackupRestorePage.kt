@@ -87,7 +87,7 @@ fun BackupRestorePage(
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
-    val database = remember { MusicDatabase.getDatabase(context) }
+    val database = remember(context) { suspend { withContext(Dispatchers.IO) { MusicDatabase.getDatabase(context) } } }
 
     val appColors = LocalAppColors.current
     val cardBg = appColors.cardBackground
@@ -177,7 +177,7 @@ fun BackupRestorePage(
             isRestoringBackup = true
             statusNotification = null
             coroutineScope.launch {
-                val summary = BackupRestoreManager.restoreFromUri(context, database, uri)
+                val summary = BackupRestoreManager.restoreFromUri(context, database(), uri)
                 isRestoringBackup = false
                 statusNotification = summary.message
                 refreshBackups()
@@ -241,7 +241,7 @@ fun BackupRestorePage(
                             isCreatingBackup = true
                             statusNotification = null
                             coroutineScope.launch {
-                                val result = BackupRestoreManager.createBackup(context, database)
+                                val result = BackupRestoreManager.createBackup(context, database())
                                 isCreatingBackup = false
                                 if (result.isSuccess) {
                                     val info = result.getOrNull()
@@ -899,7 +899,7 @@ fun BackupRestorePage(
                             coroutineScope.launch {
                                 val summary = BackupRestoreManager.restoreBackup(
                                     context,
-                                    database,
+                                    database(),
                                     backupFile = fileToRestore,
                                     uriString = uriStr,
                                     mode = BackupRestoreManager.RestoreMode.MERGE
@@ -962,7 +962,7 @@ fun BackupRestorePage(
                         coroutineScope.launch {
                             val summary = BackupRestoreManager.restoreBackup(
                                 context,
-                                database,
+                                database(),
                                 backupFile = fileToRestore,
                                 uriString = uriStr,
                                 mode = BackupRestoreManager.RestoreMode.REPLACE,

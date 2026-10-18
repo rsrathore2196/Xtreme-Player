@@ -1,5 +1,7 @@
 package com.example.recommendation
 
+import com.example.performance.AppDispatchers
+
 import com.example.data.local.ListeningEventDao
 import com.example.data.local.ListeningEventEntity
 import com.example.data.model.MusicTrack
@@ -36,7 +38,7 @@ data class UserTasteProfile(
 
         suspend fun buildProfile(dao: ListeningEventDao, nowMs: Long = System.currentTimeMillis(),
             tracks: List<MusicTrack> = emptyList(), favorites: List<MusicTrack> = emptyList()): UserTasteProfile =
-            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            kotlinx.coroutines.withContext(AppDispatchers.CpuBounded) {
                 val events = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { dao.getActualPlays(limit = 5000) }
                 fromEvents(events, tracks, favorites, nowMs)
             }

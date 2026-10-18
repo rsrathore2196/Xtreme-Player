@@ -58,7 +58,7 @@ class ArtworkRequestIdentityTest {
         assertEquals(Size(600, 400), runBlocking { request.sizeResolver.size() })
     }
 
-    @Test fun userOpenedPlayerArtworkDoesNotWaitForOptionalHomeDecodeWorkers() {
+    @Test fun playerArtworkUsesTheSameProcessWideDecodeBudgetAsHome() {
         lateinit var request: ImageRequest
         compose.setContent {
             val prepared = rememberOptimizedImageRequest("https://covers.example/player.jpg",
@@ -66,7 +66,7 @@ class ArtworkRequestIdentityTest {
             SideEffect { request = prepared }
         }
         compose.waitForIdle()
-        assertSame(Dispatchers.Default, request.decoderDispatcher)
+        assertSame(com.example.performance.AppDispatchers.CpuBounded, request.decoderDispatcher)
         assertEquals(Size(1080, 1080), runBlocking { request.sizeResolver.size() })
     }
 }

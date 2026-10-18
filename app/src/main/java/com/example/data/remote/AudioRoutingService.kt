@@ -1,5 +1,7 @@
 package com.example.data.remote
 
+import com.example.performance.AppDispatchers
+
 import android.content.Context
 import com.example.data.model.MusicTrack
 import com.example.data.repository.CatalogNames
@@ -30,7 +32,7 @@ object AudioRoutingService {
 
     suspend fun searchPage(query: String, standardPage: Int? = 1,
         youtubeContinuation: String? = null, fetchYouTube: Boolean = true, limit: Int = 10
-    ): SearchPage = withContext(Dispatchers.Default) {
+    ): SearchPage = withContext(AppDispatchers.CpuBounded) {
         val cleaned = StreamResolver.extractCleanTitle(query).trim()
         if (cleaned.isBlank()) return@withContext SearchPage(emptyList(), null, null)
         supervisorScope {

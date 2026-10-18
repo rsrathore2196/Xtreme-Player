@@ -1,5 +1,7 @@
 package com.example.data.repository
 
+import com.example.performance.AppDispatchers
+
 import android.content.Context
 import com.example.data.remote.CatalogHttpException
 import com.example.data.remote.YouTubeMusicApiService
@@ -102,7 +104,7 @@ object ArtistPhotoRepository {
         (it.startsWith("https://") || it.startsWith("http://")) && !placeholderImage.containsMatchIn(it)
     }?.replaceFirst("http://", "https://")?.takeIf { (rejectedImages[it] ?: 0L) <= System.currentTimeMillis() }
 
-    suspend fun photo(context: Context, artist: CatalogArtist, fallbackArtwork: String? = null): String? = withContext(Dispatchers.IO) {
+    suspend fun photo(context: Context, artist: CatalogArtist, fallbackArtwork: String? = null): String? = withContext(AppDispatchers.CpuBounded) {
         val name = CatalogNames.normalize(artist.name)
         if (name.isBlank() || name in setOf("unknown", "unknown artist", "various artists")) return@withContext null
         val key = key(artist)
@@ -183,7 +185,10 @@ object ArtistPhotoRepository {
                 // fallback is marked separately and never cached as a real portrait.
                 val aliases = (listOf(artist.name, selected.name) + selected.aliases).map(CatalogNames::normalize)
                     .filter(String::isNotBlank).distinct()
-                val edit = context.applicationContext.getSharedPreferences("artist_images_v2", Context.MODE_PRIVATE).edit()
+                val photoPreferences = withContext(Dispatchers.IO) {
+                    context.applicationContext.getSharedPreferences("artist_images_v2", Context.MODE_PRIVATE)
+                }
+                val edits = linkedMapOf<String, String>()
                 val json = JSONObject().put("version", PHOTO_VERSION).put("image", result.orEmpty())
                     .put("source", source).put("expires", expires).put("mbid", photo.musicBrainzId)
                     .put("catalogId", photo.catalogId).put("albumArtwork", photo.albumArtwork.orEmpty()).toString()
@@ -196,10 +201,12 @@ object ArtistPhotoRepository {
                         priority(previous) > priority(photo)) continue
                     if (previous == null || compatible(previous, selected)) {
                         memory.put(aliasKey, photo)
-                        edit.putString(aliasKey, json)
+                        edits[aliasKey] = json
                     }
                 }
-                edit.apply()
+                withContext(Dispatchers.IO) {
+                    photoPreferences.edit().also { edit -> edits.forEach { (key, value) -> edit.putString(key, value) } }.commit()
+                }
                 photoRevision.update { it + 1L }
                 cachedPhoto(artist) ?: result ?: album
             }
@@ -211,7 +218,7 @@ object ArtistPhotoRepository {
         .filter { it.isNotBlank() && it != "null" }.distinct()
 
     /** Only aliases from a uniquely verified artist may broaden catalogue credit matching. */
-    internal suspend fun enrichIdentity(artist: CatalogArtist): CatalogArtist = withContext(Dispatchers.IO) {
+    internal suspend fun enrichIdentity(artist: CatalogArtist): CatalogArtist = withContext(AppDispatchers.CpuBounded) {
         val row = audioDbIdentity(artist) ?: return@withContext artist
         artist.copy(musicBrainzId = artist.musicBrainzId.ifBlank {
             row.optString("strMusicBrainzID").takeUnless { it == "null" }.orEmpty()
@@ -239,7 +246,8 @@ object ArtistPhotoRepository {
                     if (System.currentTimeMillis() < audioDbBackoffUntil) return@withLock cached?.second
                     val url = "https://www.theaudiodb.com/api/v1/json/123/search.php".toHttpUrl().newBuilder()
                         .addQueryParameter("s", query).build().toString()
-                    val array = JSONObject(client.catalogGet(url)).optJSONArray("artists")
+                    val httpClient = withContext(Dispatchers.IO) { client }
+                    val array = JSONObject(httpClient.catalogGet(url)).optJSONArray("artists")
                     val matches = (0 until (array?.length() ?: 0)).mapNotNull { array?.optJSONObject(it) }.filter { row ->
                         row.optString("idArtist").isNotBlank() && if (artist.musicBrainzId.isNotBlank()) {
                             row.optString("strMusicBrainzID").equals(artist.musicBrainzId, true)

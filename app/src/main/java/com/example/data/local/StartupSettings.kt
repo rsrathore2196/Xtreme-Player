@@ -40,6 +40,12 @@ internal class StartupSettingsCache(private val context: Context) : AutoCloseabl
     private val loading = Mutex()
     @Volatile private var snapshot: Snapshot? = null
     private var preferences: List<SharedPreferences> = emptyList()
+    private var memoryPreferences: List<SharedPreferences> = emptyList()
+    private val memoryListener = SharedPreferences.OnSharedPreferenceChangeListener { prefs, key ->
+        val index = memoryPreferences.indexOf(prefs)
+        if (index != 2 && index != 3 || key == null ||
+            index == 2 && key in appearanceKeys || index == 3 && key in networkKeys) revision.incrementAndGet()
+    }
     private val listener = SharedPreferences.OnSharedPreferenceChangeListener { prefs, key ->
         // Listening statistics and lyrics settings do not invalidate appearance/profile.
         val relevant = when (prefs) {
@@ -61,6 +67,18 @@ internal class StartupSettingsCache(private val context: Context) : AutoCloseabl
                     context.applicationContext.getSharedPreferences(it, Context.MODE_PRIVATE)
                 }
                 preferences.forEach { it.registerOnSharedPreferenceChangeListener(listener) }
+                memoryPreferences = listOf("xtreme_theme_prefs", "xtreme_user_profile_prefs",
+                    "xtreme_other_settings", "xtreme_audio_quality_prefs").map {
+                    ReactiveSettingsRepository.preferences(context, it)
+                }
+                memoryPreferences.forEach { it.registerOnSharedPreferenceChangeListener(memoryListener) }
+            }
+            peek()?.let { return@withContext it }
+            (context.applicationContext as? com.example.XtremeMusicApp)?.settingsRepository?.let {
+                it.awaitPendingWrites()
+                // Listener order is unspecified: a raw restore listener may run
+                // before the adapter's notification. Read its loaded memory on IO.
+                it.refreshExternalEdits()
             }
             while (true) {
                 peek()?.let { return@withContext it }
@@ -81,6 +99,7 @@ internal class StartupSettingsCache(private val context: Context) : AutoCloseabl
 
     override fun close() {
         preferences.forEach { it.unregisterOnSharedPreferenceChangeListener(listener) }
+        memoryPreferences.forEach { it.unregisterOnSharedPreferenceChangeListener(memoryListener) }
     }
 
     private companion object {

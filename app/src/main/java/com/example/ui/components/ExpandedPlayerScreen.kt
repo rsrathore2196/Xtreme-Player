@@ -1,5 +1,7 @@
 package com.example.ui.components
 
+import com.example.performance.AppDispatchers
+
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 
@@ -246,7 +248,7 @@ fun ExpandedPlayerScreen(
     }
 
     val resolvedArtworkRequest = com.example.ui.util.rememberOptimizedImageRequest(
-        track = track, targetSize = com.example.ui.util.ImageConfig.PLAYER_SCREEN_SIZE)
+        track = track, targetSize = if (isScreenVisible) com.example.ui.util.ImageConfig.PLAYER_SCREEN_SIZE else 192)
     val highResCoverUrl = resolvedArtworkRequest.data as? String ?: ""
     val memoryItunesUrl = remember(track.id, track.title, track.artist, track.source, track.coverUrl, itunesRepo) {
         itunesRepo?.peekMemoryCachedUrl(track.toMediaItem(), ArtworkDimensions.EXPANDED_PLAYER)
@@ -256,7 +258,7 @@ fun ExpandedPlayerScreen(
         produceState(resolvedArtworkRequest.placeholderMemoryCacheKey) {
             // Scanning Coil's decoded cache and comparing artwork variants is CPU
             // work. A keyed producer cannot publish a previous song's placeholder.
-            value = withContext(Dispatchers.Default) {
+            value = withContext(AppDispatchers.CpuBounded) {
                 val urls = mutableSetOf(track.coverUrl, initialRawCoverUrl, highResCoverUrl)
                 memoryItunesUrl?.let { url ->
                     val dimensions = Regex("\\d+x\\d+bb")
@@ -350,7 +352,7 @@ fun ExpandedPlayerScreen(
                     val result = (loader.execute(request) as? SuccessResult)?.drawable
                     val bitmap = (result as? BitmapDrawable)?.bitmap
                     if (bitmap != null) {
-                        val palette = withContext(Dispatchers.Default) {
+                        val palette = withContext(AppDispatchers.CpuBounded) {
                             Palette.from(bitmap).generate()
                         }
                         val defaultAccentInt = android.graphics.Color.rgb(

@@ -1,5 +1,7 @@
 package com.example.ui.viewmodel
 
+import com.example.performance.AppDispatchers
+
 import com.example.data.model.MusicTrack
 import com.example.data.repository.*
 import com.example.playback.AudioQuality
@@ -52,10 +54,10 @@ private fun CatalogDetailState.withTracks(tracks: List<MusicTrack>, pending: Lis
 /** Owned by PlayerViewModel's scope; browsing never changes playback state. */
 class CatalogBrowserState(private val repository: CatalogRepository, private val scope: CoroutineScope,
     initialQuality: AudioQuality = AudioQuality.ULTRA_HD_320) {
-    // Result computation/publication is serialized on Default; navigation and cache ownership
-    // stay with the caller's UI scope. Both scopes share the ViewModel's cancellation job.
-    private val dataScope = scope + Dispatchers.Default.limitedParallelism(1)
-    private var audioQuality = initialQuality
+    // CPU preparation shares the process budget; generation checks and atomic state
+    // updates protect publication. UI control stays on the caller's application scope.
+    private val dataScope = scope + AppDispatchers.CpuBounded
+    @Volatile private var audioQuality = initialQuality
     private val _search = MutableStateFlow(CatalogSearchState())
     val search = _search.asStateFlow()
     private val _detail = MutableStateFlow<CatalogDetailState?>(null)
@@ -109,8 +111,8 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
             }
         }
     }
-    private var searchGeneration = 0
-    private var detailGeneration = 0
+    @Volatile private var searchGeneration = 0
+    @Volatile private var detailGeneration = 0
     private val scrollPositions = object : android.util.LruCache<String, Pair<Int, Int>>(20) {}
     private val detailAliases: MutableMap<String, String> = java.util.Collections.synchronizedMap(
         object : LinkedHashMap<String, String>(40, 0.75f, true) {
@@ -159,7 +161,7 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
             try {
                 val result = repository.search(state.query.trim(), state.type, page, quality, state.page)
                 if (generation != _search.value.requestId) return@launch
-                val tracks = withContext(Dispatchers.Default) {
+                val tracks = withContext(AppDispatchers.CpuBounded) {
                     com.example.data.remote.AudioRoutingService.mergeTracks(state.page.tracks + result.tracks)
                 }
                 if (generation != _search.value.requestId) return@launch
@@ -229,7 +231,7 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
                     is CatalogDestination.Playlist -> repository.playlistSongs(selected.playlist, state.nextPage ?: 1)
                 }
                 if (generation != _detail.value?.requestId) return@launch
-                val fresh = withContext(Dispatchers.Default) {
+                val fresh = withContext(AppDispatchers.CpuBounded) {
                     if (destination is CatalogDestination.Album) page.tracks else repository.uniqueTracks(state.tracks + page.tracks).drop(state.tracks.size)
                 }
                 if (generation != _detail.value?.requestId) return@launch

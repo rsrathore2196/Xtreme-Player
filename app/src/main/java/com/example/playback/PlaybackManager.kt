@@ -1,5 +1,7 @@
 package com.example.playback
 
+import com.example.performance.AppDispatchers
+
 import android.content.ComponentName
 import android.content.Context
 import android.net.Uri
@@ -111,7 +113,7 @@ class PlaybackManager(
 ) {
     private val TAG = "PlaybackManager"
 
-    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private val scope = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob())
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private var controller: MediaController? = null
         set(value) {
@@ -162,7 +164,9 @@ class PlaybackManager(
 
     val recommendationEngine = RecommendationEngine()
     @Volatile private var candidateCatalogPool: List<MusicTrack> = emptyList()
-    private val candidateDispatcher = Dispatchers.Default.limitedParallelism(1)
+    private val candidateDispatcher = AppDispatchers.CpuBounded
+    private val candidateUpdates = kotlinx.coroutines.sync.Mutex()
+    private val candidateGeneration = java.util.concurrent.atomic.AtomicLong()
     private var recommendationFetchJob: Job? = null
     private var queueGeneration = 0L
     private var advanceWhenQueueReady = false
@@ -204,6 +208,7 @@ class PlaybackManager(
     private var uiForeground = com.example.performance.BackgroundWorkCoordinator.uiForeground.value
 
     // Isolated high-frequency position state flows so high-frequency updates do NOT trigger full-screen recompositions
+    private val positionClock = PlaybackPositionClock()
     private val _playbackPosition = MutableStateFlow(0L)
     val playbackPosition: StateFlow<Long> = _playbackPosition.asStateFlow()
 
@@ -214,7 +219,7 @@ class PlaybackManager(
     val trackDuration: StateFlow<Long> = _trackDuration.asStateFlow()
 
     val currentPlaybackPositionMs: Long
-        get() = if (pendingSelectionId != null) 0L else controller?.currentPosition?.coerceAtLeast(0L) ?: _playbackPosition.value
+        get() = if (pendingSelectionId != null) 0L else positionClock.position(_playbackPosition.value, _trackDuration.value)
 
     private var queueRevision = 0L
     private var snapshotRevision = -1L
@@ -253,7 +258,8 @@ class PlaybackManager(
 
     init {
         scope.launch {
-            combine(NetworkQualityMonitor.getInstance(context).activeQualityCeiling,
+            val monitor = withContext(Dispatchers.IO) { NetworkQualityMonitor.getInstance(context) }
+            combine(monitor.activeQualityCeiling,
                 AudioEffectsManager.effectsState.map { it.audioEnhancerEnabled }.distinctUntilChanged()
             ) { policy, enhancer -> policy to enhancer }.collect { (policy, enhancer) ->
                 updateLosslessPolicy(policy, enhancer)
@@ -264,7 +270,7 @@ class PlaybackManager(
             try {
                 val (saved, tracks) = com.example.performance.BackgroundWorkCoordinator.work {
                     val snapshot = PlaybackSessionStore.restore(context)
-                    snapshot to withContext(Dispatchers.Default) { snapshot?.items?.map(::controllerTrack).orEmpty() }
+                    snapshot to withContext(AppDispatchers.CpuBounded) { snapshot?.items?.map(::controllerTrack).orEmpty() }
                 }
                 // A tap or an already-running service always wins over the disk snapshot.
                 if (saved != null && tracks.isNotEmpty() && selectionGeneration == 0L &&
@@ -272,6 +278,7 @@ class PlaybackManager(
                     pendingRestoredSession = saved
                     activeQueue = tracks.toMutableList()
                     val current = tracks[saved.index]
+                    positionClock.sample(saved.positionMs, false)
                     _playbackPosition.value = saved.positionMs
                     _trackDuration.value = current.durationMs
                     _uiState.update { it.copy(currentTrack = current, queue = queueSnapshot(), currentIndex = saved.index,
@@ -356,6 +363,7 @@ class PlaybackManager(
     private fun initMediaController() {
         if (controller != null || controllerFuture != null) return
         if (controllerReady.isCompleted) controllerReady = CompletableDeferred()
+        val connectionTrace = com.example.performance.BackgroundWorkCoordinator.trace("MediaController connect")
         try {
             val sessionToken = SessionToken(context, ComponentName(context, MusicService::class.java))
             controllerFuture = MediaController.Builder(context, sessionToken)
@@ -393,10 +401,11 @@ class PlaybackManager(
                         controllerReady.completeExceptionally(e)
                         Log.e(TAG, "Failed to initialize MediaController: ${e.message}", e)
                         _uiState.update { it.copy(isLoading = false, errorMessage = "Player initialization failed") }
-                    }
+                    } finally { connectionTrace.close() }
                 }
             }, MoreExecutors.directExecutor())
         } catch (e: Exception) {
+            connectionTrace.close()
             controllerFuture = null
             controllerReady.completeExceptionally(e)
             Log.e(TAG, "Error setting up MediaController: ${e.message}", e)
@@ -414,7 +423,7 @@ class PlaybackManager(
             val quality = _uiState.value.selectedQuality
             val tracks = queueSnapshot()
             if (tracks.isEmpty()) return
-            val prepared = withContext(Dispatchers.Default) {
+            val prepared = withContext(AppDispatchers.CpuBounded) {
                 val items = tracks.map { it.toMediaItem(quality) }
                 items to items.map(::controllerTrack)
             }
@@ -480,28 +489,48 @@ class PlaybackManager(
             recommendationOnly = extras?.getBoolean("recommendation_only", false) == true)
     }
 
-    private fun synchronizeControllerQueue(player: MediaController): Boolean {
-        val count = player.mediaItemCount
-        val known by lazy(LazyThreadSafetyMode.NONE) { activeQueue.associateBy { it.id } }
-        var revised: MutableList<MusicTrack>? = null
-        for (index in 0 until count) {
-            val item = player.getMediaItemAt(index)
-            val existing = activeQueue.getOrNull(index)
-            val track = existing?.takeIf { it.id == item.mediaId } ?: known[item.mediaId] ?: controllerTrack(item)
-            if (existing != track) {
-                val target = revised ?: activeQueue.toMutableList().also { revised = it }
-                if (index < target.size) target[index] = track else target.add(track)
-            }
+    private var queueSyncJob: Job? = null
+    private var queueSyncEpoch = 0L
+
+    private suspend fun synchronizeControllerQueue(player: MediaController): Boolean {
+        val revision = queueRevision
+        val generation = selectionGeneration
+        // Media3 getters are confined to its application looper. Only capture the
+        // immutable MediaItems here; metadata conversion/list construction is CPU work.
+        val timeline = player.currentTimeline
+        val items = List(player.mediaItemCount, player::getMediaItemAt)
+        // Main can append/patch its mutable queue while this CPU job is running.
+        // The retained immutable snapshot is safe to iterate across that handoff.
+        val previous = queueSnapshot()
+        val prepared = withContext(AppDispatchers.CpuBounded) {
+            val known = previous.associateBy { it.id }
+            val revised = items.map { item ->
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                known[item.mediaId] ?: controllerTrack(item)
+            }.toMutableList()
+            revised.takeUnless { it == previous }
         }
-        if (count < activeQueue.size) {
-            val target = revised ?: activeQueue.toMutableList().also { revised = it }
-            target.subList(count, target.size).clear()
+        if (controller !== player || generation != selectionGeneration || revision != queueRevision) return false
+        if (timeline !== player.currentTimeline) {
+            requestQueueSynchronization(player)
+            return false
         }
-        revised?.let { activeQueue = it }
-        return revised != null
+        if (prepared == null) return false
+        activeQueue = prepared
+        return true
     }
 
-    private fun setupPlayerListener() {
+    private fun requestQueueSynchronization(player: MediaController) {
+        val epoch = ++queueSyncEpoch
+        queueSyncJob?.cancel()
+        queueSyncJob = scope.launch {
+            val changed = synchronizeControllerQueue(player)
+            if (epoch == queueSyncEpoch && controller === player &&
+                (changed || _uiState.value.currentIndex != player.currentMediaItemIndex.coerceAtLeast(0))) publishQueueState()
+        }
+    }
+
+    private suspend fun setupPlayerListener() {
         val player = controller
         if (player == null) {
             Log.e(TAG, "Cannot setup listener: player is null")
@@ -536,8 +565,7 @@ class PlaybackManager(
                 rememberLosslessPosition(controller)
                 if (queueContentsChanged) {
                     queueContentsChanged = false
-                    if (synchronizeControllerQueue(controller) ||
-                        _uiState.value.currentIndex != controller.currentMediaItemIndex.coerceAtLeast(0)) publishQueueState()
+                    requestQueueSynchronization(controller)
                 }
                 publishListeningState(controller, newPlay = listeningPlayRestart)
                 listeningPlayRestart = false
@@ -679,7 +707,7 @@ class PlaybackManager(
                     val wasMeaningful = hasRecordedMeaningfulPlay
                     val shouldRecordPlayback = player.isPlaying || player.playWhenReady
                     if (activeQueue.size != player.mediaItemCount || activeQueue.getOrNull(player.currentMediaItemIndex)?.id != trackId)
-                        synchronizeControllerQueue(player)
+                        requestQueueSynchronization(player)
                     val queuedTrack = activeQueue.getOrNull(player.currentMediaItemIndex)?.takeIf { it.id == trackId }
                     val policyTransition = mediaItem.mediaMetadata.extras?.containsKey("audio_policy_tier") == true &&
                         queuedTrack?.audioUrl != mediaItem.localConfiguration?.uri?.toString()
@@ -1059,6 +1087,7 @@ class PlaybackManager(
             val dur = if (player.duration > 0) player.duration else _uiState.value.durationMs
             val buf = player.bufferedPosition.coerceAtLeast(0L)
 
+            positionClock.sample(pos, player.isPlaying, player.playbackParameters.speed)
             // Update isolated position StateFlows for high-performance lambda reads
             if (_playbackPosition.value != pos) _playbackPosition.value = pos
             if (_bufferedPosition.value != buf) _bufferedPosition.value = buf
@@ -1320,6 +1349,7 @@ class PlaybackManager(
         stopProgressTicker()
         _listeningState.update { it.copy(isPlaying = false) }
         activeQueue = mutableListOf()
+        positionClock.sample(0L, false)
         _playbackPosition.value = 0L
         _bufferedPosition.value = 0L
         _trackDuration.value = track.durationMs
@@ -1450,7 +1480,7 @@ class PlaybackManager(
         do {
             autoplayEnabled = _uiState.value.isAutoplayEnabled
             targetQuality = _uiState.value.selectedQuality
-            prepared = withContext(Dispatchers.Default) {
+            prepared = withContext(AppDispatchers.CpuBounded) {
                 val tracks = if (autoplayEnabled && !isExplicitPlaylist) {
                     val contextTracks = queue.filter { it.id != track.id && it.hasQueueSource() }.distinctBy { it.id }
                     (listOf(track) + contextTracks).toMutableList()
@@ -1481,6 +1511,7 @@ class PlaybackManager(
                 player.prepare()
                 player.play()
 
+                positionClock.sample(0L, false)
                 _playbackPosition.value = 0L
                 _uiState.update {
                     it.copy(
@@ -1508,6 +1539,7 @@ class PlaybackManager(
 
                 val nextInQueue = activeQueue.getOrNull(startIndex + 1)
 
+                positionClock.sample(0L, false)
                 _playbackPosition.value = 0L
                 _uiState.update {
                     it.copy(
@@ -1538,10 +1570,15 @@ class PlaybackManager(
     }
 
     private fun rememberQueueCandidates(tracks: List<MusicTrack>) {
+        val generation = candidateGeneration.get()
         scope.launch(candidateDispatcher) {
-            val merged = (candidateCatalogPool + tracks).distinctBy { it.id }.takeLast(600)
-            ensureActive()
-            candidateCatalogPool = merged
+            candidateUpdates.lock()
+            try {
+                if (generation != candidateGeneration.get()) return@launch
+                val merged = (candidateCatalogPool + tracks).distinctBy { it.id }.takeLast(600)
+                ensureActive()
+                if (generation == candidateGeneration.get()) candidateCatalogPool = merged
+            } finally { candidateUpdates.unlock() }
         }
     }
 
@@ -1606,12 +1643,12 @@ class PlaybackManager(
                     val metadata = events.map { it.trackId }.distinct().chunked(900)
                         .flatMap { database.musicDao().getTracksByIds(it) }.map { it.toMusicTrack() }
                     val favorites = repository?.getFavoriteTracks()?.first().orEmpty()
-                    withContext(Dispatchers.Default) { UserTasteProfile.fromEvents(events, metadata, favorites) }
+                    withContext(AppDispatchers.CpuBounded) { UserTasteProfile.fromEvents(events, metadata, favorites) }
                 }
                 suspend fun appendCandidates(pool: List<MusicTrack>, targetSize: Int = upcomingQueueTarget) {
                     val excludedIds = (activeQueue + pendingCollectionRadio).mapTo(mutableSetOf()) { it.id } + attemptedIds
                     val queuedSnapshot = queueSnapshot() + pendingCollectionRadio
-                    val ranked = withContext(Dispatchers.Default) {
+                    val ranked = withContext(AppDispatchers.CpuBounded) {
                         recommendationEngine.buildInfiniteAutoplayRecommendations(
                             currentTrack = track,
                             candidatePool = pool.filterNot { it.audioUrl.contains("soundhelix.com", ignoreCase = true) },
@@ -1639,7 +1676,7 @@ class PlaybackManager(
                         if (resolved.audioUrl.isBlank()) continue
                         if (!isActive || queueGeneration != generation || !_uiState.value.isAutoplayEnabled) return
                         val currentQueue = queueSnapshot() + pendingCollectionRadio
-                        val duplicate = withContext(Dispatchers.Default) {
+                        val duplicate = withContext(AppDispatchers.CpuBounded) {
                             val queued = HomeRecommendationPolicy.Recordings()
                             currentQueue.forEach { queued.add(it) }
                             queued.contains(resolved)
@@ -1733,11 +1770,15 @@ class PlaybackManager(
     }
 
     fun setCandidatePool(pool: List<MusicTrack>) {
+        val generation = candidateGeneration.incrementAndGet()
         scope.launch(candidateDispatcher) {
-            if (candidateCatalogPool == pool) return@launch
-            val snapshot = pool.toList()
-            ensureActive()
-            candidateCatalogPool = snapshot
+            candidateUpdates.lock()
+            try {
+                if (generation != candidateGeneration.get() || candidateCatalogPool == pool) return@launch
+                val snapshot = pool.toList()
+                ensureActive()
+                if (generation == candidateGeneration.get()) candidateCatalogPool = snapshot
+            } finally { candidateUpdates.unlock() }
         }
     }
 
@@ -1798,6 +1839,7 @@ class PlaybackManager(
 
         try {
             player.seekTo(positionMs)
+            positionClock.sample(positionMs, controller?.isPlaying == true, controller?.playbackParameters?.speed ?: 1f)
             _playbackPosition.value = positionMs
             _uiState.update { it.copy(currentPositionMs = positionMs) }
         } catch (e: Exception) {
@@ -1813,7 +1855,7 @@ class PlaybackManager(
                 val result = withContext(Dispatchers.IO) { loader.fetch(loader.page) }
                 if (generation != queueGeneration || !isCurrentSessionExplicitPlaylist) return@launch
                 val existing = activeQueue.mapTo(mutableSetOf()) { it.id }
-                val items = withContext(Dispatchers.Default) { result.tracks.filter { it.hasQueueSource() && existing.add(it.id) }
+                val items = withContext(AppDispatchers.CpuBounded) { result.tracks.filter { it.hasQueueSource() && existing.add(it.id) }
                     .map { it to it.toMediaItem() } }
                 if (generation != queueGeneration) return@launch
                 val next = result.nextPage?.takeIf { it > loader.page }
@@ -2116,6 +2158,7 @@ class PlaybackManager(
             controller?.release()
             controllerFuture?.let { MediaController.releaseFuture(it) }
             controller = null
+            candidateGeneration.incrementAndGet()
             candidateCatalogPool = emptyList()
             Log.i(TAG, "PlaybackManager released successfully")
         } catch (e: Exception) {

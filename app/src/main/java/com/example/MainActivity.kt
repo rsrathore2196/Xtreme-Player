@@ -219,6 +219,7 @@ class MainActivity : ComponentActivity() {
                     if (firstDrawListener === this && uiResumed) {
                         removeFirstDrawListener()
                         com.example.performance.BackgroundWorkCoordinator.firstFrameRendered()
+                        reportFullyDrawn()
                     }
                 }
             }

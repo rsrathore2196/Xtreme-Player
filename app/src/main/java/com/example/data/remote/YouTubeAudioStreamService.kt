@@ -1,5 +1,7 @@
 package com.example.data.remote
 
+import com.example.performance.AppDispatchers
+
 import android.net.Uri
 import androidx.media3.common.C
 import androidx.media3.common.Format
@@ -466,7 +468,7 @@ object YouTubeAudioStreamService {
             it.bytes.isNotEmpty() && !it.type.contains("text/") && !it.type.contains("json")
         }?.let { AudioProbe(it.url, codec = codec) }
         if (response.transient) return null // An unparsed HLS master could contain video.
-        val playlist = try { withContext(Dispatchers.Default) {
+        val playlist = try { withContext(AppDispatchers.CpuBounded) {
             HlsPlaylistParser().parse(Uri.parse(response.url), response.bytes.inputStream())
         } } catch (e: CancellationException) { throw e } catch (_: IOException) { return null }
         if (playlist is HlsMediaPlaylist) {
@@ -504,7 +506,7 @@ object YouTubeAudioStreamService {
             .maxByOrNull { bitrate(it.second) ?: 0 }
             ?: compatible.minByOrNull { bitrate(it.second) ?: Int.MAX_VALUE } ?: return null
         val audio = fetchMediaProbe(selected.first, headers, manifest = true) ?: return null
-        val media = try { withContext(Dispatchers.Default) {
+        val media = try { withContext(AppDispatchers.CpuBounded) {
             HlsPlaylistParser().parse(Uri.parse(audio.url), audio.bytes.inputStream())
         } } catch (e: CancellationException) { throw e } catch (_: IOException) { return null }
         if (media !is HlsMediaPlaylist || media.protectionSchemes != null) return null

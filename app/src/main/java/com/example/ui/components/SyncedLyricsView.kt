@@ -1,5 +1,7 @@
 package com.example.ui.components
 
+import com.example.performance.AppDispatchers
+
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -720,7 +722,7 @@ private data class PreparedGlyphGlows(val layout: TextLayoutResult, val masks: M
 private suspend fun prepareGlyphGlows(
     layout: TextLayoutResult, regions: List<RevealRegion>, broad: Float, core: Float
 ): PreparedGlyphGlows {
-    val source = withContext(Dispatchers.Default) {
+    val source = withContext(AppDispatchers.CpuBounded) {
         android.graphics.Bitmap.createBitmap(
             layout.size.width.coerceAtLeast(1), layout.size.height.coerceAtLeast(1),
             android.graphics.Bitmap.Config.ALPHA_8
@@ -728,7 +730,7 @@ private suspend fun prepareGlyphGlows(
     }
     try {
         layout.multiParagraph.paint(androidx.compose.ui.graphics.Canvas(source.asImageBitmap()), color = Color.White)
-        val masks = withContext(Dispatchers.Default) {
+        val masks = withContext(AppDispatchers.CpuBounded) {
             val broadPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                 // Keep only light outside the shaped letters. NORMAL also paints the
                 // solid glyph body twice, and wide overlapping halos flatten into a band.

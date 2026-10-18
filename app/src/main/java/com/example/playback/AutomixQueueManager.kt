@@ -1,5 +1,7 @@
 package com.example.playback
 
+import com.example.performance.AppDispatchers
+
 import android.util.Log
 import androidx.media3.common.Player
 import com.example.data.local.ListeningEventDao
@@ -92,7 +94,7 @@ class AutomixQueueManager(
 
                     // The unified engine already ranked these recordings. Keep that
                     // order; this layer only guards queue/session identity and availability.
-                    val rankedCandidates = withContext(Dispatchers.Default) {
+                    val rankedCandidates = withContext(AppDispatchers.CpuBounded) {
                         val seen = com.example.recommendation.HomeRecommendationPolicy.Recordings()
                         (currentQueue + currentTrack).forEach { seen.add(it) }
                         pool.filter { candidate -> candidate.id !in excludedIds && candidate.recommendationOnly &&

@@ -208,7 +208,7 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val serializationDispatcher = workerDispatcher.limitedParallelism(1)
+    private val serializationDispatcher = workerDispatcher
     private val writes = Channel<SavedHomeCards>(Channel.CONFLATED)
     private val closing = AtomicBoolean(false)
     private val writer = scope.launch {

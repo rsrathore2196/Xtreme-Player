@@ -99,10 +99,11 @@ object SmartCacheManager {
 
     fun configure(context: Context, repository: MusicRepository? = null) {
         appContext = context.applicationContext
-        repositoryRef = repository
+        // Headless maintenance must not detach an already configured live repository.
+        if (repository != null) repositoryRef = repository
     }
 
-    fun initialize(context: Context, repository: MusicRepository? = null) {
+    fun initialize(context: Context, repository: MusicRepository? = null, scheduleMaintenance: Boolean = true) {
         configure(context, repository)
         if (!initialized.compareAndSet(false, true)) return
         val prefs = getPrefs()
@@ -121,20 +122,20 @@ object SmartCacheManager {
             prefs?.getBoolean(KEY_AUTO_PRECACHE, true) ?: true,
             prefs?.getBoolean(KEY_WIFI_ONLY, false) ?: false, context.cacheDir.freeSpace)
         // No directory traversal and no forced Media3/Coil cache construction.
-        if (System.currentTimeMillis() - lastReconciliation.get() !in 0 until STATS_MAX_AGE_MS)
+        if (scheduleMaintenance && System.currentTimeMillis() - lastReconciliation.get() !in 0 until STATS_MAX_AGE_MS)
             refreshStats(userRequested = false)
-        else if (audioBytes + imageBytes > _stats.value.maxQuotaBytes) smartAutoTrim()
+        else if (scheduleMaintenance && audioBytes + imageBytes > _stats.value.maxQuotaBytes) smartAutoTrim()
     }
 
     private fun getPrefs(): SharedPreferences? {
-        return appContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return appContext?.let { com.example.data.local.ReactiveSettingsRepository.preferences(it, PREFS_NAME) }
     }
 
     private val checkpoints = Channel<Unit>(Channel.CONFLATED)
     private val checkpointWriter = scope.launch {
         checkpoints.receiveAsFlow().debounce(2_000L).collect {
-            BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.MAINTENANCE,
-                requireForeground = false) {
+            // Small owner-counter checkpoint, not a scan/trim maintenance job.
+            run {
                 val value = _stats.value
                 getPrefs()?.edit()?.putLong("stats_audio", value.audioBytes)?.putLong("stats_images", value.imageBytes)
                     ?.putLong("stats_lyrics", value.lyricsBytes)?.putLong("stats_metadata", value.metadataBytes)
@@ -165,6 +166,10 @@ object SmartCacheManager {
 
     fun refreshStats(userRequested: Boolean = true) {
         val ctx = appContext ?: return
+        if (!userRequested) {
+            scope.launch { com.example.performance.MaintenanceScheduler.requestCacheMaintenance(ctx) }
+            return
+        }
         synchronized(jobLock) {
             if (statisticsJob?.isActive == true) {
                 if (!userRequested || statisticsRequestedByUser) return
@@ -204,34 +209,25 @@ object SmartCacheManager {
     /** Quota decisions always re-read cache owners; persisted estimates never authorize deletion. */
     fun smartAutoTrim(context: Context? = appContext) {
         val ctx = context ?: appContext ?: return
-        synchronized(jobLock) {
-            if (maintenanceJob?.isActive == true) return
-            maintenanceJob = scope.launch {
-                BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.MAINTENANCE,
-                    requireForeground = false) {
-                    maintenanceMutex.withLock {
-                        try {
-                            val prefs = getPrefs()
-                            if (prefs?.getBoolean(KEY_SMART_AUTO_TRIM, true) == false) return@withLock
-                            val quota = prefs?.getLong(KEY_MAX_QUOTA, QUOTA_BALANCED) ?: QUOTA_BALANCED
-                            val audio = MusicCache.getSimpleCache(ctx).cacheSpace
-                            val images = calculateImageCacheBytes(ctx)
-                            if (audio + images > quota) {
-                                ctx.cacheDir.listFiles()?.forEachIndexed { index, file ->
-                                    if (index % 64 == 0) scanCheckpoint()
-                                    if (file.isFile && file.lastModified() < System.currentTimeMillis() - 24 * 60 * 60_000L &&
-                                        (file.name.endsWith(".tmp") || file.name.startsWith("temp_"))) file.delete()
-                                }
-                                if (images > 0L) trimImageCache(ctx, (quota - audio).coerceAtLeast(0L))
-                                if (audio > quota * 0.70f) MusicCache.trimAudioCache(ctx, (quota * 0.50).toLong())
-                            }
-                            val usage = MusicCache.peekCacheUsage()
-                            cacheUsageChanged(usage?.first, usage?.second, ctx.imageLoader.diskCache?.size)
-                        } catch (e: CancellationException) { throw e }
-                        catch (e: Exception) { Log.w(TAG, "Smart auto-trim error: ${e.message}") }
-                    }
+        scope.launch { com.example.performance.MaintenanceScheduler.requestCacheMaintenance(ctx) }
+    }
+
+    /** WorkManager entry point; also works with no Activity/Home lifecycle in the process. */
+    internal suspend fun performScheduledMaintenance(context: Context) = withContext(Dispatchers.IO) {
+        initialize(context, scheduleMaintenance = false)
+        maintenanceMutex.withLock {
+            val prefs = getPrefs()
+            if (prefs?.getBoolean(KEY_SMART_AUTO_TRIM, true) != false) {
+                val quota = prefs?.getLong(KEY_MAX_QUOTA, QUOTA_BALANCED) ?: QUOTA_BALANCED
+                val audio = MusicCache.getSimpleCache(context).cacheSpace
+                val images = calculateImageCacheBytes(context)
+                if (audio + images > quota) {
+                    // Owner-validated sizes, journal-aware removals; estimates never authorize eviction.
+                    if (images > 0L) trimImageCache(context, (quota - audio).coerceAtLeast(0L))
+                    if (audio > quota * 0.70f) MusicCache.trimAudioCache(context, (quota * 0.50).toLong())
                 }
             }
+            reconcileStats(context)
         }
     }
 
@@ -405,7 +401,7 @@ object SmartCacheManager {
     private suspend fun scanCheckpoint() {
         currentCoroutineContext().ensureActive()
         yield()
-        BackgroundWorkCoordinator.yieldToInteraction()
+        BackgroundWorkCoordinator.yieldToInteraction(bypass = { !BackgroundWorkCoordinator.uiForeground.value })
     }
 
     private suspend fun getFolderSize(file: File): Long {

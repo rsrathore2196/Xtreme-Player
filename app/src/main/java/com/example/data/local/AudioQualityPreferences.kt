@@ -25,7 +25,7 @@ object AudioQualityPreferences {
     }
 
     private fun getPrefs(context: Context): SharedPreferences {
-        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return ReactiveSettingsRepository.preferences(context, PREFS_NAME)
     }
 
     /** The active network profile is the only quality preference; old saved IDs cannot cap it. */

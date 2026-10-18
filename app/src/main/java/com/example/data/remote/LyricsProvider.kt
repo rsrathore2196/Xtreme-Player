@@ -1,5 +1,7 @@
 package com.example.data.remote
 
+import com.example.performance.AppDispatchers
+
 import android.util.Base64
 import android.util.Log
 import com.example.XtremeMusicApp
@@ -62,9 +64,8 @@ object LyricsProvider {
     private const val CACHE_VERSION = 3
     private const val CACHE_TTL_MS = 30 * 60 * 1000L
     private class LyricsFlight(val updates: MutableStateFlow<TrackLyrics?>, val result: Deferred<TrackLyrics>, var readers: Int = 0)
-    private val lookupScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val lookupScope = CoroutineScope(SupervisorJob() + AppDispatchers.CpuBounded)
     private val lookups = mutableMapOf<String, LyricsFlight>()
-    private var lastDiskTrimAt = 0L
 
     private fun providerKey(provider: String) = if (provider == "Auto") "" else "provider_${safeHash(provider)}_"
     private fun cacheLyrics(trackId: String, lyrics: TrackLyrics, complete: Boolean = true, provider: String = "Auto") {
@@ -99,13 +100,14 @@ object LyricsProvider {
         return normalizeForSimilarity(text).replace(" ", "_")
     }
 
-    private fun loadFromDisk(file: File, allowStale: Boolean = false): TrackLyrics? {
+    private suspend fun loadFromDisk(file: File, allowStale: Boolean = false): TrackLyrics? {
         if (!file.exists() || !file.canRead() || file.length() <= 0) return null
         return try {
             val content = file.readText(Charsets.UTF_8)
+            withContext(AppDispatchers.CpuBounded) {
             val json = JSONObject(content)
-            if (json.optInt("timingVersion", 0) != CACHE_VERSION) return null
-            if (!allowStale && System.currentTimeMillis() - json.optLong("cachedAt", 0L) > CACHE_TTL_MS) return null
+            if (json.optInt("timingVersion", 0) != CACHE_VERSION) return@withContext null
+            if (!allowStale && System.currentTimeMillis() - json.optLong("cachedAt", 0L) > CACHE_TTL_MS) return@withContext null
             val trackId = json.optString("trackId", "")
             val title = json.optString("title", "")
             val artist = json.optString("artist", "")
@@ -177,13 +179,15 @@ object LyricsProvider {
                     hasRomanization = hasRomanization
                 )
             } else null
-        } catch (e: Exception) {
+            }
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (e: Exception) {
             Log.d(TAG, "Error reading cached lyrics from disk: ${e.message}")
             null
         }
     }
 
-    private fun getCachedLyrics(identity: SongIdentity, cleanTitle: String, primaryArtist: String, allowStale: Boolean = false, provider: String = "Auto"): TrackLyrics? {
+    private suspend fun getCachedLyrics(identity: SongIdentity, cleanTitle: String, primaryArtist: String, allowStale: Boolean = false, provider: String = "Auto"): TrackLyrics? {
         val trackId = identity.trackId ?: ""
         if (trackId.isNotBlank()) {
             lyricsCache.get(providerKey(provider) + trackId)?.let {
@@ -230,6 +234,63 @@ object LyricsProvider {
         return null
     }
 
+    private fun encodeLyrics(lyrics: TrackLyrics, trackId: String): String {
+        val json = JSONObject()
+        json.put("timingVersion", CACHE_VERSION)
+        json.put("trackId", trackId)
+        json.put("title", lyrics.title)
+        json.put("artist", lyrics.artist)
+        json.put("isSynced", lyrics.isSynced)
+        json.put("provider", lyrics.provider)
+        json.put("language", lyrics.language ?: "")
+        json.put("hasWordTiming", lyrics.hasWordTiming)
+        json.put("hasSyllableTiming", lyrics.hasSyllableTiming)
+        json.put("hasTranslation", lyrics.hasTranslation)
+        json.put("hasRomanization", lyrics.hasRomanization)
+        json.put("cachedAt", System.currentTimeMillis())
+
+        val linesArray = JSONArray()
+        for (line in lyrics.lines) {
+            val lineObj = JSONObject()
+            lineObj.put("t", line.timestampMs)
+            lineObj.put("x", line.text)
+            lineObj.put("d", line.durationMs)
+            lineObj.put("reliable", line.isReliableDuration)
+            if (!line.translation.isNullOrBlank()) lineObj.put("tr", line.translation)
+            if (!line.romanization.isNullOrBlank()) lineObj.put("ro", line.romanization)
+
+            if (line.words.isNotEmpty()) {
+                val wArray = JSONArray()
+                for (w in line.words) {
+                    val wObj = JSONObject()
+                    wObj.put("t", w.timestampMs)
+                    wObj.put("d", w.durationMs)
+                    wObj.put("x", w.text)
+                    wObj.put("reliable", w.isReliableTiming)
+                    if (w.syllables.isNotEmpty()) {
+                        val sArray = JSONArray()
+                        for (s in w.syllables) {
+                            val sObj = JSONObject()
+                            sObj.put("t", s.timestampMs)
+                            sObj.put("d", s.durationMs)
+                            sObj.put("x", s.text)
+                            sObj.put("reliable", s.isReliableTiming)
+                            sArray.put(sObj)
+                        }
+                        wObj.put("s", sArray)
+                    }
+                    wArray.put(wObj)
+                }
+                lineObj.put("w", wArray)
+            }
+            linesArray.put(lineObj)
+        }
+        json.put("lines", linesArray)
+
+        return json.toString()
+
+    }
+
     @Synchronized
     private fun persistLyrics(
         identity: SongIdentity,
@@ -237,7 +298,8 @@ object LyricsProvider {
         primaryArtist: String,
         lyrics: TrackLyrics,
         isrc: String = "",
-        provider: String = "Auto"
+        provider: String = "Auto",
+        content: String
     ) {
         val trackId = identity.trackId ?: lyrics.trackId
         cacheLyrics(trackId, lyrics, provider = provider)
@@ -245,60 +307,6 @@ object LyricsProvider {
 
         val dir = getDiskCacheDir() ?: return
         try {
-            val json = JSONObject()
-            json.put("timingVersion", CACHE_VERSION)
-            json.put("trackId", trackId)
-            json.put("title", lyrics.title)
-            json.put("artist", lyrics.artist)
-            json.put("isSynced", lyrics.isSynced)
-            json.put("provider", lyrics.provider)
-            json.put("language", lyrics.language ?: "")
-            json.put("hasWordTiming", lyrics.hasWordTiming)
-            json.put("hasSyllableTiming", lyrics.hasSyllableTiming)
-            json.put("hasTranslation", lyrics.hasTranslation)
-            json.put("hasRomanization", lyrics.hasRomanization)
-            json.put("cachedAt", System.currentTimeMillis())
-
-            val linesArray = JSONArray()
-            for (line in lyrics.lines) {
-                val lineObj = JSONObject()
-                lineObj.put("t", line.timestampMs)
-                lineObj.put("x", line.text)
-                lineObj.put("d", line.durationMs)
-                lineObj.put("reliable", line.isReliableDuration)
-                if (!line.translation.isNullOrBlank()) lineObj.put("tr", line.translation)
-                if (!line.romanization.isNullOrBlank()) lineObj.put("ro", line.romanization)
-
-                if (line.words.isNotEmpty()) {
-                    val wArray = JSONArray()
-                    for (w in line.words) {
-                        val wObj = JSONObject()
-                        wObj.put("t", w.timestampMs)
-                        wObj.put("d", w.durationMs)
-                        wObj.put("x", w.text)
-                        wObj.put("reliable", w.isReliableTiming)
-                        if (w.syllables.isNotEmpty()) {
-                            val sArray = JSONArray()
-                            for (s in w.syllables) {
-                                val sObj = JSONObject()
-                                sObj.put("t", s.timestampMs)
-                                sObj.put("d", s.durationMs)
-                                sObj.put("x", s.text)
-                                sObj.put("reliable", s.isReliableTiming)
-                                sArray.put(sObj)
-                            }
-                            wObj.put("s", sArray)
-                        }
-                        wArray.put(wObj)
-                    }
-                    lineObj.put("w", wArray)
-                }
-                linesArray.put(lineObj)
-            }
-            json.put("lines", linesArray)
-
-            val content = json.toString()
-
             if (trackId.isNotBlank()) {
                 val trackFile = File(dir, "${providerKey(provider)}trk_${safeHash(trackId)}.json")
                 trackFile.writeText(content, Charsets.UTF_8)
@@ -315,22 +323,25 @@ object LyricsProvider {
                 val metaFile = File(dir, "${providerKey(provider)}meta_${safeHash(metaKey)}.json")
                 metaFile.writeText(content, Charsets.UTF_8)
             }
-            // Freshness expiry is independent of storage limits; retain recent stale lyrics for outages.
-            val now = System.currentTimeMillis()
-            if (now - lastDiskTrimAt >= 30_000L) {
-                lastDiskTrimAt = now
-                val files = dir.listFiles()?.filter { it.isFile && it.extension == "json" }
-                    ?.sortedBy { it.lastModified() }.orEmpty()
-                var bytes = files.sumOf { it.length() }
-                var count = files.size
-                for (file in files) {
-                    if (bytes <= 20L * 1024 * 1024 && count <= 512) break
-                    val size = file.length()
-                    if (file.delete()) { bytes -= size; count-- }
-                }
-            }
         } catch (e: Exception) {
             Log.d(TAG, "Error saving lyrics to disk cache: ${e.message}")
+        }
+    }
+
+    /** Quota sweep belongs to WorkManager, never to a selected-song lookup. */
+    internal suspend fun maintainDiskCache() = withContext(Dispatchers.IO) {
+        val dir = getDiskCacheDir() ?: return@withContext
+        val files = dir.listFiles()?.filter { it.isFile && it.extension == "json" }
+            ?.map { Triple(it, it.lastModified(), it.length()) }.orEmpty()
+        val ordered = withContext(AppDispatchers.CpuBounded) { files.sortedBy { it.second } }
+        var bytes = files.sumOf { it.third }
+        var count = files.size
+        for ((index, row) in ordered.withIndex()) {
+            if (bytes <= 20L * 1024 * 1024 && count <= 512) break
+            if (index % 64 == 0) com.example.performance.BackgroundWorkCoordinator.yieldToInteraction(bypass = { !com.example.performance.BackgroundWorkCoordinator.uiForeground.value })
+            synchronized(this@LyricsProvider) {
+                if (row.first.lastModified() == row.second && row.first.delete()) { bytes -= row.third; count-- }
+            }
         }
     }
 
@@ -410,7 +421,7 @@ object LyricsProvider {
         rawTrack: MusicTrack? = null,
         forceRefresh: Boolean = false,
         onUpdate: (TrackLyrics) -> Unit = {}
-    ): TrackLyrics = withContext(Dispatchers.Default) {
+    ): TrackLyrics = withContext(AppDispatchers.CpuBounded) {
         val provider = withContext(Dispatchers.IO) {
             com.example.data.local.OtherSettingsPreferences.getLyricsProvider(XtremeMusicApp.instance)
         }
@@ -442,7 +453,8 @@ object LyricsProvider {
                     val published = updates.value
                     val selected = if (best != null && LyricsDocuments.meaningfulUpgrade(best, published)) best else published ?: best
                     if (selected != null) {
-                        withContext(Dispatchers.IO) { persistLyrics(identity, cleanTitle, primaryArtist, selected, identity.isrc.orEmpty(), provider) }
+                        val content = encodeLyrics(selected, identity.trackId ?: selected.trackId)
+                        withContext(Dispatchers.IO) { persistLyrics(identity, cleanTitle, primaryArtist, selected, identity.isrc.orEmpty(), provider, content) }
                         selected
                     } else TrackLyrics(identity.trackId.orEmpty(), identity.title, identity.artist.orEmpty(), false, emptyList())
                 })

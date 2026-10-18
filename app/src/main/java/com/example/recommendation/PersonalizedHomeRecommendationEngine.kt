@@ -1,5 +1,7 @@
 package com.example.recommendation
 
+import com.example.performance.AppDispatchers
+
 import com.example.data.local.ListeningEventDao
 import com.example.data.local.UserProfile
 import com.example.data.model.MusicTrack
@@ -15,7 +17,7 @@ import kotlin.random.Random
 /** Metadata and actual-listening ranking shared by Home's existing recommendation cards. */
 class PersonalizedHomeRecommendationEngine(
     private val listeningEventDao: ListeningEventDao,
-    private val workerDispatcher: CoroutineDispatcher = Dispatchers.Default
+    private val workerDispatcher: CoroutineDispatcher = AppDispatchers.CpuBounded
 ) {
     private val snapshotMutex = Mutex()
     private var cachedSnapshot: RecommendationSnapshot? = null

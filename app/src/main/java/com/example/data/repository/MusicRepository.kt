@@ -1,5 +1,7 @@
 package com.example.data.repository
 
+import com.example.performance.AppDispatchers
+
 import android.content.Context
 import com.example.data.local.AudioQualityPreferences
 import com.example.data.local.MusicDao
@@ -187,7 +189,7 @@ class MusicRepository private constructor(
         recommendationShelf(homeProfile(profile), com.example.recommendation.UnifiedRecommendationEngine.Shelf.CHART, limit, forceRefresh)
 
     suspend fun recommendationRadio(seed: MusicTrack, alreadyQueued: List<MusicTrack>, limit: Int,
-        taste: UserTasteProfile? = null): List<MusicTrack> = withContext(Dispatchers.Default) {
+        taste: UserTasteProfile? = null): List<MusicTrack> = withContext(AppDispatchers.CpuBounded) {
         val profile = homeProfile()
         val actualTaste = taste ?: context?.let {
             val events = withContext(Dispatchers.IO) { MusicDatabase.getDatabase(it).listeningEventDao().getActualPlays(250) }
@@ -199,11 +201,11 @@ class MusicRepository private constructor(
     }
 
     fun observeFavoriteTrackIds(): Flow<Set<String>> = flow { emitAll(musicDao.observeFavoriteTrackIds()) }
-        .flowOn(Dispatchers.IO).map { it.toSet() }.distinctUntilChanged().flowOn(homeDispatcher)
+        .flowOn(AppDispatchers.Database).map { it.toSet() }.distinctUntilChanged().flowOn(homeDispatcher)
 
     fun getFavoriteTracks(preparationDispatcher: kotlinx.coroutines.CoroutineDispatcher = homeDispatcher): Flow<List<MusicTrack>> {
         return flow { emitAll(musicDao.getFavoriteTracks()) }
-            .flowOn(Dispatchers.IO)
+            .flowOn(AppDispatchers.Database)
             // Room invalidates this query for any track write, including unrelated playback updates.
             .distinctUntilChanged()
             .map { list -> list.map { it.toMusicTrack() } }
@@ -212,21 +214,21 @@ class MusicRepository private constructor(
     }
 
     fun getRecentlyPlayedTracks(): Flow<List<MusicTrack>> {
-        return flow { emitAll(musicDao.getRecentlyPlayedTracks()) }.flowOn(Dispatchers.IO).distinctUntilChanged()
-            .map { list -> list.map { it.toMusicTrack() } }.flowOn(Dispatchers.Default)
+        return flow { emitAll(musicDao.getRecentlyPlayedTracks()) }.flowOn(AppDispatchers.Database).distinctUntilChanged()
+            .map { list -> list.map { it.toMusicTrack() } }.flowOn(AppDispatchers.CpuBounded)
     }
 
     fun getAllPlaylists(): Flow<List<PlaylistEntity>> {
         return flow { emitAll(musicDao.getAllPlaylists()) }
-            .flowOn(Dispatchers.IO)
+            .flowOn(AppDispatchers.Database)
             .distinctUntilChanged()
-            .flowOn(Dispatchers.Default)
+            .flowOn(AppDispatchers.CpuBounded)
     }
 
     fun getPlaylistWithTracks(playlistId: Long): Flow<PlaylistWithTracks?> {
         return flow { emitAll(musicDao.getPlaylistWithTracks(playlistId)) }
-            .flowOn(Dispatchers.IO).distinctUntilChanged()
-            .map { content -> content?.also { it.musicTracks } }.flowOn(Dispatchers.Default)
+            .flowOn(AppDispatchers.Database).distinctUntilChanged()
+            .map { content -> content?.also { it.musicTracks } }.flowOn(AppDispatchers.CpuBounded)
     }
 
     suspend fun toggleFavorite(track: MusicTrack): Boolean =
@@ -290,7 +292,7 @@ class MusicRepository private constructor(
     }
 
     /** User search returns matching catalog entities; discovery remains in its own flows. */
-    suspend fun search(query: String, context: android.content.Context? = null): SearchResultCategory = withContext(Dispatchers.Default) {
+    suspend fun search(query: String, context: android.content.Context? = null): SearchResultCategory = withContext(AppDispatchers.CpuBounded) {
         val trimmed = query.trim()
         if (trimmed.isBlank()) return@withContext SearchResultCategory()
         val cacheKey = trimmed.lowercase(java.util.Locale.ROOT)
@@ -348,7 +350,7 @@ class MusicRepository private constructor(
         streamResolver.resolveYouTubeFallback(track, quality)
     }
 
-    suspend fun getTracksByGenre(genre: String): List<MusicTrack> = withContext(Dispatchers.Default) {
+    suspend fun getTracksByGenre(genre: String): List<MusicTrack> = withContext(AppDispatchers.CpuBounded) {
         val likedEntities = try {
             withContext(Dispatchers.IO) { musicDao.getFavoriteTracks().first() }
         } catch (e: CancellationException) { throw e } catch (e: Exception) {
@@ -382,7 +384,7 @@ class MusicRepository private constructor(
         monitor?.snapshot()
         if (monitor?.allowsLosslessUpgrade != true) return@withContext null
         if (context == null || AudioQualityPreferences.getSelectedQuality(context) != AudioQuality.HI_RES_LOSSLESS) return@withContext null
-        val key = withContext(Dispatchers.Default) { RecordingIdentity.key(track) }
+        val key = withContext(AppDispatchers.CpuBounded) { RecordingIdentity.key(track) }
         fun missedRecently() = losslessMisses.get(key)?.let { android.os.SystemClock.elapsedRealtime() < it } == true
         if (missedRecently()) return@withContext null
         // One optional Archive lookup at a time, and recheck after waiting for its permit.
@@ -408,7 +410,7 @@ class MusicRepository private constructor(
                     if (!monitor.snapshot().allowsLosslessUpgrade) return@withTimeoutOrNull null
                     val page = losslessPageSearch(query, if (index == 0) 4 else 6)
                     successful = successful && page.isSuccessful
-                    val match = withContext(Dispatchers.Default) { page.tracks.filter { candidate ->
+                    val match = withContext(AppDispatchers.CpuBounded) { page.tracks.filter { candidate ->
                         candidate.audioUrl != track.audioUrl && StreamResolver.matchesLosslessUpgrade(track, candidate) &&
                             (!track.isLossless || !track.qualityBadge.startsWith("Hi-Res") && candidate.qualityBadge.startsWith("Hi-Res"))
                     }.sortedByDescending { it.qualityBadge.startsWith("Hi-Res") }.firstOrNull() }
@@ -423,7 +425,7 @@ class MusicRepository private constructor(
         }
     }
 
-    internal suspend fun rejectLosslessUpgrade(track: MusicTrack) = withContext(Dispatchers.Default) {
+    internal suspend fun rejectLosslessUpgrade(track: MusicTrack) = withContext(AppDispatchers.CpuBounded) {
         losslessMisses.put(RecordingIdentity.key(track), android.os.SystemClock.elapsedRealtime() + 180_000L)
         Unit
     }

@@ -273,16 +273,6 @@ fun MainNavigationScaffold(
     val appColors = remember(baseAppColors, isDynamicGlassEnabled) {
         baseAppColors.copy(dynamicGlassEnabled = isDynamicGlassEnabled)
     }
-    val artworkTrack = playerUiState.currentTrack
-    LaunchedEffect(artworkTrack?.id, artworkTrack?.coverUrl, appColors.isDark,
-        appColors.primaryAccent, appColors.cardBackgroundElevated) {
-        if (artworkTrack != null) homeLifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.RESUMED) {
-            try { com.example.ui.util.preparePlayerArtwork(context, artworkTrack, appColors.isDark,
-                appColors.primaryAccent, appColors.cardBackgroundElevated) }
-            catch (e: kotlinx.coroutines.CancellationException) { throw e }
-            catch (_: Exception) { /* The visible image loader remains the fallback. */ }
-        }
-    }
 
     // These screens own their edge spring; disable Android's competing stretch effect.
     val platformOverscroll = LocalOverscrollConfiguration.current

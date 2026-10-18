@@ -39,7 +39,7 @@ object UserProfilePreferences {
     private const val KEY_ONBOARDING_COMPLETED = "onboarding_completed"
 
     private fun getPrefs(context: Context): SharedPreferences {
-        return context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return ReactiveSettingsRepository.preferences(context, PREFS_NAME)
     }
 
     fun getUserProfile(context: Context): UserProfile {

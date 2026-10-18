@@ -1,5 +1,7 @@
 package com.example.data.repository
 
+import com.example.performance.AppDispatchers
+
 import com.example.data.model.MusicTrack
 import com.example.data.remote.OnlineMusicApiService
 import com.example.data.remote.AudioRoutingService
@@ -36,17 +38,17 @@ class CatalogRepository {
         locks[(url.hashCode() and Int.MAX_VALUE) % locks.size].withLock {
             val cached = synchronized(cache) { cache.get(url) }
             if (cached != null && System.currentTimeMillis() - cached.first < 300_000)
-                return@withLock withContext(Dispatchers.Default) { JSONObject(cached.second) }
+                return@withLock withContext(AppDispatchers.CpuBounded) { JSONObject(cached.second) }
             try {
                 val body = if (artistBrowse) client.catalogRequest(Request.Builder().url(url)
                     .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
                     .header("Accept", "application/json").build()) else client.catalogGet(url)
-                val json = withContext(Dispatchers.Default) { JSONObject(body) }
+                val json = withContext(AppDispatchers.CpuBounded) { JSONObject(body) }
                 if (json.opt("error")?.let { it != JSONObject.NULL && it != false && it != "" && it != 0 } == true) throw IOException("Catalog unavailable")
                 synchronized(cache) { cache.put(url, System.currentTimeMillis() to body) }
                 json
             } catch (e: CancellationException) { throw e }
-            catch (e: Exception) { cached?.let { withContext(Dispatchers.Default) { JSONObject(it.second) } } ?: throw e }
+            catch (e: Exception) { cached?.let { withContext(AppDispatchers.CpuBounded) { JSONObject(it.second) } } ?: throw e }
         }
     }
     private fun JSONArray?.objects(): List<JSONObject> = (0 until (this?.length() ?: 0)).mapNotNull { this?.optJSONObject(it) }
@@ -111,7 +113,7 @@ class CatalogRepository {
     }
     suspend fun search(query: String, type: String, page: Int = 1,
         quality: AudioQuality = AudioQuality.ULTRA_HD_320, previousPage: CatalogPage? = null
-    ): CatalogPage = withContext(Dispatchers.Default) {
+    ): CatalogPage = withContext(AppDispatchers.CpuBounded) {
         if (query.isBlank()) return@withContext CatalogPage()
         if (type == "All") return@withContext supervisorScope {
             val tasks = listOf("Tracks", "Albums", "Artists").map { kind -> async {
@@ -175,12 +177,12 @@ class CatalogRepository {
         return listOf(clean, clean.replace(Regex("(?<=\\p{Ll})(?=\\p{Lu})"), " "))
             .filter(String::isNotBlank).distinct()
     }
-    suspend fun resolveArtist(selected: CatalogArtist): CatalogArtist = withContext(Dispatchers.Default) {
+    suspend fun resolveArtist(selected: CatalogArtist): CatalogArtist = withContext(AppDispatchers.CpuBounded) {
         if (selected.id.isNotBlank()) return@withContext selected
         // Failure to find a JioSaavn ID does not make the artist unavailable elsewhere.
         withTimeoutOrNull(6_000L) { resolveJioArtist(selected) } ?: selected
     }
-    private suspend fun resolveJioArtist(selected: CatalogArtist): CatalogArtist? = withContext(Dispatchers.Default) {
+    private suspend fun resolveJioArtist(selected: CatalogArtist): CatalogArtist? = withContext(AppDispatchers.CpuBounded) {
         val queries = (artistQueries(selected.name) + selected.aliases.flatMap(::artistQueries)).distinct().take(3)
         val names = listOf(selected.name) + selected.aliases
         for (query in queries) {
@@ -329,7 +331,7 @@ class CatalogRepository {
     }
     suspend fun artistSongs(selected: CatalogArtist, page: Int,
         continuation: ArtistCatalogContinuation? = null, existing: List<MusicTrack> = emptyList()
-    ): CatalogPage = withContext(Dispatchers.Default) {
+    ): CatalogPage = withContext(AppDispatchers.CpuBounded) {
         if (selected.name.isBlank()) return@withContext CatalogPage()
         var failure: Exception? = null
         var available: CatalogPage? = null
@@ -395,7 +397,7 @@ class CatalogRepository {
         // failure is retryable; one failing API must not hide another API's real songs.
         available ?: throw IOException("Artist catalogues are temporarily unavailable", failure)
     }
-    suspend fun albumSongs(selected: CatalogAlbum): CatalogPage = withContext(Dispatchers.Default) {
+    suspend fun albumSongs(selected: CatalogAlbum): CatalogPage = withContext(AppDispatchers.CpuBounded) {
         val root = request("content.getAlbumDetails", "albumid" to selected.id)
         val verified = album(root) ?: throw IOException("Album metadata unavailable")
         if (verified.id != selected.id || !CatalogNames.same(verified.title, selected.title) || verified.artists.none { a -> selected.artists.any { it.id == a.id } }) throw IOException("Album identity mismatch")
@@ -407,7 +409,7 @@ class CatalogRepository {
         CatalogPage(tracks = ordered.mapNotNull(::track).distinctBy { it.id }, warning =
             if (root.optJSONObject("more_info")?.optInt("song_count", raw.size)?.let { it > raw.size } == true) "The catalog returned only part of this release." else null)
     }
-    suspend fun playlistSongs(selected: CatalogPlaylist, page: Int): CatalogPage = withContext(Dispatchers.Default) {
+    suspend fun playlistSongs(selected: CatalogPlaylist, page: Int): CatalogPage = withContext(AppDispatchers.CpuBounded) {
         val root = request("playlist.getDetails", "listid" to selected.id, "p" to page.toString(), "n" to "10")
         if (text(root, "id").ifBlank { text(root, "listid") } != selected.id) throw IOException("Playlist identity mismatch")
         val raw = (root.optJSONArray("list") ?: root.optJSONArray("songs")).objects()

@@ -1,5 +1,7 @@
 package com.example.data.remote
 
+import com.example.performance.AppDispatchers
+
 import android.util.Log
 import com.example.data.model.MusicTrack
 import com.metrolist.innertubex.models.YouTubeClient
@@ -49,7 +51,7 @@ object YouTubeMusicApiService {
             if (useInnerTubeX) {
                 val page = try {
                     val body = YouTubeAudioStreamService.searchSongsResponse(query.trim(), continuation)
-                    withContext(Dispatchers.Default) { parseSongSearchPage(body) }
+                    withContext(AppDispatchers.CpuBounded) { parseSongSearchPage(body) }
                 } catch (e: CancellationException) { throw e }
                 catch (_: Exception) { null }
                 if (page != null) {
@@ -77,7 +79,7 @@ object YouTubeMusicApiService {
                 .header("X-YouTube-Client-Name", profile.clientId)
                 .header("X-YouTube-Client-Version", profile.clientVersion).build()
             val body = artistSearchClient.catalogRequest(request)
-            val page = withContext(Dispatchers.Default) { parseSongSearchPage(body) }
+            val page = withContext(AppDispatchers.CpuBounded) { parseSongSearchPage(body) }
             val result = page.copy(continuation = page.continuation?.takeUnless { it == continuation })
             artistSearchCache.put(key, System.currentTimeMillis() to result)
             result
@@ -242,7 +244,7 @@ object YouTubeMusicApiService {
                 .build()
 
             val body = httpClient.catalogRequest(request)
-            withContext(Dispatchers.Default) {
+            withContext(AppDispatchers.CpuBounded) {
                 (parseSearchResults(body, limit) + parseSongSearchPage(body).tracks).distinctBy { it.id }.take(limit)
             }
         } catch (e: CancellationException) { throw e } catch (e: Exception) {
@@ -266,7 +268,7 @@ object YouTubeMusicApiService {
                 .post(payload.toString().toRequestBody(jsonMediaType))
                 .header("User-Agent", "Mozilla/5.0").header("Referer", "https://music.youtube.com/").build()
             val body = httpClient.catalogRequest(request)
-            withContext(Dispatchers.Default) {
+            withContext(AppDispatchers.CpuBounded) {
                 val tracks = mutableListOf<MusicTrack>()
                 fun visit(value: Any?, depth: Int = 0) {
                     if (depth > 24 || tracks.size >= limit) return

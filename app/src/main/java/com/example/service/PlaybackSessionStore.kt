@@ -1,5 +1,6 @@
 package com.example.service
 
+import com.example.performance.AppDispatchers
 import android.content.Context
 import android.net.Uri
 import android.os.Bundle
@@ -23,6 +24,8 @@ internal object PlaybackSessionStore {
     private val fileMutex = Mutex()
     @Volatile private var file: AtomicFile? = null
     @Volatile private var latest: Snapshot? = null
+    private val publicationLock = Any()
+    private var latestGeneration = -1L
 
     @Synchronized
     private fun initialize(context: Context) {
@@ -31,6 +34,7 @@ internal object PlaybackSessionStore {
         scope.launch {
             for (snapshot in pending) fileMutex.withLock {
                 try {
+                    val json = withContext(AppDispatchers.CpuBounded) {
                     val queue = JSONArray()
                     snapshot.items.forEach { item ->
                         val meta = item.mediaMetadata
@@ -50,8 +54,9 @@ internal object PlaybackSessionStore {
                                 put("recommendationOnly", extras?.getBoolean("recommendation_only", false) ?: false)
                             })
                     }
-                    val json = JSONObject().put("version", 1).put("index", snapshot.index)
+                    JSONObject().put("version", 1).put("index", snapshot.index)
                         .put("position", snapshot.positionMs).put("queue", queue).toString()
+                    }
                     val output = requireNotNull(file).startWrite()
                     try { output.write(json.toByteArray(Charsets.UTF_8)); requireNotNull(file).finishWrite(output) }
                     catch (error: Exception) { requireNotNull(file).failWrite(output); throw error }
@@ -69,12 +74,22 @@ internal object PlaybackSessionStore {
             uri.scheme in setOf("https", "http", "file", "content", "xtreme-youtube", "xtreme-sabr")
     }
 
+    private val checkpointGeneration = java.util.concurrent.atomic.AtomicLong()
     fun checkpoint(context: Context, snapshot: Snapshot) {
-        if (snapshot.items.isEmpty() || snapshot.index !in snapshot.items.indices ||
-            !snapshot.items.all(::isReal)) return
-        initialize(context)
-        latest = snapshot
-        pending.trySend(snapshot)
+        if (snapshot.items.isEmpty() || snapshot.index !in snapshot.items.indices) return
+        val generation = checkpointGeneration.incrementAndGet()
+        scope.launch {
+            val valid = withContext(AppDispatchers.CpuBounded) { snapshot.items.all(::isReal) }
+            if (!valid || checkpointGeneration.get() != generation) return@launch
+            initialize(context)
+            synchronized(publicationLock) {
+                if (generation == checkpointGeneration.get() && generation >= latestGeneration) {
+                    latestGeneration = generation
+                    latest = snapshot
+                    pending.trySend(snapshot)
+                }
+            }
+        }
     }
 
     suspend fun restore(context: Context): Snapshot? = withContext(Dispatchers.IO) {
@@ -82,15 +97,19 @@ internal object PlaybackSessionStore {
         latest?.let { return@withContext it }
         fileMutex.withLock {
             try {
-                val root = requireNotNull(file).openRead().bufferedReader().use { JSONObject(it.readText()) }
+                val text = requireNotNull(file).openRead().bufferedReader().use { it.readText() }
+                val root = withContext(AppDispatchers.CpuBounded) { JSONObject(text) }
                 if (root.optInt("version") != 1) return@withLock null
                 val queue = root.getJSONArray("queue")
                 if (queue.length() == 0) return@withLock null
-                val ids = (0 until queue.length()).map { queue.getJSONObject(it).getString("id") }.distinct()
+                val ids = withContext(AppDispatchers.CpuBounded) {
+                    (0 until queue.length()).map { queue.getJSONObject(it).getString("id") }.distinct()
+                }
                 val known = (context.applicationContext as? com.example.XtremeMusicApp)?.database?.musicDao()?.let { dao ->
                     ids.chunked(900).flatMap { dao.getTracksByIds(it) }.associateBy { it.id }
                 }.orEmpty()
-                val items = (0 until queue.length()).map { index ->
+                val items = withContext(AppDispatchers.CpuBounded) { (0 until queue.length()).map { index ->
+                    currentCoroutineContext().ensureActive()
                     val entry = queue.getJSONObject(index)
                     val id = entry.getString("id")
                     val url = YouTubeAudioStreamService.playbackUri(id, entry.getString("uri"))
@@ -108,11 +127,11 @@ internal object PlaybackSessionStore {
                             putBoolean("recommendation_only", entry.optBoolean("recommendationOnly"))
                         }).build()
                     MediaItem.Builder().setMediaId(id).setUri(url).setMediaMetadata(metadata).build()
-                }
+                } }
                 val index = root.getInt("index")
                 val position = root.getLong("position")
                 if (index !in items.indices || position < 0L || !items.all(::isReal)) return@withLock null
-                latest ?: Snapshot(items, index, position).also { latest = it }
+                synchronized(publicationLock) { latest ?: Snapshot(items, index, position).also { latest = it } }
             } catch (e: CancellationException) { throw e }
             catch (_: java.io.FileNotFoundException) { null }
             catch (e: Exception) { android.util.Log.w("PlaybackSession", "Saved session is unavailable: ${e.message}"); null }

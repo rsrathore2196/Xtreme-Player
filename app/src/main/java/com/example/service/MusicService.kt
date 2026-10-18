@@ -1,5 +1,7 @@
 package com.example.service
 
+import com.example.performance.AppDispatchers
+
 import android.app.PendingIntent
 import android.content.Intent
 import android.net.Uri
@@ -704,14 +706,14 @@ class MusicService : MediaLibraryService() {
 
                 else -> future {
                     val tracks = getTracksForCategory(parentId)
-                    withContext(Dispatchers.Default) {
+                    withContext(AppDispatchers.CpuBounded) {
                         LibraryResult.ofItemList(paginate(tracks, page, pageSize).map { it.toMediaItem() }, params)
                     }
                 }
             }
         }
 
-        private suspend fun getTracksForCategory(categoryId: String): List<MusicTrack> = withContext(Dispatchers.Default) {
+        private suspend fun getTracksForCategory(categoryId: String): List<MusicTrack> = withContext(AppDispatchers.CpuBounded) {
             val records = withContext(Dispatchers.IO) { app.database.musicDao().getAllTracksSync() }
                 .filter { realTrack(it.toMusicTrack()) }
                 .sortedWith(compareByDescending<TrackEntity> { it.isLiked }.thenByDescending { it.lastPlayedAt }.thenByDescending { it.addedAt })
@@ -740,7 +742,7 @@ class MusicService : MediaLibraryService() {
         private suspend fun searchTracks(query: String, requestedPage: Int = 1): List<MusicTrack> = withContext(Dispatchers.IO) {
             if (query.isBlank()) return@withContext emptyList()
             val records = app.database.musicDao().getAllTracksSync()
-            val local = withContext(Dispatchers.Default) { records.map { it.toMusicTrack() }.filter {
+            val local = withContext(AppDispatchers.CpuBounded) { records.map { it.toMusicTrack() }.filter {
                 realTrack(it) && CatalogNames.score(query, it.title, listOf(it.artist, it.album, it.genre, it.language)) > 0
             }
             }
@@ -755,7 +757,7 @@ class MusicService : MediaLibraryService() {
                 if (app.database.musicDao().getTrackById(track.id) == null)
                     app.database.musicDao().mergeTrackMetadata(TrackEntity.fromMusicTrack(track))
             }
-            withContext(Dispatchers.Default) { (local + remote).filter(::realTrack).distinctBy { it.id }
+            withContext(AppDispatchers.CpuBounded) { (local + remote).filter(::realTrack).distinctBy { it.id }
                 .sortedByDescending { CatalogNames.score(query, it.title, listOf(it.artist, it.album)) } }
         }
 
@@ -836,7 +838,7 @@ class MusicService : MediaLibraryService() {
         ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> = future {
             val needed = ((page.coerceAtLeast(0).toLong() + 1L) * pageSize.coerceIn(1, 100)).coerceAtMost(100L)
             val tracks = searchTracks(query.trim(), ((needed + 9L) / 10L).toInt())
-            withContext(Dispatchers.Default) {
+            withContext(AppDispatchers.CpuBounded) {
                 LibraryResult.ofItemList(paginate(tracks, page, pageSize).map { it.toMediaItem() }, params)
             }
         }
@@ -869,8 +871,10 @@ class MusicService : MediaLibraryService() {
             }
             return future {
                 val track = withContext(Dispatchers.IO) { app.database.musicDao().getTrackById(mediaId)?.toMusicTrack() }
-                if (track != null && realTrack(track)) LibraryResult.ofItem(track.toMediaItem(), null)
-                else LibraryResult.ofError(SessionResult.RESULT_ERROR_BAD_VALUE)
+                withContext(AppDispatchers.CpuBounded) {
+                    if (track != null && realTrack(track)) LibraryResult.ofItem(track.toMediaItem(), null)
+                    else LibraryResult.ofError(SessionResult.RESULT_ERROR_BAD_VALUE)
+                }
             }
         }
 
@@ -907,11 +911,14 @@ class MusicService : MediaLibraryService() {
                 queueGeneration++
                 return Futures.immediateFuture(mediaItems.toMutableList())
             }
-            return future {
+            return future { withContext(AppDispatchers.CpuBounded) {
                 val items = mutableListOf<MediaItem>()
                 for (item in mediaItems) {
                     if (item.mediaId.startsWith("category_")) {
-                        items.addAll(getTracksForCategory(item.mediaId).take(100).map { it.toMediaItem() })
+                        val tracks = getTracksForCategory(item.mediaId)
+                        items.addAll(withContext(AppDispatchers.CpuBounded) {
+                            tracks.take(100).map { it.toMediaItem() }
+                        })
                     } else items.add(item)
                 }
                 val expandingCategory = mediaItems.any { it.mediaId.startsWith("category_") }
@@ -934,7 +941,7 @@ class MusicService : MediaLibraryService() {
                         if (it.isEmpty() && items.isNotEmpty()) throw IllegalArgumentException("No playable tracks are available in this category")
                     }
                 }
-            }
+            } }
         }
 
     }

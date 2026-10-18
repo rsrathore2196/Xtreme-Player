@@ -1,5 +1,7 @@
 package com.example.data.local
 
+import com.example.performance.AppDispatchers
+
 import android.Manifest
 import android.content.ContentUris
 import android.content.ContentValues
@@ -54,7 +56,7 @@ object BackupRestoreManager {
     )
 
     private fun getPrefs(context: Context): SharedPreferences {
-        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return ReactiveSettingsRepository.preferences(context, PREFS_NAME)
     }
 
     // Permission helpers
@@ -288,8 +290,9 @@ object BackupRestoreManager {
                 dao.removeOrphanPlaylistTrackRefs()
                 Triple(dao.getAllPlaylistsSync(), dao.getAllTracksSync(), dao.getAllPlaylistCrossRefsSync())
             }
-            val favoriteTracks = allTracks.filter { it.isLiked }
             val userProfile = UserProfilePreferences.getUserProfile(context)
+            val (jsonContent, tracksCount) = withContext(AppDispatchers.CpuBounded) {
+            val favoriteTracks = allTracks.filter { it.isLiked }
 
             val rootJson = JSONObject()
             rootJson.put("app", "Xtreme Player")
@@ -364,7 +367,8 @@ object BackupRestoreManager {
             }
             rootJson.put("playlistTrackRefs", refsArray)
 
-            val jsonContent = rootJson.toString(2)
+            rootJson.toString(2) to tracksToSave.size
+            }
             val timestamp = System.currentTimeMillis()
             val timeFormatted = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date(timestamp))
             val backupFileName = "XtremePlayer_Backup_$timeFormatted.json"
@@ -435,7 +439,7 @@ object BackupRestoreManager {
             getPrefs(context).edit()
                 .putLong(KEY_LAST_BACKUP_TIME, timestamp)
                 .putString(KEY_LAST_BACKUP_FILE, filePath)
-                .putInt(KEY_LAST_BACKUP_TRACKS_COUNT, tracksToSave.size)
+                .putInt(KEY_LAST_BACKUP_TRACKS_COUNT, tracksCount)
                 .putInt(KEY_LAST_BACKUP_PLAYLISTS_COUNT, playlists.size)
                 .apply()
 
@@ -445,7 +449,7 @@ object BackupRestoreManager {
                 filePath = filePath,
                 fileName = backupFileName,
                 sizeFormatted = OtherSettingsPreferences.formatBytes(if (finalFile.exists()) finalFile.length() else jsonContent.length.toLong()),
-                tracksCount = tracksToSave.size,
+                tracksCount = tracksCount,
                 playlistsCount = playlists.size,
                 contentUri = contentUriString
             )
@@ -715,7 +719,7 @@ object BackupRestoreManager {
                     context.contentResolver.openInputStream(Uri.parse(it))?.let(::readBackupText)
                 } ?: backupFile?.takeIf { it.isFile }?.inputStream()?.let(::readBackupText)
                     ?: throw IllegalArgumentException("Backup file not found or empty")
-                val backup = parseBackup(text)
+                val backup = withContext(AppDispatchers.CpuBounded) { parseBackup(text) }
                 val beforeProfile = UserProfilePreferences.getUserProfile(context)
                 previousProfile = beforeProfile
                 val profile = backup.profile?.let { restoredProfile(it, beforeProfile) }

@@ -1,5 +1,7 @@
 package com.example.data.importer
 
+import com.example.performance.AppDispatchers
+
 import android.util.Log
 import com.example.data.model.MusicTrack
 import com.example.data.remote.OnlineMusicApiService
@@ -69,7 +71,7 @@ data class PlaylistImportSummary(
 
 object PlaylistImportEngine {
     private const val TAG = "PlaylistImportEngine"
-    private const val MATCH_WORKERS = 6
+    private const val MATCH_WORKERS = 2
     private val searchSlots = Semaphore(MATCH_WORKERS)
     private val manualRetrySlots = Semaphore(2)
     private val artistSeparators = Regex("(?i)\\s*(?:,|&|•|\\s+/\\s+|;|\\+|(?<=\\S)\\s+(?:feat\\.?|ft\\.?|featuring|with|x)\\s+(?=\\S))\\s*")
@@ -79,11 +81,34 @@ object PlaylistImportEngine {
 
     private val httpClient by lazy {
         OkHttpClient.Builder()
+            .dispatcher(okhttp3.Dispatcher().apply { maxRequests = 2; maxRequestsPerHost = 2 })
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(15, TimeUnit.SECONDS)
             .followRedirects(true)
             .build()
     }
+
+    /** Metadata parsing stays on the shared CPU lane; HTTP/body reads use the import IO lane. */
+    private suspend fun executeImportRequest(request: Request): okhttp3.Response {
+        val owner = currentCoroutineContext()[kotlinx.coroutines.Job]
+        return withContext(AppDispatchers.Imports) {
+            kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
+                val call = httpClient.newCall(request)
+                continuation.invokeOnCancellation { call.cancel() }
+                call.enqueue(object : okhttp3.Callback {
+                    override fun onFailure(call: okhttp3.Call, error: java.io.IOException) {
+                        if (!continuation.isCancelled) continuation.resumeWith(Result.failure(error))
+                    }
+                    override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
+                        owner?.invokeOnCompletion { response.close() }
+                        continuation.resume(response, onCancellation = { _, value, _ -> value.close() })
+                    }
+                })
+            }
+        }
+    }
+    private suspend fun readImportBody(response: okhttp3.Response): String? =
+        withContext(AppDispatchers.Imports) { response.use { it.body?.string() } }
 
     /**
      * Determines which platform a URL or text input belongs to.
@@ -107,7 +132,7 @@ object PlaylistImportEngine {
         input: String,
         platformHint: String = "auto",
         accessToken: String = ""
-    ): Pair<PlaylistHeader, List<ImportedTrackMeta>> = withContext(Dispatchers.IO) {
+    ): Pair<PlaylistHeader, List<ImportedTrackMeta>> = withContext(AppDispatchers.CpuBounded) {
         val detected = if (platformHint != "auto" && platformHint.isNotBlank()) platformHint else detectPlatform(input)
         val trimmed = input.trim()
 
@@ -151,7 +176,7 @@ object PlaylistImportEngine {
         if (resolvedUrl.contains("spotify.link") || resolvedUrl.contains("spoti.fi")) {
             try {
                 val headReq = Request.Builder().url(resolvedUrl).head().build()
-                val headResp = httpClient.newCall(headReq).execute()
+                val headResp = executeImportRequest(headReq)
                 resolvedUrl = headResp.request.url.toString()
             } catch (e: Exception) {
                 Log.w(TAG, "Failed resolving Spotify short link: ${e.message}")
@@ -184,9 +209,9 @@ object PlaylistImportEngine {
                     .url(apiUrl)
                     .addHeader("Authorization", "Bearer ${accessToken.trim()}")
                     .build()
-                val response = httpClient.newCall(request).execute()
+                val response = executeImportRequest(request)
                 if (response.isSuccessful) {
-                    val body = response.body?.string().orEmpty()
+                    val body = readImportBody(response).orEmpty()
                     val json = JSONObject(body)
                     val title = json.optString("name", if (isAlbum) "Spotify Album" else "Spotify Playlist")
                     val desc = json.optString("description", "Imported from Spotify")
@@ -234,9 +259,9 @@ object PlaylistImportEngine {
                                     .url(nextUrl)
                                     .addHeader("Authorization", "Bearer ${accessToken.trim()}")
                                     .build()
-                                val nextResp = httpClient.newCall(nextReq).execute()
+                                val nextResp = executeImportRequest(nextReq)
                                 if (!nextResp.isSuccessful) break
-                                val nextJson = JSONObject(nextResp.body?.string().orEmpty())
+                                val nextJson = JSONObject(readImportBody(nextResp).orEmpty())
                                 val nextItems = nextJson.optJSONArray("items") ?: break
                                 for (i in 0 until nextItems.length()) {
                                     val item = nextItems.getJSONObject(i)
@@ -290,8 +315,8 @@ object PlaylistImportEngine {
                     .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
                     .addHeader("Accept-Language", "en-US,en;q=0.9")
                     .build()
-                val response = httpClient.newCall(request).execute()
-                val html = response.body?.string().orEmpty()
+                val response = executeImportRequest(request)
+                val html = readImportBody(response).orEmpty()
 
                 // High-Capacity Method 0: Spotify Pathfinder GraphQL with Anonymous Token Bootstrapping (up to 1000 songs)
                 val tokenMatcher = Pattern.compile("\"accessToken\":\"([^\"]+)\"").matcher(html)
@@ -383,11 +408,11 @@ object PlaylistImportEngine {
         try {
             val oembedUrl = "https://open.spotify.com/oembed?url=https://open.spotify.com/$entityType/$entityId"
             val oembedReq = Request.Builder().url(oembedUrl).build()
-            val oembedResp = httpClient.newCall(oembedReq).execute()
+            val oembedResp = executeImportRequest(oembedReq)
             var plTitle = if (isAlbum) "Spotify Album" else "Spotify Playlist"
             var plThumb = "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=800&q=80"
             if (oembedResp.isSuccessful) {
-                val oJson = JSONObject(oembedResp.body?.string().orEmpty())
+                val oJson = JSONObject(readImportBody(oembedResp).orEmpty())
                 plTitle = oJson.optString("title", plTitle)
                 plThumb = oJson.optString("thumbnail_url", plThumb)
             }
@@ -429,9 +454,9 @@ object PlaylistImportEngine {
                 try {
                     val oembedUrl = "https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=$videoId&format=json"
                     val oReq = Request.Builder().url(oembedUrl).build()
-                    val oResp = httpClient.newCall(oReq).execute()
+                    val oResp = executeImportRequest(oReq)
                     if (oResp.isSuccessful) {
-                        val oJson = JSONObject(oResp.body?.string().orEmpty())
+                        val oJson = JSONObject(readImportBody(oResp).orEmpty())
                         val rawTitle = oJson.optString("title", "YouTube Track")
                         val author = oJson.optString("author_name", "YouTube Artist")
                         val thumb = oJson.optString("thumbnail_url", "https://i.ytimg.com/vi/$videoId/hqdefault.jpg")
@@ -498,9 +523,9 @@ object PlaylistImportEngine {
                 .addHeader("Cookie", "CONSENT=YES+cb.20210328-17-p0.en+FX+478; SOCS=CAISNQgDEitib3FfaWRlbnRpdHlmcm9udGVuZHVpc2VydmVyXzIwMjMwODI5LjA3X3AwGgJlbhACGgYIgLCvpwY")
                 .build()
 
-            val resp = httpClient.newCall(req).execute()
+            val resp = executeImportRequest(req)
             if (resp.isSuccessful) {
-                val html = resp.body?.string().orEmpty()
+                val html = readImportBody(resp).orEmpty()
                 val marker = "var ytInitialData ="
                 val idx = html.indexOf(marker)
                 if (idx != -1) {
@@ -604,9 +629,9 @@ object PlaylistImportEngine {
                     val pageParam = if (pageToken.isNotBlank()) "&pageToken=$pageToken" else ""
                     val apiUrl = "https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&maxResults=50&playlistId=$cleanId&key=${apiKey.trim()}$pageParam"
                     val req = Request.Builder().url(apiUrl).build()
-                    val resp = httpClient.newCall(req).execute()
+                    val resp = executeImportRequest(req)
                     if (!resp.isSuccessful) break
-                    val body = resp.body?.string().orEmpty()
+                    val body = readImportBody(resp).orEmpty()
                     val json = JSONObject(body)
                     val items = json.optJSONArray("items")
                     if (items != null) {
@@ -657,8 +682,8 @@ object PlaylistImportEngine {
                 .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
                 .addHeader("Accept-Language", "en-US,en;q=0.9")
                 .build()
-            val response = httpClient.newCall(request).execute()
-            val html = response.body?.string().orEmpty()
+            val response = executeImportRequest(request)
+            val html = readImportBody(response).orEmpty()
 
             // OpenGraph tags
             val titleMatcher = Pattern.compile("<meta\\s+property=[\"']og:title[\"']\\s+content=[\"'](.*?)[\"']", Pattern.CASE_INSENSITIVE).matcher(html)
@@ -816,7 +841,7 @@ object PlaylistImportEngine {
         if (resolvedUrl.contains("amzn.to") || resolvedUrl.contains("a.co") || resolvedUrl.contains("/share/")) {
             try {
                 val headReq = Request.Builder().url(resolvedUrl).head().build()
-                val headResp = httpClient.newCall(headReq).execute()
+                val headResp = executeImportRequest(headReq)
                 val redirect = headResp.request.url.toString()
                 if (redirect.isNotBlank() && redirect != resolvedUrl) {
                     resolvedUrl = redirect
@@ -837,8 +862,8 @@ object PlaylistImportEngine {
                 .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
                 .addHeader("Accept-Language", "en-US,en;q=0.9")
                 .build()
-            val response = httpClient.newCall(request).execute()
-            val html = response.body?.string().orEmpty()
+            val response = executeImportRequest(request)
+            val html = readImportBody(response).orEmpty()
 
             // OpenGraph metadata
             val titleMatcher = Pattern.compile("<meta\\s+property=[\"']og:title[\"']\\s+content=[\"'](.*?)[\"']", Pattern.CASE_INSENSITIVE).matcher(html)
@@ -1055,9 +1080,9 @@ object PlaylistImportEngine {
                             .url(apiUrl)
                             .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
                             .build()
-                        val apiResp = httpClient.newCall(apiReq).execute()
+                        val apiResp = executeImportRequest(apiReq)
                         if (apiResp.isSuccessful) {
-                            val apiBody = apiResp.body?.string().orEmpty()
+                            val apiBody = readImportBody(apiResp).orEmpty()
                             if (apiBody.startsWith("{")) {
                                 val json = JSONObject(apiBody)
                                 var plTitle = json.optString("list_name", json.optString("title", json.optString("album", ""))).trim()
@@ -1114,9 +1139,9 @@ object PlaylistImportEngine {
                     .url(url)
                     .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
                     .build()
-                val resp = httpClient.newCall(req).execute()
+                val resp = executeImportRequest(req)
                 if (resp.isSuccessful) {
-                    val html = resp.body?.string().orEmpty()
+                    val html = readImportBody(resp).orEmpty()
                     val titleMatcher = Pattern.compile("<meta\\s+property=[\"']og:title[\"']\\s+content=[\"'](.*?)[\"']", Pattern.CASE_INSENSITIVE).matcher(html)
                     val rawTitle = if (titleMatcher.find()) titleMatcher.group(1)?.replace("&amp;", "&")?.trim().orEmpty() else ""
                     val imgMatcher = Pattern.compile("<meta\\s+property=[\"']og:image[\"']\\s+content=[\"'](.*?)[\"']", Pattern.CASE_INSENSITIVE).matcher(html)
@@ -1162,7 +1187,7 @@ object PlaylistImportEngine {
         importedTracks: List<ImportedTrackMeta>,
         header: PlaylistHeader,
         onProgress: (current: Int, total: Int, trackName: String, matchedCount: Int) -> Unit
-    ): PlaylistImportSummary = withContext(Dispatchers.IO) {
+    ): PlaylistImportSummary = withContext(AppDispatchers.Imports) {
         val total = importedTracks.size
         val requests = Channel<IndexedValue<ImportedTrackMeta>>(MATCH_WORKERS)
         val results = Channel<Pair<Int, MatchResult>>(MATCH_WORKERS)
@@ -1202,7 +1227,7 @@ object PlaylistImportEngine {
             }
         }
         results.close()
-        val (matchedList, unmatchedList) = withContext(Dispatchers.Default) {
+        val (matchedList, unmatchedList) = withContext(AppDispatchers.CpuBounded) {
             ordered.filterNotNull().partition { it.matchedTrack != null && it.matchStatus == MatchStatus.EXACT_MATCH }
         }
         PlaylistImportSummary(
@@ -1227,8 +1252,8 @@ object PlaylistImportEngine {
 
     /** Match catalogue identity independently of the lifetime of a signed audio URL. */
     private suspend fun matchTrack(original: ImportedTrackMeta, youtubeOnly: Boolean,
-        forceRefresh: Boolean): MatchResult = withContext(Dispatchers.IO) {
-        val (cleanTitle, coreTitle, primaryArtist) = withContext(Dispatchers.Default) {
+        forceRefresh: Boolean): MatchResult = withContext(AppDispatchers.Imports) {
+        val (cleanTitle, coreTitle, primaryArtist) = withContext(AppDispatchers.CpuBounded) {
             val title = cleanTrackTitle(original.originalTitle)
             Triple(title, normalizeForComparison(title), extractPrimaryArtist(cleanArtistName(original.originalArtist)))
         }
@@ -1251,7 +1276,7 @@ object PlaylistImportEngine {
                 coverUrl = "https://i.ytimg.com/vi/${original.youtubeVideoId}/hqdefault.jpg", audioUrl = "",
                 bitrateKbps = 0, qualityBadge = "YouTube Music", genre = "Unknown", language = "Unknown",
                 source = "Extended Stream")
-            if (withContext(Dispatchers.Default) {
+            if (withContext(AppDispatchers.CpuBounded) {
                 verifyStrictMatch(original, reference, coreTitle, primaryArtist, isExplicitAlt)
             }) return@withContext matched(reference, 99.0)
         }
@@ -1288,7 +1313,7 @@ object PlaylistImportEngine {
                 // quality upgrade after the selected song is actually playing.
                 jio.await() + youtube.await()
             }
-            val selected = withContext(Dispatchers.Default) {
+            val selected = withContext(AppDispatchers.CpuBounded) {
                 candidates.filter { verifyStrictMatch(original, it, coreTitle, primaryArtist, isExplicitAlt) }
                     .filter { playable(it) || youtubeReference(it) != null }.forEach { pool[it.id] = it }
                 val strong = pool.values.filter {
@@ -1599,7 +1624,7 @@ object PlaylistImportEngine {
     // ==========================================
     // SPOTIFY PATHFINDER GRAPHQL PAGINATION (UP TO 1000 SONGS)
     // ==========================================
-    private fun fetchSpotifyPathfinder(
+    private suspend fun fetchSpotifyPathfinder(
         entityType: String,
         entityId: String,
         token: String,
@@ -1637,9 +1662,9 @@ object PlaylistImportEngine {
                     .addHeader("app-platform", "WebPlayer")
                     .build()
 
-                val resp = httpClient.newCall(req).execute()
+                val resp = executeImportRequest(req)
                 if (resp.isSuccessful) {
-                    val root = JSONObject(resp.body?.string().orEmpty())
+                    val root = JSONObject(readImportBody(resp).orEmpty())
                     val alb = root.optJSONObject("data")?.optJSONObject("albumUnion")
                     if (alb != null) {
                         val albName = alb.optString("name", title)
@@ -1703,9 +1728,9 @@ object PlaylistImportEngine {
                         .addHeader("app-platform", "WebPlayer")
                         .build()
 
-                    val resp = httpClient.newCall(req).execute()
+                    val resp = executeImportRequest(req)
                     if (!resp.isSuccessful) break
-                    val root = JSONObject(resp.body?.string().orEmpty())
+                    val root = JSONObject(readImportBody(resp).orEmpty())
                     val playlistV2 = root.optJSONObject("data")?.optJSONObject("playlistV2") ?: break
                     val name = playlistV2.optString("name", "")
                     if (name.isNotBlank()) title = name

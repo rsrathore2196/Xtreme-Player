@@ -1,5 +1,7 @@
 package com.example.ui.viewmodel
 
+import com.example.performance.AppDispatchers
+
 import android.app.Application
 import android.content.Context
 import androidx.lifecycle.AndroidViewModel
@@ -89,8 +91,8 @@ class HomeViewModel(
     // IO collectors do not consume the two CPU-ranking workers. Only small mutable
     // request/bookkeeping sections share an owner; queries and scoring suspend off it.
     private val workerDispatcher = repository.homeDispatcher
-    private val dataDispatcher = Dispatchers.IO.limitedParallelism(4)
-    private val ownerDispatcher = Dispatchers.IO.limitedParallelism(1)
+    private val dataDispatcher = AppDispatchers.Database
+    private val ownerDispatcher = AppDispatchers.HomeBookkeeping
     private val ownerScope = viewModelScope + ownerDispatcher
     private val dataScope = viewModelScope + dataDispatcher
 

@@ -1,5 +1,7 @@
 package com.example.ui.util
 
+import com.example.performance.AppDispatchers
+
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.unit.IntSize
@@ -54,7 +56,9 @@ object TrackPaletteCache {
         scope.launch {
             try {
                 if (storage.baseFile.exists() && storage.baseFile.length() <= 100_000L) {
-                    val json = org.json.JSONObject(storage.openRead().use { String(it.readBytes()) })
+                    val text = storage.openRead().use { String(it.readBytes()) }
+                    kotlinx.coroutines.withContext(AppDispatchers.CpuBounded) {
+                    val json = org.json.JSONObject(text)
                     json.keys().asSequence().take(128).forEach { key ->
                         val item = json.getJSONArray(key)
                         synchronized(memoryCache) {
@@ -63,15 +67,19 @@ object TrackPaletteCache {
                                     Color(item.getInt(0)), Color(item.getInt(1)), Color(item.getInt(2))))
                         }
                     }
+                    }
                 }
             } catch (_: Exception) { /* A palette miss never prevents artwork/playback. */ }
             for (snapshot in pending) {
                 try {
+                    val content = kotlinx.coroutines.withContext(AppDispatchers.CpuBounded) {
                     val json = org.json.JSONObject()
                     snapshot.forEach { (key, c) -> json.put(key, org.json.JSONArray().put(c.dominantColor.toArgb())
                         .put(c.accentColor.toArgb()).put(c.vibrantColor.toArgb())) }
+                    json.toString().toByteArray()
+                    }
                     val stream = storage.startWrite()
-                    try { stream.write(json.toString().toByteArray()); storage.finishWrite(stream) }
+                    try { stream.write(content); storage.finishWrite(stream) }
                     catch (e: Exception) { storage.failWrite(stream); throw e }
                 } catch (_: Exception) { /* Keep the in-memory result if storage is unavailable. */ }
             }
@@ -162,10 +170,8 @@ fun rememberOptimizedImageRequest(
             .setParameter(ARTWORK_METADATA_PARAMETER, metadata, null)
             .placeholderMemoryCacheKey(initialUrl.takeIf { it.isNotBlank() })
             .interceptorDispatcher(Dispatchers.IO)
-            // Scrolling thumbnails share Home's CPU budget. An explicitly opened
-            // player cover is user work and must not queue behind optional ranking.
-            .decoderDispatcher(if (targetSize < 0) Dispatchers.Default
-                else com.example.performance.BackgroundWorkCoordinator.optionalCpuDispatcher)
+            // One process-wide CPU budget, including explicitly opened player covers.
+            .decoderDispatcher(AppDispatchers.CpuBounded)
             .scale(Scale.FILL)
             .crossfade(if (crossfadeEnabled) 200 else 0)
             .allowHardware(true)

@@ -85,11 +85,14 @@ class iTunesArtworkRepository(
             try {
                 com.example.performance.BackgroundWorkCoordinator.startup(
                     com.example.performance.BackgroundWorkCoordinator.StartupPriority.DEFERRED) {
-                    cacheDao.getNewest(limit = 2048).asReversed().forEachIndexed { index, entry ->
-                        if (index % 64 == 0) com.example.performance.BackgroundWorkCoordinator.yieldToInteraction()
-                        if (entry.rawArtworkUrl.isNotBlank()) synchronized(memoryCache) {
-                            if (memoryCache.get(entry.cacheKey) == null)
-                                memoryCache.put(entry.cacheKey, Lookup(entry.rawArtworkUrl, Long.MAX_VALUE))
+                    val restored = cacheDao.getNewest(limit = 2048)
+                    withContext(com.example.performance.AppDispatchers.CpuBounded) {
+                        restored.asReversed().forEachIndexed { index, entry ->
+                            if (index % 64 == 0) com.example.performance.BackgroundWorkCoordinator.yieldToInteraction()
+                            if (entry.rawArtworkUrl.isNotBlank()) synchronized(memoryCache) {
+                                if (memoryCache.get(entry.cacheKey) == null)
+                                    memoryCache.put(entry.cacheKey, Lookup(entry.rawArtworkUrl, Long.MAX_VALUE))
+                            }
                         }
                     }
                 }

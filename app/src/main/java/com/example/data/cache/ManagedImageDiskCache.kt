@@ -3,11 +3,6 @@ package com.example.data.cache
 import coil.disk.DiskCache
 import com.example.performance.BackgroundWorkCoordinator
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -20,19 +15,11 @@ class ManagedImageDiskCache(private val delegate: DiskCache, private val keyFile
     private val lock = Any()
     private val diskWriteLock = Any()
     private val accesses = LinkedHashMap<String, Long>()
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val keysLoaded = CompletableDeferred<Unit>()
     private val keyLoadMutex = Mutex()
-    private var saveScheduled = false
+    private var persistedRevision = 0L
     private var generation = 0
     private var accessRevision = 0L
-
-    init {
-        scope.launch {
-            BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.MAINTENANCE,
-                requireForeground = false) { loadKeys() }
-        }
-    }
 
     private suspend fun loadKeys() = keyLoadMutex.withLock {
         if (keysLoaded.isCompleted) return@withLock
@@ -76,45 +63,30 @@ class ManagedImageDiskCache(private val delegate: DiskCache, private val keyFile
         accesses[key] = now
         accessRevision++
         while (accesses.size > 2000) accesses.remove(accesses.keys.first())
-        scheduleSave()
+        // The delayed WorkManager owner checkpoints this advisory LRU index.
     }
 
-    // Called under the short map lock; serialization and filesystem work never hold it.
-    private fun scheduleSave() {
-        if (saveScheduled) return
-        saveScheduled = true
-        scope.launch {
-            keysLoaded.await()
-            while (true) {
-                delay(25_000)
-                val revision = BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.MAINTENANCE,
-                    requireForeground = false) {
-                val (version, revision, snapshot) = synchronized(lock) {
-                    Triple(generation, accessRevision, accesses.toList())
-                }
-                val json = withContext(BackgroundWorkCoordinator.optionalCpuDispatcher) {
-                    val entries = JSONArray()
-                    snapshot.forEachIndexed { index, (entry, time) ->
-                        if (index % 128 == 0) BackgroundWorkCoordinator.yieldToInteraction()
-                        entries.put(JSONArray().put(entry).put(time))
-                    }
-                    entries.toString()
-                }
-                synchronized(diskWriteLock) {
-                    if (synchronized(lock) { version == generation }) {
-                        runCatching {
-                            val temp = File(keyFile.parentFile, "${keyFile.name}.tmp")
-                            temp.writeText(json)
-                            if (!temp.renameTo(keyFile)) temp.delete()
-                        }
-                    }
-                }
-                revision
-                }
-                val saved = synchronized(lock) {
-                    if (revision == accessRevision) { saveScheduled = false; true } else false
-                }
-                if (saved) break
+    /** Advisory access metadata only. Coil remains the sole disk-cache/journal owner. */
+    suspend fun flushAccessIndex() {
+        loadKeys()
+        val (version, revision, snapshot) = synchronized(lock) {
+            Triple(generation, accessRevision, accesses.toList())
+        }
+        if (revision == persistedRevision) return
+        val json = withContext(BackgroundWorkCoordinator.optionalCpuDispatcher) {
+            val entries = JSONArray()
+            snapshot.forEachIndexed { index, (entry, time) ->
+                if (index % 128 == 0) BackgroundWorkCoordinator.yieldToInteraction(bypass = { !BackgroundWorkCoordinator.uiForeground.value })
+                entries.put(JSONArray().put(entry).put(time))
+            }
+            entries.toString()
+        }
+        synchronized(diskWriteLock) {
+            if (synchronized(lock) { version == generation }) {
+                val temp = File(keyFile.parentFile, "${keyFile.name}.tmp")
+                temp.writeText(json)
+                check(temp.renameTo(keyFile)) { "Could not checkpoint artwork access index" }
+                persistedRevision = revision
             }
         }
     }
@@ -170,7 +142,7 @@ class ManagedImageDiskCache(private val delegate: DiskCache, private val keyFile
             if (delegate.remove(key)) synchronized(lock) {
                 accesses.remove(key)
                 accessRevision++
-                scheduleSave()
+                // The delayed WorkManager owner checkpoints this advisory LRU index.
             }
         }
         SmartCacheManager.cacheUsageChanged(imageBytes = delegate.size)

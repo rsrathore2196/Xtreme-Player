@@ -1,5 +1,7 @@
 package com.example.recommendation
 
+import com.example.performance.AppDispatchers
+
 import android.os.SystemClock
 import com.example.data.local.ListeningEventDao
 import com.example.data.local.ListeningEventEntity
@@ -22,7 +24,7 @@ import java.util.UUID
 /** Observes existing player flows; never controls playback. One updatable row per actual play. */
 @OptIn(ExperimentalCoroutinesApi::class)
 class RecommendationListeningObserver(private val dao: ListeningEventDao, private val musicDao: MusicDao) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + AppDispatchers.CpuBounded)
     fun start(player: PlaybackManager) {
         scope.launch {
             var track: MusicTrack? = null

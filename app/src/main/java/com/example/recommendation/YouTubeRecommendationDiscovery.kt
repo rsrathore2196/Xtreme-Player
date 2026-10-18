@@ -1,5 +1,7 @@
 package com.example.recommendation
 
+import com.example.performance.AppDispatchers
+
 import com.example.data.cache.RecommendationCache
 import com.example.data.cache.RecommendationTrackCodec
 import com.example.data.model.MusicTrack
@@ -35,27 +37,27 @@ internal class YouTubeRecommendationDiscovery(private val cache: RecommendationC
                         JSONObject()
                     }
                 } ?: JSONObject()
-                var found = withContext(if (essential) Dispatchers.Default else com.example.performance.BackgroundWorkCoordinator.optionalCpuDispatcher) { if (operation in setOf("similar", "charts")) emptyList() else parse(root) }
+                var found = withContext(AppDispatchers.CpuBounded) { if (operation in setOf("similar", "charts")) emptyList() else parse(root) }
                 // The related tab is returned by next as a browse endpoint on some
                 // anonymous clients. Follow the real endpoint, never invent a radio ID.
                 if (operation == "related" && found.size < 12) {
-                    val related = withContext(if (essential) Dispatchers.Default else com.example.performance.BackgroundWorkCoordinator.optionalCpuDispatcher) { endpoints(root, "related").firstOrNull() }
-                    if (related != null) found = found + response("browse", related, country, essential).let { withContext(if (essential) Dispatchers.Default else com.example.performance.BackgroundWorkCoordinator.optionalCpuDispatcher) { parse(it) } }
+                    val related = withContext(AppDispatchers.CpuBounded) { endpoints(root, "related").firstOrNull() }
+                    if (related != null) found = found + response("browse", related, country, essential).let { withContext(AppDispatchers.CpuBounded) { parse(it) } }
                 }
                 if (operation == "similar") {
                     // Search the seed, then browse its real artist identity. Relationships
                     // are supplied by YouTube Music, not guessed from similarly named artists.
-                    val artist = withContext(if (essential) Dispatchers.Default else com.example.performance.BackgroundWorkCoordinator.optionalCpuDispatcher) { matchedArtistEndpoint(root, value) }
+                    val artist = withContext(AppDispatchers.CpuBounded) { matchedArtistEndpoint(root, value) }
                     if (artist != null) {
                         val page = response("browse", artist, country, essential)
-                        val relatedIds = withContext(if (essential) Dispatchers.Default else com.example.performance.BackgroundWorkCoordinator.optionalCpuDispatcher) { relatedArtists(page).take(2) }
-                        for (id in relatedIds) found = found + response("browse", id, country, essential).let { withContext(if (essential) Dispatchers.Default else com.example.performance.BackgroundWorkCoordinator.optionalCpuDispatcher) { parse(it) } }
+                        val relatedIds = withContext(AppDispatchers.CpuBounded) { relatedArtists(page).take(2) }
+                        for (id in relatedIds) found = found + response("browse", id, country, essential).let { withContext(AppDispatchers.CpuBounded) { parse(it) } }
                     }
                 }
                 if (operation == "charts") {
-                    val playlist = withContext(if (essential) Dispatchers.Default else com.example.performance.BackgroundWorkCoordinator.optionalCpuDispatcher) { regionalChart(root, country) }
+                    val playlist = withContext(AppDispatchers.CpuBounded) { regionalChart(root, country) }
                     if (playlist != null) found = response("browse", playlist, country, essential)
-                        .let { withContext(if (essential) Dispatchers.Default else com.example.performance.BackgroundWorkCoordinator.optionalCpuDispatcher) { parse(it) } }
+                        .let { withContext(AppDispatchers.CpuBounded) { parse(it) } }
                 }
                 if (operation == "search" && found.isEmpty()) {
                     found = withTimeoutOrNull(3_500L) { DiscoveryRequestCoordinator.network(essential) {
@@ -63,7 +65,7 @@ internal class YouTubeRecommendationDiscovery(private val cache: RecommendationC
                             forceRefresh = force, countryCode = country).tracks
                     } }.orEmpty()
                 }
-                val result = withContext(if (essential) Dispatchers.Default else com.example.performance.BackgroundWorkCoordinator.optionalCpuDispatcher) {
+                val result = withContext(AppDispatchers.CpuBounded) {
                     HomeRecommendationPolicy.originals(found).filter { it.id.startsWith("yt_") &&
                         HomeRecommendationPolicy.known(it.artist) }.take(48)
                 }
@@ -79,7 +81,7 @@ internal class YouTubeRecommendationDiscovery(private val cache: RecommendationC
     private suspend fun response(operation: String, value: String, country: String, essential: Boolean): JSONObject =
         DiscoveryRequestCoordinator.network(essential) {
             val body = YouTubeAudioStreamService.discoveryResponse(when (operation) { "similar" -> "search"; "charts" -> "browse"; else -> operation }, value, country)
-            withContext(if (essential) Dispatchers.Default else com.example.performance.BackgroundWorkCoordinator.optionalCpuDispatcher) { JSONObject(body) }
+            withContext(AppDispatchers.CpuBounded) { JSONObject(body) }
         }
     private fun parse(root: JSONObject): List<MusicTrack> {
         val found = linkedMapOf<String, MusicTrack>()

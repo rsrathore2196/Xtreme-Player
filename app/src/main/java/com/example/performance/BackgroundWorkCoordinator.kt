@@ -22,15 +22,24 @@ object BackgroundWorkCoordinator {
     // One shared execution budget for Home transforms, artwork matching and Coil
     // bitmap decoding. Separate limitedParallelism views would multiply this budget.
     // Audio decoding, stream extraction and network waits remain independent.
-    val optionalCpuDispatcher = kotlinx.coroutines.Dispatchers.Default.limitedParallelism(2)
+    val optionalCpuDispatcher = AppDispatchers.CpuBounded
     private val traceCookies = AtomicInteger()
+
+    fun trace(name: String): AutoCloseable {
+        val cookie = traceCookies.incrementAndGet()
+        androidx.tracing.Trace.beginAsyncSection("Xtreme/$name", cookie)
+        val closed = AtomicBoolean()
+        return AutoCloseable {
+            if (closed.compareAndSet(false, true))
+                androidx.tracing.Trace.endAsyncSection("Xtreme/$name", cookie)
+        }
+    }
 
     /** Async sections survive dispatcher switches; no frame ticker or UI state. */
     suspend fun <T> traceWork(name: String, block: suspend () -> T): T {
-        val cookie = traceCookies.incrementAndGet()
-        androidx.core.os.TraceCompat.beginAsyncSection("Xtreme/$name", cookie)
+        val section = trace(name)
         try { return block() }
-        finally { androidx.core.os.TraceCompat.endAsyncSection("Xtreme/$name", cookie) }
+        finally { section.close() }
     }
     private val foregroundDrawPending = AtomicBoolean(false)
     private val firstFrame = kotlinx.coroutines.CompletableDeferred<Unit>()
@@ -41,11 +50,11 @@ object BackgroundWorkCoordinator {
     private val maintenanceReady = kotlinx.coroutines.CompletableDeferred<Unit>()
     fun expectForegroundDraw() {
         if (!foregroundDrawPending.getAndSet(true))
-            androidx.core.os.TraceCompat.beginAsyncSection("Xtreme/Foreground first draw", 0)
+            androidx.tracing.Trace.beginAsyncSection("Xtreme/Foreground first draw", 0)
     }
     private fun finishForegroundDrawTrace() {
         if (foregroundDrawPending.getAndSet(false))
-            androidx.core.os.TraceCompat.endAsyncSection("Xtreme/Foreground first draw", 0)
+            androidx.tracing.Trace.endAsyncSection("Xtreme/Foreground first draw", 0)
     }
     fun firstFrameRendered() {
         finishForegroundDrawTrace()
@@ -72,6 +81,23 @@ object BackgroundWorkCoordinator {
         cachedHomeReady.await()
         awaitIdle(quietMillis = 750L, minimumUptimeMillis = 0L)
         awaitNavigationIdle(requireForeground = true)
+    }
+
+    /** WorkManager can wake a headless process or coincide with a warm reopen.
+     * Check BEFORE acquiring cache/database locks; workers do not own a busy lease.
+     * Do not await Home milestones when there is no foreground Activity. */
+    suspend fun awaitMaintenanceIdle() {
+        while (true) {
+            currentCoroutineContext().ensureActive()
+            // A paused Activity may retain a navigation/optional-work lease.
+            // Headless workers must not wait for a UI that will not draw.
+            if (!foreground.get()) return
+            val now = SystemClock.elapsedRealtime()
+            val uiReady = firstFrame.isCompleted && homeReady.isCompleted &&
+                cachedHomeReady.isCompleted && optionalInteractionIdle(now)
+            if (uiReady && jobs.get() == 0 && isInteractionIdle()) return
+            delay(250L)
+        }
     }
 
     enum class StartupPriority { CRITICAL, ESSENTIAL_UI, DEFERRED, MAINTENANCE }
