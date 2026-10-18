@@ -66,6 +66,7 @@ internal object LosslessStreamPrebuffer {
     suspend fun prepare(context: Context, item: MediaItem, expectedDurationMs: Long,
         currentPosition: () -> Long, stillCurrent: () -> Boolean): Prepared? = withContext(Dispatchers.IO) {
         worker.withLock {
+            if (!NetworkQualityMonitor.getInstance(context).snapshot().allowsLosslessUpgrade) return@withLock null
             if (!withContext(Dispatchers.Main.immediate) { stillCurrent() }) return@withLock null
             val uri = item.localConfiguration?.uri ?: return@withLock null
             val source = MusicCache.createCacheDataSourceFactory(context.applicationContext,
@@ -83,6 +84,11 @@ internal object LosslessStreamPrebuffer {
             var opened = false
             var fullLength = C.LENGTH_UNSET.toLong()
             fun openAt(position: Long): DefaultExtractorInput {
+                jobContext.ensureActive()
+                // This is optional preparation, not the audible stream. Never
+                // open another Archive range after a capped-network handover.
+                if (!NetworkQualityMonitor.getInstance(context).snapshot().allowsLosslessUpgrade)
+                    throw IOException("Lossless prebuffer no longer permitted by the active network")
                 if (opened) source.close()
                 opened = true
                 val remaining = source.open(DataSpec.Builder().setUri(uri).setPosition(position).build())

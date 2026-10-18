@@ -30,6 +30,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.flow.collect
@@ -72,10 +73,16 @@ data class SearchResultCategory(
 @OptIn(ExperimentalCoroutinesApi::class)
 class MusicRepository private constructor(
     private val daoProvider: () -> MusicDao,
-    private val context: Context?
+    private val context: Context?,
+    private val losslessPageSearch: suspend (String, Int) -> InternetArchiveApiService.LosslessSearchPage = { query, size ->
+        InternetArchiveApiService.searchLosslessPage(query, pageSize = size, playableOnly = true)
+    }
 ) {
     constructor(musicDao: MusicDao, context: Context? = null) : this({ musicDao }, context)
     constructor(context: Context) : this({ MusicDatabase.getDatabase(context.applicationContext).musicDao() }, context.applicationContext)
+    internal constructor(musicDao: MusicDao, context: Context,
+        losslessPageSearch: suspend (String, Int) -> InternetArchiveApiService.LosslessSearchPage
+    ) : this({ musicDao }, context, losslessPageSearch)
     // Constructing the UI's repository never opens Room. Cold flows acquire it on IO.
     private val musicDao: MusicDao by lazy(daoProvider)
     private val initialCatalogMutex = Mutex()
@@ -394,13 +401,18 @@ class MusicRepository private constructor(
                 // Reuse the initial page/cache first. Album collections may index
                 // their creator and album, without indexing each individual title.
                 for ((index, query) in listOf("$title $artist".trim(), artist).filter(String::isNotBlank).distinct().withIndex()) {
-                    val page = InternetArchiveApiService.searchLosslessPage(query,
-                        pageSize = if (index == 0) 4 else 6, playableOnly = true)
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    // Recheck the real transport before each outbound query, not
+                    // only at admission: a Wi-Fi-to-cellular handover may occur
+                    // while the first Archive response is being parsed.
+                    if (!monitor.snapshot().allowsLosslessUpgrade) return@withTimeoutOrNull null
+                    val page = losslessPageSearch(query, if (index == 0) 4 else 6)
                     successful = successful && page.isSuccessful
                     val match = withContext(Dispatchers.Default) { page.tracks.filter { candidate ->
                         candidate.audioUrl != track.audioUrl && StreamResolver.matchesLosslessUpgrade(track, candidate) &&
                             (!track.isLossless || !track.qualityBadge.startsWith("Hi-Res") && candidate.qualityBadge.startsWith("Hi-Res"))
                     }.sortedByDescending { it.qualityBadge.startsWith("Hi-Res") }.firstOrNull() }
+                    if (!monitor.snapshot().allowsLosslessUpgrade) return@withTimeoutOrNull null
                     if (match != null) { completed = true; return@withTimeoutOrNull match }
                 }
                 completed = successful

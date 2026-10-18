@@ -29,8 +29,7 @@ class NetworkQualityMonitor private constructor(context: Context) {
     @Volatile private var latest = ActiveQualityState()
     val currentMaxBitrateBps: Int get() = latest.effectiveCeiling.maxBitrateBps
     val currentAudioQuality: AudioQuality get() = latest.effectiveCeiling.audioQuality
-    val allowsLosslessUpgrade: Boolean get() = latest.effectiveCeiling == AudioQualityCeiling.MAX &&
-        latest.connectionType != NetworkConnectionType.OFFLINE
+    val allowsLosslessUpgrade: Boolean get() = latest.allowsLosslessUpgrade
 
     val preferences: StateFlow<NetworkAudioPreferences> = AudioQualityPreferences.observeNetworkSettings(app)
         .distinctUntilChanged().stateIn(scope, SharingStarted.WhileSubscribed(5_000), NetworkAudioPreferences())

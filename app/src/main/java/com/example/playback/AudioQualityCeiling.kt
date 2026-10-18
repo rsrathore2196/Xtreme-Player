@@ -42,4 +42,7 @@ enum class NetworkConnectionType { UNMETERED_WIFI_OR_ETHERNET, METERED_WIFI, CEL
 data class ActiveQualityState(
     val effectiveCeiling: AudioQualityCeiling = AudioQualityCeiling.HIGH,
     val connectionType: NetworkConnectionType = NetworkConnectionType.OFFLINE
-)
+) {
+    val allowsLosslessUpgrade: Boolean get() = effectiveCeiling == AudioQualityCeiling.MAX &&
+        connectionType != NetworkConnectionType.OFFLINE
+}
