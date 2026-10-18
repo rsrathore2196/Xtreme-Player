@@ -19,6 +19,10 @@ data class SectionState(
 internal fun SectionState.limitShelf() = if (tracks.size <= HomeRecommendationPolicy.MAX_SHELF_TRACKS) this
     else copy(tracks = tracks.take(HomeRecommendationPolicy.MAX_SHELF_TRACKS))
 
+/** Prioritize bootstrap only while it is eligible; failed attempts cannot starve other cards. */
+internal fun Set<Shelf>.initialCardDemand(bootstrap: Set<Shelf>, automaticStartup: Boolean): Set<Shelf> =
+    if (automaticStartup) intersect(bootstrap).takeIf { it.isNotEmpty() } ?: this else this
+
 /** Verification finishing before presentation is still loading, not an empty/error result. */
 internal fun SectionState.finishPreparation(hasVerifiedCandidate: Boolean): SectionState {
     val next = when {
@@ -41,6 +45,20 @@ data class MostListenedArtist(
     val playCount: Int,
     val tracks: List<MusicTrack>
 )
+
+/** Preserve long-term cached counts until the complete historical baseline is ready. */
+internal fun addPendingArtistPlays(cached: List<MostListenedArtist>, tracks: Collection<MusicTrack>): List<MostListenedArtist> {
+    if (tracks.isEmpty()) return cached
+    val artists = cached.associateByTo(linkedMapOf()) { HomeRecommendationPolicy.normalize(it.name) }
+    for (track in tracks) for (key in HomeRecommendationPolicy.artists(track)) {
+        val previous = artists[key]
+        val display = previous?.name ?: (track.artist + "," + track.singers).split(',')
+            .firstOrNull { HomeRecommendationPolicy.normalize(it) == key }?.trim() ?: key
+        artists[key] = MostListenedArtist(display, (previous?.playCount ?: 0) + 1,
+            (listOf(track) + previous?.tracks.orEmpty()).distinctBy { it.id }.take(3))
+    }
+    return artists.values.sortedByDescending { it.playCount }.take(20)
+}
 internal fun RecommendationCards.section(shelf: Shelf): SectionState = when (shelf) {
     Shelf.QUICK -> quick
     Shelf.ERA -> era

@@ -99,4 +99,20 @@ class DiscoveryAdmissionRegressionTest {
             blockers.forEach { it.cancelAndJoin() }
         }
     }
+
+    @Test fun aNewVisibleEmptyCardKeepsItsEssentialHintInSharedLookups() = kotlinx.coroutines.runBlocking {
+        BackgroundWorkCoordinator.frame(20_000_000L, 8_000_000L)
+        var ran = false
+        val request = async {
+            withContext(DiscoveryRequestCoordinator.HomeRefresh(false) + DiscoveryRequestCoordinator.HomeCard(true)) {
+                DiscoveryRequestCoordinator.shared("visible-empty-card", essential = false) {
+                    ran = true
+                    emptyList()
+                }
+            }
+        }
+        // The shared request is owned by the IO scope, not the test dispatcher.
+        kotlinx.coroutines.withTimeout(2_000L) { request.await() }
+        assertTrue("Slow placeholder frames cannot indefinitely starve a newly visible empty card", ran)
+    }
 }

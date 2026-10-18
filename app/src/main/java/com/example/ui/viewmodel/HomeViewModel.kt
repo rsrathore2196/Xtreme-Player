@@ -18,6 +18,7 @@ import com.example.data.cache.RecommendationShelfLoad
 import com.example.recommendation.HomeRecommendationPolicy
 import com.example.recommendation.DiscoveryRequestCoordinator
 import com.example.recommendation.UserTasteProfile
+import com.example.recommendation.UserTasteProfileStore
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.delay
@@ -110,7 +111,7 @@ class HomeViewModel(
     fun setHomeScrolling(active: Boolean) {
         if (homeScrolling.value == active) return
         homeScrolling.value = active
-        BackgroundWorkCoordinator.scrolling(active)
+        BackgroundWorkCoordinator.scrolling(this, active)
         com.example.recommendation.DiscoveryRequestCoordinator.homeScrolling(active)
     }
     private val restored = CompletableDeferred<Unit>()
@@ -191,7 +192,7 @@ class HomeViewModel(
         }
     }.flowOn(dataDispatcher).stateIn(dataScope, SharingStarted.Eagerly, HistoryRows())
     private data class PersonalizationHistory(val events: List<ListeningEventEntity> = emptyList(),
-        val tracks: List<MusicTrack> = emptyList(), val ready: Boolean = false)
+        val tracks: List<MusicTrack> = emptyList(), val ready: Boolean = false, val complete: Boolean = false)
     private val historicalRows = MutableStateFlow(PersonalizationHistory())
     // Long-term rows never expand the visible Room observer or its metadata query.
     // Reuse old metadata and merge only the changed recent window on milestones.
@@ -221,7 +222,7 @@ class HomeViewModel(
                     trackTail = base.filter { it.id !in liveIds && it.id in activeIds }
                 }
                 source = older; recentIds = ids; recentTrackIds = tracks
-                PersonalizationHistory(recent + tail, rows.tracks + trackTail, true).also { retained = it }
+                PersonalizationHistory(recent + tail, rows.tracks + trackTail, true, older.ready).also { retained = it }
             }
         }.filterNotNull().collect { emit(it) }
     }.flowOn(dataDispatcher).stateIn(dataScope, SharingStarted.Eagerly, PersonalizationHistory())
@@ -253,38 +254,57 @@ class HomeViewModel(
         currentCoroutineContext().ensureActive()
         // One publication, not one taste/ranking/render pass per history page.
         BackgroundWorkCoordinator.yieldToInteraction(requireForeground = true)
-        historicalRows.value = PersonalizationHistory(events.values.toList(), metadata.values.toList(), true)
+        historicalRows.value = PersonalizationHistory(events.values.toList(), metadata.values.toList(), true, true)
     }
 
     private data class TasteInputs(val events: List<ListeningEventEntity>, val tracks: List<MusicTrack>,
-        val favorites: List<MusicTrack>, val preferences: UserProfile)
+        val favorites: List<MusicTrack>, val preferences: UserProfile, val complete: Boolean)
     private data class TasteSnapshot(val inputs: TasteInputs? = null,
         val taste: UserTasteProfile = UserTasteProfile.COLD_START_PROFILE)
     private var lastTasteInputs: TasteInputs? = null
-    private var retainedTaste = com.example.recommendation.UserTasteProfileStore.getOrLoad(application)
-        ?: UserTasteProfile.COLD_START_PROFILE
+    private val tasteCacheLoaded = CompletableDeferred<Unit>()
+    private var cachedTasteSnapshot = UserTasteProfileStore.peekSnapshot(profileKey())
+    private var retainedTaste = cachedTasteSnapshot?.profile ?: UserTasteProfile.COLD_START_PROFILE
     private val tasteSnapshot = combine(personalizationHistory, favoriteTracks, _userProfile) { history, favorites, preferences ->
-        if (history.ready) TasteInputs(history.events, history.tracks, favorites, preferences) else null
+        if (history.ready) TasteInputs(history.events, history.tracks, favorites, preferences, history.complete) else null
     }.filterNotNull().distinctUntilChanged().debounce(300L).mapLatest { inputs ->
         restored.await()
-        eventsLoaded.await(); favoritesLoaded.await()
+        eventsLoaded.await(); favoritesLoaded.await(); tasteCacheLoaded.await()
         // Restarting a screen subscription is not a new listening signal. Keep the same decay
         // snapshot until real data changes, rather than reshuffling on every tab return.
         if (inputs != lastTasteInputs) {
-            awaitHomeIdle(allowWhenEmpty = false, quietMillis = 15_000L)
-            BackgroundWorkCoordinator.startup(if (!deferredHomeReady) BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI
-                else BackgroundWorkCoordinator.StartupPriority.DEFERRED) {
-                val taste = withContext(workerDispatcher) {
-                    UserTasteProfile.fromEventsCooperatively(inputs.events, inputs.tracks, inputs.favorites) {
-                        yieldHomePreparation()
+            val key = profileKey(inputs.preferences)
+            val cached = cachedTasteSnapshot?.takeIf { it.contextKey == key }
+            // Reuse complete long-term taste while the independent older-history
+            // reader fills in. Never replace it with a 300-row partial rebuild.
+            if (!inputs.complete && cached?.completeHistory == true) {
+                retainedTaste = cached.profile
+                lastTasteInputs = inputs
+            } else {
+                awaitHomePresentation()
+                BackgroundWorkCoordinator.startup(if (!deferredHomeReady || lastTasteInputs == null)
+                    BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI else BackgroundWorkCoordinator.StartupPriority.DEFERRED) {
+                    val signature = withContext(workerDispatcher) {
+                        UserTasteProfileStore.fingerprint(inputs.events, inputs.tracks, inputs.favorites, key) {
+                            yieldHomePreparation()
+                        }
+                    }
+                    val taste = cached?.takeIf { it.matches(key, signature) }?.profile ?: withContext(workerDispatcher) {
+                        UserTasteProfile.fromEventsCooperatively(inputs.events, inputs.tracks, inputs.favorites) {
+                            yieldHomePreparation()
+                        }.let { profile -> profile.copy(languageAffinities = inputs.preferences.languages.associate {
+                            HomeRecommendationPolicy.normalize(it) to 0.35f
+                        } + profile.languageAffinities) }
+                    }
+                    currentCoroutineContext().ensureActive()
+                    retainedTaste = taste
+                    lastTasteInputs = inputs
+                    if (inputs.complete) {
+                        val snapshot = UserTasteProfileStore.Snapshot(key, signature, true, taste)
+                        cachedTasteSnapshot = snapshot
+                        UserTasteProfileStore.save(application, snapshot)
                     }
                 }
-                currentCoroutineContext().ensureActive()
-                retainedTaste = taste.copy(languageAffinities = inputs.preferences.languages.associate {
-                    HomeRecommendationPolicy.normalize(it) to 0.35f
-                } + taste.languageAffinities)
-                lastTasteInputs = inputs
-                com.example.recommendation.UserTasteProfileStore.save(application, retainedTaste)
             }
         }
         TasteSnapshot(inputs, retainedTaste)
@@ -362,7 +382,10 @@ class HomeViewModel(
         if (!deferredHomeReady && !allowDeferred) {
             // Cold Home only bootstraps its first shelf. Cached cards stay visible
             // without scheduling discovery for every empty/lower section.
-            return if (preparedCards.value.quick.tracks.isEmpty() && preparedCards.value.chart.tracks.isEmpty())
+            val emptyVisible = recommendationViewport.value.filterTo(mutableSetOf()) {
+                preparedCards.value.section(it).tracks.isEmpty() && needsShelfLoad(it)
+            }
+            return emptyVisible + if (preparedCards.value.quick.tracks.isEmpty() && preparedCards.value.chart.tracks.isEmpty())
                 setOf(Shelf.QUICK) else emptySet()
         }
         val visible = recommendationViewport.value
@@ -479,6 +502,7 @@ class HomeViewModel(
     fun refreshAll() = refreshHome(isExplicitPull = true)
 
     private data class ArtistHistory(val plays: List<Pair<String, String>>, val trackIds: List<String>)
+    private val appliedCachedArtistSessions = mutableSetOf<String>()
     private suspend fun refreshListeningCards() {
         // Reuse the live Room snapshots; song-start requests add their pending play
         // before Room commits it, without re-querying all history and metadata.
@@ -488,6 +512,8 @@ class HomeViewModel(
             .first { (events, rows) -> rows.ids == events.map { it.trackId }.distinct() }
         val longTerm = personalizationHistory.first { it.ready }
         val pending = pendingCardPlays.toMap()
+        val keepCachedArtists = !longTerm.complete && _mostListenedArtists.value.isNotEmpty()
+        val cachedArtists = _mostListenedArtists.value
         val (recent, artists, committed) = withContext(workerDispatcher) {
             val played = longTerm.events.filter(UserTasteProfile::played)
             val recorded = played.mapTo(mutableSetOf()) { it.sessionId to it.trackId }
@@ -501,7 +527,10 @@ class HomeViewModel(
                 .mapNotNull { byId[it.trackId] }).filter(seen::add).take(30).toList()
             val plays = uncommitted.entries.toList().asReversed().map { (session, track) -> session to track.id } +
                 played.map { it.sessionId to it.trackId }
-            Triple(recentTracks, rankListenedArtists(plays, tracks, immediate = pending.isNotEmpty()), recorded)
+            val artists = if (keepCachedArtists) addPendingArtistPlays(cachedArtists,
+                pending.filterKeys { it !in appliedCachedArtistSessions }.values)
+            else rankListenedArtists(plays, tracks, immediate = pending.isNotEmpty())
+            Triple(recentTracks, artists, recorded)
         }
         currentCoroutineContext().ensureActive()
         // Essential data is prepared even when a tab transition is underway.
@@ -516,6 +545,8 @@ class HomeViewModel(
         if (_listeningHistoryCard.value.tracks != recent || _listeningHistoryCard.value.isLoading)
             _listeningHistoryCard.update { it.copy(tracks = recent, isLoaded = recent.isNotEmpty(), isLoading = false) }
         if (_mostListenedArtists.value != artists) _mostListenedArtists.value = artists
+        if (keepCachedArtists) appliedCachedArtistSessions.addAll(pending.keys)
+        else appliedCachedArtistSessions.clear()
         pendingCardPlays.entries.removeAll { (it.key to it.value.id) in committed }
         if (changed) savePreparedCards()
     }
@@ -912,6 +943,19 @@ class HomeViewModel(
     init {
         ownerScope.launch {
             restored.await()
+            try {
+                val key = profileKey()
+                val cached = BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI) {
+                    UserTasteProfileStore.loadAsync(getApplication(), key)
+                }
+                if (key == profileKey() && lastTasteInputs == null && cached != null) {
+                    cachedTasteSnapshot = cached
+                    retainedTaste = cached.profile
+                }
+            } finally { tasteCacheLoaded.complete(Unit) }
+        }
+        ownerScope.launch {
+            restored.await()
             favoritesLoaded.await()
             eventsLoaded.await()
             listeningCardsReady.await()
@@ -1148,6 +1192,19 @@ class HomeViewModel(
                     // An obsolete contextual-only pass must not delay the newly selected song.
                     homeRefreshJob?.cancelAndJoin()
                 }
+                val emptyDemand = shelfDemand().filterTo(mutableSetOf()) {
+                    preparedCards.value.section(it).tracks.isEmpty() && needsShelfLoad(it)
+                }
+                val currentPriority = activeRefreshPriority
+                val waiting = currentPriority?.waitingShelf?.value
+                val active = currentPriority?.activeShelf?.value
+                if (!activeRefreshIsExplicit && emptyDemand.isNotEmpty() &&
+                    (waiting != null && waiting !in emptyDemand || active != null &&
+                        active !in currentPriority.essentialShelves && active !in emptyDemand)) {
+                    // New visible empty content outranks a stale/offscreen card.
+                    // Retain its already-verified mappings and prepared snapshots.
+                    homeRefreshJob?.cancelAndJoin()
+                }
                 homeRefreshJob?.join()
                 val needed = if (pendingExplicitRefresh) shelfDemand()
                     else shelfDemand().filterTo(mutableSetOf(), ::needsShelfLoad)
@@ -1188,6 +1245,9 @@ class HomeViewModel(
             val demand = shelfDemand(allowDeferred = isExplicitPull || pendingExplicitRefresh || activeRefreshIsExplicit) + bootstrap
             val requested = (requestedShelves ?: demand).intersect(demand)
                 .filterTo(mutableSetOf()) { isExplicitPull || pendingExplicitRefresh || needsShelfLoad(it) }
+                // A failed/negative-cached bootstrap must not discard another
+                // visible shelf's demand and leave a first installation empty.
+                .initialCardDemand(bootstrap, automaticStartup = !deferredHomeReady && !isExplicitPull && !pendingExplicitRefresh)
             if (requested.isEmpty()) {
                 if (isExplicitPull) pendingExplicitRefresh = true
                 return@launch
@@ -1216,8 +1276,12 @@ class HomeViewModel(
             pendingSilentRefresh = false
             val initialExplicit = isExplicitPull || pendingExplicitRefresh || _isRefreshing.value
             pendingExplicitRefresh = false
-            val startupBatch = !deferredHomeReady && !initialExplicit
-            val priority = DiscoveryRequestCoordinator.HomeRefresh(initialExplicit, initialShelf = startupBatch)
+            val startupBatch = !deferredHomeReady && !initialExplicit && requested.any(bootstrap::contains)
+            val emptyVisible = (recommendationViewport.value + bootstrap).filterTo(mutableSetOf()) {
+                it in requested && preparedCards.value.section(it).tracks.isEmpty()
+            }
+            val priority = DiscoveryRequestCoordinator.HomeRefresh(initialExplicit, initialShelf = startupBatch,
+                essentialShelves = emptyVisible)
             activeRefreshPriority = priority
             activeRefreshIsExplicit = initialExplicit
             if (startupBatch) startupBootstrapUsed = true
@@ -1235,7 +1299,9 @@ class HomeViewModel(
                         essentialsLoaded.await()
                         if (!activeRefreshIsExplicit) {
                             refreshWaitingForIdle = true
-                            try { awaitHomeIdle() }
+                            try {
+                                if (emptyVisible.isNotEmpty()) awaitHomePresentation() else awaitHomeIdle()
+                            }
                             finally { if (generation == refreshGeneration) refreshWaitingForIdle = false }
                         }
                         lastDiscoveryAttempt = System.currentTimeMillis()
@@ -1247,15 +1313,12 @@ class HomeViewModel(
                             next.withSection(shelf, section.copy(isLoading = section.tracks.isEmpty(), isError = false, errorMessage = ""))
                         } }
                         try {
-                            val completed = BackgroundWorkCoordinator.startup(
-                                if (activeRefreshIsExplicit) BackgroundWorkCoordinator.StartupPriority.CRITICAL
-                                else if (startupBatch) BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI
-                                else BackgroundWorkCoordinator.StartupPriority.DEFERRED,
-                                urgent = { activeRefreshIsExplicit }) {
-                                withTimeoutOrNull(40_000L) {
-                                    refreshSuggestions(activeRefreshIsExplicit, requested, startupBatch && !activeRefreshIsExplicit)
-                                    true
-                                }
+                            // Each shelf owns its own admission/deadline. A silent
+                            // pass waiting for optional idle must not expire before
+                            // it starts; an explicit pull keeps a bounded budget.
+                            val completed = priority.withBudget(40_000L) {
+                                refreshSuggestions(activeRefreshIsExplicit, requested, startupBatch && !activeRefreshIsExplicit)
+                                true
                             }
                             if (completed == null && generation == refreshGeneration)
                                 _refreshErrorMessage.value = "Refresh took too long. Your existing cards have been kept. Please retry."

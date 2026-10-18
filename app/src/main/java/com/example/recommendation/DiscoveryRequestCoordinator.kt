@@ -13,9 +13,12 @@ import kotlin.coroutines.EmptyCoroutineContext
 /** Shared discovery work: two bounded optional slots and a reserved urgent lane. */
 internal object DiscoveryRequestCoordinator {
     /** A pull can promote its existing refresh without launching another pass. */
-    class HomeRefresh(requested: Boolean, val initialShelf: Boolean = false) : AbstractCoroutineContextElement(Key) {
+    class HomeRefresh(requested: Boolean, val initialShelf: Boolean = false,
+        val essentialShelves: Set<UnifiedRecommendationEngine.Shelf> = emptySet()) : AbstractCoroutineContextElement(Key) {
         companion object Key : CoroutineContext.Key<HomeRefresh>
         val requested = MutableStateFlow(requested)
+        val waitingShelf = MutableStateFlow<UnifiedRecommendationEngine.Shelf?>(null)
+        val activeShelf = MutableStateFlow<UnifiedRecommendationEngine.Shelf?>(null)
         fun promote() { requested.value = true }
 
         /** Start the deadline on a pull, including promotion of a deferred silent pass. */
@@ -33,6 +36,11 @@ internal object DiscoveryRequestCoordinator {
             }
         }
     }
+    class HomeCard(val essential: Boolean) : AbstractCoroutineContextElement(Key) {
+        companion object Key : CoroutineContext.Key<HomeCard>
+    }
+    suspend fun essentialHomeWork(): Boolean = currentCoroutineContext()[HomeRefresh]?.initialShelf == true ||
+        currentCoroutineContext()[HomeCard]?.essential == true
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private class Flight(val urgent: MutableStateFlow<Boolean>, val requested: MutableStateFlow<Boolean>,
         val result: Deferred<List<MusicTrack>>, var readers: Int = 0)
@@ -71,11 +79,13 @@ internal object DiscoveryRequestCoordinator {
     suspend fun shared(key: String, essential: Boolean, network: Boolean = true,
         block: suspend () -> List<MusicTrack>): List<MusicTrack> {
         val priority = currentCoroutineContext()[HomeRefresh]
+        val card = currentCoroutineContext()[HomeCard]
         val flight = synchronized(flights) {
             flights.getOrPut(key) {
                 val urgent = MutableStateFlow(essential)
                 val requested = MutableStateFlow(priority?.requested?.value == true)
-                Flight(urgent, requested, scope.async((priority ?: EmptyCoroutineContext) + SharedPriority(urgent), start = CoroutineStart.LAZY) {
+                Flight(urgent, requested, scope.async((priority ?: EmptyCoroutineContext) +
+                    (card ?: EmptyCoroutineContext) + SharedPriority(urgent), start = CoroutineStart.LAZY) {
                     if (network) permit(urgent, requested) { withTimeoutOrNull(12_000L) { block() }.orEmpty() }
                     else block()
                 })
@@ -106,7 +116,7 @@ internal object DiscoveryRequestCoordinator {
     }
 
     private suspend fun <T> permit(urgent: StateFlow<Boolean>, requested: StateFlow<Boolean>, block: suspend () -> T): T {
-        val awaitFrameQuiet = currentCoroutineContext()[HomeRefresh]?.initialShelf != true
+        val awaitFrameQuiet = !essentialHomeWork()
         var acquired = false
         var optional = false
         fun release() {

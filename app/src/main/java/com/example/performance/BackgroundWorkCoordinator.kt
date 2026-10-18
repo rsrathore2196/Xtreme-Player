@@ -17,6 +17,8 @@ import kotlin.coroutines.CoroutineContext
 /** Coordinates optional work; never drives frames or controls the audio engine. */
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 object BackgroundWorkCoordinator {
+    internal const val OPTIONAL_IDLE_MS = 15_000L
+    internal const val BETWEEN_JOBS_MS = 750L
     // One CPU budget for optional Home work, rather than two workers per subsystem.
     // Playback, network IO and image decoding retain their independent dispatchers.
     val optionalCpuDispatcher = kotlinx.coroutines.Dispatchers.Default.limitedParallelism(2)
@@ -56,16 +58,21 @@ object BackgroundWorkCoordinator {
     }
 
     enum class StartupPriority { CRITICAL, ESSENTIAL_UI, DEFERRED, MAINTENANCE }
-    private class Admission(val priority: StartupPriority) : AbstractCoroutineContextElement(Key) {
+    private class Admission(val priority: StartupPriority, val cardWork: Boolean = false) : AbstractCoroutineContextElement(Key) {
         companion object Key : CoroutineContext.Key<Admission>
     }
-    private class Ticket(val priority: StartupPriority, val foregroundOnly: Boolean) {
+    private class Ticket(val priority: StartupPriority, val foregroundOnly: Boolean,
+        val cardWork: Boolean, val urgent: () -> Boolean) {
         val queuedAt = SystemClock.elapsedRealtime()
+        fun essential() = priority == StartupPriority.ESSENTIAL_UI || cardWork &&
+            (priority == StartupPriority.CRITICAL || urgent())
     }
     private val admissionLock = Any()
     private val waiting = mutableListOf<Ticket>()
     private var essentialActive = false
     private var optionalActive = false
+    private var cardActive = false
+    private var lastCardCompleted = 0L
 
     /**
      * Caller-owned, cancellable admission, rather than a broadcast idle latch. There
@@ -74,53 +81,68 @@ object BackgroundWorkCoordinator {
      */
     suspend fun <T> startup(priority: StartupPriority, requireForeground: Boolean = true,
         urgent: () -> Boolean = { false },
+        cardWork: Boolean = false,
         block: suspend () -> T): T {
         if (currentCoroutineContext()[Admission] != null) return block()
-        if (priority == StartupPriority.CRITICAL || urgent()) return withContext(Admission(priority)) { work { block() } }
+        if (!cardWork && (priority == StartupPriority.CRITICAL || urgent()))
+            return withContext(Admission(StartupPriority.CRITICAL)) { work { block() } }
         awaitFirstFrame()
-        val ticket = Ticket(priority, requireForeground)
+        val ticket = Ticket(priority, requireForeground, cardWork, urgent)
         synchronized(admissionLock) { waiting.add(ticket) }
         var admitted = false
+        var admittedEssential = false
         try {
             while (!admitted) {
                 currentCoroutineContext().ensureActive()
-                if (urgent()) {
+                if (!cardWork && urgent()) {
                     synchronized(admissionLock) { waiting.remove(ticket) }
-                    return withContext(Admission(priority)) { work { block() } }
+                    return withContext(Admission(StartupPriority.CRITICAL)) { work { block() } }
                 }
                 admitted = synchronized(admissionLock) {
                     val now = SystemClock.elapsedRealtime()
-                    val essential = priority == StartupPriority.ESSENTIAL_UI
+                    val essential = ticket.essential()
                     val eligible = waiting.filter { next ->
                         (!next.foregroundOnly || foreground.get()) &&
-                            (next.priority == StartupPriority.ESSENTIAL_UI ||
-                                homeReady.isCompleted && cachedHomeReady.isCompleted)
+                            (next.essential() || homeReady.isCompleted && cachedHomeReady.isCompleted) &&
+                            (!next.cardWork || !cardActive && (lastCardCompleted == 0L ||
+                                now - lastCardCompleted >= BETWEEN_JOBS_MS))
                     }
-                    // Sequential execution: ordered by priority, then queued order (FIFO)
-                    val next = eligible.minWithOrNull(compareBy<Ticket> { it.priority.ordinal }.thenBy { it.queuedAt })
+                    // Aging is fairness between optional jobs, never permission to
+                    // bypass essential content, gestures or the foreground idle gate.
+                    val next = eligible.minByOrNull {
+                        if (it.essential()) StartupPriority.ESSENTIAL_UI.ordinal
+                        else if (it.priority == StartupPriority.MAINTENANCE && now - it.queuedAt >= 30_000L)
+                            StartupPriority.DEFERRED.ordinal else it.priority.ordinal
+                    }
                     val interacting = foregroundDrawPending.get() || scrolling.get() ||
                         navigationJobs.get() != 0 || now < navigationUntil.get()
-                    val idle15sMet = now - lastInteraction.get() >= 15_000L && now - lastForegroundResume.get() >= 15_000L
-                    val breathingGapMet = now - lastOptionalCompleted.get() >= 750L
+                    val idle15sMet = optionalInteractionIdle(now)
+                    val breathingGapMet = lastOptionalCompleted.get() == 0L ||
+                        now - lastOptionalCompleted.get() >= BETWEEN_JOBS_MS
                     val quiet = jobs.get() == 0 && !interacting &&
-                        if (essential) now - maxOf(lastInteraction.get(), lastSlowFrame.get()) >= 250L
-                        else idle15sMet && breathingGapMet
+                        now - lastSlowFrame.get() >= 250L && idle15sMet && breathingGapMet
                     if (next === ticket && (if (essential) !essentialActive && !interacting
                         else !optionalActive && !essentialActive && quiet)) {
                         waiting.remove(ticket)
+                        admittedEssential = essential
                         if (essential) essentialActive = true else optionalActive = true
+                        if (cardWork) cardActive = true
                         true
                     } else false
                 }
                 if (!admitted) delay(50L)
             }
             if (priority == StartupPriority.MAINTENANCE) maintenanceReady.complete(Unit)
-            return withContext(Admission(priority)) { work { block() } }
+            return withContext(Admission(if (admittedEssential) StartupPriority.ESSENTIAL_UI else priority, cardWork)) { work { block() } }
         } finally {
             synchronized(admissionLock) {
                 waiting.remove(ticket)
                 if (admitted) {
-                    if (priority == StartupPriority.ESSENTIAL_UI) {
+                    if (cardWork) {
+                        cardActive = false
+                        lastCardCompleted = SystemClock.elapsedRealtime()
+                    }
+                    if (admittedEssential) {
                         essentialActive = false
                     } else {
                         optionalActive = false
@@ -142,11 +164,16 @@ object BackgroundWorkCoordinator {
             currentCoroutineContext().ensureActive()
             val essentialWaiting = if (admission?.priority == StartupPriority.DEFERRED ||
                 admission?.priority == StartupPriority.MAINTENANCE) synchronized(admissionLock) {
-                !essentialActive && waiting.any { it.priority == StartupPriority.ESSENTIAL_UI &&
+                // A second card needs this card's slot. Yielding *to that
+                // waiter* would wait for our own completion indefinitely.
+                essentialActive || waiting.any { it.essential() && (!admission.cardWork || !it.cardWork) &&
                     (!it.foregroundOnly || foreground.get()) }
             } else false
+            val optional = admission?.priority == StartupPriority.DEFERRED ||
+                admission?.priority == StartupPriority.MAINTENANCE
             val frameQuiet = awaitFrameQuiet && admission?.priority != StartupPriority.ESSENTIAL_UI
-            if (bypass() || !essentialWaiting && isInteractionIdle(requireForeground, frameQuiet)) return
+            if (bypass() || !essentialWaiting && isInteractionIdle(requireForeground, frameQuiet) &&
+                (!optional || optionalInteractionIdle(SystemClock.elapsedRealtime()))) return
             delay(50L)
         }
     }
@@ -158,6 +185,9 @@ object BackgroundWorkCoordinator {
             !scrolling.get() && navigationJobs.get() == 0 && now >= navigationUntil.get() &&
             now - lastInteraction.get() >= 250L && (!awaitFrameQuiet || now - lastSlowFrame.get() >= 250L)
     }
+    private fun optionalInteractionIdle(now: Long): Boolean =
+        now - lastInteraction.get() >= OPTIONAL_IDLE_MS && now - lastForegroundResume.get() >= OPTIONAL_IDLE_MS
+
     private val startedAt = SystemClock.elapsedRealtime()
     private val foreground = AtomicBoolean(false)
     private val _uiForeground = MutableStateFlow(false)
@@ -171,10 +201,19 @@ object BackgroundWorkCoordinator {
     private val navigationJobs = AtomicInteger(0)
     private val navigationUntil = AtomicLong(0L)
     private val scrolling = AtomicBoolean(false)
+    private val scrollOwners = mutableSetOf<Any>()
+    private val legacyScrollOwner = Any()
 
-    fun scrolling(active: Boolean) {
-        scrolling.set(active)
-        interaction()
+    fun scrolling(active: Boolean) = scrolling(legacyScrollOwner, active)
+
+    /** Independent screen/row owners cannot clear another active fling. */
+    fun scrolling(owner: Any, active: Boolean) {
+        val changed = synchronized(scrollOwners) {
+            val changed = if (active) scrollOwners.add(owner) else scrollOwners.remove(owner)
+            scrolling.set(scrollOwners.isNotEmpty())
+            changed
+        }
+        if (changed) interaction()
     }
 
     /** Called before changing the selected tab, so worker admission closes immediately. */
@@ -214,13 +253,13 @@ object BackgroundWorkCoordinator {
     }
 
     fun foreground(visible: Boolean) {
+        if (foreground.getAndSet(visible) == visible) return
         if (visible) {
             interaction()
             lastForegroundResume.set(SystemClock.elapsedRealtime())
         } else {
             foregroundDrawPending.set(false)
         }
-        foreground.set(visible)
         _uiForeground.value = visible
     }
     fun interaction() { lastInteraction.set(SystemClock.elapsedRealtime()) }
@@ -254,8 +293,9 @@ object BackgroundWorkCoordinator {
             currentCoroutineContext().ensureActive()
             val now = SystemClock.elapsedRealtime()
             val last = maxOf(lastInteraction.get(), lastSlowFrame.get(), lastWork.get())
-            if ((!requireForeground || foreground.get()) && (userRequested() || !foregroundDrawPending.get() && jobs.get() == 0 &&
-                now - startedAt >= minimumUptimeMillis && now - last >= quietMillis)) return
+            val quiet = !foregroundDrawPending.get() && jobs.get() == 0 &&
+                now - startedAt >= minimumUptimeMillis && now - last >= quietMillis
+            if ((!requireForeground || foreground.get()) && (userRequested() || quiet)) return
             delay(250L)
         }
     }

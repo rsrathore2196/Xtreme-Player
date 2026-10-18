@@ -29,7 +29,8 @@ class PersonalizedHomeRecommendationEngine(
         favorites: List<MusicTrack> = emptyList(),
         taste: UserTasteProfile? = null
     ): List<HomeShelf> = withContext(workerDispatcher) {
-        val profile = taste ?: UserTasteProfileStore.peek() ?: withContext(Dispatchers.IO) {
+        val contextKey = userProfile?.let { "${it.countryCode}|${it.languages.joinToString(",")}" }
+        val profile = taste ?: contextKey?.let(UserTasteProfileStore::peek) ?: withContext(Dispatchers.IO) {
             UserTasteProfile.buildProfile(listeningEventDao, tracks = catalogTracks, favorites = favorites)
         }
         // Event/profile/catalog changes invalidate immediately; time alone never masks new likes.

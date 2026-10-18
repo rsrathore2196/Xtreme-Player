@@ -167,29 +167,34 @@ class PlayerViewModel(
     private var searchJob: Job? = null
     private val legacySearchGeneration = AtomicLong()
     private val recentSearchDispatcher = Dispatchers.IO.limitedParallelism(1)
+    private val recentSearchMutex = Mutex()
+    private val recentSearchRevision = AtomicLong()
     private val favoriteUpdateMutex = Mutex()
     private var playlistTracksJob: Job? = null
 
     // Reuse the ViewModel's lifecycle job while keeping large-list publication off Main.
-    private val libraryDataScope = viewModelScope + Dispatchers.Default
+    private val libraryDataScope = viewModelScope + derivedStateDispatcher
 
-    val favoriteTracks: StateFlow<List<MusicTrack>> = repository.getFavoriteTracks()
-        .stateIn(libraryDataScope, SharingStarted.Lazily, emptyList())
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private fun <T> retainedLibraryData(initial: T, source: () -> kotlinx.coroutines.flow.Flow<T>): StateFlow<T> =
+        com.example.performance.BackgroundWorkCoordinator.uiForeground.flatMapLatest { foreground ->
+            if (foreground) kotlinx.coroutines.flow.flow {
+                com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
+                emitAll(source())
+            } else emptyFlow()
+        }.stateIn(libraryDataScope, SharingStarted.Lazily, initial)
 
-    val recentlyPlayed: StateFlow<List<MusicTrack>> = repository.getRecentlyPlayedTracks()
-        .flowOn(Dispatchers.Default)
-        .stateIn(libraryDataScope, SharingStarted.Lazily, emptyList())
+    val favoriteTracks: StateFlow<List<MusicTrack>> = retainedLibraryData(emptyList()) {
+        repository.getFavoriteTracks(derivedStateDispatcher)
+    }
+
+    val recentlyPlayed: StateFlow<List<MusicTrack>> = retainedLibraryData(emptyList()) {
+        repository.getRecentlyPlayedTracks()
+    }
 
     // Keep one foreground observer and its last snapshot instead of querying on every tab entry.
     // Suspend observation in the background without clearing the retained Library content.
-    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-    val playlists: StateFlow<List<PlaylistEntity>> = com.example.performance.BackgroundWorkCoordinator.uiForeground
-        .flatMapLatest { foreground -> if (foreground) kotlinx.coroutines.flow.flow {
-            com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
-            emitAll(repository.getAllPlaylists())
-        } else emptyFlow() }
-        // Start on the first Library/dialog subscriber, then retain the foreground observer.
-        .stateIn(libraryDataScope, SharingStarted.Lazily, emptyList())
+    val playlists: StateFlow<List<PlaylistEntity>> = retainedLibraryData(emptyList()) { repository.getAllPlaylists() }
 
     private val preparedSettings = (application as? com.example.XtremeMusicApp)?.takeInitialStartupSettings()
     private val initialSettings = preparedSettings ?: com.example.data.local.StartupSettings()
@@ -220,15 +225,18 @@ class PlayerViewModel(
         if (searchVisible && !searchDataStarted) {
             searchDataStarted = true
             viewModelScope.launch(recentSearchDispatcher) {
-                com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle()
-                val recent = com.example.data.local.RecentSearchPreferences.getRecentSearches(application)
-                _searchState.update { it.copy(recentSearches = recent) }
+                com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
+                val revision = recentSearchRevision.get()
+                recentSearchMutex.withLock {
+                    val recent = com.example.data.local.RecentSearchPreferences.getRecentSearches(application)
+                    if (recentSearchRevision.get() == revision) _searchState.update { it.copy(recentSearches = recent) }
+                }
             }
         }
         if ((searchVisible || detailVisible) && !catalogFavoritesStarted) {
             catalogFavoritesStarted = true
             derivedStateScope.launch {
-                com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle()
+                com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
                 repository.observeFavoriteTrackIds().collect { catalogBrowser.updateFavorites(it) }
             }
         }
@@ -757,23 +765,32 @@ class PlayerViewModel(
 
     // Serial IO operations preserve history order and survive Search tab disposal.
     fun rememberSearch(query: String) {
+        recentSearchRevision.incrementAndGet()
         viewModelScope.launch(recentSearchDispatcher) {
+          recentSearchMutex.withLock {
             val recent = com.example.data.local.RecentSearchPreferences.addRecentSearch(application, query)
             _searchState.update { it.copy(recentSearches = recent) }
+          }
         }
     }
 
     fun removeRecentSearch(query: String) {
+        recentSearchRevision.incrementAndGet()
         viewModelScope.launch(recentSearchDispatcher) {
+          recentSearchMutex.withLock {
             val recent = com.example.data.local.RecentSearchPreferences.removeRecentSearch(application, query)
             _searchState.update { it.copy(recentSearches = recent) }
+          }
         }
     }
 
     fun clearRecentSearches() {
+        recentSearchRevision.incrementAndGet()
         viewModelScope.launch(recentSearchDispatcher) {
+          recentSearchMutex.withLock {
             com.example.data.local.RecentSearchPreferences.clearRecentSearches(application)
             _searchState.update { it.copy(recentSearches = emptyList()) }
+          }
         }
     }
 
@@ -822,7 +839,7 @@ class PlayerViewModel(
             repository.getPlaylistWithTracks(playlistId).collect {
                 // Publication belongs to the selected-page state machine; all row preparation
                 // has already completed on the repository's Default dispatcher.
-                withContext(Dispatchers.Main.immediate) { _selectedPlaylistTracks.value = it }
+                _selectedPlaylistTracks.value = it
             }
         }
     }

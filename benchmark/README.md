@@ -46,3 +46,10 @@ gradle :benchmark:connectedNonMinifiedReleaseAndroidTest \
 Run the same journey on the same device/build settings before and after changes. Compare
 `frameOverrunMs` percentiles and the Perfetto traces around launch, tab slides and player expansion,
 along with startup timing. Host unit tests and successful compilation do not measure device jank.
+
+`optionalWorkWakeupAndInteraction` adds a warm-reopen journey covering the 15-second
+optional-work idle window and subsequent Search/Library interaction. Its 17-second
+pause is measurement-only: keep Perfetto recording to check whether contention was
+merely moved later, then verify optional work yields when input resumes. Run this
+with populated history/caches as well as a clean profiling installation. No
+production animation, refresh timer or loading gate is changed by the benchmark.

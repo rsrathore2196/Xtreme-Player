@@ -113,7 +113,7 @@ class UnifiedRecommendationEngine(context: Context?,
     private suspend fun yieldHomeWork() {
         val priority = currentCoroutineContext()[DiscoveryRequestCoordinator.HomeRefresh]
         BackgroundWorkCoordinator.yieldToInteraction(requireForeground = true,
-            awaitFrameQuiet = priority?.initialShelf != true,
+            awaitFrameQuiet = !DiscoveryRequestCoordinator.essentialHomeWork(),
             bypass = { priority?.requested?.value == true })
     }
 
@@ -131,34 +131,52 @@ class UnifiedRecommendationEngine(context: Context?,
         }
         val ordering = listOf(Shelf.QUICK, Shelf.CHART, Shelf.ERA, Shelf.PERSONALIZED, Shelf.SIMILAR, Shelf.INSPIRED)
         // Only requested/visible shelves are queued. Below-the-fold shelves do no work.
-        val cursor = AtomicInteger()
         val requested = ordering.filter { it in shelves }
-        coroutineScope {
-            repeat(minOf(if (startupBatch) 1 else 2, requested.size)) { launch {
-                while (true) {
-                    val shelf = requested.getOrNull(cursor.getAndIncrement()) ?: break
-                    try {
-                        yieldHomeWork()
-                        val candidates = discover(shelf, profile, country, taste, seed, history, favorites, force, variation, false,
-                            initialBatch = startupBatch)
-                            .filterNot { recent.contains(it.track) || taste.keyFor(it.track) in taste.recentRecordings }
-                        resolveBatches(candidates, shelf, profile, taste, known + history + favorites, false,
-                            recent = recent, maxResults = if (startupBatch) 3 else limits.shelfSize + limits.reserve,
-                            concurrency = if (startupBatch) minOf(2, limits.matchConcurrency) else limits.matchConcurrency).collect { tracks ->
-                            val now = System.currentTimeMillis()
-                            send(Batch(quick = tracks.takeIf { shelf == Shelf.QUICK }.orEmpty(),
-                                era = tracks.takeIf { shelf == Shelf.ERA }.orEmpty(),
-                                chart = tracks.takeIf { shelf == Shelf.CHART },
-                                personalized = tracks.takeIf { shelf == Shelf.PERSONALIZED }.orEmpty(),
-                                similarArtists = tracks.takeIf { shelf == Shelf.SIMILAR }.orEmpty(),
-                                inspiredTrack = tracks.takeIf { shelf == Shelf.INSPIRED }.orEmpty(),
-                                chartFetchedAt = now, seedKey = seedKey(seed), seedArtist = artist,
-                                seedTitle = seed?.title.orEmpty(), requested = setOf(shelf), fetchedAt = mapOf(shelf to now)))
+        val priority = currentCoroutineContext()[DiscoveryRequestCoordinator.HomeRefresh]
+        for (shelf in requested) {
+            // Direct compatibility entry points request a specific visible shelf;
+            // Home supplies explicit optional/essential demand in its context.
+            val essential = startupBatch || priority == null || shelf in priority.essentialShelves
+            priority?.waitingShelf?.value = shelf
+            try {
+                // Admission owns the complete suspending card unit, not merely
+                // the launch of child workers. The coordinator also spaces cards
+                // across separate refresh passes and keeps playback independent.
+                BackgroundWorkCoordinator.startup(if (essential || force)
+                    BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI else BackgroundWorkCoordinator.StartupPriority.DEFERRED,
+                    urgent = { priority?.requested?.value == true }, cardWork = true) {
+                    priority?.waitingShelf?.value = null
+                    priority?.activeShelf?.value = shelf
+                    withContext(DiscoveryRequestCoordinator.HomeCard(essential)) {
+                        withTimeout(40_000L) {
+                            yieldHomeWork()
+                            val candidates = discover(shelf, profile, country, taste, seed, history, favorites, force, variation, false,
+                                initialBatch = startupBatch)
+                                .filterNot { recent.contains(it.track) || taste.keyFor(it.track) in taste.recentRecordings }
+                            resolveBatches(candidates, shelf, profile, taste, known + history + favorites, false,
+                                recent = recent, maxResults = if (startupBatch) 3 else limits.shelfSize + limits.reserve,
+                                concurrency = if (startupBatch) minOf(2, limits.matchConcurrency) else limits.matchConcurrency).collect { tracks ->
+                                val now = System.currentTimeMillis()
+                                send(Batch(quick = tracks.takeIf { shelf == Shelf.QUICK }.orEmpty(),
+                                    era = tracks.takeIf { shelf == Shelf.ERA }.orEmpty(),
+                                    chart = tracks.takeIf { shelf == Shelf.CHART },
+                                    personalized = tracks.takeIf { shelf == Shelf.PERSONALIZED }.orEmpty(),
+                                    similarArtists = tracks.takeIf { shelf == Shelf.SIMILAR }.orEmpty(),
+                                    inspiredTrack = tracks.takeIf { shelf == Shelf.INSPIRED }.orEmpty(),
+                                    chartFetchedAt = now, seedKey = seedKey(seed), seedArtist = artist,
+                                    seedTitle = seed?.title.orEmpty(), requested = setOf(shelf), fetchedAt = mapOf(shelf to now)))
+                            }
                         }
-                    } catch (e: CancellationException) { throw e }
-                    catch (_: Exception) { /* Keep other shelves and the last verified snapshot. */ }
+                    }
                 }
-            } }
+            } catch (_: TimeoutCancellationException) {
+                currentCoroutineContext().ensureActive() // A canceled parent must not start another card.
+            } catch (e: CancellationException) { throw e }
+            catch (_: Exception) { /* Keep other shelves and the last verified snapshot. */ }
+            finally {
+                priority?.waitingShelf?.value = null
+                priority?.activeShelf?.value = null
+            }
         }
     }.flowOn(ranking)
 

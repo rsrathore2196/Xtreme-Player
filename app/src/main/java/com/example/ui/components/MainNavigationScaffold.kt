@@ -190,6 +190,22 @@ fun MainNavigationScaffold(
     var trackToAddToPlaylist by remember { mutableStateOf<MusicTrack?>(null) }
     var isSettingsSubpageOpen by rememberSaveable { mutableStateOf(false) }
 
+    // Data admission follows real Search/Library drags and flings as well as
+    // Home's nested rows. Observe here without reading scroll state in composition.
+    val tabScrollOwner = remember { Any() }
+    val tabCovered = isPlayerExpanded || catalogDetail != null || selectedPlaylistWithTracks != null
+    LaunchedEffect(selectedTabIndex, tabCovered, searchListState, libraryListState) {
+        try {
+            androidx.compose.runtime.snapshotFlow {
+                !tabCovered && when (selectedTabIndex) {
+                    1 -> searchListState.isScrollInProgress
+                    2 -> libraryListState.isScrollInProgress
+                    else -> false
+                }
+            }.collect { com.example.performance.BackgroundWorkCoordinator.scrolling(tabScrollOwner, it) }
+        } finally { com.example.performance.BackgroundWorkCoordinator.scrolling(tabScrollOwner, false) }
+    }
+
     // Request notification permission for Android 13+ (API 33)
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()

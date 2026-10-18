@@ -194,14 +194,14 @@ class MusicRepository private constructor(
     fun observeFavoriteTrackIds(): Flow<Set<String>> = flow { emitAll(musicDao.observeFavoriteTrackIds()) }
         .flowOn(Dispatchers.IO).map { it.toSet() }.distinctUntilChanged().flowOn(homeDispatcher)
 
-    fun getFavoriteTracks(): Flow<List<MusicTrack>> {
+    fun getFavoriteTracks(preparationDispatcher: kotlinx.coroutines.CoroutineDispatcher = homeDispatcher): Flow<List<MusicTrack>> {
         return flow { emitAll(musicDao.getFavoriteTracks()) }
             .flowOn(Dispatchers.IO)
             // Room invalidates this query for any track write, including unrelated playback updates.
             .distinctUntilChanged()
             .map { list -> list.map { it.toMusicTrack() } }
             .distinctUntilChanged()
-            .flowOn(homeDispatcher)
+            .flowOn(preparationDispatcher)
     }
 
     fun getRecentlyPlayedTracks(): Flow<List<MusicTrack>> {

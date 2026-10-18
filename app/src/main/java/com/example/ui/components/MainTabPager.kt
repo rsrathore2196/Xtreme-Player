@@ -21,7 +21,7 @@ internal fun MainTabPager(
 ) {
     HorizontalPager(
         state = state,
-        beyondViewportPageCount = 1,
+        beyondViewportPageCount = 0,
         userScrollEnabled = false,
         key = { it },
         modifier = Modifier.fillMaxSize()

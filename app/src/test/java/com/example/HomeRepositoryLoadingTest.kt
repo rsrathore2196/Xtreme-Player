@@ -65,8 +65,14 @@ class HomeRepositoryLoadingTest {
             BackgroundWorkCoordinator.cachedHomeRestored()
             BackgroundWorkCoordinator.foreground(true)
             BackgroundWorkCoordinator.scrolling(false)
+            // The process-wide coordinator survives Robolectric's method clock
+            // reset; completed cards from other fixtures must not be in the future.
+            BackgroundWorkCoordinator::class.java.getDeclaredField("lastCardCompleted")
+                .apply { isAccessible = true }.setLong(null, 0L)
             ShadowSystemClock.advanceBy(Duration.ofSeconds(2))
             val regional = withTimeout(5_000) { repo.getCountryAndLanguageHits(profile, 10) }
+            // Separate shelf requests still share the coordinator's card gap.
+            ShadowSystemClock.advanceBy(Duration.ofMillis(750))
             val era = withTimeout(5_000) { repo.getEraHits(10) }
             assertEquals(10, regional.size)
             assertEquals(10, era.size)

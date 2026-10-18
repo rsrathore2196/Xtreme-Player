@@ -5,6 +5,8 @@ import com.example.data.local.ListeningEventEntity
 import com.example.data.model.MusicTrack
 import com.example.recommendation.HomeRecommendationPolicy
 import com.example.recommendation.UserTasteProfile
+import com.example.ui.viewmodel.MostListenedArtist
+import com.example.ui.viewmodel.addPendingArtistPlays
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.*
@@ -80,5 +82,16 @@ class HomeStartupWorkloadTest {
         } catch (_: CancellationException) { }
         assertFalse(published)
         assertEquals(4, checkpoints)
+    }
+
+    @Test fun cachedArtistTotalsSurviveRecentOnlyPreparationAndNewPlaysAreAdded() {
+        val song = track(0)
+        val cached = listOf(MostListenedArtist(song.artist, 200, listOf(song)),
+            MostListenedArtist("Long Term Artist", 150, listOf(track(1))))
+        assertSame(cached, addPendingArtistPlays(cached, emptyList()))
+        val updated = addPendingArtistPlays(cached, listOf(song, track(2)))
+        assertEquals(201, updated.first().playCount)
+        assertEquals(150, updated.first { it.name == "Long Term Artist" }.playCount)
+        assertEquals(1, updated.first { it.name == "Artist 2" }.playCount)
     }
 }

@@ -95,7 +95,6 @@ class XtremeMusicApp : Application(), ImageLoaderFactory {
                 com.example.data.cache.HomeCardCache.preloadAsync(this@XtremeMusicApp,
                     "${profile.countryCode}|${profile.languages.joinToString(",")}", previewOnly = true)
             }
-            com.example.recommendation.UserTasteProfileStore.getOrLoad(this@XtremeMusicApp)
         }
 
         // Context registration does not read storage or initialize the network client.

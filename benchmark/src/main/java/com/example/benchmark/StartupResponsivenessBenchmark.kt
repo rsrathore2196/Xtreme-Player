@@ -39,8 +39,9 @@ class StartupResponsivenessBenchmark {
 
     @Test fun coldOpening() = opening(StartupMode.COLD)
     @Test fun warmReopening() = opening(StartupMode.WARM)
+    @Test fun optionalWorkWakeupAndInteraction() = opening(StartupMode.WARM, observeOptionalWakeup = true)
 
-    private fun opening(mode: StartupMode) = benchmark.measureRepeated(
+    private fun opening(mode: StartupMode, observeOptionalWakeup: Boolean = false) = benchmark.measureRepeated(
         packageName = TARGET,
         metrics = listOf(StartupTimingMetric(), FrameTimingMetric()),
         compilationMode = CompilationMode.Partial(),
@@ -67,6 +68,16 @@ class StartupResponsivenessBenchmark {
             tab("library")
             tab("home")
         } while (SystemClock.elapsedRealtime() - interactiveStart < 6_000L)
+        if (observeOptionalWakeup) {
+            // Measurement only: trace across optional admission, then interrupt
+            // it. This is not an application startup delay or a UI-idle wait.
+            SystemClock.sleep(17_000L)
+            tab("search")
+            check(device.wait(Until.hasObject(By.res("search_screen")), 2_000L))
+            tab("library")
+            check(device.wait(Until.hasObject(By.res("library_screen")), 2_000L))
+            tab("home")
+        }
         // Include the existing player expansion path when a paused real session is prepared.
         device.findObject(By.res("mini_player_container"))?.let { mini ->
             mini.click()

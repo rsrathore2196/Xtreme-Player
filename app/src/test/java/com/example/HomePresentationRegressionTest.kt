@@ -7,6 +7,7 @@ import com.example.ui.viewmodel.SectionState
 import com.example.ui.viewmodel.enrichFromCache
 import com.example.ui.viewmodel.finishPreparation
 import com.example.ui.viewmodel.withSection
+import com.example.ui.viewmodel.initialCardDemand
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
 import org.junit.Test
@@ -64,5 +65,20 @@ class HomePresentationRegressionTest {
     @Test fun aFailedRefreshRetainsUsableCachedTracks() {
         val cached = section("cached")
         assertSame(cached, cached.finishPreparation(hasVerifiedCandidate = false))
+    }
+
+    @Test fun firstInstallStartsWithOnlyTheEligibleBootstrapShelf() {
+        assertEquals(setOf(Shelf.QUICK), setOf(Shelf.QUICK, Shelf.CHART, Shelf.ERA)
+            .initialCardDemand(setOf(Shelf.QUICK), automaticStartup = true))
+    }
+
+    @Test fun aFailedOrNegativeCachedBootstrapCannotBlockOtherVisibleEmptyCards() {
+        val eligible = setOf(Shelf.CHART, Shelf.ERA)
+        assertSame(eligible, eligible.initialCardDemand(setOf(Shelf.QUICK), automaticStartup = true))
+    }
+
+    @Test fun explicitRefreshAndLaterViewportDemandKeepTheirRequestedSections() {
+        val requested = setOf(Shelf.QUICK, Shelf.CHART, Shelf.ERA)
+        assertSame(requested, requested.initialCardDemand(setOf(Shelf.QUICK), automaticStartup = false))
     }
 }
