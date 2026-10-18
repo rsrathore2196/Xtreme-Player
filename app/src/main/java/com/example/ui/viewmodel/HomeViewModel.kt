@@ -237,11 +237,13 @@ class HomeViewModel(
             BackgroundWorkCoordinator.yieldToInteraction(requireForeground = true)
             val before = cursor
             val batch = BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.DEFERRED) {
-                val page = listeningEventDao.getActualPlaysBefore(before.timestamp, before.id,
-                    minOf(200, 5000 - events.size))
-                val missing = page.map { it.trackId }.distinct().filterNot(metadata::containsKey)
-                val tracks = if (missing.isEmpty()) emptyList() else database.musicDao().getTracksByIds(missing)
-                page to withContext(workerDispatcher) { tracks.map { it.toMusicTrack() } }
+                withContext(Dispatchers.IO) {
+                    val page = listeningEventDao.getActualPlaysBefore(before.timestamp, before.id,
+                        minOf(200, 5000 - events.size))
+                    val missing = page.map { it.trackId }.distinct().filterNot(metadata::containsKey)
+                    val tracks = if (missing.isEmpty()) emptyList() else database.musicDao().getTracksByIds(missing)
+                    page to withContext(workerDispatcher) { tracks.map { it.toMusicTrack() } }
+                }
             }
             if (batch.first.isEmpty()) break
             batch.first.forEach { events[it.id] = it }
@@ -259,7 +261,8 @@ class HomeViewModel(
     private data class TasteSnapshot(val inputs: TasteInputs? = null,
         val taste: UserTasteProfile = UserTasteProfile.COLD_START_PROFILE)
     private var lastTasteInputs: TasteInputs? = null
-    private var retainedTaste = UserTasteProfile.COLD_START_PROFILE
+    private var retainedTaste = com.example.recommendation.UserTasteProfileStore.getOrLoad(application)
+        ?: UserTasteProfile.COLD_START_PROFILE
     private val tasteSnapshot = combine(personalizationHistory, favoriteTracks, _userProfile) { history, favorites, preferences ->
         if (history.ready) TasteInputs(history.events, history.tracks, favorites, preferences) else null
     }.filterNotNull().distinctUntilChanged().debounce(300L).mapLatest { inputs ->
@@ -268,7 +271,7 @@ class HomeViewModel(
         // Restarting a screen subscription is not a new listening signal. Keep the same decay
         // snapshot until real data changes, rather than reshuffling on every tab return.
         if (inputs != lastTasteInputs) {
-            awaitHomeIdle()
+            awaitHomeIdle(allowWhenEmpty = false, quietMillis = 15_000L)
             BackgroundWorkCoordinator.startup(if (!deferredHomeReady) BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI
                 else BackgroundWorkCoordinator.StartupPriority.DEFERRED) {
                 val taste = withContext(workerDispatcher) {
@@ -281,12 +284,13 @@ class HomeViewModel(
                     HomeRecommendationPolicy.normalize(it) to 0.35f
                 } + taste.languageAffinities)
                 lastTasteInputs = inputs
+                com.example.recommendation.UserTasteProfileStore.save(application, retainedTaste)
             }
         }
         TasteSnapshot(inputs, retainedTaste)
-    }.flowOn(dataDispatcher).stateIn(dataScope, SharingStarted.WhileSubscribed(5000L), TasteSnapshot())
+    }.flowOn(dataDispatcher).stateIn(dataScope, SharingStarted.Lazily, TasteSnapshot(taste = retainedTaste))
     private val tasteProfile = tasteSnapshot.map { it.taste }
-        .stateIn(dataScope, SharingStarted.WhileSubscribed(5000L), UserTasteProfile.COLD_START_PROFILE)
+        .stateIn(dataScope, SharingStarted.Lazily, retainedTaste)
     val recentlyPlayed: StateFlow<List<MusicTrack>> = combine(actualPlays, historyRows, cachedHistory) { events, rows, cached ->
         if (!eventsLoaded.isCompleted || rows.ids != events.map { it.trackId }.distinct()) cached.orEmpty() else {
             val byId = rows.tracks.associateBy { it.id }
@@ -295,11 +299,11 @@ class HomeViewModel(
                 .filter(seen::add).take(30).toList()
         }
     }.distinctUntilChanged().flowOn(dataDispatcher)
-        .stateIn(dataScope, SharingStarted.WhileSubscribed(5000L), cachedHistory.value.orEmpty())
+        .stateIn(dataScope, SharingStarted.Lazily, cachedHistory.value.orEmpty())
     val heroSeedTrack: StateFlow<MusicTrack?> = combine(recentlyPlayed, favoriteTracks, _catalogTracks, cachedHero) { recent, favorites, catalog, cached ->
         (recent.asSequence() + listOfNotNull(cached).asSequence() + favorites.asSequence() + catalog.asSequence())
             .firstOrNull(com.example.recommendation.OriginalMusicFilter::isHomeRecommendation)
-    }.flowOn(dataDispatcher).stateIn(dataScope, SharingStarted.WhileSubscribed(5000L), cachedHero.value)
+    }.flowOn(dataDispatcher).stateIn(dataScope, SharingStarted.Lazily, cachedHero.value)
 
     // Helper to compute authoritative trending title
     fun getAuthoritativeTrendingTitle(countryDisplayName: String): String {
@@ -917,7 +921,7 @@ class HomeViewModel(
             // first Home. Deeper rankings/discovery follow a real idle window.
             startupRecommendationsComplete.await()
             BackgroundWorkCoordinator.optionalRecommendationsReady()
-            awaitHomeIdle(allowWhenEmpty = false, quietMillis = 750L)
+            awaitHomeIdle(allowWhenEmpty = false, quietMillis = 15_000L)
             deferredHomeReady = true
             _currentStage.value = LoadingStage.PRIORITY_3_BACKGROUND_ENRICHED
             if (startupBootstrapUsed) {
@@ -1101,6 +1105,7 @@ class HomeViewModel(
                     return@collectLatest
                 }
                 if (signal != lastDiscoverySignal && (signal.first.isNotEmpty() || signal.second.isNotEmpty())) {
+                    awaitHomeIdle(allowWhenEmpty = false, quietMillis = 15_000L)
                     delay((60_000 - (System.currentTimeMillis() - lastDiscoveryRefresh)).coerceAtLeast(0))
                     lastDiscoverySignal = signal
                     refreshHome(false)

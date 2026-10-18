@@ -174,11 +174,11 @@ class PlayerViewModel(
     private val libraryDataScope = viewModelScope + Dispatchers.Default
 
     val favoriteTracks: StateFlow<List<MusicTrack>> = repository.getFavoriteTracks()
-        .stateIn(libraryDataScope, SharingStarted.WhileSubscribed(5000L), emptyList())
+        .stateIn(libraryDataScope, SharingStarted.Lazily, emptyList())
 
     val recentlyPlayed: StateFlow<List<MusicTrack>> = repository.getRecentlyPlayedTracks()
         .flowOn(Dispatchers.Default)
-        .stateIn(libraryDataScope, SharingStarted.WhileSubscribed(5000L), emptyList())
+        .stateIn(libraryDataScope, SharingStarted.Lazily, emptyList())
 
     // Keep one foreground observer and its last snapshot instead of querying on every tab entry.
     // Suspend observation in the background without clearing the retained Library content.

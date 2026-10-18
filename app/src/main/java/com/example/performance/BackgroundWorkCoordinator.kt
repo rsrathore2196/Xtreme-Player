@@ -96,16 +96,15 @@ object BackgroundWorkCoordinator {
                             (next.priority == StartupPriority.ESSENTIAL_UI ||
                                 homeReady.isCompleted && cachedHomeReady.isCompleted)
                     }
-                    // Aging only resolves competition between optional tasks; it
-                    // never promotes maintenance ahead of essential UI/playback.
-                    val next = eligible.minByOrNull {
-                        if (it.priority == StartupPriority.MAINTENANCE && now - it.queuedAt >= 30_000L)
-                            StartupPriority.DEFERRED.ordinal else it.priority.ordinal
-                    }
+                    // Sequential execution: ordered by priority, then queued order (FIFO)
+                    val next = eligible.minWithOrNull(compareBy<Ticket> { it.priority.ordinal }.thenBy { it.queuedAt })
                     val interacting = foregroundDrawPending.get() || scrolling.get() ||
                         navigationJobs.get() != 0 || now < navigationUntil.get()
+                    val idle15sMet = now - lastInteraction.get() >= 15_000L && now - lastForegroundResume.get() >= 15_000L
+                    val breathingGapMet = now - lastOptionalCompleted.get() >= 750L
                     val quiet = jobs.get() == 0 && !interacting &&
-                        now - maxOf(lastInteraction.get(), lastSlowFrame.get()) >= 250L
+                        if (essential) now - maxOf(lastInteraction.get(), lastSlowFrame.get()) >= 250L
+                        else idle15sMet && breathingGapMet
                     if (next === ticket && (if (essential) !essentialActive && !interacting
                         else !optionalActive && !essentialActive && quiet)) {
                         waiting.remove(ticket)
@@ -121,7 +120,12 @@ object BackgroundWorkCoordinator {
             synchronized(admissionLock) {
                 waiting.remove(ticket)
                 if (admitted) {
-                    if (priority == StartupPriority.ESSENTIAL_UI) essentialActive = false else optionalActive = false
+                    if (priority == StartupPriority.ESSENTIAL_UI) {
+                        essentialActive = false
+                    } else {
+                        optionalActive = false
+                        lastOptionalCompleted.set(SystemClock.elapsedRealtime())
+                    }
                 }
             }
         }
@@ -161,6 +165,8 @@ object BackgroundWorkCoordinator {
     private val lastInteraction = AtomicLong(startedAt)
     private val lastSlowFrame = AtomicLong(startedAt)
     private val lastWork = AtomicLong(startedAt)
+    private val lastForegroundResume = AtomicLong(startedAt)
+    private val lastOptionalCompleted = AtomicLong(0L)
     private val jobs = AtomicInteger(0)
     private val navigationJobs = AtomicInteger(0)
     private val navigationUntil = AtomicLong(0L)
@@ -208,8 +214,12 @@ object BackgroundWorkCoordinator {
     }
 
     fun foreground(visible: Boolean) {
-        if (visible) interaction()
-        else foregroundDrawPending.set(false)
+        if (visible) {
+            interaction()
+            lastForegroundResume.set(SystemClock.elapsedRealtime())
+        } else {
+            foregroundDrawPending.set(false)
+        }
         foreground.set(visible)
         _uiForeground.value = visible
     }
@@ -231,9 +241,9 @@ object BackgroundWorkCoordinator {
         val lease = busy()
         try { return block() } finally { lease.close() }
     }
-    /** Wait for actual quiet, not just a fixed delay after reopening. */
-    suspend fun awaitIdle(quietMillis: Long = 2_500L, requireForeground: Boolean = true,
-        minimumUptimeMillis: Long = 6_000L, userRequested: () -> Boolean = { false }) {
+    /** Wait for actual quiet (defaulting to 15s after reopen/interaction), not just a quick pulse. */
+    suspend fun awaitIdle(quietMillis: Long = 15_000L, requireForeground: Boolean = true,
+        minimumUptimeMillis: Long = 15_000L, userRequested: () -> Boolean = { false }) {
         // An admitted task owns a busy lease. Waiting for jobs == 0 here would
         // wait for itself (including nested cache/repository calls).
         if (currentCoroutineContext()[Admission] != null) {
