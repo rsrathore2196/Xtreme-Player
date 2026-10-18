@@ -122,6 +122,20 @@ class AudioPipelineRegressionTest {
         assertNull(sink.preferredPcmEncoding(format)); assertFalse(AudioSignalPath.state.value.bitPerfect)
         sink.release()
     }
+    @Test fun aCrossfadeTailCannotOverwriteThePrimarySignalPathOrEnableDsp() {
+        val app = androidx.test.core.app.ApplicationProvider.getApplicationContext<Application>()
+        AudioSignalPath.source("primary", "JioSaavn")
+        AudioSignalPath.format("primary", Format.Builder().setSampleMimeType(MimeTypes.AUDIO_AAC)
+            .setSampleRate(44100).setAverageBitrate(320000).build(), 320)
+        val before = AudioSignalPath.state.value
+        val dsp = PsychoacousticAudioProcessor.settings.get()
+        val sink = BitPerfectAudioSink(app, reportSignalPath = false, allowDirect = { false })
+        sink.setVolume(0.2f)
+        sink.setPlaybackParameters(androidx.media3.common.PlaybackParameters(1.25f))
+        sink.release()
+        assertEquals(before, AudioSignalPath.state.value)
+        assertEquals(dsp, PsychoacousticAudioProcessor.settings.get())
+    }
     @Test fun settingsAdaptToExistingPerNetworkProfiles() {
         assertEquals(AudioQualityPreference.MAX_LOSSLESS, AudioQualityPreference.from(AudioQualityCeiling.MAX.audioQuality))
         assertEquals(320000, AudioQualityCeiling.HIGH.maxBitrateBps)

@@ -11,9 +11,23 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
+import com.example.performance.AppDispatchers
 
 @Immutable
 data class LyricsSettings(val provider: String = "Auto", val textSizeSp: Int = 34, val ready: Boolean = false)
+
+@Immutable
+data class PlayerExperienceSettings(
+    val dynamicAlbumGlow: Boolean = true,
+    val highContrastTypography: Boolean = false,
+    val crossfade: Boolean = false
+)
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 object OtherSettingsPreferences {
@@ -72,6 +86,36 @@ object OtherSettingsPreferences {
     private const val KEY_CACHE_CLEARED_TIMESTAMP = "cache_cleared_timestamp"
     private const val KEY_HAPTICS_ENABLED = "haptics_enabled"
     private const val KEY_DYNAMIC_GLASS_ENABLED = "dynamic_glass_enabled"
+    private const val KEY_ALBUM_GLOW = "player_dynamic_album_glow"
+    private const val KEY_HIGH_CONTRAST = "player_high_contrast_typography"
+    private const val KEY_CROSSFADE = "playback_crossfade_enabled"
+
+    fun playerExperienceSettings(context: Context): PlayerExperienceSettings = getPrefs(context).let {
+        PlayerExperienceSettings(it.getBoolean(KEY_ALBUM_GLOW, true),
+            it.getBoolean(KEY_HIGH_CONTRAST, false), it.getBoolean(KEY_CROSSFADE, false))
+    }
+
+    /** Reuse the preloaded memory preferences and ordered IO persistence, including restores. */
+    fun observePlayerExperience(context: Context) = callbackFlow {
+        val prefs = getPrefs(context.applicationContext)
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == null || key == KEY_ALBUM_GLOW || key == KEY_HIGH_CONTRAST || key == KEY_CROSSFADE) trySend(Unit)
+        }
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+        trySend(Unit)
+        awaitClose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+    }.conflate().map { playerExperienceSettings(context.applicationContext) }
+        .distinctUntilChanged().flowOn(AppDispatchers.Io)
+
+    fun setDynamicAlbumGlow(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_ALBUM_GLOW, enabled).apply()
+    }
+    fun setHighContrastTypography(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_HIGH_CONTRAST, enabled).apply()
+    }
+    fun setCrossfade(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_CROSSFADE, enabled).apply()
+    }
 
     private fun getPrefs(context: Context): SharedPreferences {
         return ReactiveSettingsRepository.preferences(context, PREFS_NAME)

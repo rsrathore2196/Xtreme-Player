@@ -81,7 +81,12 @@ fun MusicPlaybackPage(
     val dividerColor = appColors.dividerColor
     val textPrimary = appColors.textPrimary
     val textMuted = appColors.textMuted
-    var gaplessEnabled by remember { mutableStateOf(true) }
+    val settingsContext = androidx.compose.ui.platform.LocalContext.current
+    val playerExperienceFlow = remember(settingsContext) {
+        com.example.data.local.OtherSettingsPreferences.observePlayerExperience(settingsContext)
+    }
+    val playerExperience by playerExperienceFlow.collectAsStateWithLifecycle(
+        initialValue = com.example.data.local.OtherSettingsPreferences.playerExperienceSettings(settingsContext))
 
     val presets = listOf("Flat", "Bass Boost", "Studio Master", "Vocal Enhance", "Electronic", "Rock", "Acoustic")
 
@@ -327,22 +332,22 @@ fun MusicPlaybackPage(
                             .padding(end = 12.dp)
                     ) {
                         Text(
-                            text = "Gapless Playback Engine",
+                            text = "Crossfade",
                             fontSize = 13.5.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = textPrimary
                         )
                         Text(
-                            text = "Eliminates silence between consecutive tracks",
+                            text = "Smoothly blends the last 3 seconds into the next track",
                             fontSize = 11.sp,
                             color = textMuted
                         )
                     }
                     Switch(
-                        checked = gaplessEnabled,
-                        onCheckedChange = { gaplessEnabled = it },
+                        checked = playerExperience.crossfade,
+                        onCheckedChange = { com.example.data.local.OtherSettingsPreferences.setCrossfade(settingsContext, it) },
                         colors = liquidGlassSwitchColors(appColors),
-                        modifier = Modifier.testTag("switch_gapless_playback")
+                        modifier = Modifier.testTag("switch_crossfade")
                     )
                 }
 

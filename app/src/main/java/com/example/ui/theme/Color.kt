@@ -31,7 +31,9 @@ data class AppThemeColors(
     val chipBackground: Color,
     val chipBorder: Color,
     val dividerColor: Color,
-    val dynamicGlassEnabled: Boolean = true
+    val dynamicGlassEnabled: Boolean = true,
+    val dynamicAlbumGlow: Boolean = true,
+    val highContrastTypography: Boolean = false
 ) {
     val heroGradient: Brush
         get() = Brush.linearGradient(listOf(primaryAccent, secondaryAccent))

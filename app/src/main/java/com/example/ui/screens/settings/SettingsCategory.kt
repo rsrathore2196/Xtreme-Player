@@ -28,7 +28,7 @@ enum class SettingsCategory(
     ),
     MUSIC_PLAYBACK(
         title = "Music & Playback",
-        rawSubtitle = "Audio Quality · Equalizer & DSP · Gapless Playback",
+        rawSubtitle = "Audio Quality · Equalizer & DSP · Crossfade",
         icon = Icons.Default.MusicNote,
         tag = "settings_cat_music"
     ),

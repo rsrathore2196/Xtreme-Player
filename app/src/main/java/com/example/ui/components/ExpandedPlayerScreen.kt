@@ -327,8 +327,8 @@ fun ExpandedPlayerScreen(
     var accentColor by remember(track.id, appColors.primaryAccent) { mutableStateOf(cachedColors?.accentColor ?: appColors.primaryAccent) }
     var vibrantColor by remember(track.id, appColors.primaryAccent) { mutableStateOf(cachedColors?.vibrantColor ?: appColors.primaryAccent) }
 
-    LaunchedEffect(paletteKey, isScreenVisible) {
-        if (!isScreenVisible) return@LaunchedEffect
+    LaunchedEffect(paletteKey, isScreenVisible, appColors.dynamicAlbumGlow) {
+        if (!isScreenVisible || !appColors.dynamicAlbumGlow) return@LaunchedEffect
         // Fast-path: If already in memory cache, avoid all processing
         val inMem = TrackPaletteCache.get(paletteKey)
         if (inMem != null) {
@@ -424,8 +424,8 @@ fun ExpandedPlayerScreen(
         label = "vibrant_color"
     )
 
-    val isEffectivelyDark by remember(isDark, appColors.isDark, appColors.isAmoled, animatedDominantColor, appColors.scaffoldBackground) { derivedStateOf {
-        val color = animatedDominantColor.value
+    val isEffectivelyDark by remember(isDark, appColors.isDark, appColors.isAmoled, appColors.dynamicAlbumGlow, animatedDominantColor, appColors.scaffoldBackground) { derivedStateOf {
+        val color = if (appColors.dynamicAlbumGlow) animatedDominantColor.value else appColors.scaffoldBackground
         if (isDark || appColors.isDark || appColors.isAmoled) {
             true
         } else if (color != Color.Unspecified) {
@@ -592,8 +592,8 @@ fun ExpandedPlayerScreen(
                                     modifier = Modifier.fillMaxSize(),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    // Adaptive Ambient Glow
-                                    Box(
+                                    // Adaptive Ambient Glow follows the saved player preference.
+                                    if (appColors.dynamicAlbumGlow) Box(
                                         modifier = Modifier
                                             .size(240.dp)
                                             .graphicsLayer()
@@ -622,7 +622,7 @@ fun ExpandedPlayerScreen(
                                                 rotationY = flipRotation
                                                 cameraDistance = 14f * density
                                             }
-                                            .animatedArtworkShadow(animatedAccentColor, RoundedCornerShape(22.dp))
+                                            .animatedArtworkShadow(animatedAccentColor, RoundedCornerShape(22.dp), appColors.dynamicAlbumGlow)
                                             .clip(RoundedCornerShape(22.dp))
                                             .clickable {
                                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -1431,7 +1431,7 @@ fun ExpandedPlayerScreen(
                                 contentAlignment = Alignment.Center
                             ) {
                                 // Adaptive Ambient Glow Layer matching album art with hardware acceleration
-                                Box(
+                                if (appColors.dynamicAlbumGlow) Box(
                                     modifier = Modifier
                                     .size(if (isLandscape) 190.dp else 280.dp)
                                     .graphicsLayer()
@@ -1467,7 +1467,7 @@ fun ExpandedPlayerScreen(
                                         rotationY = flipRotation
                                         cameraDistance = 14f * density
                                     }
-                                    .animatedArtworkShadow(animatedAccentColor, RoundedCornerShape(24.dp))
+                                    .animatedArtworkShadow(animatedAccentColor, RoundedCornerShape(24.dp), appColors.dynamicAlbumGlow)
                                     .clip(RoundedCornerShape(24.dp))
                                     .clickable {
                                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -2236,12 +2236,13 @@ private fun Modifier.animatedArtworkBorder(accent: State<Color>, dark: Boolean, 
     border(BorderStroke(1.5.dp, if (dark) accent.value.copy(alpha = 0.65f) else fallback), shape)
 }
 
-private fun Modifier.animatedArtworkShadow(accent: State<Color>, shape: androidx.compose.ui.graphics.Shape): Modifier =
+private fun Modifier.animatedArtworkShadow(accent: State<Color>, shape: androidx.compose.ui.graphics.Shape,
+    albumGlow: Boolean): Modifier =
     graphicsLayer {
         shadowElevation = 28.dp.toPx()
         this.shape = shape
         clip = true
-        spotShadowColor = accent.value.copy(alpha = 0.5f)
+        spotShadowColor = if (albumGlow) accent.value.copy(alpha = 0.5f) else Color.Black
         ambientShadowColor = Color.Black
     }
 
@@ -2284,7 +2285,7 @@ private fun Modifier.playerBackdropBlur(radius: Dp): Modifier {
 }
 
 @Composable
-private fun PlayerGlassBackground(
+internal fun PlayerGlassBackground(
     artworkUrl: String,
     artworkRequest: ImageRequest? = null,
     dominantColor: State<Color>,
@@ -2295,8 +2296,9 @@ private fun PlayerGlassBackground(
 ) {
     val appColors = LocalAppColors.current
     val dynamicGlass = LocalDynamicGlassEnabled.current
-    if (!dynamicGlass) {
-        Box(modifier.fillMaxSize().background(appColors.scaffoldBackground))
+    if (!dynamicGlass || !appColors.dynamicAlbumGlow) {
+        Box(modifier.fillMaxSize().testTag("player_neutral_backdrop").xtremeSharedBackdropSource(enabled = dynamicGlass)
+            .background(appColors.scaffoldBackground))
         return
     }
     val context = LocalContext.current
@@ -2306,7 +2308,7 @@ private fun PlayerGlassBackground(
             .size(256).crossfade(650).build()
     }
     val base = appColors.scaffoldBackground
-    Box(modifier.fillMaxSize().xtremeSharedBackdropSource(enabled = dynamicGlass).background(base)) {
+    Box(modifier.fillMaxSize().testTag("player_album_glow_backdrop").xtremeSharedBackdropSource(enabled = dynamicGlass).background(base)) {
         // Broad color fields provide the same soft finish on devices without RenderEffect.
         Box(Modifier.fillMaxSize().drawWithCache {
             val field = Brush.linearGradient(listOf(dominantColor.value, base, vibrantColor.value.copy(alpha = 0.55f)),
@@ -2329,14 +2331,14 @@ private fun PlayerGlassBackground(
                     .playerBackdropBlur(56.dp)
             )
         }
-        // A broad reflection and neutral veil give gloss without obscuring controls or cover art.
+        // High contrast strengthens only the neutral text backdrop, never text size/layout.
         Box(Modifier.fillMaxSize().drawWithCache {
             val veil = if (isDark) Color.Black else base
             val veilBrush = Brush.verticalGradient(
-                0f to veil.copy(alpha = if (isDark) 0.42f else 0.40f),
-                0.35f to veil.copy(alpha = if (isDark) 0.16f else 0.28f),
-                0.65f to veil.copy(alpha = if (isDark) 0.40f else 0.58f),
-                1f to veil.copy(alpha = if (isDark) 0.66f else 0.76f)
+                0f to veil.copy(alpha = if (appColors.highContrastTypography) 0.80f else if (isDark) 0.42f else 0.40f),
+                0.35f to veil.copy(alpha = if (appColors.highContrastTypography) 0.72f else if (isDark) 0.16f else 0.28f),
+                0.65f to veil.copy(alpha = if (appColors.highContrastTypography) 0.80f else if (isDark) 0.40f else 0.58f),
+                1f to veil.copy(alpha = if (appColors.highContrastTypography) 0.88f else if (isDark) 0.66f else 0.76f)
             )
             val reflection = Brush.linearGradient(listOf(Color.White.copy(alpha = if (isDark) 0.08f else 0.25f),
                 Color.Transparent, Color.Transparent), Offset.Zero, Offset(size.width, size.height * 0.7f))
@@ -2597,8 +2599,8 @@ private fun PlayerTimelineSection(
     val sliderValue = if (isUserScrubbing) scrubPosition else (currentPosition.toFloat() / trackDuration.toFloat()).coerceIn(0f, 1f)
 
     // Contrast calculation according to theme and effective background
-    val isEffectivelyDark by remember(isDark, appColors.isDark, appColors.isAmoled, dominantColor, appColors.scaffoldBackground) { derivedStateOf {
-        val color = dominantColor.value
+    val isEffectivelyDark by remember(isDark, appColors.isDark, appColors.isAmoled, appColors.dynamicAlbumGlow, dominantColor, appColors.scaffoldBackground) { derivedStateOf {
+        val color = if (appColors.dynamicAlbumGlow) dominantColor.value else appColors.scaffoldBackground
         if (isDark || appColors.isDark || appColors.isAmoled) {
             true
         } else if (color != Color.Unspecified) {
@@ -2619,7 +2621,9 @@ private fun PlayerTimelineSection(
     val chipContentColor = if (isEffectivelyDark) Color.White else Color(0xFF0F172A)
     val chipBorderColor = if (isEffectivelyDark) Color.White.copy(alpha = 0.25f) else Color.Black.copy(alpha = 0.20f)
     val chipBgColor = if (isEffectivelyDark) Color.White.copy(alpha = 0.12f) else Color.Black.copy(alpha = 0.08f)
-    val timeLabelColor = if (isEffectivelyDark) Color.White.copy(alpha = 0.65f) else Color.Black.copy(alpha = 0.65f)
+    val timeLabelColor = if (appColors.highContrastTypography) {
+        if (isEffectivelyDark) Color.White else Color.Black
+    } else if (isEffectivelyDark) Color.White.copy(alpha = 0.65f) else Color.Black.copy(alpha = 0.65f)
 
     Column(modifier = modifier.fillMaxWidth().graphicsLayer()) {
         WavyScrubberBar(

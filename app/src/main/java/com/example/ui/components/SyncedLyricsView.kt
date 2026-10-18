@@ -271,7 +271,9 @@ fun SyncedLyricsView(
     }
 
     val activeTextColor = if (isDark) Color(0xFFFFFFFF) else Color(0xFF000000)
-    val inactiveTextColor = if (isDark) Color(0xFFFFFFFF).copy(alpha = 0.62f) else Color(0xFF000000).copy(alpha = 0.60f)
+    val inactiveTextColor = if (appColors.highContrastTypography) {
+        if (isDark) Color.White.copy(alpha = 0.90f) else Color.Black.copy(alpha = 0.90f)
+    } else if (isDark) Color(0xFFFFFFFF).copy(alpha = 0.62f) else Color(0xFF000000).copy(alpha = 0.60f)
 
     BoxWithConstraints(
         modifier = modifier

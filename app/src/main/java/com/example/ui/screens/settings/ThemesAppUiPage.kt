@@ -1,5 +1,7 @@
 package com.example.ui.screens.settings
 
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -154,8 +156,12 @@ private fun ThemesAppUiOverview(
 
     var showMiniHeart by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(true) }
     var showMiniNext by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(true) }
-    var ambientGlowEnabled by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(true) }
-    var highContrastTypography by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
+    val settingsContext = androidx.compose.ui.platform.LocalContext.current
+    val playerExperienceFlow = remember(settingsContext) {
+        com.example.data.local.OtherSettingsPreferences.observePlayerExperience(settingsContext)
+    }
+    val playerExperience by playerExperienceFlow.collectAsStateWithLifecycle(
+        initialValue = com.example.data.local.OtherSettingsPreferences.playerExperienceSettings(settingsContext))
 
     Column(
         modifier = modifier
@@ -447,8 +453,8 @@ private fun ThemesAppUiOverview(
                         )
                     }
                     Switch(
-                        checked = ambientGlowEnabled,
-                        onCheckedChange = { ambientGlowEnabled = it },
+                        checked = playerExperience.dynamicAlbumGlow,
+                        onCheckedChange = { com.example.data.local.OtherSettingsPreferences.setDynamicAlbumGlow(settingsContext, it) },
                         colors = liquidGlassSwitchColors(appColors),
                         modifier = Modifier.testTag("switch_ambient_glow")
                     )
@@ -479,8 +485,8 @@ private fun ThemesAppUiOverview(
                         )
                     }
                     Switch(
-                        checked = highContrastTypography,
-                        onCheckedChange = { highContrastTypography = it },
+                        checked = playerExperience.highContrastTypography,
+                        onCheckedChange = { com.example.data.local.OtherSettingsPreferences.setHighContrastTypography(settingsContext, it) },
                         colors = liquidGlassSwitchColors(appColors),
                         modifier = Modifier.testTag("switch_high_contrast")
                     )

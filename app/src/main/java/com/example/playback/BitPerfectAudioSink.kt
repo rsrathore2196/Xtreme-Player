@@ -25,22 +25,29 @@ import java.nio.ByteBuffer
 import kotlin.math.abs
 
 /** One renderer/sink: verified native PCM on supported USB hardware, otherwise Media3's shared sink.
- * All configure/write/drain calls run on ExoPlayer's playback thread. No second player/audio focus.
+ * All configure/write/drain calls run on ExoPlayer's playback thread. A crossfade tail
+ * reuses the processing path without native output or signal-path publication.
  * Native integer PCM never goes through DefaultAudioSink's 24/32 -> float/16-bit converters.
  */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class BitPerfectAudioSink private constructor(
     private val context: Context, private val shared: DefaultAudioSink,
-    private val observation: TrackObservation
+    private val observation: TrackObservation,
+    private val allowDirect: () -> Boolean
 ) : ForwardingAudioSink(shared) {
-    constructor(context: Context) : this(context.applicationContext, TrackObservation())
-    private constructor(context: Context, observation: TrackObservation) : this(context,
+    constructor(context: Context, reportSignalPath: Boolean = true, allowDirect: () -> Boolean = { true }) :
+        this(context.applicationContext, TrackObservation(reportSignalPath), allowDirect)
+    private constructor(context: Context, observation: TrackObservation, allowDirect: () -> Boolean) : this(context,
         DefaultAudioSink.Builder(context).setEnableFloatOutput(true).setEnableAudioTrackPlaybackParams(true)
             .setAudioTrackProvider { config, attributes, sessionId ->
                 DefaultAudioSink.AudioTrackProvider.DEFAULT.getAudioTrack(config, attributes, sessionId).also {
                     observation.attach(it, false, null)
                 }
-            }.build(), observation)
+            }.build(), observation, allowDirect)
+
+    private fun publishSignal(block: (SignalPathState) -> SignalPathState) {
+        if (observation.reportSignalPath) AudioSignalPath.update(block)
+    }
 
     @Volatile private var directUnavailable = false
     init { observation.directLost = { directUnavailable = true } }
@@ -55,7 +62,7 @@ class BitPerfectAudioSink private constructor(
     }
     fun preferredPcmEncoding(source: Format): Int? {
         sourceFormat(source)
-        return if (Build.VERSION.SDK_INT >= 34 && volume == 1f && parameters == PlaybackParameters.DEFAULT && !skipSilence)
+        return if (allowDirect() && Build.VERSION.SDK_INT >= 34 && volume == 1f && parameters == PlaybackParameters.DEFAULT && !skipSilence)
             NativeUsb.preferredEncoding(context, source, attributes, preferred) else null
     }
     private var attributes = AudioAttributes.DEFAULT
@@ -114,14 +121,14 @@ class BitPerfectAudioSink private constructor(
         val repack24 = inputFormat.pcmEncoding == C.ENCODING_PCM_FLOAT && sourceEncoding == C.ENCODING_PCM_24BIT
         val nativeFormat = if (repack24) inputFormat.buildUpon().setPcmEncoding(C.ENCODING_PCM_24BIT).build() else inputFormat
         val nativeKey = "${inputFormat.pcmEncoding}|${inputFormat.sampleRate}|${inputFormat.channelCount}|${preferred?.id}"
-        native = if (Build.VERSION.SDK_INT >= 34 && failedDirectFormat != nativeKey && identityChannels &&
+        native = if (allowDirect() && Build.VERSION.SDK_INT >= 34 && failedDirectFormat != nativeKey && identityChannels &&
             (sourceEncoding == C.ENCODING_INVALID || sourceEncoding == nativeFormat.pcmEncoding) && parameters == PlaybackParameters.DEFAULT &&
             volume == 1f && !skipSilence && inputFormat.encoderDelay == 0 && inputFormat.encoderPadding == 0)
             NativeUsb.open(context, nativeFormat, attributes, preferred, sessionId, specifiedBufferSize) else null
         native?.let { lease ->
             shared.flush()
             observation.attach(lease.track, true, lease)
-            AudioSignalPath.update { it.copy(inputRateHz = inputFormat.sampleRate, outputRateHz = lease.track.sampleRate,
+            publishSignal { it.copy(inputRateHz = inputFormat.sampleRate, outputRateHz = lease.track.sampleRate,
                 dspActive = false, eqActive = false, directApproved = true, mode = "Direct") }
             listener?.onAudioTrackInitialized(AudioSink.AudioTrackConfig(lease.encoding,
                 inputFormat.sampleRate, lease.track.channelConfiguration, false, false, lease.bufferBytes))
@@ -131,7 +138,7 @@ class BitPerfectAudioSink private constructor(
         configureShared(inputFormat, specifiedBufferSize, outputChannels)
     }
     private fun configureShared(inputFormat: Format, specifiedBufferSize: Int, outputChannels: IntArray?) {
-        AudioSignalPath.update { it.copy(inputRateHz = inputFormat.sampleRate, bitPerfect = false,
+        publishSignal { it.copy(inputRateHz = inputFormat.sampleRate, bitPerfect = false,
             directApproved = false, mode = "Shared", eqActive = AudioEffectsManager.effectsState.value.isEnabled,
             dspActive = AudioEffectsManager.effectsState.value.let { settings -> settings.isEnabled || settings.audioEnhancerEnabled }) }
         processor.configure(AudioProcessor.AudioFormat(inputFormat)); processor.flush()
@@ -231,11 +238,11 @@ class BitPerfectAudioSink private constructor(
         this.volume = volume; native?.track?.setVolume(volume); super.setVolume(volume)
         observation.unity = volume == 1f && parameters == PlaybackParameters.DEFAULT
         observation.refresh()
-        AudioSignalPath.update { it.copy(appVolume = volume) }
+        publishSignal { it.copy(appVolume = volume) }
     }
     override fun setPlaybackParameters(playbackParameters: PlaybackParameters) {
         parameters = playbackParameters
-        AudioSignalPath.update { it.copy(appResampling = playbackParameters != PlaybackParameters.DEFAULT,
+        publishSignal { it.copy(appResampling = playbackParameters != PlaybackParameters.DEFAULT,
             playbackSpeed = playbackParameters.speed, pitch = playbackParameters.pitch) }
         native?.track?.let { track ->
             track.playbackParams = android.media.PlaybackParams().allowDefaults()
@@ -345,7 +352,10 @@ class BitPerfectAudioSink private constructor(
         }
     }
 
-    private class TrackObservation {
+    private class TrackObservation(val reportSignalPath: Boolean) {
+        private fun publishSignal(block: (SignalPathState) -> SignalPathState) {
+            if (reportSignalPath) AudioSignalPath.update(block)
+        }
         private var track: AudioTrack? = null
         private var direct = false
         private var lease: DirectLease? = null
@@ -355,6 +365,7 @@ class BitPerfectAudioSink private constructor(
         private var underruns = 0
         private val routeListener = AudioRouting.OnRoutingChangedListener { refresh() }
         fun attach(value: AudioTrack, direct: Boolean, lease: DirectLease?) {
+            if (!reportSignalPath) return
             detach(); track = value; this.direct = direct; this.lease = lease; underruns = 0
             value.addOnRoutingChangedListener(routeListener, Handler(Looper.myLooper() ?: Looper.getMainLooper()))
             refresh()
@@ -367,7 +378,7 @@ class BitPerfectAudioSink private constructor(
                 val approved = direct && usb && lease?.approved?.invoke() == true
                 val pure = approved && unity
                 if (direct && route != null && !approved) directLost()
-                AudioSignalPath.update { it.copy(outputDevice = route?.productName?.toString() ?: "System output",
+                publishSignal { it.copy(outputDevice = route?.productName?.toString() ?: "System output",
                     outputType = when (route?.type) {
                         AudioDeviceInfo.TYPE_USB_DEVICE, AudioDeviceInfo.TYPE_USB_HEADSET, AudioDeviceInfo.TYPE_USB_ACCESSORY -> "USB DAC"
                         AudioDeviceInfo.TYPE_WIRED_HEADPHONES, AudioDeviceInfo.TYPE_WIRED_HEADSET -> "Wired Headphones"
@@ -387,13 +398,14 @@ class BitPerfectAudioSink private constructor(
             if (now - lastHealthMs < 1_000L) return
             lastHealthMs = now
             runCatching { val count = track?.underrunCount ?: 0
-                if (count != underruns) { underruns = count; AudioSignalPath.update { it.copy(glitches = count) } }
+                if (count != underruns) { underruns = count; publishSignal { it.copy(glitches = count) } }
             }
         }
         fun detach() {
+            if (!reportSignalPath) return
             track?.let { runCatching { it.removeOnRoutingChangedListener(routeListener) } }
             track = null; lease = null; direct = false
-            AudioSignalPath.update { it.copy(outputEncoding = C.ENCODING_INVALID, outputChannels = 0,
+            publishSignal { it.copy(outputEncoding = C.ENCODING_INVALID, outputChannels = 0,
                 outputRouteVerified = false, outputRateHz = 0, directApproved = false, bitPerfect = false) }
         }
     }

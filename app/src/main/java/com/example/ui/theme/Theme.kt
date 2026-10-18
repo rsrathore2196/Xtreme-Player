@@ -9,6 +9,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.data.local.OtherSettingsPreferences
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
@@ -32,7 +35,7 @@ private fun parseColorSafe(hex: String, fallback: Color): Color {
  * Resolves the complete high-performance [AppThemeColors] dynamically from the active [CustomThemeState].
  * Supports instant, smooth transitions across all 10 presets and customized palettes.
  */
-fun resolveAppThemeColors(darkTheme: Boolean, custom: CustomThemeState): AppThemeColors {
+fun resolveAppThemeColors(darkTheme: Boolean, custom: CustomThemeState, highContrastTypography: Boolean = false): AppThemeColors {
     val isDark = darkTheme
     // System mode can change while a preset of the opposite brightness is saved.
     // Resolve the whole palette together instead of mixing light text with dark surfaces.
@@ -85,16 +88,17 @@ fun resolveAppThemeColors(darkTheme: Boolean, custom: CustomThemeState): AppThem
         return fallback
     }
 
+    val minimumTextContrast = if (highContrastTypography) 7.0 else 4.5
     val textPrimary = readable(parseColorSafe(effectiveCustom.textPrimaryHex,
-        if (isDark) Color(0xFFF8FAFC) else Color(0xFF0F172A)), 4.5)
+        if (isDark) Color(0xFFF8FAFC) else Color(0xFF0F172A)), minimumTextContrast)
 
     val textSecondary = readable(parseColorSafe(effectiveCustom.textSecondaryHex,
-        if (isDark) Color(0xFFCBD5E1) else Color(0xFF475569)), 4.5)
+        if (isDark) Color(0xFFCBD5E1) else Color(0xFF475569)), minimumTextContrast)
 
     val textMuted = readable(parseColorSafe(
         effectiveCustom.textMutedHex,
         Color(0xFF64748B)
-    ), 4.5)
+    ), minimumTextContrast)
 
     val bgGradientColors = if (isAmoled) {
         listOf(Color(0xFF000000), Color(0xFF000000))
@@ -161,7 +165,8 @@ fun resolveAppThemeColors(darkTheme: Boolean, custom: CustomThemeState): AppThem
         inputBackground = if (isDark) (if (isAmoled) Color(0xFF0A0A0A) else cardBg) else Color(0xFFF1F5F9),
         chipBackground = chipBg,
         chipBorder = cardBorder,
-        dividerColor = if (isAmoled) Color(0xFF1A1A1A) else cardBorder.copy(alpha = 0.5f)
+        dividerColor = if (isAmoled) Color(0xFF1A1A1A) else cardBorder.copy(alpha = 0.5f),
+        highContrastTypography = highContrastTypography
     )
 }
 
@@ -222,9 +227,13 @@ fun MyApplicationTheme(
     content: @Composable () -> Unit,
 ) {
     val context = LocalContext.current
+    val playerExperienceFlow = remember(context) { OtherSettingsPreferences.observePlayerExperience(context) }
+    val playerExperience by playerExperienceFlow.collectAsStateWithLifecycle(
+        initialValue = OtherSettingsPreferences.playerExperienceSettings(context))
     val custom = customThemeState ?: remember { ThemePreferences.getCustomThemeState(context) }
-    val appColors = remember(darkTheme, custom) {
-        resolveAppThemeColors(darkTheme, custom)
+    val appColors = remember(darkTheme, custom, playerExperience.dynamicAlbumGlow, playerExperience.highContrastTypography) {
+        resolveAppThemeColors(darkTheme, custom, playerExperience.highContrastTypography)
+            .copy(dynamicAlbumGlow = playerExperience.dynamicAlbumGlow)
     }
     val colorScheme = remember(darkTheme, appColors) {
         resolveColorScheme(darkTheme, appColors)

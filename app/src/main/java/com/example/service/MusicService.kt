@@ -59,6 +59,7 @@ class MusicService : MediaLibraryService() {
     private var applyingNetworkPolicy = false
     private var volumeObserver: android.database.ContentObserver? = null
     private var volumeJob: Job? = null
+    private var crossfade: com.example.playback.CrossfadeController? = null
     private val app: XtremeMusicApp get() = application as XtremeMusicApp
 
     private fun applyAudioCeiling(selector: DefaultTrackSelector, player: Player) {
@@ -225,10 +226,11 @@ class MusicService : MediaLibraryService() {
         }
 
         // 3. Audio-only Renderers Factory: suppresses video codecs and uses software-prioritized selector
-        val audioOnlyRenderersFactory = object : DefaultRenderersFactory(this) {
+        fun audioRenderersFactory(reportSignalPath: Boolean) = object : DefaultRenderersFactory(this) {
             override fun buildAudioSink(context: android.content.Context, enableFloatOutput: Boolean,
                 enableAudioTrackPlaybackParams: Boolean): androidx.media3.exoplayer.audio.AudioSink =
-                com.example.playback.BitPerfectAudioSink(context)
+                com.example.playback.BitPerfectAudioSink(context, reportSignalPath = reportSignalPath,
+                    allowDirect = { reportSignalPath && crossfade?.enabled != true })
             override fun buildAudioRenderers(context: android.content.Context, extensionRendererMode: Int,
                 mediaCodecSelector: MediaCodecSelector, enableDecoderFallback: Boolean,
                 audioSink: androidx.media3.exoplayer.audio.AudioSink, eventHandler: android.os.Handler,
@@ -268,6 +270,7 @@ class MusicService : MediaLibraryService() {
             .setEnableDecoderFallback(true)
             .setEnableAudioFloatOutput(true)
             .setEnableAudioTrackPlaybackParams(true)
+        val audioOnlyRenderersFactory = audioRenderersFactory(reportSignalPath = true)
 
         // 4. High-Fidelity 320kbps Audio Pipeline with Caching
         val cacheDataSourceFactory = MusicCache.createCacheDataSourceFactory(this)
@@ -286,6 +289,33 @@ class MusicService : MediaLibraryService() {
             .build()
 
         exoPlayer = player
+        crossfade = com.example.playback.CrossfadeController(player, serviceScope,
+            canMix = { !com.example.playback.AudioSignalPath.state.value.directApproved },
+            createTail = {
+                // A cache-backed outgoing tail only; no MediaSession, focus owner,
+                // provider search or competing signal-path publication is created.
+                ExoPlayer.Builder(this, audioRenderersFactory(reportSignalPath = false))
+                    .setMediaSourceFactory(mediaSourceFactory)
+                    .setTrackSelector(DefaultTrackSelector(this).apply { parameters = trackSelector.parameters })
+                    .setAudioAttributes(audioAttributes, false)
+                    .setHandleAudioBecomingNoisy(false)
+                    .setLoadControl(androidx.media3.exoplayer.DefaultLoadControl.Builder()
+                        .setBufferDurationsMs(1_000, 8_000, 500, 500).build())
+                    .setWakeMode(C.WAKE_MODE_NETWORK)
+                    .build().apply {
+                        val selected = com.example.playback.AudioDeviceManager.availableDevices.value.firstOrNull { it.isSelected }
+                        if (selected != null) {
+                            val manager = getSystemService(android.media.AudioManager::class.java)
+                            val output = manager?.getDevices(android.media.AudioManager.GET_DEVICES_OUTPUTS)?.firstOrNull { it.id == selected.id }
+                            if (output != null) setPreferredAudioDevice(output)
+                        }
+                    }
+            })
+        serviceScope.launch {
+            com.example.data.local.OtherSettingsPreferences.observePlayerExperience(this@MusicService).collect {
+                crossfade?.setEnabled(it.crossfade)
+            }
+        }
         val audioManager = getSystemService(android.media.AudioManager::class.java)
         fun publishVolume() {
             volumeJob?.cancel()
@@ -572,6 +602,7 @@ class MusicService : MediaLibraryService() {
         _liveSession.value = false
         checkpoint()
         checkpointJob?.cancel()
+        crossfade?.close(); crossfade = null
         jioFallback?.cancel(); jioFallback = null
         serviceScope.cancel()
         exoPlayer?.let(com.example.playback.SleepTimerManager::detach)
@@ -890,6 +921,7 @@ class MusicService : MediaLibraryService() {
             if (customCommand.customAction == COMMAND_SET_OUTPUT_DEVICE) {
                 val deviceId = args.getInt("device_id", -1)
                 return future {
+                    crossfade?.outputRouteChanging()
                     com.example.playback.AudioDeviceManager.routeDevice(this@MusicService, deviceId, exoPlayer)
                     SessionResult(SessionResult.RESULT_SUCCESS)
                 }
