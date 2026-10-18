@@ -1,7 +1,9 @@
 package com.example.ui.util
 
 import android.graphics.drawable.BitmapDrawable
+import android.content.Context
 import coil.intercept.Interceptor
+import coil.request.CachePolicy
 import coil.request.ImageResult
 import coil.request.SuccessResult
 import coil.size.Dimension
@@ -9,11 +11,8 @@ import coil.size.Size
 import com.example.data.repository.MediaItem
 import com.example.data.repository.iTunesArtworkRepository
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.currentCoroutineContext
-import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Semaphore
@@ -34,7 +33,10 @@ data class ArtworkRequestMetadata(
 )
 
 /** Resolve once inside Coil before the final decode; no Compose URL swaps or per-card jobs. */
-class ArtworkResolutionInterceptor : Interceptor {
+class ArtworkResolutionInterceptor internal constructor(
+    private val repositoryFor: (Context) -> iTunesArtworkRepository
+) : Interceptor {
+    constructor() : this({ iTunesArtworkRepository.getInstance(it) })
     override suspend fun intercept(chain: Interceptor.Chain): ImageResult {
         val metadata = chain.request.parameters.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER)
             ?: return chain.proceed(chain.request)
@@ -54,31 +56,47 @@ class ArtworkResolutionInterceptor : Interceptor {
             metadata.item?.sourceArtworkUrl?.let { upgradeProviderUrl(it, sourceDimension) },
             metadata.item?.sourceArtworkUrl
         ).filter(String::isNotBlank).distinct()
-        val attempted = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        val attempted = mutableSetOf<String>()
         var lastError: ImageResult? = null
-        suspend fun load(url: String?): SuccessResult? {
-            if (url.isNullOrBlank() || !attempted.add(url)) return null
+        suspend fun load(url: String?, cacheOnly: Boolean = false): SuccessResult? {
+            if (url.isNullOrBlank() || !cacheOnly && !attempted.add(url)) return null
             // Coil performs its O(1) memory lookup and disk lookup with the actual
             // requested decode bounds. Do not copy/scan its entire key collection.
-            return when (val result = chain.proceed(request.newBuilder().data(url).build())) {
+            val candidate = request.newBuilder().data(url).apply {
+                // An interim cover must not start a second remote image fetch/decode
+                // alongside iTunes. Respect the caller's memory/disk cache policies.
+                if (cacheOnly) networkCachePolicy(CachePolicy.DISABLED)
+            }.build()
+            return when (val result = chain.proceed(candidate)) {
                 is SuccessResult -> result
-                else -> { lastError = result; null }
+                else -> { if (!cacheOnly) lastError = result; null }
             }
         }
         val item = metadata.item
-        val repository = item?.takeUnless { metadata.providerArtworkOnly }?.let { iTunesArtworkRepository.getInstance(request.context) }
-        val cached = item?.let { repository?.getMemoryCachedResolvedUrl(it, sourceDimension) }
+        val repository = item?.takeUnless { metadata.providerArtworkOnly }?.let { repositoryFor(request.context) }
+        val cached = item?.let {
+            // A cold metadata cache may sanitize/normalize here. Bound that work
+            // with ranking/decoding instead of consuming another IO worker's CPU.
+            withContext(com.example.performance.BackgroundWorkCoordinator.optionalCpuDispatcher) {
+                repository?.getMemoryCachedResolvedUrl(it, sourceDimension)
+            }
+        }
         load(cached)?.let { return it }
         val requiredWidth = (chain.size.width as? Dimension.Pixels)?.px ?: sourceDimension
         val requiredHeight = (chain.size.height as? Dimension.Pixels)?.px ?: sourceDimension
-        suspend fun providerFallback(): SuccessResult? {
+        fun sufficient(result: SuccessResult): Boolean {
+            val bitmap = (result.drawable as? BitmapDrawable)?.bitmap
+            return (bitmap?.width ?: result.drawable.intrinsicWidth) >= requiredWidth &&
+                (bitmap?.height ?: result.drawable.intrinsicHeight) >= requiredHeight
+        }
+        suspend fun providerFallback(cacheOnly: Boolean = false): SuccessResult? {
             var smallFallback: SuccessResult? = null
             for (url in providerUrls) {
-                val result = load(url) ?: continue
+                val result = load(url, cacheOnly) ?: continue
                 val bitmap = (result.drawable as? BitmapDrawable)?.bitmap
                 val width = bitmap?.width ?: result.drawable.intrinsicWidth
                 val height = bitmap?.height ?: result.drawable.intrinsicHeight
-                if (width >= requiredWidth && height >= requiredHeight) return result
+                if (sufficient(result)) return result
                 if (smallFallback == null || width.toLong() * height >
                     smallFallback.drawable.intrinsicWidth.toLong() * smallFallback.drawable.intrinsicHeight)
                     smallFallback = result
@@ -102,30 +120,19 @@ class ArtworkResolutionInterceptor : Interceptor {
         // Palette/prefetch requests have no visible target and need no interim
         // decode. Preserve the preferred-source path without speculative image IO.
         if (request.target == null) return preferredArtwork() ?: providerFallback() ?: lastError ?: chain.proceed(request)
-        return coroutineScope {
-            val delivered = AtomicBoolean(false)
-            // Keep the same request/target identity. A usable provider cover is an
-            // interim drawable while the verified iTunes cover (the preferred final
-            // image) resolves; no per-card effect, URL state or section emission.
-            val provider = async {
-                providerFallback()?.also { result ->
-                    if (request.target != null) withContext(Dispatchers.Main.immediate) {
-                        currentCoroutineContext().ensureActive()
-                        if (!delivered.get()) request.target?.onStart(result.drawable)
-                    }
-                }
+        // The only interim drawable is an existing cache hit. A cold card has one
+        // preferred remote image, not a speculative provider download racing iTunes.
+        // The original target/metadata identity remains owned by Coil cancellation.
+        val interim = providerFallback(cacheOnly = true)
+        if (interim != null) {
+            withContext(Dispatchers.Main.immediate) {
+                currentCoroutineContext().ensureActive()
+                request.target?.onStart(interim.drawable)
             }
-            try {
-                val verified = preferredArtwork()
-                if (verified != null) {
-                    delivered.set(true)
-                    provider.cancel()
-                    verified
-                } else provider.await() ?: lastError ?: chain.proceed(request)
-            } finally {
-                delivered.set(true)
-                provider.cancel()
-            }
+        }
+        return com.example.performance.BackgroundWorkCoordinator.traceWork("Visible artwork") {
+            preferredArtwork() ?: interim?.takeIf(::sufficient) ?: providerFallback() ?: interim ?:
+                lastError ?: chain.proceed(request)
         }
     }
 

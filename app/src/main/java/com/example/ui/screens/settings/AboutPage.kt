@@ -1022,6 +1022,21 @@ fun AboutSocialCommunityButtonsRow(
     val context = LocalContext.current
     val appColors = LocalAppColors.current
     val accentColor = appColors.primaryAccent
+    val buttonContent = contrastingContentColor(accentColor)
+    val buttonFill = remember(accentColor, appColors.cardBackground) {
+        Brush.verticalGradient(listOf(accentColor,
+            androidx.compose.ui.graphics.lerp(accentColor, appColors.cardBackground, 0.10f)))
+    }
+    val buttonBorder = remember(accentColor, appColors.cardBorder) {
+        Brush.verticalGradient(listOf(accentColor, appColors.cardBorder))
+    }
+    val pillStyle = Modifier
+        .height(40.dp)
+        .shadow(3.dp, CircleShape, spotColor = accentColor.copy(alpha = 0.35f),
+            ambientColor = accentColor.copy(alpha = 0.12f))
+        .clip(CircleShape)
+        .background(buttonFill)
+        .border(BorderStroke(1.dp, buttonBorder), CircleShape)
 
     fun openUrl(url: String, label: String) {
         try {
@@ -1107,38 +1122,11 @@ fun AboutSocialCommunityButtonsRow(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // 1. GitHub Pill Button (Black pill with white text & logo)
+                // GitHub — shared theme colors and contrast.
                 Box(
                     modifier = Modifier
                         .weight(1f)
-                        .height(40.dp)
-                        .shadow(
-                            elevation = 3.dp,
-                            shape = CircleShape,
-                            spotColor = Color.Black.copy(alpha = 0.55f),
-                            ambientColor = Color.Black.copy(alpha = 0.20f)
-                        )
-                        .clip(CircleShape)
-                        .background(
-                            Brush.verticalGradient(
-                                listOf(
-                                    Color(0xFF262930),
-                                    Color(0xFF131518)
-                                )
-                            )
-                        )
-                        .border(
-                            BorderStroke(
-                                1.dp,
-                                Brush.verticalGradient(
-                                    listOf(
-                                        Color(0xFF4C505D),
-                                        Color(0xFF212328)
-                                    )
-                                )
-                            ),
-                            CircleShape
-                        )
+                        .then(pillStyle)
                         .bouncyClickable {
                             openUrl("https://github.com/rsrathore2196/Xtreme-Player", "GitHub")
                         }
@@ -1153,13 +1141,13 @@ fun AboutSocialCommunityButtonsRow(
                         Icon(
                             painter = painterResource(id = R.drawable.ic_github_logo),
                             contentDescription = "GitHub logo",
-                            tint = Color.White,
+                            tint = buttonContent,
                             modifier = Modifier.size(14.dp)
                         )
                         Spacer(modifier = Modifier.width(3.5.dp))
                         Text(
                             text = "GitHub",
-                            color = Color.White,
+                            color = buttonContent,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
                             maxLines = 1,
@@ -1168,38 +1156,11 @@ fun AboutSocialCommunityButtonsRow(
                     }
                 }
 
-                // 2. Telegram Channel Pill Button (Blue pill with white text & logo)
+                // Telegram Channel — shared theme colors and contrast.
                 Box(
                     modifier = Modifier
                         .weight(1f)
-                        .height(40.dp)
-                        .shadow(
-                            elevation = 3.dp,
-                            shape = CircleShape,
-                            spotColor = Color(0xFF24A1DE).copy(alpha = 0.45f),
-                            ambientColor = Color(0xFF24A1DE).copy(alpha = 0.15f)
-                        )
-                        .clip(CircleShape)
-                        .background(
-                            Brush.verticalGradient(
-                                listOf(
-                                    Color(0xFF2FB3F6),
-                                    Color(0xFF229ED9)
-                                )
-                            )
-                        )
-                        .border(
-                            BorderStroke(
-                                1.dp,
-                                Brush.verticalGradient(
-                                    listOf(
-                                        Color(0xFF76CDFD),
-                                        Color(0xFF1B8BC2)
-                                    )
-                                )
-                            ),
-                            CircleShape
-                        )
+                        .then(pillStyle)
                         .bouncyClickable {
                             openUrl("https://t.me/XtremePlayerOfficiaI", "Telegram Channel")
                         }
@@ -1214,20 +1175,20 @@ fun AboutSocialCommunityButtonsRow(
                         Icon(
                             painter = painterResource(id = R.drawable.ic_telegram_logo),
                             contentDescription = "Telegram logo",
-                            tint = Color.White,
+                            tint = buttonContent,
                             modifier = Modifier.size(13.5.dp)
                         )
                         Spacer(modifier = Modifier.width(2.5.dp))
                         Text(
                             text = "|",
-                            color = Color.White.copy(alpha = 0.55f),
+                            color = buttonContent.copy(alpha = 0.55f),
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Light
                         )
                         Spacer(modifier = Modifier.width(2.5.dp))
                         Text(
                             text = "Channel",
-                            color = Color.White,
+                            color = buttonContent,
                             fontSize = 10.5.sp,
                             fontWeight = FontWeight.Bold,
                             maxLines = 1,
@@ -1236,38 +1197,11 @@ fun AboutSocialCommunityButtonsRow(
                     }
                 }
 
-                // 3. Telegram Discussion Pill Button (Blue pill with white text & logo)
+                // Telegram Discussion — shared theme colors and contrast.
                 Box(
                     modifier = Modifier
                         .weight(1f)
-                        .height(40.dp)
-                        .shadow(
-                            elevation = 3.dp,
-                            shape = CircleShape,
-                            spotColor = Color(0xFF24A1DE).copy(alpha = 0.45f),
-                            ambientColor = Color(0xFF24A1DE).copy(alpha = 0.15f)
-                        )
-                        .clip(CircleShape)
-                        .background(
-                            Brush.verticalGradient(
-                                listOf(
-                                    Color(0xFF2FB3F6),
-                                    Color(0xFF229ED9)
-                                )
-                            )
-                        )
-                        .border(
-                            BorderStroke(
-                                1.dp,
-                                Brush.verticalGradient(
-                                    listOf(
-                                        Color(0xFF76CDFD),
-                                        Color(0xFF1B8BC2)
-                                    )
-                                )
-                            ),
-                            CircleShape
-                        )
+                        .then(pillStyle)
                         .bouncyClickable {
                             openUrl("https://t.me/xtremeplayerofficial", "Telegram Discussion")
                         }
@@ -1282,20 +1216,20 @@ fun AboutSocialCommunityButtonsRow(
                         Icon(
                             painter = painterResource(id = R.drawable.ic_telegram_logo),
                             contentDescription = "Telegram logo",
-                            tint = Color.White,
+                            tint = buttonContent,
                             modifier = Modifier.size(13.5.dp)
                         )
                         Spacer(modifier = Modifier.width(2.5.dp))
                         Text(
                             text = "|",
-                            color = Color.White.copy(alpha = 0.55f),
+                            color = buttonContent.copy(alpha = 0.55f),
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Light
                         )
                         Spacer(modifier = Modifier.width(2.5.dp))
                         Text(
                             text = "Discussion",
-                            color = Color.White,
+                            color = buttonContent,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
                             maxLines = 1,

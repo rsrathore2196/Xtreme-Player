@@ -2,6 +2,13 @@ package com.example.data.local
 
 import android.content.Context
 import com.example.playback.AudioQuality
+import android.content.SharedPreferences
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
+import java.util.concurrent.atomic.AtomicLong
 
 /** A single IO-loaded startup snapshot; constructors never open preference files. */
 data class StartupSettings(
@@ -22,5 +29,62 @@ data class StartupSettings(
             OtherSettingsPreferences.isDynamicGlassEnabled(context), UserProfilePreferences.getUserProfile(context),
             AudioQualityPreferences.getSelectedQuality(context)
         )
+    }
+}
+
+/** Process-local reuse, invalidated by the existing stores (including backup restore).
+ * No preferences are opened by the constructor or the UI-safe peek operation. */
+internal class StartupSettingsCache(private val context: Context) : AutoCloseable {
+    private data class Snapshot(val revision: Long, val settings: StartupSettings)
+    private val revision = AtomicLong()
+    private val loading = Mutex()
+    @Volatile private var snapshot: Snapshot? = null
+    private var preferences: List<SharedPreferences> = emptyList()
+    private val listener = SharedPreferences.OnSharedPreferenceChangeListener { prefs, key ->
+        // Listening statistics and lyrics settings do not invalidate appearance/profile.
+        val relevant = when (prefs) {
+            preferences.getOrNull(2) -> key == null || key in appearanceKeys
+            preferences.getOrNull(3) -> key == null || key in networkKeys
+            else -> true
+        }
+        if (relevant)
+            revision.incrementAndGet()
+    }
+
+    fun peek(): StartupSettings? = snapshot?.takeIf { it.revision == revision.get() }?.settings
+
+    suspend fun load(): StartupSettings = withContext(Dispatchers.IO) {
+        loading.withLock {
+            if (preferences.isEmpty()) {
+                preferences = listOf("xtreme_theme_prefs", "xtreme_user_profile_prefs",
+                    "xtreme_other_settings", "xtreme_audio_quality_prefs").map {
+                    context.applicationContext.getSharedPreferences(it, Context.MODE_PRIVATE)
+                }
+                preferences.forEach { it.registerOnSharedPreferenceChangeListener(listener) }
+            }
+            while (true) {
+                peek()?.let { return@withContext it }
+                val started = revision.get()
+                val loaded = com.example.performance.BackgroundWorkCoordinator.traceWork("Settings restore") {
+                    StartupSettings.read(context)
+                }
+                if (started == revision.get()) {
+                    snapshot = Snapshot(started, loaded)
+                    return@withContext loaded
+                }
+                // A concurrent preference/restore edit supersedes the old read.
+                yield()
+            }
+            @Suppress("UNREACHABLE_CODE") error("Unreachable")
+        }
+    }
+
+    override fun close() {
+        preferences.forEach { it.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
+
+    private companion object {
+        val appearanceKeys = setOf("text_size_index", "ui_size_index", "dynamic_glass_enabled")
+        val networkKeys = setOf("wifi_quality_ceiling", "cellular_quality_ceiling", "treat_metered_wifi_as_cellular")
     }
 }

@@ -92,9 +92,12 @@ class ManagedImageDiskCache(private val delegate: DiskCache, private val keyFile
                 val (version, revision, snapshot) = synchronized(lock) {
                     Triple(generation, accessRevision, accesses.toList())
                 }
-                val json = withContext(Dispatchers.Default) {
+                val json = withContext(BackgroundWorkCoordinator.optionalCpuDispatcher) {
                     val entries = JSONArray()
-                    snapshot.forEach { (entry, time) -> entries.put(JSONArray().put(entry).put(time)) }
+                    snapshot.forEachIndexed { index, (entry, time) ->
+                        if (index % 128 == 0) BackgroundWorkCoordinator.yieldToInteraction()
+                        entries.put(JSONArray().put(entry).put(time))
+                    }
                     entries.toString()
                 }
                 synchronized(diskWriteLock) {

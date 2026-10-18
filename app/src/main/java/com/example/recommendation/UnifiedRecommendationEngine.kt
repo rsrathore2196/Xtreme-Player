@@ -144,7 +144,8 @@ class UnifiedRecommendationEngine(context: Context?,
                 // across separate refresh passes and keeps playback independent.
                 BackgroundWorkCoordinator.startup(if (essential || force)
                     BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI else BackgroundWorkCoordinator.StartupPriority.DEFERRED,
-                    urgent = { priority?.requested?.value == true }, cardWork = true) {
+                    urgent = { priority?.requested?.value == true }, cardWork = true,
+                    label = "Home shelf ${shelf.name}") {
                     priority?.waitingShelf?.value = null
                     priority?.activeShelf?.value = shelf
                     withContext(DiscoveryRequestCoordinator.HomeCard(essential)) {

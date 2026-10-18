@@ -5,6 +5,10 @@ import java.time.Duration
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -53,6 +57,33 @@ class StartupCooperationRegressionTest {
         "$it=${field.get(null)}"
     } + " elapsed=${android.os.SystemClock.elapsedRealtime()}"
 
+    @Test fun sharedCpuConsumersCannotMultiplyTheBudgetOrBlockCriticalAdmission() = runBlocking {
+        val entered = java.util.concurrent.CountDownLatch(2)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val running = java.util.concurrent.atomic.AtomicInteger()
+        val maximum = java.util.concurrent.atomic.AtomicInteger()
+        val consumers = List(6) {
+            async(coordinator.optionalCpuDispatcher) {
+                val count = running.incrementAndGet()
+                maximum.accumulateAndGet(count, ::maxOf)
+                entered.countDown()
+                try { assertTrue(release.await(5, java.util.concurrent.TimeUnit.SECONDS)) }
+                finally { running.decrementAndGet() }
+            }
+        }
+        try {
+            assertTrue(entered.await(3, java.util.concurrent.TimeUnit.SECONDS))
+            assertEquals(2, maximum.get())
+            var criticalRan = false
+            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                coordinator.startup(BackgroundWorkCoordinator.StartupPriority.CRITICAL) { criticalRan = true }
+            }
+            assertTrue("Playback admission is independent of optional CPU slots", criticalRan)
+        } finally { release.countDown() }
+        consumers.awaitAll()
+        assertEquals(2, maximum.get())
+    }
+
     @Test fun anAdmittedBatchYieldsToScrollingWithoutBlockingCriticalPlayback() = runTest {
         val entered = CompletableDeferred<Unit>()
         val resumed = CompletableDeferred<Unit>()
@@ -77,6 +108,26 @@ class StartupCooperationRegressionTest {
         runCurrent()
         assertTrue(schedulerState(), resumed.isCompleted)
         optional.join()
+    }
+
+    @Test fun preparedVisualPublicationWaitsForTouchQuietWithoutWaitingForOptionalStartup() = runTest {
+        coordinator.interaction()
+        var published = false
+        val presentation = launch {
+            coordinator.yieldToInteraction(requireForeground = true, awaitFrameQuiet = false)
+            published = true
+        }
+        runCurrent()
+        assertFalse(published)
+        ShadowSystemClock.advanceBy(Duration.ofMillis(249))
+        advanceTimeBy(100)
+        runCurrent()
+        assertFalse(published)
+        ShadowSystemClock.advanceBy(Duration.ofMillis(1))
+        advanceTimeBy(100)
+        runCurrent()
+        assertTrue(published)
+        presentation.join()
     }
 
     @Test fun newOptionalBatchesAreNotAdmittedDuringScrolling() = runTest {

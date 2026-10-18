@@ -423,7 +423,8 @@ class PlayerViewModel(
         viewModelScope.launch(Dispatchers.IO) {
             if (preparedSettings != null) return@launch
             try {
-                val settings = com.example.data.local.StartupSettings.read(application)
+                val settings = (application as? com.example.XtremeMusicApp)?.loadStartupSettings()
+                    ?: com.example.data.local.StartupSettings.read(application)
                 _themeMode.value = settings.themeMode
                 _isDarkMode.value = when (settings.themeMode) {
                     com.example.data.local.AppThemeMode.DARK -> true

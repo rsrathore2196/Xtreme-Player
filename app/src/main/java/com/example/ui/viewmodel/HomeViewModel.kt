@@ -784,6 +784,9 @@ class HomeViewModel(
             homeVisible.first { it }
             homeScrolling.first { !it }
             BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
+            // Completed optional snapshots also yield to recent touches, not just
+            // an active fling. Keep song-start/favorite publication on its own path.
+            BackgroundWorkCoordinator.yieldToInteraction(requireForeground = true, awaitFrameQuiet = false)
             if (homeVisible.value && !homeScrolling.value) return
         }
     }
@@ -1050,9 +1053,11 @@ class HomeViewModel(
                 // Do not prepare a new visible list while a retained Home is hidden,
                 // scrolling or sliding. mapLatest keeps only the newest inputs.
                 awaitHomePresentation()
-                val snapshot = withContext(workerDispatcher) {
-                    hideRecentRecommendations(inputs.cards,
-                        inputs.recent + inputs.listening.tracks + listOfNotNull(inputs.seed), inputs.taste)
+                val snapshot = BackgroundWorkCoordinator.traceWork("Home presentation prepare") {
+                    withContext(workerDispatcher) {
+                        hideRecentRecommendations(inputs.cards,
+                            inputs.recent + inputs.listening.tracks + listOfNotNull(inputs.seed), inputs.taste)
+                    }
                 }
                 awaitHomePresentation()
                 currentCoroutineContext().ensureActive()
@@ -1077,7 +1082,8 @@ class HomeViewModel(
         }
         ownerScope.launch {
           try {
-            val cached = BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI) {
+            val cached = BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI,
+                label = "Home preview restore") {
                 initialCards ?: HomeCardCache.preloadAsync(getApplication(), profileKey(), previewOnly = true).await()
             }
             if (cached != null) restoreCachedCards(cached, additional = false)
@@ -1100,6 +1106,7 @@ class HomeViewModel(
             try {
                 val cached = shelfCache.peekFull(key) ?: BackgroundWorkCoordinator.startup(
                     BackgroundWorkCoordinator.StartupPriority.DEFERRED,
+                    label = "Home full cache enrichment",
                     urgent = { pendingExplicitRefresh }) { shelfCache.read(key) }
                 if (cached != null && key == profileKey()) {
                     yieldHomePreparation()

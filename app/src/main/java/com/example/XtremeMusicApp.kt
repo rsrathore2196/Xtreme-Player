@@ -28,11 +28,11 @@ class XtremeMusicApp : Application(), ImageLoaderFactory {
     val repository: MusicRepository by lazy {
         MusicRepository(this).also { com.example.data.cache.SmartCacheManager.configure(this, it) }
     }
-    @Volatile var startupSettings: com.example.data.local.StartupSettings? = null
-        private set
-    private val startupSettingsClaimed = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val settingsCache = com.example.data.local.StartupSettingsCache(this)
+    val startupSettings: com.example.data.local.StartupSettings? get() = settingsCache.peek()
     internal fun takeInitialStartupSettings(): com.example.data.local.StartupSettings? =
-        if (startupSettingsClaimed.compareAndSet(false, true)) startupSettings else null
+        settingsCache.peek()
+    internal suspend fun loadStartupSettings() = settingsCache.load()
     private val _startupReady = kotlinx.coroutines.flow.MutableStateFlow(false)
     val startupReady: kotlinx.coroutines.flow.StateFlow<Boolean> = _startupReady
 
@@ -52,7 +52,7 @@ class XtremeMusicApp : Application(), ImageLoaderFactory {
             .components { add(com.example.ui.util.ArtworkResolutionInterceptor()) }
             // Bound actual decode work, without putting instant memory-cache hits
             // behind slow network requests in the artwork interceptor.
-            .decoderDispatcher(Dispatchers.Default.limitedParallelism(2))
+            .decoderDispatcher(BackgroundWorkCoordinator.optionalCpuDispatcher)
             .okHttpClient(okhttp3.OkHttpClient.Builder()
                 .dispatcher(okhttp3.Dispatcher().apply { maxRequests = 8; maxRequestsPerHost = 4 })
                 .eventListenerFactory { object : okhttp3.EventListener() {
@@ -89,7 +89,7 @@ class XtremeMusicApp : Application(), ImageLoaderFactory {
         _instance = this
         // Only the local appearance/profile snapshot gates the first themed frame.
         startupScope.launch {
-            startupSettings = com.example.data.local.StartupSettings.read(this@XtremeMusicApp)
+            loadStartupSettings()
             _startupReady.value = true
             startupSettings?.profile?.let { profile ->
                 com.example.data.cache.HomeCardCache.preloadAsync(this@XtremeMusicApp,
@@ -106,16 +106,16 @@ class XtremeMusicApp : Application(), ImageLoaderFactory {
         // history and cache work. On-demand playback/images bypass this queue.
         startupScope.launch {
             val coordinator = BackgroundWorkCoordinator
-            coordinator.startup(StartupPriority.DEFERRED) { runCatching { com.example.ui.util.TrackPaletteCache.initialize(this@XtremeMusicApp) }
+            coordinator.startup(StartupPriority.DEFERRED, label = "Palette prewarm") { runCatching { com.example.ui.util.TrackPaletteCache.initialize(this@XtremeMusicApp) }
                 .onFailure { android.util.Log.w("XtremeMusicApp", "Palette prewarm unavailable", it) } }
-            coordinator.startup(StartupPriority.DEFERRED) { runCatching { imageLoader }
+            coordinator.startup(StartupPriority.DEFERRED, label = "Image loader prewarm") { runCatching { imageLoader }
                 .onFailure { android.util.Log.w("XtremeMusicApp", "Image loader prewarm unavailable", it) } }
-            coordinator.startup(StartupPriority.DEFERRED) { runCatching { com.example.data.repository.iTunesArtworkRepository.getInstance(this@XtremeMusicApp) }
+            coordinator.startup(StartupPriority.DEFERRED, label = "Artwork metadata prewarm") { runCatching { com.example.data.repository.iTunesArtworkRepository.getInstance(this@XtremeMusicApp) }
                 .onFailure { android.util.Log.w("XtremeMusicApp", "Artwork prewarm unavailable", it) } }
-            coordinator.startup(StartupPriority.DEFERRED) { runCatching { SecurityConfig.getDESKey(this@XtremeMusicApp) } }
-            coordinator.startup(StartupPriority.DEFERRED) { runCatching { com.example.data.repository.ArtistPhotoRepository.prewarm(this@XtremeMusicApp).await() }
+            coordinator.startup(StartupPriority.DEFERRED, label = "Playback key prewarm") { runCatching { SecurityConfig.getDESKey(this@XtremeMusicApp) } }
+            coordinator.startup(StartupPriority.DEFERRED, label = "Portrait cache prewarm") { runCatching { com.example.data.repository.ArtistPhotoRepository.prewarm(this@XtremeMusicApp).await() }
                 .onFailure { android.util.Log.w("XtremeMusicApp", "Artist prewarm unavailable", it) } }
-            coordinator.startup(StartupPriority.DEFERRED) { runCatching { com.example.playback.AudioDeviceManager.init(this@XtremeMusicApp) }
+            coordinator.startup(StartupPriority.DEFERRED, label = "Audio devices prewarm") { runCatching { com.example.playback.AudioDeviceManager.init(this@XtremeMusicApp) }
                 .onFailure { android.util.Log.w("XtremeMusicApp", "Audio devices unavailable", it) } }
             com.example.data.cache.SmartCacheManager.configure(this@XtremeMusicApp, repository)
             coordinator.startup(StartupPriority.MAINTENANCE, requireForeground = false) { runCatching { com.example.data.cache.SmartCacheManager.initialize(this@XtremeMusicApp, repository) }
@@ -124,6 +124,7 @@ class XtremeMusicApp : Application(), ImageLoaderFactory {
     }
 
     override fun onTerminate() {
+        settingsCache.close()
         // Clean up sensitive data if needed
         try {
             SecurityConfig.clearStoredKeys(this)

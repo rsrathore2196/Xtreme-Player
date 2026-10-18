@@ -68,7 +68,8 @@ fun MusicTrack.toMediaItem(): MediaItem {
  */
 class iTunesArtworkRepository(
     private val apiService: iTunesApiService,
-    private val cacheDao: ArtworkCacheDao
+    private val cacheDao: ArtworkCacheDao,
+    private val lookupScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 ) {
     private data class Lookup(val url: String?, val expiresAt: Long)
     private data class Flight(val result: Deferred<Lookup>, var readers: Int = 0)
@@ -77,7 +78,6 @@ class iTunesArtworkRepository(
     private val metadataCache = LruCache<RawMetadata, LookupMetadata>(256)
     private val whitespace = Regex("\\s+")
     private val memoryCache = LruCache<String, Lookup>(2048)
-    private val lookupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val networkSlots = Semaphore(2)
     private val inFlight = mutableMapOf<String, Flight>()
     init {
@@ -108,7 +108,7 @@ class iTunesArtworkRepository(
         }
     }
 
-    suspend fun resolveArtwork(item: MediaItem, targetDimension: Int): String = withContext(Dispatchers.Default) {
+    suspend fun resolveArtwork(item: MediaItem, targetDimension: Int): String = withContext(com.example.performance.BackgroundWorkCoordinator.optionalCpuDispatcher) {
         val metadata = lookupMetadata(item)
         val cleanedTitle = metadata.title
         val cleanedArtist = metadata.artist
@@ -172,7 +172,7 @@ class iTunesArtworkRepository(
                 val response = networkSlots.withPermit {
                     apiService.searchSong(term = queryTerm, media = "music", limit = 15)
                 }
-                matchedResult = withContext(Dispatchers.Default) { response.results.mapNotNull { res ->
+                matchedResult = withContext(com.example.performance.BackgroundWorkCoordinator.optionalCpuDispatcher) { response.results.mapNotNull { res ->
                     if (res.trackName.isNullOrBlank() || res.artistName.isNullOrBlank() || res.artworkUrl100.isNullOrBlank()) null
                     else {
                         val candidate = reference.copy(title = sanitizeTitle(res.trackName, artist = res.artistName),

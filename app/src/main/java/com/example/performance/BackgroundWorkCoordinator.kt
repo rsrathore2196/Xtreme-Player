@@ -19,9 +19,19 @@ import kotlin.coroutines.CoroutineContext
 object BackgroundWorkCoordinator {
     internal const val OPTIONAL_IDLE_MS = 15_000L
     internal const val BETWEEN_JOBS_MS = 750L
-    // One CPU budget for optional Home work, rather than two workers per subsystem.
-    // Playback, network IO and image decoding retain their independent dispatchers.
+    // One shared execution budget for Home transforms, artwork matching and Coil
+    // bitmap decoding. Separate limitedParallelism views would multiply this budget.
+    // Audio decoding, stream extraction and network waits remain independent.
     val optionalCpuDispatcher = kotlinx.coroutines.Dispatchers.Default.limitedParallelism(2)
+    private val traceCookies = AtomicInteger()
+
+    /** Async sections survive dispatcher switches; no frame ticker or UI state. */
+    suspend fun <T> traceWork(name: String, block: suspend () -> T): T {
+        val cookie = traceCookies.incrementAndGet()
+        androidx.core.os.TraceCompat.beginAsyncSection("Xtreme/$name", cookie)
+        try { return block() }
+        finally { androidx.core.os.TraceCompat.endAsyncSection("Xtreme/$name", cookie) }
+    }
     private val foregroundDrawPending = AtomicBoolean(false)
     private val firstFrame = kotlinx.coroutines.CompletableDeferred<Unit>()
     private val homeReady = kotlinx.coroutines.CompletableDeferred<Unit>()
@@ -29,9 +39,16 @@ object BackgroundWorkCoordinator {
     private val playbackReady = kotlinx.coroutines.CompletableDeferred<Unit>()
     private val recommendationsReady = kotlinx.coroutines.CompletableDeferred<Unit>()
     private val maintenanceReady = kotlinx.coroutines.CompletableDeferred<Unit>()
-    fun expectForegroundDraw() { foregroundDrawPending.set(true) }
+    fun expectForegroundDraw() {
+        if (!foregroundDrawPending.getAndSet(true))
+            androidx.core.os.TraceCompat.beginAsyncSection("Xtreme/Foreground first draw", 0)
+    }
+    private fun finishForegroundDrawTrace() {
+        if (foregroundDrawPending.getAndSet(false))
+            androidx.core.os.TraceCompat.endAsyncSection("Xtreme/Foreground first draw", 0)
+    }
     fun firstFrameRendered() {
-        foregroundDrawPending.set(false)
+        finishForegroundDrawTrace()
         firstFrame.complete(Unit)
     }
     fun homeContentReady() { homeReady.complete(Unit) }
@@ -82,10 +99,11 @@ object BackgroundWorkCoordinator {
     suspend fun <T> startup(priority: StartupPriority, requireForeground: Boolean = true,
         urgent: () -> Boolean = { false },
         cardWork: Boolean = false,
+        label: String = priority.name,
         block: suspend () -> T): T {
-        if (currentCoroutineContext()[Admission] != null) return block()
+        if (currentCoroutineContext()[Admission] != null) return traceWork(label, block)
         if (!cardWork && (priority == StartupPriority.CRITICAL || urgent()))
-            return withContext(Admission(StartupPriority.CRITICAL)) { work { block() } }
+            return withContext(Admission(StartupPriority.CRITICAL)) { work { traceWork(label, block) } }
         awaitFirstFrame()
         val ticket = Ticket(priority, requireForeground, cardWork, urgent)
         synchronized(admissionLock) { waiting.add(ticket) }
@@ -96,7 +114,7 @@ object BackgroundWorkCoordinator {
                 currentCoroutineContext().ensureActive()
                 if (!cardWork && urgent()) {
                     synchronized(admissionLock) { waiting.remove(ticket) }
-                    return withContext(Admission(StartupPriority.CRITICAL)) { work { block() } }
+                    return withContext(Admission(StartupPriority.CRITICAL)) { work { traceWork(label, block) } }
                 }
                 admitted = synchronized(admissionLock) {
                     val now = SystemClock.elapsedRealtime()
@@ -133,7 +151,7 @@ object BackgroundWorkCoordinator {
                 if (!admitted) delay(50L)
             }
             if (priority == StartupPriority.MAINTENANCE) maintenanceReady.complete(Unit)
-            return withContext(Admission(if (admittedEssential) StartupPriority.ESSENTIAL_UI else priority, cardWork)) { work { block() } }
+            return withContext(Admission(if (admittedEssential) StartupPriority.ESSENTIAL_UI else priority, cardWork)) { work { traceWork(label, block) } }
         } finally {
             synchronized(admissionLock) {
                 waiting.remove(ticket)
@@ -258,7 +276,7 @@ object BackgroundWorkCoordinator {
             interaction()
             lastForegroundResume.set(SystemClock.elapsedRealtime())
         } else {
-            foregroundDrawPending.set(false)
+            finishForegroundDrawTrace()
         }
         _uiForeground.value = visible
     }

@@ -53,3 +53,18 @@ pause is measurement-only: keep Perfetto recording to check whether contention w
 merely moved later, then verify optional work yields when input resumes. Run this
 with populated history/caches as well as a clean profiling installation. No
 production animation, refresh timer or loading gate is changed by the benchmark.
+
+`retainedActivityReopening` also measures a hot reopening with the existing Activity,
+separately from warm Activity creation. The early journey exercises all six directed
+Home/Search/Library changes. Use a dedicated installation with a new profile/empty Home
+cache for the first-use case, and repeat with populated caches and a paused/active
+playback session. Never clear a personal installation to prepare a benchmark.
+
+Perfetto includes async `Xtreme/Settings restore`, `Xtreme/Home preview restore`,
+`Xtreme/Home full cache enrichment`, `Xtreme/Home shelf …`, and
+`Xtreme/Home presentation prepare` sections. `Xtreme/Visible artwork` identifies the
+preferred-artwork/fallback portion after the interim cache probe. Inspect these alongside
+thread scheduling, GC, disk I/O and RenderThread/GPU events: work being on IO/Default
+does not establish that it is harmless to frame deadlines. Async sections remain valid
+across coroutine dispatcher switches. Do not infer measured improvement from host
+regression tests, a successful APK build, or the presence of baseline profile rules.

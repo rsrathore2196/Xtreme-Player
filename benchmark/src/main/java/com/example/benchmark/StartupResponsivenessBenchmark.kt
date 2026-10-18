@@ -39,6 +39,7 @@ class StartupResponsivenessBenchmark {
 
     @Test fun coldOpening() = opening(StartupMode.COLD)
     @Test fun warmReopening() = opening(StartupMode.WARM)
+    @Test fun retainedActivityReopening() = opening(StartupMode.HOT)
     @Test fun optionalWorkWakeupAndInteraction() = opening(StartupMode.WARM, observeOptionalWakeup = true)
 
     private fun opening(mode: StartupMode, observeOptionalWakeup: Boolean = false) = benchmark.measureRepeated(
@@ -65,6 +66,9 @@ class StartupResponsivenessBenchmark {
             device.swipe(device.displayWidth / 2, device.displayHeight * 2 / 3,
                 device.displayWidth / 2, device.displayHeight / 3, 50)
             tab("search")
+            tab("library")
+            tab("search")
+            tab("home")
             tab("library")
             tab("home")
         } while (SystemClock.elapsedRealtime() - interactiveStart < 6_000L)

@@ -162,6 +162,10 @@ fun rememberOptimizedImageRequest(
             .setParameter(ARTWORK_METADATA_PARAMETER, metadata, null)
             .placeholderMemoryCacheKey(initialUrl.takeIf { it.isNotBlank() })
             .interceptorDispatcher(Dispatchers.IO)
+            // Scrolling thumbnails share Home's CPU budget. An explicitly opened
+            // player cover is user work and must not queue behind optional ranking.
+            .decoderDispatcher(if (targetSize < 0) Dispatchers.Default
+                else com.example.performance.BackgroundWorkCoordinator.optionalCpuDispatcher)
             .scale(Scale.FILL)
             .crossfade(if (crossfadeEnabled) 200 else 0)
             .allowHardware(true)
