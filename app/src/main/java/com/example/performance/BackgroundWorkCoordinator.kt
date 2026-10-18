@@ -34,6 +34,11 @@ object BackgroundWorkCoordinator {
     }
     fun homeContentReady() { homeReady.complete(Unit) }
     fun cachedHomeRestored() { cachedHomeReady.complete(Unit) }
+    /** A restored non-Home destination has no feed/cache prerequisite for optional app work. */
+    fun nonHomeContentReady() {
+        homeReady.complete(Unit)
+        cachedHomeReady.complete(Unit)
+    }
     fun playbackSessionRestored() { playbackReady.complete(Unit) }
     fun optionalRecommendationsReady() { recommendationsReady.complete(Unit) }
     suspend fun awaitFirstFrame() { firstFrame.await() }
@@ -123,24 +128,31 @@ object BackgroundWorkCoordinator {
     }
 
     /** Pause a long maintenance/batch loop for interaction, without waiting on its own lease. */
-    suspend fun yieldToInteraction(requireForeground: Boolean = false, bypass: () -> Boolean = { false }) {
+    suspend fun yieldToInteraction(requireForeground: Boolean = false, awaitFrameQuiet: Boolean = true,
+        bypass: () -> Boolean = { false }) {
         // A fast batch must also give other coroutines a turn, even when no gesture
         // is active. This gate never waits for jobs == 0 (the caller may own a lease).
         yield()
         val admission = currentCoroutineContext()[Admission]
         while (true) {
             currentCoroutineContext().ensureActive()
-            val now = SystemClock.elapsedRealtime()
             val essentialWaiting = if (admission?.priority == StartupPriority.DEFERRED ||
                 admission?.priority == StartupPriority.MAINTENANCE) synchronized(admissionLock) {
                 !essentialActive && waiting.any { it.priority == StartupPriority.ESSENTIAL_UI &&
                     (!it.foregroundOnly || foreground.get()) }
             } else false
-            if (bypass() || (!requireForeground || foreground.get()) && !essentialWaiting &&
-                !foregroundDrawPending.get() && !scrolling.get() && navigationJobs.get() == 0 &&
-                now >= navigationUntil.get() && now - maxOf(lastInteraction.get(), lastSlowFrame.get()) >= 250L) return
+            val frameQuiet = awaitFrameQuiet && admission?.priority != StartupPriority.ESSENTIAL_UI
+            if (bypass() || !essentialWaiting && isInteractionIdle(requireForeground, frameQuiet)) return
             delay(50L)
         }
+    }
+
+    /** Recheck admission after a resource wait, without holding that resource while idling. */
+    internal fun isInteractionIdle(requireForeground: Boolean = false, awaitFrameQuiet: Boolean = true): Boolean {
+        val now = SystemClock.elapsedRealtime()
+        return (!requireForeground || foreground.get()) && !foregroundDrawPending.get() &&
+            !scrolling.get() && navigationJobs.get() == 0 && now >= navigationUntil.get() &&
+            now - lastInteraction.get() >= 250L && (!awaitFrameQuiet || now - lastSlowFrame.get() >= 250L)
     }
     private val startedAt = SystemClock.elapsedRealtime()
     private val foreground = AtomicBoolean(false)

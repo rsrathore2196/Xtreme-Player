@@ -33,7 +33,6 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.wrapContentWidth
@@ -74,7 +73,6 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.animation.core.updateTransition
@@ -98,16 +96,13 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.viewmodel.compose.viewModel
-import com.example.XtremeMusicApp
 import com.example.data.model.MusicTrack
-import com.example.ui.screens.HomeScreen
+import com.example.ui.screens.HomeFeedRoute
 import com.example.ui.screens.LibraryScreen
 import com.example.ui.screens.PlaylistDetailScreen
 import com.example.ui.screens.SearchScreen
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.theme.LocalAppColors
-import com.example.ui.viewmodel.HomeViewModel
 import com.example.ui.viewmodel.PlayerViewModel
 import com.example.util.AppHaptics
 
@@ -133,16 +128,6 @@ fun MainNavigationScaffold(
     val isDynamicGlassEnabled by viewModel.isDynamicGlassEnabled.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
-    val app = context.applicationContext as XtremeMusicApp
-    val homeFactory = remember(app) {
-        HomeViewModel.provideFactory(
-            repository = app.repository,
-            playbackManager = app.playbackManager,
-            application = app
-        )
-    }
-    val homeViewModel: HomeViewModel = viewModel(factory = homeFactory)
-
     var selectedTabIndex by rememberSaveable { mutableIntStateOf(0) }
     // Like LastWave, one lazy pager owns the page position. Selection changes on
     // tap, never from currentPage halfway through a slide (which retriggers pills).
@@ -178,8 +163,12 @@ fun MainNavigationScaffold(
                     tabPagerState.animateScrollToPage(selectedTabIndex)
                 }
             }
-            androidx.compose.runtime.withFrameNanos { }
-            androidx.compose.runtime.withFrameNanos { }
+            if (selectedTabIndex != 0) {
+                // A restored Search/Library/Settings page must not need to create
+                // a hidden Home ViewModel to release application maintenance.
+                com.example.performance.BackgroundWorkCoordinator.awaitFirstFrame()
+                com.example.performance.BackgroundWorkCoordinator.nonHomeContentReady()
+            }
         } finally { navigation.close() }
     }
     LaunchedEffect(viewModel, selectedTabIndex, catalogDetail != null) {
@@ -263,12 +252,6 @@ fun MainNavigationScaffold(
     // retained state alive while another tab or the expanded player is visible.
     val homeIsVisible = selectedTabIndex == 0 && !isPlayerExpanded && playerVisibility.isIdle &&
         !playerVisibility.currentState && catalogDetail == null && selectedPlaylistWithTracks == null
-    LaunchedEffect(homeViewModel, homeLifecycle, homeIsVisible) {
-        if (homeIsVisible) homeLifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.RESUMED) {
-            homeViewModel.setHomeVisible(true)
-            try { kotlinx.coroutines.awaitCancellation() } finally { homeViewModel.setHomeVisible(false) }
-        }
-    }
 
     val baseAppColors = LocalAppColors.current
     val appColors = remember(baseAppColors, isDynamicGlassEnabled) {
@@ -340,14 +323,11 @@ fun MainNavigationScaffold(
                     val tabContent: @Composable (Int) -> Unit = { tabIndex ->
                       tabState.SaveableStateProvider(tabIndex) {
                         when (tabIndex) {
-                            0 -> HomeScreen(
-                                homeViewModel = homeViewModel,
+                            0 -> HomeFeedRoute(
+                                player = playerUiState,
+                                isVisible = homeIsVisible,
                                 listState = homeListState,
                                 onOpenArtist = { viewModel.catalogBrowser.open(com.example.data.repository.CatalogDestination.Artist(it)) },
-                                currentPlayingTrackId = currentPlayingTrackId,
-                                isPlaying = playerUiState.isPlaying,
-                                isAutoplayEnabled = playerUiState.isAutoplayEnabled,
-                                currentTrack = playerUiState.currentTrack,
                                 onTrackClick = { track, queue -> viewModel.playTrack(track, queue) },
                                 onToggleFavorite = { track -> viewModel.toggleLike(track) },
                                 onOpenSettings = { selectTab(3) },
@@ -458,26 +438,11 @@ fun MainNavigationScaffold(
                                 tabContent(3)
                             }
                         } else {
-                            HorizontalPager(
+                            MainTabPager(
                                 state = tabPagerState,
-                                beyondViewportPageCount = 0,
-                                userScrollEnabled = false,
-                                key = { it },
-                                modifier = Modifier.fillMaxSize()
+                                pageCovered = playerCoversContent || catalogDetail != null
                             ) { tabIndex ->
-                                // Move retained display lists; keep foreground pixels
-                                // sharp and the shared glass source live during travel.
-                                val pageCovered = playerCoversContent || catalogDetail != null
-                                val pageVisible by remember(tabPagerState, tabIndex, pageCovered) {
-                                    derivedStateOf {
-                                        !pageCovered && tabPagerState.layoutInfo.visiblePagesInfo.any { it.index == tabIndex }
-                                    }
-                                }
-                                CompositionLocalProvider(LocalVisualEffectsActive provides pageVisible) {
-                                    Box(Modifier.fillMaxSize().graphicsLayer { clip = false }) {
-                                        tabContent(tabIndex)
-                                    }
-                                }
+                                tabContent(tabIndex)
                             }
                         }
                     }

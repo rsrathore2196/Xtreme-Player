@@ -27,3 +27,22 @@ rules to `startup-prof.txt`) for review and commit. Existing profile rules remai
 collection succeeds. Release builds package the checked-in profile with ProfileInstaller and
 do not run a device, benchmark or generation task: `automaticGenerationDuringBuild = false`.
 Use a release build to assess AOT improvements; debug builds do not represent release performance.
+
+## Post-launch responsiveness measurement
+
+`StartupResponsivenessBenchmark` records startup timing and frame timing for five cold launches
+and five warm reopenings. It starts Home scrolling and Home → Search → Library → Home taps as
+soon as the dock appears, while recommendation placeholders or cached cards are still visible.
+It samples at least six seconds after the dock appears and disables UiAutomator's implicit
+idle waits, so it does not skip the reported loading window or wait for network content.
+If a paused real session is available, it also expands the mini-player. Onboarding must already
+be complete; use the preparation instructions above without clearing an existing user's data.
+
+```sh
+gradle :benchmark:connectedNonMinifiedReleaseAndroidTest \
+  -Pandroid.testInstrumentationRunnerArguments.class=com.example.benchmark.StartupResponsivenessBenchmark
+```
+
+Run the same journey on the same device/build settings before and after changes. Compare
+`frameOverrunMs` percentiles and the Perfetto traces around launch, tab slides and player expansion,
+along with startup timing. Host unit tests and successful compilation do not measure device jank.

@@ -42,10 +42,33 @@ data class UserTasteProfile(
             }
 
         fun fromEvents(events: List<ListeningEventEntity>, tracks: List<MusicTrack>,
-            favorites: List<MusicTrack> = emptyList(), nowMs: Long = System.currentTimeMillis()): UserTasteProfile {
-            val byId = tracks.associateBy { it.id }
+            favorites: List<MusicTrack> = emptyList(), nowMs: Long = System.currentTimeMillis()): UserTasteProfile =
+            prepareProfile(events, tracks, favorites, nowMs).filterNotNull().first()
+
+        /** Same scoring, with safe boundaries so historical enrichment can yield to gestures. */
+        suspend fun fromEventsCooperatively(events: List<ListeningEventEntity>, tracks: List<MusicTrack>,
+            favorites: List<MusicTrack> = emptyList(), nowMs: Long = System.currentTimeMillis(),
+            checkpoint: suspend () -> Unit): UserTasteProfile {
+            checkpoint()
+            for (profile in prepareProfile(events, tracks, favorites, nowMs)) {
+                checkpoint()
+                if (profile != null) return profile
+            }
+            error("Taste preparation did not produce a profile")
+        }
+
+        // The synchronous and cooperative callers consume the exact same computation.
+        // Null yields retain local accumulators without publishing partial taste to Home.
+        private fun prepareProfile(events: List<ListeningEventEntity>, tracks: List<MusicTrack>,
+            favorites: List<MusicTrack>, nowMs: Long): Sequence<UserTasteProfile?> = sequence {
+            val byId = mutableMapOf<String, MusicTrack>()
+            tracks.forEachIndexed { index, track ->
+                if (index % 64 == 0) yield(null)
+                byId[track.id] = track
+            }
             val aliases = mutableMapOf<String, String>()
-            (tracks + favorites).forEach { track ->
+            for ((index, track) in (tracks.asSequence() + favorites.asSequence()).withIndex()) {
+                if (index % 64 == 0) yield(null)
                 val names = HomeRecommendationPolicy.aliases(track)
                 val key = names.firstNotNullOfOrNull { aliases[it] } ?: HomeRecommendationPolicy.metadataKey(track)
                 names.forEach { aliases[it] = key }
@@ -65,7 +88,9 @@ data class UserTasteProfile(
             fun add(map: MutableMap<String, Float>, value: String, weight: Float) {
                 if (HomeRecommendationPolicy.known(value)) map.merge(HomeRecommendationPolicy.normalize(value), weight, Float::plus)
             }
-            for (event in events.sortedByDescending { it.timestamp }.distinctBy { it.sessionId to it.trackId }) {
+            for ((index, event) in events.sortedByDescending { it.timestamp }
+                .distinctBy { it.sessionId to it.trackId }.withIndex()) {
+                if (index % 64 == 0) yield(null)
                 if (!played(event)) continue
                 val track = byId[event.trackId]
                 val key = track?.let(::keyFor) ?: event.trackId
@@ -89,7 +114,8 @@ data class UserTasteProfile(
                 HomeRecommendationPolicy.moodForGenre(track?.genre ?: event.genre)?.let { add(moods, it, weight) }
                 add(languages, track?.language ?: event.language, weight)
             }
-            favorites.forEach { track ->
+            favorites.forEachIndexed { index, track ->
+                if (index % 64 == 0) yield(null)
                 HomeRecommendationPolicy.artists(track).forEach { add(artists, it, 3f) }
                 add(genres, track.genre, 2f); add(languages, track.language, 2f)
                 HomeRecommendationPolicy.moodForGenre(track.genre)?.let { add(moods, it, 2f) }
@@ -98,11 +124,11 @@ data class UserTasteProfile(
                 val max = values.values.maxOfOrNull { abs(it) }?.coerceAtLeast(1f) ?: 1f
                 return values.mapValues { (it.value / max).coerceIn(-1f, 1f) }
             }
-            return UserTasteProfile(normalized(artists), normalized(genres), normalized(languages), moodAffinities = normalized(moods),
+            yield(UserTasteProfile(normalized(artists), normalized(genres), normalized(languages), moodAffinities = normalized(moods),
                 topRecentTrackIds = recent.take(30), meaningfulPlaysCount = uniqueCount,
                 isColdStart = recent.isEmpty(), lastUpdatedMs = nowMs, playCounts = plays,
                 skipCounts = skips, recentRecordings = recentKeys,
-                favoriteRecordings = favorites.map(::keyFor).toSet(), recordingAliases = aliases)
+                favoriteRecordings = favorites.map(::keyFor).toSet(), recordingAliases = aliases))
         }
     }
 }

@@ -31,6 +31,9 @@ class StartupCooperationRegressionTest {
         coordinator.homeContentReady()
         coordinator.foreground(true)
         coordinator.scrolling(false)
+        // Robolectric resets its clock between methods but retains this singleton.
+        // Rebase the sampled frame time before advancing to the fixture's idle state.
+        coordinator.frame(2L, 1L)
         ShadowSystemClock.advanceBy(Duration.ofSeconds(2))
     }
     @After fun stop() {

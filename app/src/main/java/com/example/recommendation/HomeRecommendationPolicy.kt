@@ -124,6 +124,23 @@ object HomeRecommendationPolicy {
         return tracks.filter { isOriginalRecommendationTrack(it) && seen.add(it) }
     }
 
+    /** Cache checkpoints need only their retained prefix, not all historical metadata. */
+    suspend fun originalsCooperatively(tracks: Sequence<MusicTrack>, limit: Int,
+        checkpoint: suspend () -> Unit): List<MusicTrack> {
+        require(limit >= 0)
+        if (limit == 0) return emptyList()
+        val seen = Recordings()
+        val result = ArrayList<MusicTrack>(minOf(limit, 400))
+        for ((index, track) in tracks.withIndex()) {
+            if (index % 64 == 0) checkpoint()
+            if (isOriginalRecommendationTrack(track) && seen.add(track)) {
+                result.add(track)
+                if (result.size == limit) break
+            }
+        }
+        return result
+    }
+
     /** Soft diversity penalties: never discard a legitimate song solely for sharing an album. */
     fun diversify(ranked: List<MusicTrack>, limit: Int, seen: Recordings = Recordings()): List<MusicTrack> {
         val remaining = originals(ranked).filterNot(seen::contains).toMutableList()

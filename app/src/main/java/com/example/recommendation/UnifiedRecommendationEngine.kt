@@ -113,6 +113,7 @@ class UnifiedRecommendationEngine(context: Context?,
     private suspend fun yieldHomeWork() {
         val priority = currentCoroutineContext()[DiscoveryRequestCoordinator.HomeRefresh]
         BackgroundWorkCoordinator.yieldToInteraction(requireForeground = true,
+            awaitFrameQuiet = priority?.initialShelf != true,
             bypass = { priority?.requested?.value == true })
     }
 

@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -271,7 +272,9 @@ class HomeViewModel(
             BackgroundWorkCoordinator.startup(if (!deferredHomeReady) BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI
                 else BackgroundWorkCoordinator.StartupPriority.DEFERRED) {
                 val taste = withContext(workerDispatcher) {
-                    UserTasteProfile.fromEvents(inputs.events, inputs.tracks, inputs.favorites)
+                    UserTasteProfile.fromEventsCooperatively(inputs.events, inputs.tracks, inputs.favorites) {
+                        yieldHomePreparation()
+                    }
                 }
                 currentCoroutineContext().ensureActive()
                 retainedTaste = taste.copy(languageAffinities = inputs.preferences.languages.associate {
@@ -527,8 +530,10 @@ class HomeViewModel(
                 if (!immediate && index % 128 == 0) yieldHomePreparation()
             }
             val byId = tracks.associateBy { it.id }
-            val credits = byId.mapValues { (id, track) ->
-                rankedArtistCredits[id]?.takeIf { it.artist == track.artist && it.singers == track.singers } ?: run {
+            val credits = mutableMapOf<String, ArtistCredits>()
+            byId.entries.forEachIndexed { index, (id, track) ->
+                checkpoint(index)
+                credits[id] = rankedArtistCredits[id]?.takeIf { it.artist == track.artist && it.singers == track.singers } ?: run {
                     val keys = HomeRecommendationPolicy.artists(track)
                     val display = keys.associateWith { key -> (track.artist + "," + track.singers).split(',')
                         .firstOrNull { HomeRecommendationPolicy.normalize(it) == key }?.trim() ?: key }
@@ -536,13 +541,20 @@ class HomeViewModel(
                 }
             }
             val current = linkedMapOf<Pair<String, String>, List<String>>()
-            plays.forEach { play -> credits[play.second]?.let { current.putIfAbsent(play, it.keys) } }
+            plays.forEachIndexed { index, play ->
+                checkpoint(index)
+                credits[play.second]?.let { current.putIfAbsent(play, it.keys) }
+            }
             val counts = artistPlayCounts.toMutableMap()
             // Only new/removed sessions or changed artist credits adjust totals.
-            countedArtistPlays.forEach { (play, keys) -> if (current[play] != keys)
-                keys.forEach { counts[it] = (counts[it] ?: 0) - 1 } }
-            current.forEach { (play, keys) -> if (countedArtistPlays[play] != keys)
-                keys.forEach { counts[it] = (counts[it] ?: 0) + 1 } }
+            countedArtistPlays.entries.forEachIndexed { index, (play, keys) ->
+                checkpoint(index)
+                if (current[play] != keys) keys.forEach { counts[it] = (counts[it] ?: 0) - 1 }
+            }
+            current.entries.forEachIndexed { index, (play, keys) ->
+                checkpoint(index)
+                if (countedArtistPlays[play] != keys) keys.forEach { counts[it] = (counts[it] ?: 0) + 1 }
+            }
             val names = linkedMapOf<String, String>()
             val artistTracks = mutableMapOf<String, MutableList<MusicTrack>>()
             var processed = 0
@@ -609,10 +621,12 @@ class HomeViewModel(
         // Safe boundaries are outside locks and busy leases. Keep completed work
         // when a gesture starts, instead of cancelling/restarting a whole ranking.
         yieldHomePreparation()
-        val catalog = BackgroundWorkCoordinator.work {
-            HomeRecommendationPolicy.originals(inputs.catalog + pool.quick + pool.era + pool.chart +
-                pool.personalized + pool.similar + pool.inspired + inputs.history + inputs.favorites)
-        }
+        // This list is only persisted as a 400-track checkpoint. Do not normalize
+        // thousands of older tracks after that prefix is already complete.
+        val catalog = HomeRecommendationPolicy.originalsCooperatively(
+            sequenceOf(inputs.catalog, pool.quick, pool.era, pool.chart, pool.personalized,
+                pool.similar, pool.inspired, inputs.history, inputs.favorites).flatMap { it.asSequence() },
+            limit = 400, checkpoint = { yieldHomePreparation() })
         val seen = HomeRecommendationPolicy.Recordings()
         val excludedRecent = HomeRecommendationPolicy.Recordings().apply { inputs.recent.forEach { add(it) } }
         fun notRecent(track: MusicTrack) = !excludedRecent.contains(track) && taste.keyFor(track) !in taste.recentRecordings
@@ -691,7 +705,8 @@ class HomeViewModel(
     private suspend fun yieldHomePreparation() {
         if (!activeRefreshIsExplicit) {
             homeScrolling.first { !it }
-            BackgroundWorkCoordinator.yieldToInteraction(requireForeground = true)
+            BackgroundWorkCoordinator.yieldToInteraction(requireForeground = true,
+                awaitFrameQuiet = deferredHomeReady || startupRecommendationsComplete.isCompleted)
         }
         kotlinx.coroutines.yield()
     }
@@ -924,6 +939,10 @@ class HomeViewModel(
         }
         dataScope.launch {
             essentialsLoaded.await()
+            // Long-term enrichment is independent of first-shelf preparation.
+            // A cache hit or completion/failure of the minimal bootstrap releases
+            // it; playback, navigation and recent-history publication never wait.
+            startupRecommendationsComplete.await()
             historicalReload.collectLatest {
                 // Rebuild older pages only after structural import/deletion changes;
                 // normal playback milestones merge into the retained long-term window.
@@ -1065,7 +1084,10 @@ class HomeViewModel(
         ownerScope.launch {
             combine(candidates, tasteProfile, favoriteTracks, _userProfile, recentlyPlayed) { pool, taste, favorites, profile, recent ->
                 RenderTrigger(listOf(pool.generation, pool.revision, pool.source, pool.contextKey), taste, favorites, profile, recent)
-            }.distinctUntilChanged().debounce(300L).collectLatest {
+            }.distinctUntilChanged().debounce(300L).conflate().collect {
+                    // Retain a bounded preparation in progress instead of repeatedly
+                    // restarting it for every verified song. Publication still rejects
+                    // stale generations/revisions, then consumes only the latest input.
                     renderRecommendations()
                 }
         }
@@ -1189,10 +1211,10 @@ class HomeViewModel(
             pendingSilentRefresh = false
             val initialExplicit = isExplicitPull || pendingExplicitRefresh || _isRefreshing.value
             pendingExplicitRefresh = false
-            val priority = DiscoveryRequestCoordinator.HomeRefresh(initialExplicit)
+            val startupBatch = !deferredHomeReady && !initialExplicit
+            val priority = DiscoveryRequestCoordinator.HomeRefresh(initialExplicit, initialShelf = startupBatch)
             activeRefreshPriority = priority
             activeRefreshIsExplicit = initialExplicit
-            val startupBatch = !deferredHomeReady && !initialExplicit
             if (startupBatch) startupBootstrapUsed = true
             _isRefreshing.value = initialExplicit
             if (initialExplicit) _refreshErrorMessage.value = null

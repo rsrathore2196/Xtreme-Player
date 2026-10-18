@@ -13,7 +13,7 @@ import kotlin.coroutines.EmptyCoroutineContext
 /** Shared discovery work: two bounded optional slots and a reserved urgent lane. */
 internal object DiscoveryRequestCoordinator {
     /** A pull can promote its existing refresh without launching another pass. */
-    class HomeRefresh(requested: Boolean) : AbstractCoroutineContextElement(Key) {
+    class HomeRefresh(requested: Boolean, val initialShelf: Boolean = false) : AbstractCoroutineContextElement(Key) {
         companion object Key : CoroutineContext.Key<HomeRefresh>
         val requested = MutableStateFlow(requested)
         fun promote() { requested.value = true }
@@ -106,40 +106,51 @@ internal object DiscoveryRequestCoordinator {
     }
 
     private suspend fun <T> permit(urgent: StateFlow<Boolean>, requested: StateFlow<Boolean>, block: suspend () -> T): T {
+        val awaitFrameQuiet = currentCoroutineContext()[HomeRefresh]?.initialShelf != true
         var acquired = false
         var optional = false
-        try {
-            // Do not admit optional discovery in the same frames as a tab/player transition.
-            // No request is cancelled or restarted, and playback's urgent lane stays open.
-            if (!urgent.value) com.example.performance.BackgroundWorkCoordinator.yieldToInteraction(
-                bypass = { urgent.value || requested.value })
-            combine(changed, urgent, requested, scrolling, resolving) { _, _, _, _, _ -> Unit }.first {
-                synchronized(lock) {
-                    // Explicit refresh can use two slots and start during the pull's
-                    // settling scroll. A third slot remains available to radio;
-                    // selected-track resolution still takes priority over Home.
-                    val homeAllowed = resolving.value == 0 && if (requested.value)
-                        optionalRunning < 2 else optionalRunning < 2 && !scrolling.value
-                    if (running < 3 && (urgent.value || homeAllowed)) {
-                        optional = !urgent.value
-                        running++
-                        if (optional) optionalRunning++
-                        acquired = true
-                        true
-                    } else false
-                }
-            }
-            currentCoroutineContext().ensureActive()
-            // A tab can change while this request is queued for a network slot.
-            if (!urgent.value) com.example.performance.BackgroundWorkCoordinator.yieldToInteraction(
-                bypass = { urgent.value || requested.value })
-            return block()
-        } finally {
+        fun release() {
             if (acquired) synchronized(lock) {
                 running--
                 if (optional) optionalRunning--
+                acquired = false
                 changed.update { it + 1 }
             }
+        }
+        try {
+            // Do not admit optional discovery in the same frames as a tab/player transition.
+            // No request is cancelled or restarted, and playback's urgent lane stays open.
+            while (true) {
+                if (!urgent.value) com.example.performance.BackgroundWorkCoordinator.yieldToInteraction(
+                    awaitFrameQuiet = awaitFrameQuiet,
+                    bypass = { urgent.value || requested.value })
+                combine(changed, urgent, requested, scrolling, resolving) { _, _, _, _, _ -> Unit }.first {
+                    synchronized(lock) {
+                        // Explicit refresh can use two slots during the pull's
+                        // settling scroll. A third slot remains available to radio;
+                        // selected-track resolution still takes priority over Home.
+                        val homeAllowed = resolving.value == 0 && if (requested.value)
+                            optionalRunning < 2 else optionalRunning < 2 && !scrolling.value
+                        if (running < 3 && (urgent.value || homeAllowed)) {
+                            optional = !urgent.value
+                            running++
+                            if (optional) optionalRunning++
+                            acquired = true
+                            true
+                        } else false
+                    }
+                }
+                currentCoroutineContext().ensureActive()
+                // A navigation gesture may begin while queued for a slot. Release
+                // it before waiting again; paused Home work must not reserve IO
+                // capacity needed by other consumers. No request has started yet.
+                if (urgent.value || requested.value ||
+                    com.example.performance.BackgroundWorkCoordinator.isInteractionIdle(awaitFrameQuiet = awaitFrameQuiet)) break
+                release()
+            }
+            return block()
+        } finally {
+            release()
         }
     }
 }
