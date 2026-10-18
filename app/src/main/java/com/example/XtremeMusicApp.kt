@@ -54,7 +54,7 @@ class XtremeMusicApp : Application(), ImageLoaderFactory {
             // behind slow network requests in the artwork interceptor.
             .decoderDispatcher(Dispatchers.Default.limitedParallelism(2))
             .okHttpClient(okhttp3.OkHttpClient.Builder()
-                .dispatcher(okhttp3.Dispatcher().apply { maxRequests = 24; maxRequestsPerHost = 6 })
+                .dispatcher(okhttp3.Dispatcher().apply { maxRequests = 8; maxRequestsPerHost = 4 })
                 .eventListenerFactory { object : okhttp3.EventListener() {
                     private var work: AutoCloseable? = null
                     override fun callStart(call: okhttp3.Call) { work = com.example.performance.BackgroundWorkCoordinator.busy() }
@@ -91,6 +91,10 @@ class XtremeMusicApp : Application(), ImageLoaderFactory {
         startupScope.launch {
             startupSettings = com.example.data.local.StartupSettings.read(this@XtremeMusicApp)
             _startupReady.value = true
+            startupSettings?.profile?.let { profile ->
+                com.example.data.cache.HomeCardCache.preloadAsync(this@XtremeMusicApp,
+                    "${profile.countryCode}|${profile.languages.joinToString(",")}", previewOnly = true)
+            }
         }
 
         // Context registration does not read storage or initialize the network client.

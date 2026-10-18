@@ -79,10 +79,14 @@ class MusicRepository private constructor(
     // Constructing the UI's repository never opens Room. Cold flows acquire it on IO.
     private val musicDao: MusicDao by lazy(daoProvider)
     private val initialCatalogMutex = Mutex()
+    private val initialCatalogScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
+    private var initialCatalogFlight: kotlinx.coroutines.Deferred<List<MusicTrack>>? = null
+    private data class PreparedCatalog(val tracks: List<MusicTrack>, val liked: Set<String>, val result: List<MusicTrack>)
+    private var preparedCatalog: PreparedCatalog? = null
 
     val catalogBrowser = CatalogRepository()
     // Home's owners and workers share this cap, including discovery ranking.
-    internal val homeDispatcher = Dispatchers.Default.limitedParallelism(2)
+    internal val homeDispatcher = BackgroundWorkCoordinator.optionalCpuDispatcher
     val recommendations by lazy { com.example.recommendation.UnifiedRecommendationEngine(context) }
 
     internal suspend fun cacheRecommendationTracks(tracks: List<MusicTrack>) = withContext(homeDispatcher) {
@@ -107,22 +111,40 @@ class MusicRepository private constructor(
         observeFavoriteTrackIds().first()
     }
 
-    suspend fun getInitialCatalog(profile: UserProfile? = null): List<MusicTrack> = withContext(homeDispatcher) {
-        val liked = getLikedTrackIds()
-        val cached = initialCatalogMutex.withLock {
-            memoryCachedCatalog.orEmpty().ifEmpty {
-                withContext(Dispatchers.IO) { musicDao.getCachedTracksSync(250) }.map { it.toMusicTrack() }
-                    .also { if (it.isNotEmpty() && memoryCachedCatalog.isNullOrEmpty()) memoryCachedCatalog = it }
+    suspend fun getInitialCatalog(profile: UserProfile? = null): List<MusicTrack> {
+        // Home and Player join one repository-owned load; disposing one UI owner
+        // cannot cancel the database work still needed by another caller.
+        val flight = initialCatalogMutex.withLock {
+            initialCatalogFlight?.takeUnless { it.isCompleted } ?: initialCatalogScope.async(
+                start = kotlinx.coroutines.CoroutineStart.LAZY) { prepareInitialCatalog() }
+                .also { initialCatalogFlight = it }
+        }
+        try {
+            flight.start()
+            return flight.await()
+        } finally {
+            if (flight.isCompleted) initialCatalogMutex.withLock {
+                if (initialCatalogFlight === flight) initialCatalogFlight = null
             }
+        }
+    }
+
+    private suspend fun prepareInitialCatalog(): List<MusicTrack> = withContext(homeDispatcher) {
+        val liked = getLikedTrackIds()
+        val cached = memoryCachedCatalog.orEmpty().ifEmpty {
+            withContext(Dispatchers.IO) { musicDao.getCachedTracksSync(250) }.map { it.toMusicTrack() }
+                .also { if (it.isNotEmpty() && memoryCachedCatalog.isNullOrEmpty()) memoryCachedCatalog = it }
         }.ifEmpty {
             MusicDataSource.curatedTracks
         }
+        preparedCatalog?.takeIf { it.tracks == cached && it.liked == liked }?.let { return@withContext it.result }
         // Discard legacy fabricated YouTube defaults when reading old recommendation caches.
         val corrected = cached.map { track ->
             if (track.id.startsWith("yt_") && track.genre == "Pop" && track.language == "Hindi")
                 track.copy(genre = "Unknown", language = "Unknown") else track
         }
         HomeRecommendationPolicy.originals(corrected).map { it.copy(isLiked = it.id in liked) }
+            .also { preparedCatalog = PreparedCatalog(cached, liked, it) }
     }
 
     private suspend fun homeProfile(profile: UserProfile? = null): UserProfile = profile ?: withContext(Dispatchers.IO) {
@@ -158,7 +180,7 @@ class MusicRepository private constructor(
         recommendationShelf(homeProfile(profile), com.example.recommendation.UnifiedRecommendationEngine.Shelf.CHART, limit, forceRefresh)
 
     suspend fun recommendationRadio(seed: MusicTrack, alreadyQueued: List<MusicTrack>, limit: Int,
-        taste: UserTasteProfile? = null): List<MusicTrack> = withContext(homeDispatcher) {
+        taste: UserTasteProfile? = null): List<MusicTrack> = withContext(Dispatchers.Default) {
         val profile = homeProfile()
         val actualTaste = taste ?: context?.let {
             val events = withContext(Dispatchers.IO) { MusicDatabase.getDatabase(it).listeningEventDao().getActualPlays(250) }

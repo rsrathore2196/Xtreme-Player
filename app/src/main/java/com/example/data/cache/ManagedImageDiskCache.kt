@@ -29,7 +29,7 @@ class ManagedImageDiskCache(private val delegate: DiskCache, private val keyFile
 
     init {
         scope.launch {
-            BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.DEFERRED,
+            BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.MAINTENANCE,
                 requireForeground = false) { loadKeys() }
         }
     }
@@ -41,7 +41,7 @@ class ManagedImageDiskCache(private val delegate: DiskCache, private val keyFile
             val text = synchronized(diskWriteLock) {
                 runCatching { if (keyFile.length() in 1..1_000_000) keyFile.readText() else null }.getOrNull()
             }
-            val restored = withContext(Dispatchers.Default) { runCatching {
+            val restored = withContext(BackgroundWorkCoordinator.optionalCpuDispatcher) { runCatching {
                 val entries = JSONArray(text ?: "[]")
                 val keys = LinkedHashMap<String, Long>()
                 for (index in 0 until minOf(entries.length(), 2000)) {

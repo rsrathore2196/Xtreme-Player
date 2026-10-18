@@ -44,7 +44,8 @@ class UnifiedRecommendationEngine(context: Context?,
         val mood: String = "")
     private val cache = context?.let { RecommendationCache.get(it) }
     private val discovery = YouTubeRecommendationDiscovery(cache)
-    private val ranking = Dispatchers.Default.limitedParallelism(2)
+    private val ranking = BackgroundWorkCoordinator.optionalCpuDispatcher
+    private val urgentRanking = Dispatchers.Default.limitedParallelism(1)
     private val matching = Semaphore(limits.matchConcurrency.coerceIn(1, 4))
     private val discoveryWorkers = Semaphore(2)
     private val starts = Mutex()
@@ -161,7 +162,7 @@ class UnifiedRecommendationEngine(context: Context?,
     }.flowOn(ranking)
 
     suspend fun radio(seed: MusicTrack, profile: UserProfile, taste: UserTasteProfile,
-        queued: List<MusicTrack>, limit: Int): List<MusicTrack> = withContext(ranking) {
+        queued: List<MusicTrack>, limit: Int): List<MusicTrack> = withContext(urgentRanking) {
         val excluded = HomeRecommendationPolicy.Recordings().apply { add(seed); queued.forEach { add(it) } }
         val found = mutableListOf<MusicTrack>()
         suspend fun collectMatches(pool: List<Candidate>, shelf: Shelf) {
@@ -282,11 +283,12 @@ class UnifiedRecommendationEngine(context: Context?,
                 pool("browse", "FEmusic_home")
         }
         }
-        return rank(found, shelf, profile, taste, moods, variation)
+        return rank(found, shelf, profile, taste, moods, variation, essential)
     }
 
     private suspend fun rank(pool: List<Candidate>, shelf: Shelf, profile: UserProfile, taste: UserTasteProfile,
-        moods: Map<String, Float>, variation: Long): List<Candidate> = withContext(ranking) {
+        moods: Map<String, Float>, variation: Long, essential: Boolean): List<Candidate> =
+        withContext(if (essential) urgentRanking else ranking) {
         val selected = profile.languages.map(::language).toSet()
         val seen = HomeRecommendationPolicy.Recordings()
         val merged = pool.groupBy { it.track.id }.values.map { aliases ->
@@ -401,7 +403,7 @@ class UnifiedRecommendationEngine(context: Context?,
             }
         }
         if (output.isNotEmpty() && output.size != published) emit(output.take(limits.shelfSize).toList())
-    }.flowOn(ranking)
+    }.flowOn(if (essential) urgentRanking else ranking)
 
     private fun <T> interleave(groups: List<List<T>>): List<T> = buildList {
         repeat(groups.maxOfOrNull { it.size } ?: 0) { index -> groups.forEach { it.getOrNull(index)?.let(::add) } }
@@ -444,15 +446,16 @@ class UnifiedRecommendationEngine(context: Context?,
                 val verified = tracks.filter { verified(it) && confidence(seed, it) != null }
                 if (verified.isNotEmpty() || tracks.isEmpty()) return@shared verified
             }
-            matching.withPermit {
-                val queries = listOf("${StreamResolver.extractCleanTitle(seed.title, seed.artist)} ${CustomRecommendationQueryWrapper.extractPrimaryArtist(seed)}",
-                    romanized(seed).let { translated -> "${StreamResolver.extractCleanTitle(translated.title, translated.artist)} ${CustomRecommendationQueryWrapper.extractPrimaryArtist(translated)}" },
-                    "${StreamResolver.extractCleanTitle(seed.title, seed.artist)} ${StreamResolver.extractCleanArtist(seed.artist)}").distinct()
-                var successfulResponse = false
-                var resolved: MusicTrack? = null
-                for (query in queries.take(2)) {
-                    val matches = try {
-                        DiscoveryRequestCoordinator.network(essential) {
+            val queries = listOf("${StreamResolver.extractCleanTitle(seed.title, seed.artist)} ${CustomRecommendationQueryWrapper.extractPrimaryArtist(seed)}",
+                romanized(seed).let { translated -> "${StreamResolver.extractCleanTitle(translated.title, translated.artist)} ${CustomRecommendationQueryWrapper.extractPrimaryArtist(translated)}" },
+                "${StreamResolver.extractCleanTitle(seed.title, seed.artist)} ${StreamResolver.extractCleanArtist(seed.artist)}").distinct()
+            var successfulResponse = false
+            var resolved: MusicTrack? = null
+            for (query in queries.take(2)) {
+                val matches = try {
+                    DiscoveryRequestCoordinator.network(essential) {
+                        // Matching capacity is acquired only after priority/gesture admission.
+                        matching.withPermit {
                             starts.withLock {
                                 val wait = nextStart - android.os.SystemClock.elapsedRealtime()
                                 if (wait > 0) delay(wait)
@@ -460,32 +463,32 @@ class UnifiedRecommendationEngine(context: Context?,
                             }
                             withTimeoutOrNull(4_500L) { OnlineMusicApiService.searchSongs(query, limit = 8) }
                         }
-                    } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
-                    if (matches != null) successfulResponse = true
-                    val ranked = withContext(ranking) { matches.orEmpty().mapNotNull { track ->
-                        if (!track.id.startsWith("online_") || !track.source.equals("JIOSAAVN", true) ||
-                            !OriginalMusicFilter.isHomeRecommendation(track)) null else confidence(seed, track)?.let { track to it }
-                    }.sortedByDescending { it.second }.take(2).map { it.first } }
-                    for (candidate in ranked) {
-                        if (verified(candidate)) { resolved = candidate; break }
-                        // Some catalog search responses omit the encrypted media field.
-                        // Fetch details only for a high-confidence match, never unrelated hits.
-                        val detailed = try { DiscoveryRequestCoordinator.network(essential) {
-                            withTimeoutOrNull(3_000L) { OnlineMusicApiService.fetchSongDetails(candidate.id.removePrefix("online_")) }
-                        } } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
-                        if (detailed != null && verified(detailed) && withContext(ranking) {
-                                confidence(seed, detailed) != null }) {
-                            resolved = detailed; break
-                        }
                     }
-                    if (resolved != null) break
+                } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
+                if (matches != null) successfulResponse = true
+                val ranked = withContext(if (essential) urgentRanking else ranking) { matches.orEmpty().mapNotNull { track ->
+                    if (!track.id.startsWith("online_") || !track.source.equals("JIOSAAVN", true) ||
+                        !OriginalMusicFilter.isHomeRecommendation(track)) null else confidence(seed, track)?.let { track to it }
+                }.sortedByDescending { it.second }.take(2).map { it.first } }
+                for (candidate in ranked) {
+                    if (verified(candidate)) { resolved = candidate; break }
+                    // Some catalog search responses omit the encrypted media field.
+                    // Fetch details only for a high-confidence match, never unrelated hits.
+                    val detailed = try { DiscoveryRequestCoordinator.network(essential) {
+                        matching.withPermit { withTimeoutOrNull(3_000L) { OnlineMusicApiService.fetchSongDetails(candidate.id.removePrefix("online_")) } }
+                    } } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
+                    if (detailed != null && verified(detailed) && withContext(if (essential) urgentRanking else ranking) {
+                            confidence(seed, detailed) != null }) {
+                        resolved = detailed; break
+                    }
                 }
-                val tracks = listOfNotNull(resolved)
-                withContext(ranking) {
-                    if (resolved != null || successfulResponse) cache?.put(key, tracks, if (resolved != null) MATCH_TTL else MISS_TTL)
-                }
-                tracks
+                if (resolved != null) break
             }
+            val tracks = listOfNotNull(resolved)
+            withContext(if (essential) urgentRanking else ranking) {
+                if (resolved != null || successfulResponse) cache?.put(key, tracks, if (resolved != null) MATCH_TTL else MISS_TTL)
+            }
+            tracks
         }.firstOrNull { verified(it) && confidence(seed, it) != null }
     }
 }

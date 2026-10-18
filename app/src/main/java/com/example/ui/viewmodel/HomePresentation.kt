@@ -16,7 +16,8 @@ data class SectionState(
     val errorMessage: String = ""
 )
 
-internal fun SectionState.limitShelf() = copy(tracks = tracks.take(HomeRecommendationPolicy.MAX_SHELF_TRACKS))
+internal fun SectionState.limitShelf() = if (tracks.size <= HomeRecommendationPolicy.MAX_SHELF_TRACKS) this
+    else copy(tracks = tracks.take(HomeRecommendationPolicy.MAX_SHELF_TRACKS))
 
 /** Verification finishing before presentation is still loading, not an empty/error result. */
 internal fun SectionState.finishPreparation(hasVerifiedCandidate: Boolean): SectionState {

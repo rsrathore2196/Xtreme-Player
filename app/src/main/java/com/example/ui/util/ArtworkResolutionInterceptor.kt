@@ -16,6 +16,8 @@ import kotlinx.coroutines.currentCoroutineContext
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 const val ARTWORK_METADATA_PARAMETER = "com.example.artwork.metadata"
 
@@ -84,9 +86,18 @@ class ArtworkResolutionInterceptor : Interceptor {
             return smallFallback
         }
         if (item == null || repository == null) return providerFallback() ?: lastError ?: chain.proceed(request)
-        suspend fun preferredArtwork(): SuccessResult? {
+        suspend fun loadPreferredArtwork(): SuccessResult? {
             val resolved = withTimeoutOrNull(5_000L) { repository.resolveArtwork(item, sourceDimension) }
             return if (resolved != null && resolved !in providerUrls) load(resolved) else null
+        }
+        suspend fun preferredArtwork(): SuccessResult? {
+            if (metadata.preferStableArtwork) return thumbnailEnrichment.withPermit {
+                // Provider/cached images can appear independently. Optional shelf
+                // upgrades do not start a cold metadata/decode burst during gestures.
+                com.example.performance.BackgroundWorkCoordinator.yieldToInteraction(requireForeground = true)
+                loadPreferredArtwork()
+            }
+            return loadPreferredArtwork()
         }
         // Palette/prefetch requests have no visible target and need no interim
         // decode. Preserve the preferred-source path without speculative image IO.
@@ -128,6 +139,7 @@ class ArtworkResolutionInterceptor : Interceptor {
     }
 
     private companion object {
+        val thumbnailEnrichment = Semaphore(2)
         val youtubeThumbnail = Regex("/(?:default|mqdefault|hqdefault|sddefault)\\.jpg")
     }
 }

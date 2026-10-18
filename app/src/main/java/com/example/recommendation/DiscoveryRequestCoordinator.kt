@@ -36,6 +36,9 @@ internal object DiscoveryRequestCoordinator {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private class Flight(val urgent: MutableStateFlow<Boolean>, val requested: MutableStateFlow<Boolean>,
         val result: Deferred<List<MusicTrack>>, var readers: Int = 0)
+    private class SharedPriority(val urgent: MutableStateFlow<Boolean>) : AbstractCoroutineContextElement(Key) {
+        companion object Key : CoroutineContext.Key<SharedPriority>
+    }
     private val flights = mutableMapOf<String, Flight>()
     private val lock = Any()
     private val changed = MutableStateFlow(0L)
@@ -52,7 +55,9 @@ internal object DiscoveryRequestCoordinator {
 
     suspend fun <T> network(essential: Boolean = false, block: suspend () -> T): T {
         val requested = currentCoroutineContext()[HomeRefresh]?.requested ?: MutableStateFlow(false)
-        return permit(MutableStateFlow(essential), requested) {
+        val urgent = currentCoroutineContext()[SharedPriority]?.urgent ?: MutableStateFlow(essential)
+        if (essential) urgent.value = true
+        return permit(urgent, requested) {
             withTimeoutOrNull(12_000L) { Result.success(block()) }?.getOrThrow()
                 ?: throw java.io.IOException("Discovery request timed out")
         }
@@ -70,7 +75,7 @@ internal object DiscoveryRequestCoordinator {
             flights.getOrPut(key) {
                 val urgent = MutableStateFlow(essential)
                 val requested = MutableStateFlow(priority?.requested?.value == true)
-                Flight(urgent, requested, scope.async(priority ?: EmptyCoroutineContext, start = CoroutineStart.LAZY) {
+                Flight(urgent, requested, scope.async((priority ?: EmptyCoroutineContext) + SharedPriority(urgent), start = CoroutineStart.LAZY) {
                     if (network) permit(urgent, requested) { withTimeoutOrNull(12_000L) { block() }.orEmpty() }
                     else block()
                 })
@@ -106,7 +111,8 @@ internal object DiscoveryRequestCoordinator {
         try {
             // Do not admit optional discovery in the same frames as a tab/player transition.
             // No request is cancelled or restarted, and playback's urgent lane stays open.
-            if (!urgent.value) com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(bypass = { urgent.value })
+            if (!urgent.value) com.example.performance.BackgroundWorkCoordinator.yieldToInteraction(
+                bypass = { urgent.value || requested.value })
             combine(changed, urgent, requested, scrolling, resolving) { _, _, _, _, _ -> Unit }.first {
                 synchronized(lock) {
                     // Explicit refresh can use two slots and start during the pull's
@@ -125,7 +131,8 @@ internal object DiscoveryRequestCoordinator {
             }
             currentCoroutineContext().ensureActive()
             // A tab can change while this request is queued for a network slot.
-            if (!urgent.value) com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(bypass = { urgent.value })
+            if (!urgent.value) com.example.performance.BackgroundWorkCoordinator.yieldToInteraction(
+                bypass = { urgent.value || requested.value })
             return block()
         } finally {
             if (acquired) synchronized(lock) {

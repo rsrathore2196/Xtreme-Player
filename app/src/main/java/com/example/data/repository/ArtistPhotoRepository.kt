@@ -77,16 +77,21 @@ object ArtistPhotoRepository {
     fun prewarm(context: Context): Deferred<Unit> = warmup ?: photoScope.async {
         val now = System.currentTimeMillis()
         val prefs = context.applicationContext.getSharedPreferences("artist_images_v2", Context.MODE_PRIVATE)
-        prefs.all.forEach { (key, value) ->
-            if (!key.startsWith("portrait:")) return@forEach
-            val stored = (value as? String)?.let { runCatching { JSONObject(it) }.getOrNull() } ?: return@forEach
-            // Old entries mixed album covers and portraits and included provider IDs
-            // in their keys. They must not suppress the newly shared artist lookup.
-            if (stored.optInt("version") != PHOTO_VERSION || !key.startsWith("portrait:")) return@forEach
-            val expires = stored.optLong("expires")
-            val url = image(stored.optString("image"))
-            if (expires > now || url != null) memory.put(key, Photo(expires, url, stored.optString("source"),
-                stored.optString("mbid"), stored.optString("catalogId"), image(stored.optString("albumArtwork"))))
+        val storedEntries = prefs.all
+        withContext(com.example.performance.BackgroundWorkCoordinator.optionalCpuDispatcher) {
+            for ((index, entry) in storedEntries.entries.withIndex()) {
+                if (index % 64 == 0) com.example.performance.BackgroundWorkCoordinator.yieldToInteraction()
+                val (key, value) = entry
+                if (!key.startsWith("portrait:")) continue
+                val stored = (value as? String)?.let { runCatching { JSONObject(it) }.getOrNull() } ?: continue
+                // Old entries mixed album covers and portraits and included provider IDs
+                // in their keys. They must not suppress the newly shared artist lookup.
+                if (stored.optInt("version") != PHOTO_VERSION || !key.startsWith("portrait:")) continue
+                val expires = stored.optLong("expires")
+                val url = image(stored.optString("image"))
+                if (expires > now || url != null) memory.put(key, Photo(expires, url, stored.optString("source"),
+                    stored.optString("mbid"), stored.optString("catalogId"), image(stored.optString("albumArtwork"))))
+            }
         }
         photoRevision.update { it + 1L }
     }.also { warmup = it }

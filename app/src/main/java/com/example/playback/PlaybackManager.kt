@@ -265,8 +265,10 @@ class PlaybackManager(
         SleepTimerManager.addExpirationListener(sleepExpirationListener)
         scope.launch {
             try {
-                val saved = PlaybackSessionStore.restore(context)
-                val tracks = withContext(Dispatchers.Default) { saved?.items?.map(::controllerTrack).orEmpty() }
+                val (saved, tracks) = com.example.performance.BackgroundWorkCoordinator.work {
+                    val snapshot = PlaybackSessionStore.restore(context)
+                    snapshot to withContext(Dispatchers.Default) { snapshot?.items?.map(::controllerTrack).orEmpty() }
+                }
                 // A tap or an already-running service always wins over the disk snapshot.
                 if (saved != null && tracks.isNotEmpty() && selectionGeneration == 0L &&
                     (controller == null || controller?.mediaItemCount == 0)) {
@@ -297,8 +299,13 @@ class PlaybackManager(
             val coordinator = com.example.performance.BackgroundWorkCoordinator
             coordinator.awaitFirstFrame()
             coordinator.uiForeground.first { it }
-            coordinator.startup(com.example.performance.BackgroundWorkCoordinator.StartupPriority.CRITICAL) {
-                if (_uiState.value.currentTrack != null || MusicService.liveSession.value)
+            // A paused queue is already restored above. Binding it would start a
+            // service during first composition for no audible playback. A running
+            // service and explicit play requests still connect immediately.
+            if (_uiState.value.currentTrack == null && !MusicService.liveSession.value) return@launch
+            coordinator.startup(com.example.performance.BackgroundWorkCoordinator.StartupPriority.DEFERRED,
+                urgent = { MusicService.liveSession.value }) {
+                if (controller?.isConnected != true && (_uiState.value.currentTrack != null || MusicService.liveSession.value))
                     ensureMediaControllerConnected()
             }
         }

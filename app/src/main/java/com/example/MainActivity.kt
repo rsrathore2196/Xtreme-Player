@@ -34,6 +34,7 @@ import com.example.ui.viewmodel.PlayerViewModel
 
 class MainActivity : ComponentActivity() {
     private var initialContentReady = false
+    private var firstDrawListener: android.view.ViewTreeObserver.OnDrawListener? = null
     private var lastInteractionMs = 0L
     private var frameThread: HandlerThread? = null
     private var frameListener: Window.OnFrameMetricsAvailableListener? = null
@@ -134,11 +135,6 @@ class MainActivity : ComponentActivity() {
             val settingsReady by playerViewModel.settingsReady.collectAsStateWithLifecycle()
             if (!settingsReady) return@setContent
             androidx.compose.runtime.SideEffect { initialContentReady = true }
-            androidx.compose.runtime.LaunchedEffect(Unit) {
-                androidx.compose.runtime.withFrameNanos { }
-                androidx.compose.runtime.withFrameNanos { }
-                com.example.performance.BackgroundWorkCoordinator.firstFrameRendered()
-            }
             val themeMode by playerViewModel.themeMode.collectAsStateWithLifecycle()
             val customThemeState by playerViewModel.customThemeState.collectAsStateWithLifecycle()
             val textScale by playerViewModel.textScale.collectAsStateWithLifecycle()
@@ -191,6 +187,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         uiResumed = true
+        observeForegroundDraw()
         updateRefreshRate()
         com.example.performance.BackgroundWorkCoordinator.foreground(true)
         // Recover an existing verified download/install session immediately. This
@@ -200,10 +197,42 @@ class MainActivity : ComponentActivity() {
 
     override fun onPause() {
         uiResumed = false
+        removeFirstDrawListener()
         updateRefreshRate()
         com.example.performance.BackgroundWorkCoordinator.foreground(false)
         com.example.updater.AppUpdateManager.onBackground()
         super.onPause()
+    }
+
+    private fun observeForegroundDraw() {
+        removeFirstDrawListener()
+        com.example.performance.BackgroundWorkCoordinator.expectForegroundDraw()
+        val decor = window.decorView
+        val listener = object : android.view.ViewTreeObserver.OnDrawListener {
+            private var posted = false
+            override fun onDraw() {
+                if (posted || !initialContentReady || !uiResumed) return
+                posted = true
+                // Post after the actual traversal. Frame-clock callbacks can run
+                // before content has been drawn and cannot establish this milestone.
+                decor.post {
+                    if (firstDrawListener === this && uiResumed) {
+                        removeFirstDrawListener()
+                        com.example.performance.BackgroundWorkCoordinator.firstFrameRendered()
+                    }
+                }
+            }
+        }
+        firstDrawListener = listener
+        decor.viewTreeObserver.addOnDrawListener(listener)
+        decor.invalidate()
+    }
+
+    private fun removeFirstDrawListener() {
+        firstDrawListener?.let { listener ->
+            window.decorView.viewTreeObserver.takeIf { it.isAlive }?.removeOnDrawListener(listener)
+        }
+        firstDrawListener = null
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {

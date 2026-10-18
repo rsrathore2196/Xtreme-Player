@@ -166,6 +166,8 @@ class HomeViewModel(
                     lastEventStamps.clear()
                 }
                 val changed = if (reloadHistory) emptyList() else stamps.filter { lastEventStamps[it.id] != it }.map { it.id }
+                // Unrelated Room invalidations do not change listening evidence.
+                if (!reloadHistory && changed.isEmpty()) return@collect
                 val pages = changed.chunked(900)
                 val rows = withContext(Dispatchers.IO) { pages.flatMap { listeningEventDao.getEventsByIds(it) } }
                 rows.forEach { retainedEvents[it.id] = it }
@@ -978,6 +980,9 @@ class HomeViewModel(
                 _listeningHistoryCard) { cards, recent, taste, seed, listening ->
                 DisplayInputs(cards, recent, taste, seed, listening)
             }.distinctUntilChanged().mapLatest { inputs ->
+                // Do not prepare a new visible list while a retained Home is hidden,
+                // scrolling or sliding. mapLatest keeps only the newest inputs.
+                awaitHomePresentation()
                 val snapshot = withContext(workerDispatcher) {
                     hideRecentRecommendations(inputs.cards,
                         inputs.recent + inputs.listening.tracks + listOfNotNull(inputs.seed), inputs.taste)
@@ -1006,7 +1011,7 @@ class HomeViewModel(
         ownerScope.launch {
           try {
             val cached = BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI) {
-                initialCards ?: shelfCache.readInitial(profileKey())
+                initialCards ?: HomeCardCache.preloadAsync(getApplication(), profileKey(), previewOnly = true).await()
             }
             if (cached != null) restoreCachedCards(cached, additional = false)
             if (preparedCards.value.quick.tracks.isNotEmpty() || preparedCards.value.chart.tracks.isNotEmpty())
@@ -1051,8 +1056,10 @@ class HomeViewModel(
             restored.await()
             eventsLoaded.await()
             personalizationHistory.filter { it.ready }.map { history ->
-                ArtistHistory(history.events.asSequence().filter(UserTasteProfile::played)
-                    .map { it.sessionId to it.trackId }.distinct().toList(), history.tracks.map { it.id }) to history.tracks
+                withContext(workerDispatcher) {
+                    ArtistHistory(history.events.asSequence().filter(UserTasteProfile::played)
+                        .map { it.sessionId to it.trackId }.distinct().toList(), history.tracks.map { it.id }) to history.tracks
+                }
             }.distinctUntilChanged().collect { listeningCardRequests.update { it + 1 } }
         }
         ownerScope.launch {

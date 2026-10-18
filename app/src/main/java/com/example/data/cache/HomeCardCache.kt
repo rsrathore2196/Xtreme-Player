@@ -44,7 +44,7 @@ data class SavedHomeCards(
 )
 
 @OptIn(FlowPreview::class, ExperimentalCoroutinesApi::class)
-class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Dispatchers.Default) {
+class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = BackgroundWorkCoordinator.optionalCpuDispatcher) {
     private val appContext = context.applicationContext
     private val file = AtomicFile(File(appContext.filesDir, "home_cards_v1.json"))
     private data class Retained(val path: String, val cards: SavedHomeCards)
@@ -58,15 +58,18 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Di
         private val readMutex = Mutex()
         private val preloadScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         private val preloads = mutableMapOf<String, Deferred<SavedHomeCards?>>()
+        private val previewPreloads = mutableMapOf<String, Deferred<SavedHomeCards?>>()
         private fun preloadKey(context: Context, profile: String) = "${context.filesDir.path}|$profile"
-        fun preloadAsync(context: Context, profileKey: String): Deferred<SavedHomeCards?> = synchronized(preloads) {
+        fun preloadAsync(context: Context, profileKey: String, previewOnly: Boolean = false): Deferred<SavedHomeCards?> = synchronized(preloads) {
             val key = preloadKey(context, profileKey)
-            preloads.getOrPut(key) {
+            val flights = if (previewOnly) previewPreloads else preloads
+            flights.getOrPut(key) {
                 preloadScope.async(start = CoroutineStart.LAZY) {
                     val cache = HomeCardCache(context.applicationContext)
-                    try { cache.readDisk(profileKey) } finally { cache.close() }
+                    try { if (previewOnly) cache.readInitial(profileKey) else cache.readDisk(profileKey) }
+                    finally { cache.close() }
                 }.also { job ->
-                    job.invokeOnCompletion { synchronized(preloads) { if (preloads[key] === job) preloads.remove(key) } }
+                    job.invokeOnCompletion { synchronized(preloads) { if (flights[key] === job) flights.remove(key) } }
                 }
             }.also { it.start() }
         }
