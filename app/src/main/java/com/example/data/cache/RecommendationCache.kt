@@ -5,6 +5,7 @@ import android.util.LruCache
 import androidx.room.*
 import com.example.data.model.MusicTrack
 import com.example.performance.BackgroundWorkCoordinator
+import com.example.performance.AppDispatchers
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
@@ -37,12 +38,14 @@ abstract class RecommendationCacheDatabase : RoomDatabase() {
 @OptIn(FlowPreview::class)
 internal class RecommendationCache private constructor(context: Context) {
     private val app = context.applicationContext
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(SupervisorJob() + AppDispatchers.Io)
     private val memory = LruCache<String, RecommendationCacheEntry>(512)
     private val pending = linkedMapOf<String, RecommendationCacheEntry>()
     private val writes = Channel<Unit>(Channel.CONFLATED)
     private val database by lazy { Room.databaseBuilder(app, RecommendationCacheDatabase::class.java,
-        "recommendation_cache.db").build() }
+        "recommendation_cache.db")
+        .setQueryExecutor(AppDispatchers.Database.asExecutor())
+        .setTransactionExecutor(AppDispatchers.Io.asExecutor()).build() }
     init {
         scope.launch {
             var lastWrite = 0L
@@ -59,7 +62,7 @@ internal class RecommendationCache private constructor(context: Context) {
             }
         }
     }
-    suspend fun get(key: String): RecommendationCacheEntry? = memory.get(key) ?: withContext(Dispatchers.IO) {
+    suspend fun get(key: String): RecommendationCacheEntry? = memory.get(key) ?: withContext(AppDispatchers.Io) {
         try { database.entries().get(key)?.also { memory.put(key, it) } }
         catch (e: CancellationException) { throw e } catch (_: Exception) { null }
     }

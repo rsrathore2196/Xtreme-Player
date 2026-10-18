@@ -78,6 +78,7 @@ class DockGlassInteraction internal constructor(private val scope: CoroutineScop
         try {
             awaitEachGesture {
                 val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                BackgroundWorkCoordinator.cancelNonEssentialWork()
                 var pointerId = down.id
                 touchPosition = down.position
                 pressed(true)
@@ -122,4 +123,13 @@ internal fun rememberDockGlassInteraction(): DockGlassInteraction {
 }
 
 internal fun Modifier.observeDockGlassTouches(interaction: DockGlassInteraction?): Modifier =
-    if (interaction == null) this else pointerInput(interaction) { interaction.observeTouches(this) }
+    pointerInput(interaction) {
+        if (interaction != null) interaction.observeTouches(this)
+        else awaitEachGesture {
+            awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            BackgroundWorkCoordinator.cancelNonEssentialWork()
+            // Observe only; child clickables retain press, cancellation and navigation.
+            do { val event = awaitPointerEvent(PointerEventPass.Initial) }
+            while (event.changes.any { it.pressed })
+        }
+    }

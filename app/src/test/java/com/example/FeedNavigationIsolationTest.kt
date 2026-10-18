@@ -26,6 +26,10 @@ import androidx.compose.ui.unit.dp
 import com.example.ui.components.AnimatedBottomBar
 import com.example.ui.components.AnimatedBottomBarItem
 import com.example.ui.components.MainTabPager
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import org.junit.Assert.*
 import org.junit.Rule
@@ -41,11 +45,55 @@ import org.robolectric.annotation.GraphicsMode
 class FeedNavigationIsolationTest {
     @get:Rule val compose = createComposeRule()
 
+    @Test fun allPagesStayMountedButOnlyVisiblePagesCollectScreenData() {
+        val mounts = IntArray(3)
+        val collectors = IntArray(3)
+        lateinit var pager: PagerState
+        var select: (Int) -> Unit = {}
+        compose.mainClock.autoAdvance = false
+        compose.setContent { MaterialTheme {
+            var selected by remember { mutableIntStateOf(0) }
+            pager = rememberPagerState(pageCount = { 3 })
+            select = { selected = it }
+            LaunchedEffect(selected) { pager.animateScrollToPage(selected) }
+            MainTabPager(pager, pageCovered = false) { page ->
+                DisposableEffect(page) { mounts[page]++; onDispose { } }
+                val source = remember(page) { flow {
+                    collectors[page]++
+                    try { emit(page); awaitCancellation() }
+                    finally { collectors[page]-- }
+                } }
+                val value by source.collectAsStateWithLifecycle(-1, minActiveState = Lifecycle.State.STARTED)
+                Text("Page $page value $value")
+            }
+        } }
+        compose.mainClock.advanceTimeBy(100)
+        compose.runOnIdle {
+            assertArrayEquals(intArrayOf(1, 1, 1), mounts)
+            assertArrayEquals(intArrayOf(1, 0, 0), collectors)
+        }
+        for (target in listOf(2, 1, 0, 1, 2, 0)) {
+            compose.runOnIdle { select(target) }
+            // Let the platform apply the state write/start the keyed effect before
+            // advancing its animation clock (this fixture has no clickable dock).
+            compose.mainClock.advanceTimeByFrame()
+            compose.waitForIdle()
+            compose.mainClock.advanceTimeBy(1600)
+            compose.runOnIdle {
+                assertEquals(target, pager.currentPage)
+                assertArrayEquals(intArrayOf(1, 1, 1), mounts)
+                assertArrayEquals(IntArray(3) { if (it == target) 1 else 0 }, collectors)
+            }
+        }
+    }
+
     @Test fun pendingOrPublishingFeedDoesNotBlockDockRetargetingOrResetRetainedHomeScroll() {
         val feedReady = MutableStateFlow(false)
         lateinit var pager: PagerState
         lateinit var homeScroll: androidx.compose.foundation.lazy.LazyListState
         val mounted = mutableSetOf<Int>()
+        val mounts = IntArray(3)
+        val disposals = IntArray(3)
         var selected = 0
         compose.mainClock.autoAdvance = false
         compose.setContent { MaterialTheme {
@@ -59,7 +107,7 @@ class FeedNavigationIsolationTest {
             LaunchedEffect(tab) { pager.animateScrollToPage(tab) }
             Box(Modifier.fillMaxSize()) {
                 MainTabPager(pager, pageCovered = false) { page ->
-                    DisposableEffect(page) { mounted.add(page); onDispose { mounted.remove(page) } }
+                    DisposableEffect(page) { mounted.add(page); mounts[page]++; onDispose { mounted.remove(page); disposals[page]++ } }
                     if (page == 0) {
                         // No timer or network result releases navigation. The actual host
                         // must remain interactive while this feed is still unprepared.
@@ -77,7 +125,7 @@ class FeedNavigationIsolationTest {
             }
         } }
         compose.waitForIdle()
-        compose.runOnIdle { assertEquals(setOf(0), mounted) }
+        compose.runOnIdle { assertEquals(setOf(0, 1, 2), mounted) }
         // Start in the visible feed, above the floating dock. Its outer glass
         // now observes touches too, so a gesture beginning behind the dock is
         // a dock interaction rather than a feed scroll.
@@ -105,5 +153,9 @@ class FeedNavigationIsolationTest {
         compose.onNodeWithTag("nav_tab_home_active").assertExists()
         compose.runOnIdle { assertEquals(retainedIndex, homeScroll.firstVisibleItemIndex) }
         compose.onNodeWithText("Prepared $retainedIndex").assertExists()
+        compose.runOnIdle {
+            assertArrayEquals(intArrayOf(1, 1, 1), mounts)
+            assertArrayEquals(intArrayOf(0, 0, 0), disposals)
+        }
     }
 }

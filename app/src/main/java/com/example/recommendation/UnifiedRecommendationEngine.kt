@@ -403,7 +403,7 @@ class UnifiedRecommendationEngine(context: Context?,
                 val cursor = AtomicInteger()
                 val missing = cached.filter { it.second == null }
                 val results = Channel<Pair<Candidate, MusicTrack?>>(concurrency.coerceIn(1, limits.matchConcurrency))
-                val workers = List(minOf(concurrency.coerceIn(1, limits.matchConcurrency), missing.size)) { launch(Dispatchers.IO) {
+                val workers = List(minOf(concurrency.coerceIn(1, limits.matchConcurrency), missing.size)) { launch(AppDispatchers.Io) {
                     while (isActive) {
                         val candidate = missing.getOrNull(cursor.getAndIncrement())?.first ?: break
                         if (!essential) yieldHomeWork()

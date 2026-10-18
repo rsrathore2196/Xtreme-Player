@@ -6,6 +6,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.util.concurrent.atomic.AtomicBoolean
@@ -117,6 +118,35 @@ object BackgroundWorkCoordinator {
     private var cardActive = false
     private var lastCardCompleted = 0L
 
+    private fun optionalCanRun(requireForeground: Boolean, urgent: () -> Boolean): Boolean {
+        if (urgent()) return true
+        if (requireForeground && !foreground.get()) return false
+        if (!foreground.get()) return true
+        return isInteractionIdle() && optionalInteractionIdle(SystemClock.elapsedRealtime())
+    }
+
+    private suspend fun optionalContext(requireForeground: Boolean, urgent: () -> Boolean = { false }) =
+        NonEssentialWork(currentCoroutineContext()[Job], { optionalCanRun(requireForeground, urgent) }) {
+            while (!optionalCanRun(requireForeground, urgent)) {
+                currentCoroutineContext().ensureActive()
+                delay(50L)
+            }
+        }
+
+    /** WorkManager also participates in dock preemption, without requiring a headless Home. */
+    internal suspend fun <T> maintenance(block: suspend () -> T): T =
+        optionalProcessing(block = block)
+
+    /** Shared flights use their own live urgency, not a single consumer's cancellation. */
+    internal suspend fun <T> optionalProcessing(urgent: () -> Boolean = { false }, block: suspend () -> T): T =
+        withContext(optionalContext(requireForeground = false, urgent = urgent)) { block() }
+
+    /** Finish a bounded response/transaction before yielding, never idle with its permit held. */
+    internal suspend fun <T> finishBoundedBatch(block: suspend () -> T): T {
+        val optional = currentCoroutineContext()[NonEssentialWork] ?: return block()
+        return withContext(NonEssentialWork(optional.owner, canRun = { true }, awaitAdmission = { })) { block() }
+    }
+
     /**
      * Caller-owned, cancellable admission, rather than a broadcast idle latch. There
      * is one heavy optional worker and one essential lane. Playback/user work never
@@ -177,7 +207,9 @@ object BackgroundWorkCoordinator {
                 if (!admitted) delay(50L)
             }
             if (priority == StartupPriority.MAINTENANCE) maintenanceReady.complete(Unit)
-            return withContext(Admission(if (admittedEssential) StartupPriority.ESSENTIAL_UI else priority, cardWork)) { work { traceWork(label, block) } }
+            val admission = Admission(if (admittedEssential) StartupPriority.ESSENTIAL_UI else priority, cardWork)
+            val context = if (admittedEssential) admission else admission + optionalContext(requireForeground, urgent)
+            return withContext(context) { work { traceWork(label, block) } }
         } finally {
             synchronized(admissionLock) {
                 waiting.remove(ticket)
@@ -262,6 +294,18 @@ object BackgroundWorkCoordinator {
 
     /** Called before changing the selected tab, so worker admission closes immediately. */
     fun navigationInteraction() {
+        cancelNonEssentialWork()
+    }
+
+    /**
+     * Immediately revoke optional runnable admission. Existing bounded batches yield at
+     * their next suspension/checkpoint; new CPU continuations park until genuine idle.
+     * IO completes its current transaction/bounded file batch before yielding, so
+     * a paused CPU consumer never parks a database transaction on an IO worker.
+     * Pausing instead of destroying caller jobs preserves in-flight cache writes, parsed
+     * history and verified matches. Critical playback/user jobs are never cancelled.
+     */
+    fun cancelNonEssentialWork() {
         interaction()
         navigationUntil.set(SystemClock.elapsedRealtime() + 350L)
     }

@@ -15,6 +15,9 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.test.*
@@ -45,15 +48,18 @@ class DockGlassMotionTest {
     private var selected = 0
     private var clicks = 0
     private var compositions = 0
+    private var measures = 0
     private val dock get() = compose.onNodeWithTag("floating_bottom_navigation_bar")
 
-    private fun showDock(glass: Boolean = true, withBackdrop: Boolean = false, owner: LifecycleOwner? = null) {
+    private fun showDock(glass: Boolean = true, withBackdrop: Boolean = false, owner: LifecycleOwner? = null,
+        direction: LayoutDirection = LayoutDirection.Ltr) {
         compose.mainClock.autoAdvance = false
         compose.setContent { MaterialTheme {
             val tab = remember { mutableIntStateOf(0) }
             val backdrop = if (withBackdrop) rememberLiquidGlassBackdrop() else null
             SideEffect { compositions++ }
             CompositionLocalProvider(LocalLiquidGlassBackdrop provides backdrop,
+                LocalLayoutDirection provides direction,
                 LocalLifecycleOwner provides (owner ?: LocalLifecycleOwner.current)) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 if (withBackdrop) Box(Modifier.fillMaxSize().xtremeSharedBackdropSource()
@@ -66,11 +72,48 @@ class DockGlassMotionTest {
                     AnimatedBottomBarItem(0, "Home", Icons.Filled.Home, Icons.Filled.Home),
                     AnimatedBottomBarItem(1, "Search", Icons.Filled.Search, Icons.Filled.Search),
                     AnimatedBottomBarItem(2, "Library", Icons.Filled.LibraryMusic, Icons.Filled.LibraryMusic)
-                ) }, appColors = DarkAppColors.copy(dynamicGlassEnabled = glass))
+                ) }, modifier = Modifier.layout { measurable, constraints ->
+                    measures++
+                    val placeable = measurable.measure(constraints)
+                    layout(placeable.width, placeable.height) { placeable.place(0, 0) }
+                }, appColors = DarkAppColors.copy(dynamicGlassEnabled = glass))
             }
             }
         } }
         compose.waitForIdle()
+    }
+
+    @Test fun tabSpringsChangeLayersWithoutRemeasuringTheDock() {
+        showDock()
+        val layoutSize = dock.fetchSemanticsNode().size
+        for (title in listOf("search", "library", "home")) {
+            compose.onNodeWithTag("nav_tab_${title}_inactive").performClick()
+            compose.mainClock.advanceTimeByFrame()
+            val measured = measures
+            repeat(35) {
+                compose.mainClock.advanceTimeByFrame()
+                assertEquals("Selection frames must not remeasure ancestors", measured, measures)
+                assertEquals(layoutSize, dock.fetchSemanticsNode().size)
+            }
+            compose.mainClock.advanceTimeBy(1200)
+        }
+    }
+
+    @Test fun retainedEndpointsAndTouchTargetsAlsoWorkInRtl() {
+        showDock(direction = LayoutDirection.Rtl)
+        val home = compose.onNodeWithTag("nav_tab_home_active").fetchSemanticsNode().boundsInRoot
+        val library = compose.onNodeWithTag("nav_tab_library_inactive").fetchSemanticsNode().boundsInRoot
+        assertTrue(home.center.x > library.center.x)
+        compose.onNodeWithTag("nav_tab_library_inactive").performTouchInput { click() }
+        compose.mainClock.advanceTimeBy(1600)
+        assertEquals(2, selected)
+        compose.onNodeWithTag("nav_tab_library_active").assertIsSelected()
+        // The label/icon inverse layer must not leave the icon stretched by tab expansion.
+        val icon = compose.onNodeWithContentDescription("Library", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        assertEquals(icon.width, icon.height, 0.6f)
+        compose.onNodeWithTag("nav_tab_home_inactive").performTouchInput { click() }
+        compose.mainClock.advanceTimeBy(1600)
+        assertEquals(0, selected)
     }
 
     @Test fun holdingTabMovesWholeOuterDockWithoutResizingLayoutOrRecomposingItsHost() {

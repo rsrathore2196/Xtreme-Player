@@ -106,8 +106,10 @@ class DiscoveryAdmissionRegressionTest {
         val request = async {
             withContext(DiscoveryRequestCoordinator.HomeRefresh(false) + DiscoveryRequestCoordinator.HomeCard(true)) {
                 DiscoveryRequestCoordinator.shared("visible-empty-card", essential = false) {
-                    ran = true
-                    emptyList()
+                    withContext(AppDispatchers.CpuBounded) {
+                        ran = true
+                        emptyList()
+                    }
                 }
             }
         }

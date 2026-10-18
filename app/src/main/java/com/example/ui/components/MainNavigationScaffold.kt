@@ -135,8 +135,8 @@ fun MainNavigationScaffold(
         initialPage = selectedTabIndex.coerceIn(0, 2),
         pageCount = { 3 }
     )
-    // Destinations are composed on demand, including during startup. The pager
-    // still composes incoming pages for its existing slide; there is no idle prewarm.
+    // The three primary pages stay mounted. Visibility still controls optional
+    // data preparation and effects; tab motion does not reconstruct their trees.
     val previousTabIndex = remember { mutableIntStateOf(selectedTabIndex) }
     val selectTab: (Int) -> Unit = { index ->
         if (selectedTabIndex != index) {

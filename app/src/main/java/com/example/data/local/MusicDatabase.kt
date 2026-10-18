@@ -6,6 +6,8 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.example.performance.AppDispatchers
+import kotlinx.coroutines.asExecutor
 
 @Database(
     entities = [TrackEntity::class, PlaylistEntity::class, PlaylistTrackCrossRef::class, ListeningEventEntity::class, ArtworkCacheEntity::class],
@@ -176,6 +178,8 @@ abstract class MusicDatabase : RoomDatabase() {
                     MusicDatabase::class.java,
                     "xtreme_music_db"
                 )
+                    .setQueryExecutor(AppDispatchers.Database.asExecutor())
+                    .setTransactionExecutor(AppDispatchers.Io.asExecutor())
                     .addMigrations(*ALL_MIGRATIONS)
                     // Missing upgrade/downgrade paths must fail and leave the existing
                     // database intact. Never add destructive migration fallbacks here.

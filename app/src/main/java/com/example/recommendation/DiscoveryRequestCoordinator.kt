@@ -1,6 +1,8 @@
 package com.example.recommendation
 
 import com.example.data.model.MusicTrack
+import com.example.performance.AppDispatchers
+import com.example.performance.BackgroundWorkCoordinator
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.selects.select
@@ -41,7 +43,7 @@ internal object DiscoveryRequestCoordinator {
     }
     suspend fun essentialHomeWork(): Boolean = currentCoroutineContext()[HomeRefresh]?.initialShelf == true ||
         currentCoroutineContext()[HomeCard]?.essential == true
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(SupervisorJob() + AppDispatchers.Io)
     private class Flight(val urgent: MutableStateFlow<Boolean>, val requested: MutableStateFlow<Boolean>,
         val result: Deferred<List<MusicTrack>>, var readers: Int = 0)
     private class SharedPriority(val urgent: MutableStateFlow<Boolean>) : AbstractCoroutineContextElement(Key) {
@@ -66,8 +68,12 @@ internal object DiscoveryRequestCoordinator {
         val urgent = currentCoroutineContext()[SharedPriority]?.urgent ?: MutableStateFlow(essential)
         if (essential) urgent.value = true
         return permit(urgent, requested) {
-            withTimeoutOrNull(12_000L) { Result.success(block()) }?.getOrThrow()
-                ?: throw java.io.IOException("Discovery request timed out")
+            // Finish this bounded transport/parse batch and release its permit.
+            // Heavy ranking after the response remains interaction-preemptible.
+            BackgroundWorkCoordinator.finishBoundedBatch {
+                withTimeoutOrNull(12_000L) { Result.success(block()) }?.getOrThrow()
+                    ?: throw java.io.IOException("Discovery request timed out")
+            }
         }
     }
 
@@ -86,8 +92,14 @@ internal object DiscoveryRequestCoordinator {
                 val requested = MutableStateFlow(priority?.requested?.value == true)
                 Flight(urgent, requested, scope.async((priority ?: EmptyCoroutineContext) +
                     (card ?: EmptyCoroutineContext) + SharedPriority(urgent), start = CoroutineStart.LAZY) {
-                    if (network) permit(urgent, requested) { withTimeoutOrNull(12_000L) { block() }.orEmpty() }
-                    else block()
+                    BackgroundWorkCoordinator.optionalProcessing(urgent = {
+                        urgent.value || requested.value || card?.essential == true || priority?.initialShelf == true
+                    }) {
+                        if (network) permit(urgent, requested) {
+                            BackgroundWorkCoordinator.finishBoundedBatch { withTimeoutOrNull(12_000L) { block() }.orEmpty() }
+                        }
+                        else block()
+                    }
                 })
             }.also {
                 it.readers++

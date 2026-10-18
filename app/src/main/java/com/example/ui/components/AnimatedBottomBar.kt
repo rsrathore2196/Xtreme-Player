@@ -5,16 +5,10 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.updateTransition
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.CircleShape
@@ -24,14 +18,22 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.State
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.drawscope.clipRect
@@ -46,6 +48,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.constrainHeight
 import androidx.compose.ui.unit.constrainWidth
@@ -77,8 +80,8 @@ data class AnimatedBottomBarItem(
  *    expands/shrinks while the old and new selection backgrounds fade continuously.
  * 2. Label & Icon Visibility State: Unselected items display only their icon; selected item displays
  *    both its icon and animated text label.
- * 3. Smooth Spring / Layout Transition: One selection transition coordinates capsule width and
- *    placement while keeping icon and label measurements independent of animation frames.
+ * 3. Smooth Spring Transition: One selection transition coordinates capsule width and layer
+ *    translations while keeping all measurements independent of animation frames.
  * 4. Scale & Alpha Feedback: Smooth fade-in/fade-out and horizontal expansion/contraction for the text
  *    label, paired with subtle icon bounce scaling.
  * 5. 3D Liquid Glass UI: 15% visibility translucent background with frosted blur, specular edge highlight,
@@ -95,58 +98,60 @@ fun AnimatedBottomBar(
 ) {
     val textMeasurer = androidx.compose.ui.text.rememberTextMeasurer()
     val density = LocalDensity.current
+    val direction = LocalLayoutDirection.current
     val labelStyle = androidx.compose.material3.LocalTextStyle.current.copy(
         fontWeight = FontWeight.Bold, fontSize = 14.5.sp, letterSpacing = 0.2.sp)
-    val captureWidth = remember(items, textMeasurer, density, labelStyle) {
-        val labelWidth = items.maxOfOrNull { textMeasurer.measure(it.title, labelStyle, maxLines = 1, softWrap = false).size.width } ?: 0
-        with(density) {
-            // Existing 52dp collapsed tabs, expanded padding/gap, outer padding,
-            // gaps, and a small spring overshoot margin. This is never a layout width.
-            52.dp.toPx() * items.size + labelWidth + 10.dp.toPx() +
-                12.dp.toPx() + 4.dp.toPx() * (items.size - 1).coerceAtLeast(0) + 12.dp.toPx()
+    val expandedWidths = remember(items, textMeasurer, density, labelStyle) {
+        items.map { item ->
+            val labelWidth = textMeasurer.measure(item.title, labelStyle, maxLines = 1, softWrap = false).size.width
+            with(density) { 24.dp.roundToPx() + 16.dp.roundToPx() * 2 + 6.dp.roundToPx() + labelWidth }.toFloat()
         }
     }
-    val selectionTransition = updateTransition(
-        targetState = selectedTabIndex,
-        label = "bottom_bar_selection"
-    )
+    val selectionTransition = updateTransition(selectedTabIndex, label = "bottom_bar_selection")
+    val motions = items.map { item ->
+        val expansion = selectionTransition.animateFloat(
+            transitionSpec = { spring(dampingRatio = 0.65f, stiffness = Spring.StiffnessLow) },
+            label = "tab_expansion_${item.index}"
+        ) { selected -> if (selected == item.index) 1f else 0f }
+        val labelAlpha = selectionTransition.animateFloat(
+            transitionSpec = {
+                if (targetState == item.index) spring(dampingRatio = 0.65f, stiffness = Spring.StiffnessLow)
+                else tween(90)
+            }, label = "tab_label_alpha_${item.index}"
+        ) { selected -> if (selected == item.index) 1f else 0f }
+        remember(expansion, labelAlpha) { DockTabMotion(expansion, labelAlpha) }
+    }
+    val geometry = remember(expandedWidths, motions, density) {
+        with(density) {
+            DockGeometry(expandedWidths, motions, (24.dp.roundToPx() + 14.dp.roundToPx() * 2).toFloat(),
+                4.dp.toPx(), 6.dp.toPx())
+        }
+    }
     val glassInteraction = if (appColors.dynamicGlassEnabled && LocalDynamicGlassEnabled.current) {
         rememberDockGlassInteraction()
     } else null
     DisposableEffect(selectionTransition.isRunning) {
-        // The page slide may finish before the pill's final spring settle.
-        // Keep optional work deferred until both are finished; disposal always
-        // releases this lease, including when the player hides the dock.
         val work = if (selectionTransition.isRunning) BackgroundWorkCoordinator.navigationBusy() else null
         onDispose { work?.close() }
     }
     val activePillBrush = remember(appColors.primaryAccent) {
-        // Even a custom accent with alpha must fully cover the shared backdrop.
-        Brush.verticalGradient(listOf(
-            appColors.primaryAccent.copy(alpha = 1f),
-            appColors.primaryAccent.copy(alpha = 1f)
-        ))
+        Brush.verticalGradient(listOf(appColors.primaryAccent.copy(alpha = 1f), appColors.primaryAccent.copy(alpha = 1f)))
     }
-    val activeBorderStroke = remember(appColors.isDark, appColors.dynamicGlassEnabled, appColors.cardBorder) {
-        BorderStroke(0.6.dp, if (!appColors.dynamicGlassEnabled) appColors.cardBorder else Color.White.copy(alpha = if (appColors.isDark) 0.10f else 0.40f))
-    }
+    val activeBorder = if (!appColors.dynamicGlassEnabled) appColors.cardBorder
+        else Color.White.copy(alpha = if (appColors.isDark) 0.10f else 0.40f)
     val specularSheen = remember(appColors.isDark) {
-        Brush.verticalGradient(
-            listOf(Color.White.copy(alpha = if (appColors.isDark) 0.10f else 0.26f), Color.Transparent),
-            startY = 0f,
-            endY = 22f
-        )
+        Brush.verticalGradient(listOf(Color.White.copy(alpha = if (appColors.isDark) 0.10f else 0.26f), Color.Transparent),
+            startY = 0f, endY = 22f)
     }
+    val origin = if (direction == LayoutDirection.Ltr) TransformOrigin(0f, 0.5f) else TransformOrigin(1f, 0.5f)
 
     Box(
         modifier = modifier
-            // One hardware-layer transform moves the outer rim, glass, pill
-            // and crisp foreground together. Resting layout/hit targets retain
-            // their existing dimensions; pressing does not remeasure the dock.
             .graphicsLayer {
-                val scale = glassInteraction?.scale ?: 1f
-                scaleX = scale
-                scaleY = scale
+                val press = glassInteraction?.scale ?: 1f
+                // A fixed measured viewport; only its hardware layer changes width.
+                scaleX = press * geometry.width / geometry.reservedWidth
+                scaleY = press
             }
             .observeDockGlassTouches(glassInteraction)
             .testTag("floating_bottom_navigation_bar")
@@ -154,119 +159,128 @@ fun AnimatedBottomBar(
             .height(64.dp),
         contentAlignment = Alignment.Center
     ) {
-        // LAYER 1: GLASS BACKGROUND SURFACE ONLY (Colorless Liquid Glass)
-        Box(
-            modifier = Modifier
-                .matchParentSize()
-                .xtremeLiquidGlassBackground(
-                    shape = CircleShape,
-                    blurRadius = XtremeLiquidGlassDefaults.FloatingDockBlurRadius,
-                    surfaceTintAlpha = XtremeLiquidGlassDefaults.FloatingDockTintAlpha,
-                    tintColor = ambientGlowColor,
-                    borderWidth = 0.8.dp,
-                    elevation = 16.dp,
-                    appColors = appColors,
-                    baseFillAlpha = if (appColors.isDark) XtremeLiquidGlassDefaults.FloatingDockDarkFillAlpha
-                        else XtremeLiquidGlassDefaults.FloatingDockLightFillAlpha,
-                    stableCaptureWidthPx = captureWidth,
-                    interaction = glassInteraction
-                )
-        )
-
-        // LAYER 2: UNBLURRED FOREGROUND CONTENT
-        Row(
-            modifier = Modifier
-                .wrapContentWidth()
-                .height(64.dp)
-                .padding(horizontal = 6.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally)
-        ) {
-            items.forEach { item ->
-                key(item.index) {
-                    val isSelected = selectedTabIndex == item.index
-
-                    val expansion = selectionTransition.animateFloat(
-                        // LastWave's spatial spring: a quick response with a visible,
-                        // gently settling bounce, rather than a shortened tween.
-                        transitionSpec = { spring(dampingRatio = 0.65f, stiffness = Spring.StiffnessLow) },
-                        label = "tab_expansion_${item.index}"
-                    ) { selectedIndex ->
-                        if (selectedIndex == item.index) 1f else 0f
-                    }
-
-                    val labelAlpha = selectionTransition.animateFloat(
-                        transitionSpec = {
-                            if (targetState == item.index) {
-                                spring(dampingRatio = 0.65f, stiffness = Spring.StiffnessLow)
-                            } else tween(90)
-                        },
-                        label = "tab_label_alpha_${item.index}"
-                    ) { selectedIndex ->
-                        if (selectedIndex == item.index) 1f else 0f
-                    }
-
-                    // Individual tab item container: Active pill with 3D liquid glass capsule and theme accent blur
+        Box(Modifier.matchParentSize().xtremeLiquidGlassBackground(
+            shape = CircleShape,
+            blurRadius = XtremeLiquidGlassDefaults.FloatingDockBlurRadius,
+            surfaceTintAlpha = XtremeLiquidGlassDefaults.FloatingDockTintAlpha,
+            tintColor = ambientGlowColor, borderWidth = 0.8.dp, elevation = 16.dp, appColors = appColors,
+            baseFillAlpha = if (appColors.isDark) XtremeLiquidGlassDefaults.FloatingDockDarkFillAlpha
+                else XtremeLiquidGlassDefaults.FloatingDockLightFillAlpha,
+            stableCaptureWidthPx = geometry.reservedWidth + with(density) { 12.dp.toPx() },
+            interaction = glassInteraction
+        ))
+        Layout(
+            modifier = Modifier.graphicsLayer {
+                // Cancel the viewport's horizontal scale for sharp, unstretched text/icons.
+                // The separate press spring still moves the complete dock together.
+                scaleX = geometry.reservedWidth / geometry.width
+            },
+            content = {
+                items.forEachIndexed { position, item -> key(item.index) {
+                    val motion = motions[position]
+                    val selected = selectedTabIndex == item.index
                     Box(
                         modifier = Modifier
-                            .height(52.dp)
-                            .graphicsLayer {
-                                translationY = -1.5f * expansion.value
-                            }
-                            .then(
-                                if (glassInteraction != null) Modifier.clickable(
-                                    interactionSource = remember { MutableInteractionSource() },
-                                    indication = null,
-                                    role = Role.Tab,
-                                    onClick = { onTabSelected(item.index) }
-                                ) else Modifier.bouncyClickable { onTabSelected(item.index) }
-                            )
-                            .semantics { selected = isSelected }
-                            .testTag(
-                                if (isSelected) "nav_tab_${item.title.lowercase()}_active"
-                                else "nav_tab_${item.title.lowercase()}_inactive"
-                            ),
+                            .then(if (glassInteraction != null) Modifier.clickable(
+                                interactionSource = remember { MutableInteractionSource() }, indication = null,
+                                role = Role.Tab, onClick = {
+                                    BackgroundWorkCoordinator.cancelNonEssentialWork()
+                                    onTabSelected(item.index)
+                                }
+                            ) else Modifier.bouncyClickable {
+                                BackgroundWorkCoordinator.cancelNonEssentialWork()
+                                onTabSelected(item.index)
+                            })
+                            .semantics { this.selected = selected }
+                            .testTag("nav_tab_${item.title.lowercase()}_${if (selected) "active" else "inactive"}"),
                         contentAlignment = Alignment.Center
                     ) {
-                        // The selected fill stays opaque throughout expansion. Retain
-                        // the outgoing pill's existing fade as its width collapses.
-                        Box(
-                            modifier = Modifier
-                                .matchParentSize()
-                                .graphicsLayer { alpha = if (isSelected) 1f else expansion.value.coerceIn(0f, 1f) }
-                                .shadow(
-                                    elevation = 6.dp,
-                                    shape = CircleShape,
-                                    spotColor = if (!appColors.dynamicGlassEnabled) Color.Black.copy(alpha = 0.15f) else appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.50f else 0.30f),
-                                    ambientColor = Color.Transparent
-                                )
-                                .clip(CircleShape)
-                                .background(activePillBrush)
-                                .border(activeBorderStroke, CircleShape)
-                        ) {
-                            if (appColors.dynamicGlassEnabled) {
-                                Box(Modifier.matchParentSize().background(specularSheen))
-                            }
+                        Box(Modifier.matchParentSize().graphicsLayer {
+                            // The outer tab layer supplies the changing hit rectangle. Undo
+                            // its scale inside so the glyphs and capsule radius stay exact.
+                            scaleX = expandedWidths[position] / geometry.tabWidth(position)
+                            transformOrigin = origin
+                        }) {
+                            Box(Modifier.matchParentSize().graphicsLayer {
+                                alpha = if (selected) 1f else motion.expansion.value.coerceIn(0f, 1f)
+                                val width = geometry.tabWidth(position)
+                                shape = DockPillShape(width, direction == LayoutDirection.Rtl)
+                                clip = true
+                                shadowElevation = 6.dp.toPx()
+                                spotShadowColor = if (!appColors.dynamicGlassEnabled) Color.Black.copy(alpha = 0.15f)
+                                    else appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.50f else 0.30f)
+                                ambientShadowColor = Color.Transparent
+                            }.drawWithCache {
+                                val stroke = 0.6.dp.toPx()
+                                val borderStyle = Stroke(stroke)
+                                onDrawBehind {
+                                    val width = geometry.tabWidth(position)
+                                    val left = if (direction == LayoutDirection.Ltr) 0f else size.width - width
+                                    drawRect(activePillBrush)
+                                    if (appColors.dynamicGlassEnabled) drawRect(specularSheen)
+                                    drawRoundRect(activeBorder, Offset(left + stroke / 2f, stroke / 2f),
+                                        Size((width - stroke).coerceAtLeast(0f), (size.height - stroke).coerceAtLeast(0f)),
+                                        CornerRadius((size.height - stroke).coerceAtLeast(0f) / 2f), style = borderStyle)
+                                }
+                            })
+                            BottomBarTabContent(motion.expansion, motion.labelAlpha, item, selected,
+                                appColors.onPrimaryAccent,
+                                if (appColors.isDark) Color.White.copy(alpha = 0.65f) else Color(0xFF64748B),
+                                modifier = Modifier.align(Alignment.Center))
                         }
-
-                        val selectedTabContentColor = appColors.onPrimaryAccent
-
-                        BottomBarTabContent(
-                            expansion = expansion,
-                            labelAlpha = labelAlpha,
-                            item = item,
-                            isSelected = isSelected,
-                            selectedContentColor = selectedTabContentColor,
-                            unselectedContentColor = if (appColors.isDark) {
-                                Color.White.copy(alpha = 0.65f)
-                            } else {
-                                Color(0xFF64748B)
-                            }
-                        )
+                    }
+                } }
+            }
+        ) { measurables, constraints ->
+            val width = constraints.constrainWidth(geometry.reservedWidth.roundToInt())
+            val height = constraints.constrainHeight(64.dp.roundToPx())
+            val tabHeight = 52.dp.roundToPx().coerceAtMost(height)
+            val tabs = measurables.mapIndexed { index, measurable ->
+                measurable.measure(Constraints.fixed(expandedWidths[index].roundToInt(), tabHeight))
+            }
+            // Neither measurement nor placement reads an animating State. Only layer
+            // properties below observe the springs, so ancestors never remeasure per frame.
+            layout(width, height) {
+                tabs.forEachIndexed { index, tab ->
+                    tab.placeWithLayer(0, (height - tab.height) / 2) {
+                        val tabWidth = geometry.tabWidth(index)
+                        val left = geometry.left(index, width.toFloat(), direction)
+                        scaleX = tabWidth / tab.width
+                        transformOrigin = origin
+                        translationX = if (direction == LayoutDirection.Ltr) left else left + tabWidth - tab.width
+                        translationY = -1.5f * motions[index].expansion.value
                     }
                 }
             }
         }
+    }
+}
+
+@Stable
+private class DockTabMotion(val expansion: State<Float>, val labelAlpha: State<Float>)
+
+@Stable
+private class DockGeometry(
+    private val expanded: List<Float>, private val motions: List<DockTabMotion>,
+    private val collapsed: Float, private val gap: Float, private val padding: Float
+) {
+    val reservedWidth = (collapsed * expanded.size + (expanded.maxOrNull()?.minus(collapsed) ?: 0f) +
+        gap * (expanded.size - 1).coerceAtLeast(0) + padding * 2).coerceAtLeast(1f)
+    fun tabWidth(index: Int): Float = (collapsed + (expanded[index] - collapsed) * motions[index].expansion.value).coerceAtLeast(1f)
+    val width: Float get() = (expanded.indices.sumOf { tabWidth(it).toDouble() }.toFloat() +
+        gap * (expanded.size - 1).coerceAtLeast(0) + padding * 2).coerceAtLeast(1f)
+    fun left(index: Int, viewport: Float, direction: LayoutDirection): Float {
+        var preceding = padding
+        for (i in 0 until index) preceding += tabWidth(i) + gap
+        return if (direction == LayoutDirection.Ltr) (viewport - width) / 2f + preceding
+            else (viewport + width) / 2f - preceding - tabWidth(index)
+    }
+}
+
+private data class DockPillShape(val width: Float, val fromRight: Boolean) : Shape {
+    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
+        val left = if (fromRight) size.width - width else 0f
+        return Outline.Rounded(RoundRect(left, 0f, left + width, size.height, CornerRadius(size.height / 2f)))
     }
 }
 
@@ -277,11 +291,14 @@ private fun BottomBarTabContent(
     item: AnimatedBottomBarItem,
     isSelected: Boolean,
     selectedContentColor: Color,
-    unselectedContentColor: Color
+    unselectedContentColor: Color,
+    modifier: Modifier = Modifier
 ) {
     val gapPx = with(LocalDensity.current) { 6.dp.toPx() }
     val labelDirection = LocalLayoutDirection.current
+    val insetDelta = with(LocalDensity.current) { (16.dp.roundToPx() - 14.dp.roundToPx()).toFloat() }
     Layout(
+        modifier = modifier,
         content = {
             Icon(
                 imageVector = if (isSelected) item.selectedIcon else item.unselectedIcon,
@@ -292,6 +309,7 @@ private fun BottomBarTabContent(
                     .graphicsLayer {
                         // Preserve the selected icon's 1.12x size, coordinated with
                         // the pill instead of running an independent competing spring.
+                        translationX = insetDelta * expansion.value * if (labelDirection == LayoutDirection.Ltr) 1f else -1f
                         scaleX = 1f + 0.12f * expansion.value
                         scaleY = scaleX
                     }
@@ -301,6 +319,10 @@ private fun BottomBarTabContent(
             Text(
                 text = item.title,
                 modifier = (if (isSelected) Modifier else Modifier.clearAndSetSemantics { })
+                    .graphicsLayer {
+                        alpha = labelAlpha.value.coerceIn(0f, 1f)
+                        translationX = insetDelta * expansion.value * if (labelDirection == LayoutDirection.Ltr) 1f else -1f
+                    }
                     .drawWithContent {
                         // Keep the exact old reveal window without a fresh Shape/Outline.
                         val reveal = ((size.width + gapPx) * expansion.value - gapPx).coerceIn(0f, size.width)
@@ -322,41 +344,18 @@ private fun BottomBarTabContent(
         } else {
             Constraints.Infinity
         }
-        // Fixed child constraints let Compose reuse the icon/text placeables as sibling widths
-        // change. Only this small layout observes the spring for its reported capsule width.
+        // Children keep fixed endpoint constraints throughout the selection spring.
         val contentConstraints = Constraints(maxHeight = contentMaxHeight)
         val icon = measurables[0].measure(contentConstraints)
         val label = measurables[1].measure(contentConstraints)
         val collapsedInset = 14.dp.roundToPx().toFloat()
-        val expandedInset = 16.dp.roundToPx().toFloat()
         val labelGap = 6.dp.roundToPx().toFloat()
-        // Preserve the original 52dp collapsed endpoint: a 24dp icon and 14dp on either side.
-        val collapsedWidth = icon.width + collapsedInset * 2
-        val expandedWidth = icon.width + expandedInset * 2 + labelGap + label.width
-        val width = constraints.constrainWidth(
-            (collapsedWidth + (expandedWidth - collapsedWidth) * expansion.value)
-                .roundToInt()
-                .coerceAtLeast(0)
-        )
-        val height = constraints.constrainHeight(
-            max(icon.height, label.height) + verticalPadding * 2
-        )
-
+        val expandedWidth = icon.width + 16.dp.roundToPx() * 2 + labelGap + label.width
+        val width = constraints.constrainWidth(expandedWidth.roundToInt())
+        val height = constraints.constrainHeight(max(icon.height, label.height) + verticalPadding * 2)
         layout(width, height) {
-            val progress = expansion.value
-            val startInset = collapsedInset + (expandedInset - collapsedInset) * progress
-            icon.placeRelative(
-                x = startInset.roundToInt(),
-                y = (height - icon.height) / 2
-            )
-            label.placeRelativeWithLayer(
-                x = (startInset + icon.width + labelGap).roundToInt(),
-                y = (height - label.height) / 2
-            ) {
-                alpha = labelAlpha.value.coerceIn(0f, 1f)
-                clip = true
-                shape = androidx.compose.ui.graphics.RectangleShape
-            }
+            icon.placeRelative(collapsedInset.roundToInt(), (height - icon.height) / 2)
+            label.placeRelative((collapsedInset + icon.width + labelGap).roundToInt(), (height - label.height) / 2)
         }
     }
 }

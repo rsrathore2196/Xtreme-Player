@@ -51,7 +51,7 @@ object MaintenanceScheduler {
 class CacheMaintenanceWorker(context: Context, parameters: WorkerParameters) : CoroutineWorker(context, parameters) {
     override suspend fun doWork(): Result = withContext(AppDispatchers.Io) {
         try {
-            MaintenanceScheduler.serial {
+            BackgroundWorkCoordinator.maintenance { MaintenanceScheduler.serial {
                 MaintenanceScheduler.cacheWorkStarted()
                 BackgroundWorkCoordinator.awaitMaintenanceIdle()
                 val app = applicationContext as? com.example.XtremeMusicApp
@@ -63,7 +63,7 @@ class CacheMaintenanceWorker(context: Context, parameters: WorkerParameters) : C
                     applicationContext.deleteDatabase("lastfm_recommendations.db")
                 com.example.data.remote.LyricsProvider.maintainDiskCache()
                 SmartCacheManager.performScheduledMaintenance(applicationContext)
-            }
+            } }
             Result.success()
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (error: Exception) {
@@ -75,7 +75,7 @@ class CacheMaintenanceWorker(context: Context, parameters: WorkerParameters) : C
 
 class LogCleanupWorker(context: Context, parameters: WorkerParameters) : CoroutineWorker(context, parameters) {
     override suspend fun doWork(): Result = withContext(AppDispatchers.Io) {
-        MaintenanceScheduler.serial {
+        BackgroundWorkCoordinator.maintenance { MaintenanceScheduler.serial {
             BackgroundWorkCoordinator.awaitMaintenanceIdle()
             val cutoff = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(14)
             // Only app-owned diagnostic directories; never descend into Coil/Media3/HTTP caches.
@@ -100,7 +100,7 @@ class LogCleanupWorker(context: Context, parameters: WorkerParameters) : Corouti
                     }
                 }
             }
-        }
+        } }
         Result.success()
     }
 }

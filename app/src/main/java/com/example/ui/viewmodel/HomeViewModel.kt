@@ -152,7 +152,7 @@ class HomeViewModel(
             var previousIds: Set<Long>? = null
             combine(listeningEventDao.observeActualPlayStamps(),
                 listeningEventDao.observeActualPlayCount().distinctUntilChanged()) { stamps, count -> stamps to count }
-                .flowOn(Dispatchers.IO).collect { (stamps, count) ->
+                .flowOn(AppDispatchers.Io).collect { (stamps, count) ->
                 val ids = stamps.mapTo(mutableSetOf()) { it.id }
                 val reloadHistory = previousIds != ids || previousCount != count
                 val rebuildOlder = previousCount >= 0 && (count < previousCount || count > previousCount + 1 ||
@@ -160,7 +160,7 @@ class HomeViewModel(
                 // Only the visible recent window is reactive. Older personalization
                 // data is loaded separately, in cancellable keyset batches.
                 if (reloadHistory) {
-                    val history = withContext(Dispatchers.IO) {
+                    val history = withContext(AppDispatchers.Io) {
                         BackgroundWorkCoordinator.work { listeningEventDao.getActualPlays(300) }
                     }
                     retainedEvents.clear()
@@ -173,7 +173,7 @@ class HomeViewModel(
                 // Unrelated Room invalidations do not change listening evidence.
                 if (!reloadHistory && changed.isEmpty()) return@collect
                 val pages = changed.chunked(900)
-                val rows = withContext(Dispatchers.IO) { pages.flatMap { listeningEventDao.getEventsByIds(it) } }
+                val rows = withContext(AppDispatchers.Io) { pages.flatMap { listeningEventDao.getEventsByIds(it) } }
                 rows.forEach { retainedEvents[it.id] = it }
                 lastEventStamps.clear(); stamps.forEach { lastEventStamps[it.id] = it }
                 emit(withContext(workerDispatcher) { retainedEvents.values.sortedWith(compareByDescending<ListeningEventEntity> { it.timestamp }.thenByDescending { it.id }).take(300) })
@@ -188,7 +188,7 @@ class HomeViewModel(
     private val historyRows = actualPlays.map { events -> events.map { it.trackId }.distinct() }
         .distinctUntilChanged().flatMapLatest { ids ->
         val pages = ids.chunked(900).map { database.musicDao().observeTracksByIds(it)
-            .flowOn(Dispatchers.IO).distinctUntilChanged() }
+            .flowOn(AppDispatchers.Io).distinctUntilChanged() }
         if (pages.isEmpty()) kotlinx.coroutines.flow.flowOf(HistoryRows(ids)) else combine(pages) { groups ->
             withContext(workerDispatcher) { HistoryRows(ids, groups.flatMap { rows -> rows.map { it.toMusicTrack() } }) }
         }
@@ -240,7 +240,7 @@ class HomeViewModel(
             BackgroundWorkCoordinator.yieldToInteraction(requireForeground = true)
             val before = cursor
             val batch = BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.DEFERRED) {
-                withContext(Dispatchers.IO) {
+                withContext(AppDispatchers.Io) {
                     val page = listeningEventDao.getActualPlaysBefore(before.timestamp, before.id,
                         minOf(200, 5000 - events.size))
                     val missing = page.map { it.trackId }.distinct().filterNot(metadata::containsKey)
@@ -652,7 +652,7 @@ class HomeViewModel(
             lastRenderInputs = inputs
             return@withContext
         }
-        val exposure = if (pool.generation == renderedGeneration) previousExposure else withContext(Dispatchers.IO) {
+        val exposure = if (pool.generation == renderedGeneration) previousExposure else withContext(AppDispatchers.Io) {
             exposurePreferences.getStringSet("recordings_v2", emptySet()).orEmpty().toSet()
         }
         // Safe boundaries are outside locks and busy leases. Keep completed work
@@ -733,7 +733,7 @@ class HomeViewModel(
             // waits, so a preview cannot overwrite still-unrestored candidate pools.
             savePreparedCards()
             if (manualRenderGeneration == pool.generation) manualRenderGeneration = -1L
-            if (nextExposure.isNotEmpty()) withContext(Dispatchers.IO) {
+            if (nextExposure.isNotEmpty()) withContext(AppDispatchers.Io) {
                 exposurePreferences.edit().putStringSet("recordings_v2", nextExposure).apply()
             }
         }
@@ -822,7 +822,7 @@ class HomeViewModel(
 
     fun updateUserProfile(profile: UserProfile) {
         ownerScope.launch {
-            withContext(Dispatchers.IO) { UserProfilePreferences.saveUserProfile(getApplication(), profile) }
+            withContext(AppDispatchers.Io) { UserProfilePreferences.saveUserProfile(getApplication(), profile) }
             applyUserProfile(profile)
         }
     }
@@ -1121,7 +1121,7 @@ class HomeViewModel(
             }
         }
         ownerScope.launch {
-            val profiles = withContext(Dispatchers.IO) { UserProfilePreferences.getUserProfileFlow(getApplication()) }
+            val profiles = withContext(AppDispatchers.Io) { UserProfilePreferences.getUserProfileFlow(getApplication()) }
             profiles.collect { profile ->
                 applyUserProfile(profile)
             }
@@ -1470,7 +1470,7 @@ class HomeViewModel(
     }
 
     fun toggleFavorite(track: MusicTrack) {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(AppDispatchers.Io) {
             repository.toggleFavorite(track)
         }
     }

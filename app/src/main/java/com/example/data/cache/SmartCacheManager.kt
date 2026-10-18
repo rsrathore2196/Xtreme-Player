@@ -1,5 +1,6 @@
 package com.example.data.cache
 
+import com.example.performance.AppDispatchers
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
@@ -8,7 +9,6 @@ import com.example.data.remote.OnlineMusicApiService
 import com.example.data.repository.MusicRepository
 import com.example.service.MusicCache
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
@@ -79,9 +79,9 @@ object SmartCacheManager {
     const val QUOTA_BALANCED = 60L * 1024L * 1024L // 60 MB Balanced (Default)
     const val QUOTA_GENEROUS = 120L * 1024L * 1024L // 120 MB Generous
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(SupervisorJob() + AppDispatchers.Io)
     private val maintenanceMutex = Mutex()
-    private suspend fun <T> maintainCache(action: suspend () -> T): T = withContext(Dispatchers.IO) {
+    private suspend fun <T> maintainCache(action: suspend () -> T): T = withContext(AppDispatchers.Io) {
         // Explicit storage actions preempt optional reconciliation, not playback.
         val pending = synchronized(jobLock) { listOfNotNull(maintenanceJob, statisticsJob) }
         pending.forEach { it.cancelAndJoin() }
@@ -213,7 +213,7 @@ object SmartCacheManager {
     }
 
     /** WorkManager entry point; also works with no Activity/Home lifecycle in the process. */
-    internal suspend fun performScheduledMaintenance(context: Context) = withContext(Dispatchers.IO) {
+    internal suspend fun performScheduledMaintenance(context: Context) = withContext(AppDispatchers.Io) {
         initialize(context, scheduleMaintenance = false)
         maintenanceMutex.withLock {
             val prefs = getPrefs()
