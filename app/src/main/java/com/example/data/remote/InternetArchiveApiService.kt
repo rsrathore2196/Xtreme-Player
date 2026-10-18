@@ -316,6 +316,18 @@ object InternetArchiveApiService {
             val request = Request.Builder().url(metadataUrl)
                 .header("User-Agent", "XtremePlayer/2.5.0 (Android)").build()
             val root = JSONObject(httpClient.catalogRequest(request))
+            return parseLosslessItem(doc, root)
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: Exception) {
+            Log.w(TAG, "Failed to verify metadata for $identifier: ${e.message}")
+            return null
+        }
+    }
+
+    /** Interpret actual per-file tags, without borrowing a collection's title/duration. */
+    internal suspend fun parseLosslessItem(doc: JSONObject, root: JSONObject): List<MusicTrack> {
+            val identifier = text(doc, "identifier")
+            if (identifier.isBlank()) return emptyList()
             if (root.optBoolean("is_dark", false)) return emptyList()
             val metadata = root.optJSONObject("metadata")
             if (!authorized(metadata)) return emptyList()
@@ -336,16 +348,23 @@ object InternetArchiveApiService {
                 if (name.isBlank() || name.split('/').any { it == ".." }) return@mapNotNull null
                 // Names such as track01.flac cannot establish recording identity. Only a
                 // single-file item's real title can substitute for missing embedded tags.
-                val fileTitle = text(file, "title").ifBlank {
+                val fileTitle = text(file, "title").ifBlank { text(file, "track_title") }
+                    .ifBlank { text(file, "song_title") }.ifBlank {
                     if (lossless.size == 1 && !isConcert) text(metadata, "title") else ""
                 }
                 if (fileTitle.isBlank() || genericTitle.matches(fileTitle.trim())) return@mapNotNull null
                 val artist = text(file, "artist").ifBlank { text(file, "creator") }
+                    .ifBlank { text(file, "album_artist") }.ifBlank { text(file, "albumartist") }
+                    .ifBlank { text(metadata, "artist") }
                     .ifBlank { text(metadata, "creator") }.ifBlank { text(doc, "creator") }.ifBlank { "Unknown Artist" }
                 val album = text(file, "album").ifBlank { text(metadata, "album") }
                     .ifBlank { text(doc, "album") }
                     .ifBlank { if (lossless.size > 1) text(metadata, "title") else "Unknown" }
-                val duration = durationMillis(text(file, "length"))
+                val duration = sequenceOf("length", "duration", "runtime")
+                    .map { durationMillis(text(file, it)) }.firstOrNull { it > 0L }
+                    ?: text(file, "duration_ms").toLongOrNull()?.takeIf { it > 0L }
+                    ?: if (lossless.size == 1 && !isConcert) sequenceOf("length", "duration", "runtime")
+                        .map { durationMillis(text(metadata, it)) }.firstOrNull { it > 0L } ?: 0L else 0L
                 if (duration <= 0L || artist.equals("Unknown Artist", true) || artist.equals("Various Artists", true))
                     return@mapNotNull null
                 val reportedBitrate = text(file, "bitrate").toDoubleOrNull()?.takeIf { it.isFinite() && it > 0 }?.toInt()
@@ -364,11 +383,6 @@ object InternetArchiveApiService {
                     year = text(file, "year").ifBlank { text(metadata, "year") }.ifBlank { text(doc, "year") },
                     isrc = text(file, "isrc"), source = "INTERNET_ARCHIVE", isLossless = true)
             }
-        } catch (e: kotlinx.coroutines.CancellationException) { throw e }
-        catch (e: Exception) {
-            Log.w(TAG, "Failed to verify metadata for $identifier: ${e.message}")
-            return null
-        }
     }
 
     private fun losslessQuality(file: JSONObject): String {

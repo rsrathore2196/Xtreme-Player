@@ -416,7 +416,14 @@ class MusicService : MediaLibraryService() {
 
             override fun onEvents(player: Player, events: Player.Events) {
                 publishSignalSource(player.currentMediaItem)
-                com.example.playback.AudioSignalPath.update { it.copy(buffering = player.playbackState == Player.STATE_BUFFERING) }
+                com.example.playback.AudioSignalPath.update { it.copy(buffering = player.playbackState == Player.STATE_BUFFERING,
+                    playbackStatus = when {
+                        player.playbackState == Player.STATE_BUFFERING -> "Buffering"
+                        player.playbackState == Player.STATE_ENDED -> "Ended"
+                        player.isPlaying -> "Playing"
+                        player.playbackState == Player.STATE_READY -> "Paused"
+                        else -> "Idle"
+                    }) }
                 jioFallback?.update()
                 val queueChanged = events.contains(Player.EVENT_TIMELINE_CHANGED)
                 if (queueChanged || events.contains(Player.EVENT_MEDIA_ITEM_TRANSITION) ||

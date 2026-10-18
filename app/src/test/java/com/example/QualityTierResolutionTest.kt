@@ -42,7 +42,27 @@ class QualityTierResolutionTest {
             searchStandard = { _, _ -> listOf(jio) }, resolveYouTube = { _, _, _ -> null })
         val result = withTimeout(4000) { resolver.resolve(song, AudioQuality.HI_RES_LOSSLESS) }
         assertTrue(cancelled); assertEquals(jio.audioUrl, result.audioUrl)
+        assertFalse("A timeout must allow the delayed broader lossless lookup", resolver.hasRecentLosslessAttempt(song))
+    }
+    @Test fun failedInitialArchiveRequestDoesNotPoisonTheNextVerifiedResolution() = runBlocking {
+        var lookups = 0
+        val resolver = StreamResolver(searchLossless = {
+            if (++lookups == 1) throw java.io.IOException("Temporary network failure")
+            listOf(archive)
+        }, searchStandard = { _, _ -> listOf(jio) }, resolveYouTube = { _, _, _ -> null }, supportsLossless = { true })
+        val first = resolver.resolve(song, AudioQuality.HI_RES_LOSSLESS)
+        assertEquals(jio.audioUrl, first.audioUrl)
+        assertFalse(resolver.hasRecentLosslessAttempt(song))
+        val refreshed = resolver.resolve(song, AudioQuality.HI_RES_LOSSLESS, failedUrl = first.audioUrl)
+        assertEquals(archive.audioUrl, refreshed.audioUrl)
         assertTrue(resolver.hasRecentLosslessAttempt(song))
+        assertEquals(2, lookups)
+    }
+    @Test fun emptyInitialPageStillPermitsABroaderBackgroundCollectionLookup() = runBlocking {
+        val resolver = StreamResolver(searchLossless = { emptyList() }, searchStandard = { _, _ -> listOf(jio) },
+            resolveYouTube = { _, _, _ -> null })
+        assertEquals(jio.audioUrl, resolver.resolve(song, AudioQuality.HI_RES_LOSSLESS).audioUrl)
+        assertFalse(resolver.hasRecentLosslessAttempt(song))
     }
     @Test fun unavailableJioUsesExactSelectedYoutubeNotAnUnrelatedVideo() = runBlocking {
         val resolver = StreamResolver(searchLossless = { emptyList() }, searchStandard = { _, _ -> emptyList() },

@@ -99,6 +99,8 @@ class XtremeMusicApp : Application(), ImageLoaderFactory {
 
         // Context registration does not read storage or initialize the network client.
         OnlineMusicApiService.initialize(this)
+        // One asynchronous local preference; no DSP or disk work on the first-render path.
+        com.example.playback.AudioEffectsManager.initialize(this)
 
         // Every heavy prewarm competes in the same admission queue as catalog,
         // history and cache work. On-demand playback/images bypass this queue.

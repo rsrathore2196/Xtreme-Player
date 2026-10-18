@@ -48,7 +48,7 @@ class PsychoacousticAudioProcessor : BaseAudioProcessor() {
             C.ENCODING_PCM_24BIT_BIG_ENDIAN, C.ENCODING_PCM_32BIT_BIG_ENDIAN)
         val order = if (bigEndian) ByteOrder.BIG_ENDIAN else ByteOrder.LITTLE_ENDIAN
         val output = replaceOutputBuffer(bytes).order(order)
-        if (!state.isEnabled) {
+        if (!state.isEnabled && !state.audioEnhancerEnabled) {
             val limit = inputBuffer.limit()
             inputBuffer.limit(inputBuffer.position() + bytes)
             output.put(inputBuffer)
@@ -89,18 +89,19 @@ class PsychoacousticAudioProcessor : BaseAudioProcessor() {
         var boosts = 0.0
         for (i in 0 until 5) {
             val band = state.bands.getOrNull(i)
-            val db = (band?.levelMb ?: 0) / 100.0
+            val db = if (state.isEnabled) (band?.levelMb ?: 0) / 100.0 else 0.0
             boosts += max(0.0, db)
             filters[i].target(coefficients(rate, band?.centerFreqHz?.toDouble() ?: 1000.0, db, false))
         }
-        val bass = state.bassBoostStrength / 1000.0 * 4.0 + if (state.crystalClarityEnabled) 0.8 else 0.0
-        val air = if (state.crystalClarityEnabled) 1.5 else 0.0
+        val enhance = state.audioEnhancerEnabled || state.isEnabled && state.crystalClarityEnabled
+        val bass = (if (state.isEnabled) state.bassBoostStrength / 1000.0 * 4.0 else 0.0) + if (enhance) 0.8 else 0.0
+        val air = if (enhance) 1.5 else 0.0
         filters[5].target(coefficients(rate, 60.0, bass, false))
         filters[6].target(coefficients(rate, 14000.0, air, true))
-        boosts += bass + air + if (state.virtualizerStrength > 0) 2.5 else 0.0
+        boosts += bass + air + if (state.isEnabled && state.virtualizerStrength > 0) 2.5 else 0.0
         // Reserve filter headroom BEFORE boosting. Loudness gain stays controlled by the limiter.
-        targetGain = 10.0.pow((-boosts + state.loudnessGainMb / 100.0) / 20.0).toFloat()
-        targetWidth = 1f + state.virtualizerStrength.coerceIn(0, 1000) / 1000f * 0.30f
+        targetGain = 10.0.pow((-boosts + if (state.isEnabled) state.loudnessGainMb / 100.0 else 0.0) / 20.0).toFloat()
+        targetWidth = 1f + if (state.isEnabled) state.virtualizerStrength.coerceIn(0, 1000) / 1000f * 0.30f else 0f
     }
 
     private fun read(buffer: ByteBuffer): Float = when (inputAudioFormat.encoding) {

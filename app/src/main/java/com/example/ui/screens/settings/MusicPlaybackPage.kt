@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Speed
@@ -59,6 +60,8 @@ import com.example.ui.theme.liquidGlassPill
 import com.example.ui.theme.liquidGlassButton
 import com.example.ui.theme.liquidGlassSwitchColors
 import com.example.ui.theme.bouncyClickable
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.playback.AudioEffectsManager
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -89,6 +92,8 @@ fun MusicPlaybackPage(
             .padding(16.dp)
     ) {
         NetworkStreamingQualitySection()
+        Spacer(modifier = Modifier.height(16.dp))
+        AudioEnhancerSettingsSection()
         Spacer(modifier = Modifier.height(16.dp))
 
         // 2. Hardware Equalizer & Soundstage Card
@@ -420,5 +425,28 @@ fun MusicPlaybackPage(
         }
 
         Spacer(modifier = Modifier.height(24.dp))
+    }
+}
+
+/** Local subscription: the enhancer preference does not drive navigation or stream resolution. */
+@Composable
+internal fun AudioEnhancerSettingsSection() {
+    val colors = LocalAppColors.current
+    val effects by AudioEffectsManager.effectsState.collectAsStateWithLifecycle()
+    val onToggle = remember { AudioEffectsManager::setAudioEnhancerEnabled }
+    Row(Modifier.fillMaxWidth().testTag("audio_enhancer_settings_section")
+        .liquidGlassCard(colors, RoundedCornerShape(22.dp), elevation = 6.dp,
+            translucency = 0.82f, tintAccent = true).padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = colors.primaryAccent,
+            modifier = Modifier.size(24.dp))
+        Column(Modifier.weight(1f)) {
+            Text("Audio Enhancer", color = colors.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+            Text("Applies to all songs. Keeps the original stream quality and your separate EQ settings.",
+                color = colors.textMuted, fontSize = 11.5.sp, lineHeight = 15.sp)
+        }
+        Switch(checked = effects.audioEnhancerEnabled, onCheckedChange = onToggle,
+            colors = liquidGlassSwitchColors(colors), modifier = Modifier.testTag("switch_audio_enhancer_settings"))
     }
 }

@@ -23,7 +23,9 @@ internal class StreamResolver(
         OnlineMusicApiService.searchSongs(query, limit = 20, forceRefresh = refresh)
     },
     private val searchLossless: suspend (String) -> List<MusicTrack> = { query ->
-        com.example.data.remote.InternetArchiveApiService.searchLosslessPage(query, pageSize = 4, playableOnly = true).tracks
+        val page = com.example.data.remote.InternetArchiveApiService.searchLosslessPage(query, pageSize = 4, playableOnly = true)
+        if (!page.isSuccessful) throw IOException("Incomplete Archive lookup")
+        page.tracks
     },
     private val fetchById: suspend (String, Boolean) -> MusicTrack? = { id, refresh ->
         OnlineMusicApiService.fetchSongDetails(id, refresh)
@@ -174,16 +176,20 @@ internal class StreamResolver(
                 title.isBlank() || primary.isBlank()) return null
             val identity = recordingKey
             if (synchronized(archiveMisses) { (archiveMisses[identity] ?: 0L) > android.os.SystemClock.elapsedRealtime() }) return null
-            synchronized(archiveAttempts) {
-                archiveAttempts[identity] = android.os.SystemClock.elapsedRealtime() + 180_000L
-                while (archiveAttempts.size > 128) archiveAttempts.remove(archiveAttempts.keys.first())
-            }
+            var completed = false
             // This is one TOTAL deadline, including search, item metadata and matching.
             val found = attempt(LOSSLESS_LOOKUP_TIMEOUT_MS) {
                 val candidates = searchLossless("$title ${primary.ifBlank { artist }}".trim())
                 withContext(Dispatchers.Default) { candidates.firstOrNull { usable(it) && matchesInitialLossless(track, it) && supportsLossless(it) } }
+                    .also { completed = true }
             }
-            if (found == null) synchronized(archiveMisses) {
+            // A timeout/partial response is not proof of absence. Only a successful
+            // initial resolution suppresses the later, broader background lookup.
+            if (found != null) synchronized(archiveAttempts) {
+                archiveAttempts[identity] = android.os.SystemClock.elapsedRealtime() + 180_000L
+                while (archiveAttempts.size > 128) archiveAttempts.remove(archiveAttempts.keys.first())
+            }
+            if (completed && found == null) synchronized(archiveMisses) {
                 archiveMisses[identity] = android.os.SystemClock.elapsedRealtime() + 180_000L
                 while (archiveMisses.size > 128) archiveMisses.remove(archiveMisses.keys.first())
             }

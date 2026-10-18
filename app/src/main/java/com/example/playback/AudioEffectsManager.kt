@@ -38,6 +38,7 @@ data class BandState(
 data class AudioEffectsState(
     val isEnabled: Boolean = false,
     val crystalClarityEnabled: Boolean = false,
+    val audioEnhancerEnabled: Boolean = false,
     val bassBoostStrength: Int = 0, // 0..1000
     val virtualizerStrength: Int = 0, // 0..1000
     val loudnessGainMb: Int = 0, // 0..800 mB
@@ -75,6 +76,10 @@ object AudioEffectsManager {
     // snapshots are published by the worker without invoking native audio effects.
     private val stateLock = Any()
     private var revision = 0L
+    private var enhancerChoiceRevision = 0L
+    private var preferencesContext: android.content.Context? = null
+    private var persistedEnhancer: Boolean? = null
+    private val initializingPreferences = java.util.concurrent.atomic.AtomicBoolean(false)
     private data class Request(val revision: Long, val state: AudioEffectsState)
     private val commands = Channel<Unit>(Channel.CONFLATED)
     private val effectsScope = CoroutineScope(SupervisorJob() + Dispatchers.IO).also { scope ->
@@ -131,6 +136,27 @@ object AudioEffectsManager {
         if (it.crystalClarityEnabled == enabled) it
         else it.copy(crystalClarityEnabled = enabled, isEnabled = it.isEnabled || enabled)
     } }
+    /** Independent of EQ, presets and provider resolution; shared by settings and the popup. */
+    fun setAudioEnhancerEnabled(enabled: Boolean) { updateDesired {
+        enhancerChoiceRevision++
+        // Also persist an explicit OFF made before asynchronous preference restoration.
+        if (it.audioEnhancerEnabled == enabled) commands.trySend(Unit)
+        it.copy(audioEnhancerEnabled = enabled)
+    } }
+    fun initialize(context: android.content.Context) {
+        if (!initializingPreferences.compareAndSet(false, true)) return
+        val app = context.applicationContext
+        effectsScope.launch {
+            val saved = com.example.data.local.AudioQualityPreferences.getAudioEnhancerEnabled(app)
+            synchronized(stateLock) {
+                preferencesContext = app
+                persistedEnhancer = saved
+                if (enhancerChoiceRevision == 0L)
+                    updateDesired { it.copy(audioEnhancerEnabled = saved) }
+                commands.trySend(Unit)
+            }
+        }
+    }
     fun resetAll(enabled: Boolean? = null) { updateDesired { state ->
         presetState(state, "Flat").copy(isEnabled = enabled ?: state.isEnabled)
     } }
@@ -155,11 +181,19 @@ object AudioEffectsManager {
     // The render thread reads one complete immutable snapshot at buffer boundaries.
     // Coalescing keeps rapid slider changes cheap; obsolete worker states never win.
     private fun reconcile(request: Request) {
-        synchronized(stateLock) {
+        val preference = synchronized(stateLock) {
             if (revision != request.revision) return
             PsychoacousticAudioProcessor.settings.set(request.state)
             AudioSignalPath.update { it.copy(clarityEnabled = request.state.crystalClarityEnabled,
-                dspActive = request.state.isEnabled && !it.directApproved) }
+                enhancerEnabled = request.state.audioEnhancerEnabled,
+                eqActive = request.state.isEnabled && !it.directApproved,
+                dspActive = (request.state.isEnabled || request.state.audioEnhancerEnabled) && !it.directApproved) }
+            preferencesContext?.takeIf { persistedEnhancer != request.state.audioEnhancerEnabled }
+                ?.let { it to request.state.audioEnhancerEnabled }
+        }
+        if (preference != null) {
+            com.example.data.local.AudioQualityPreferences.setAudioEnhancerEnabled(preference.first, preference.second)
+            synchronized(stateLock) { persistedEnhancer = preference.second }
         }
     }
 

@@ -1073,8 +1073,8 @@ class PlaybackManager(
             _uiState.value.currentTrack?.audioUrl == original.audioUrl
         losslessUpgradeJob = scope.launch {
             try {
-                // A fresh selection already tried Archive within the resolver's 2.5s budget.
-                // Retain upgrade support for a profile changed to MAX during an existing session.
+                // A successful initial Archive resolution needs no second search.
+                // A timeout/empty first page still permits one broader, delayed lookup.
                 if (repo.hasRecentLosslessAttempt(original)) return@launch
                 // Let the chosen provider establish playback and its initial buffer first.
                 // A pause/rebuffer cancels this pre-lookup delay and starts it afresh on resume.

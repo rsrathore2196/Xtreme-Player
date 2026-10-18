@@ -122,7 +122,7 @@ class BitPerfectAudioSink private constructor(
             shared.flush()
             observation.attach(lease.track, true, lease)
             AudioSignalPath.update { it.copy(inputRateHz = inputFormat.sampleRate, outputRateHz = lease.track.sampleRate,
-                dspActive = false, directApproved = true, mode = "Direct") }
+                dspActive = false, eqActive = false, directApproved = true, mode = "Direct") }
             listener?.onAudioTrackInitialized(AudioSink.AudioTrackConfig(lease.encoding,
                 inputFormat.sampleRate, lease.track.channelConfiguration, false, false, lease.bufferBytes))
             if (playing) lease.track.play()
@@ -132,7 +132,8 @@ class BitPerfectAudioSink private constructor(
     }
     private fun configureShared(inputFormat: Format, specifiedBufferSize: Int, outputChannels: IntArray?) {
         AudioSignalPath.update { it.copy(inputRateHz = inputFormat.sampleRate, bitPerfect = false,
-            directApproved = false, mode = "Shared", dspActive = AudioEffectsManager.effectsState.value.isEnabled) }
+            directApproved = false, mode = "Shared", eqActive = AudioEffectsManager.effectsState.value.isEnabled,
+            dspActive = AudioEffectsManager.effectsState.value.let { settings -> settings.isEnabled || settings.audioEnhancerEnabled }) }
         processor.configure(AudioProcessor.AudioFormat(inputFormat)); processor.flush()
         super.configure(inputFormat, specifiedBufferSize, outputChannels)
         super.setPlaybackParameters(parameters)
@@ -234,7 +235,8 @@ class BitPerfectAudioSink private constructor(
     }
     override fun setPlaybackParameters(playbackParameters: PlaybackParameters) {
         parameters = playbackParameters
-        AudioSignalPath.update { it.copy(appResampling = playbackParameters != PlaybackParameters.DEFAULT) }
+        AudioSignalPath.update { it.copy(appResampling = playbackParameters != PlaybackParameters.DEFAULT,
+            playbackSpeed = playbackParameters.speed, pitch = playbackParameters.pitch) }
         native?.track?.let { track ->
             track.playbackParams = android.media.PlaybackParams().allowDefaults()
                 .setSpeed(playbackParameters.speed).setPitch(playbackParameters.pitch)
@@ -373,8 +375,11 @@ class BitPerfectAudioSink private constructor(
                         AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "Device Speaker"
                         else -> "System output"
                     }, outputRateHz = audio.sampleRate, bitPerfect = pure, directApproved = approved,
+                    outputEncoding = audio.audioFormat, outputChannels = audio.channelCount,
+                    outputRouteVerified = route != null,
                     mode = if (approved) "Direct" else if (Build.VERSION.SDK_INT >= 29 && audio.isOffloadedPlayback) "Offload" else "Shared",
-                    dspActive = !direct && AudioEffectsManager.effectsState.value.isEnabled) }
+                    eqActive = !direct && AudioEffectsManager.effectsState.value.isEnabled,
+                    dspActive = !direct && AudioEffectsManager.effectsState.value.let { settings -> settings.isEnabled || settings.audioEnhancerEnabled }) }
             }
         }
         fun health() {
@@ -388,6 +393,8 @@ class BitPerfectAudioSink private constructor(
         fun detach() {
             track?.let { runCatching { it.removeOnRoutingChangedListener(routeListener) } }
             track = null; lease = null; direct = false
+            AudioSignalPath.update { it.copy(outputEncoding = C.ENCODING_INVALID, outputChannels = 0,
+                outputRouteVerified = false, outputRateHz = 0, directApproved = false, bitPerfect = false) }
         }
     }
 }

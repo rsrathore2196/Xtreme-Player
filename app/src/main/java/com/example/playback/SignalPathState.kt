@@ -59,10 +59,27 @@ data class SignalPathState(
     val inputRateHz: Int = 0, val outputRateHz: Int = 0, val appResampling: Boolean = false, val bitPerfect: Boolean = false,
     val directApproved: Boolean = false, val outputDevice: String = "System output", val outputType: String = "Unknown",
     val dspActive: Boolean = false, val clarityEnabled: Boolean = false,
+    val enhancerEnabled: Boolean = false, val eqActive: Boolean = false,
     val appVolume: Float = 1f, val systemVolume: Int = 0, val systemVolumeMax: Int = 0,
-    val mode: String = "Shared", val buffering: Boolean = false, val glitches: Int = 0
+    val mode: String = "Shared", val buffering: Boolean = false, val glitches: Int = 0,
+    val outputEncoding: Int = C.ENCODING_INVALID, val outputChannels: Int = 0,
+    val outputRouteVerified: Boolean = false, val playbackSpeed: Float = 1f, val pitch: Float = 1f,
+    val playbackStatus: String = "Idle"
 ) {
     val status: String get() = when { bitPerfect -> "Bit-Perfect"; dspActive -> "Enhanced"; else -> "High Quality" }
+    val outputFormat: String get() {
+        val encoding = when (outputEncoding) {
+            C.ENCODING_PCM_FLOAT -> "32-bit float PCM"
+            C.ENCODING_PCM_8BIT -> "8-bit PCM"
+            C.ENCODING_PCM_16BIT, C.ENCODING_PCM_16BIT_BIG_ENDIAN -> "16-bit PCM"
+            C.ENCODING_PCM_24BIT, C.ENCODING_PCM_24BIT_BIG_ENDIAN -> "24-bit PCM"
+            C.ENCODING_PCM_32BIT, C.ENCODING_PCM_32BIT_BIG_ENDIAN -> "32-bit PCM"
+            else -> "Format not reported"
+        }
+        val channels = when (outputChannels) { 1 -> "Mono"; 2 -> "Stereo"; in 3..32 -> "$outputChannels channels"; else -> "" }
+        val rate = outputRateHz.takeIf { it > 0 }?.let { String.format(Locale.ROOT, "%.1f kHz", it / 1000.0) }.orEmpty()
+        return listOf(encoding, rate, channels).filter(String::isNotEmpty).joinToString(" • ")
+    }
 }
 
 /** One service-owned presentation channel; no polling, disk reads, or UI dependencies. */

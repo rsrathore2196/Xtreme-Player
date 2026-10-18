@@ -383,19 +383,30 @@ class MusicRepository private constructor(
             if (missedRecently() || AudioQualityPreferences.getSelectedQuality(context) != AudioQuality.HI_RES_LOSSLESS ||
                 !monitor.allowsLosslessUpgrade)
                 return@withLock null
+            var completed = false
             val result = kotlinx.coroutines.withTimeoutOrNull(8_000L) {
                 // Archive often credits only the primary artist. Optional featured
                 // credits must not turn a targeted query into an impossible AND search.
                 val artist = RecordingIdentity.artistNames(track).firstOrNull()
                     ?: StreamResolver.extractCleanArtist(track.artist)
-                val query = "${StreamResolver.extractCleanTitle(track.title, track.artist)} $artist".trim()
-                val candidates = InternetArchiveApiService.searchLosslessPage(query, pageSize = 6, playableOnly = true).tracks
-                withContext(Dispatchers.Default) { candidates.filter { candidate ->
-                    candidate.audioUrl != track.audioUrl && StreamResolver.matchesLosslessUpgrade(track, candidate) &&
-                        (!track.isLossless || !track.qualityBadge.startsWith("Hi-Res") && candidate.qualityBadge.startsWith("Hi-Res"))
-                }.sortedByDescending { it.qualityBadge.startsWith("Hi-Res") }.firstOrNull() }
+                val title = StreamResolver.extractCleanTitle(track.title, track.artist)
+                var successful = true
+                // Reuse the initial page/cache first. Album collections may index
+                // their creator and album, without indexing each individual title.
+                for ((index, query) in listOf("$title $artist".trim(), artist).filter(String::isNotBlank).distinct().withIndex()) {
+                    val page = InternetArchiveApiService.searchLosslessPage(query,
+                        pageSize = if (index == 0) 4 else 6, playableOnly = true)
+                    successful = successful && page.isSuccessful
+                    val match = withContext(Dispatchers.Default) { page.tracks.filter { candidate ->
+                        candidate.audioUrl != track.audioUrl && StreamResolver.matchesLosslessUpgrade(track, candidate) &&
+                            (!track.isLossless || !track.qualityBadge.startsWith("Hi-Res") && candidate.qualityBadge.startsWith("Hi-Res"))
+                    }.sortedByDescending { it.qualityBadge.startsWith("Hi-Res") }.firstOrNull() }
+                    if (match != null) { completed = true; return@withTimeoutOrNull match }
+                }
+                completed = successful
+                null
             }
-            if (result == null) losslessMisses.put(key, android.os.SystemClock.elapsedRealtime() + 180_000L)
+            if (completed && result == null) losslessMisses.put(key, android.os.SystemClock.elapsedRealtime() + 180_000L)
             result
         }
     }
