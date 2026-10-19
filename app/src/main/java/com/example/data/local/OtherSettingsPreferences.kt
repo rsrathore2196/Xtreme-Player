@@ -46,7 +46,7 @@ object OtherSettingsPreferences {
     private const val KEY_LYRICS_TEXT_SIZE = "lyrics_text_size_sp"
     val LYRICS_PROVIDERS = listOf("Auto", "lrc.red", "BiniLyrics", "BetterLyrics", "PaxSenix", "LyricsPlus", "Unison",
         "BetterLyrics Portato", "PaxSenix: Spotify", "PaxSenix: Musixmatch", "Musixmatch", "KuGou",
-        "YouTube captions", "LRCLIB", "YouTube Music", "Genius")
+        "LRCLIB", "Genius")
     private val lyricsScope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(1))
     private val lyricsStarted = java.util.concurrent.atomic.AtomicBoolean(false)
     private val lyricsState = MutableStateFlow(LyricsSettings())
