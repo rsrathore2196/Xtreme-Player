@@ -24,10 +24,8 @@ object BackgroundWorkCoordinator {
     val startupReadiness = _startupReadiness.asStateFlow()
     private val initialPresentationPending = AtomicBoolean(false)
     private val preparedContentDrawn = AtomicBoolean(false)
-    private val renderedFrames = AtomicLong()
     private val healthyFrames = AtomicInteger()
-    private val preparedAtFrame = AtomicLong()
-    private val startupPresented = kotlinx.coroutines.CompletableDeferred<Unit>()
+    private val preparedDrawAt = AtomicLong()
     val initialPresentationInProgress: Boolean get() = initialPresentationPending.get()
 
     fun beginInitialPresentation() {
@@ -36,14 +34,17 @@ object BackgroundWorkCoordinator {
     fun startupTask(task: StartupTask, status: StartupStatus) {
         _startupReadiness.update { it.withStatus(task, status) }
     }
-    /** Called after the actual retained navigation tree is drawn, never from a frame-clock guess. */
+    /** Called by the View tree's actual draw observer, including cached Compose layers. */
     fun initialContentDrawn() {
-        if (initialPresentationPending.get() && !preparedContentDrawn.get() &&
-            _startupReadiness.value.preparationComplete) {
-            preparedAtFrame.set(renderedFrames.get())
+        if (initialPresentationPending.get() && _startupReadiness.value.preparationComplete) {
+            preparedDrawAt.set(SystemClock.elapsedRealtime())
+            healthyFrames.set(0)
             preparedContentDrawn.set(true)
         }
     }
+    /** Optional continuations cannot wake between data preparation and presentation. */
+    suspend fun awaitInitialPresentation() { startupReadiness.first { it.complete } }
+
     suspend fun awaitInitialPresentationSettled() {
         startupReadiness.first { it.preparationComplete }
         if (startupReadiness.value.complete) return
@@ -52,11 +53,15 @@ object BackgroundWorkCoordinator {
             currentCoroutineContext().ensureActive()
             if (startupReadiness.value.complete) return
             val essentialFinished = synchronized(admissionLock) { !essentialActive }
-            val framesAfterPresentation = renderedFrames.get() - preparedAtFrame.get()
+            val now = SystemClock.elapsedRealtime()
+            val drawnFor = now - preparedDrawAt.get()
+            // A static screen need not submit another frame. Telemetry can also
+            // be absent or continuously over budget on a busy device. It guides
+            // a bounded settling observation, never an unbounded readiness latch.
+            val settled = healthyFrames.get() >= 3 ||
+                now - maxOf(preparedDrawAt.get(), lastSlowFrame.get()) >= 250L || drawnFor >= 1_000L
             if (foreground.get() && preparedContentDrawn.get() && !foregroundDrawPending.get() &&
-                essentialFinished && navigationJobs.get() == 0 && framesAfterPresentation > 0L &&
-                (healthyFrames.get() >= 3 && framesAfterPresentation >= 3L ||
-                    SystemClock.elapsedRealtime() - lastSlowFrame.get() >= 250L)) break
+                essentialFinished && navigationJobs.get() == 0 && settled) break
             delay(50L)
         }
         // Revealing interactive controls is itself a foreground interaction
@@ -65,7 +70,6 @@ object BackgroundWorkCoordinator {
         interaction()
         initialPresentationPending.set(false)
         startupTask(StartupTask.PRESENTATION, StartupStatus.READY)
-        startupPresented.complete(Unit)
     }
     internal const val OPTIONAL_IDLE_MS = 15_000L
     internal const val BETWEEN_JOBS_MS = 750L
@@ -129,7 +133,7 @@ object BackgroundWorkCoordinator {
         awaitFirstFrame()
         awaitHomeContent()
         cachedHomeReady.await()
-        if (initialPresentationPending.get()) startupPresented.await()
+        if (initialPresentationPending.get()) awaitInitialPresentation()
         awaitIdle(quietMillis = 750L, minimumUptimeMillis = 0L)
         awaitNavigationIdle(requireForeground = true)
     }
@@ -405,7 +409,6 @@ object BackgroundWorkCoordinator {
     }
     fun interaction() { lastInteraction.set(SystemClock.elapsedRealtime()) }
     fun frame(durationNanos: Long, budgetNanos: Long) {
-        renderedFrames.incrementAndGet()
         if (durationNanos > budgetNanos) {
             healthyFrames.set(0)
             lastSlowFrame.set(SystemClock.elapsedRealtime())

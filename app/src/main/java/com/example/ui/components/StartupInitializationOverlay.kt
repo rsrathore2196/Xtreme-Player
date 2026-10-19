@@ -35,6 +35,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.font.FontWeight
@@ -55,14 +56,17 @@ import kotlin.math.roundToInt
 internal fun StartupInitializationOverlay(modifier: Modifier = Modifier, firstLaunch: Boolean = false) {
     val state by BackgroundWorkCoordinator.startupReadiness.collectAsStateWithLifecycle()
     val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val view = LocalView.current
     val visibility = remember {
         MutableTransitionState(false).apply { targetState = !state.complete }
     }
     visibility.targetState = !state.complete
-    LaunchedEffect(lifecycle) {
+    LaunchedEffect(lifecycle, view, state.preparationComplete) {
+        if (!state.preparationComplete || state.complete) return@LaunchedEffect
         lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
-            if (!BackgroundWorkCoordinator.startupReadiness.value.complete) withContext(Dispatchers.IO) {
-                BackgroundWorkCoordinator.awaitInitialPresentationSettled()
+            if (!BackgroundWorkCoordinator.startupReadiness.value.complete) {
+                view.awaitStartupContentDraw { BackgroundWorkCoordinator.initialContentDrawn() }
+                withContext(Dispatchers.IO) { BackgroundWorkCoordinator.awaitInitialPresentationSettled() }
             }
         }
     }

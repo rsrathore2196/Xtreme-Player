@@ -306,10 +306,7 @@ fun MainNavigationScaffold(
         LocalOverscrollConfiguration provides
             if (selectedTabIndex == 3 && selectedPlaylistWithTracks == null) platformOverscroll else null
     ) {
-        Box(modifier = modifier.fillMaxSize().background(appColors.scaffoldBackground).drawWithContent {
-            drawContent()
-            BackgroundWorkCoordinator.initialContentDrawn()
-        }) {
+        Box(modifier = modifier.fillMaxSize().background(appColors.scaffoldBackground)) {
             Scaffold(
                 modifier = if (initializing) Modifier.clearAndSetSemantics { } else Modifier,
                 contentWindowInsets = WindowInsets(0.dp),

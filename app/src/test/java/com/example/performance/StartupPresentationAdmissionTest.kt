@@ -97,4 +97,55 @@ class StartupPresentationAdmissionTest {
         assertTrue(ran)
         optional.join()
     }
+
+    @Test fun aPreparedStaticScreenDoesNotNeedFutureAnimationFramesToFinishStartup() = runTest {
+        StartupTask.entries.filter { it != StartupTask.PRESENTATION }.forEach {
+            coordinator.startupTask(it, StartupStatus.READY)
+        }
+        coordinator.frame(20, 10)
+        coordinator.initialContentDrawn()
+        val finish = launch { coordinator.awaitInitialPresentationSettled() }
+        runCurrent()
+        assertFalse(coordinator.startupReadiness.value.complete)
+        // A cached/static RenderNode need not produce another FrameMetrics event.
+        ShadowSystemClock.advanceBy(Duration.ofMillis(300))
+        advanceTimeBy(300); runCurrent()
+        assertTrue("Real prepared content was drawn; no further animation is required",
+            coordinator.startupReadiness.value.complete)
+        finish.join()
+    }
+
+    @Test fun slowFrameTelemetryCannotKeepAnAlreadyPreparedDrawModalForever() = runTest {
+        StartupTask.entries.filter { it != StartupTask.PRESENTATION }.forEach {
+            coordinator.startupTask(it, StartupStatus.READY)
+        }
+        coordinator.initialContentDrawn()
+        val finish = launch { coordinator.awaitInitialPresentationSettled() }
+        runCurrent()
+        repeat(24) {
+            ShadowSystemClock.advanceBy(Duration.ofMillis(50))
+            coordinator.frame(20, 10)
+            advanceTimeBy(50); runCurrent()
+        }
+        assertTrue("Frame health guides admission, not an unbounded modal dependency",
+            coordinator.startupReadiness.value.complete)
+        finish.join()
+    }
+
+    @Test fun preparedDataDoesNotReleaseOptionalFollowersBeforeTheActualReveal() = runTest {
+        var continued = false
+        val follower = launch { coordinator.awaitInitialPresentation(); continued = true }
+        StartupTask.entries.filter { it != StartupTask.PRESENTATION }.forEach {
+            coordinator.startupTask(it, StartupStatus.READY)
+        }
+        ShadowSystemClock.advanceBy(Duration.ofSeconds(20))
+        runCurrent()
+        assertFalse(continued)
+        coordinator.initialContentDrawn()
+        repeat(3) { coordinator.frame(5, 10) }
+        coordinator.awaitInitialPresentationSettled()
+        runCurrent()
+        assertTrue(continued)
+        follower.join()
+    }
 }

@@ -12,6 +12,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import com.example.performance.BackgroundWorkCoordinator
@@ -28,6 +29,7 @@ import com.github.takahirom.roborazzi.RoborazziTaskType
 import kotlinx.coroutines.flow.MutableStateFlow
 import org.junit.Assert.*
 import org.junit.Before
+import org.junit.After
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -47,8 +49,16 @@ class StartupOverlayUiTest {
 
     @Before fun pending() {
         readiness.value = StartupReadiness()
+        (BackgroundWorkCoordinator::class.java.getDeclaredField("preparedContentDrawn")
+            .apply { isAccessible = true }.get(null) as java.util.concurrent.atomic.AtomicBoolean).set(false)
         // Advance entrance, progress and exit transitions explicitly.
         compose.mainClock.autoAdvance = false
+    }
+
+    @After fun releasePresentation() {
+        BackgroundWorkCoordinator.foreground(false)
+        (BackgroundWorkCoordinator::class.java.getDeclaredField("initialPresentationPending")
+            .apply { isAccessible = true }.get(null) as java.util.concurrent.atomic.AtomicBoolean).set(false)
     }
 
     @Test fun lightThemeIsOpaqueReadableAndConsumesUnderlyingTouches() = checkOpaqueTheme(false)
@@ -135,5 +145,43 @@ class StartupOverlayUiTest {
         compose.onNodeWithTag("startup_modal").assertDoesNotExist()
         compose.onNodeWithTag("home").assertIsDisplayed()
         compose.runOnIdle { assertEquals(1, hostCompositions) }
+    }
+
+    @Test fun preparedOverlayFinishesFromARealViewDrawWithoutFutureFrameMetricsOrAParentRedraw() {
+        val coordinator = BackgroundWorkCoordinator
+        coordinator.firstFrameRendered()
+        coordinator.foreground(true)
+        coordinator.beginInitialPresentation()
+        coordinator.frame(20, 10) // Rebase Robolectric's per-fixture uptime before the actual draw.
+        lateinit var view: android.view.View
+        var parentCompositions = 0
+        compose.setContent { MaterialTheme {
+            androidx.compose.runtime.SideEffect { parentCompositions++ }
+            view = LocalView.current
+            Box(Modifier.fillMaxSize()) {
+                Text("Retained Home", Modifier.testTag("home"))
+                StartupInitializationOverlay(Modifier.fillMaxSize().testTag("startup_modal"))
+            }
+        } }
+        compose.mainClock.advanceTimeBy(400)
+        compose.runOnIdle {
+            readiness.value = StartupReadiness(StartupTask.entries.associateWith {
+                if (it == StartupTask.PRESENTATION) StartupStatus.PENDING else StartupStatus.READY
+            })
+            androidx.compose.runtime.snapshots.Snapshot.sendApplyNotifications()
+        }
+        compose.mainClock.advanceTimeByFrame()
+        compose.waitForIdle()
+        // Exercise the listener installed by the popup, not a synthetic call to
+        // initialContentDrawn()/frame(). Cached parents need not execute their draw modifier.
+        compose.runOnIdle { view.viewTreeObserver.dispatchOnDraw() }
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(300))
+        compose.waitUntil(5_000L) { coordinator.startupReadiness.value.complete }
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeBy(400)
+        compose.onNodeWithTag("startup_modal").assertDoesNotExist()
+        compose.onNodeWithTag("home").assertIsDisplayed()
+        compose.runOnIdle { assertEquals("Only the popup observes startup progress", 1, parentCompositions) }
     }
 }

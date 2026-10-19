@@ -314,7 +314,7 @@ class HomeViewModel(
                 lastTasteInputs = inputs
             } else {
                 awaitHomePresentation()
-                BackgroundWorkCoordinator.startup(if (!deferredHomeReady || lastTasteInputs == null)
+                BackgroundWorkCoordinator.startup(if (preparingInitialHome)
                     BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI else BackgroundWorkCoordinator.StartupPriority.DEFERRED) {
                     val signature = withContext(workerDispatcher) {
                         UserTasteProfileStore.fingerprint(inputs.events, inputs.tracks, inputs.favorites, key) {
@@ -555,7 +555,13 @@ class HomeViewModel(
         val pending = pendingCardPlays.toMap()
         val keepCachedArtists = !longTerm.complete && _mostListenedArtists.value.isNotEmpty()
         val cachedArtists = _mostListenedArtists.value
-        val (recent, artists, committed) = withContext(workerDispatcher) {
+        val priority = when {
+            preparingInitialHome -> BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI
+            pending.isNotEmpty() -> BackgroundWorkCoordinator.StartupPriority.CRITICAL
+            else -> BackgroundWorkCoordinator.StartupPriority.DEFERRED
+        }
+        val (recent, artists, committed) = BackgroundWorkCoordinator.startup(priority, label = "Listening cards prepare") {
+          withContext(workerDispatcher) {
             val played = longTerm.events.filter(UserTasteProfile::played)
             val recorded = played.mapTo(mutableSetOf()) { it.sessionId to it.trackId }
             val uncommitted = pending.filter { (session, track) -> (session to track.id) !in recorded }
@@ -572,6 +578,7 @@ class HomeViewModel(
                 pending.filterKeys { it !in appliedCachedArtistSessions }.values)
             else rankListenedArtists(plays, tracks, immediate = pending.isNotEmpty())
             Triple(recentTracks, artists, recorded)
+          }
         }
         currentCoroutineContext().ensureActive()
         // Essential data is prepared even when a tab transition is underway.
@@ -668,7 +675,16 @@ class HomeViewModel(
         val favorites: List<MusicTrack>, val profile: UserProfile, val taste: TasteSnapshot)
     private var lastRenderInputs: RenderInputs? = null
 
-    private suspend fun renderRecommendations() = withContext(workerDispatcher) {
+    private suspend fun renderRecommendations() {
+        if (preparingInitialHome || activeRefreshIsExplicit) prepareRecommendations()
+        else {
+            awaitHomePresentation()
+            BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.DEFERRED,
+                urgent = { activeRefreshIsExplicit }, label = "Home recommendation ranking") { prepareRecommendations() }
+        }
+    }
+
+    private suspend fun prepareRecommendations() = withContext(workerDispatcher) {
         restored.await()
         val pool = candidates.value
         if (pool.source != UnifiedRecommendationEngine.SOURCE || pool.contextKey != profileKey()) return@withContext
@@ -741,7 +757,11 @@ class HomeViewModel(
         val country = resolveCountryDisplayName(inputs.profile)
         val chartTitle = getAuthoritativeTrendingTitle(country)
         withContext(ownerDispatcher) publish@ {
-            awaitHomePresentation()
+            // This is internal preparation; the public section collector gates
+            // visibility. Do not hold the optional admission slot waiting for a
+            // hidden Home to return after a tab change during ranking.
+            if (preparingInitialHome || activeRefreshIsExplicit) awaitHomePresentation()
+            else yieldHomePreparation()
             currentCoroutineContext().ensureActive()
             // A cache read, another refresh, or new preferences cannot overwrite
             // a newer prepared generation after any suspension above.
@@ -823,6 +843,7 @@ class HomeViewModel(
     // Navigation admission ignores our rendering lease. Retain completed work
     // across hidden tabs rather than discarding it and reranking on the return.
     private suspend fun awaitHomePresentation() {
+        if (!preparingInitialHome) BackgroundWorkCoordinator.awaitInitialPresentation()
         while (true) {
             homeVisible.first { it }
             homeScrolling.first { !it }
@@ -1014,6 +1035,7 @@ class HomeViewModel(
             // first Home. Deeper rankings/discovery follow a real idle window.
             initialHomePrepared.await()
             startupRecommendationsComplete.await()
+            BackgroundWorkCoordinator.awaitInitialPresentation()
             BackgroundWorkCoordinator.optionalRecommendationsReady()
             awaitHomeIdle(allowWhenEmpty = false, quietMillis = 15_000L)
             deferredHomeReady = true
@@ -1042,6 +1064,7 @@ class HomeViewModel(
             // it; playback, navigation and recent-history publication never wait.
             initialHomePrepared.await()
             startupRecommendationsComplete.await()
+            BackgroundWorkCoordinator.awaitInitialPresentation()
             historicalReload.collectLatest {
                 // Rebuild older pages only after structural import/deletion changes;
                 // normal playback milestones merge into the retained long-term window.
@@ -1391,6 +1414,7 @@ class HomeViewModel(
                 if (isExplicitPull) pendingExplicitRefresh = true
                 return@launch
             }
+            if (!initialPresentation) BackgroundWorkCoordinator.awaitInitialPresentation()
             restored.await()
             if (!homeVisible.value) {
                 if (isExplicitPull) pendingExplicitRefresh = true else pendingSilentRefresh = true
@@ -1406,7 +1430,8 @@ class HomeViewModel(
                 .filterTo(mutableSetOf()) { initialPresentation || isExplicitPull || pendingExplicitRefresh || needsShelfLoad(it) }
                 // A failed/negative-cached bootstrap must not discard another
                 // visible shelf's demand and leave a first installation empty.
-                .initialCardDemand(bootstrap, automaticStartup = !initialPresentation && !deferredHomeReady && !isExplicitPull && !pendingExplicitRefresh)
+                .initialCardDemand(bootstrap, automaticStartup = !initialPresentation &&
+                    !BackgroundWorkCoordinator.startupReadiness.value.complete && !deferredHomeReady && !isExplicitPull && !pendingExplicitRefresh)
             if (requested.isEmpty()) {
                 if (isExplicitPull) pendingExplicitRefresh = true
                 return@launch
@@ -1435,12 +1460,15 @@ class HomeViewModel(
             pendingSilentRefresh = false
             val initialExplicit = isExplicitPull || pendingExplicitRefresh || _isRefreshing.value
             pendingExplicitRefresh = false
-            val startupBatch = !initialPresentation && !deferredHomeReady && !initialExplicit && requested.any(bootstrap::contains)
+            val startupBatch = !initialPresentation && !BackgroundWorkCoordinator.startupReadiness.value.complete &&
+                !deferredHomeReady && !initialExplicit && requested.any(bootstrap::contains)
             val emptyVisible = (recommendationViewport.value + bootstrap).filterTo(mutableSetOf()) {
                 it in requested && preparedCards.value.section(it).tracks.isEmpty()
             }
             val priority = DiscoveryRequestCoordinator.HomeRefresh(initialExplicit, initialShelf = startupBatch,
-                essentialShelves = if (initialPresentation) requested else emptyVisible,
+                // Once initial content is prepared, automatic retries/revalidation
+                // are optional even for an empty shelf. A pull promotes its pass.
+                essentialShelves = if (initialPresentation) requested else emptySet(),
                 initialPresentation = initialPresentation)
             activeRefreshPriority = priority
             activeRefreshIsExplicit = initialExplicit
