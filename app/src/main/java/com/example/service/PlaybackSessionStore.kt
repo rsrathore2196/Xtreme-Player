@@ -21,7 +21,7 @@ import java.lang.ref.WeakReference
 /** One bounded writer for the real session; no Room schema changes or demo fallback. */
 internal object PlaybackSessionStore {
     data class Snapshot(val items: List<MediaItem>, val index: Int, val positionMs: Long)
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(SupervisorJob() + AppDispatchers.Io)
     private val pending = Channel<Snapshot>(Channel.CONFLATED)
     private val fileMutex = Mutex()
     @Volatile private var file: AtomicFile? = null
@@ -128,7 +128,7 @@ internal object PlaybackSessionStore {
         }
     }
 
-    suspend fun restore(context: Context): Snapshot? = withContext(Dispatchers.IO) {
+    suspend fun restore(context: Context): Snapshot? = withContext(AppDispatchers.Io) {
         initialize(context)
         latest?.let { return@withContext it }
         fileMutex.withLock {

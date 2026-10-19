@@ -131,13 +131,20 @@ fun MainNavigationScaffold(
     }.collectAsStateWithLifecycle(initialValue = !BackgroundWorkCoordinator.startupReadiness.value.complete)
     if (initializing) com.example.ui.screens.PrepareInitialHome()
     var retainInactivePages by remember { mutableStateOf(BackgroundWorkCoordinator.startupReadiness.value.complete) }
-    LaunchedEffect(Unit) {
+    val startupView = androidx.compose.ui.platform.LocalView.current
+    LaunchedEffect(startupView) {
         BackgroundWorkCoordinator.startupReadiness.first { it.complete }
         if (!retainInactivePages) {
-            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            kotlinx.coroutines.withContext(com.example.performance.AppDispatchers.Io) {
                 BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.DEFERRED,
                     label = "Retained tab preparation") {
-                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) { retainInactivePages = true }
+                    kotlinx.coroutines.withContext(com.example.performance.AppDispatchers.Main) {
+                        retainInactivePages = true
+                        // Composition/measurement happens after this state write.
+                        // Keep admission until that actual traversal completes,
+                        // rather than admitting another heavy job immediately.
+                        startupView.awaitStartupContentDraw { }
+                    }
                 }
             }
         }
@@ -237,24 +244,31 @@ fun MainNavigationScaffold(
     val startupLifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(viewModel, startupLifecycle) {
       startupLifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.RESUMED) {
-        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            com.example.performance.BackgroundWorkCoordinator.awaitStartupIdle()
-        }
-        com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && viewModel.canRequestNotificationPermission &&
             androidx.core.content.ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
-                android.content.pm.PackageManager.PERMISSION_GRANTED && viewModel.beginNotificationPermissionRequest()) {
-            try { notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) }
-            catch (e: Exception) { viewModel.finishNotificationPermissionRequest() }
+                android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            kotlinx.coroutines.withContext(com.example.performance.AppDispatchers.Io) {
+                BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.DEFERRED,
+                    label = "Notification permission") {
+                    kotlinx.coroutines.withContext(com.example.performance.AppDispatchers.Main) {
+                        if (viewModel.beginNotificationPermissionRequest()) {
+                            try { notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) }
+                            catch (cancelled: kotlinx.coroutines.CancellationException) {
+                                viewModel.finishNotificationPermissionRequest()
+                                throw cancelled
+                            } catch (_: Exception) { viewModel.finishNotificationPermissionRequest() }
+                        }
+                    }
+                }
+            }
         }
         // The OS dialog may pause this lifecycle. Its result is retained by the VM
         // so the next resumed pass continues instead of requesting permission again.
         viewModel.awaitNotificationPermissionResult()
         // An automatic release check is optional. A fixed startup delay alone
         // allowed it to compete with the first artwork/Room/recommendation wave.
-        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            com.example.performance.BackgroundWorkCoordinator.awaitStartupIdle()
-        }
+        // AppUpdateManager owns serialized MAINTENANCE admission and promotion
+        // for manual checks; do not add a competing readiness/timer gate here.
         if (viewModel.beginAutomaticUpdateCheck())
             com.example.updater.AppUpdateManager.checkForUpdate(context = context)
       }

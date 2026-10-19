@@ -26,7 +26,6 @@ import com.example.data.remote.YouTubeMusicApiService
 import com.example.data.remote.catalogRequest
 import com.example.playback.AudioQuality
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -86,8 +85,10 @@ class MusicRepository private constructor(
     // Constructing the UI's repository never opens Room. Cold flows acquire it on IO.
     private val musicDao: MusicDao by lazy(daoProvider)
     private val initialCatalogMutex = Mutex()
-    private val initialCatalogScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
-    private var initialCatalogFlight: kotlinx.coroutines.Deferred<List<MusicTrack>>? = null
+    private val initialCatalogScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + AppDispatchers.Io)
+    private class InitialCatalogFlight(val result: kotlinx.coroutines.Deferred<List<MusicTrack>>,
+        val urgent: java.util.concurrent.atomic.AtomicBoolean)
+    private var initialCatalogFlight: InitialCatalogFlight? = null
     private data class PreparedCatalog(val tracks: List<MusicTrack>, val liked: Set<String>, val result: List<MusicTrack>)
     private var preparedCatalog: PreparedCatalog? = null
 
@@ -99,7 +100,7 @@ class MusicRepository private constructor(
     internal suspend fun cacheRecommendationTracks(tracks: List<MusicTrack>) = withContext(homeDispatcher) {
         val rows = tracks.filter(com.example.recommendation.UnifiedRecommendationEngine::verified)
             .distinctBy { it.id }.map { TrackEntity.fromMusicTrack(it).copy(isCached = true) }
-        if (rows.isNotEmpty()) withContext(Dispatchers.IO) { musicDao.mergeTracksMetadata(rows) }
+        if (rows.isNotEmpty()) withContext(AppDispatchers.Database) { musicDao.mergeTracksMetadata(rows) }
     }
 
     // LRU / in-memory cache to avoid duplicate network calls and prevent rate limiting
@@ -119,19 +120,28 @@ class MusicRepository private constructor(
         observeFavoriteTrackIds().first()
     }
 
-    suspend fun getInitialCatalog(profile: UserProfile? = null): List<MusicTrack> {
+    suspend fun getInitialCatalog(profile: UserProfile? = null,
+        priority: BackgroundWorkCoordinator.StartupPriority = BackgroundWorkCoordinator.StartupPriority.CRITICAL): List<MusicTrack> {
         // Home and Player join one repository-owned load; disposing one UI owner
         // cannot cancel the database work still needed by another caller.
         val flight = initialCatalogMutex.withLock {
-            initialCatalogFlight?.takeUnless { it.isCompleted } ?: initialCatalogScope.async(
-                start = kotlinx.coroutines.CoroutineStart.LAZY) { prepareInitialCatalog() }
-                .also { initialCatalogFlight = it }
+            initialCatalogFlight?.takeUnless { it.result.isCompleted }?.also {
+                if (priority == BackgroundWorkCoordinator.StartupPriority.CRITICAL) it.urgent.set(true)
+            } ?: run {
+                val urgent = java.util.concurrent.atomic.AtomicBoolean(priority == BackgroundWorkCoordinator.StartupPriority.CRITICAL)
+                InitialCatalogFlight(initialCatalogScope.async(start = kotlinx.coroutines.CoroutineStart.LAZY) {
+                    // The shared flight owns the admission. A caller must not hold
+                    // an optional slot while a detached child does unadmitted CPU work.
+                    BackgroundWorkCoordinator.startup(priority, urgent = { urgent.get() },
+                        label = "Initial catalog preparation") { prepareInitialCatalog() }
+                }, urgent).also { initialCatalogFlight = it }
+            }
         }
         try {
-            flight.start()
-            return flight.await()
+            flight.result.start()
+            return flight.result.await()
         } finally {
-            if (flight.isCompleted) initialCatalogMutex.withLock {
+            if (flight.result.isCompleted) initialCatalogMutex.withLock {
                 if (initialCatalogFlight === flight) initialCatalogFlight = null
             }
         }
@@ -140,7 +150,7 @@ class MusicRepository private constructor(
     private suspend fun prepareInitialCatalog(): List<MusicTrack> = withContext(homeDispatcher) {
         val liked = getLikedTrackIds()
         val cached = memoryCachedCatalog.orEmpty().ifEmpty {
-            withContext(Dispatchers.IO) { musicDao.getCachedTracksSync(250) }.map { it.toMusicTrack() }
+            withContext(AppDispatchers.Database) { musicDao.getCachedTracksSync(250) }.map { it.toMusicTrack() }
                 .also { if (it.isNotEmpty() && memoryCachedCatalog.isNullOrEmpty()) memoryCachedCatalog = it }
         }.ifEmpty {
             MusicDataSource.curatedTracks
@@ -155,7 +165,7 @@ class MusicRepository private constructor(
             .also { preparedCatalog = PreparedCatalog(cached, liked, it) }
     }
 
-    private suspend fun homeProfile(profile: UserProfile? = null): UserProfile = profile ?: withContext(Dispatchers.IO) {
+    private suspend fun homeProfile(profile: UserProfile? = null): UserProfile = profile ?: withContext(AppDispatchers.Io) {
         context?.let { UserProfilePreferences.getUserProfile(it) } ?: UserProfile()
     }
 
@@ -191,9 +201,9 @@ class MusicRepository private constructor(
         taste: UserTasteProfile? = null): List<MusicTrack> = withContext(AppDispatchers.CpuBounded) {
         val profile = homeProfile()
         val actualTaste = taste ?: context?.let {
-            val events = withContext(Dispatchers.IO) { MusicDatabase.getDatabase(it).listeningEventDao().getActualPlays(250) }
+            val events = withContext(AppDispatchers.Database) { MusicDatabase.getDatabase(it).listeningEventDao().getActualPlays(250) }
             val ids = events.map { event -> event.trackId }.distinct()
-            val metadata = withContext(Dispatchers.IO) { musicDao.getTracksByIds(ids) }.map { row -> row.toMusicTrack() }
+            val metadata = withContext(AppDispatchers.Database) { musicDao.getTracksByIds(ids) }.map { row -> row.toMusicTrack() }
             UserTasteProfile.fromEvents(events, metadata, getFavoriteTracks().first())
         } ?: UserTasteProfile.COLD_START_PROFILE
         recommendations.radio(seed, profile, actualTaste, alreadyQueued, limit)
@@ -298,7 +308,7 @@ class MusicRepository private constructor(
         searchCache.get(cacheKey)?.takeIf { System.currentTimeMillis() - it.first < 300_000L }
             ?.let { return@withContext it.second }
         val likedIds = try {
-            withContext(Dispatchers.IO) { musicDao.getFavoriteTracks().first() }.mapTo(mutableSetOf()) { it.id }
+            withContext(AppDispatchers.Database) { musicDao.getFavoriteTracks().first() }.mapTo(mutableSetOf()) { it.id }
         } catch (e: CancellationException) { throw e }
         catch (_: Exception) { emptySet<String>() }
         val tracks = AudioRoutingService.resolveSearchTracks(context ?: this@MusicRepository.context,
@@ -325,7 +335,7 @@ class MusicRepository private constructor(
         jioDeadlineMs: Long = 0L,
         currentSourceOnly: Boolean = false,
         rejectedUrls: Set<String> = emptySet()
-    ): MusicTrack = withContext(Dispatchers.IO) {
+    ): MusicTrack = withContext(AppDispatchers.Io) {
         val profile = context?.let { com.example.playback.NetworkQualityMonitor.getInstance(it).snapshot() }
         val preference = com.example.playback.AudioQualityPreference.from(profile?.effectiveCeiling?.audioQuality
             ?: AudioQuality.ULTRA_HD_320)
@@ -345,13 +355,13 @@ class MusicRepository private constructor(
     suspend fun resolveYouTubeFallback(
         track: MusicTrack,
         quality: AudioQuality = AudioQuality.ULTRA_HD_320
-    ): MusicTrack? = withContext(Dispatchers.IO) {
+    ): MusicTrack? = withContext(AppDispatchers.Io) {
         streamResolver.resolveYouTubeFallback(track, quality)
     }
 
     suspend fun getTracksByGenre(genre: String): List<MusicTrack> = withContext(AppDispatchers.CpuBounded) {
         val likedEntities = try {
-            withContext(Dispatchers.IO) { musicDao.getFavoriteTracks().first() }
+            withContext(AppDispatchers.Database) { musicDao.getFavoriteTracks().first() }
         } catch (e: CancellationException) { throw e } catch (e: Exception) {
             emptyList()
         }
@@ -378,7 +388,7 @@ class MusicRepository private constructor(
 
     internal suspend fun hasRecentLosslessAttempt(track: MusicTrack) = streamResolver.hasRecentLosslessAttempt(track)
 
-    suspend fun findLosslessUpgrade(track: MusicTrack): MusicTrack? = withContext(Dispatchers.IO) {
+    suspend fun findLosslessUpgrade(track: MusicTrack): MusicTrack? = withContext(AppDispatchers.Io) {
         val monitor = context?.let(com.example.playback.NetworkQualityMonitor::getInstance)
         if (monitor?.snapshot()?.allowsLosslessUpgrade != true) {
             com.example.playback.LosslessDiagnostics.record(track.id,

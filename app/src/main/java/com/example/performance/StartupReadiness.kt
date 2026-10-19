@@ -13,6 +13,7 @@ enum class StartupStatus {
 /** Fixed, real units of work. Artwork downloads and future refreshes are not startup prerequisites. */
 enum class StartupTask(val group: StartupGroup) {
     SETTINGS(StartupGroup.HOME), HOME_CACHE(StartupGroup.HOME), FAVORITES(StartupGroup.HOME),
+    LOCAL_TABS(StartupGroup.HOME),
     PERSONALIZATION(StartupGroup.HOME), QUICK(StartupGroup.HOME), ERA(StartupGroup.HOME),
     CHART(StartupGroup.HOME), PERSONALIZED(StartupGroup.HOME), SIMILAR(StartupGroup.HOME),
     INSPIRED(StartupGroup.HOME), HERO(StartupGroup.HOME), PRESENTATION(StartupGroup.HOME),
@@ -36,6 +37,7 @@ data class StartupReadiness(
             StartupTask.SETTINGS -> "Restoring your preferences"
             StartupTask.HOME_CACHE -> "Restoring your saved music"
             StartupTask.FAVORITES -> "Syncing your favorite music"
+            StartupTask.LOCAL_TABS -> "Preparing your library"
             StartupTask.PERSONALIZATION -> "Preparing your listening preferences"
             StartupTask.RECENT_HISTORY, StartupTask.RECENT_ARTISTS -> "Syncing your listening history"
             StartupTask.PLAYER_SESSION, StartupTask.PLAYER_CONNECTION -> "Restoring your last session"

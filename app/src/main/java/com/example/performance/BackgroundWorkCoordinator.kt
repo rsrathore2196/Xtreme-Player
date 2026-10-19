@@ -52,7 +52,12 @@ object BackgroundWorkCoordinator {
         while (true) {
             currentCoroutineContext().ensureActive()
             if (startupReadiness.value.complete) return
-            val essentialFinished = synchronized(admissionLock) { !essentialActive }
+            // A hand-off between essential jobs is not a settled UI. Waiting
+            // tickets must drain as well; optional tickets remain independent
+            // and can never keep the modal presentation fence open.
+            val essentialFinished = synchronized(admissionLock) {
+                !essentialActive && waiting.none { it.essential() && (!it.foregroundOnly || foreground.get()) }
+            }
             val now = SystemClock.elapsedRealtime()
             val drawnFor = now - preparedDrawAt.get()
             // A static screen need not submit another frame. Telemetry can also

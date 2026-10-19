@@ -206,7 +206,7 @@ class MusicService : MediaLibraryService() {
     @OptIn(UnstableApi::class)
     override fun onCreate() {
         super.onCreate()
-        serviceScope.launch(Dispatchers.IO) { com.example.playback.AudioDeviceManager.init(this@MusicService) }
+        serviceScope.launch(AppDispatchers.Io) { com.example.playback.AudioDeviceManager.init(this@MusicService) }
 
         // 1. Audio Focus & Interruption Handling
         val audioAttributes = AudioAttributes.Builder()
@@ -337,7 +337,7 @@ class MusicService : MediaLibraryService() {
         val audioManager = getSystemService(android.media.AudioManager::class.java)
         fun publishVolume() {
             volumeJob?.cancel()
-            volumeJob = serviceScope.launch(Dispatchers.IO) {
+            volumeJob = serviceScope.launch(AppDispatchers.Io) {
                 val current = audioManager?.getStreamVolume(android.media.AudioManager.STREAM_MUSIC) ?: 0
                 val max = audioManager?.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC) ?: 0
                 ensureActive()
@@ -558,7 +558,7 @@ class MusicService : MediaLibraryService() {
                             recommendationOnly = extras?.getBoolean("recommendation_only", false) == true)
                         sourceRecoveryJob = serviceScope.launch {
                             try {
-                                val resolved = withContext(Dispatchers.IO) {
+                                val resolved = withContext(AppDispatchers.Io) {
                                     app.repository.resolvePlayableTrack(selected, forceRefresh = true,
                                         failedUrl = failedUri.toString())
                                 }
@@ -696,7 +696,7 @@ class MusicService : MediaLibraryService() {
             return future {
                 currentQueueForResumption()?.let { return@future it }
                 val saved = PlaybackSessionStore.restore(this@MusicService)
-                val ceiling = withContext(Dispatchers.IO) { networkQuality.snapshot().effectiveCeiling.maxBitrateBps }
+                val ceiling = withContext(AppDispatchers.Io) { networkQuality.snapshot().effectiveCeiling.maxBitrateBps }
                 val restoredItems = withContext(AppDispatchers.CpuBounded) {
                     saved?.items.orEmpty().map { NetworkAudioQualityPolicy.constrain(it, ceiling) }
                 }
@@ -779,7 +779,7 @@ class MusicService : MediaLibraryService() {
         }
 
         private suspend fun getTracksForCategory(categoryId: String): List<MusicTrack> = withContext(AppDispatchers.CpuBounded) {
-            val records = withContext(Dispatchers.IO) { app.database.musicDao().getAllTracksSync() }
+            val records = withContext(AppDispatchers.Database) { app.database.musicDao().getAllTracksSync() }
                 .filter { realTrack(it.toMusicTrack()) }
                 .sortedWith(compareByDescending<TrackEntity> { it.isLiked }.thenByDescending { it.lastPlayedAt }.thenByDescending { it.addedAt })
             val tracks = records.map { it.toMusicTrack() }
@@ -804,9 +804,9 @@ class MusicService : MediaLibraryService() {
             }
         }
 
-        private suspend fun searchTracks(query: String, requestedPage: Int = 1): List<MusicTrack> = withContext(Dispatchers.IO) {
+        private suspend fun searchTracks(query: String, requestedPage: Int = 1): List<MusicTrack> = withContext(AppDispatchers.Io) {
             if (query.isBlank()) return@withContext emptyList()
-            val records = app.database.musicDao().getAllTracksSync()
+            val records = withContext(AppDispatchers.Database) { app.database.musicDao().getAllTracksSync() }
             val local = withContext(AppDispatchers.CpuBounded) { records.map { it.toMusicTrack() }.filter {
                 realTrack(it) && CatalogNames.score(query, it.title, listOf(it.artist, it.album, it.genre, it.language)) > 0
             }
@@ -935,8 +935,9 @@ class MusicService : MediaLibraryService() {
                 return Futures.immediateFuture(LibraryResult.ofItem(category, null))
             }
             return future {
-                val track = withContext(Dispatchers.IO) { app.database.musicDao().getTrackById(mediaId)?.toMusicTrack() }
+                val record = withContext(AppDispatchers.Database) { app.database.musicDao().getTrackById(mediaId) }
                 withContext(AppDispatchers.CpuBounded) {
+                    val track = record?.toMusicTrack()
                     if (track != null && realTrack(track)) LibraryResult.ofItem(track.toMediaItem(), null)
                     else LibraryResult.ofError(SessionResult.RESULT_ERROR_BAD_VALUE)
                 }
@@ -990,7 +991,7 @@ class MusicService : MediaLibraryService() {
                 val expandingCategory = mediaItems.any { it.mediaId.startsWith("category_") }
                 coroutineScope {
                     val slots = kotlinx.coroutines.sync.Semaphore(3)
-                    items.map { item -> async(Dispatchers.IO) {
+                    items.map { item -> async(AppDispatchers.Io) {
                         slots.acquire()
                         try {
                             if (PlaybackSessionStore.isReal(item) && controller.packageName == packageName) return@async item

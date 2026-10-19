@@ -64,6 +64,8 @@ class InitialHomePreparationTest {
             (BackgroundWorkCoordinator::class.java.getDeclaredField("navigationUntil")
                 .apply { isAccessible = true }.get(null) as java.util.concurrent.atomic.AtomicLong).set(0L)
             coordinator.startupTask(StartupTask.SETTINGS, StartupStatus.READY)
+            // This data-only fixture has no PlayerViewModel/local tab host.
+            coordinator.startupTask(StartupTask.LOCAL_TABS, StartupStatus.READY)
             ShadowSystemClock.advanceBy(Duration.ofSeconds(2))
             val repository = MusicRepository(app)
             player = PlaybackManager(app, repository)

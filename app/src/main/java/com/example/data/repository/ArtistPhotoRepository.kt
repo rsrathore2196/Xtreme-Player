@@ -7,7 +7,6 @@ import com.example.data.remote.CatalogHttpException
 import com.example.data.remote.YouTubeMusicApiService
 import com.example.data.remote.catalogGet
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -60,7 +59,7 @@ object ArtistPhotoRepository {
         ?.takeIf { compatible(it, artist) }?.url?.let(::image)
     fun initialPhoto(artist: CatalogArtist): String? = cachedPhoto(artist) ?: image(artist.image)
     fun observePhoto(artist: CatalogArtist): Flow<String?> = photoRevision.map { cachedPhoto(artist) }
-        .distinctUntilChanged().flowOn(Dispatchers.IO)
+        .distinctUntilChanged().flowOn(AppDispatchers.Io)
 
     /** A failed image URL is not a failed artist: try the next verified photograph. */
     fun rejectPhoto(url: String) {
@@ -70,13 +69,17 @@ object ArtistPhotoRepository {
         rejectedImages[url] = now + 3_600_000L
         photoRevision.update { it + 1L }
     }
-    private val photoScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val photoScope = CoroutineScope(SupervisorJob() + AppDispatchers.Io)
     private val photoSlots = Semaphore(3)
     private var warmup: Deferred<Unit>? = null
+    private val warmupReaders = java.util.concurrent.atomic.AtomicInteger()
     private val placeholderImage = Regex("(?i)(?:no[_-]?image|default[_-]?(?:artist|avatar)|placeholder)")
 
     @Synchronized
     fun prewarm(context: Context): Deferred<Unit> = warmup ?: photoScope.async {
+      com.example.performance.BackgroundWorkCoordinator.startup(
+        com.example.performance.BackgroundWorkCoordinator.StartupPriority.DEFERRED,
+        urgent = { warmupReaders.get() > 0 }, label = "Portrait cache prewarm") {
         val now = System.currentTimeMillis()
         val prefs = context.applicationContext.getSharedPreferences("artist_images_v2", Context.MODE_PRIVATE)
         val storedEntries = prefs.all
@@ -96,6 +99,7 @@ object ArtistPhotoRepository {
             }
         }
         photoRevision.update { it + 1L }
+      }
     }.also { warmup = it }
     private val identityMemory = android.util.LruCache<String, Pair<Long, JSONObject?>>(100)
     private val identityLocks = Array(8) { Mutex() }
@@ -108,7 +112,10 @@ object ArtistPhotoRepository {
         val name = CatalogNames.normalize(artist.name)
         if (name.isBlank() || name in setOf("unknown", "unknown artist", "various artists")) return@withContext null
         val key = key(artist)
-        prewarm(context).await()
+        // Visible portrait requests can promote the same warmup immediately;
+        // optional Application prewarming must not gate a user-visible image.
+        warmupReaders.incrementAndGet()
+        try { prewarm(context).await() } finally { warmupReaders.decrementAndGet() }
         locks[(key.hashCode() and Int.MAX_VALUE) % locks.size].withLock {
             val now = System.currentTimeMillis()
             val cached = memory.get(key)?.takeIf { compatible(it, artist) }
@@ -185,7 +192,7 @@ object ArtistPhotoRepository {
                 // fallback is marked separately and never cached as a real portrait.
                 val aliases = (listOf(artist.name, selected.name) + selected.aliases).map(CatalogNames::normalize)
                     .filter(String::isNotBlank).distinct()
-                val photoPreferences = withContext(Dispatchers.IO) {
+                val photoPreferences = withContext(AppDispatchers.Io) {
                     context.applicationContext.getSharedPreferences("artist_images_v2", Context.MODE_PRIVATE)
                 }
                 val edits = linkedMapOf<String, String>()
@@ -204,7 +211,7 @@ object ArtistPhotoRepository {
                         edits[aliasKey] = json
                     }
                 }
-                withContext(Dispatchers.IO) {
+                withContext(AppDispatchers.Io) {
                     photoPreferences.edit().also { edit -> edits.forEach { (key, value) -> edit.putString(key, value) } }.commit()
                 }
                 photoRevision.update { it + 1L }
@@ -246,7 +253,7 @@ object ArtistPhotoRepository {
                     if (System.currentTimeMillis() < audioDbBackoffUntil) return@withLock cached?.second
                     val url = "https://www.theaudiodb.com/api/v1/json/123/search.php".toHttpUrl().newBuilder()
                         .addQueryParameter("s", query).build().toString()
-                    val httpClient = withContext(Dispatchers.IO) { client }
+                    val httpClient = withContext(AppDispatchers.Io) { client }
                     val array = JSONObject(httpClient.catalogGet(url)).optJSONArray("artists")
                     val matches = (0 until (array?.length() ?: 0)).mapNotNull { array?.optJSONObject(it) }.filter { row ->
                         row.optString("idArtist").isNotBlank() && if (artist.musicBrainzId.isNotBlank()) {

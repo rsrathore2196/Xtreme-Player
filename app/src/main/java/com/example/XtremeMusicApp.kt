@@ -17,13 +17,12 @@ import com.example.performance.BackgroundWorkCoordinator
 import com.example.performance.BackgroundWorkCoordinator.StartupPriority
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 class XtremeMusicApp : Application(), ImageLoaderFactory, androidx.work.Configuration.Provider {
     override val workManagerConfiguration: androidx.work.Configuration
         get() = androidx.work.Configuration.Builder().setMinimumLoggingLevel(android.util.Log.WARN).build()
-    private val startupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val startupScope = CoroutineScope(SupervisorJob() + AppDispatchers.Io)
     @Volatile internal var initializedImageDiskCache: DiskCache? = null
         private set
 
@@ -145,8 +144,10 @@ class XtremeMusicApp : Application(), ImageLoaderFactory, androidx.work.Configur
             coordinator.startup(StartupPriority.DEFERRED, label = "Artwork metadata prewarm") { runCatching { com.example.data.repository.iTunesArtworkRepository.getInstance(this@XtremeMusicApp) }
                 .onFailure { android.util.Log.w("XtremeMusicApp", "Artwork prewarm unavailable", it) } }
             coordinator.startup(StartupPriority.DEFERRED, label = "Playback key prewarm") { runCatching { SecurityConfig.getDESKey(this@XtremeMusicApp) } }
-            coordinator.startup(StartupPriority.DEFERRED, label = "Portrait cache prewarm") { runCatching { com.example.data.repository.ArtistPhotoRepository.prewarm(this@XtremeMusicApp).await() }
-                .onFailure { android.util.Log.w("XtremeMusicApp", "Artist prewarm unavailable", it) } }
+            // The shared portrait warmup owns its admission. Wrapping its await
+            // in another deferred slot would deadlock that child admission.
+            runCatching { com.example.data.repository.ArtistPhotoRepository.prewarm(this@XtremeMusicApp).await() }
+                .onFailure { android.util.Log.w("XtremeMusicApp", "Artist prewarm unavailable", it) }
             coordinator.startup(StartupPriority.DEFERRED, label = "Audio devices prewarm") { runCatching { com.example.playback.AudioDeviceManager.init(this@XtremeMusicApp) }
                 .onFailure { android.util.Log.w("XtremeMusicApp", "Audio devices unavailable", it) } }
         }

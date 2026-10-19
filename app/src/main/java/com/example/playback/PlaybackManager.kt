@@ -117,7 +117,8 @@ class PlaybackManager(
 ) {
     private val TAG = "PlaybackManager"
 
-    private val scope = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob())
+    private val scope = CoroutineScope(AppDispatchers.Main + SupervisorJob())
+    private var networkQualityMonitor: NetworkQualityMonitor? = null
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private var controller: MediaController? = null
         set(value) {
@@ -265,7 +266,8 @@ class PlaybackManager(
 
     init {
         scope.launch {
-            val monitor = withContext(Dispatchers.IO) { NetworkQualityMonitor.getInstance(context) }
+            val monitor = withContext(AppDispatchers.Io) { NetworkQualityMonitor.getInstance(context) }
+            networkQualityMonitor = monitor
             combine(monitor.activeQualityCeiling,
                 AudioEffectsManager.effectsState.map { it.audioEnhancerEnabled }.distinctUntilChanged()
             ) { policy, enhancer -> policy to enhancer }.collect { (policy, enhancer) ->
@@ -278,7 +280,9 @@ class PlaybackManager(
             startup.startupTask(com.example.performance.StartupTask.PLAYER_SESSION,
                 com.example.performance.StartupStatus.RUNNING)
             try {
-                val (saved, tracks) = com.example.performance.BackgroundWorkCoordinator.work {
+                val (saved, tracks) = startup.startup(
+                    com.example.performance.BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI,
+                    urgent = { MusicService.liveSession.value }, label = "Player session preparation") {
                     val snapshot = PlaybackSessionStore.restore(context)
                     snapshot to withContext(AppDispatchers.CpuBounded) { snapshot?.items?.map(::controllerTrack).orEmpty().toMutableStateList() }
                 }
@@ -450,7 +454,7 @@ class PlaybackManager(
         val saved = pendingRestoredSession ?: return
         pendingRestoredSession = null
         val generation = selectionGeneration
-        withContext(Dispatchers.IO) { NetworkQualityMonitor.getInstance(context).snapshot() }
+        withContext(AppDispatchers.Io) { NetworkQualityMonitor.getInstance(context).snapshot() }
         while (pendingSelectionId == null && player.mediaItemCount == 0) {
             val revision = queueRevision
             val quality = _uiState.value.selectedQuality
@@ -623,7 +627,7 @@ class PlaybackManager(
                     // Genuinely playing: persist track into Room DB listening history immediately
                     val current = _uiState.value.currentTrack
                     if (current != null && losslessFallback == null) {
-                        scope.launch(Dispatchers.IO) {
+                        scope.launch(AppDispatchers.Io) {
                             try {
                                 val now = System.currentTimeMillis()
                                 val entity = TrackEntity.fromMusicTrack(current, lastPlayedAt = now)
@@ -675,7 +679,7 @@ class PlaybackManager(
                     val completedTrack = _uiState.value.currentTrack
                     if (completedTrack != null) {
                         val elapsed = (System.currentTimeMillis() - currentTrackStartTimeMs).coerceAtLeast(0L)
-                        scope.launch(Dispatchers.IO) {
+                        scope.launch(AppDispatchers.Io) {
                             val event = ListeningEventEntity.fromTrack(
                                 track = completedTrack,
                                 sessionId = currentSessionId,
@@ -795,7 +799,7 @@ class PlaybackManager(
                                     skipped = true,
                                     liked = oldTrack.isLiked
                                 )
-                                withContext(Dispatchers.IO) { listeningEventDao.insertListeningEvent(skipEvent) }
+                                withContext(AppDispatchers.Database) { listeningEventDao.insertListeningEvent(skipEvent) }
                             }
                         }
 
@@ -811,14 +815,14 @@ class PlaybackManager(
                             skipped = false,
                             liked = matchedTrack.isLiked
                         )
-                        withContext(Dispatchers.IO) { listeningEventDao.insertListeningEvent(startEvent) }
+                        withContext(AppDispatchers.Database) { listeningEventDao.insertListeningEvent(startEvent) }
 
                         // If playback is actively running or set to play immediately, persist lastPlayedAt
                         if (shouldRecordPlayback) {
                             try {
                                 val now = System.currentTimeMillis()
                                 val entity = TrackEntity.fromMusicTrack(matchedTrack, lastPlayedAt = now)
-                                withContext(Dispatchers.IO) { database.musicDao().recordTrackPlayed(entity, now) }
+                                withContext(AppDispatchers.Database) { database.musicDao().recordTrackPlayed(entity, now) }
                             } catch (e: Exception) {
                                 Log.w(TAG, "Failed updating track history on transition: ${e.message}")
                             }
@@ -915,7 +919,7 @@ class PlaybackManager(
                             } else if (retryCurrent) {
                                 delay(300L)
                                 current
-                            } else withContext(Dispatchers.IO) {
+                            } else withContext(AppDispatchers.Io) {
                                 repo.resolvePlayableTrack(current, forceRefresh = true, failedUrl = failedUrl,
                                     currentSourceOnly = stage < 2, rejectedUrls = blocked)
                             }
@@ -1090,7 +1094,7 @@ class PlaybackManager(
         hasRecordedMeaningfulPlay = true
         val track = _uiState.value.currentTrack ?: return
         val sessionId = currentSessionId
-        scope.launch(Dispatchers.IO) {
+        scope.launch(AppDispatchers.Io) {
             try {
                 listeningEventDao.insertListeningEvent(ListeningEventEntity.fromTrack(
                     track, sessionId, listenedMs, durationMs, "MEANINGFUL_PLAY",
@@ -1241,7 +1245,7 @@ class PlaybackManager(
                     losslessLookupStarted = true
                     losslessRetryAfterMs = android.os.SystemClock.elapsedRealtime() + 10_000L
                     val reference = original.copy(durationMs = duration)
-                    val lossless = withContext(Dispatchers.IO) { repo.findLosslessUpgrade(reference) }
+                    val lossless = withContext(AppDispatchers.Io) { repo.findLosslessUpgrade(reference) }
                     if (!stillCurrent()) return@launch
                     if (lossless == null) {
                         if (LosslessDiagnostics.last(original.id)?.reason == LosslessDiagnostics.Reason.NO_RESULTS) return@launch
@@ -1393,7 +1397,7 @@ class PlaybackManager(
         pendingSelectionId = track.id
         // Archive's bounded primary attempt must not spend Jio's recovery window.
         initialJioDeadlineMs = android.os.SystemClock.elapsedRealtime() + 6_000L +
-            if (NetworkQualityMonitor.getInstance(context).currentAudioQuality == AudioQuality.HI_RES_LOSSLESS)
+            if ((networkQualityMonitor?.currentAudioQuality ?: _uiState.value.selectedQuality) == AudioQuality.HI_RES_LOSSLESS)
                 com.example.data.repository.StreamResolver.LOSSLESS_LOOKUP_TIMEOUT_MS else 0L
         selectionContext = listOf(track) // Replaced by the owned CPU-prepared queue below.
         val previous = _uiState.value.currentTrack
@@ -1501,7 +1505,7 @@ class PlaybackManager(
                 if (!ownsSelection(track.id, generation)) return@launch
                 selectionContext = ownedQueue
                 awaitController()
-                val resolved = if (needsResolution) withContext(Dispatchers.IO) {
+                val resolved = if (needsResolution) withContext(AppDispatchers.Io) {
                     (repo ?: throw IllegalStateException("Music catalogue is unavailable. Please try again."))
                         .resolvePlayableTrack(track, jioDeadlineMs = jioDeadline)
                 } else track
@@ -1531,7 +1535,7 @@ class PlaybackManager(
         }
 
         val generation = selectionGeneration
-        val networkPolicy = withContext(Dispatchers.IO) { NetworkQualityMonitor.getInstance(context).snapshot() }
+        val networkPolicy = withContext(AppDispatchers.Io) { NetworkQualityMonitor.getInstance(context).snapshot() }
         _uiState.update { it.copy(selectedQuality = networkPolicy.effectiveCeiling.audioQuality) }
         var autoplayEnabled: Boolean
         var targetQuality: AudioQuality
@@ -1698,12 +1702,12 @@ class PlaybackManager(
         recommendationFetchJob = scope.launch {
             val attemptedIds = mutableSetOf<String>()
             try {
-                val taste = withContext(Dispatchers.IO) {
+                val taste = withContext(AppDispatchers.Database) {
                     val events = listeningEventDao.getActualPlays(limit = 5000)
-                    val metadata = events.map { it.trackId }.distinct().chunked(900)
-                        .flatMap { database.musicDao().getTracksByIds(it) }.map { it.toMusicTrack() }
+                    val groups = withContext(AppDispatchers.CpuBounded) { events.map { it.trackId }.distinct().chunked(900) }
+                    val metadata = groups.flatMap { database.musicDao().getTracksByIds(it) }
                     val favorites = repository?.getFavoriteTracks()?.first().orEmpty()
-                    withContext(AppDispatchers.CpuBounded) { UserTasteProfile.fromEvents(events, metadata, favorites) }
+                    withContext(AppDispatchers.CpuBounded) { UserTasteProfile.fromEvents(events, metadata.map { it.toMusicTrack() }, favorites) }
                 }
                 suspend fun appendCandidates(pool: List<MusicTrack>, targetSize: Int = upcomingQueueTarget) {
                     val nativeSnapshot = queueSnapshot()
@@ -1725,7 +1729,7 @@ class PlaybackManager(
                         if (availableUpcoming() >= targetSize) return
                         if (!attemptedIds.add(candidate.id) || activeQueue.any { it.id == candidate.id }) continue
                         val resolved = try {
-                            withContext(Dispatchers.IO) {
+                            withContext(AppDispatchers.Io) {
                                 if (!com.example.data.repository.StreamResolver.needsResolution(candidate)) candidate
                                 else repository?.resolvePlayableTrack(candidate)
                             }
@@ -1789,7 +1793,7 @@ class PlaybackManager(
                 }
                 if (!isActive || queueGeneration != generation) return@launch
                 val needed = (upcomingQueueTarget - remaining).coerceAtLeast(1)
-                val discovery = async(Dispatchers.IO) {
+                val discovery = async(AppDispatchers.Io) {
                     withTimeoutOrNull(15_000) {
                         repository?.recommendationRadio(seed, alreadyQueued = queued, limit = needed, taste = taste).orEmpty()
                     }.orEmpty()
@@ -1822,7 +1826,7 @@ class PlaybackManager(
     }
 
     /**
-     * Plays a track from search results, resolving its stream asynchronously on Dispatchers.IO
+     * Plays a track from search results, resolving its stream asynchronously on AppDispatchers.Io
      * and starting playback without freezing the UI or racing on MediaController.
      */
     fun playFromSearch(track: MusicTrack, @Suppress("UNUSED_PARAMETER") searchContextPool: List<MusicTrack>) {
@@ -1921,18 +1925,19 @@ class PlaybackManager(
         val generation = queueGeneration
         recommendationFetchJob = scope.launch {
             try {
-                val result = withContext(Dispatchers.IO) { loader.fetch(loader.page) }
+                val result = withContext(AppDispatchers.Io) { loader.fetch(loader.page) }
                 if (generation != queueGeneration || !isCurrentSessionExplicitPlaylist) return@launch
                 val before = queueSnapshot()
                 val revision = queueRevision
-                val items = withContext(AppDispatchers.CpuBounded) {
+                val (tracks, mediaItems) = withContext(AppDispatchers.CpuBounded) {
                     val existing = before.mapTo(mutableSetOf()) { it.id }
-                    result.tracks.filter { it.hasQueueSource() && existing.add(it.id) }.map { it to it.toMediaItem() }
+                    val tracks = result.tracks.filter { it.hasQueueSource() && existing.add(it.id) }
+                    tracks to tracks.map { it.toMediaItem() }
                 }
                 if (generation != queueGeneration) return@launch
                 if (revision != queueRevision) return@launch // Retry the same cursor against the latest queue.
                 val next = result.nextPage?.takeIf { it > loader.page }
-                if (items.isEmpty()) {
+                if (tracks.isEmpty()) {
                     if (next != null) throw java.io.IOException("The next playlist page contained no new playable songs")
                     collectionContinuation = null
                     return@launch
@@ -1940,8 +1945,8 @@ class PlaybackManager(
                 val advance = advanceWhenQueueReady || player.playbackState == Player.STATE_ENDED
                 val resume = player.playWhenReady
                 val oldSize = activeQueue.size
-                activeQueue.addAll(items.map { it.first }); queueRevision++
-                try { player.addMediaItems(items.map { it.second }) }
+                activeQueue.addAll(tracks); queueRevision++
+                try { player.addMediaItems(mediaItems) }
                 catch (error: Exception) {
                     while (activeQueue.size > oldSize) activeQueue.removeAt(activeQueue.lastIndex)
                     queueRevision++
@@ -2153,7 +2158,7 @@ class PlaybackManager(
         val generation = queueGeneration
         scope.launch {
             try {
-                val resolved = withContext(Dispatchers.IO) {
+                val resolved = withContext(AppDispatchers.Io) {
                     if (!com.example.data.repository.StreamResolver.needsResolution(track)) track
                     else repository?.resolvePlayableTrack(track)
                 } ?: return@launch

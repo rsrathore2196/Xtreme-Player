@@ -31,6 +31,7 @@ import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -39,7 +40,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.flow.emitAll
 import androidx.compose.runtime.Immutable
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -169,7 +169,7 @@ class PlayerViewModel(
 
     private var searchJob: Job? = null
     private val legacySearchGeneration = AtomicLong()
-    private val recentSearchDispatcher = Dispatchers.IO.limitedParallelism(1)
+    private val recentSearchDispatcher = AppDispatchers.Io
     private val recentSearchMutex = Mutex()
     private val recentSearchRevision = AtomicLong()
     private val favoriteUpdateMutex = Mutex()
@@ -177,27 +177,38 @@ class PlayerViewModel(
 
     // Reuse the ViewModel's lifecycle job while keeping large-list publication off Main.
     private val libraryDataScope = viewModelScope + derivedStateDispatcher
+    private val localLibraryLoaded = List(3) { kotlinx.coroutines.CompletableDeferred<Unit>() }
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-    private fun <T> retainedLibraryData(initial: T, source: () -> kotlinx.coroutines.flow.Flow<T>): StateFlow<T> =
+    private fun <T> retainedLibraryData(initial: T, loaded: kotlinx.coroutines.CompletableDeferred<Unit>,
+        source: () -> kotlinx.coroutines.flow.Flow<T>): StateFlow<T> =
         com.example.performance.BackgroundWorkCoordinator.uiForeground.flatMapLatest { foreground ->
             if (foreground) kotlinx.coroutines.flow.flow {
                 com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
-                emitAll(source())
+                try {
+                    source().collect {
+                        emit(it)
+                        loaded.complete(Unit)
+                    }
+                } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                catch (error: Exception) {
+                    loaded.completeExceptionally(error)
+                    android.util.Log.w("PlayerViewModel", "Local library snapshot unavailable", error)
+                }
             } else emptyFlow()
         }.stateIn(libraryDataScope, SharingStarted.Lazily, initial)
 
-    val favoriteTracks: StateFlow<List<MusicTrack>> = retainedLibraryData(emptyList()) {
+    val favoriteTracks: StateFlow<List<MusicTrack>> = retainedLibraryData(emptyList(), localLibraryLoaded[0]) {
         repository.getFavoriteTracks(derivedStateDispatcher)
     }
 
-    val recentlyPlayed: StateFlow<List<MusicTrack>> = retainedLibraryData(emptyList()) {
+    val recentlyPlayed: StateFlow<List<MusicTrack>> = retainedLibraryData(emptyList(), localLibraryLoaded[1]) {
         repository.getRecentlyPlayedTracks()
     }
 
     // Keep one foreground observer and its last snapshot instead of querying on every tab entry.
     // Suspend observation in the background without clearing the retained Library content.
-    val playlists: StateFlow<List<PlaylistEntity>> = retainedLibraryData(emptyList()) { repository.getAllPlaylists() }
+    val playlists: StateFlow<List<PlaylistEntity>> = retainedLibraryData(emptyList(), localLibraryLoaded[2]) { repository.getAllPlaylists() }
 
     private val preparedSettings = (application as? com.example.XtremeMusicApp)?.takeInitialStartupSettings()
     private val initialSettings = preparedSettings ?: com.example.data.local.StartupSettings()
@@ -251,6 +262,7 @@ class PlayerViewModel(
     private var notificationPermissionRequested = false
     private val notificationPermissionPending = MutableStateFlow(false)
     private var automaticUpdateRequested = false
+    val canRequestNotificationPermission: Boolean get() = !notificationPermissionRequested
     fun beginNotificationPermissionRequest(): Boolean {
         if (notificationPermissionRequested) return false
         notificationPermissionRequested = true
@@ -425,7 +437,47 @@ class PlayerViewModel(
     ) }
 
     init {
-        viewModelScope.launch(Dispatchers.IO) {
+        if (application is com.example.XtremeMusicApp &&
+            !com.example.performance.BackgroundWorkCoordinator.startupReadiness.value.complete) {
+            viewModelScope.launch(AppDispatchers.Io) {
+                val startup = com.example.performance.BackgroundWorkCoordinator
+                val task = com.example.performance.StartupTask.LOCAL_TABS
+                startup.startupTask(task, com.example.performance.StartupStatus.RUNNING)
+                try {
+                    startup.startup(com.example.performance.BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI,
+                        label = "Local tab snapshots") {
+                        kotlinx.coroutines.withTimeout(5_000L) {
+                            kotlinx.coroutines.coroutineScope {
+                                // Subscribe to the existing retained local flows;
+                                // do not compose hidden pages or fetch a catalog.
+                                val consumers = listOf(
+                                    launch { favoriteTracks.collect { } },
+                                    launch { recentlyPlayed.collect { } },
+                                    launch { playlists.collect { } })
+                                try {
+                                    val revision = recentSearchRevision.get()
+                                    recentSearchMutex.withLock {
+                                        val recent = com.example.data.local.RecentSearchPreferences.getRecentSearches(application)
+                                        if (recentSearchRevision.get() == revision)
+                                            _searchState.update { it.copy(recentSearches = recent) }
+                                    }
+                                    withContext(AppDispatchers.Main) { searchDataStarted = true }
+                                    localLibraryLoaded.forEach { it.await() }
+                                } finally { consumers.forEach { it.cancel() } }
+                            }
+                        }
+                    }
+                    startup.startupTask(task, com.example.performance.StartupStatus.READY)
+                } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
+                    startup.startupTask(task, com.example.performance.StartupStatus.UNAVAILABLE)
+                } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                catch (error: Exception) {
+                    android.util.Log.w("PlayerViewModel", "Initial local tabs unavailable", error)
+                    startup.startupTask(task, com.example.performance.StartupStatus.UNAVAILABLE)
+                }
+            }
+        }
+        viewModelScope.launch(AppDispatchers.Io) {
             if (preparedSettings != null) return@launch
             try {
                 val settings = (application as? com.example.XtremeMusicApp)?.loadStartupSettings()
@@ -471,7 +523,7 @@ class PlayerViewModel(
             playbackManager.uiState.map { it.selectedQuality }.distinctUntilChanged()
                 .collect(catalogBrowser::setAudioQuality)
         }
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(AppDispatchers.Io) {
             _settingsReady.first { it }
             loadCatalog(com.example.performance.BackgroundWorkCoordinator.StartupPriority.DEFERRED)
         }
@@ -520,7 +572,7 @@ class PlayerViewModel(
                     lyricsPrefetchAdmission = null
                 } else if (!lyricsLookupComplete && !lyricsPrefetchStarted &&
                     lyricsJob?.isActive != true && lyricsPrefetchAdmission?.isActive != true) {
-                    lyricsPrefetchAdmission = viewModelScope.launch(Dispatchers.IO) {
+                    lyricsPrefetchAdmission = viewModelScope.launch(AppDispatchers.Io) {
                         kotlinx.coroutines.delay(10_000L)
                         com.example.performance.BackgroundWorkCoordinator.startup(
                             com.example.performance.BackgroundWorkCoordinator.StartupPriority.DEFERRED,
@@ -570,7 +622,7 @@ class PlayerViewModel(
         val identity = SongIdentity.from(track)
         lyricsLookupComplete = false
         if (_currentLyrics.value?.trackId != track.id || forceRefresh) _currentLyrics.value = null
-        lyricsJob = viewModelScope.launch(Dispatchers.IO) {
+        lyricsJob = viewModelScope.launch(AppDispatchers.Io) {
             fun stillSelected(): Boolean = lyricsRequestGeneration.get() == generation &&
                 playbackManager.uiState.value.currentTrack?.let(SongIdentity::from) == identity
             try {
@@ -604,12 +656,10 @@ class PlayerViewModel(
 
     private fun loadCatalog(priority: com.example.performance.BackgroundWorkCoordinator.StartupPriority =
         com.example.performance.BackgroundWorkCoordinator.StartupPriority.CRITICAL) {
-        viewModelScope.launch(Dispatchers.IO) {
-            com.example.performance.BackgroundWorkCoordinator.startup(priority) {
-                val initial = repository.getInitialCatalog(_userProfile.value)
-                _catalogTracks.value = initial
-                playbackManager.setCandidatePool(initial)
-            }
+        viewModelScope.launch(AppDispatchers.Io) {
+            val initial = repository.getInitialCatalog(_userProfile.value, priority)
+            _catalogTracks.value = initial
+            playbackManager.setCandidatePool(initial)
 
             // Home owns optional discovery refreshes. Playback can use this real local
             // pool immediately, without launching a competing discovery pass at startup.
@@ -618,7 +668,7 @@ class PlayerViewModel(
 
     fun renamePlaylist(playlistId: Long, newTitle: String) {
         viewModelScope.launch(AppDispatchers.CpuBounded) {
-            withContext(Dispatchers.IO) { repository.renamePlaylist(playlistId, newTitle) }
+            withContext(AppDispatchers.Io) { repository.renamePlaylist(playlistId, newTitle) }
             val current = _selectedPlaylistTracks.value
             if (current != null && current.playlist.playlistId == playlistId) {
                 val renamed = current.copy(
@@ -630,7 +680,7 @@ class PlayerViewModel(
     }
 
     fun reloadAfterRestore() {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(AppDispatchers.Io) {
             _userProfile.value = com.example.data.local.UserProfilePreferences.getUserProfile(application)
             loadCatalog()
             val currentId = _selectedPlaylistTracks.value?.playlist?.playlistId
@@ -748,7 +798,7 @@ class PlayerViewModel(
     fun toggleLike(track: MusicTrack) {
         viewModelScope.launch(AppDispatchers.CpuBounded) {
           favoriteUpdateMutex.withLock {
-            val newLikedStatus = withContext(Dispatchers.IO) { repository.toggleFavorite(track) }
+            val newLikedStatus = withContext(AppDispatchers.Io) { repository.toggleFavorite(track) }
             withContext(Dispatchers.Main.immediate) { playbackManager.updateFavoriteStatus(track.id, newLikedStatus) }
             _catalogTracks.update { list ->
                 list.map { if (it.id == track.id) it.copy(isLiked = newLikedStatus) else it }
@@ -836,14 +886,14 @@ class PlayerViewModel(
 
     fun createPlaylist(title: String, description: String, onCreated: ((Long) -> Unit)? = null) {
         viewModelScope.launch {
-            val id = withContext(Dispatchers.IO) { repository.createPlaylist(title, description) }
+            val id = withContext(AppDispatchers.Io) { repository.createPlaylist(title, description) }
             onCreated?.invoke(id)
         }
     }
 
     fun deletePlaylist(playlistId: Long) {
         viewModelScope.launch {
-            withContext(Dispatchers.IO) { repository.deletePlaylist(playlistId) }
+            withContext(AppDispatchers.Io) { repository.deletePlaylist(playlistId) }
             if (_selectedPlaylistTracks.value?.playlist?.playlistId == playlistId) {
                 _selectedPlaylistTracks.value = null
             }
@@ -851,13 +901,13 @@ class PlayerViewModel(
     }
 
     fun addTrackToPlaylist(playlistId: Long, track: MusicTrack) {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(AppDispatchers.Io) {
             repository.addTrackToPlaylist(playlistId, track)
         }
     }
 
     fun removeTrackFromPlaylist(playlistId: Long, trackId: String) {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(AppDispatchers.Io) {
             repository.removeTrackFromPlaylist(playlistId, trackId)
         }
     }
@@ -1018,7 +1068,7 @@ class PlayerViewModel(
 
         importJob?.cancel()
         cancelImportRetries()
-        importJob = viewModelScope.launch(AppDispatchers.CpuBounded) {
+        importJob = viewModelScope.launch(AppDispatchers.Imports) {
             val work = com.example.performance.BackgroundWorkCoordinator.busy()
             try {
                 val platform = currentState.selectedPlatform
@@ -1160,7 +1210,7 @@ class PlayerViewModel(
                 val desc = _importState.value.customDescription.ifBlank { summary.playlistDescription }
                 val cover = summary.coverUrl.ifBlank { matchedTracks.firstOrNull()?.coverUrl.orEmpty() }
 
-                val playlistId = withContext(Dispatchers.IO) { repository.createPlaylistWithTracks(
+                val playlistId = withContext(AppDispatchers.Io) { repository.createPlaylistWithTracks(
                     title = title,
                     description = desc,
                     coverUrl = cover,

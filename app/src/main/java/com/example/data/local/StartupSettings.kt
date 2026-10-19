@@ -3,7 +3,7 @@ package com.example.data.local
 import android.content.Context
 import com.example.playback.AudioQuality
 import android.content.SharedPreferences
-import kotlinx.coroutines.Dispatchers
+import com.example.performance.AppDispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -59,7 +59,7 @@ internal class StartupSettingsCache(private val context: Context) : AutoCloseabl
 
     fun peek(): StartupSettings? = snapshot?.takeIf { it.revision == revision.get() }?.settings
 
-    suspend fun load(): StartupSettings = withContext(Dispatchers.IO) {
+    suspend fun load(): StartupSettings = withContext(AppDispatchers.Io) {
         loading.withLock {
             if (preferences.isEmpty()) {
                 preferences = listOf("xtreme_theme_prefs", "xtreme_user_profile_prefs",

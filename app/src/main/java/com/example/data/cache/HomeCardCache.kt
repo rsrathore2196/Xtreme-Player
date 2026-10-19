@@ -7,6 +7,7 @@ import android.util.JsonToken
 import com.example.data.model.MusicTrack
 import com.example.recommendation.UnifiedRecommendationEngine
 import com.example.performance.BackgroundWorkCoordinator
+import com.example.performance.AppDispatchers
 import com.example.ui.viewmodel.SectionState
 import com.example.ui.viewmodel.MostListenedArtist
 import kotlinx.coroutines.*
@@ -56,7 +57,7 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
         private val previews = AtomicReference<Retained?>(null)
         private val fileMutex = Mutex()
         private val readMutex = Mutex()
-        private val preloadScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        private val preloadScope = CoroutineScope(SupervisorJob() + AppDispatchers.Io)
         private val preloads = mutableMapOf<String, Deferred<SavedHomeCards?>>()
         private val previewPreloads = mutableMapOf<String, Deferred<SavedHomeCards?>>()
         private fun preloadKey(context: Context, profile: String) = "${context.filesDir.path}|$profile"
@@ -82,7 +83,7 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
     }?.cards
 
     /** Read only visible content; v3 keeps this small header before the large pools. */
-    suspend fun readInitial(profile: String): SavedHomeCards? = withContext(Dispatchers.IO) {
+    suspend fun readInitial(profile: String): SavedHomeCards? = withContext(AppDispatchers.Io) {
       try {
         peek(profile)?.let { return@withContext it }
         readMutex.withLock {
@@ -207,7 +208,7 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
         }
     }
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(SupervisorJob() + AppDispatchers.Io)
     private val serializationDispatcher = workerDispatcher
     private val writes = Channel<SavedHomeCards>(Channel.CONFLATED)
     private val closing = AtomicBoolean(false)
@@ -249,11 +250,41 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
         writes.close()
         writer.invokeOnCompletion { scope.cancel() }
     }
-    suspend fun read(profile: String): SavedHomeCards? =
-        peekFull(profile) ?: preloadAsync(appContext, profile).await()
+    suspend fun read(profile: String): SavedHomeCards? {
+        // The admitted caller owns decoding and its cooperative checkpoints. A
+        // detached preload would lose Admission/NonEssentialWork while its caller
+        // held the scheduler's slot. Other consumers still join the same result.
+        val key = preloadKey(appContext, profile)
+        while (true) {
+            currentCoroutineContext().ensureActive()
+            peekFull(profile)?.let { return it }
+            val completion = CompletableDeferred<SavedHomeCards?>()
+            val flight = synchronized(preloads) {
+                preloads[key] ?: completion.also { preloads[key] = it }
+            }
+            if (flight !== completion) {
+                try { return flight.await() }
+                catch (cancelled: CancellationException) {
+                    currentCoroutineContext().ensureActive()
+                    // An obsolete owner may have left Home. A live consumer can
+                    // retry without inheriting that owner's cancellation.
+                    yield()
+                    continue
+                }
+            }
+            try {
+                return readDisk(profile).also { completion.complete(it) }
+            } catch (error: Throwable) {
+                completion.completeExceptionally(error)
+                throw error
+            } finally {
+                synchronized(preloads) { if (preloads[key] === completion) preloads.remove(key) }
+            }
+        }
+    }
 
     private suspend fun readDisk(profile: String): SavedHomeCards? = readDiskOnce(profile)
-    private suspend fun readDiskOnce(profile: String): SavedHomeCards? = withContext(Dispatchers.IO) {
+    private suspend fun readDiskOnce(profile: String): SavedHomeCards? = withContext(AppDispatchers.Io) {
         peekFull(profile)?.let { return@withContext it }
         val before = memory.get()
         try {
