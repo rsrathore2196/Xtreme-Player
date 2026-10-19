@@ -201,6 +201,8 @@ class PlayerViewModel(
 
     private val preparedSettings = (application as? com.example.XtremeMusicApp)?.takeInitialStartupSettings()
     private val initialSettings = preparedSettings ?: com.example.data.local.StartupSettings()
+    // Captured before onboarding completes; no additional preference or disk lookup.
+    val isFirstHomeSession: Boolean get() = !initialSettings.profile.isOnboardingCompleted
     private val _settingsReady = MutableStateFlow(preparedSettings != null)
     val settingsReady: StateFlow<Boolean> = _settingsReady.asStateFlow()
     private val initialThemeMode = initialSettings.themeMode

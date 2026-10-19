@@ -151,7 +151,7 @@ class UnifiedRecommendationEngine(context: Context?,
                     priority?.waitingShelf?.value = null
                     priority?.activeShelf?.value = shelf
                     withContext(DiscoveryRequestCoordinator.HomeCard(essential)) {
-                        withTimeout(40_000L) {
+                        withTimeout(if (priority?.initialPresentation == true) 15_000L else 40_000L) {
                             yieldHomeWork()
                             val candidates = discover(shelf, profile, country, taste, seed, history, favorites, force, variation, false,
                                 initialBatch = startupBatch)

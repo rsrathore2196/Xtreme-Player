@@ -105,6 +105,11 @@ import com.example.ui.screens.SettingsScreen
 import com.example.ui.theme.LocalAppColors
 import com.example.ui.viewmodel.PlayerViewModel
 import com.example.util.AppHaptics
+import com.example.performance.BackgroundWorkCoordinator
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
+import androidx.compose.ui.semantics.clearAndSetSemantics
 
 enum class NavigationTab(val title: String) {
     HOME("Home"),
@@ -119,6 +124,24 @@ fun MainNavigationScaffold(
     viewModel: PlayerViewModel,
     modifier: Modifier = Modifier
 ) {
+    // Only this terminal boundary reaches the host. Progress updates are observed
+    // exclusively by the popup; the pager/dock do not recompose for every task.
+    val initializing by remember {
+        BackgroundWorkCoordinator.startupReadiness.map { !it.complete }.distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialValue = !BackgroundWorkCoordinator.startupReadiness.value.complete)
+    if (initializing) com.example.ui.screens.PrepareInitialHome()
+    var retainInactivePages by remember { mutableStateOf(BackgroundWorkCoordinator.startupReadiness.value.complete) }
+    LaunchedEffect(Unit) {
+        BackgroundWorkCoordinator.startupReadiness.first { it.complete }
+        if (!retainInactivePages) {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.DEFERRED,
+                    label = "Retained tab preparation") {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) { retainInactivePages = true }
+                }
+            }
+        }
+    }
     val playerUiState by viewModel.navigationPlayerUiState.collectAsStateWithLifecycle()
     val currentPlayingTrackId = playerUiState.currentTrack?.id
     val catalogDetail by viewModel.catalogBrowser.detail.collectAsStateWithLifecycle()
@@ -283,15 +306,19 @@ fun MainNavigationScaffold(
         LocalOverscrollConfiguration provides
             if (selectedTabIndex == 3 && selectedPlaylistWithTracks == null) platformOverscroll else null
     ) {
-        Box(modifier = modifier.fillMaxSize().background(appColors.scaffoldBackground)) {
+        Box(modifier = modifier.fillMaxSize().background(appColors.scaffoldBackground).drawWithContent {
+            drawContent()
+            BackgroundWorkCoordinator.initialContentDrawn()
+        }) {
             Scaffold(
+                modifier = if (initializing) Modifier.clearAndSetSemantics { } else Modifier,
                 contentWindowInsets = WindowInsets(0.dp),
                 containerColor = appColors.scaffoldBackground
             ) { _ ->
             Box(modifier = Modifier.fillMaxSize()) {
                 Box(Modifier.fillMaxSize().drawWithContent { if (!playerCoversContent) drawContent() }
                     .xtremeSharedBackdropSource(enabled = isDynamicGlassEnabled && !playerCoversContent)) {
-                CompositionLocalProvider(LocalVisualEffectsActive provides (!playerCoversContent && catalogDetail == null)) {
+                CompositionLocalProvider(LocalVisualEffectsActive provides (!initializing && !playerCoversContent && catalogDetail == null)) {
                 // If playlist detail is open, show it with a smooth animated transition
                 val currentPlaylist = selectedPlaylistWithTracks
                 AnimatedVisibility(
@@ -446,7 +473,8 @@ fun MainNavigationScaffold(
                         } else {
                             MainTabPager(
                                 state = tabPagerState,
-                                pageCovered = playerCoversContent || catalogDetail != null
+                                pageCovered = playerCoversContent || catalogDetail != null,
+                                retainInactivePages = retainInactivePages
                             ) { tabIndex ->
                                 tabContent(tabIndex)
                             }
@@ -585,7 +613,7 @@ fun MainNavigationScaffold(
                 lyrics = currentLyrics,
                 onRetryLyrics = { viewModel.retryLyrics() },
                 onLyricsVisibilityChanged = viewModel::setLyricsVisible,
-                isScreenVisible = isPlayerExpanded,
+                isScreenVisible = isPlayerExpanded && !initializing,
                 availableAudioDevices = availableAudioDevices,
                 onSelectAudioDevice = { deviceId -> viewModel.selectAudioOutputDevice(deviceId) },
                 playbackPositionFlow = viewModel.playbackPosition,
@@ -596,7 +624,7 @@ fun MainNavigationScaffold(
         }
 
         // QUEUE BOTTOM SHEET
-        if (isQueueOpen) {
+        if (isQueueOpen && !initializing) {
             QueueBottomSheet(
                 queue = playerUiState.queue,
                 currentTrack = playerUiState.currentTrack,
@@ -610,7 +638,7 @@ fun MainNavigationScaffold(
         }
 
         // EQUALIZER DIALOG
-        if (isEqualizerOpen) {
+        if (isEqualizerOpen && !initializing) {
             val effectsState by viewModel.effectsState.collectAsStateWithLifecycle()
             EqualizerDialog(
                 effectsState = effectsState,
@@ -625,7 +653,7 @@ fun MainNavigationScaffold(
         }
 
         // ADD TO PLAYLIST DIALOG
-        trackToAddToPlaylist?.let { track ->
+        trackToAddToPlaylist?.takeUnless { initializing }?.let { track ->
             val playlists by viewModel.playlists.collectAsStateWithLifecycle()
             AddToPlaylistDialog(
                 track = track,
@@ -644,7 +672,7 @@ fun MainNavigationScaffold(
         }
 
         // CREATE PLAYLIST DIALOG
-        if (isCreatePlaylistOpen) {
+        if (isCreatePlaylistOpen && !initializing) {
             CreatePlaylistDialog(
                 isDarkMode = isDarkMode,
                 onDismiss = { isCreatePlaylistOpen = false },
@@ -656,7 +684,8 @@ fun MainNavigationScaffold(
         }
 
         // PLAYLIST IMPORT DIALOG (Spotify, YouTube Music, Apple Music, CSV)
-        if (importDialogOpen) ImportDialogHost(viewModel, isDarkMode)
+        if (importDialogOpen && !initializing) ImportDialogHost(viewModel, isDarkMode)
+        StartupInitializationOverlay(Modifier.fillMaxSize(), firstLaunch = viewModel.isFirstHomeSession)
     }
 }
 }

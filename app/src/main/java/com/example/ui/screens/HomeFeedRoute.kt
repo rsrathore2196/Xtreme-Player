@@ -16,6 +16,17 @@ import com.example.playback.PlayerUiState
 import com.example.ui.viewmodel.HomeViewModel
 import kotlinx.coroutines.awaitCancellation
 
+@Composable
+private fun retainedHomeFeed(): HomeViewModel {
+    val app = LocalContext.current.applicationContext as XtremeMusicApp
+    val factory = remember(app) { HomeViewModel.provideFactory(app.repository, app.playbackManager, app) }
+    return viewModel(factory = factory)
+}
+
+/** Data only: a restored Search/Library destination must not strand Home startup readiness. */
+@Composable
+internal fun PrepareInitialHome() { retainedHomeFeed() }
+
 /**
  * Feed ownership stays inside the Home destination. The pager and dock have no
  * dependency on feed loading, cache restoration, or recommendation publication.
@@ -33,11 +44,7 @@ internal fun HomeFeedRoute(
     onPlayInfiniteRadio: (MusicTrack?) -> Unit,
     onAddToQueue: (MusicTrack) -> Unit
 ) {
-    val app = LocalContext.current.applicationContext as XtremeMusicApp
-    val factory = remember(app) {
-        HomeViewModel.provideFactory(app.repository, app.playbackManager, app)
-    }
-    val feed: HomeViewModel = viewModel(factory = factory)
+    val feed = retainedHomeFeed()
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(feed, lifecycle, isVisible) {
         if (isVisible) lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {

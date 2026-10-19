@@ -16,7 +16,8 @@ import kotlin.coroutines.EmptyCoroutineContext
 internal object DiscoveryRequestCoordinator {
     /** A pull can promote its existing refresh without launching another pass. */
     class HomeRefresh(requested: Boolean, val initialShelf: Boolean = false,
-        val essentialShelves: Set<UnifiedRecommendationEngine.Shelf> = emptySet()) : AbstractCoroutineContextElement(Key) {
+        val essentialShelves: Set<UnifiedRecommendationEngine.Shelf> = emptySet(),
+        val initialPresentation: Boolean = false) : AbstractCoroutineContextElement(Key) {
         companion object Key : CoroutineContext.Key<HomeRefresh>
         val requested = MutableStateFlow(requested)
         val waitingShelf = MutableStateFlow<UnifiedRecommendationEngine.Shelf?>(null)
@@ -26,7 +27,7 @@ internal object DiscoveryRequestCoordinator {
         /** Start the deadline on a pull, including promotion of a deferred silent pass. */
         suspend fun <T> withBudget(milliseconds: Long, block: suspend () -> T): T? = coroutineScope {
             val work = async { block() }
-            val deadline = async { requested.first { it }; delay(milliseconds) }
+            val deadline = async { if (!initialPresentation) requested.first { it }; delay(milliseconds) }
             try {
                 select {
                     work.onAwait { it }

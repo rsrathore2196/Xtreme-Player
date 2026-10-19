@@ -268,6 +268,9 @@ class PlaybackManager(
         }
         SleepTimerManager.addExpirationListener(sleepExpirationListener)
         scope.launch {
+            val startup = com.example.performance.BackgroundWorkCoordinator
+            startup.startupTask(com.example.performance.StartupTask.PLAYER_SESSION,
+                com.example.performance.StartupStatus.RUNNING)
             try {
                 val (saved, tracks) = com.example.performance.BackgroundWorkCoordinator.work {
                     val snapshot = PlaybackSessionStore.restore(context)
@@ -287,10 +290,35 @@ class PlaybackManager(
                         currentPositionMs = saved.positionMs, durationMs = current.durationMs,
                         qualityBadge = current.qualityBadge.ifBlank { it.selectedQuality.badge }) }
                 }
+                startup.startupTask(com.example.performance.StartupTask.PLAYER_SESSION,
+                    com.example.performance.StartupStatus.READY)
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                Log.w(TAG, "Saved player metadata unavailable", e)
+                startup.startupTask(com.example.performance.StartupTask.PLAYER_SESSION,
+                    com.example.performance.StartupStatus.UNAVAILABLE)
             } finally {
                 sessionRestored.complete(Unit)
                 com.example.performance.BackgroundWorkCoordinator.playbackSessionRestored()
             }
+        }
+        scope.launch {
+            sessionRestored.await()
+            val startup = com.example.performance.BackgroundWorkCoordinator
+            startup.startupTask(com.example.performance.StartupTask.PLAYER_CONNECTION,
+                com.example.performance.StartupStatus.RUNNING)
+            // A paused/no-session restore needs metadata only. Never start a
+            // service or prepare audio merely to finish the startup popup.
+            val connected = if (!MusicService.liveSession.value) true else {
+                ensureMediaControllerConnected()
+                try { withTimeoutOrNull(8_000L) { controllerReady.await(); true } == true }
+                catch (e: CancellationException) { throw e }
+                catch (_: Exception) { false }
+            }
+            startup.startupTask(com.example.performance.StartupTask.PLAYER_CONNECTION,
+                if (connected) com.example.performance.StartupStatus.READY
+                else if (_uiState.value.currentTrack != null) com.example.performance.StartupStatus.FALLBACK_READY
+                else com.example.performance.StartupStatus.UNAVAILABLE)
         }
         scope.launch {
             // A service started by a headset/Auto is already paying initialization

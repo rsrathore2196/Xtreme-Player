@@ -35,6 +35,9 @@ import kotlinx.coroutines.flow.onEach
 import com.example.data.cache.HomeCardCache
 import com.example.data.cache.SavedHomeCards
 import com.example.performance.BackgroundWorkCoordinator
+import com.example.performance.StartupTask
+import com.example.performance.StartupStatus
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.flatMapLatest
 import com.example.data.repository.MusicRepository
 import com.example.playback.PlaybackManager
@@ -108,7 +111,8 @@ class HomeViewModel(
     // 2. Instant Local Catalog state (Local-First: Room/Memory)
     private val _catalogTracks = MutableStateFlow(initialCards?.catalog.orEmpty())
     val catalogTracks: StateFlow<List<MusicTrack>> = _catalogTracks.asStateFlow()
-    private val homeVisible = MutableStateFlow(false)
+    private var requestedHomeVisible = false
+    private val homeVisible = MutableStateFlow(!BackgroundWorkCoordinator.startupReadiness.value.complete)
     private val homeScrolling = MutableStateFlow(false)
     fun setHomeScrolling(active: Boolean) {
         if (homeScrolling.value == active) return
@@ -121,8 +125,11 @@ class HomeViewModel(
     private val essentialsLoaded = CompletableDeferred<Unit>()
     private val listeningCardsReady = CompletableDeferred<Unit>()
     private val startupRecommendationsComplete = CompletableDeferred<Unit>()
+    private val initialHomePrepared = CompletableDeferred<Unit>()
+    @Volatile private var preparingInitialHome = !BackgroundWorkCoordinator.startupReadiness.value.complete
     @Volatile private var deferredHomeReady = false
     private val eventsLoaded = CompletableDeferred<Unit>()
+    @Volatile private var recentHistoryUnavailable = false
     private val favoritesLoaded = CompletableDeferred<Unit>()
     private var savedSignal: String? = initialCards?.signal
     private var savedGeneration = initialCards?.generation ?: -1L
@@ -138,8 +145,16 @@ class HomeViewModel(
     val favoriteTracks = kotlinx.coroutines.flow.flow {
         restored.await()
         BackgroundWorkCoordinator.awaitFirstFrame()
+        BackgroundWorkCoordinator.startupTask(StartupTask.FAVORITES, StartupStatus.RUNNING)
         repository.getFavoriteTracks().collect { emit(it) }
-    }.onEach { favoritesLoaded.complete(Unit) }
+    }.catch { error ->
+        if (error is CancellationException) throw error
+        BackgroundWorkCoordinator.startupTask(StartupTask.FAVORITES, StartupStatus.UNAVAILABLE)
+        emit(emptyList())
+    }.onEach {
+        favoritesLoaded.complete(Unit)
+        BackgroundWorkCoordinator.startupTask(StartupTask.FAVORITES, StartupStatus.READY)
+    }
         .flowOn(dataDispatcher).stateIn(dataScope, SharingStarted.Eagerly, emptyList())
     private val historicalReload = MutableStateFlow(0L)
     @Volatile private var historicalLoadFailed = false
@@ -148,6 +163,7 @@ class HomeViewModel(
             restored.await()
             favoritesLoaded.await()
             BackgroundWorkCoordinator.awaitFirstFrame()
+            BackgroundWorkCoordinator.startupTask(StartupTask.RECENT_HISTORY, StartupStatus.RUNNING)
             var previousCount = -1
             var previousIds: Set<Long>? = null
             combine(listeningEventDao.observeActualPlayStamps(),
@@ -183,6 +199,15 @@ class HomeViewModel(
                 eventsLoaded.complete(Unit)
                 if (rebuildOlder) historicalReload.update { it + 1L }
             }
+    }.catch { error ->
+        if (error is CancellationException) throw error
+        historicalLoadFailed = true
+        recentHistoryUnavailable = true
+        historyReadyForRanking.value = true
+        eventsLoaded.complete(Unit)
+        BackgroundWorkCoordinator.startupTask(StartupTask.RECENT_HISTORY,
+            if (cachedHistory.value.isNullOrEmpty()) StartupStatus.UNAVAILABLE else StartupStatus.FALLBACK_READY)
+        emit(emptyList())
     }.flowOn(dataDispatcher).stateIn(dataScope, SharingStarted.Eagerly, emptyList())
     private data class HistoryRows(val ids: List<String> = emptyList(), val tracks: List<MusicTrack> = emptyList())
     private val historyRows = actualPlays.map { events -> events.map { it.trackId }.distinct() }
@@ -192,6 +217,11 @@ class HomeViewModel(
         if (pages.isEmpty()) kotlinx.coroutines.flow.flowOf(HistoryRows(ids)) else combine(pages) { groups ->
             withContext(workerDispatcher) { HistoryRows(ids, groups.flatMap { rows -> rows.map { it.toMusicTrack() } }) }
         }
+    }.catch { error ->
+        if (error is CancellationException) throw error
+        recentHistoryUnavailable = true
+        val ids = actualPlays.value.map { it.trackId }.distinct()
+        emit(HistoryRows(ids, cachedHistory.value.orEmpty().filter { it.id in ids }))
     }.flowOn(dataDispatcher).stateIn(dataScope, SharingStarted.Eagerly, HistoryRows())
     private data class PersonalizationHistory(val events: List<ListeningEventEntity> = emptyList(),
         val tracks: List<MusicTrack> = emptyList(), val ready: Boolean = false, val complete: Boolean = false)
@@ -314,7 +344,7 @@ class HomeViewModel(
     private val tasteProfile = tasteSnapshot.map { it.taste }
         .stateIn(dataScope, SharingStarted.Lazily, retainedTaste)
     val recentlyPlayed: StateFlow<List<MusicTrack>> = combine(actualPlays, historyRows, cachedHistory) { events, rows, cached ->
-        if (!eventsLoaded.isCompleted || rows.ids != events.map { it.trackId }.distinct()) cached.orEmpty() else {
+        if (recentHistoryUnavailable || !eventsLoaded.isCompleted || rows.ids != events.map { it.trackId }.distinct()) cached.orEmpty() else {
             val byId = rows.tracks.associateBy { it.id }
             val seen = HomeRecommendationPolicy.Recordings()
             events.asSequence().filter(UserTasteProfile::played).mapNotNull { byId[it.trackId] }
@@ -510,8 +540,17 @@ class HomeViewModel(
         // before Room commits it, without re-querying all history and metadata.
         restored.await()
         eventsLoaded.await()
+        BackgroundWorkCoordinator.startupTask(StartupTask.RECENT_ARTISTS, StartupStatus.RUNNING)
         val (events, rows) = combine(actualPlays, historyRows) { events, rows -> events to rows }
             .first { (events, rows) -> rows.ids == events.map { it.trackId }.distinct() }
+        if (recentHistoryUnavailable) {
+            listeningCardsReady.complete(Unit)
+            BackgroundWorkCoordinator.startupTask(StartupTask.RECENT_HISTORY,
+                if (_listeningHistoryCard.value.tracks.isEmpty()) StartupStatus.UNAVAILABLE else StartupStatus.FALLBACK_READY)
+            BackgroundWorkCoordinator.startupTask(StartupTask.RECENT_ARTISTS,
+                if (_mostListenedArtists.value.isEmpty()) StartupStatus.UNAVAILABLE else StartupStatus.FALLBACK_READY)
+            return
+        }
         val longTerm = personalizationHistory.first { it.ready }
         val pending = pendingCardPlays.toMap()
         val keepCachedArtists = !longTerm.complete && _mostListenedArtists.value.isNotEmpty()
@@ -550,6 +589,8 @@ class HomeViewModel(
         if (keepCachedArtists) appliedCachedArtistSessions.addAll(pending.keys)
         else appliedCachedArtistSessions.clear()
         pendingCardPlays.entries.removeAll { (it.key to it.value.id) in committed }
+        BackgroundWorkCoordinator.startupTask(StartupTask.RECENT_HISTORY, StartupStatus.READY)
+        BackgroundWorkCoordinator.startupTask(StartupTask.RECENT_ARTISTS, StartupStatus.READY)
         if (changed) savePreparedCards()
     }
 
@@ -743,7 +784,7 @@ class HomeViewModel(
         if (!activeRefreshIsExplicit) {
             homeScrolling.first { !it }
             BackgroundWorkCoordinator.yieldToInteraction(requireForeground = true,
-                awaitFrameQuiet = deferredHomeReady || startupRecommendationsComplete.isCompleted)
+                awaitFrameQuiet = !preparingInitialHome && (deferredHomeReady || startupRecommendationsComplete.isCompleted))
         }
         kotlinx.coroutines.yield()
     }
@@ -858,6 +899,9 @@ class HomeViewModel(
     private var lastDiscoverySignal: Pair<Set<String>, Set<String>>? = null
 
     fun setHomeVisible(visible: Boolean) {
+        requestedHomeVisible = visible
+        val preparing = preparingInitialHome
+        if (preparing) { homeVisible.value = true; return }
       ownerScope.launch {
         if (homeVisible.value == visible) return@launch
         homeVisible.value = visible
@@ -968,6 +1012,7 @@ class HomeViewModel(
             BackgroundWorkCoordinator.homeContentReady()
             // Cached cards or a small completed bootstrap are sufficient for the
             // first Home. Deeper rankings/discovery follow a real idle window.
+            initialHomePrepared.await()
             startupRecommendationsComplete.await()
             BackgroundWorkCoordinator.optionalRecommendationsReady()
             awaitHomeIdle(allowWhenEmpty = false, quietMillis = 15_000L)
@@ -995,6 +1040,7 @@ class HomeViewModel(
             // Long-term enrichment is independent of first-shelf preparation.
             // A cache hit or completion/failure of the minimal bootstrap releases
             // it; playback, navigation and recent-history publication never wait.
+            initialHomePrepared.await()
             startupRecommendationsComplete.await()
             historicalReload.collectLatest {
                 // Rebuild older pages only after structural import/deletion changes;
@@ -1044,6 +1090,10 @@ class HomeViewModel(
                 catch (e: Exception) {
                     android.util.Log.w("HomeViewModel", "Could not update listening cards", e)
                     listeningCardsReady.complete(Unit)
+                    BackgroundWorkCoordinator.startupTask(StartupTask.RECENT_HISTORY,
+                        if (_listeningHistoryCard.value.tracks.isEmpty()) StartupStatus.UNAVAILABLE else StartupStatus.FALLBACK_READY)
+                    BackgroundWorkCoordinator.startupTask(StartupTask.RECENT_ARTISTS,
+                        if (_mostListenedArtists.value.isEmpty()) StartupStatus.UNAVAILABLE else StartupStatus.FALLBACK_READY)
                 }
             }
         }
@@ -1051,7 +1101,7 @@ class HomeViewModel(
             combine(preparedCards, recentlyPlayed, tasteProfile, recommendationSeed,
                 _listeningHistoryCard) { cards, recent, taste, seed, listening ->
                 DisplayInputs(cards, recent, taste, seed, listening)
-            }.distinctUntilChanged().mapLatest { inputs ->
+            }.distinctUntilChanged().filter { !preparingInitialHome }.mapLatest { inputs ->
                 // Do not prepare a new visible list while a retained Home is hidden,
                 // scrolling or sliding. mapLatest keeps only the newest inputs.
                 awaitHomePresentation()
@@ -1084,6 +1134,7 @@ class HomeViewModel(
         }
         ownerScope.launch {
           try {
+            BackgroundWorkCoordinator.startupTask(StartupTask.HOME_CACHE, StartupStatus.RUNNING)
             val cached = BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI,
                 label = "Home preview restore") {
                 initialCards ?: HomeCardCache.preloadAsync(getApplication(), profileKey(), previewOnly = true).await()
@@ -1107,7 +1158,8 @@ class HomeViewModel(
             val key = profileKey()
             try {
                 val cached = shelfCache.peekFull(key) ?: BackgroundWorkCoordinator.startup(
-                    BackgroundWorkCoordinator.StartupPriority.DEFERRED,
+                    if (preparingInitialHome) BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI
+                    else BackgroundWorkCoordinator.StartupPriority.DEFERRED,
                     label = "Home full cache enrichment",
                     urgent = { pendingExplicitRefresh }) { shelfCache.read(key) }
                 if (cached != null && key == profileKey()) {
@@ -1117,6 +1169,7 @@ class HomeViewModel(
             } finally {
                 // Partial first-read snapshots must never overwrite full disk pools.
                 additionalCacheRestored.complete(Unit)
+                BackgroundWorkCoordinator.startupTask(StartupTask.HOME_CACHE, StartupStatus.READY)
                 savePreparedCards()
             }
         }
@@ -1145,7 +1198,7 @@ class HomeViewModel(
                     // Retain a bounded preparation in progress instead of repeatedly
                     // restarting it for every verified song. Publication still rejects
                     // stale generations/revisions, then consumes only the latest input.
-                    renderRecommendations()
+                    if (!preparingInitialHome) renderRecommendations()
                 }
         }
         ownerScope.launch {
@@ -1153,6 +1206,7 @@ class HomeViewModel(
             tasteSnapshot.map { snapshot -> snapshot.inputs?.let { inputs ->
                 snapshot.taste.topRecentTrackIds.toSet() to inputs.favorites.map { it.id }.toSet()
             } }.filterNotNull().distinctUntilChanged().debounce(2_000L).collectLatest { signal ->
+                initialHomePrepared.await()
                 if (lastDiscoverySignal == null) {
                     lastDiscoverySignal = signal
                     return@collectLatest
@@ -1195,6 +1249,7 @@ class HomeViewModel(
             }.distinctUntilChanged().debounce(200L).collectLatest { demand ->
                 restored.await()
                 if (demand.first.isEmpty()) return@collectLatest
+                initialHomePrepared.await()
                 awaitHomePresentation()
                 if (activeRecommendationSeed != demand.second && activeRecommendationShelves.isNotEmpty() &&
                     activeRecommendationShelves.all { it == Shelf.SIMILAR || it == Shelf.INSPIRED }) {
@@ -1221,27 +1276,121 @@ class HomeViewModel(
             }
         }
         ownerScope.launch {
-            restored.await()
-            homeVisible.first { it }
+            BackgroundWorkCoordinator.beginInitialPresentation()
+            prepareInitialHome()
             startupRefreshScheduled = true
-            if (pendingExplicitRefresh || pendingSilentRefresh || lastDiscoveryRefresh == 0L ||
-                preparedCards.value.quick.tracks.isEmpty() && preparedCards.value.chart.tracks.isEmpty() ||
-                System.currentTimeMillis() - lastDiscoveryRefresh >= 30 * 60_000L) {
-                if (!pendingExplicitRefresh && (preparedCards.value.quick.tracks.isNotEmpty() || preparedCards.value.chart.tracks.isNotEmpty()))
-                    awaitHomeIdle(allowWhenEmpty = false, quietMillis = 750L)
-                refreshHome(isExplicitPull = pendingExplicitRefresh)
-            } else if (candidates.value.chart.isEmpty() ||
-                candidates.value.chart.any { it.id.startsWith("chart_in_") } ||
-                System.currentTimeMillis() - lastRegionalRefresh >= 30 * 60_000L) {
-                val profile = _userProfile.value
-                loadRegionalTrending(resolveCountryDisplayName(profile), profile.countryCode)
-            }
+            // Fresh replacements are optional after valid cache restoration. The
+            // normal viewport/freshness collectors resume after the modal boundary.
+            if (pendingExplicitRefresh) refreshHome(true)
         }
     }
 
-    fun refreshHome(isExplicitPull: Boolean = true, requestedShelves: Set<Shelf>? = null) {
-        // Request ownership and short publication blocks share the IO owner.
-        ownerScope.launch {
+    private fun Shelf.startupTask(): StartupTask = when (this) {
+        Shelf.QUICK -> StartupTask.QUICK
+        Shelf.ERA -> StartupTask.ERA
+        Shelf.CHART -> StartupTask.CHART
+        Shelf.PERSONALIZED -> StartupTask.PERSONALIZED
+        Shelf.SIMILAR -> StartupTask.SIMILAR
+        Shelf.INSPIRED -> StartupTask.INSPIRED
+    }
+
+    /** One cache-first preparation, independent of viewport and retained across tab/lifecycle changes. */
+    private suspend fun prepareInitialHome() {
+        if (!preparingInitialHome) { initialHomePrepared.complete(Unit); return }
+        try {
+            restored.await()
+            homeVisible.first { it }
+            essentialsLoaded.await()
+            additionalCacheRestored.await()
+            BackgroundWorkCoordinator.startupTask(StartupTask.PERSONALIZATION, StartupStatus.RUNNING)
+            val taste = withTimeoutOrNull(8_000L) { tasteSnapshot.first { it.inputs != null } }
+            BackgroundWorkCoordinator.startupTask(StartupTask.PERSONALIZATION,
+                if (taste != null) StartupStatus.READY else StartupStatus.FALLBACK_READY)
+            val visibleCache = withContext(workerDispatcher) {
+                hideRecentRecommendations(preparedCards.value,
+                    recentlyPlayed.value + _listeningHistoryCard.value.tracks + listOfNotNull(activeRecommendationTrack()), tasteProfile.value)
+            }
+            val missing = Shelf.entries.filterTo(linkedSetOf()) { shelf ->
+                val eligible = when (shelf) {
+                    Shelf.PERSONALIZED -> !tasteProfile.value.isColdStart
+                    Shelf.SIMILAR, Shelf.INSPIRED -> activeRecommendationTrack() != null
+                    else -> true
+                }
+                val cached = visibleCache.section(shelf).tracks.isNotEmpty()
+                BackgroundWorkCoordinator.startupTask(shelf.startupTask(), when {
+                    cached -> StartupStatus.FALLBACK_READY
+                    !eligible -> StartupStatus.READY // No history/seed: a genuine final empty section.
+                    else -> StartupStatus.RUNNING
+                })
+                eligible && !cached
+            }
+            if (missing.isNotEmpty()) {
+                val request = refreshHome(false, missing, initialPresentation = true)
+                val finished = withTimeoutOrNull(40_000L) {
+                    request.join()
+                    homeRefreshJob?.join()
+                    true
+                } == true
+                if (!finished) {
+                    request.cancelAndJoin()
+                    homeRefreshJob?.cancelAndJoin()
+                }
+            }
+            // Rank/deduplicate once, after the bounded initial pass. No per-track
+            // full-card publication or repeated ranking while the modal is visible.
+            renderRecommendations()
+            val ready = withContext(workerDispatcher) {
+                val cards = hideRecentRecommendations(preparedCards.value,
+                    recentlyPlayed.value + _listeningHistoryCard.value.tracks + listOfNotNull(activeRecommendationTrack()), tasteProfile.value)
+                Shelf.entries.fold(cards) { result, shelf ->
+                    val section = result.section(shelf)
+                    result.withSection(shelf, section.copy(isLoading = false))
+                }
+            }
+            preparedCards.value = ready
+            if (_recommendationCards.value != ready) _recommendationCards.value = ready
+            // The retained per-section flows, including offscreen sections, must
+            // contain this snapshot before the final draw fence can be released.
+            Shelf.entries.forEach { shelf -> sectionStates.getValue(shelf).first { it == ready.section(shelf) } }
+            Shelf.entries.forEach { shelf ->
+                BackgroundWorkCoordinator.startupTask(shelf.startupTask(),
+                    if (ready.section(shelf).tracks.isNotEmpty()) StartupStatus.READY else StartupStatus.UNAVAILABLE)
+            }
+            BackgroundWorkCoordinator.startupTask(StartupTask.HERO, StartupStatus.RUNNING)
+            val hero = playbackManager.uiState.value.currentTrack ?: heroSeedTrack.value
+                ?: ready.quick.tracks.firstOrNull() ?: ready.chart.tracks.firstOrNull()
+            if (hero != null && cachedHero.value == null) cachedHero.value = hero
+            if (hero != null && playbackManager.uiState.value.currentTrack == null)
+                withTimeoutOrNull(1_000L) { heroSeedTrack.first { it != null } }
+            BackgroundWorkCoordinator.startupTask(StartupTask.HERO,
+                if (hero != null) StartupStatus.READY else StartupStatus.UNAVAILABLE)
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) {
+            android.util.Log.w("HomeViewModel", "Initial Home preparation used retained content", e)
+            val retained = preparedCards.value
+            val fallback = Shelf.entries.fold(retained) { cards, shelf ->
+                cards.withSection(shelf, cards.section(shelf).copy(isLoading = false))
+            }
+            preparedCards.value = fallback
+            _recommendationCards.value = fallback
+            (Shelf.entries.map { it.startupTask() } + StartupTask.HERO + StartupTask.PERSONALIZATION).forEach {
+                BackgroundWorkCoordinator.startupTask(it, StartupStatus.UNAVAILABLE)
+            }
+        } finally {
+            preparingInitialHome = false
+            initialHomePrepared.complete(Unit)
+            startupRecommendationsComplete.complete(Unit)
+            homeVisible.value = requestedHomeVisible
+        }
+    }
+
+    fun refreshHome(isExplicitPull: Boolean = true, requestedShelves: Set<Shelf>? = null,
+        initialPresentation: Boolean = false): Job = ownerScope.launch {
+            // Request ownership and short publication blocks share the IO owner.
+            if (preparingInitialHome && !initialPresentation) {
+                if (isExplicitPull) pendingExplicitRefresh = true
+                return@launch
+            }
             restored.await()
             if (!homeVisible.value) {
                 if (isExplicitPull) pendingExplicitRefresh = true else pendingSilentRefresh = true
@@ -1251,12 +1400,13 @@ class HomeViewModel(
             // Bootstrap only essential discovery; all lower shelves retain on-demand loading.
             val bootstrap = if (preparedCards.value.quick.tracks.isEmpty() && preparedCards.value.chart.tracks.isEmpty())
                 setOf(Shelf.QUICK) else emptySet()
-            val demand = shelfDemand(allowDeferred = isExplicitPull || pendingExplicitRefresh || activeRefreshIsExplicit) + bootstrap
+            val demand = if (initialPresentation) requestedShelves.orEmpty() else
+                shelfDemand(allowDeferred = isExplicitPull || pendingExplicitRefresh || activeRefreshIsExplicit) + bootstrap
             val requested = (requestedShelves ?: demand).intersect(demand)
-                .filterTo(mutableSetOf()) { isExplicitPull || pendingExplicitRefresh || needsShelfLoad(it) }
+                .filterTo(mutableSetOf()) { initialPresentation || isExplicitPull || pendingExplicitRefresh || needsShelfLoad(it) }
                 // A failed/negative-cached bootstrap must not discard another
                 // visible shelf's demand and leave a first installation empty.
-                .initialCardDemand(bootstrap, automaticStartup = !deferredHomeReady && !isExplicitPull && !pendingExplicitRefresh)
+                .initialCardDemand(bootstrap, automaticStartup = !initialPresentation && !deferredHomeReady && !isExplicitPull && !pendingExplicitRefresh)
             if (requested.isEmpty()) {
                 if (isExplicitPull) pendingExplicitRefresh = true
                 return@launch
@@ -1285,12 +1435,13 @@ class HomeViewModel(
             pendingSilentRefresh = false
             val initialExplicit = isExplicitPull || pendingExplicitRefresh || _isRefreshing.value
             pendingExplicitRefresh = false
-            val startupBatch = !deferredHomeReady && !initialExplicit && requested.any(bootstrap::contains)
+            val startupBatch = !initialPresentation && !deferredHomeReady && !initialExplicit && requested.any(bootstrap::contains)
             val emptyVisible = (recommendationViewport.value + bootstrap).filterTo(mutableSetOf()) {
                 it in requested && preparedCards.value.section(it).tracks.isEmpty()
             }
             val priority = DiscoveryRequestCoordinator.HomeRefresh(initialExplicit, initialShelf = startupBatch,
-                essentialShelves = emptyVisible)
+                essentialShelves = if (initialPresentation) requested else emptyVisible,
+                initialPresentation = initialPresentation)
             activeRefreshPriority = priority
             activeRefreshIsExplicit = initialExplicit
             if (startupBatch) startupBootstrapUsed = true
@@ -1306,7 +1457,8 @@ class HomeViewModel(
                     withContext(priority) {
                         restored.await()
                         essentialsLoaded.await()
-                        if (!activeRefreshIsExplicit) {
+                        if (initialPresentation) awaitHomePresentation()
+                        else if (!activeRefreshIsExplicit) {
                             refreshWaitingForIdle = true
                             try {
                                 if (emptyVisible.isNotEmpty()) awaitHomePresentation() else awaitHomeIdle()
@@ -1373,12 +1525,11 @@ class HomeViewModel(
                         // not a reason to drop the next cards until manual refresh.
                         val pending = pendingShelfRequests.toSet() + shelfDemand().filter(::needsShelfLoad)
                         pendingShelfRequests.clear()
-                        if (pending.isNotEmpty() && homeVisible.value)
+                        if (!preparingInitialHome && pending.isNotEmpty() && homeVisible.value)
                             refreshHome(false, pending)
                     }
                 }
             }
-        }
     }
 
     private suspend fun refreshSuggestions(force: Boolean, requested: Set<Shelf>, startupBatch: Boolean = false) = withContext(ownerDispatcher) {
@@ -1389,7 +1540,9 @@ class HomeViewModel(
         BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
         val bootstrap = if (preparedCards.value.quick.tracks.isEmpty() && preparedCards.value.chart.tracks.isEmpty())
             setOf(Shelf.QUICK) else emptySet()
-        val enabled = requested.intersect(shelfDemand(allowDeferred = force || activeRefreshIsExplicit) + bootstrap)
+        val initialPresentation = currentCoroutineContext()[DiscoveryRequestCoordinator.HomeRefresh]?.initialPresentation == true
+        val enabled = if (initialPresentation) requested else
+            requested.intersect(shelfDemand(allowDeferred = force || activeRefreshIsExplicit) + bootstrap)
         if (enabled.isEmpty()) return@withContext
         val contexts = enabled.associateWith(::shelfContext)
         activeRecommendationShelves = enabled

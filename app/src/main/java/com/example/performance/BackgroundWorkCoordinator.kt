@@ -9,6 +9,8 @@ import kotlinx.coroutines.yield
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -18,6 +20,53 @@ import kotlin.coroutines.CoroutineContext
 /** Coordinates optional work; never drives frames or controls the audio engine. */
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 object BackgroundWorkCoordinator {
+    private val _startupReadiness = MutableStateFlow(StartupReadiness())
+    val startupReadiness = _startupReadiness.asStateFlow()
+    private val initialPresentationPending = AtomicBoolean(false)
+    private val preparedContentDrawn = AtomicBoolean(false)
+    private val renderedFrames = AtomicLong()
+    private val healthyFrames = AtomicInteger()
+    private val preparedAtFrame = AtomicLong()
+    private val startupPresented = kotlinx.coroutines.CompletableDeferred<Unit>()
+    val initialPresentationInProgress: Boolean get() = initialPresentationPending.get()
+
+    fun beginInitialPresentation() {
+        if (!_startupReadiness.value.complete) initialPresentationPending.set(true)
+    }
+    fun startupTask(task: StartupTask, status: StartupStatus) {
+        _startupReadiness.update { it.withStatus(task, status) }
+    }
+    /** Called after the actual retained navigation tree is drawn, never from a frame-clock guess. */
+    fun initialContentDrawn() {
+        if (initialPresentationPending.get() && !preparedContentDrawn.get() &&
+            _startupReadiness.value.preparationComplete) {
+            preparedAtFrame.set(renderedFrames.get())
+            preparedContentDrawn.set(true)
+        }
+    }
+    suspend fun awaitInitialPresentationSettled() {
+        startupReadiness.first { it.preparationComplete }
+        if (startupReadiness.value.complete) return
+        startupTask(StartupTask.PRESENTATION, StartupStatus.RUNNING)
+        while (true) {
+            currentCoroutineContext().ensureActive()
+            if (startupReadiness.value.complete) return
+            val essentialFinished = synchronized(admissionLock) { !essentialActive }
+            val framesAfterPresentation = renderedFrames.get() - preparedAtFrame.get()
+            if (foreground.get() && preparedContentDrawn.get() && !foregroundDrawPending.get() &&
+                essentialFinished && navigationJobs.get() == 0 && framesAfterPresentation > 0L &&
+                (healthyFrames.get() >= 3 && framesAfterPresentation >= 3L ||
+                    SystemClock.elapsedRealtime() - lastSlowFrame.get() >= 250L)) break
+            delay(50L)
+        }
+        // Revealing interactive controls is itself a foreground interaction
+        // boundary. Reuse the existing idle budget so optional waiters cannot
+        // all wake in the popup's exit frames after a slow network lookup.
+        interaction()
+        initialPresentationPending.set(false)
+        startupTask(StartupTask.PRESENTATION, StartupStatus.READY)
+        startupPresented.complete(Unit)
+    }
     internal const val OPTIONAL_IDLE_MS = 15_000L
     internal const val BETWEEN_JOBS_MS = 750L
     // One shared execution budget for Home transforms, artwork matching and Coil
@@ -80,6 +129,7 @@ object BackgroundWorkCoordinator {
         awaitFirstFrame()
         awaitHomeContent()
         cachedHomeReady.await()
+        if (initialPresentationPending.get()) startupPresented.await()
         awaitIdle(quietMillis = 750L, minimumUptimeMillis = 0L)
         awaitNavigationIdle(requireForeground = true)
     }
@@ -120,6 +170,7 @@ object BackgroundWorkCoordinator {
 
     private fun optionalCanRun(requireForeground: Boolean, urgent: () -> Boolean): Boolean {
         if (urgent()) return true
+        if (foreground.get() && initialPresentationPending.get()) return false
         if (requireForeground && !foreground.get()) return false
         if (!foreground.get()) return true
         return isInteractionIdle() && optionalInteractionIdle(SystemClock.elapsedRealtime())
@@ -177,7 +228,8 @@ object BackgroundWorkCoordinator {
                     val essential = ticket.essential()
                     val eligible = waiting.filter { next ->
                         (!next.foregroundOnly || foreground.get()) &&
-                            (next.essential() || homeReady.isCompleted && cachedHomeReady.isCompleted) &&
+                            (next.essential() || homeReady.isCompleted && cachedHomeReady.isCompleted &&
+                                !initialPresentationPending.get()) &&
                             (!next.cardWork || !cardActive && (lastCardCompleted == 0L ||
                                 now - lastCardCompleted >= BETWEEN_JOBS_MS))
                     }
@@ -262,7 +314,8 @@ object BackgroundWorkCoordinator {
             now - lastInteraction.get() >= 250L && (!awaitFrameQuiet || now - lastSlowFrame.get() >= 250L)
     }
     private fun optionalInteractionIdle(now: Long): Boolean =
-        now - lastInteraction.get() >= OPTIONAL_IDLE_MS && now - lastForegroundResume.get() >= OPTIONAL_IDLE_MS
+        !initialPresentationPending.get() && now - lastInteraction.get() >= OPTIONAL_IDLE_MS &&
+            now - lastForegroundResume.get() >= OPTIONAL_IDLE_MS
 
     private val startedAt = SystemClock.elapsedRealtime()
     private val foreground = AtomicBoolean(false)
@@ -352,7 +405,11 @@ object BackgroundWorkCoordinator {
     }
     fun interaction() { lastInteraction.set(SystemClock.elapsedRealtime()) }
     fun frame(durationNanos: Long, budgetNanos: Long) {
-        if (durationNanos > budgetNanos) lastSlowFrame.set(SystemClock.elapsedRealtime())
+        renderedFrames.incrementAndGet()
+        if (durationNanos > budgetNanos) {
+            healthyFrames.set(0)
+            lastSlowFrame.set(SystemClock.elapsedRealtime())
+        } else healthyFrames.updateAndGet { (it + 1).coerceAtMost(3) }
     }
     fun busy(): AutoCloseable {
         jobs.incrementAndGet()

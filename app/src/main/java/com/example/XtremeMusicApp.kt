@@ -103,8 +103,12 @@ class XtremeMusicApp : Application(), ImageLoaderFactory, androidx.work.Configur
         asynchronousImageLoader.start()
         // Only the local appearance/profile snapshot gates the first themed frame.
         startupScope.launch {
+            BackgroundWorkCoordinator.startupTask(com.example.performance.StartupTask.SETTINGS,
+                com.example.performance.StartupStatus.RUNNING)
             settingsRepository.preload()
             loadStartupSettings()
+            BackgroundWorkCoordinator.startupTask(com.example.performance.StartupTask.SETTINGS,
+                com.example.performance.StartupStatus.READY)
             _startupReady.value = true
             startupSettings?.profile?.let { profile ->
                 com.example.data.cache.HomeCardCache.preloadAsync(this@XtremeMusicApp,

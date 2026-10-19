@@ -24,13 +24,15 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 internal fun MainTabPager(
     state: PagerState,
     pageCovered: Boolean,
+    retainInactivePages: Boolean = true,
     content: @Composable (Int) -> Unit
 ) {
+    val parentEffectsActive = LocalVisualEffectsActive.current
     HorizontalPager(
         state = state,
         // Keep all three primary destinations mounted, including Home's carousels
         // and painters. Hidden effects remain gated by the visibility local below.
-        beyondViewportPageCount = 2,
+        beyondViewportPageCount = if (retainInactivePages) 2 else 0,
         userScrollEnabled = false,
         key = { it },
         modifier = Modifier.fillMaxSize()
@@ -46,7 +48,7 @@ internal fun MainTabPager(
             onDispose { parent.removeObserver(observer); page.destroy() }
         }
         SideEffect { page.visible = visible; page.update() }
-        CompositionLocalProvider(LocalVisualEffectsActive provides visible, LocalLifecycleOwner provides page) {
+        CompositionLocalProvider(LocalVisualEffectsActive provides (visible && parentEffectsActive), LocalLifecycleOwner provides page) {
             Box(Modifier.fillMaxSize().graphicsLayer { clip = false }) { content(index) }
         }
     }

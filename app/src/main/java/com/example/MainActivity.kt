@@ -59,7 +59,10 @@ class MainActivity : ComponentActivity() {
         if (event.actionMasked == MotionEvent.ACTION_DOWN || event.actionMasked == MotionEvent.ACTION_UP ||
             now - lastInteractionMs >= 200L) {
             lastInteractionMs = now
-            com.example.performance.BackgroundWorkCoordinator.interaction()
+            // Modal touches cannot reach navigation. They must not continually
+            // postpone the essential work the startup panel is waiting for.
+            if (!com.example.performance.BackgroundWorkCoordinator.initialPresentationInProgress)
+                com.example.performance.BackgroundWorkCoordinator.interaction()
         }
         return super.dispatchTouchEvent(event)
     }
@@ -209,17 +212,28 @@ class MainActivity : ComponentActivity() {
         com.example.performance.BackgroundWorkCoordinator.expectForegroundDraw()
         val decor = window.decorView
         val listener = object : android.view.ViewTreeObserver.OnDrawListener {
-            private var posted = false
+            private var firstPaintPosted = false
+            private var fullyDrawnPosted = false
             override fun onDraw() {
-                if (posted || !initialContentReady || !uiResumed) return
-                posted = true
+                if (!initialContentReady || !uiResumed) return
                 // Post after the actual traversal. Frame-clock callbacks can run
                 // before content has been drawn and cannot establish this milestone.
-                decor.post {
-                    if (firstDrawListener === this && uiResumed) {
-                        removeFirstDrawListener()
-                        com.example.performance.BackgroundWorkCoordinator.firstFrameRendered()
-                        reportFullyDrawn()
+                if (!firstPaintPosted) {
+                    firstPaintPosted = true
+                    decor.post {
+                        if (firstDrawListener === this && uiResumed)
+                            com.example.performance.BackgroundWorkCoordinator.firstFrameRendered()
+                    }
+                }
+                val onboarding = (application as XtremeMusicApp).startupSettings?.profile?.isOnboardingCompleted == false
+                if (!fullyDrawnPosted && (onboarding ||
+                    com.example.performance.BackgroundWorkCoordinator.startupReadiness.value.complete)) {
+                    fullyDrawnPosted = true
+                    decor.post {
+                        if (firstDrawListener === this && uiResumed) {
+                            removeFirstDrawListener()
+                            reportFullyDrawn()
+                        }
                     }
                 }
             }
