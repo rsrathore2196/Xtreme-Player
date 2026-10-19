@@ -71,6 +71,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
+import com.example.ui.components.AppDynamicLogo
 import com.example.ui.theme.LocalAppColors
 import com.example.ui.theme.LiquidGlass
 import com.example.ui.theme.liquidGlassCard
@@ -106,31 +107,16 @@ fun AboutPage(
                     .padding(20.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // App Logo Icon
-                Box(
+                // Dynamic App Logo (Matching HomeScreen top-left and Onboarding)
+                AppDynamicLogo(
                     modifier = Modifier
                         .size(72.dp)
-                        .clip(RoundedCornerShape(18.dp))
-                        .background(
-                            Brush.linearGradient(
-                                listOf(
-                                    accentColor,
-                                    appColors.secondaryAccent
-                                )
-                            )
-                        )
-                        .border(
-                            BorderStroke(1.5.dp, Color.White.copy(alpha = 0.3f)),
-                            RoundedCornerShape(18.dp)
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Image(
-                        painter = painterResource(id = R.drawable.ic_launcher_foreground),
-                        contentDescription = "Xtreme Player Logo",
-                        modifier = Modifier.size(56.dp)
-                    )
-                }
+                        .testTag("about_app_dynamic_logo"),
+                    primaryAccent = accentColor,
+                    secondaryAccent = appColors.secondaryAccent,
+                    cutoutColor = appColors.cardBackground,
+                    contentDescriptionText = "Xtreme Player Logo"
+                )
 
                 Spacer(modifier = Modifier.height(14.dp))
 

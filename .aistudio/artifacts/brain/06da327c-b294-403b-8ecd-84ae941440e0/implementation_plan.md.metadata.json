@@ -1,0 +1,6 @@
+{
+  "summary": "Implementation plan to eliminate tab switching and bottom bar navigation lag by adopting LastWave-Native's architectural model: preloading all tabs in memory, canceling non-essential background work immediately upon tab taps, and strictly isolating background coroutines to background thread pools without modifying the existing bottom bar styling or animations.",
+  "updatedAt": "2026-10-18T17:00:32.276678600Z",
+  "requestFeedback": true,
+  "userFacing": true
+}
