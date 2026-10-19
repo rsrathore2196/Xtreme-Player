@@ -165,4 +165,22 @@ class EnhancerArchiveLookupTest {
         cancelFirst = false
         assertEquals(archive, withTimeout(2000) { repo.findLosslessUpgrade(track) })
     }
+    @Test fun incompleteMetadataUsesOnlyAShortFailureCacheAndDoesNotHideALaterVerifiedRecording() = runBlocking {
+        var queries = 0
+        var available = false
+        val repo = MusicRepository(dao, app) { _, _ ->
+            queries++
+            if (available) LosslessSearchPage(listOf(archive))
+            else LosslessSearchPage(isSuccessful = false, failure = LosslessDiagnostics.Reason.NETWORK_TIMEOUT)
+        }
+        assertNull(repo.findLosslessUpgrade(track))
+        assertEquals(2, queries)
+        assertEquals(LosslessDiagnostics.Reason.NETWORK_TIMEOUT, LosslessDiagnostics.last(track.id)?.reason)
+        assertNull(repo.findLosslessUpgrade(track))
+        assertEquals(2, queries)
+        available = true
+        ShadowSystemClock.advanceBy(Duration.ofSeconds(11))
+        assertEquals(archive, repo.findLosslessUpgrade(track))
+        assertEquals(3, queries)
+    }
 }

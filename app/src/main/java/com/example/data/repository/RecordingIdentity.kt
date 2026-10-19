@@ -12,7 +12,7 @@ internal object RecordingIdentity {
     private val featured = Regex("(?i)\\s*(?:\\(|\\[)?\\b(?:feat\\.?|ft\\.?|featuring)\\s+([^\\)\\]]+)(?:\\)|\\])?\\s*$")
     private val versions = Regex("(?i)\\b(?:live|re[ -]?mix|rmx|remaster(?:ed)?|radio[ -]?edit|acoustic|unplugged|instrumental|karaoke|cover|slowed|reverb|sped[ -]?up|nightcore|extended|demo|mono|stereo|edit)\\b")
     private val albumEdition = Regex("(?i)\\s*(?:\\(|\\[)(?:deluxe|expanded|bonus|anniversary)[^\\)\\]]*(?:\\)|\\])\\s*$")
-    private val unknown = setOf("", "unknown", "unknown artist", "various artists", "online artist", "youtube artist")
+    private val unknown = setOf("", "unknown", "unknown artist", "various artists", "online artist", "youtube artist", "internet archive")
     private val unknownAlbums = setOf("", "unknown", "single", "online stream", "extended stream", "youtube music", "youtube playlist")
 
     fun isrc(value: String): String? = value.uppercase(Locale.ROOT).replace(codeSeparators, "")
@@ -119,6 +119,46 @@ internal object RecordingIdentity {
             (if (exactArtist) 35 else if (closeArtist) 25 else 0) +
             (if (timed) 20 - (delta / 1_000L).toInt() else 0) +
             (if (a.album != null && a.album == b.album) 5 else 0)
+    }
+
+    /** Archive file tags may be sparse; require independent recording evidence, not upload names.
+     * This is deliberately separate from catalog/search deduplication and provider fallback rules. */
+    fun losslessConfidence(requested: MusicTrack, candidate: MusicTrack): Int? {
+        val a = signature(requested); val b = signature(candidate)
+        if (a.title.isBlank() || b.title.isBlank() || a.versions != b.versions) return null
+        if (a.isrc != null && b.isrc != null && a.isrc != b.isrc) return null
+        val sameCode = a.isrc != null && a.isrc == b.isrc
+        val exactTitle = a.title.replace(" ", "") == b.title.replace(" ", "")
+        if (!exactTitle && !CatalogNames.spellingEquivalent(a.title, b.title)) return null
+        val knownArtists = a.artists.isNotEmpty() && b.artists.isNotEmpty()
+        val sameArtist = knownArtists && (a.artists.first() == b.artists.first() || a.artists.toSet() == b.artists.toSet())
+        val closeArtist = knownArtists && CatalogNames.spellingEquivalent(a.artists.first(), b.artists.first())
+        if (knownArtists && !sameArtist && !closeArtist) return null
+        if (!sameCode && a.artists.size > 1 && b.artists.size > 1 && a.artists.drop(1).none { first ->
+            b.artists.drop(1).any { second -> CatalogNames.spellingEquivalent(first, second) }
+        }) return null
+        if (a.language !in unknown && b.language !in unknown && a.language != b.language) return null
+        val sameAlbum = a.album != null && a.album == b.album
+        val timed = a.durationMs > 0L && b.durationMs > 0L
+        val delta = if (timed) abs(a.durationMs - b.durationMs) else Long.MAX_VALUE
+        val tolerance = when {
+            sameCode -> 8_000L
+            exactTitle && sameArtist -> 5_000L
+            else -> 2_000L
+        }
+        if (timed && delta > tolerance) return null
+        // Missing artist/duration is not a conflict, but must be replaced by strong evidence.
+        if (!knownArtists && !sameCode && !(exactTitle && sameAlbum && timed && delta <= 2_000L)) return null
+        if (!timed && !sameCode) return null
+        if (!exactTitle && !sameCode && !(sameArtist && sameAlbum && timed && delta <= 2_000L)) return null
+        if (!sameArtist && !sameCode && !(exactTitle && timed && delta <= 2_000L)) return null
+        // Album editions/compilations can differ; an explicitly different version cannot.
+        val archiveVersion = candidate.album.lowercase(Locale.ROOT)
+        if (a.versions.isEmpty() && (archiveVersion.contains("remaster") ||
+            archiveVersion.startsWith("live at ") || archiveVersion.endsWith(" live"))) return null
+        return (if (sameCode) 150 else 0) + (if (exactTitle) 50 else 25) +
+            (if (sameArtist) 40 else if (closeArtist) 25 else 0) + (if (sameAlbum) 10 else 0) +
+            (if (timed) 20 - (delta / 1000L).toInt() else 0)
     }
 
     fun key(track: MusicTrack): String = listOf(title(track),

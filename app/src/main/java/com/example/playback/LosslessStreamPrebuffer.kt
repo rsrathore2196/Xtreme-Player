@@ -29,11 +29,13 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.IOException
+import java.net.SocketTimeoutException
 import kotlin.math.abs
 
 /** Validate and warm the shared Media3 cache, without another player, decoder or audio focus. */
 internal object LosslessStreamPrebuffer {
     private val worker = Mutex()
+    private class PreparationFailure(val reason: LosslessDiagnostics.Reason, message: String) : IOException(message)
     data class AudioInfo(val codec: String, val bitrateKbps: Int, val sampleRate: Int, val bitDepth: Int) {
         val isHiRes: Boolean get() = sampleRate >= 44_100 && bitDepth >= 16 &&
             (bitDepth > 16 || sampleRate > 48_000)
@@ -55,7 +57,7 @@ internal object LosslessStreamPrebuffer {
             C.ENCODING_PCM_8BIT -> 8
             C.ENCODING_PCM_16BIT, C.ENCODING_PCM_16BIT_BIG_ENDIAN -> 16
             C.ENCODING_PCM_24BIT, C.ENCODING_PCM_24BIT_BIG_ENDIAN -> 24
-            C.ENCODING_PCM_32BIT, C.ENCODING_PCM_32BIT_BIG_ENDIAN, C.ENCODING_PCM_FLOAT -> 32
+            C.ENCODING_PCM_32BIT, C.ENCODING_PCM_32BIT_BIG_ENDIAN -> 32
             else -> 0
         }
         if (format.sampleRate <= 0 || format.channelCount <= 0 || format.drmInitData != null) return null
@@ -64,21 +66,26 @@ internal object LosslessStreamPrebuffer {
     }
 
     suspend fun prepare(context: Context, item: MediaItem, expectedDurationMs: Long,
-        currentPosition: () -> Long, stillCurrent: () -> Boolean): Prepared? = withContext(Dispatchers.IO) {
+        currentPosition: () -> Long, stillCurrent: () -> Boolean, durationToleranceMs: Long = 5_000L,
+        allowUnknownDuration: Boolean = false): Prepared? = withContext(Dispatchers.IO) {
         worker.withLock {
-            if (!NetworkQualityMonitor.getInstance(context).snapshot().allowsLosslessUpgrade) return@withLock null
+            if (!NetworkQualityMonitor.getInstance(context).snapshot().allowsLosslessUpgrade) {
+                LosslessDiagnostics.record(item.mediaId, LosslessDiagnostics.Reason.NETWORK_POLICY_BLOCKED, "prebuffer")
+                return@withLock null
+            }
             if (!withContext(Dispatchers.Main.immediate) { stillCurrent() }) return@withLock null
             val uri = item.localConfiguration?.uri ?: return@withLock null
             val source = MusicCache.createCacheDataSourceFactory(context.applicationContext,
-                connectTimeoutMs = 3_000, readTimeoutMs = 3_000).createDataSource()
-            val deadline = SystemClock.elapsedRealtime() + 6_000L
+                connectTimeoutMs = 5_000, readTimeoutMs = 5_000).createDataSource()
+            val deadline = SystemClock.elapsedRealtime() + 20_000L
+            val maxBytes = 24L * 1024 * 1024
             val jobContext = currentCoroutineContext()
             var bytes = 0L
             val reader = DataReader { buffer, offset, length ->
                 jobContext.ensureActive()
-                if (SystemClock.elapsedRealtime() >= deadline || bytes >= 8L * 1024 * 1024)
-                    throw IOException("Optional lossless prebuffer exceeded its budget")
-                source.read(buffer, offset, minOf(length.toLong(), 8L * 1024 * 1024 - bytes).toInt())
+                if (SystemClock.elapsedRealtime() >= deadline || bytes >= maxBytes)
+                    throw PreparationFailure(LosslessDiagnostics.Reason.PREBUFFER_FAILED, "Optional preparation budget reached")
+                source.read(buffer, offset, minOf(length.toLong(), maxBytes - bytes).toInt())
                     .also { if (it > 0) bytes += it }
             }
             var opened = false
@@ -88,7 +95,7 @@ internal object LosslessStreamPrebuffer {
                 // This is optional preparation, not the audible stream. Never
                 // open another Archive range after a capped-network handover.
                 if (!NetworkQualityMonitor.getInstance(context).snapshot().allowsLosslessUpgrade)
-                    throw IOException("Lossless prebuffer no longer permitted by the active network")
+                    throw PreparationFailure(LosslessDiagnostics.Reason.NETWORK_POLICY_BLOCKED, "Active profile changed")
                 if (opened) source.close()
                 opened = true
                 val remaining = source.open(DataSpec.Builder().setUri(uri).setPosition(position).build())
@@ -100,7 +107,7 @@ internal object LosslessStreamPrebuffer {
                 var input = openAt(0L)
                 val extractor = extractors.firstOrNull { candidate ->
                     try { candidate.sniff(input) } finally { input.resetPeekPosition() }
-                } ?: return@withLock null
+                } ?: throw PreparationFailure(LosslessDiagnostics.Reason.DECODER_UNSUPPORTED, "Unsupported audio container")
                 var format: Format? = null
                 var seekMap: SeekMap? = null
                 var firstSampleUs = Long.MAX_VALUE
@@ -136,29 +143,55 @@ internal object LosslessStreamPrebuffer {
                         else -> true
                     }
                 }
-                while (format == null || seekMap == null) if (!step()) return@withLock null
+                while (format == null || seekMap == null) if (!step())
+                    throw PreparationFailure(LosslessDiagnostics.Reason.METADATA_INCOMPLETE, "No complete audio format")
                 val verifiedFormat = format ?: return@withLock null
-                val info = audioInfo(verifiedFormat) ?: return@withLock null
+                val info = audioInfo(verifiedFormat) ?: throw PreparationFailure(
+                    LosslessDiagnostics.Reason.DECODER_UNSUPPORTED, "Container did not contain supported lossless audio")
                 if (verifiedFormat.sampleMimeType != MimeTypes.AUDIO_RAW &&
                     MediaCodecUtil.getDecoderInfos(verifiedFormat.sampleMimeType!!, false, false)
-                        .none { it.isFormatSupported(verifiedFormat) }) return@withLock null
+                        .none { it.isFormatSupported(verifiedFormat) }) throw PreparationFailure(
+                            LosslessDiagnostics.Reason.DECODER_UNSUPPORTED, "No compatible decoder")
                 val map = seekMap ?: return@withLock null
-                if (map.durationUs <= 0L || expectedDurationMs <= 0L ||
-                    abs(map.durationUs / 1000 - expectedDurationMs) > 2_000L) return@withLock null
+                val actualDuration = map.durationUs.takeIf { it > 0L }?.div(1000L)
+                if (actualDuration != null && expectedDurationMs > 0L &&
+                    abs(actualDuration - expectedDurationMs) > durationToleranceMs) throw PreparationFailure(
+                        LosslessDiagnostics.Reason.RECORDING_MISMATCH, "Actual duration conflicts with the recording")
+                if (actualDuration == null && !allowUnknownDuration) throw PreparationFailure(
+                    LosslessDiagnostics.Reason.METADATA_INCOMPLETE, "Duration is unavailable without independent identity evidence")
                 val bitrate = info.bitrateKbps.takeIf { it > 0 } ?: if (fullLength > 0L)
-                    (fullLength * 8 / (map.durationUs / 1000).coerceAtLeast(1L)).coerceAtMost(Int.MAX_VALUE.toLong()).toInt() else 0
+                    (fullLength * 8 / (actualDuration ?: expectedDurationMs).coerceAtLeast(1L))
+                        .coerceAtMost(Int.MAX_VALUE.toLong()).toInt() else 0
 
                 // Seek using the real container index, never a bitrate-to-offset estimate.
                 repeat(2) {
                     val position = withContext(Dispatchers.Main.immediate) {
                         if (stillCurrent()) currentPosition().coerceAtLeast(0L) else null
                     } ?: return@withLock null
-                    if (map.durationUs / 1000 - position < 2_000L || !map.isSeekable) return@withLock null
-                    val point = map.getSeekPoints(position * 1000).first
-                    input = openAt(point.position)
-                    extractor.seek(point.position, point.timeUs)
-                    firstSampleUs = Long.MAX_VALUE; lastSampleUs = Long.MIN_VALUE
-                    while (lastSampleUs < (position + 1_500L) * 1000) if (!step()) return@withLock null
+                    if ((actualDuration ?: expectedDurationMs) - position < 2_000L) return@withLock null
+                    if (map.isSeekable) {
+                        val point = map.getSeekPoints(position * 1000).first
+                        input = openAt(point.position)
+                        extractor.seek(point.position, point.timeUs)
+                        firstSampleUs = Long.MAX_VALUE; lastSampleUs = Long.MIN_VALUE
+                    }
+                    // No fabricated byte offsets. For an unindexed file, continue
+                    // reading real samples from the start within the same byte/time cap.
+                    while (lastSampleUs < (position + 3_000L) * 1000) if (!step())
+                        throw PreparationFailure(LosslessDiagnostics.Reason.PREBUFFER_FAILED, "Stream ended before the target position")
+                    if (!map.isSeekable && position > 0L) {
+                        if (actualDuration == null) throw PreparationFailure(LosslessDiagnostics.Reason.METADATA_INCOMPLETE,
+                            "No safe seek index or complete duration")
+                        // FLAC with neither a seek table nor HTTP Content-Length can
+                        // become seekable after a bounded complete disk-cache fill.
+                        // CacheDataSource records the real length at EOF, allowing
+                        // Media3's native binary seeker on activation. Never start
+                        // an unseekable replacement audibly at the beginning.
+                        while (step()) Unit
+                        source.close(); opened = false
+                        if (!MusicCache.fullyCached(context, uri.toString())) throw PreparationFailure(
+                            LosslessDiagnostics.Reason.PREBUFFER_FAILED, "Cannot guarantee position-preserving activation")
+                    }
                     val warmed = Prepared(info.copy(bitrateKbps = bitrate), firstSampleUs / 1000, lastSampleUs / 1000)
                     val latest = withContext(Dispatchers.Main.immediate) {
                         if (stillCurrent()) currentPosition().coerceAtLeast(0L) else null
@@ -167,7 +200,15 @@ internal object LosslessStreamPrebuffer {
                 }
                 null
             } catch (e: CancellationException) { throw e }
-            catch (_: Exception) { null }
+            catch (e: Exception) {
+                val reason = when (e) {
+                    is PreparationFailure -> e.reason
+                    is SocketTimeoutException -> LosslessDiagnostics.Reason.NETWORK_TIMEOUT
+                    else -> LosslessDiagnostics.Reason.PREBUFFER_FAILED
+                }
+                LosslessDiagnostics.record(item.mediaId, reason, "prebuffer")
+                null
+            }
             finally {
                 extractors.forEach { it.release() }
                 if (opened) source.close()

@@ -21,7 +21,7 @@ object MusicCache {
     private const val CACHE_SIZE = DEFAULT_CACHE_SIZE
     private val saavnRate = Regex("_(320|160|96|48)\\.(?:mp4|m4a)(?:$|[?#])")
 
-    private fun fullyCached(context: Context, key: String, knownLength: Long? = null): Boolean = runCatching {
+    internal fun fullyCached(context: Context, key: String, knownLength: Long? = null): Boolean = runCatching {
         val cache = getSimpleCache(context)
         val length = knownLength?.takeIf { it > 0 }
             ?: androidx.media3.datasource.cache.ContentMetadata.getContentLength(cache.getContentMetadata(key))

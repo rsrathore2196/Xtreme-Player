@@ -12,7 +12,7 @@ internal suspend fun OkHttpClient.catalogGet(url: String): String = catalogReque
         .header("Accept", "application/json").build()
 )
 
-internal suspend fun OkHttpClient.catalogRequest(request: Request): String =
+internal suspend fun OkHttpClient.catalogRequest(request: Request, maxResponseBytes: Long? = null): String =
     com.example.performance.BackgroundWorkCoordinator.work { suspendCancellableCoroutine { continuation ->
     val call = newCall(request)
     continuation.invokeOnCancellation { call.cancel() }
@@ -24,7 +24,15 @@ internal suspend fun OkHttpClient.catalogRequest(request: Request): String =
             response.use {
                 try {
                     if (!it.isSuccessful) throw CatalogHttpException(it.code, it.header("Retry-After")?.toLongOrNull())
-                    val body = it.body?.string() ?: throw IOException("Empty response")
+                    val responseBody = it.body ?: throw IOException("Empty response")
+                    val body = if (maxResponseBytes == null) responseBody.string() else {
+                        val buffer = okio.Buffer()
+                        val source = responseBody.source()
+                        while (buffer.size <= maxResponseBytes &&
+                            source.read(buffer, minOf(8192L, maxResponseBytes + 1L - buffer.size)) != -1L) Unit
+                        if (buffer.size > maxResponseBytes) throw IOException("Catalog response exceeds its metadata budget")
+                        buffer.readUtf8()
+                    }
                     if (!continuation.isCancelled) continuation.resume(body)
                 } catch (e: Exception) {
                     if (!continuation.isCancelled) continuation.resumeWithException(e)

@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.CornerBasedShape
+import androidx.compose.foundation.shape.CornerSize
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -127,6 +129,7 @@ fun AnimatedBottomBar(
                 4.dp.toPx(), 6.dp.toPx())
         }
     }
+    val viewportShape = remember(geometry) { DockViewportShape(horizontalScale = { geometry.width / geometry.reservedWidth }) }
     val glassInteraction = if (appColors.dynamicGlassEnabled && LocalDynamicGlassEnabled.current) {
         rememberDockGlassInteraction()
     } else null
@@ -160,7 +163,7 @@ fun AnimatedBottomBar(
         contentAlignment = Alignment.Center
     ) {
         Box(Modifier.matchParentSize().xtremeLiquidGlassBackground(
-            shape = CircleShape,
+            shape = viewportShape,
             blurRadius = XtremeLiquidGlassDefaults.FloatingDockBlurRadius,
             surfaceTintAlpha = XtremeLiquidGlassDefaults.FloatingDockTintAlpha,
             tintColor = ambientGlowColor, borderWidth = 0.8.dp, elevation = 16.dp, appColors = appColors,
@@ -282,6 +285,22 @@ private data class DockPillShape(val width: Float, val fromRight: Boolean) : Sha
         val left = if (fromRight) size.width - width else 0f
         return Outline.Rounded(RoundRect(left, 0f, left + width, size.height, CornerRadius(size.height / 2f)))
     }
+}
+
+/** Counter the viewport's horizontal layer scale so the resting ends stay circular.
+ * Keep a CornerBasedShape so the existing liquid-glass lens remains enabled. */
+internal class DockViewportShape(private val horizontalScale: () -> Float,
+    topStart: CornerSize = CornerSize(50), topEnd: CornerSize = CornerSize(50),
+    bottomEnd: CornerSize = CornerSize(50), bottomStart: CornerSize = CornerSize(50)
+) : CornerBasedShape(topStart, topEnd, bottomEnd, bottomStart) {
+    override fun createOutline(size: Size, topStart: Float, topEnd: Float, bottomEnd: Float,
+        bottomStart: Float, layoutDirection: LayoutDirection): Outline {
+        val radius = size.height / 2f
+        return Outline.Rounded(RoundRect(0f, 0f, size.width, size.height,
+            CornerRadius(radius / horizontalScale().coerceAtLeast(0.01f), radius)))
+    }
+    override fun copy(topStart: CornerSize, topEnd: CornerSize, bottomEnd: CornerSize,
+        bottomStart: CornerSize): CornerBasedShape = DockViewportShape(horizontalScale, topStart, topEnd, bottomEnd, bottomStart)
 }
 
 @Composable

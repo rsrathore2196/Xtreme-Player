@@ -192,7 +192,8 @@ internal class StreamResolver(
                 while (archiveAttempts.size > 128) archiveAttempts.remove(archiveAttempts.keys.first())
             }
             if (completed && found == null) synchronized(archiveMisses) {
-                archiveMisses[identity] = android.os.SystemClock.elapsedRealtime() + 180_000L
+                // A first-page startup probe is not an exhaustive recording search.
+                archiveMisses[identity] = android.os.SystemClock.elapsedRealtime() + 15_000L
                 while (archiveMisses.size > 128) archiveMisses.remove(archiveMisses.keys.first())
             }
             return found
@@ -240,20 +241,12 @@ internal class StreamResolver(
         internal fun matchesInitialLossless(requested: MusicTrack, candidate: MusicTrack): Boolean =
             candidate.isLossless && candidate.audioUrl.startsWith("https://") && archiveTransport(candidate.audioUrl) &&
                 uriPath(candidate.audioUrl).let { path -> path.endsWith(".flac") || path.endsWith(".wav") || path.endsWith(".m4a") } &&
-                RecordingIdentity.title(requested) == RecordingIdentity.title(candidate) &&
-                RecordingIdentity.artistNames(requested).firstOrNull()?.let { primary ->
-                    primary == RecordingIdentity.artistNames(candidate).firstOrNull()
-                } == true &&
-                RecordingIdentity.fallbackConfidence(requested, candidate, durationToleranceMs = 5_000L,
-                    requireDuration = true) != null
+                RecordingIdentity.losslessConfidence(requested, candidate) != null
 
         internal fun matchesLosslessUpgrade(requested: MusicTrack, candidate: MusicTrack): Boolean =
-            candidate.isLossless && candidate.audioUrl.startsWith("https://") &&
-                (RecordingIdentity.title(requested) == RecordingIdentity.title(candidate) ||
-                    RecordingIdentity.isrc(requested.isrc)?.let { it == RecordingIdentity.isrc(candidate.isrc) } == true &&
-                    CatalogNames.spellingEquivalent(RecordingIdentity.title(requested), RecordingIdentity.title(candidate))) &&
-                RecordingIdentity.fallbackConfidence(requested, candidate, durationToleranceMs = 2_000L,
-                    requireDuration = true) != null
+            candidate.isLossless && candidate.audioUrl.startsWith("https://") && archiveTransport(candidate.audioUrl) &&
+                uriPath(candidate.audioUrl).let { it.endsWith(".flac") || it.endsWith(".wav") || it.endsWith(".m4a") } &&
+                RecordingIdentity.losslessConfidence(requested, candidate) != null
 
         private fun uriPath(url: String): String = runCatching { Uri.parse(url).path.orEmpty().lowercase(java.util.Locale.ROOT) }.getOrDefault("")
 

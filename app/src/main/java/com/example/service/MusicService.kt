@@ -60,6 +60,10 @@ class MusicService : MediaLibraryService() {
     private var volumeObserver: android.database.ContentObserver? = null
     private var volumeJob: Job? = null
     private var crossfade: com.example.playback.CrossfadeController? = null
+    private var verifiedSignalUri: Uri? = null
+    private var verifiedSignalId: String? = null
+    private var verifiedSignalFormat: Format? = null
+    private var verifiedSignalBitrate = 0
     private val app: XtremeMusicApp get() = application as XtremeMusicApp
 
     private fun applyAudioCeiling(selector: DefaultTrackSelector, player: Player) {
@@ -351,21 +355,38 @@ class MusicService : MediaLibraryService() {
                 if (!eventTime.timeline.isEmpty && eventTime.windowIndex in 0 until eventTime.timeline.windowCount &&
                     eventTime.timeline.getWindow(eventTime.windowIndex, androidx.media3.common.Timeline.Window())
                         .mediaItem.localConfiguration?.uri != uri) return
-                publishSignalSource(item)
-                com.example.playback.AudioSignalPath.format(item.mediaId, format,
-                    item.mediaMetadata.extras?.getInt("bitrate", 0) ?: 0)
                 val host = uri.host.orEmpty().lowercase(java.util.Locale.ROOT)
                 if ((host == "archive.org" || host.endsWith(".archive.org")) &&
                     item.mediaMetadata.extras?.getBoolean("isLossless") == true) {
                     val before = item.mediaMetadata.extras
                     val audio = com.example.playback.LosslessStreamPrebuffer.audioInfo(format,
-                        before?.getInt("bitrate", 0) ?: 0) ?: return
+                        before?.getInt("bitrate", 0) ?: 0)
+                    if (audio == null) {
+                        com.example.playback.LosslessDiagnostics.record(item.mediaId,
+                            com.example.playback.LosslessDiagnostics.Reason.DECODER_UNSUPPORTED, "active-format")
+                        publishAudioProperties(item, Bundle(before ?: Bundle()).apply {
+                            putBoolean("audio_actual", true); putBoolean("isLossless", false)
+                            putBoolean("lossless_invalid", true)
+                            putString("qualityBadge", com.example.playback.StreamQualityBadge.from(format).label)
+                            putString("media_source", "INTERNET_ARCHIVE")
+                        })
+                        if (before?.getBoolean("lossless_upgrade_pending") != true) {
+                            verifiedSignalUri = uri; verifiedSignalId = item.mediaId
+                            verifiedSignalFormat = format; verifiedSignalBitrate = 0
+                            publishVerifiedSignal()
+                        }
+                        return
+                    }
+                    verifiedSignalUri = uri; verifiedSignalId = item.mediaId
+                    verifiedSignalFormat = format; verifiedSignalBitrate = audio.bitrateKbps
+                    publishVerifiedSignal()
                     val actualBadge = com.example.playback.StreamQualityBadge.from(format, audio.bitrateKbps).label
                     if (before?.getBoolean("audio_actual") == true && before.getString("qualityBadge") == actualBadge) return
                     val extras = Bundle(before ?: Bundle()).apply {
                         putInt("bitrate", audio.bitrateKbps); putString("qualityBadge", actualBadge)
                         putInt("sample_rate", audio.sampleRate); putInt("bit_depth", audio.bitDepth)
                         putString("audio_codec", audio.codec)
+                        putString("media_source", "INTERNET_ARCHIVE")
                         putBoolean("isLossless", true); putBoolean("audio_actual", true)
                     }
                     player.replaceMediaItem(player.currentMediaItemIndex, item.buildUpon()
@@ -386,7 +407,9 @@ class MusicService : MediaLibraryService() {
                     .ifBlank { resolved?.codec.orEmpty() }
                 val bitrate = format.averageBitrate.takeIf { it > 0 }?.div(1000)
                     ?: resolved?.bitrateKbps ?: item.mediaMetadata.extras?.getInt("bitrate", 0) ?: 0
-                com.example.playback.AudioSignalPath.format(item.mediaId, format, bitrate)
+                verifiedSignalUri = uri; verifiedSignalId = item.mediaId
+                verifiedSignalFormat = format; verifiedSignalBitrate = bitrate
+                publishVerifiedSignal()
                 val badge = com.example.playback.StreamQualityBadge.from(format, bitrate).let {
                     if (it.codec.isBlank()) it.copy(codec = codec) else it
                 }.label
@@ -466,6 +489,7 @@ class MusicService : MediaLibraryService() {
 
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_READY) {
+                    publishVerifiedSignal()
                     val sessionId = player.audioSessionId
                     if (sessionId != C.AUDIO_SESSION_ID_UNSET && sessionId > 0) {
                         com.example.playback.AudioEffectsManager.attachAudioSession(sessionId)
@@ -585,15 +609,30 @@ class MusicService : MediaLibraryService() {
     private fun publishSignalSource(item: MediaItem?) {
         if (item == null) return
         val uri = item.localConfiguration?.uri ?: return
+        if (item.mediaMetadata.extras?.getBoolean("lossless_upgrade_pending") == true) return
+        publishSignalSource(item, uri)
+    }
+
+    private fun publishSignalSource(item: MediaItem, uri: Uri, format: Format? = null, bitrate: Int = 0) {
         val host = uri.host.orEmpty()
         val provider = when {
             YouTubeAudioStreamService.isYouTubeAudio(item.mediaId, uri.toString()) -> "YouTube Music"
-            host == "archive.org" || host.endsWith(".archive.org") -> "Archive.org"
+            host == "archive.org" || host.endsWith(".archive.org") -> "Internet Archive"
             host == "saavncdn.com" || host.endsWith(".saavncdn.com") -> "JioSaavn"
             uri.scheme in setOf("file", "content") -> "Local audio"
             else -> item.mediaMetadata.extras?.getString("media_source").orEmpty().ifBlank { "Audio stream" }
         }
-        com.example.playback.AudioSignalPath.source(item.mediaId, provider)
+        if (format == null) com.example.playback.AudioSignalPath.source(item.mediaId, provider)
+        else com.example.playback.AudioSignalPath.verifiedSource(item.mediaId, provider, format, bitrate)
+    }
+
+    private fun publishVerifiedSignal() {
+        val player = exoPlayer ?: return
+        val item = player.currentMediaItem ?: return
+        val uri = item.localConfiguration?.uri ?: return
+        val format = verifiedSignalFormat ?: return
+        if (player.playbackState != Player.STATE_READY || item.mediaId != verifiedSignalId || uri != verifiedSignalUri) return
+        publishSignalSource(item, uri, format, verifiedSignalBitrate)
     }
 
     override fun onDestroy() {

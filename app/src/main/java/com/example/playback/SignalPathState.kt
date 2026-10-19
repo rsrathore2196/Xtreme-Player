@@ -95,4 +95,8 @@ object AudioSignalPath {
     internal fun format(id: String, value: Format, bitrate: Int) = update { old ->
         if (old.trackId != id) old else old.copy(quality = StreamQualityBadge.from(value, bitrate))
     }
+    internal fun verifiedSource(id: String, provider: String, value: Format, bitrate: Int) = update { old ->
+        old.copy(trackId = id, source = provider, quality = StreamQualityBadge.from(value, bitrate),
+            glitches = if (old.trackId == id) old.glitches else 0)
+    }
 }

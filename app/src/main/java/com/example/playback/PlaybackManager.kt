@@ -135,6 +135,7 @@ class PlaybackManager(
     private var losslessRequestEpoch = 0L
     private var losslessEnhancerRequest = false
     private var losslessRetryAfterMs = 0L
+    private var losslessAttemptCount = 0
     private var losslessPlaybackStableSinceMs: Long? = null
     private var losslessPolicyAllowed = false
     private var losslessEnhancerEnabled = false
@@ -337,12 +338,10 @@ class PlaybackManager(
                 losslessNetworkBlockedKey = "$selectionGeneration|${current.id}"
         } else if (!losslessPolicyAllowed || enhancerTurnedOn) {
             losslessNetworkBlockedKey = null
+            if (losslessUpgradeJob?.isActive != true) losslessAttemptCount = 0
             // Reuse an automatic request already in flight. Explicit toggles may
             // retry a finished attempt, subject to repository caches and backoff.
             maybeUpgradeToLossless(enhancerTriggered = enhancerTurnedOn)
-        } else if (!enhancer && losslessEnhancerEnabled && losslessEnhancerRequest &&
-            !(losslessFallback?.activated == true && losslessFallback?.requestEpoch == losslessRequestEpoch)) {
-            stopPendingLosslessUpgrade()
         }
         losslessPolicyAllowed = allowed
         losslessEnhancerEnabled = enhancer
@@ -585,7 +584,7 @@ class PlaybackManager(
                     maybeUpgradeToLossless()
                     // Genuinely playing: persist track into Room DB listening history immediately
                     val current = _uiState.value.currentTrack
-                    if (current != null) {
+                    if (current != null && losslessFallback == null) {
                         scope.launch(Dispatchers.IO) {
                             try {
                                 val now = System.currentTimeMillis()
@@ -604,7 +603,7 @@ class PlaybackManager(
                         losslessUpgradeJob?.cancel()
                         losslessUpgradeJob = null
                         losslessEnhancerRequest = false
-                        if (!losslessLookupStarted) losslessAttemptKey = null
+                        losslessAttemptKey = null
                     }
                 }
                 Log.d(TAG, "Playing state changed: $isPlaying")
@@ -997,13 +996,20 @@ class PlaybackManager(
         if (player.currentMediaItem?.playbackUri()?.toString() != address) return
         val fallback = losslessFallback
         if (fallback != null && fallback.upgradedUrl == address) {
+            if (extras.getBoolean("lossless_invalid")) {
+                LosslessDiagnostics.record(current.id, LosslessDiagnostics.Reason.DECODER_UNSUPPORTED, "active-format")
+                restoreLosslessFallback(player, current)
+                return
+            }
             fallback.audioConfirmed = extras.getBoolean("isLossless")
             fallback.confirmedAudio = Bundle(extras)
             confirmLosslessActivation(player)
             return
         }
         if (fallback != null && !fallback.activated) return
-        val updated = current.copy(qualityBadge = extras.getString("qualityBadge").orEmpty(),
+        val updated = current.copy(audioUrl = address,
+            source = extras.getString("media_source")?.takeIf { it.isNotBlank() } ?: current.source,
+            qualityBadge = extras.getString("qualityBadge").orEmpty(),
             bitrateKbps = if (address.contains("saavncdn.com")) current.bitrateKbps else extras.getInt("bitrate"),
             isLossless = extras.getBoolean("isLossless"))
         if (updated == current) return
@@ -1118,6 +1124,7 @@ class PlaybackManager(
         losslessLookupStarted = false
         losslessEnhancerRequest = false
         losslessRetryAfterMs = 0L
+        losslessAttemptCount = 0
         losslessPlaybackStableSinceMs = null
         losslessFallback = null
         losslessTransitionId = null
@@ -1133,132 +1140,138 @@ class PlaybackManager(
             fallback.resumePositionMs = positionMs
     }
 
-    /** Start only after audible playback, and never let optional Archive work delay selection. */
+    /** MAX enables automatic upgrades; the enhancer is an additional trigger, never a prerequisite. */
     private fun maybeUpgradeToLossless(enhancerTriggered: Boolean = false) {
         val state = _uiState.value
         if (state.selectedQuality != AudioQuality.HI_RES_LOSSLESS || pendingSelectionId != null) return
-        val requiresEnhancer = enhancerTriggered || AudioEffectsManager.effectsState.value.audioEnhancerEnabled
-        if (enhancerTriggered && !AudioEffectsManager.effectsState.value.audioEnhancerEnabled) return
         val networkKey = "$selectionGeneration|${state.currentTrack?.id}"
         if (!NetworkQualityMonitor.getInstance(context).allowsLosslessUpgrade) {
             losslessNetworkBlockedKey = networkKey
+            state.currentTrack?.let { LosslessDiagnostics.record(it.id,
+                LosslessDiagnostics.Reason.NETWORK_POLICY_BLOCKED, "admission") }
             return
         }
         if (losslessNetworkBlockedKey == networkKey) return
         val player = controller ?: return
-        // This controller is built on Main; all native reads and mutations stay on its owner.
         if (player.applicationLooper != android.os.Looper.getMainLooper() || !player.isPlaying) return
         val original = state.currentTrack ?: return
-        if (player.currentMediaItem?.mediaId != original.id ||
-            original.isLossless && original.qualityBadge.startsWith("Hi-Res", ignoreCase = true)) return
+        if (player.currentMediaItem?.mediaId != original.id || original.isLossless) return
         val repo = repository ?: return
         val generation = selectionGeneration
         val key = "$generation|${original.id}"
         if (losslessUpgradeJob?.isActive == true || losslessFallback?.activated == false ||
+            losslessAttemptCount >= 3 ||
             losslessAttemptKey == key && !enhancerTriggered) return
         val requestEpoch = ++losslessRequestEpoch
         losslessAttemptKey = key
         losslessLookupStarted = false
-        losslessEnhancerRequest = requiresEnhancer
+        losslessEnhancerRequest = false
         if (losslessPlaybackStableSinceMs == null)
             losslessPlaybackStableSinceMs = android.os.SystemClock.elapsedRealtime()
         fun ownsRequest(): Boolean = losslessRequestEpoch == requestEpoch && ownsSelection(original.id, generation) &&
             pendingSelectionId == null && _uiState.value.selectedQuality == AudioQuality.HI_RES_LOSSLESS &&
-            NetworkQualityMonitor.getInstance(context).allowsLosslessUpgrade &&
-            (!requiresEnhancer || AudioEffectsManager.effectsState.value.audioEnhancerEnabled) &&
-            player.currentMediaItem?.mediaId == original.id
+            NetworkQualityMonitor.getInstance(context).allowsLosslessUpgrade && player.currentMediaItem?.mediaId == original.id
         fun stillCurrent(): Boolean = ownsRequest() && player.isPlaying &&
             _uiState.value.currentTrack?.audioUrl == original.audioUrl
         losslessUpgradeJob = scope.launch {
             try {
-                // A successful initial Archive resolution needs no second search.
-                // A timeout/empty first page still permits one broader, delayed lookup.
-                if (repo.hasRecentLosslessAttempt(original)) return@launch
-                // Rapid toggles join the current work or wait out a short retry
-                // backoff. This does not consume playback's buffer or Main time.
                 delay((losslessRetryAfterMs - android.os.SystemClock.elapsedRealtime()).coerceAtLeast(0L))
-                if (!stillCurrent()) return@launch
-                // An already-stable song can start lookup immediately on toggle.
-                // A newly playing/rebuffered song still establishes its buffer first.
                 val playingSince = losslessPlaybackStableSinceMs ?: return@launch
                 delay((playingSince + 3_000L - android.os.SystemClock.elapsedRealtime()).coerceAtLeast(0L))
                 if (!stillCurrent()) return@launch
-                // A short-buffer transport (including SABR) must not permanently disable
-                // upgrades. Wait a bounded interval for healthy playback, then attempt once.
-                val stable = withTimeoutOrNull(6_000L) {
+                val buffered = withTimeoutOrNull(6_000L) {
                     while (stillCurrent() && player.bufferedPosition - player.currentPosition < 1_000L) delay(250L)
                     stillCurrent()
                 } == true
-                if (!stable) return@launch
-                val duration = player.duration.takeIf { it > 0L } ?: original.durationMs
-                if (duration <= 0L || duration - player.currentPosition < 8_000L) return@launch
-                losslessLookupStarted = true
-                losslessRetryAfterMs = android.os.SystemClock.elapsedRealtime() + 15_000L
-                val reference = original.copy(durationMs = duration)
-                val lossless = withContext(Dispatchers.IO) { repo.findLosslessUpgrade(reference) } ?: return@launch
-                if (!stillCurrent()) return@launch
-                // Optional prefetch must not starve the audible provider on a weak link.
-                if (player.playbackState != Player.STATE_READY ||
-                    duration - player.currentPosition < 8_000L) return@launch
-                // Preserve the selected recording's identity, artwork, lyrics and user metadata.
-                val candidate = original.copy(audioUrl = lossless.audioUrl, bitrateKbps = lossless.bitrateKbps,
-                    qualityBadge = lossless.qualityBadge, isLossless = true, source = lossless.source)
-                val warmed = LosslessStreamPrebuffer.prepare(context, candidate.toMediaItem(), duration,
-                    currentPosition = { player.currentPosition }, stillCurrent = ::stillCurrent)
-                if (warmed == null) {
-                    if (stillCurrent()) repo.rejectLosslessUpgrade(reference)
+                // Some progressive/SABR sessions under-report bufferedPosition.
+                // Continuous READY playback is valid evidence after this bounded wait.
+                if (!buffered && (!stillCurrent() || player.playbackState != Player.STATE_READY || player.playerError != null))
                     return@launch
-                }
-                val qualityStillSelected = withContext(Dispatchers.IO) {
-                    com.example.data.local.AudioQualityPreferences.getSelectedQuality(context) == AudioQuality.HI_RES_LOSSLESS
-                }
-                if (!qualityStillSelected || !stillCurrent() || !warmed.covers(player.currentPosition)) return@launch
-                val index = player.currentMediaItemIndex
-                if (index !in activeQueue.indices) return@launch
-                val position = player.currentPosition.coerceAtLeast(0L)
-                val resume = player.playWhenReady
-                val latest = _uiState.value.currentTrack ?: return@launch
-                if (latest.isLossless && !warmed.audio.isHiRes) return@launch
-                val replacement = latest.copy(audioUrl = candidate.audioUrl, bitrateKbps = warmed.audio.bitrateKbps,
-                    qualityBadge = warmed.audio.badge, isLossless = true, source = candidate.source)
-                losslessFallback = LosslessFallback(generation, latest, replacement, position, requestEpoch, requiresEnhancer)
-                losslessTransitionId = latest.id
-                val resolvedItem = replacement.toMediaItem()
-                val item = resolvedItem.buildUpon().setMediaMetadata(
-                    resolvedItem.mediaMetadata.buildUpon().setExtras(Bundle(
-                        resolvedItem.mediaMetadata.extras ?: Bundle()).apply {
-                            // The prebuffer parsed the real container, but the audible source
-                            // still needs to confirm decoder/input activation below.
-                            putBoolean("audio_actual", false)
-                            putInt("sample_rate", warmed.audio.sampleRate)
-                            putInt("bit_depth", warmed.audio.bitDepth)
-                            putString("audio_codec", warmed.audio.codec)
-                        }).build()).build()
-                player.replaceMediaItem(index, item)
-                player.seekTo(index, position)
-                player.prepare()
-                player.playWhenReady = resume
-                val activated = withTimeoutOrNull(4_000L) {
-                    while (ownsRequest() &&
-                        player.currentMediaItem?.playbackUri()?.toString() == replacement.audioUrl) {
-                        applyActualAudioProperties(player, player.sessionExtras.getBundle("active_audio"))
-                        confirmLosslessActivation(player)
-                        if (losslessFallback?.activated == true) return@withTimeoutOrNull true
-                        if (player.playerError != null) break
-                        delay(50L)
+                // Three bounded attempts, with exponential backoff. Completed matches and
+                // partial metadata are reused; confirmed absence does not cause a retry loop.
+                for (attempt in 0..2) {
+                    if (attempt > 0) delay(10_000L shl (attempt - 1))
+                    if (!stillCurrent()) return@launch
+                    val duration = player.duration.takeIf { it > 0L } ?: original.durationMs
+                    if (duration <= 0L || duration - player.currentPosition < 10_000L) return@launch
+                    if (losslessAttemptCount >= 3) return@launch
+                    losslessAttemptCount++
+                    losslessLookupStarted = true
+                    losslessRetryAfterMs = android.os.SystemClock.elapsedRealtime() + 10_000L
+                    val reference = original.copy(durationMs = duration)
+                    val lossless = withContext(Dispatchers.IO) { repo.findLosslessUpgrade(reference) }
+                    if (!stillCurrent()) return@launch
+                    if (lossless == null) {
+                        if (LosslessDiagnostics.last(original.id)?.reason == LosslessDiagnostics.Reason.NO_RESULTS) return@launch
+                        continue
                     }
-                    false
-                } == true
-                if (!activated && losslessRequestEpoch == requestEpoch && ownsSelection(original.id, generation)) {
+                    if (duration - player.currentPosition < 8_000L) return@launch
+                    val candidate = original.copy(audioUrl = lossless.audioUrl, bitrateKbps = lossless.bitrateKbps,
+                        qualityBadge = lossless.qualityBadge, isLossless = true, source = lossless.source)
+                    val sameCode = withContext(AppDispatchers.CpuBounded) {
+                        com.example.data.repository.RecordingIdentity.isrc(original.isrc)?.let {
+                            it == com.example.data.repository.RecordingIdentity.isrc(lossless.isrc)
+                        } == true
+                    }
+                    val warmed = LosslessStreamPrebuffer.prepare(context, candidate.toMediaItem(), duration,
+                        currentPosition = { player.currentPosition }, stillCurrent = ::stillCurrent,
+                        durationToleranceMs = if (sameCode) 8_000L else 5_000L, allowUnknownDuration = sameCode)
+                    if (!stillCurrent()) return@launch
+                    if (warmed == null || !warmed.covers(player.currentPosition)) {
+                        if (warmed != null) LosslessDiagnostics.record(original.id,
+                            LosslessDiagnostics.Reason.PREBUFFER_FAILED, "target-coverage")
+                        repo.rejectLosslessUpgrade(reference, candidate.audioUrl)
+                        continue
+                    }
+                    val index = player.currentMediaItemIndex
+                    if (index !in activeQueue.indices) return@launch
+                    val position = player.currentPosition.coerceAtLeast(0L)
+                    val resume = player.playWhenReady
+                    val latest = _uiState.value.currentTrack ?: return@launch
+                    val replacement = latest.copy(audioUrl = candidate.audioUrl, bitrateKbps = warmed.audio.bitrateKbps,
+                        qualityBadge = warmed.audio.badge, isLossless = true, source = candidate.source)
+                    losslessFallback = LosslessFallback(generation, latest, replacement, position, requestEpoch, false)
+                    losslessTransitionId = latest.id
+                    val resolvedItem = replacement.toMediaItem()
+                    val item = resolvedItem.buildUpon().setMediaMetadata(
+                        resolvedItem.mediaMetadata.buildUpon().setExtras(Bundle(
+                            resolvedItem.mediaMetadata.extras ?: Bundle()).apply {
+                                putBoolean("audio_actual", false)
+                                putBoolean("lossless_upgrade_pending", true)
+                                putInt("sample_rate", warmed.audio.sampleRate)
+                                putInt("bit_depth", warmed.audio.bitDepth)
+                                putString("audio_codec", warmed.audio.codec)
+                            }).build()).build()
+                    player.replaceMediaItem(index, item)
+                    player.seekTo(index, position)
+                    player.prepare()
+                    player.playWhenReady = resume
+                    val activated = withTimeoutOrNull(8_000L) {
+                        while (ownsRequest() && player.currentMediaItem?.playbackUri()?.toString() == replacement.audioUrl) {
+                            applyActualAudioProperties(player, player.sessionExtras.getBundle("active_audio"))
+                            confirmLosslessActivation(player)
+                            if (losslessFallback?.activated == true) return@withTimeoutOrNull true
+                            if (player.playerError != null) break
+                            delay(100L)
+                        }
+                        false
+                    } == true
+                    if (activated) return@launch
+                    if (!ownsRequest()) return@launch
+                    LosslessDiagnostics.record(original.id, LosslessDiagnostics.Reason.ACTIVATION_FAILED, "decoder-activation")
                     _uiState.value.currentTrack?.let { restoreLosslessFallback(player, it) }
-                    repo.rejectLosslessUpgrade(reference)
+                    repo.rejectLosslessUpgrade(reference, candidate.audioUrl)
                 }
-            } catch (e: CancellationException) { throw e }
-            catch (e: Exception) {
+            } catch (e: CancellationException) {
+                if (losslessRequestEpoch == requestEpoch && losslessFallback?.activated == false)
+                    _uiState.value.currentTrack?.let { restoreLosslessFallback(player, it) }
+                throw e
+            } catch (e: Exception) {
                 val current = _uiState.value.currentTrack
                 if (current != null && losslessRequestEpoch == requestEpoch &&
                     losslessFallback?.requestEpoch == requestEpoch && ownsSelection(current.id, generation))
                     restoreLosslessFallback(player, current)
+                LosslessDiagnostics.record(original.id, LosslessDiagnostics.Reason.ACTIVATION_FAILED, "upgrade")
                 Log.d(TAG, "Optional lossless upgrade unavailable: ${e.message}")
             } finally {
                 if (losslessRequestEpoch == requestEpoch) {
@@ -1274,7 +1287,6 @@ class PlaybackManager(
         val fallback = losslessFallback ?: return
         if (fallback.activated) return
         if (fallback.requestEpoch != losslessRequestEpoch ||
-            fallback.requiresEnhancer && !AudioEffectsManager.effectsState.value.audioEnhancerEnabled ||
             !NetworkQualityMonitor.getInstance(context).allowsLosslessUpgrade ||
             _uiState.value.selectedQuality != AudioQuality.HI_RES_LOSSLESS) {
             // A remote controller may acknowledge replacement after cancellation.
@@ -1296,6 +1308,7 @@ class PlaybackManager(
         fallback.activated = true
         replaceQueueTrack(player.currentMediaItemIndex, updated)
         _uiState.update { it.copy(currentTrack = updated, qualityBadge = updated.qualityBadge, queue = queueSnapshot()) }
+        LosslessDiagnostics.clear(updated.id)
         Log.i(TAG, "Activated the verified ${updated.qualityBadge} source at the current position")
     }
 

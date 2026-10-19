@@ -76,9 +76,7 @@ data class SearchResultCategory(
 class MusicRepository private constructor(
     private val daoProvider: () -> MusicDao,
     private val context: Context?,
-    private val losslessPageSearch: suspend (String, Int) -> InternetArchiveApiService.LosslessSearchPage = { query, size ->
-        InternetArchiveApiService.searchLosslessPage(query, pageSize = size, playableOnly = true)
-    }
+    private val losslessPageSearch: (suspend (String, Int) -> InternetArchiveApiService.LosslessSearchPage)? = null
 ) {
     constructor(musicDao: MusicDao, context: Context? = null) : this({ musicDao }, context)
     constructor(context: Context) : this({ MusicDatabase.getDatabase(context.applicationContext).musicDao() }, context.applicationContext)
@@ -108,6 +106,7 @@ class MusicRepository private constructor(
     private val searchCache = android.util.LruCache<String, Pair<Long, SearchResultCategory>>(80)
     private val losslessMisses = android.util.LruCache<String, Long>(128)
     private val losslessLookup = kotlinx.coroutines.sync.Mutex()
+    private val rejectedLosslessUrls = android.util.LruCache<String, Long>(64)
     private val streamResolver = StreamResolver()
     private val chartClient by lazy { OkHttpClient.Builder().connectTimeout(8, TimeUnit.SECONDS).readTimeout(10, TimeUnit.SECONDS).build() }
 
@@ -381,52 +380,84 @@ class MusicRepository private constructor(
 
     suspend fun findLosslessUpgrade(track: MusicTrack): MusicTrack? = withContext(Dispatchers.IO) {
         val monitor = context?.let(com.example.playback.NetworkQualityMonitor::getInstance)
-        monitor?.snapshot()
-        if (monitor?.allowsLosslessUpgrade != true) return@withContext null
-        if (context == null || AudioQualityPreferences.getSelectedQuality(context) != AudioQuality.HI_RES_LOSSLESS) return@withContext null
+        if (monitor?.snapshot()?.allowsLosslessUpgrade != true) {
+            com.example.playback.LosslessDiagnostics.record(track.id,
+                com.example.playback.LosslessDiagnostics.Reason.NETWORK_POLICY_BLOCKED, "discovery")
+            return@withContext null
+        }
         val key = withContext(AppDispatchers.CpuBounded) { RecordingIdentity.key(track) }
         fun missedRecently() = losslessMisses.get(key)?.let { android.os.SystemClock.elapsedRealtime() < it } == true
         if (missedRecently()) return@withContext null
-        // One optional Archive lookup at a time, and recheck after waiting for its permit.
-        losslessLookup.withLock {
-            if (missedRecently() || AudioQualityPreferences.getSelectedQuality(context) != AudioQuality.HI_RES_LOSSLESS ||
-                !monitor.allowsLosslessUpgrade)
-                return@withLock null
-            var completed = false
-            val result = kotlinx.coroutines.withTimeoutOrNull(8_000L) {
-                // Archive often credits only the primary artist. Optional featured
-                // credits must not turn a targeted query into an impossible AND search.
-                val artist = RecordingIdentity.artistNames(track).firstOrNull()
-                    ?: StreamResolver.extractCleanArtist(track.artist)
-                val title = StreamResolver.extractCleanTitle(track.title, track.artist)
-                var successful = true
-                // Reuse the initial page/cache first. Album collections may index
-                // their creator and album, without indexing each individual title.
-                for ((index, query) in listOf("$title $artist".trim(), artist).filter(String::isNotBlank).distinct().withIndex()) {
-                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                    // Recheck the real transport before each outbound query, not
-                    // only at admission: a Wi-Fi-to-cellular handover may occur
-                    // while the first Archive response is being parsed.
-                    if (!monitor.snapshot().allowsLosslessUpgrade) return@withTimeoutOrNull null
-                    val page = losslessPageSearch(query, if (index == 0) 4 else 6)
-                    successful = successful && page.isSuccessful
-                    val match = withContext(AppDispatchers.CpuBounded) { page.tracks.filter { candidate ->
-                        candidate.audioUrl != track.audioUrl && StreamResolver.matchesLosslessUpgrade(track, candidate) &&
-                            (!track.isLossless || !track.qualityBadge.startsWith("Hi-Res") && candidate.qualityBadge.startsWith("Hi-Res"))
-                    }.sortedByDescending { it.qualityBadge.startsWith("Hi-Res") }.firstOrNull() }
-                    if (!monitor.snapshot().allowsLosslessUpgrade) return@withTimeoutOrNull null
-                    if (match != null) { completed = true; return@withTimeoutOrNull match }
+        // Reuse the process-wide reference-counted request sharing. Cancelling one
+        // consumer cannot cancel a lookup another consumer still needs.
+        com.example.recommendation.DiscoveryRequestCoordinator.shared("archive-recording:$key",
+            essential = true, network = false) {
+            losslessLookup.withLock {
+                if (missedRecently() || !monitor.snapshot().allowsLosslessUpgrade) return@withLock emptyList()
+                val result = if (losslessPageSearch == null) {
+                    val rejected = rejectedLosslessUrls.snapshot().filterValues {
+                        it > android.os.SystemClock.elapsedRealtime()
+                    }.keys
+                    InternetArchiveApiService.findLosslessRecording(track, rejected) { monitor.snapshot().allowsLosslessUpgrade }
+                } else {
+                    val artist = RecordingIdentity.artistNames(track).firstOrNull()
+                        ?: StreamResolver.extractCleanArtist(track.artist)
+                    val title = StreamResolver.extractCleanTitle(track.title, track.artist)
+                    val tracks = mutableListOf<MusicTrack>()
+                    var successful = true
+                    var failure: com.example.playback.LosslessDiagnostics.Reason? = null
+                    var exhaustive = true
+                    for ((index, query) in listOf("$title $artist".trim(), artist)
+                        .filter(String::isNotBlank).distinct().withIndex()) {
+                        if (!monitor.snapshot().allowsLosslessUpgrade) break
+                        val page = losslessPageSearch.invoke(query, if (index == 0) 4 else 6)
+                        successful = successful && page.isSuccessful
+                        failure = page.failure ?: failure
+                        exhaustive = exhaustive && page.exhaustive && page.nextPage == null
+                        tracks.addAll(page.tracks)
+                        if (page.tracks.any { StreamResolver.matchesLosslessUpgrade(track, it) }) break
+                    }
+                    InternetArchiveApiService.LosslessSearchPage(tracks, isSuccessful = successful,
+                        failure = failure, exhaustive = exhaustive)
                 }
-                completed = successful
-                null
+                if (!monitor.snapshot().allowsLosslessUpgrade) {
+                    com.example.playback.LosslessDiagnostics.record(track.id,
+                        com.example.playback.LosslessDiagnostics.Reason.NETWORK_POLICY_BLOCKED, "discovery-policy")
+                    return@withLock emptyList()
+                }
+                val matches = withContext(AppDispatchers.CpuBounded) {
+                    result.tracks.mapNotNull { candidate ->
+                        if (candidate.audioUrl == track.audioUrl ||
+                            (rejectedLosslessUrls.get(candidate.audioUrl) ?: 0L) > android.os.SystemClock.elapsedRealtime() ||
+                            !StreamResolver.matchesLosslessUpgrade(track, candidate)) null
+                        else RecordingIdentity.losslessConfidence(track, candidate)?.let { candidate to it }
+                    }.sortedByDescending { it.second }.map { it.first }
+                }
+                if (matches.isEmpty()) {
+                    val reason = result.failure ?: if (result.tracks.isNotEmpty())
+                        com.example.playback.LosslessDiagnostics.Reason.RECORDING_MISMATCH
+                        else com.example.playback.LosslessDiagnostics.Reason.NO_RESULTS
+                    com.example.playback.LosslessDiagnostics.record(track.id, reason, "discovery")
+                    // Never persist timeouts/partial searches as confirmed absence.
+                    val ttl = if (result.isSuccessful && result.exhaustive && result.nextPage == null &&
+                        reason == com.example.playback.LosslessDiagnostics.Reason.NO_RESULTS) 90_000L else 10_000L
+                    losslessMisses.put(key, android.os.SystemClock.elapsedRealtime() + ttl)
+                }
+                matches
             }
-            if (completed && result == null) losslessMisses.put(key, android.os.SystemClock.elapsedRealtime() + 180_000L)
-            result
-        }
+        }.firstOrNull()
     }
 
-    internal suspend fun rejectLosslessUpgrade(track: MusicTrack) = withContext(AppDispatchers.CpuBounded) {
-        losslessMisses.put(RecordingIdentity.key(track), android.os.SystemClock.elapsedRealtime() + 180_000L)
+    internal suspend fun rejectLosslessUpgrade(track: MusicTrack, candidateUrl: String? = null) = withContext(AppDispatchers.CpuBounded) {
+        // Reject the failed representation, not every authorized copy of this recording.
+        val ttl = when (com.example.playback.LosslessDiagnostics.last(track.id)?.reason) {
+            com.example.playback.LosslessDiagnostics.Reason.RECORDING_MISMATCH,
+            com.example.playback.LosslessDiagnostics.Reason.DECODER_UNSUPPORTED -> 300_000L
+            com.example.playback.LosslessDiagnostics.Reason.ACTIVATION_FAILED -> 30_000L
+            else -> 10_000L // A slow connection is not proof that a valid file is unavailable.
+        }
+        if (candidateUrl != null) rejectedLosslessUrls.put(candidateUrl, android.os.SystemClock.elapsedRealtime() + ttl)
+        losslessMisses.put(RecordingIdentity.key(track), android.os.SystemClock.elapsedRealtime() + 5_000L)
         Unit
     }
 
