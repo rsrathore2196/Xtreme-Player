@@ -20,7 +20,7 @@ import kotlinx.coroutines.flow.map
 import com.example.performance.AppDispatchers
 
 @Immutable
-data class LyricsSettings(val provider: String = "Auto", val textSizeSp: Int = 34, val ready: Boolean = false)
+data class LyricsSettings(val provider: String = "Auto", val textSizeSp: Int = 32, val ready: Boolean = false)
 
 @Immutable
 data class PlayerExperienceSettings(
@@ -57,7 +57,7 @@ object OtherSettingsPreferences {
             val prefs = getPrefs(context.applicationContext)
             fun publish() {
                 lyricsState.value = LyricsSettings(prefs.getString(KEY_LYRICS_PROVIDER, "Auto")
-                    ?.takeIf { it in LYRICS_PROVIDERS } ?: "Auto", prefs.getInt(KEY_LYRICS_TEXT_SIZE, 34).coerceIn(18, 44), true)
+                    ?.takeIf { it in LYRICS_PROVIDERS } ?: "Auto", prefs.getInt(KEY_LYRICS_TEXT_SIZE, 32).coerceIn(18, 44), true)
             }
             lyricsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
                 if (key == KEY_LYRICS_PROVIDER || key == KEY_LYRICS_TEXT_SIZE) publish()

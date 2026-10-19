@@ -248,7 +248,7 @@ fun LyricsTextSizePopup(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text("18 sp", style = MaterialTheme.typography.bodySmall.copy(color = appColors.textMuted, fontSize = 11.sp))
-                        Text("Default (34 sp)", style = MaterialTheme.typography.bodySmall.copy(color = appColors.textMuted, fontSize = 11.sp))
+                        Text("Default (32 sp)", style = MaterialTheme.typography.bodySmall.copy(color = appColors.textMuted, fontSize = 11.sp))
                         Text("44 sp", style = MaterialTheme.typography.bodySmall.copy(color = appColors.textMuted, fontSize = 11.sp))
                     }
                 }
