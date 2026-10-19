@@ -934,8 +934,10 @@ class HomeViewModel(
       }
     }
 
-    private var cachePreviewCards: RecommendationCards? = initialCards?.let(::cachedSections)
-    private var cachePreviewPool: Candidates? = initialCards?.let(::restoredCandidates)
+    // Reuse the already retained constructor snapshots; full transformations run
+    // in restoreCachedCards on workerDispatcher rather than repeating on Main.
+    private var cachePreviewCards: RecommendationCards? = initialCards?.let { preparedCards.value }
+    private var cachePreviewPool: Candidates? = initialCards?.let { candidates.value }
     private fun cachedSections(cached: SavedHomeCards) = RecommendationCards(cached.quick.limitShelf(),
         cached.era.limitShelf(), cached.chart.limitShelf(), cached.personalized.limitShelf(),
         cached.similarArtists.limitShelf(), cached.inspiredTrack.limitShelf())

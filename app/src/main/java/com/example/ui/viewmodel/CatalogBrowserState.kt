@@ -51,6 +51,12 @@ private fun CatalogDetailState.withTracks(tracks: List<MusicTrack>, pending: Lis
     return copy(tracks = tracks, pending = pending, playlistContent = content)
 }
 
+/** Preserve catalog ordering/first metadata, without deduplicating a large playlist on Main. */
+internal suspend fun CatalogDetailState.preparePlaybackQueue(fallback: MusicTrack): List<MusicTrack> =
+    withContext(AppDispatchers.CpuBounded) {
+        (tracks + pending).distinctBy { it.id }.ifEmpty { listOf(fallback) }
+    }
+
 /** Owned by PlayerViewModel's scope; browsing never changes playback state. */
 class CatalogBrowserState(private val repository: CatalogRepository, private val scope: CoroutineScope,
     initialQuality: AudioQuality = AudioQuality.ULTRA_HD_320) {

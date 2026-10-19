@@ -7,6 +7,7 @@ import android.os.Bundle
 import android.util.AtomicFile
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.Timeline
 import com.example.data.remote.YouTubeAudioStreamService
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
@@ -15,6 +16,7 @@ import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.lang.ref.WeakReference
 
 /** One bounded writer for the real session; no Room schema changes or demo fallback. */
 internal object PlaybackSessionStore {
@@ -26,6 +28,35 @@ internal object PlaybackSessionStore {
     @Volatile private var latest: Snapshot? = null
     private val publicationLock = Any()
     private var latestGeneration = -1L
+    private data class TimelineItems(val timeline: WeakReference<Timeline>, val items: List<MediaItem>, val valid: Boolean)
+    private val timelineMutex = Mutex()
+    private var retainedTimeline: TimelineItems? = null
+
+    /** Timeline is an immutable Media3 snapshot. No Player getter runs off its looper. */
+    private suspend fun prepareTimeline(timeline: Timeline): TimelineItems = timelineMutex.withLock {
+        retainedTimeline?.takeIf { it.timeline.get() === timeline } ?: withContext(AppDispatchers.CpuBounded) {
+            val window = Timeline.Window()
+            val items = List(timeline.windowCount) { index ->
+                ensureActive()
+                timeline.getWindow(index, window).mediaItem
+            }
+            TimelineItems(WeakReference(timeline), items, items.all(::isReal))
+        }.also { retainedTimeline = it }
+    }
+
+    suspend fun validatedTimelineItems(timeline: Timeline): List<MediaItem>? =
+        prepareTimeline(timeline).takeIf { it.valid }?.items
+
+    /** Main captures only timeline/index/position, including the final service checkpoint. */
+    fun checkpoint(context: Context, timeline: Timeline, index: Int, positionMs: Long) {
+        if (timeline.isEmpty || index !in 0 until timeline.windowCount) return
+        val generation = checkpointGeneration.incrementAndGet()
+        scope.launch {
+            if (generation != checkpointGeneration.get()) return@launch
+            val prepared = prepareTimeline(timeline)
+            if (prepared.valid) publish(context, Snapshot(prepared.items, index, positionMs), generation)
+        }
+    }
 
     @Synchronized
     private fun initialize(context: Context) {
@@ -81,13 +112,18 @@ internal object PlaybackSessionStore {
         scope.launch {
             val valid = withContext(AppDispatchers.CpuBounded) { snapshot.items.all(::isReal) }
             if (!valid || checkpointGeneration.get() != generation) return@launch
-            initialize(context)
-            synchronized(publicationLock) {
-                if (generation == checkpointGeneration.get() && generation >= latestGeneration) {
-                    latestGeneration = generation
-                    latest = snapshot
-                    pending.trySend(snapshot)
-                }
+            publish(context, snapshot, generation)
+        }
+    }
+
+    private fun publish(context: Context, snapshot: Snapshot, generation: Long) {
+        if (generation != checkpointGeneration.get()) return
+        initialize(context)
+        synchronized(publicationLock) {
+            if (generation == checkpointGeneration.get() && generation >= latestGeneration) {
+                latestGeneration = generation
+                latest = snapshot
+                pending.trySend(snapshot)
             }
         }
     }

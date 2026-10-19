@@ -17,7 +17,7 @@ data class SectionState(
 )
 
 internal fun SectionState.limitShelf() = if (tracks.size <= HomeRecommendationPolicy.MAX_SHELF_TRACKS) this
-    else copy(tracks = tracks.take(HomeRecommendationPolicy.MAX_SHELF_TRACKS))
+    else copy(tracks = tracks.subList(0, HomeRecommendationPolicy.MAX_SHELF_TRACKS))
 
 /** Prioritize bootstrap only while it is eligible; failed attempts cannot starve other cards. */
 internal fun Set<Shelf>.initialCardDemand(bootstrap: Set<Shelf>, automaticStartup: Boolean): Set<Shelf> =

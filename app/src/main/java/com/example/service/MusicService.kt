@@ -48,7 +48,6 @@ class MusicService : MediaLibraryService() {
     private var exoPlayer: ExoPlayer? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var checkpointJob: Job? = null
-    private var checkpointItems: List<MediaItem> = emptyList()
     private var queueGeneration = 0L
     private var sabrRecoveryTrackId: String? = null
     private var sabrRecoveryCount = 0
@@ -138,18 +137,33 @@ class MusicService : MediaLibraryService() {
                 try { player.replaceMediaItem(index, after); changed = true }
                 finally { applyingNetworkPolicy = false }
             }
-            if (changed) checkpoint(rebuild = true)
+            if (changed) checkpoint()
         }
     }
 
-    private fun checkpoint(rebuild: Boolean = false) {
+    private fun checkpoint() {
         val player = exoPlayer ?: return
         if (player.mediaItemCount == 0) return
-        if (rebuild || checkpointItems.size != player.mediaItemCount) {
-            checkpointItems = (0 until player.mediaItemCount).map(player::getMediaItemAt)
+        // Immutable timeline capture is O(1). Building/validating its item list is
+        // cached by timeline identity on the persistence CPU lane, never in callbacks.
+        PlaybackSessionStore.checkpoint(this, player.currentTimeline,
+            player.currentMediaItemIndex.coerceIn(0, player.mediaItemCount - 1), player.currentPosition.coerceAtLeast(0L))
+    }
+
+    private suspend fun currentQueueForResumption(): MediaSession.MediaItemsWithStartPosition? {
+        repeat(3) {
+            val player = exoPlayer ?: return null
+            val generation = queueGeneration
+            val timeline = player.currentTimeline
+            if (timeline.isEmpty) return null
+            val items = PlaybackSessionStore.validatedTimelineItems(timeline)
+            currentCoroutineContext().ensureActive()
+            if (exoPlayer !== player || generation != queueGeneration || timeline !== player.currentTimeline) return@repeat
+            if (items == null) return null
+            return MediaSession.MediaItemsWithStartPosition(items,
+                player.currentMediaItemIndex.coerceIn(items.indices), player.currentPosition)
         }
-        PlaybackSessionStore.checkpoint(this, PlaybackSessionStore.Snapshot(checkpointItems,
-            player.currentMediaItemIndex.coerceIn(0, checkpointItems.lastIndex), player.currentPosition.coerceAtLeast(0L)))
+        throw IllegalStateException("Playback queue changed while restoring the session")
     }
 
     /** MediaMetadata.equals compares only whether extras exist, not their values.
@@ -392,7 +406,7 @@ class MusicService : MediaLibraryService() {
                     player.replaceMediaItem(player.currentMediaItemIndex, item.buildUpon()
                         .setMediaMetadata(item.mediaMetadata.buildUpon().setExtras(extras).build()).build())
                     publishAudioProperties(item, extras)
-                    checkpoint(rebuild = true)
+                    checkpoint()
                     return
                 }
                 val youtube = YouTubeAudioStreamService.isYouTubeAudio(item.mediaId, uri.toString())
@@ -423,7 +437,7 @@ class MusicService : MediaLibraryService() {
                 player.replaceMediaItem(player.currentMediaItemIndex, item.buildUpon()
                     .setMediaMetadata(item.mediaMetadata.buildUpon().setExtras(extras).build()).build())
                 publishAudioProperties(item, extras)
-                checkpoint(rebuild = true)
+                checkpoint()
             }
             override fun onAudioSessionIdChanged(
                 eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
@@ -440,7 +454,7 @@ class MusicService : MediaLibraryService() {
                 failedUrl = failedUrl, preferYouTube = true) },
             status = { status -> mediaLibrarySession?.let { session ->
                 session.setSessionExtras(Bundle(session.sessionExtras).apply { putBundle("jio_fallback_status", status) })
-            } }, changed = { checkpoint(rebuild = true) })
+            } }, changed = { checkpoint() })
         player.addListener(object : Player.Listener {
             override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
                 if (reason == Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED) {
@@ -483,7 +497,7 @@ class MusicService : MediaLibraryService() {
                 val queueChanged = events.contains(Player.EVENT_TIMELINE_CHANGED)
                 if (queueChanged || events.contains(Player.EVENT_MEDIA_ITEM_TRANSITION) ||
                     events.contains(Player.EVENT_POSITION_DISCONTINUITY) || events.contains(Player.EVENT_PLAY_WHEN_READY_CHANGED)) {
-                    checkpoint(queueChanged)
+                    checkpoint()
                 }
             }
 
@@ -526,7 +540,7 @@ class MusicService : MediaLibraryService() {
                         player.seekTo(index, position)
                         player.prepare()
                         player.playWhenReady = resume
-                        checkpoint(rebuild = true)
+                        checkpoint()
                         return
                     }
                     if (item != null && failedUri != null && next == null &&
@@ -567,7 +581,7 @@ class MusicService : MediaLibraryService() {
                                     .setMediaMetadata(metadata.buildUpon().setExtras(replacementExtras).build()).build()
                                 player.replaceMediaItem(index, replacement)
                                 player.seekTo(index, position); player.prepare(); player.playWhenReady = resume
-                                checkpoint(rebuild = true)
+                                checkpoint()
                             } catch (e: CancellationException) { throw e }
                             catch (e: Exception) { android.util.Log.w("MusicService", "Recording recovery unavailable: ${e.message}") }
                         }
@@ -678,38 +692,19 @@ class MusicService : MediaLibraryService() {
             mediaSession: MediaSession,
             controller: MediaSession.ControllerInfo
         ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
-            val player = exoPlayer
-            if (player != null && player.mediaItemCount > 0 &&
-                (0 until player.mediaItemCount).all { PlaybackSessionStore.isReal(player.getMediaItemAt(it)) }) {
-                val currentIdx = player.currentMediaItemIndex.coerceIn(0, player.mediaItemCount - 1)
-                val currentPos = player.currentPosition
-                val items = mutableListOf<MediaItem>()
-                for (i in 0 until player.mediaItemCount) {
-                    items.add(player.getMediaItemAt(i))
-                }
-                return Futures.immediateFuture(
-                    MediaSession.MediaItemsWithStartPosition(
-                        items,
-                        currentIdx,
-                        currentPos
-                    )
-                )
-            }
             val resumingGeneration = queueGeneration
             return future {
+                currentQueueForResumption()?.let { return@future it }
                 val saved = PlaybackSessionStore.restore(this@MusicService)
-                val restoredItems = withContext(Dispatchers.IO) {
-                    val ceiling = networkQuality.snapshot().effectiveCeiling.maxBitrateBps
+                val ceiling = withContext(Dispatchers.IO) { networkQuality.snapshot().effectiveCeiling.maxBitrateBps }
+                val restoredItems = withContext(AppDispatchers.CpuBounded) {
                     saved?.items.orEmpty().map { NetworkAudioQualityPolicy.constrain(it, ceiling) }
                 }
-                val current = exoPlayer
                 // A new local selection or queue mutation supersedes this disk restore.
                 // Return the current queue instead of installing an older saved song.
                 if (queueGeneration != resumingGeneration) {
-                    val items = current?.let { (0 until it.mediaItemCount).map(it::getMediaItemAt) }.orEmpty()
-                    MediaSession.MediaItemsWithStartPosition(items,
-                        current?.currentMediaItemIndex?.takeIf { it in items.indices } ?: C.INDEX_UNSET,
-                        current?.currentPosition ?: C.TIME_UNSET)
+                    currentQueueForResumption() ?: MediaSession.MediaItemsWithStartPosition(
+                        emptyList(), C.INDEX_UNSET, C.TIME_UNSET)
                 } else MediaSession.MediaItemsWithStartPosition(restoredItems,
                     saved?.index ?: C.INDEX_UNSET, saved?.positionMs ?: C.TIME_UNSET)
             }
@@ -980,7 +975,7 @@ class MusicService : MediaLibraryService() {
                     !it.mediaId.startsWith("category_") && PlaybackSessionStore.isReal(it)
                 }) {
                 queueGeneration++
-                return Futures.immediateFuture(mediaItems.toMutableList())
+                return Futures.immediateFuture(mediaItems)
             }
             return future { withContext(AppDispatchers.CpuBounded) {
                 val items = mutableListOf<MediaItem>()
