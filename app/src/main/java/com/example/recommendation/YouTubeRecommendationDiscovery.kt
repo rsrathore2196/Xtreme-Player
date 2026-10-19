@@ -20,12 +20,22 @@ internal class YouTubeRecommendationDiscovery(private val cache: RecommendationC
         val cached = cache?.get(key)
         val now = System.currentTimeMillis()
         if (cached != null && now < cached.expiresAt && (!force || now - cached.fetchedAt < 30_000L))
-            return RecommendationTrackCodec.decode(cached.body)
+            return decode(cached.body)
+        if (!force && cached != null && operation in setOf("related", "similar") &&
+            now - cached.expiresAt in 0L..ttl) {
+            val retained = decode(cached.body)
+            if (retained.isNotEmpty()) {
+                DiscoveryRequestCoordinator.revalidateWhenIdle(key) {
+                    tracks(operation, value, country, force = true, essential = false, ttl = ttl)
+                }
+                return retained
+            }
+        }
         return DiscoveryRequestCoordinator.shared(key, essential, network = false) {
             val latest = cache?.get(key)
             val time = System.currentTimeMillis()
             if (latest != null && time < latest.expiresAt && (!force || time - latest.fetchedAt < 30_000L))
-                return@shared RecommendationTrackCodec.decode(latest.body)
+                return@shared decode(latest.body)
             try {
                 // Leave time for the established metadata endpoint when an anonymous
                 // InnerTubeX session times out or returns an empty renderer variant.
@@ -70,13 +80,16 @@ internal class YouTubeRecommendationDiscovery(private val cache: RecommendationC
                         HomeRecommendationPolicy.known(it.artist) }.take(48)
                 }
                 if (result.isNotEmpty()) cache?.put(key, result, ttl)
-                result.ifEmpty { latest?.let { RecommendationTrackCodec.decode(it.body) }.orEmpty() }
+                result.ifEmpty { latest?.let { decode(it.body) }.orEmpty() }
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) {
                 android.util.Log.w("HomeDiscovery", "Keeping cached discovery after ${e.javaClass.simpleName}")
-                latest?.let { RecommendationTrackCodec.decode(it.body) }.orEmpty()
+                latest?.let { decode(it.body) }.orEmpty()
             }
         }
+    }
+    private suspend fun decode(body: String): List<MusicTrack> = withContext(AppDispatchers.CpuBounded) {
+        RecommendationTrackCodec.decode(body)
     }
     private suspend fun response(operation: String, value: String, country: String, essential: Boolean): JSONObject =
         DiscoveryRequestCoordinator.network(essential) {

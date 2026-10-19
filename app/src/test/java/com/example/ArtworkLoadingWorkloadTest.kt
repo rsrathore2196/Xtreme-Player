@@ -76,9 +76,9 @@ class ArtworkLoadingWorkloadTest {
         }, Dao(), lookupScope)
     private fun match() = iTunesSearchResponse(1, listOf(iTunesSongResult(
         "https://covers.example/100x100bb.jpg", "Test Song", "Test Artist", durationMs = 180_000)))
-    private fun request(target: Target? = object : Target {}) = ImageRequest.Builder(context)
+    private fun request(target: Target? = object : Target {}, targetSize: Int = 600) = ImageRequest.Builder(context)
         .data(provider).size(300, 300).target(target)
-        .setParameter(ARTWORK_METADATA_PARAMETER, ArtworkRequestMetadata(item, provider, 600), null)
+        .setParameter(ARTWORK_METADATA_PARAMETER, ArtworkRequestMetadata(item, provider, 600, targetSize = targetSize), null)
         .build()
 
     private inner class Chain(
@@ -104,12 +104,12 @@ class ArtworkLoadingWorkloadTest {
         }
     }
 
-    @Test fun aColdCardFetchesOnlyThePreferredImageWithoutSpeculativeProviderDownload() = runBlocking {
-        val repo = repository { match() }
+    @Test fun aColdCardShowsSufficientProviderArtworkWithoutWaitingForMetadata() = runBlocking {
+        val repo = repository { fail("A sufficient provider cover needs no remote lookup"); match() }
         val chain = Chain(request())
         val result = ArtworkResolutionInterceptor { repo }.intercept(chain) as SuccessResult
-        assertEquals(apple, result.request.data)
-        assertEquals(listOf(apple to true), chain.calls.filter { it.second })
+        assertEquals(provider, result.request.data)
+        assertEquals(listOf(provider to true), chain.calls.filter { it.second })
         assertEquals(Size(300, 300), chain.size)
     }
 
@@ -124,38 +124,38 @@ class ArtworkLoadingWorkloadTest {
         assertTrue(chain.calls.none { it.second })
     }
 
-    @Test fun providerIsFetchedRemotelyOnlyAfterPreferredArtworkIsUnavailable() = runBlocking {
+    @Test fun providerArtworkDoesNotDependOnTheMetadataApiBeingAvailable() = runBlocking {
         val searches = AtomicInteger()
         val repo = repository { searches.incrementAndGet(); iTunesSearchResponse() }
         val chain = Chain(request())
         val result = ArtworkResolutionInterceptor { repo }.intercept(chain) as SuccessResult
-        assertTrue(searches.get() > 0)
+        assertEquals(0, searches.get())
         assertEquals(provider, result.request.data)
         assertEquals(listOf(provider to true), chain.calls.filter { it.second })
     }
 
-    @Test fun failedPreferredImageStillRecoversProviderArtwork() = runBlocking {
+    @Test fun unavailableProviderArtworkFallsBackToVerifiedItunesArtwork() = runBlocking {
         val repo = repository { match() }
-        val chain = Chain(request(), failures = setOf(apple))
+        val chain = Chain(request(), failures = setOf(provider))
         val result = ArtworkResolutionInterceptor { repo }.intercept(chain) as SuccessResult
-        assertEquals(provider, result.request.data)
-        assertEquals(listOf(apple to true, provider to true), chain.calls.filter { it.second })
+        assertEquals(apple, result.request.data)
+        assertEquals(listOf(provider to true, apple to true), chain.calls.filter { it.second })
     }
 
     @Test fun reenteringACardReusesResolvedIdentityAndDoesNotRepeatMetadataSearch() = runBlocking {
         val searches = AtomicInteger()
         val repo = repository { searches.incrementAndGet(); match() }
         assertEquals(apple, repo.resolveArtwork(item, 600))
-        val chain = Chain(request())
+        val chain = Chain(request(), cached = setOf(apple))
         val result = ArtworkResolutionInterceptor { repo }.intercept(chain) as SuccessResult
         assertEquals(apple, result.request.data)
         assertEquals(1, searches.get())
-        assertEquals(listOf(apple to true), chain.calls.filter { it.second })
+        assertTrue(chain.calls.none { it.second })
     }
 
     @Test fun blurryCachedProviderDoesNotPreventARealResolutionImprovement() = runBlocking {
         val repo = repository { iTunesSearchResponse() }
-        val chain = Chain(request(), cached = setOf(provider), cachedDimension = 20)
+        val chain = Chain(request(targetSize = -1), cached = setOf(provider), cachedDimension = 20)
         val result = ArtworkResolutionInterceptor { repo }.intercept(chain) as SuccessResult
         assertEquals(DataSource.NETWORK, result.dataSource)
         assertEquals(600, result.drawable.intrinsicWidth)
@@ -172,13 +172,13 @@ class ArtworkLoadingWorkloadTest {
         val starts = AtomicInteger()
         val chain = Chain(request(object : Target {
             override fun onStart(placeholder: Drawable?) { starts.incrementAndGet() }
-        }))
+        }), failures = setOf(provider))
         val job = async { ArtworkResolutionInterceptor { repo }.intercept(chain) }
         withTimeout(5_000) { entered.await() }
         job.cancelAndJoin()
         withTimeout(5_000) { cancelled.await() }
         assertEquals(0, starts.get())
-        assertTrue(chain.calls.none { it.second })
+        assertEquals(listOf(provider to true), chain.calls.filter { it.second })
     }
 
     @Test fun oneCancelledConsumerDoesNotCancelAnotherCardsSharedMetadataLookup() = runBlocking {

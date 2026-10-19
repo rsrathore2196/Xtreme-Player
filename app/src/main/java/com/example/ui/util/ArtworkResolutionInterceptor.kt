@@ -36,7 +36,7 @@ data class ArtworkRequestMetadata(
     val startupPreparation: Boolean = false
 )
 
-/** Resolve once inside Coil before the final decode; no Compose URL swaps or per-card jobs. */
+/** Cached/provider art paints first; optional upgrades remain inside the same cancellable Coil request. */
 class ArtworkResolutionInterceptor internal constructor(
     private val repositoryFor: (Context) -> iTunesArtworkRepository
 ) : Interceptor {
@@ -64,9 +64,9 @@ class ArtworkResolutionInterceptor internal constructor(
             (chain.size.width as? Dimension.Pixels)?.px ?: 0,
             (chain.size.height as? Dimension.Pixels)?.px ?: 0)
         val providerUrls = listOfNotNull(
-            upgradeProviderUrl(metadata.providerUrl, sourceDimension), metadata.providerUrl,
-            metadata.item?.sourceArtworkUrl?.let { upgradeProviderUrl(it, sourceDimension) },
-            metadata.item?.sourceArtworkUrl
+            metadata.providerUrl, metadata.item?.sourceArtworkUrl,
+            upgradeProviderUrl(metadata.providerUrl, sourceDimension),
+            metadata.item?.sourceArtworkUrl?.let { upgradeProviderUrl(it, sourceDimension) }
         ).filter(String::isNotBlank).distinct()
         val attempted = mutableSetOf<String>()
         val cachedImages = mutableMapOf<String, SuccessResult?>()
@@ -99,11 +99,11 @@ class ArtworkResolutionInterceptor internal constructor(
             if (memory is SuccessResult && sufficient(memory)) return memory
         }
         if (!metadata.startupPreparation) coordinator.awaitNavigationIdle()
-        suspend fun providerFallback(cacheOnly: Boolean = false): SuccessResult? {
+        suspend fun providerFallback(cacheOnly: Boolean = false, firstUsable: Boolean = false): SuccessResult? {
             var small: SuccessResult? = null
             for (url in providerUrls) {
                 val result = load(url, cacheOnly) ?: continue
-                if (sufficient(result)) return result
+                if (firstUsable || sufficient(result)) return result
                 if (small == null || result.drawable.intrinsicWidth.toLong() * result.drawable.intrinsicHeight >
                     small.drawable.intrinsicWidth.toLong() * small.drawable.intrinsicHeight) small = result
             }
@@ -127,13 +127,15 @@ class ArtworkResolutionInterceptor internal constructor(
         // because its displayed provider image was already in Coil's disk cache.
         val preferredCached = cachedPreferred()
         if (preferredCached != null && sufficient(preferredCached)) return preferredCached
-        val interim = preferredCached ?: provider ?: directlyCached
-        if (request.target != null) interim?.let { cached ->
+        var interim = preferredCached ?: provider ?: directlyCached
+        suspend fun present(result: SuccessResult?) {
+            if (request.target == null || result == null) return
             withContext(Dispatchers.Main.immediate) {
                 currentCoroutineContext().ensureActive()
-                request.target?.onStart(cached.drawable)
+                request.target?.onStart(result.drawable)
             }
         }
+        present(interim)
         if (!metadata.startupPreparation && startupRequest) {
             // Startup has one bounded, explicit image batch. Ordinary card
             // requests join its cache results, rather than racing its downloads.
@@ -144,26 +146,42 @@ class ArtworkResolutionInterceptor internal constructor(
             cachedPreferred()?.let { if (sufficient(it)) return it }
             providerFallback(cacheOnly = true)?.let { if (sufficient(it)) return it }
         }
-        suspend fun fetch(): ImageResult = coldArtworkRequests.withPermit {
+        // Do not delay a usable provider cover behind metadata search or the
+        // optional idle budget. Cache misses are rechecked after acquiring a slot.
+        if (interim == null) {
+            interim = coldArtworkRequests.withPermit {
+                cachedImages.clear()
+                cachedPreferred() ?: providerFallback(cacheOnly = true) ?:
+                    withTimeoutOrNull(3_000L) { providerFallback(firstUsable = true) }
+            }
+            present(interim)
+        }
+        val initial = interim
+        // Prefetch has no visible target to upgrade. Its caller has a bounded
+        // viewport budget; metadata enrichment must never extend that budget.
+        if (initial != null && (sufficient(initial) || metadata.startupPreparation || request.target == null)) return initial
+        suspend fun fetchUpgrade(): ImageResult = coldArtworkRequests.withPermit {
             // Requests queued for a permit may now have a cache hit prepared by
             // another card/startup request using the same URL and decode bounds.
+            cachedImages.clear()
             cachedPreferred()?.let { if (sufficient(it)) return@withPermit it }
             providerFallback(cacheOnly = true)?.let { if (sufficient(it)) return@withPermit it }
             val resolved = if (item != null && repository != null)
                 withTimeoutOrNull(5_000L) { repository.resolveArtwork(item, sourceDimension) } else null
             val preferred = resolved?.takeUnless { it in providerUrls }?.let { load(it) }
-            preferred ?: providerFallback() ?: interim ?: lastError ?: chain.proceed(request)
+            preferred ?: providerFallback() ?: initial ?: lastError ?: chain.proceed(request)
         }
         // A request which began under the modal stays optional even if its
         // dispatcher continuation resumes after the modal has already closed.
-        val optional = !metadata.startupPreparation && (metadata.preferStableArtwork || startupRequest)
+        val optional = !metadata.startupPreparation && (metadata.preferStableArtwork || startupRequest ||
+            initial != null && metadata.targetSize >= 0)
         return coordinator.traceWork("Visible artwork") {
             if (optional) {
                 // Never hold an image/network permit or cache lock while idle.
                 coordinator.awaitInitialPresentation()
                 coordinator.startup(com.example.performance.BackgroundWorkCoordinator.StartupPriority.DEFERRED,
-                    label = "Optional artwork upgrade") { fetch() }
-            } else fetch()
+                    label = "Optional artwork upgrade") { fetchUpgrade() }
+            } else fetchUpgrade()
         }
     }
 

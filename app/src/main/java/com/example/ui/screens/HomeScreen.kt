@@ -497,7 +497,7 @@ fun HomeScreenContent(
             // and a radio-only glass button reflecting the actual radio session.
             // Always visible even when user has no listening history.
             // =========================================================================
-            item(key = "hero_infinite_radio_card", contentType = "hero") {
+            artworkItem(state = listState, key = "hero_infinite_radio_card", contentType = "hero") {
                 val seed = homeViewModel?.heroSeedTrack?.collectAsStateWithLifecycle()?.value ?: heroSeedTrack
                 InfiniteRadioHeroCard(
                     seedTrack = currentTrack ?: seed,
@@ -515,10 +515,10 @@ fun HomeScreenContent(
             // Rendered only when pillsCardTracks contains genuine recently played tracks.
             // When history is empty, completely hide heading, card, placeholder message, and extra spacing.
             if (hasRecent) {
-                item(key = "card_1_recently_played_grid", contentType = "recent_grid") {
+                artworkItem(state = listState, key = "card_1_recently_played_grid", contentType = "recent_grid") {
                     val history = homeViewModel?.listeningHistoryCard?.collectAsStateWithLifecycle()?.value
                     val pillsTracks = history?.tracks?.take(6) ?: pillsCardTracks.take(6)
-                    if (pillsTracks.isEmpty()) return@item
+                    if (pillsTracks.isEmpty()) return@artworkItem
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -580,7 +580,7 @@ fun HomeScreenContent(
             }
 
             // CARD 2: YouTube Music Home Screen-Based Card ("Quick Picks")
-            item(key = "card_2_ytm_dynamic_feed", contentType = "song_shelf") {
+            artworkItem(state = listState, key = "card_2_ytm_dynamic_feed", contentType = "song_shelf") {
                 val section = homeViewModel?.sectionState(com.example.recommendation.UnifiedRecommendationEngine.Shelf.QUICK)
                     ?.collectAsStateWithLifecycle()?.value ?: ytmCard
                 SectionCardLayout(
@@ -595,9 +595,9 @@ fun HomeScreenContent(
             }
 
             if (hasArtists) {
-                item(key = "most_listened_artists", contentType = "artist_shelf") {
+                artworkItem(state = listState, key = "most_listened_artists", contentType = "artist_shelf") {
                     val artists = homeViewModel?.mostListenedArtists?.collectAsStateWithLifecycle()?.value ?: mostListenedArtists
-                    if (artists.isEmpty()) return@item
+                    if (artists.isEmpty()) return@artworkItem
                     var artistPage by rememberSaveable(artists.firstOrNull()?.name) { mutableIntStateOf(0) }
                     val pageCount = (artists.size + 14) / 15
                     val page = artistPage.coerceIn(0, pageCount - 1)
@@ -642,12 +642,14 @@ fun HomeScreenContent(
                                         }.padding(12.dp),
                                     horizontalAlignment = Alignment.CenterHorizontally
                                 ) {
-                                    com.example.ui.components.ArtistPortrait(
-                                        artist = com.example.data.repository.CatalogArtist("", artist.name),
-                                        deferEnrichment = true,
-                                        fallbackArtwork = artist.tracks.firstOrNull { it.coverUrl.isNotBlank() }?.coverUrl,
-                                        modifier = Modifier.size(124.8.dp).clip(CircleShape)
-                                    )
+                                    VisibleItemArtwork(artistListState, artist.name) {
+                                        com.example.ui.components.ArtistPortrait(
+                                            artist = com.example.data.repository.CatalogArtist("", artist.name),
+                                            deferEnrichment = true,
+                                            fallbackArtwork = artist.tracks.firstOrNull { it.coverUrl.isNotBlank() }?.coverUrl,
+                                            modifier = Modifier.size(124.8.dp).clip(CircleShape)
+                                        )
+                                    }
                                     Spacer(Modifier.height(8.dp))
                                     Text(artist.name, color = textPrimaryColor, fontWeight = FontWeight.SemiBold,
                                         modifier = Modifier.fillMaxWidth().basicMarquee(iterations = Int.MAX_VALUE),
@@ -660,7 +662,7 @@ fun HomeScreenContent(
             }
 
             // CARD 3: Era-Specific Hits Card (90s Hits, 2000s Nostalgia, Retro Classics)
-            item(key = "card_3_era_specific_hits", contentType = "song_shelf") {
+            artworkItem(state = listState, key = "card_3_era_specific_hits", contentType = "song_shelf") {
                 val section = homeViewModel?.sectionState(com.example.recommendation.UnifiedRecommendationEngine.Shelf.ERA)
                     ?.collectAsStateWithLifecycle()?.value ?: eraCard
                 SectionCardLayout(
@@ -675,7 +677,7 @@ fun HomeScreenContent(
             }
 
             // CARD 4: User Selected Country & Language Card (Dynamically powered by user prefs)
-            item(key = "card_4_country_language_hits", contentType = "song_shelf") {
+            artworkItem(state = listState, key = "card_4_country_language_hits", contentType = "song_shelf") {
                 val section = homeViewModel?.sectionState(com.example.recommendation.UnifiedRecommendationEngine.Shelf.CHART)
                     ?.collectAsStateWithLifecycle()?.value ?: countryLanguageCard
                 SectionCardLayout(
@@ -690,7 +692,7 @@ fun HomeScreenContent(
             }
 
             // CARD 5: Fully Personalized Recommendation Card (PersonalizedHomeRecommendationEngine)
-            item(key = "card_6_personalized_recommendation", contentType = "song_shelf") {
+            artworkItem(state = listState, key = "card_6_personalized_recommendation", contentType = "song_shelf") {
                 val section = homeViewModel?.sectionState(com.example.recommendation.UnifiedRecommendationEngine.Shelf.PERSONALIZED)
                     ?.collectAsStateWithLifecycle()?.value ?: personalizedCard
                 SectionCardLayout(
@@ -703,14 +705,14 @@ fun HomeScreenContent(
                     onTrackClick = onTrackClick
                 )
             }
-            item(key = "card_7_similar_artists", contentType = "song_shelf") {
+            artworkItem(state = listState, key = "card_7_similar_artists", contentType = "song_shelf") {
                 val section = homeViewModel?.sectionState(com.example.recommendation.UnifiedRecommendationEngine.Shelf.SIMILAR)
                     ?.collectAsStateWithLifecycle()?.value ?: similarArtistsCard
                 SectionCardLayout(state = section, currentPlayingId = currentPlayingId,
                     cardBg = cardBg, cardBorderColor = cardBorderColor, textPrimaryColor = textPrimaryColor,
                     textMutedColor = textMutedColor, onTrackClick = onTrackClick)
             }
-            item(key = "card_8_inspired_by_track", contentType = "song_shelf") {
+            artworkItem(state = listState, key = "card_8_inspired_by_track", contentType = "song_shelf") {
                 val section = homeViewModel?.sectionState(com.example.recommendation.UnifiedRecommendationEngine.Shelf.INSPIRED)
                     ?.collectAsStateWithLifecycle()?.value ?: inspiredTrackCard
                 SectionCardLayout(state = section, currentPlayingId = currentPlayingId,
@@ -719,6 +721,33 @@ fun HomeScreenContent(
             }
         }
     }
+}
+
+/** Preserve item keys/geometry while admitting image work only for the visible viewport. */
+private fun androidx.compose.foundation.lazy.LazyListScope.artworkItem(
+    state: LazyListState, key: String, contentType: String,
+    itemContent: @Composable androidx.compose.foundation.lazy.LazyItemScope.() -> Unit
+) {
+    item(key = key, contentType = contentType) {
+        VisibleItemArtwork(state, key) { itemContent() }
+    }
+}
+
+/** No layout node or data transformation; only this item's image consumers observe visibility. */
+@Composable
+private fun VisibleItemArtwork(state: LazyListState, key: String, content: @Composable () -> Unit) {
+    val parentActive = com.example.ui.util.LocalArtworkRequestsActive.current
+    val active by remember(state, key, parentActive) {
+        androidx.compose.runtime.derivedStateOf {
+            if (!parentActive) false else {
+                val layout = state.layoutInfo
+                layout.visibleItemsInfo.any { item -> item.key == key &&
+                    item.offset + item.size > layout.viewportStartOffset && item.offset < layout.viewportEndOffset }
+            }
+        }
+    }
+    androidx.compose.runtime.CompositionLocalProvider(
+        com.example.ui.util.LocalArtworkRequestsActive provides active, content = content)
 }
 
 /**
@@ -776,15 +805,17 @@ fun SectionCardLayout(
                 horizontalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 itemsIndexed(safeTracks, key = { _, track -> track.id }, contentType = { _, _ -> "home_track" }) { _, track ->
-                    ShelfTrackCard(
-                        track = track,
-                        isPlaying = track.id == currentPlayingId,
-                        cardBg = cardBg,
-                        cardBorderColor = cardBorderColor,
-                        textPrimaryColor = textPrimaryColor,
-                        textMutedColor = textMutedColor,
-                        onClick = { onTrackClick(track, safeTracks) }
-                    )
+                    VisibleItemArtwork(shelfListState, track.id) {
+                        ShelfTrackCard(
+                            track = track,
+                            isPlaying = track.id == currentPlayingId,
+                            cardBg = cardBg,
+                            cardBorderColor = cardBorderColor,
+                            textPrimaryColor = textPrimaryColor,
+                            textMutedColor = textMutedColor,
+                            onClick = { onTrackClick(track, safeTracks) }
+                        )
+                    }
                 }
             }
         }

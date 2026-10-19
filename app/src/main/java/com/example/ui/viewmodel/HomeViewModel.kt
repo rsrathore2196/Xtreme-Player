@@ -123,6 +123,8 @@ class HomeViewModel(
     }
     private val restored = CompletableDeferred<Unit>()
     private val additionalCacheRestored = CompletableDeferred<Unit>()
+    private val initialCachePrepared = CompletableDeferred<Unit>()
+    private var completeCachePreview = initialCards?.presentationComplete == true
     private val essentialsLoaded = CompletableDeferred<Unit>()
     private val listeningCardsReady = CompletableDeferred<Unit>()
     private val startupRecommendationsComplete = CompletableDeferred<Unit>()
@@ -948,6 +950,7 @@ class HomeViewModel(
         if (cached.profileKey != profileKey()) return
         val sections = withContext(workerDispatcher) { cachedSections(cached) }
         val restoredPool = withContext(workerDispatcher) { restoredCandidates(cached) }
+        if (cached.profileKey != profileKey()) return // Preferences may change during CPU preparation.
         val current = candidates.value
         if (!additional) {
             savedSignal = cached.signal; savedGeneration = cached.generation
@@ -1183,6 +1186,11 @@ class HomeViewModel(
                 initialCards ?: HomeCardCache.preloadAsync(getApplication(), profileKey(), previewOnly = true).await()
             }
             if (cached != null) restoreCachedCards(cached, additional = false)
+            completeCachePreview = cached?.let { it.presentationComplete && it.profileKey == profileKey() } == true
+            if (completeCachePreview) {
+                initialCachePrepared.complete(Unit)
+                BackgroundWorkCoordinator.startupTask(StartupTask.HOME_CACHE, StartupStatus.READY)
+            }
             if (preparedCards.value.quick.tracks.isNotEmpty() || preparedCards.value.chart.tracks.isNotEmpty())
                 startupRecommendationsComplete.complete(Unit)
             else {
@@ -1199,21 +1207,38 @@ class HomeViewModel(
             restored.await()
             essentialsLoaded.await()
             val key = profileKey()
+            var mergedFullCache = false
             try {
-                val cached = shelfCache.peekFull(key) ?: BackgroundWorkCoordinator.startup(
-                    if (preparingInitialHome) BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI
+                if (initialCards != null && shelfCache.peekFull(key) === initialCards) {
+                    // A warm ViewModel already owns these exact pools and sections.
+                    mergedFullCache = true
+                    return@launch
+                }
+                if (completeCachePreview) {
+                    // The small preview already contains every displayed shelf.
+                    // Discovery pools are optional; do not decode megabytes just
+                    // to finish a cache-backed startup presentation.
+                    initialHomePrepared.await()
+                    BackgroundWorkCoordinator.awaitInitialPresentation()
+                }
+                BackgroundWorkCoordinator.startup(
+                    if (!completeCachePreview && preparingInitialHome) BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI
                     else BackgroundWorkCoordinator.StartupPriority.DEFERRED,
                     label = "Home full cache enrichment",
-                    urgent = { pendingExplicitRefresh }) { shelfCache.read(key) }
-                if (cached != null && key == profileKey()) {
-                    yieldHomePreparation()
-                    restoreCachedCards(cached, additional = true)
+                    urgent = { pendingExplicitRefresh }) {
+                    val cached = shelfCache.peekFull(key) ?: shelfCache.read(key)
+                    if (cached != null && key == profileKey()) {
+                        yieldHomePreparation()
+                        restoreCachedCards(cached, additional = true)
+                    }
                 }
+                mergedFullCache = true
             } finally {
                 // Partial first-read snapshots must never overwrite full disk pools.
-                additionalCacheRestored.complete(Unit)
+                if (mergedFullCache) additionalCacheRestored.complete(Unit)
+                initialCachePrepared.complete(Unit)
                 BackgroundWorkCoordinator.startupTask(StartupTask.HOME_CACHE, StartupStatus.READY)
-                savePreparedCards()
+                if (mergedFullCache) savePreparedCards()
             }
         }
         ownerScope.launch {
@@ -1344,7 +1369,7 @@ class HomeViewModel(
             restored.await()
             homeVisible.first { it }
             essentialsLoaded.await()
-            additionalCacheRestored.await()
+            initialCachePrepared.await()
             BackgroundWorkCoordinator.startupTask(StartupTask.PERSONALIZATION, StartupStatus.RUNNING)
             val taste = withTimeoutOrNull(8_000L) { tasteSnapshot.first { it.inputs != null } }
             BackgroundWorkCoordinator.startupTask(StartupTask.PERSONALIZATION,
@@ -1438,12 +1463,14 @@ class HomeViewModel(
             return
         }
         val metrics = app.resources.displayMetrics
-        val recents = _listeningHistoryCard.value.tracks.take(4)
-        val firstRow = if (recents.isNotEmpty()) recents else cards.quick.tracks.take(4)
+        val recents = _listeningHistoryCard.value.tracks.take(6)
+        val visibleQuickCount = kotlin.math.ceil((metrics.widthPixels / metrics.density - 20f) / 177.2f)
+            .toInt().coerceIn(1, 4)
+        val firstRow = if (recents.isNotEmpty()) recents else cards.quick.tracks.take(visibleQuickCount)
         // The hero and a thumbnail can represent the same track at different
         // source/decode sizes. Prepare both actual requests, not just one ID.
         val requests = (listOfNotNull(hero?.let { it to true }) + firstRow.map { it to false })
-            .distinctBy { (track, heroSize) -> track.id to heroSize }.take(5)
+            .distinctBy { (track, heroSize) -> track.id to heroSize }.take(7)
         if (requests.isEmpty()) {
             coordinator.startupTask(StartupTask.INITIAL_ARTWORK, StartupStatus.READY)
             return
@@ -1582,7 +1609,8 @@ class HomeViewModel(
                         _refreshErrorMessage.value = null
                         preparedCards.update { cards -> requested.fold(cards) { next, shelf ->
                             val section = next.section(shelf)
-                            next.withSection(shelf, section.copy(isLoading = section.tracks.isEmpty(), isError = false, errorMessage = ""))
+                            next.withSection(shelf, section.copy(isLoading = section.tracks.isEmpty() &&
+                                (initialPresentation || activeRefreshIsExplicit), isError = false, errorMessage = ""))
                         } }
                         try {
                             // Each shelf owns its own admission/deadline. A silent
@@ -1623,7 +1651,8 @@ class HomeViewModel(
                             val section = next.section(shelf)
                             // Verification can finish before the renderer publishes.
                             // Keep its skeleton instead of briefly hiding the ready shelf.
-                            next.withSection(shelf, section.finishPreparation(shelf in candidates.value.ready))
+                            next.withSection(shelf, section.finishPreparation(shelf in candidates.value.ready,
+                                showPending = initialPresentation || activeRefreshIsExplicit))
                         } }
                         if (manualRenderGeneration == candidates.value.generation) manualRenderGeneration = -1L
                         activeRefreshIsExplicit = false

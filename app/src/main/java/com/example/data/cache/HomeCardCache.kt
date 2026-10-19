@@ -41,7 +41,9 @@ data class SavedHomeCards(
     val recommendationSource: String = "",
     val seedKey: String = "", val seedArtist: String = "", val seedTitle: String = "",
     val shelfLoads: Map<String, RecommendationShelfLoad> = emptyMap(),
-    val readyShelves: Set<String> = emptySet()
+    val readyShelves: Set<String> = emptySet(),
+    /** All displayed shelves are present; large discovery pools may still be omitted. */
+    val presentationComplete: Boolean = true
 )
 
 @OptIn(FlowPreview::class, ExperimentalCoroutinesApi::class)
@@ -82,7 +84,7 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
         it.path == file.baseFile.path && it.cards.profileKey == profile
     }?.cards
 
-    /** Read only visible content; v3 keeps this small header before the large pools. */
+    /** v4 includes all displayed shelves in a small header ahead of the discovery pools. */
     suspend fun readInitial(profile: String): SavedHomeCards? = withContext(AppDispatchers.Io) {
       try {
         peek(profile)?.let { return@withContext it }
@@ -98,7 +100,9 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
                                 "version" -> if (reader.nextInt() < 3) return@previewReader null
                                 "preview" -> {
                                     val root = readJson(reader) as JSONObject
-                                    return@previewReader withContext(serializationDispatcher) { decode(root, profile) }
+                                    return@previewReader withContext(serializationDispatcher) {
+                                        decode(root, profile, presentationComplete = root.optBoolean("presentationComplete", false))
+                                    }
                                 }
                                 else -> reader.skipValue()
                             }
@@ -130,7 +134,7 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
             }
             reader.endObject()
         } }
-        if (root.optString("profile") != profile || root.optInt("version") !in 1..3) return@withLock null
+        if (root.optString("profile") != profile || root.optInt("version") !in 1..4) return@withLock null
         for (name in listOf("era", "personalized", "similarArtists", "inspiredTrack"))
             root.optJSONObject(name)?.put("tracks", JSONArray())
         val catalog = root.optJSONArray("catalog")
@@ -172,7 +176,7 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
             reader.endObject()
         } }
         root.put("tracks", tracks)
-        withContext(serializationDispatcher) { decode(root, profile) }
+        withContext(serializationDispatcher) { decode(root, profile, presentationComplete = false) }
     }
 
     private fun readJson(reader: JsonReader): Any = when (reader.peek()) {
@@ -318,14 +322,14 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
         fun ids(list: List<MusicTrack>) = JSONArray(list.map { it.id })
         fun section(value: SectionState) = JSONObject().put("title", value.title)
             .put("subtitle", value.subtitle).put("tracks", ids(value.tracks.take(MAX_TRACKS_PER_LIST)))
-        val root = JSONObject().put("version", 3)
+        val root = JSONObject().put("version", 4).put("presentationComplete", true)
         if (includePreview) {
-            val empty = SectionState()
             root.put("preview", encode(s.copy(quick = s.quick.copy(tracks = s.quick.tracks.take(12)),
                 chart = s.chart.copy(tracks = s.chart.tracks.take(12)), history = s.history.copy(tracks = s.history.tracks.take(30)),
-                era = empty.copy(title = s.era.title),
-                personalized = empty.copy(title = s.personalized.title),
-                similarArtists = empty.copy(title = s.similarArtists.title), inspiredTrack = empty.copy(title = s.inspiredTrack.title),
+                era = s.era.copy(tracks = s.era.tracks.take(12)),
+                personalized = s.personalized.copy(tracks = s.personalized.tracks.take(12)),
+                similarArtists = s.similarArtists.copy(tracks = s.similarArtists.tracks.take(12)),
+                inspiredTrack = s.inspiredTrack.copy(tracks = s.inspiredTrack.tracks.take(12)),
                 quickCandidates = emptyList(), eraCandidates = emptyList(), chartCandidates = emptyList(),
                 personalizedCandidates = emptyList(), similarArtistCandidates = emptyList(), inspiredTrackCandidates = emptyList(),
                 catalog = s.catalog.take(1), artists = s.artists.take(20).map { it.copy(tracks = it.tracks.take(1)) }), false))
@@ -362,8 +366,9 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
             .put("chartCandidates", ids(s.chartCandidates.take(MAX_CANDIDATE_TRACKS)))
             .put("catalog", ids(s.catalog.take(MAX_POOL_TRACKS)))
     }
-    private suspend fun decode(root: JSONObject, profile: String, cooperative: Boolean = false): SavedHomeCards? {
-        if (root.optInt("version") !in 1..3 || root.optString("profile") != profile) return null
+    private suspend fun decode(root: JSONObject, profile: String, cooperative: Boolean = false,
+        presentationComplete: Boolean = true): SavedHomeCards? {
+        if (root.optInt("version") !in 1..4 || root.optString("profile") != profile) return null
         val array = root.getJSONArray("tracks")
         if (array.length() > 1500) return null
         val records = (0 until array.length()).mapNotNull { i ->
@@ -402,7 +407,8 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
             root.optJSONObject("shelfLoads")?.let { loads -> loads.keys().asSequence().mapNotNull { key ->
                 loads.optJSONObject(key)?.let { key to RecommendationShelfLoad(it.optString("context"), it.optLong("fetchedAt")) }
             }.toMap() }.orEmpty(),
-            root.optJSONArray("readyShelves")?.let { a -> (0 until a.length()).map { a.optString(it) }.toSet() }.orEmpty())
+            root.optJSONArray("readyShelves")?.let { a -> (0 until a.length()).map { a.optString(it) }.toSet() }.orEmpty(),
+            presentationComplete)
         fun verified(list: List<MusicTrack>) = list.filter(UnifiedRecommendationEngine::verified).map { it.copy(recommendationOnly = true) }
         fun clean(section: SectionState): SectionState {
             val tracks = verified(section.tracks)

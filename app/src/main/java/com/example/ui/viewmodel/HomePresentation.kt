@@ -23,11 +23,11 @@ internal fun SectionState.limitShelf() = if (tracks.size <= HomeRecommendationPo
 internal fun Set<Shelf>.initialCardDemand(bootstrap: Set<Shelf>, automaticStartup: Boolean): Set<Shelf> =
     if (automaticStartup) intersect(bootstrap).takeIf { it.isNotEmpty() } ?: this else this
 
-/** Verification finishing before presentation is still loading, not an empty/error result. */
-internal fun SectionState.finishPreparation(hasVerifiedCandidate: Boolean): SectionState {
+/** Pending verification is not an error; silent work does not introduce a new skeleton. */
+internal fun SectionState.finishPreparation(hasVerifiedCandidate: Boolean, showPending: Boolean = true): SectionState {
     val next = when {
         tracks.isNotEmpty() -> copy(isLoading = false)
-        hasVerifiedCandidate -> copy(isLoading = true, isError = false, errorMessage = "")
+        hasVerifiedCandidate -> copy(isLoading = showPending, isError = false, errorMessage = "")
         else -> copy(isLoading = false, isError = true,
             errorMessage = "Recommendations are temporarily unavailable. Tap Retry to try again.")
     }

@@ -50,15 +50,6 @@ internal fun MainTabPager(
     LaunchedEffect(state.currentPage, state.targetPage) {
         mounted = mounted + state.currentPage + state.targetPage
     }
-    DisposableEffect(view) {
-        onDispose {
-            // Settings/detail navigation can dispose an unfinished pager. Its
-            // hidden layout is no longer required for a non-modal startup.
-            listOf(StartupTask.HOME_LAYOUT, StartupTask.SEARCH_LAYOUT, StartupTask.LIBRARY_LAYOUT).forEach {
-                BackgroundWorkCoordinator.startupTask(it, StartupStatus.UNAVAILABLE)
-            }
-        }
-    }
     LaunchedEffect(view, lifecycle, prepareStartup) {
         if (!prepareStartup) {
             mounted = setOf(0, 1, 2)

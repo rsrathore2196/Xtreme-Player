@@ -77,7 +77,8 @@ class HomeCardCacheRestorationTest {
         try {
             val preview = cache.readInitial(profile)!!
             assertEquals("online_quick", preview.quick.tracks.single().id)
-            assertTrue(preview.era.tracks.isEmpty())
+            assertEquals("online_era", preview.era.tracks.single().id)
+            assertTrue(preview.presentationComplete)
             assertTrue(preview.quickCandidates.isEmpty())
             val full = cache.read(profile)!!
             assertEquals(preview.quick.tracks, full.quick.tracks)
@@ -105,7 +106,9 @@ class HomeCardCacheRestorationTest {
         file.writeText(legacy.toString())
         val cache = HomeCardCache(app)
         try {
-            assertEquals("online_quick", cache.readInitial(profile)!!.quick.tracks.single().id)
+            val preview = cache.readInitial(profile)!!
+            assertEquals("online_quick", preview.quick.tracks.single().id)
+            assertFalse(preview.presentationComplete)
             assertEquals("online_era", cache.read(profile)!!.eraCandidates.single().id)
         } finally { cache.close() }
     }

@@ -51,6 +51,30 @@ internal object DiscoveryRequestCoordinator {
         companion object Key : CoroutineContext.Key<SharedPriority>
     }
     private val flights = mutableMapOf<String, Flight>()
+    private val revalidations = mutableMapOf<String, Job>()
+    private val lastRevalidation = linkedMapOf<String, Long>()
+
+    /** Cache-only callers return immediately; stale metadata refreshes share idle admission. */
+    fun revalidateWhenIdle(key: String, block: suspend () -> Unit) {
+        val job = synchronized(revalidations) {
+            val now = android.os.SystemClock.elapsedRealtime()
+            if (revalidations[key]?.isActive == true ||
+                lastRevalidation[key]?.let { now - it < 60_000L } == true || revalidations.size >= 32) return
+            lastRevalidation[key] = now
+            while (lastRevalidation.size > 64) lastRevalidation.remove(lastRevalidation.keys.first())
+            scope.launch(start = CoroutineStart.LAZY) {
+                BackgroundWorkCoordinator.awaitInitialPresentation()
+                BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.DEFERRED,
+                    label = "Discovery cache revalidation") { block() }
+            }.also { pending ->
+                revalidations[key] = pending
+                pending.invokeOnCompletion {
+                    synchronized(revalidations) { if (revalidations[key] === pending) revalidations.remove(key) }
+                }
+            }
+        }
+        job.start()
+    }
     private val lock = Any()
     private val changed = MutableStateFlow(0L)
     private val scrolling = MutableStateFlow(false)

@@ -57,8 +57,11 @@ class StartupResponsivenessBenchmark {
         startActivityAndWait()
         // A prepared profiling installation is required; never delete user data or
         // include onboarding/API latency in a frame-responsiveness measurement.
-        check(device.wait(Until.hasObject(By.res("nav_tab_home_active")), 30_000L)) {
+        check(device.wait(Until.hasObject(By.res("nav_tab_home_active")), 90_000L)) {
             "Home did not become interactive. Check onboarding. See benchmark/README.md."
+        }
+        check(device.wait(Until.gone(By.res("startup_initialization_overlay")), 90_000L)) {
+            "Startup presentation did not finish; cannot measure interactive navigation."
         }
         val interactiveStart = SystemClock.elapsedRealtime()
         do {

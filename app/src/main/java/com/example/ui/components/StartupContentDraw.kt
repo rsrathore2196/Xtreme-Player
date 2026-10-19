@@ -24,12 +24,16 @@ import kotlin.coroutines.resume
 /** Release background readiness fences after preparation; no modal UI or input gate. */
 @Composable
 internal fun ObserveInitialContentReadiness() {
-    val prepared by remember {
-        BackgroundWorkCoordinator.startupReadiness.map { it.preparationComplete }.distinctUntilChanged()
-    }.collectAsStateWithLifecycle(initialValue = BackgroundWorkCoordinator.startupReadiness.value.preparationComplete)
+    val checkpoint by remember {
+        BackgroundWorkCoordinator.startupReadiness.map { it.preparationComplete to it.presentationGeneration }
+            .distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialValue = BackgroundWorkCoordinator.startupReadiness.value.let {
+        it.preparationComplete to it.presentationGeneration
+    })
+    val (prepared, generation) = checkpoint
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val view = LocalView.current
-    LaunchedEffect(lifecycle, view, prepared) {
+    LaunchedEffect(lifecycle, view, prepared, generation) {
         if (!prepared || BackgroundWorkCoordinator.startupReadiness.value.complete) return@LaunchedEffect
         lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             view.awaitStartupContentDraw { BackgroundWorkCoordinator.initialContentDrawn() }
