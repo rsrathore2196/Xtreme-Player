@@ -31,10 +31,12 @@ Use a release build to assess AOT improvements; debug builds do not represent re
 ## Post-launch responsiveness measurement
 
 `StartupResponsivenessBenchmark` records startup timing and frame timing for five cold launches
-and five warm reopenings. It starts Home scrolling and Home → Search → Library → Home taps as
-soon as the dock appears, while recommendation placeholders or cached cards are still visible.
-It samples at least six seconds after the dock appears and disables UiAutomator's implicit
-idle waits, so it does not skip the reported loading window or wait for network content.
+and five warm reopenings. It starts Home scrolling and Home → Search → Library → Home taps
+once the dock is available and the modal startup panel has closed. The dock remains mounted
+behind that panel, where input is intentionally blocked; tapping it then would not exercise navigation.
+It samples at least six seconds of the first interactive window and disables UiAutomator's implicit
+idle waits, without waiting for optional feed refreshes. Startup preparation has a bounded
+90-second readiness check that fails explicitly rather than recording blocked gestures as tab switches.
 If a paused real session is available, it also expands the mini-player. Onboarding must already
 be complete; use the preparation instructions above without clearing an existing user's data.
 

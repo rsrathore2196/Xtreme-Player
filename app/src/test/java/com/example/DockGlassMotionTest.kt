@@ -25,6 +25,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import com.example.ui.components.AnimatedBottomBar
 import com.example.ui.components.AnimatedBottomBarItem
 import com.example.ui.components.LocalLiquidGlassBackdrop
+import com.example.ui.components.LocalDynamicGlassEnabled
 import com.example.ui.components.rememberLiquidGlassBackdrop
 import com.example.ui.components.xtremeSharedBackdropSource
 import com.example.ui.theme.DarkAppColors
@@ -39,6 +40,10 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import com.github.takahirom.roborazzi.captureRoboImage
+import com.github.takahirom.roborazzi.RoborazziOptions
+import com.github.takahirom.roborazzi.RoborazziTaskType
+import kotlin.math.sqrt
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = Application::class)
@@ -52,16 +57,17 @@ class DockGlassMotionTest {
     private val dock get() = compose.onNodeWithTag("floating_bottom_navigation_bar")
 
     private fun showDock(glass: Boolean = true, withBackdrop: Boolean = false, owner: LifecycleOwner? = null,
-        direction: LayoutDirection = LayoutDirection.Ltr) {
+        direction: LayoutDirection = LayoutDirection.Ltr, initialSelection: Int = 0) {
         compose.mainClock.autoAdvance = false
         compose.setContent { MaterialTheme {
-            val tab = remember { mutableIntStateOf(0) }
+            val tab = remember { mutableIntStateOf(initialSelection) }
             val backdrop = if (withBackdrop) rememberLiquidGlassBackdrop() else null
             SideEffect { compositions++ }
             CompositionLocalProvider(LocalLiquidGlassBackdrop provides backdrop,
+                LocalDynamicGlassEnabled provides glass,
                 LocalLayoutDirection provides direction,
                 LocalLifecycleOwner provides (owner ?: LocalLifecycleOwner.current)) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Box(Modifier.fillMaxSize().background(Color.White), contentAlignment = Alignment.Center) {
                 if (withBackdrop) Box(Modifier.fillMaxSize().xtremeSharedBackdropSource()
                     .background(Color(0xFF254963)))
                 AnimatedBottomBar(tab.intValue, {
@@ -81,6 +87,40 @@ class DockGlassMotionTest {
             }
         } }
         compose.waitForIdle()
+    }
+
+    @OptIn(com.github.takahirom.roborazzi.ExperimentalRoborazziApi::class)
+    @Test fun outerCapsuleStaysCircularAfterEveryTabChangesTheHardwareLayerWidth() {
+        showDock(glass = false, initialSelection = -1)
+        val directory = java.io.File("build/reports/dock-shape").apply { mkdirs() }
+        fun assertCapsule(name: String) {
+            val file = java.io.File(directory, "$name.png")
+            dock.captureRoboImage(file.absolutePath,
+                roborazziOptions = RoborazziOptions(taskType = RoborazziTaskType.Record))
+            val pixels = javax.imageio.ImageIO.read(file)
+            val radius = pixels.height / 2f
+            for (fraction in listOf(.125f, .1875f, .25f)) {
+                val y = (pixels.height * fraction).toInt()
+                val centerY = y + .5f
+                val expected = radius - sqrt(radius * radius - (radius - centerY) * (radius - centerY))
+                fun filled(x: Int): Boolean {
+                    val pixel = java.awt.Color(pixels.getRGB(x, y), true)
+                    return pixel.red < 100 && pixel.green < 100 && pixel.blue < 100
+                }
+                val left = (0 until pixels.width / 3).firstOrNull(::filled)
+                val right = (0 until pixels.width / 3).firstOrNull { filled(pixels.width - 1 - it) }
+                assertNotNull("$name: missing left capsule edge", left)
+                assertNotNull("$name: missing right capsule edge", right)
+                assertEquals("$name: left cap must stay circular at row $y", expected, left!!.toFloat(), 1.5f)
+                assertEquals("$name: right cap must stay circular at row $y", expected, right!!.toFloat(), 1.5f)
+            }
+        }
+        assertCapsule("inactive")
+        for (title in listOf("home", "search", "library", "home", "library", "search")) {
+            compose.onNodeWithTag("nav_tab_${title}_inactive").performClick()
+            compose.mainClock.advanceTimeBy(1600)
+            assertCapsule(title)
+        }
     }
 
     @Test fun tabSpringsChangeLayersWithoutRemeasuringTheDock() {

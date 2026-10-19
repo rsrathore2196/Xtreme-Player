@@ -137,7 +137,8 @@ class StartupOverlayUiTest {
         }
         compose.mainClock.advanceTimeByFrame()
         compose.onNodeWithText("Restoring your last session").assertIsDisplayed()
-        compose.onNodeWithText("13%").assertIsDisplayed()
+        // Two completed tasks out of the 17 required units (including local tabs).
+        compose.onNodeWithText("12%").assertIsDisplayed()
         compose.runOnIdle { assertEquals("Task progress only recomposes the popup", 1, hostCompositions) }
         compose.runOnIdle { readiness.value = StartupReadiness(StartupTask.entries.associateWith { StartupStatus.READY }) }
         compose.mainClock.advanceTimeByFrame()

@@ -131,6 +131,10 @@ class BackgroundTaskPreemptionTest {
                 withContext(AppDispatchers.CpuBounded) {
                     entered.complete(Unit)
                     release.await()
+                    // The release can win the race with await's suspension.
+                    // Always cross a dispatcher boundary before checking that
+                    // optional work parks and an explicit request promotes it.
+                    yield()
                     "ready"
                 }
             }

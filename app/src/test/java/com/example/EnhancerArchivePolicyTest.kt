@@ -40,20 +40,45 @@ class EnhancerArchivePolicyTest {
     private val track = MusicTrack("online_song", "Song", "Artist", "Album", 180_000,
         "cover", "https://aac.saavncdn.com/song_320.mp4", source = "JIOSAAVN", bitrateKbps = 320)
     private val maximum = ActiveQualityState(AudioQualityCeiling.MAX, NetworkConnectionType.UNMETERED_WIFI_OR_ETHERNET)
+    private var initialRequestEpoch = 0L
 
-    @Before fun ready() {
+    @Suppress("DEPRECATION")
+    @Before fun ready() = runBlocking {
         Dispatchers.setMain(dispatcher)
-        // Keep unrelated startup IO/controller binding unstarted. Exercise the
-        // production policy handler with owned, cancellable preparation jobs.
-        manager = PlaybackManager(ApplicationProvider.getApplicationContext<Application>())
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        com.example.data.local.AudioQualityPreferences.setWifiQualityCeiling(app, AudioQualityCeiling.MAX)
+        val connectivity = shadowOf(app.getSystemService(ConnectivityManager::class.java))
+        connectivity.clearAllNetworks()
+        val network = ShadowNetwork.newInstance(ConnectivityManager.TYPE_WIFI)
+        val info = ShadowNetworkInfo.newInstance(NetworkInfo.DetailedState.CONNECTED,
+            ConnectivityManager.TYPE_WIFI, 0, true, true)
+        val caps = ShadowNetworkCapabilities.newInstance()
+        shadowOf(caps).apply {
+            addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+        }
+        connectivity.addNetwork(network, info)
+        connectivity.setActiveNetworkInfo(info)
+        connectivity.setDefaultNetworkActive(true)
+        connectivity.setNetworkCapabilities(network, caps)
         AudioEffectsManager.resetAll(false)
         AudioEffectsManager.setAudioEnhancerEnabled(true)
+        manager = PlaybackManager(app)
+        // Let the actual async monitor finish its initial OFFLINE -> Wi-Fi
+        // transition before installing a fake Archive job. Otherwise that valid
+        // startup policy change can cancel the job, depending on test order.
+        awaitCondition {
+            val monitor = field("networkQualityMonitor").get(manager) as? NetworkQualityMonitor
+            monitor?.activeQualityCeiling?.value == maximum &&
+                field("losslessPolicyAllowed").getBoolean(manager) &&
+                field("losslessEnhancerEnabled").getBoolean(manager)
+        }
+        initialRequestEpoch = field("losslessRequestEpoch").getLong(manager)
         @Suppress("UNCHECKED_CAST")
         val state = field("_uiState").get(manager) as MutableStateFlow<PlayerUiState>
         state.value = PlayerUiState(currentTrack = track, queue = listOf(track), isPlaying = true,
             selectedQuality = AudioQuality.HI_RES_LOSSLESS, qualityBadge = "AAC • 320 kbps", currentPositionMs = 45_000)
-        set("losslessPolicyAllowed", true)
-        set("losslessEnhancerEnabled", true)
     }
 
     @After fun clear() {
@@ -75,6 +100,13 @@ class EnhancerArchivePolicyTest {
 
     private fun field(name: String) = PlaybackManager::class.java.getDeclaredField(name).apply { isAccessible = true }
     private fun set(name: String, value: Any?) = field(name).set(manager, value)
+    private suspend fun awaitCondition(condition: () -> Boolean) = withTimeout(3000) {
+        while (!condition()) {
+            dispatcher.scheduler.runCurrent()
+            shadowOf(Looper.getMainLooper()).idle()
+            delay(10)
+        }
+    }
     private fun policy(value: ActiveQualityState, enhancer: Boolean) {
         PlaybackManager::class.java.getDeclaredMethod("updateLosslessPolicy", ActiveQualityState::class.java,
             Boolean::class.javaPrimitiveType).apply { isAccessible = true }.invoke(manager, value, enhancer)
@@ -96,7 +128,7 @@ class EnhancerArchivePolicyTest {
         assertEquals("0|${track.id}", field("losslessAttemptKey").get(manager))
         assertEquals(before, manager.uiState.value)
         assertEquals(eq, AudioEffectsManager.effectsState.value)
-        assertEquals(0L, field("losslessRequestEpoch").getLong(manager))
+        assertEquals(initialRequestEpoch, field("losslessRequestEpoch").getLong(manager))
     }
 
     @Test fun automaticQualityUpgradeRemainsIndependentAndRepeatedPolicyEmissionsDoNotRestartIt() {
@@ -110,38 +142,10 @@ class EnhancerArchivePolicyTest {
         policy(maximum, enhancer = true)
         policy(maximum, enhancer = true)
         assertSame(job, field("losslessUpgradeJob").get(manager))
-        assertEquals(0L, field("losslessRequestEpoch").getLong(manager))
+        assertEquals(initialRequestEpoch, field("losslessRequestEpoch").getLong(manager))
     }
 
-    @Suppress("DEPRECATION")
     @Test fun savedEnhancerFlowDoesNotCancelAnAutomaticMaximumLookup() = runBlocking {
-        val app = ApplicationProvider.getApplicationContext<Application>()
-        com.example.data.local.AudioQualityPreferences.setWifiQualityCeiling(app, AudioQualityCeiling.MAX)
-        val connectivity = shadowOf(app.getSystemService(ConnectivityManager::class.java))
-        connectivity.clearAllNetworks()
-        val network = ShadowNetwork.newInstance(ConnectivityManager.TYPE_WIFI)
-        val info = ShadowNetworkInfo.newInstance(NetworkInfo.DetailedState.CONNECTED,
-            ConnectivityManager.TYPE_WIFI, 0, true, true)
-        val caps = ShadowNetworkCapabilities.newInstance()
-        shadowOf(caps).apply {
-            addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-            addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
-        }
-        connectivity.addNetwork(network, info)
-        connectivity.setActiveNetworkInfo(info)
-        connectivity.setDefaultNetworkActive(true)
-        connectivity.setNetworkCapabilities(network, caps)
-        suspend fun awaitCondition(condition: () -> Boolean) = withTimeout(3000) {
-            while (!condition()) {
-                dispatcher.scheduler.runCurrent()
-                shadowOf(Looper.getMainLooper()).idle()
-                delay(10)
-            }
-        }
-        dispatcher.scheduler.runCurrent()
-        awaitCondition { field("losslessPolicyAllowed").getBoolean(manager) &&
-            field("losslessEnhancerEnabled").getBoolean(manager) }
         val job = Job()
         set("losslessUpgradeJob", job)
         set("losslessEnhancerRequest", true)
@@ -207,7 +211,7 @@ class EnhancerArchivePolicyTest {
         set("losslessAttemptCount", 3)
         PlaybackManager::class.java.getDeclaredMethod("cancelLosslessUpgrade").apply { isAccessible = true }.invoke(manager)
         assertTrue(job.isCancelled)
-        assertEquals(1L, field("losslessRequestEpoch").getLong(manager))
+        assertEquals(initialRequestEpoch + 1L, field("losslessRequestEpoch").getLong(manager))
         assertEquals(0L, field("losslessRetryAfterMs").getLong(manager))
         assertEquals(0, field("losslessAttemptCount").getInt(manager))
         assertFalse(field("losslessEnhancerRequest").getBoolean(manager))

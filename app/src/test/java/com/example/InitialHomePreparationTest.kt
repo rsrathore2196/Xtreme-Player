@@ -1,6 +1,7 @@
 package com.example
 
 import android.app.Application
+import android.os.Looper
 import androidx.lifecycle.ViewModelStore
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.cache.HomeCardCache
@@ -20,7 +21,7 @@ import com.example.ui.viewmodel.SectionState
 import java.time.Duration
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
@@ -31,6 +32,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.shadows.ShadowSystemClock
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -74,7 +76,16 @@ class InitialHomePreparationTest {
             // Deliberately never setHomeVisible(true): this also covers restoring
             // Search/Library, where startup must not require a visible Home page.
             val ready = try {
-                withTimeout(10_000L) { coordinator.startupReadiness.first { it.preparationComplete } }
+                withTimeout(10_000L) {
+                    // AppDispatchers may already retain Android's real Main
+                    // from another UI fixture. Drain its paused host looper as
+                    // IO returns; replacing Dispatchers.Main alone cannot do so.
+                    while (!coordinator.startupReadiness.value.preparationComplete) {
+                        shadowOf(Looper.getMainLooper()).idle()
+                        delay(10L)
+                    }
+                    coordinator.startupReadiness.value
+                }
             } catch (error: kotlinx.coroutines.TimeoutCancellationException) {
                 throw AssertionError("Initial preparation stalled: ${coordinator.startupReadiness.value.tasks}", error)
             }

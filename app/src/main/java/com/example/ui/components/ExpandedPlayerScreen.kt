@@ -195,6 +195,17 @@ import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 import kotlin.math.ceil
 
+private val playerSingerSeparator = Regex("[,;]|\\s+(?:feat\\.?|ft\\.?|featuring|&)\\s+", RegexOption.IGNORE_CASE)
+
+/** Compact player subtitle only; retain full recording credits everywhere else. */
+internal fun playerSingerLabel(track: MusicTrack): String {
+    fun firstTwo(value: String) = playerSingerSeparator.splitToSequence(value)
+        .map(String::trim).filter(String::isNotBlank)
+        .distinctBy { it.lowercase(java.util.Locale.ROOT) }
+        .take(2).joinToString(", ")
+    return firstTwo(track.singers).ifBlank { firstTwo(track.artist) }
+}
+
 @OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 fun ExpandedPlayerScreen(
@@ -225,6 +236,7 @@ fun ExpandedPlayerScreen(
     modifier: Modifier = Modifier
 ) {
     val track = uiState.currentTrack ?: return
+    val singerLabel = remember(track.artist, track.singers) { playerSingerLabel(track) }
     // A preference is a ceiling, never evidence of the format actually playing.
     val displayedQuality = uiState.qualityBadge.ifBlank { track.qualityBadge }.ifBlank { "Resolving audio" }
     val context = LocalContext.current
@@ -563,7 +575,7 @@ fun ExpandedPlayerScreen(
                                         Column(Modifier.weight(1f)) {
                                             Text(track.cleanTitle, color = appColors.textPrimary, fontWeight = FontWeight.Bold,
                                                 maxLines = 1, modifier = Modifier.basicMarquee(), softWrap = false)
-                                            Text(track.artist, color = appColors.textSecondary, fontSize = 12.sp,
+                                            Text(singerLabel, color = appColors.textSecondary, fontSize = 12.sp,
                                                 maxLines = 1, modifier = Modifier.basicMarquee(), softWrap = false)
                                         }
                                         IconButton(onClick = { onToggleFavorite(track) }) {
@@ -679,11 +691,6 @@ fun ExpandedPlayerScreen(
                                                     CreditDetailRow(
                                                         label = "Artist",
                                                         value = if (track.singers.isNotBlank()) track.singers else track.artist,
-                                                        isDark = isDark
-                                                    )
-                                                    CreditDetailRow(
-                                                        label = "Quality",
-                                                        value = displayedQuality,
                                                         isDark = isDark
                                                     )
                                                     Spacer(modifier = Modifier.height(4.dp))
@@ -822,7 +829,7 @@ fun ExpandedPlayerScreen(
                                 )
                                 Spacer(modifier = Modifier.height(2.dp))
                                 Text(
-                                    text = "${track.artist} • ${track.album}",
+                                    text = singerLabel,
                                     style = MaterialTheme.typography.titleSmall.copy(
                                         color = appColors.textSecondary,
                                         fontWeight = FontWeight.Medium
@@ -1374,7 +1381,7 @@ fun ExpandedPlayerScreen(
                                         fontWeight = FontWeight.Bold, fontSize = 16.sp, maxLines = 1,
                                         modifier = Modifier.fillMaxWidth().basicMarquee(), softWrap = false)
                                     Spacer(Modifier.height(2.dp))
-                                    Text(track.artist, color = appColors.textSecondary,
+                                    Text(singerLabel, color = appColors.textSecondary,
                                         fontWeight = FontWeight.Medium, fontSize = 13.sp, maxLines = 1,
                                         modifier = Modifier.fillMaxWidth().basicMarquee(), softWrap = false)
                                 }
@@ -1568,11 +1575,6 @@ fun ExpandedPlayerScreen(
                                                     value = "${track.genre} • ${if (track.language.isNotBlank()) track.language else "Hindi"}${if (track.year.isNotBlank()) " (${track.year})" else ""}",
                                                     isDark = isDark
                                                 )
-                                                CreditDetailRow(
-                                                    label = "Audio Fidelity",
-                                                    value = displayedQuality,
-                                                    isDark = isDark
-                                                )
                                                 if (track.isrc.isNotBlank()) {
                                                     CreditDetailRow(
                                                         label = "ISRC Code",
@@ -1617,7 +1619,7 @@ fun ExpandedPlayerScreen(
                                     )
                                     Spacer(modifier = Modifier.height(2.dp))
                                     Text(
-                                        text = "${track.artist} • ${track.album}",
+                                        text = singerLabel,
                                         style = MaterialTheme.typography.titleSmall.copy(
                                             color = appColors.textSecondary,
                                             fontWeight = FontWeight.Medium

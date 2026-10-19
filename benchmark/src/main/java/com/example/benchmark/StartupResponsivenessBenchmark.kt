@@ -20,7 +20,7 @@ import org.junit.After
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** Exercise the early interactive window, without waiting for feed/network loading to finish. */
+/** Exercise the first interactive window after the modal startup boundary has closed. */
 @RunWith(AndroidJUnit4::class)
 @LargeTest
 class StartupResponsivenessBenchmark {
@@ -59,6 +59,11 @@ class StartupResponsivenessBenchmark {
         // include onboarding/API latency in a frame-responsiveness measurement.
         check(device.wait(Until.hasObject(By.res("nav_tab_home_active")), 5_000L)) {
             "Complete onboarding on the profiling installation first. See benchmark/README.md."
+        }
+        // The dock stays mounted behind the startup modal. Sending taps before
+        // it closes would measure consumed gestures, not actual tab transitions.
+        check(device.wait(Until.gone(By.res("startup_initialization_panel")), 90_000L)) {
+            "Startup preparation did not finish; cannot measure interactive tab switching."
         }
         val interactiveStart = SystemClock.elapsedRealtime()
         do {

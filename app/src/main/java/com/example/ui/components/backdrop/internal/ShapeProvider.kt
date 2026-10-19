@@ -11,6 +11,8 @@
 package com.example.ui.components.backdrop.internal
 
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.State
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Shape
@@ -28,7 +30,7 @@ internal class ShapeProvider(val shapeBlock: () -> Shape) {
     override fun hashCode(): Int = shapeBlock.hashCode()
 
     private var _shape: Shape? = null
-    private var _outline: Outline? = null
+    private var _outline: State<Outline>? = null
     private var _size: Size = Size.Unspecified
     private var _layoutDirection: LayoutDirection? = null
     private var _density: Float? = null
@@ -52,10 +54,14 @@ internal class ShapeProvider(val shapeBlock: () -> Shape) {
                 _size = size
                 _layoutDirection = layoutDirection
                 _density = density.density
-                _outline = shape.createOutline(size, layoutDirection, density)
+                // A retained shape can read animated snapshot state (the dock's
+                // width compensation). Keep those dependencies observed rather
+                // than freezing its first outline behind this second cache.
+                // Static shapes still compute once for unchanged geometry.
+                _outline = derivedStateOf { shape.createOutline(size, layoutDirection, density) }
             }
 
-            return _outline!!
+            return _outline!!.value
         }
     }
 }
