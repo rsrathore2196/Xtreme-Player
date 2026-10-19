@@ -30,7 +30,7 @@ import org.robolectric.shadows.ShadowSystemClock
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33], application = Application::class)
 @Suppress("DEPRECATION")
-class EnhancerArchiveLookupTest {
+class LosslessArchiveLookupTest {
     private val app get() = ApplicationProvider.getApplicationContext<Application>()
     private val track = MusicTrack("online_song", "Song (Official Audio)", "Artist", "Album", 180_000,
         "cover", "https://aac.saavncdn.com/song_320.mp4", source = "JIOSAAVN", bitrateKbps = 320)
@@ -42,12 +42,10 @@ class EnhancerArchiveLookupTest {
 
     @Before fun ready() {
         app.getSharedPreferences("xtreme_audio_quality_prefs", 0).edit().clear().commit()
-        AudioEffectsManager.setAudioEnhancerEnabled(true)
         connect(wifi = true)
     }
 
     @After fun clear() = runBlocking {
-        AudioEffectsManager.setAudioEnhancerEnabled(false)
         val monitor = NetworkQualityMonitor.getInstance(app)
         val scope = NetworkQualityMonitor::class.java.getDeclaredField("scope").apply { isAccessible = true }.get(monitor) as CoroutineScope
         scope.coroutineContext[Job]?.cancelAndJoin()
@@ -75,7 +73,7 @@ class EnhancerArchiveLookupTest {
         shadow.networkCallbacks.toList().forEach { it.onAvailable(network); it.onCapabilitiesChanged(network, caps) }
     }
 
-    @Test fun enhancerCannotIssueArchiveRequestsOnAnyCappedWifiOrCellularProfile() = runBlocking {
+    @Test fun cappedWifiOrCellularProfilesCannotIssueArchiveRequests() = runBlocking {
         val repo = MusicRepository(dao, app) { _, _ -> fail("A capped profile must not query Archive"); LosslessSearchPage() }
         for (wifi in listOf(true, false)) {
             connect(wifi)

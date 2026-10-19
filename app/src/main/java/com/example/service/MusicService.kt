@@ -1,5 +1,7 @@
 package com.example.service
 
+import com.example.playback.isAudioPipelineFailure
+
 import com.example.performance.AppDispatchers
 
 import android.app.PendingIntent
@@ -517,6 +519,13 @@ class MusicService : MediaLibraryService() {
             }
 
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                if (error.isAudioPipelineFailure()) {
+                    jioFallback?.cancel()
+                    sourceRecoveryJob?.cancel()
+                    sourceRecoveryJob = null
+                    android.util.Log.w("MusicService", "Audio pipeline failure; keeping the selected source", error)
+                    return
+                }
                 if (jioFallback?.onError() == true) return
                 // Notification/Android Auto resumption can run without the app's
                 // MediaController. Keep representation recovery on the same player,

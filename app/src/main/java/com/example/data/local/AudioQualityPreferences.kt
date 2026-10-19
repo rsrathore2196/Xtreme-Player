@@ -17,13 +17,6 @@ object AudioQualityPreferences {
     private const val KEY_WIFI_CEILING = "wifi_quality_ceiling"
     private const val KEY_CELLULAR_CEILING = "cellular_quality_ceiling"
     private const val KEY_METERED_WIFI = "treat_metered_wifi_as_cellular"
-    private const val KEY_AUDIO_ENHANCER = "audio_enhancer_enabled"
-
-    internal fun getAudioEnhancerEnabled(context: Context): Boolean = getPrefs(context).getBoolean(KEY_AUDIO_ENHANCER, false)
-    internal fun setAudioEnhancerEnabled(context: Context, enabled: Boolean) {
-        getPrefs(context).edit().putBoolean(KEY_AUDIO_ENHANCER, enabled).apply()
-    }
-
     private fun getPrefs(context: Context): SharedPreferences {
         return ReactiveSettingsRepository.preferences(context, PREFS_NAME)
     }

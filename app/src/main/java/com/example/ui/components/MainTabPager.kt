@@ -46,6 +46,19 @@ internal fun MainTabPager(
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     var mounted by remember { mutableStateOf(if (prepareStartup) setOf(state.currentPage) else setOf(0, 1, 2)) }
     val measured = remember { List(3) { CompletableDeferred<Unit>() } }
+    // Visible navigation always wins over optional hidden-tab preparation.
+    LaunchedEffect(state.currentPage, state.targetPage) {
+        mounted = mounted + state.currentPage + state.targetPage
+    }
+    DisposableEffect(view) {
+        onDispose {
+            // Settings/detail navigation can dispose an unfinished pager. Its
+            // hidden layout is no longer required for a non-modal startup.
+            listOf(StartupTask.HOME_LAYOUT, StartupTask.SEARCH_LAYOUT, StartupTask.LIBRARY_LAYOUT).forEach {
+                BackgroundWorkCoordinator.startupTask(it, StartupStatus.UNAVAILABLE)
+            }
+        }
+    }
     LaunchedEffect(view, lifecycle, prepareStartup) {
         if (!prepareStartup) {
             mounted = setOf(0, 1, 2)
@@ -97,7 +110,7 @@ internal fun MainTabPager(
         // Keep all three primary destinations mounted, including Home's carousels
         // and painters. Hidden effects remain gated by the visibility local below.
         // Retain cheap page containers immediately; mount their real content one
-        // at a time behind the popup. No post-reveal retention/precomposition wave.
+        // at a time during background preparation. A requested tab mounts immediately.
         beyondViewportPageCount = 2,
         userScrollEnabled = false,
         key = { it },

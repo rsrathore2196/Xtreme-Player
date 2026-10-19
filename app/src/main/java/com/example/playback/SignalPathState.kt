@@ -59,7 +59,7 @@ data class SignalPathState(
     val inputRateHz: Int = 0, val outputRateHz: Int = 0, val appResampling: Boolean = false, val bitPerfect: Boolean = false,
     val directApproved: Boolean = false, val outputDevice: String = "System output", val outputType: String = "Unknown",
     val dspActive: Boolean = false, val clarityEnabled: Boolean = false,
-    val enhancerEnabled: Boolean = false, val eqActive: Boolean = false,
+    val eqActive: Boolean = false,
     val appVolume: Float = 1f, val systemVolume: Int = 0, val systemVolumeMax: Int = 0,
     val mode: String = "Shared", val buffering: Boolean = false, val glitches: Int = 0,
     val outputEncoding: Int = C.ENCODING_INVALID, val outputChannels: Int = 0,

@@ -8,6 +8,7 @@ import androidx.media3.common.MimeTypes
 import androidx.media3.common.Player
 import com.example.data.model.MusicTrack
 import com.example.data.remote.YouTubeAudioStreamService
+import com.example.playback.isAudioPipelineFailure
 import kotlinx.coroutines.*
 
 /** One service-owned watchdog, independent of UI lifecycle. All Player access stays on its looper. */
@@ -56,6 +57,10 @@ internal class JioSaavnPlaybackFallback(
 
     fun update() {
         if (applying) return
+        if (player.playerError?.isAudioPipelineFailure() == true) {
+            cancel()
+            return
+        }
         val item = player.currentMediaItem
         val nextKey = currentKey()
         if (key != nextKey) {
@@ -95,7 +100,8 @@ internal class JioSaavnPlaybackFallback(
         watchdog = scope.launch {
             delay((deadline - SystemClock.elapsedRealtime()).coerceIn(0L, timeout))
             watchdog = null
-            if (generation != token || currentKey() != originalKey || player.isPlaying || !player.playWhenReady) return@launch
+            if (generation != token || currentKey() != originalKey || player.isPlaying || !player.playWhenReady ||
+                player.playerError?.isAudioPipelineFailure() == true) return@launch
             if (fallback) fail(item, "The recording is unavailable from both sources.") else recover()
         }
     }

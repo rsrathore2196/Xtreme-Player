@@ -57,15 +57,8 @@ class StartupResponsivenessBenchmark {
         startActivityAndWait()
         // A prepared profiling installation is required; never delete user data or
         // include onboarding/API latency in a frame-responsiveness measurement.
-        // The modal deliberately hides the underlying navigation semantics
-        // until preparation finishes; do not mistake that for missing onboarding.
-        check(device.wait(Until.hasObject(By.res("nav_tab_home_active")), 90_000L)) {
-            "Home did not become interactive. Check onboarding/startup readiness. See benchmark/README.md."
-        }
-        // The dock stays mounted behind the startup modal. Sending taps before
-        // it closes would measure consumed gestures, not actual tab transitions.
-        check(device.wait(Until.gone(By.res("startup_initialization_panel")), 90_000L)) {
-            "Startup preparation did not finish; cannot measure interactive tab switching."
+        check(device.wait(Until.hasObject(By.res("nav_tab_home_active")), 30_000L)) {
+            "Home did not become interactive. Check onboarding. See benchmark/README.md."
         }
         val interactiveStart = SystemClock.elapsedRealtime()
         do {

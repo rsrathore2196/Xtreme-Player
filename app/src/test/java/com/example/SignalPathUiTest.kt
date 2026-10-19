@@ -2,14 +2,12 @@ package com.example
 
 import android.app.Application
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.foundation.layout.Column
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.*
 import com.example.playback.*
 import com.example.ui.components.AudioQualityBadge
 import com.example.ui.components.SignalPathPopupPositionProvider
-import com.example.ui.screens.settings.AudioEnhancerSettingsSection
 import androidx.compose.ui.unit.*
 import androidx.compose.ui.geometry.*
 import org.junit.*
@@ -23,7 +21,7 @@ import org.robolectric.annotation.GraphicsMode
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class SignalPathUiTest {
     @get:Rule val compose = createComposeRule()
-    @After fun clear() { AudioEffectsManager.setAudioEnhancerEnabled(false); AudioSignalPath.reset() }
+    @After fun clear() { AudioEffectsManager.resetAll(false); AudioSignalPath.reset() }
     @Test fun badgeOpensCompactSignalPathAndShowsActualLossyFormat() {
         AudioSignalPath.update { SignalPathState(trackId = "playing", source = "YouTube Music",
             quality = StreamQualityBadge("OPUS", 160, 48000, verified = true),
@@ -42,7 +40,7 @@ class SignalPathUiTest {
         compose.onNodeWithText("High Quality").assertExists()
         compose.onNodeWithText("Bypassed (Pure)").assertExists()
         compose.onNodeWithText("YouTube Music • OPUS • 160 kbps • 48.0 kHz").assertExists()
-        compose.onNodeWithText("Audio Enhancer").assertExists()
+        compose.onNodeWithText("Audio Enhancer").assertDoesNotExist()
         compose.onNodeWithText("Volume / Gain").assertDoesNotExist()
         compose.onNodeWithText("Clarity Enhancer").assertDoesNotExist()
         compose.onNodeWithText("Output Format").assertExists()
@@ -59,23 +57,5 @@ class SignalPathUiTest {
         Assert.assertEquals(90, first.x)
         val tiny = position.calculatePosition(IntRect.Zero, IntSize(300, 300), LayoutDirection.Ltr, IntSize(300, 300))
         Assert.assertEquals(IntOffset.Zero, tiny)
-    }
-    @Test fun settingsAndPopupShareEnhancerChoiceWithoutEnablingEqualizer() {
-        AudioEffectsManager.resetAll(false)
-        AudioEffectsManager.setAudioEnhancerEnabled(false)
-        AudioSignalPath.source("playing", "JioSaavn")
-        compose.setContent { MaterialTheme { Column {
-            AudioEnhancerSettingsSection()
-            AudioQualityBadge("playing", "AAC • 320 kbps", Color.DarkGray, Color.White, Color.White)
-        } } }
-        compose.onNodeWithTag("switch_audio_enhancer_settings").assertIsOff().performClick()
-        compose.waitUntil(2000) { AudioSignalPath.state.value.enhancerEnabled }
-        Assert.assertFalse(AudioEffectsManager.effectsState.value.isEnabled)
-        compose.onNodeWithText("AAC • 320 kbps").performClick()
-        compose.onNodeWithTag("audio_enhancer_toggle").assertIsOn().performClick()
-        compose.waitUntil(2000) { !AudioSignalPath.state.value.enhancerEnabled }
-        compose.onNodeWithTag("switch_audio_enhancer_settings").assertIsOff()
-        Assert.assertEquals("JioSaavn", AudioSignalPath.state.value.source)
-        Assert.assertFalse(AudioEffectsManager.effectsState.value.isEnabled)
     }
 }

@@ -48,7 +48,7 @@ class PsychoacousticAudioProcessor : BaseAudioProcessor() {
             C.ENCODING_PCM_24BIT_BIG_ENDIAN, C.ENCODING_PCM_32BIT_BIG_ENDIAN)
         val order = if (bigEndian) ByteOrder.BIG_ENDIAN else ByteOrder.LITTLE_ENDIAN
         val output = replaceOutputBuffer(bytes).order(order)
-        if (!state.isEnabled && !state.audioEnhancerEnabled) {
+        if (!state.isEnabled) {
             val limit = inputBuffer.limit()
             inputBuffer.limit(inputBuffer.position() + bytes)
             output.put(inputBuffer)
@@ -93,7 +93,7 @@ class PsychoacousticAudioProcessor : BaseAudioProcessor() {
             boosts += max(0.0, db)
             filters[i].target(coefficients(rate, band?.centerFreqHz?.toDouble() ?: 1000.0, db, false))
         }
-        val enhance = state.audioEnhancerEnabled || state.isEnabled && state.crystalClarityEnabled
+        val enhance = state.crystalClarityEnabled
         val bass = (if (state.isEnabled) state.bassBoostStrength / 1000.0 * 4.0 else 0.0) + if (enhance) 0.8 else 0.0
         val air = if (enhance) 1.5 else 0.0
         filters[5].target(coefficients(rate, 60.0, bass, false))

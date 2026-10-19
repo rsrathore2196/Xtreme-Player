@@ -1,5 +1,11 @@
 package com.example.playback
 
+import androidx.media3.common.PlaybackException
+
+/** Output/DSP failures are not evidence of an unavailable catalog recording. */
+internal fun PlaybackException.isAudioPipelineFailure(): Boolean =
+    errorCode in 5000..5999 || errorCode == PlaybackException.ERROR_CODE_FAILED_RUNTIME_CHECK
+
 /** Main-thread-owned retry budget and generation for asynchronous stream recovery. */
 internal class PlaybackRecoveryGuard {
     private var trackId: String? = null

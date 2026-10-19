@@ -4,8 +4,39 @@ import android.os.Handler
 import android.os.Looper
 import android.view.View
 import android.view.ViewTreeObserver
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import com.example.performance.AppDispatchers
+import com.example.performance.BackgroundWorkCoordinator
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
+
+/** Release background readiness fences after preparation; no modal UI or input gate. */
+@Composable
+internal fun ObserveInitialContentReadiness() {
+    val prepared by remember {
+        BackgroundWorkCoordinator.startupReadiness.map { it.preparationComplete }.distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialValue = BackgroundWorkCoordinator.startupReadiness.value.preparationComplete)
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val view = LocalView.current
+    LaunchedEffect(lifecycle, view, prepared) {
+        if (!prepared || BackgroundWorkCoordinator.startupReadiness.value.complete) return@LaunchedEffect
+        lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            view.awaitStartupContentDraw { BackgroundWorkCoordinator.initialContentDrawn() }
+            withContext(AppDispatchers.Io) { BackgroundWorkCoordinator.awaitInitialPresentationSettled() }
+        }
+    }
+}
 
 /** One requested real traversal, even when Compose reuses the parent's RenderNode.
  * Called on Main after the prepared snapshot has entered composition. */

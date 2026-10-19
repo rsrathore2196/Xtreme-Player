@@ -34,7 +34,7 @@ import org.robolectric.shadows.ShadowNetworkInfo
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33], application = Application::class)
-class EnhancerArchivePolicyTest {
+class LosslessArchivePolicyTest {
     private lateinit var manager: PlaybackManager
     private val dispatcher = StandardTestDispatcher()
     private val track = MusicTrack("online_song", "Song", "Artist", "Album", 180_000,
@@ -63,7 +63,6 @@ class EnhancerArchivePolicyTest {
         connectivity.setDefaultNetworkActive(true)
         connectivity.setNetworkCapabilities(network, caps)
         AudioEffectsManager.resetAll(false)
-        AudioEffectsManager.setAudioEnhancerEnabled(true)
         manager = PlaybackManager(app)
         // Let the actual async monitor finish its initial OFFLINE -> Wi-Fi
         // transition before installing a fake Archive job. Otherwise that valid
@@ -71,8 +70,7 @@ class EnhancerArchivePolicyTest {
         awaitCondition {
             val monitor = field("networkQualityMonitor").get(manager) as? NetworkQualityMonitor
             monitor?.activeQualityCeiling?.value == maximum &&
-                field("losslessPolicyAllowed").getBoolean(manager) &&
-                field("losslessEnhancerEnabled").getBoolean(manager)
+                field("losslessPolicyAllowed").getBoolean(manager)
         }
         initialRequestEpoch = field("losslessRequestEpoch").getLong(manager)
         @Suppress("UNCHECKED_CAST")
@@ -95,7 +93,6 @@ class EnhancerArchivePolicyTest {
             instance.set(null, null)
         }
         AudioEffectsManager.resetAll(false)
-        AudioEffectsManager.setAudioEnhancerEnabled(false)
     }
 
     private fun field(name: String) = PlaybackManager::class.java.getDeclaredField(name).apply { isAccessible = true }
@@ -107,22 +104,21 @@ class EnhancerArchivePolicyTest {
             delay(10)
         }
     }
-    private fun policy(value: ActiveQualityState, enhancer: Boolean) {
-        PlaybackManager::class.java.getDeclaredMethod("updateLosslessPolicy", ActiveQualityState::class.java,
-            Boolean::class.javaPrimitiveType).apply { isAccessible = true }.invoke(manager, value, enhancer)
+    private fun policy(value: ActiveQualityState) {
+        PlaybackManager::class.java.getDeclaredMethod("updateLosslessPolicy", ActiveQualityState::class.java)
+            .apply { isAccessible = true }.invoke(manager, value)
     }
 
-    @Test fun disablingEnhancerKeepsTheAutomaticMaximumRequestAndPreservesPlaybackAndEq() {
+    @Test fun equalizerControlsKeepTheAutomaticMaximumRequestAndPreservePlayback() {
         val job = Job()
         set("losslessUpgradeJob", job)
-        set("losslessEnhancerRequest", true)
         set("losslessAttemptKey", "0|${track.id}")
         AudioEffectsManager.setEnabled(true)
         AudioEffectsManager.setBandLevel(0, 450)
-        AudioEffectsManager.setAudioEnhancerEnabled(false)
-        val eq = AudioEffectsManager.effectsState.value
         val before = manager.uiState.value
-        policy(maximum, enhancer = false)
+        AudioEffectsManager.setEnabled(false)
+        val eq = AudioEffectsManager.effectsState.value
+        policy(maximum)
         assertTrue(job.isActive)
         assertSame(job, field("losslessUpgradeJob").get(manager))
         assertEquals("0|${track.id}", field("losslessAttemptKey").get(manager))
@@ -134,55 +130,47 @@ class EnhancerArchivePolicyTest {
     @Test fun automaticQualityUpgradeRemainsIndependentAndRepeatedPolicyEmissionsDoNotRestartIt() {
         val job = Job()
         set("losslessUpgradeJob", job)
-        set("losslessEnhancerRequest", false)
-        AudioEffectsManager.setAudioEnhancerEnabled(false)
-        policy(maximum, enhancer = false)
+        policy(maximum)
         assertTrue(job.isActive)
-        AudioEffectsManager.setAudioEnhancerEnabled(true)
-        policy(maximum, enhancer = true)
-        policy(maximum, enhancer = true)
+        policy(maximum)
+        policy(maximum)
         assertSame(job, field("losslessUpgradeJob").get(manager))
         assertEquals(initialRequestEpoch, field("losslessRequestEpoch").getLong(manager))
     }
 
-    @Test fun savedEnhancerFlowDoesNotCancelAnAutomaticMaximumLookup() = runBlocking {
+    @Test fun equalizerEditsDoNotCancelAnAutomaticMaximumLookup() = runBlocking {
         val job = Job()
         set("losslessUpgradeJob", job)
-        set("losslessEnhancerRequest", true)
         AudioEffectsManager.setBandLevel(0, 500)
         dispatcher.scheduler.runCurrent()
-        assertTrue("EQ edits must not cancel the independent enhancer request", job.isActive)
-        AudioEffectsManager.setAudioEnhancerEnabled(false)
-        awaitCondition { !field("losslessEnhancerEnabled").getBoolean(manager) }
+        assertTrue("EQ edits must not cancel lossless discovery", job.isActive)
+        dispatcher.scheduler.runCurrent()
         assertTrue(job.isActive)
         assertEquals(AudioQuality.HI_RES_LOSSLESS, manager.uiState.value.selectedQuality)
     }
 
-    @Test fun activeArchiveSourceAndPositionSurviveDisablingEnhancer() {
+    @Test fun activeArchiveSourceAndPositionSurviveEqualizerChanges() {
         val upgraded = track.copy(audioUrl = "https://archive.org/download/album/song.flac",
             source = "INTERNET_ARCHIVE", isLossless = true, qualityBadge = "Lossless")
         @Suppress("UNCHECKED_CAST")
         val state = field("_uiState").get(manager) as MutableStateFlow<PlayerUiState>
         state.value = state.value.copy(currentTrack = upgraded, queue = listOf(upgraded), qualityBadge = "Lossless")
         val constructor = PlaybackManager::class.java.declaredClasses.first { it.simpleName == "LosslessFallback" }
-            .declaredConstructors.first { it.parameterCount == 9 }.apply { isAccessible = true }
-        val fallback = constructor.newInstance(0L, track, upgraded, 45_000L, 0L, true, true, true, Bundle())
+            .declaredConstructors.first { it.parameterCount == 8 }.apply { isAccessible = true }
+        val fallback = constructor.newInstance(0L, track, upgraded, 45_000L, 0L, true, true, Bundle())
         set("losslessFallback", fallback)
-        set("losslessEnhancerRequest", true)
         val before = manager.uiState.value
-        AudioEffectsManager.setAudioEnhancerEnabled(false)
-        policy(maximum, enhancer = false)
+        AudioEffectsManager.setEnabled(false)
+        policy(maximum)
         assertSame(fallback, field("losslessFallback").get(manager))
         assertEquals(before, manager.uiState.value)
 
-        // Maximum remains eligible independently of the enhancer toggle; the
+        // Maximum remains eligible independently of equalizer controls; the
         // current source and any automatic preparation remain untouched.
         val pendingBetterCopy = Job()
-        set("losslessEnhancerEnabled", true)
-        set("losslessEnhancerRequest", true)
         set("losslessRequestEpoch", 1L)
         set("losslessUpgradeJob", pendingBetterCopy)
-        policy(maximum, enhancer = false)
+        policy(maximum)
         assertTrue(pendingBetterCopy.isActive)
         assertSame(fallback, field("losslessFallback").get(manager))
         assertEquals(before, manager.uiState.value)
@@ -194,8 +182,7 @@ class EnhancerArchivePolicyTest {
             ActiveQualityState(AudioQualityCeiling.MAX, NetworkConnectionType.OFFLINE)) {
             val job = Job()
             set("losslessUpgradeJob", job)
-            set("losslessEnhancerRequest", true)
-            policy(value, enhancer = true)
+            policy(value)
             assertTrue(job.isCancelled)
             assertEquals(track, manager.uiState.value.currentTrack)
             assertEquals(45_000L, manager.uiState.value.currentPositionMs)
@@ -206,7 +193,6 @@ class EnhancerArchivePolicyTest {
     @Test fun newSelectionInvalidatesTheOldRequestAndClearsOnlyItsRetryState() {
         val job = Job()
         set("losslessUpgradeJob", job)
-        set("losslessEnhancerRequest", true)
         set("losslessRetryAfterMs", 123_000L)
         set("losslessAttemptCount", 3)
         PlaybackManager::class.java.getDeclaredMethod("cancelLosslessUpgrade").apply { isAccessible = true }.invoke(manager)
@@ -214,16 +200,13 @@ class EnhancerArchivePolicyTest {
         assertEquals(initialRequestEpoch + 1L, field("losslessRequestEpoch").getLong(manager))
         assertEquals(0L, field("losslessRetryAfterMs").getLong(manager))
         assertEquals(0, field("losslessAttemptCount").getInt(manager))
-        assertFalse(field("losslessEnhancerRequest").getBoolean(manager))
-        assertTrue(AudioEffectsManager.effectsState.value.audioEnhancerEnabled)
     }
 
-    @Test fun togglingEnhancerJoinsAnActiveLookupWithoutResettingItsRetryBudget() {
+    @Test fun repeatedMaximumPolicyKeepsAnActiveLookupAndItsRetryBudget() {
         val job = Job()
         set("losslessUpgradeJob", job)
         set("losslessAttemptCount", 2)
-        set("losslessEnhancerEnabled", false)
-        policy(maximum, enhancer = true)
+        policy(maximum)
         assertSame(job, field("losslessUpgradeJob").get(manager))
         assertEquals(2, field("losslessAttemptCount").getInt(manager))
     }

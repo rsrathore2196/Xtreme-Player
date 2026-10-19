@@ -109,7 +109,6 @@ import com.example.performance.BackgroundWorkCoordinator
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
-import androidx.compose.ui.semantics.clearAndSetSemantics
 
 enum class NavigationTab(val title: String) {
     HOME("Home"),
@@ -124,15 +123,13 @@ fun MainNavigationScaffold(
     viewModel: PlayerViewModel,
     modifier: Modifier = Modifier
 ) {
-    // Establish the modal's admission boundary before child painters can enqueue
-    // work. Onboarding uses other screens and must never wait for Home artwork.
+    // Track preparation without blocking the visible UI or intercepting input.
     remember { BackgroundWorkCoordinator.beginInitialPresentation() }
-    // Only this terminal boundary reaches the host. Progress updates are observed
-    // exclusively by the popup; the pager/dock do not recompose for every task.
-    val initializing by remember {
+    val preparingStartup by remember {
         BackgroundWorkCoordinator.startupReadiness.map { !it.complete }.distinctUntilChanged()
     }.collectAsStateWithLifecycle(initialValue = !BackgroundWorkCoordinator.startupReadiness.value.complete)
-    if (initializing) com.example.ui.screens.PrepareInitialHome()
+    if (preparingStartup) com.example.ui.screens.PrepareInitialHome()
+    ObserveInitialContentReadiness()
     val playerUiState by viewModel.navigationPlayerUiState.collectAsStateWithLifecycle()
     val currentPlayingTrackId = playerUiState.currentTrack?.id
     val catalogDetail by viewModel.catalogBrowser.detail.collectAsStateWithLifecycle()
@@ -185,9 +182,9 @@ fun MainNavigationScaffold(
             }
         } finally { navigation.close() }
     }
-    LaunchedEffect(viewModel, selectedTabIndex, catalogDetail != null, initializing) {
-        viewModel.prepareCatalogUi(searchVisible = !initializing && selectedTabIndex == 1,
-            detailVisible = !initializing && catalogDetail != null)
+    LaunchedEffect(viewModel, selectedTabIndex, catalogDetail != null) {
+        viewModel.prepareCatalogUi(searchVisible = selectedTabIndex == 1,
+            detailVisible = catalogDetail != null)
     }
     val tabState = rememberSaveableStateHolder()
     // Allocate these outside AnimatedContent; tab disposal never serializes or
@@ -197,13 +194,25 @@ fun MainNavigationScaffold(
     val libraryListState = rememberLazyListState()
     // Only Settings uses AnimatedContent. Primary tabs share the pager's one
     // position/velocity and are composed lazily as they enter the viewport.
-    val tabTransition = updateTransition(if (selectedTabIndex == 3 && !initializing) 3 else 0, label = "settings_navigation_transition")
+    val tabTransition = updateTransition(if (selectedTabIndex == 3) 3 else 0, label = "settings_navigation_transition")
     var isPlayerExpanded by rememberSaveable { mutableStateOf(false) }
     var isQueueOpen by rememberSaveable { mutableStateOf(false) }
     var isEqualizerOpen by rememberSaveable { mutableStateOf(false) }
     var isCreatePlaylistOpen by rememberSaveable { mutableStateOf(false) }
     var trackToAddToPlaylist by remember { mutableStateOf<MusicTrack?>(null) }
     var isSettingsSubpageOpen by rememberSaveable { mutableStateOf(false) }
+
+    LaunchedEffect(selectedTabIndex, selectedPlaylistWithTracks != null) {
+        if (selectedTabIndex == 3 || selectedPlaylistWithTracks != null) {
+            // A restored detail/settings destination need not lay out invisible
+            // primary tabs to release background startup work.
+            listOf(com.example.performance.StartupTask.HOME_LAYOUT,
+                com.example.performance.StartupTask.SEARCH_LAYOUT,
+                com.example.performance.StartupTask.LIBRARY_LAYOUT).forEach {
+                BackgroundWorkCoordinator.startupTask(it, com.example.performance.StartupStatus.UNAVAILABLE)
+            }
+        }
+    }
 
     // Data admission follows real Search/Library drags and flings as well as
     // Home's nested rows. Observe here without reading scroll state in composition.
@@ -227,24 +236,22 @@ fun MainNavigationScaffold(
     ) { _ -> viewModel.finishNotificationPermissionRequest() }
 
     val startupLifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
-    LaunchedEffect(viewModel, startupLifecycle) {
+    val startupView = androidx.compose.ui.platform.LocalView.current
+    LaunchedEffect(viewModel, startupLifecycle, startupView, selectedTabIndex) {
       startupLifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.RESUMED) {
+        if (selectedTabIndex != 0) return@repeatOnLifecycle
+        // Ask as soon as Home has actually drawn, rather than waiting behind
+        // recommendation loading or the optional background-work idle budget.
+        startupView.awaitStartupContentDraw { }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && viewModel.canRequestNotificationPermission &&
             androidx.core.content.ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
                 android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            kotlinx.coroutines.withContext(com.example.performance.AppDispatchers.Io) {
-                BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.DEFERRED,
-                    label = "Notification permission") {
-                    kotlinx.coroutines.withContext(com.example.performance.AppDispatchers.Main) {
-                        if (viewModel.beginNotificationPermissionRequest()) {
-                            try { notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) }
-                            catch (cancelled: kotlinx.coroutines.CancellationException) {
-                                viewModel.finishNotificationPermissionRequest()
-                                throw cancelled
-                            } catch (_: Exception) { viewModel.finishNotificationPermissionRequest() }
-                        }
-                    }
-                }
+            if (viewModel.beginNotificationPermissionRequest()) {
+                try { notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) }
+                catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    viewModel.finishNotificationPermissionRequest()
+                    throw cancelled
+                } catch (_: Exception) { viewModel.finishNotificationPermissionRequest() }
             }
         }
         // The OS dialog may pause this lifecycle. Its result is retained by the VM
@@ -307,14 +314,13 @@ fun MainNavigationScaffold(
     ) {
         Box(modifier = modifier.fillMaxSize().background(appColors.scaffoldBackground)) {
             Scaffold(
-                modifier = if (initializing) Modifier.clearAndSetSemantics { } else Modifier,
                 contentWindowInsets = WindowInsets(0.dp),
                 containerColor = appColors.scaffoldBackground
             ) { _ ->
             Box(modifier = Modifier.fillMaxSize()) {
                 Box(Modifier.fillMaxSize().drawWithContent { if (!playerCoversContent) drawContent() }
                     .xtremeSharedBackdropSource(enabled = isDynamicGlassEnabled && !playerCoversContent)) {
-                CompositionLocalProvider(LocalVisualEffectsActive provides (!initializing && !playerCoversContent && catalogDetail == null)) {
+                CompositionLocalProvider(LocalVisualEffectsActive provides (!playerCoversContent && catalogDetail == null)) {
                 // If playlist detail is open, show it with a smooth animated transition
                 val currentPlaylist = selectedPlaylistWithTracks
                 AnimatedVisibility(
@@ -348,7 +354,7 @@ fun MainNavigationScaffold(
                     }
                 }
 
-                if (currentPlaylist == null || initializing) {
+                if (currentPlaylist == null) {
                     val tabContent: @Composable (Int) -> Unit = { tabIndex ->
                       tabState.SaveableStateProvider(tabIndex) {
                         when (tabIndex) {
@@ -368,7 +374,7 @@ fun MainNavigationScaffold(
                                 val catalogSearch by viewModel.catalogBrowser.search.collectAsStateWithLifecycle()
                                 SearchScreen(
                                     searchState = searchState,
-                                    isScreenActive = !initializing && selectedTabIndex == 1 && !isPlayerExpanded && catalogDetail == null,
+                                    isScreenActive = selectedTabIndex == 1 && !isPlayerExpanded && catalogDetail == null,
                                     listState = searchListState,
                                     catalogState = catalogSearch,
                                     onSelectType = viewModel.catalogBrowser::selectType,
@@ -469,8 +475,8 @@ fun MainNavigationScaffold(
                         } else {
                             MainTabPager(
                                 state = tabPagerState,
-                                pageCovered = !initializing && (playerCoversContent || catalogDetail != null),
-                                prepareStartup = initializing
+                                pageCovered = playerCoversContent || catalogDetail != null,
+                                prepareStartup = preparingStartup
                             ) { tabIndex ->
                                 tabContent(tabIndex)
                             }
@@ -609,7 +615,7 @@ fun MainNavigationScaffold(
                 lyrics = currentLyrics,
                 onRetryLyrics = { viewModel.retryLyrics() },
                 onLyricsVisibilityChanged = viewModel::setLyricsVisible,
-                isScreenVisible = isPlayerExpanded && !initializing,
+                isScreenVisible = isPlayerExpanded,
                 availableAudioDevices = availableAudioDevices,
                 onSelectAudioDevice = { deviceId -> viewModel.selectAudioOutputDevice(deviceId) },
                 playbackPositionFlow = viewModel.playbackPosition,
@@ -620,7 +626,7 @@ fun MainNavigationScaffold(
         }
 
         // QUEUE BOTTOM SHEET
-        if (isQueueOpen && !initializing) {
+        if (isQueueOpen) {
             QueueBottomSheet(
                 queue = playerUiState.queue,
                 currentTrack = playerUiState.currentTrack,
@@ -634,7 +640,7 @@ fun MainNavigationScaffold(
         }
 
         // EQUALIZER DIALOG
-        if (isEqualizerOpen && !initializing) {
+        if (isEqualizerOpen) {
             val effectsState by viewModel.effectsState.collectAsStateWithLifecycle()
             EqualizerDialog(
                 effectsState = effectsState,
@@ -649,7 +655,7 @@ fun MainNavigationScaffold(
         }
 
         // ADD TO PLAYLIST DIALOG
-        trackToAddToPlaylist?.takeUnless { initializing }?.let { track ->
+        trackToAddToPlaylist?.let { track ->
             val playlists by viewModel.playlists.collectAsStateWithLifecycle()
             AddToPlaylistDialog(
                 track = track,
@@ -668,7 +674,7 @@ fun MainNavigationScaffold(
         }
 
         // CREATE PLAYLIST DIALOG
-        if (isCreatePlaylistOpen && !initializing) {
+        if (isCreatePlaylistOpen) {
             CreatePlaylistDialog(
                 isDarkMode = isDarkMode,
                 onDismiss = { isCreatePlaylistOpen = false },
@@ -680,8 +686,7 @@ fun MainNavigationScaffold(
         }
 
         // PLAYLIST IMPORT DIALOG (Spotify, YouTube Music, Apple Music, CSV)
-        if (importDialogOpen && !initializing) ImportDialogHost(viewModel, isDarkMode)
-        StartupInitializationOverlay(Modifier.fillMaxSize(), firstLaunch = viewModel.isFirstHomeSession)
+        if (importDialogOpen) ImportDialogHost(viewModel, isDarkMode)
     }
 }
 }

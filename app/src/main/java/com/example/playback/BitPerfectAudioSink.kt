@@ -31,12 +31,14 @@ import kotlin.math.abs
  */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class BitPerfectAudioSink private constructor(
-    private val context: Context, private val shared: DefaultAudioSink,
+    private val context: Context, private val shared: AudioSink,
     private val observation: TrackObservation,
     private val allowDirect: () -> Boolean
 ) : ForwardingAudioSink(shared) {
     constructor(context: Context, reportSignalPath: Boolean = true, allowDirect: () -> Boolean = { true }) :
         this(context.applicationContext, TrackObservation(reportSignalPath), allowDirect)
+    internal constructor(context: Context, shared: AudioSink) :
+        this(context.applicationContext, shared, TrackObservation(false), { false })
     private constructor(context: Context, observation: TrackObservation, allowDirect: () -> Boolean) : this(context,
         DefaultAudioSink.Builder(context).setEnableFloatOutput(true).setEnableAudioTrackPlaybackParams(true)
             .setAudioTrackProvider { config, attributes, sessionId ->
@@ -83,6 +85,9 @@ class BitPerfectAudioSink private constructor(
     private var draining = false
     private var pending: ByteBuffer? = null
     private var pendingInput: ByteBuffer? = null
+    // DefaultAudioSink retains the exact input buffer after a partial write.
+    // An EQ toggle must not swap it for processed PCM until that write finishes.
+    private var bypassInput: ByteBuffer? = null
     private var conversionBuffer = ByteBuffer.allocateDirect(0)
     private var nativeInput: ByteBuffer? = null
     private data class PendingConfiguration(val format: Format, val bufferSize: Int, val channels: IntArray?)
@@ -140,7 +145,7 @@ class BitPerfectAudioSink private constructor(
     private fun configureShared(inputFormat: Format, specifiedBufferSize: Int, outputChannels: IntArray?) {
         publishSignal { it.copy(inputRateHz = inputFormat.sampleRate, bitPerfect = false,
             directApproved = false, mode = "Shared", eqActive = AudioEffectsManager.effectsState.value.isEnabled,
-            dspActive = AudioEffectsManager.effectsState.value.let { settings -> settings.isEnabled || settings.audioEnhancerEnabled }) }
+            dspActive = AudioEffectsManager.effectsState.value.isEnabled) }
         processor.configure(AudioProcessor.AudioFormat(inputFormat)); processor.flush()
         super.configure(inputFormat, specifiedBufferSize, outputChannels)
         super.setPlaybackParameters(parameters)
@@ -162,6 +167,13 @@ class BitPerfectAudioSink private constructor(
         }
         val lease = native
         if (lease == null) {
+            if (bypassInput != null) {
+                check(bypassInput === buffer)
+                return super.handleBuffer(buffer, presentationTimeUs, encodedAccessUnitCount).also { done ->
+                    if (done) bypassInput = null
+                    observation.health()
+                }
+            }
             // Do not process a partially written buffer twice. DefaultAudioSink may
             // consume only part of this output and call back with the SAME input.
             if (pending != null) {
@@ -170,7 +182,10 @@ class BitPerfectAudioSink private constructor(
                 processor.queueInput(buffer)
                 pending = processor.output
                 pendingInput = buffer
-            } else return super.handleBuffer(buffer, presentationTimeUs, encodedAccessUnitCount).also { observation.health() }
+            } else return super.handleBuffer(buffer, presentationTimeUs, encodedAccessUnitCount).also { done ->
+                if (!done) bypassInput = buffer
+                observation.health()
+            }
             val done = super.handleBuffer(pending!!, presentationTimeUs, encodedAccessUnitCount)
             observation.health()
             if (done) { pending = null; pendingInput = null }
@@ -268,7 +283,7 @@ class BitPerfectAudioSink private constructor(
     }
     private fun resetCounters() {
         startUs = C.TIME_UNSET; bytesWritten = 0; headWrap = 0; lastHead = 0
-        lastWriteMs = 0; draining = false; discontinuity = false; pending = null; pendingInput = null; nativeInput = null
+        lastWriteMs = 0; draining = false; discontinuity = false; pending = null; pendingInput = null; bypassInput = null; nativeInput = null
     }
     private fun closeNative() {
         native?.let {
@@ -390,7 +405,7 @@ class BitPerfectAudioSink private constructor(
                     outputRouteVerified = route != null,
                     mode = if (approved) "Direct" else if (Build.VERSION.SDK_INT >= 29 && audio.isOffloadedPlayback) "Offload" else "Shared",
                     eqActive = !direct && AudioEffectsManager.effectsState.value.isEnabled,
-                    dspActive = !direct && AudioEffectsManager.effectsState.value.let { settings -> settings.isEnabled || settings.audioEnhancerEnabled }) }
+                    dspActive = !direct && AudioEffectsManager.effectsState.value.isEnabled) }
             }
         }
         fun health() {

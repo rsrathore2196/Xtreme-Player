@@ -28,7 +28,6 @@ import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.example.playback.AudioEffectsManager
 import com.example.playback.AudioSignalPath
 import com.example.playback.SignalPathState
 import com.example.ui.theme.LocalAppColors
@@ -85,8 +84,7 @@ fun AudioQualityBadge(trackId: String, fallbackText: String, background: Color, 
                     enter = scaleIn(spring(dampingRatio = 0.84f, stiffness = 650f), initialScale = 0.94f) +
                         fadeIn(spring(stiffness = 650f)) + expandVertically(spring(dampingRatio = 0.9f, stiffness = 650f)),
                     exit = scaleOut(spring(stiffness = 750f), targetScale = 0.96f) + fadeOut(spring(stiffness = 750f))) {
-                    SignalPathPopupCard(if (path.trackId == trackId) path else SignalPathState(),
-                        onEnhancerChange = AudioEffectsManager::setAudioEnhancerEnabled)
+                    SignalPathPopupCard(if (path.trackId == trackId) path else SignalPathState())
                 }
             }
         }
@@ -94,7 +92,7 @@ fun AudioQualityBadge(trackId: String, fallbackText: String, background: Color, 
 }
 
 @Composable
-fun SignalPathPopupCard(state: SignalPathState, onEnhancerChange: (Boolean) -> Unit, modifier: Modifier = Modifier) {
+fun SignalPathPopupCard(state: SignalPathState, modifier: Modifier = Modifier) {
     val colors = LocalAppColors.current
     val rate: (Int) -> String = { if (it > 0) String.format(Locale.ROOT, "%.1f kHz", it / 1000.0) else "Not reported" }
     val solidCardBg = if (colors.isAmoled) Color(0xFF141414) else colors.cardBackground
@@ -139,17 +137,9 @@ fun SignalPathPopupCard(state: SignalPathState, onEnhancerChange: (Boolean) -> U
             SignalNode("DSP Chain", when {
                 state.bitPerfect -> "Bypassed (Bit-Perfect)"
                 state.directApproved -> "Bypassed (Direct PCM)"
-                state.dspActive && state.eqActive && state.enhancerEnabled -> "Active — EQ & Audio Enhancer"
-                state.dspActive && state.enhancerEnabled -> "Active — Audio Enhancer • EQ bypassed"
-                state.dspActive -> "Active — Equalizer • Audio Enhancer off"
+                state.dspActive -> "Active — Equalizer"
                 else -> "Bypassed (Pure)"
             })
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("Audio Enhancer", color = colors.textPrimary, style = MaterialTheme.typography.labelMedium)
-                Switch(checked = state.enhancerEnabled, onCheckedChange = onEnhancerChange, enabled = !state.directApproved,
-                    modifier = Modifier.testTag("audio_enhancer_toggle"))
-            }
             SignalNode("Tempo", String.format(Locale.ROOT, "%.2f×", state.playbackSpeed) +
                 if (state.pitch == 1f) " • Pitch unchanged" else String.format(Locale.ROOT, " • Pitch %.2f×", state.pitch))
             SignalNode("Android Mixer", if (state.bitPerfect) "Bit-Perfect Direct" else if (state.directApproved)

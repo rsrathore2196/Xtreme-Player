@@ -59,10 +59,7 @@ class MainActivity : ComponentActivity() {
         if (event.actionMasked == MotionEvent.ACTION_DOWN || event.actionMasked == MotionEvent.ACTION_UP ||
             now - lastInteractionMs >= 200L) {
             lastInteractionMs = now
-            // Modal touches cannot reach navigation. They must not continually
-            // postpone the essential work the startup panel is waiting for.
-            if (!com.example.performance.BackgroundWorkCoordinator.initialPresentationInProgress)
-                com.example.performance.BackgroundWorkCoordinator.interaction()
+            com.example.performance.BackgroundWorkCoordinator.interaction()
         }
         return super.dispatchTouchEvent(event)
     }

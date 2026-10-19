@@ -5,9 +5,11 @@ import androidx.media3.common.C
 import androidx.media3.common.Format
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.audio.AudioProcessor
+import androidx.media3.exoplayer.audio.AudioSink
 import com.example.playback.*
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.lang.reflect.Proxy
 import kotlin.math.*
 import org.junit.Assert.*
 import org.junit.After
@@ -77,6 +79,52 @@ class AudioPipelineRegressionTest {
         assertEquals(original.size, changed.size); assertFalse(original.contentEquals(changed))
         PsychoacousticAudioProcessor.settings.set(AudioEffectsState())
         processor.queueInput(ByteBuffer.wrap(original)); assertArrayEquals(original, bytes(processor.output))
+    }
+    @Test fun equalizerTogglesKeepTheExactBufferUntilEachPartialSinkWriteCompletes() {
+        var retained: ByteBuffer? = null
+        var calls = 0
+        var lastBuffer: ByteBuffer? = null
+        val shared = Proxy.newProxyInstance(AudioSink::class.java.classLoader,
+            arrayOf(AudioSink::class.java)) { _, method, args ->
+            when (method.name) {
+                "handleBuffer" -> {
+                    val buffer = args!![0] as ByteBuffer
+                    retained?.let { assertSame("A pending write must retain its original buffer", it, buffer) }
+                    lastBuffer = buffer
+                    calls++
+                    if (calls == 1 || calls == 3) {
+                        buffer.position(buffer.position() + 64)
+                        retained = buffer
+                        false
+                    } else {
+                        buffer.position(buffer.limit())
+                        retained = null
+                        true
+                    }
+                }
+                "hasPendingData", "isEnded" -> false
+                else -> null
+            }
+        } as AudioSink
+        val app = androidx.test.core.app.ApplicationProvider.getApplicationContext<Application>()
+        val sink = BitPerfectAudioSink(app, shared)
+        sink.configure(Format.Builder().setSampleMimeType(MimeTypes.AUDIO_RAW).setSampleRate(48000)
+            .setChannelCount(2).setPcmEncoding(C.ENCODING_PCM_16BIT).build(), 0, null)
+        val first = ByteBuffer.allocateDirect(4096).order(ByteOrder.LITTLE_ENDIAN)
+        assertFalse(sink.handleBuffer(first, 0L, 1))
+        PsychoacousticAudioProcessor.settings.set(AudioEffectsState(isEnabled = true))
+        assertTrue(sink.handleBuffer(first, 0L, 1))
+        assertSame(first, lastBuffer)
+        val second = ByteBuffer.allocateDirect(4096).order(ByteOrder.LITTLE_ENDIAN)
+        assertFalse(sink.handleBuffer(second, 21_333L, 1))
+        assertNotSame(second, lastBuffer)
+        PsychoacousticAudioProcessor.settings.set(AudioEffectsState())
+        assertTrue(sink.handleBuffer(second, 21_333L, 1))
+        val third = ByteBuffer.allocateDirect(4096).order(ByteOrder.LITTLE_ENDIAN)
+        assertTrue(sink.handleBuffer(third, 42_666L, 1))
+        assertSame(third, lastBuffer)
+        assertEquals(5, calls)
+        sink.release()
     }
     @Test fun badgeUsesActualFormatNeverTheSelectedLosslessPreference() {
         val aac = StreamQualityBadge.from(Format.Builder().setSampleMimeType(MimeTypes.AUDIO_AAC)
