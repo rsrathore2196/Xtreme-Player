@@ -4,6 +4,7 @@ import com.example.performance.AppDispatchers
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
@@ -17,6 +18,9 @@ import com.example.data.repository.iTunesArtworkRepository
 import com.example.data.repository.toMediaItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+
+/** Hidden retained tabs may reuse memory images, but never fetch/decode unseen artwork. */
+val LocalArtworkRequestsActive = staticCompositionLocalOf { true }
 
 object ImageConfig {
     const val LIST_ITEM_SIZE = 120 // ~120dp for track list items, playlist rows, search result items, and queue items
@@ -146,45 +150,64 @@ fun rememberOptimizedImageRequest(
     decodeSize: IntSize? = null
 ): ImageRequest {
     val context = LocalContext.current
+    val visibleContent = LocalArtworkRequestsActive.current
     // Transport URL/bitrate changes do not change artwork. Metadata edits and a larger
     // destination do create a new request, including when a recycled row keeps its ID.
     return remember(context, url, track?.id, track?.title, track?.artist, track?.album,
-        track?.source, track?.coverUrl, track?.recommendationOnly, targetSize, crossfadeEnabled, preferStableArtwork, decodeSize) {
-        val metadata = ArtworkRequestMetadata(
-            item = track?.toMediaItem(),
-            trackId = track?.id,
-            album = track?.album,
-            providerUrl = url,
-            sourceDimension = mapTargetSizeToArtworkDimension(targetSize),
-            preferStableArtwork = preferStableArtwork,
-            targetSize = targetSize,
-            providerArtworkOnly = false
-        )
-        // Re-entering cards can start on a prepared resolved URL without constructing the
-        // repository or sanitizing metadata on Main. The interceptor retains raw fallbacks.
-        val initialUrl = metadata.item?.takeUnless { metadata.providerArtworkOnly }?.let {
-            iTunesArtworkRepository.peekInstance()?.peekMemoryCachedUrl(it, metadata.sourceDimension)
-        }?.takeIf { it.isNotBlank() } ?: url
-        ImageRequest.Builder(context)
-            .data(initialUrl)
-            .setParameter(ARTWORK_METADATA_PARAMETER, metadata, null)
-            .placeholderMemoryCacheKey(initialUrl.takeIf { it.isNotBlank() })
-            .interceptorDispatcher(Dispatchers.IO)
-            // One process-wide CPU budget, including explicitly opened player covers.
-            .decoderDispatcher(AppDispatchers.CpuBounded)
-            .scale(Scale.FILL)
-            .crossfade(if (crossfadeEnabled) 200 else 0)
-            .allowHardware(true)
-            .bitmapConfig(android.graphics.Bitmap.Config.HARDWARE)
-            .allowRgb565(false)
-            .memoryCachePolicy(CachePolicy.ENABLED)
-            .diskCachePolicy(CachePolicy.ENABLED)
-            .networkCachePolicy(CachePolicy.ENABLED)
-            .apply {
-                if (decodeSize != null && decodeSize.width > 0 && decodeSize.height > 0) {
-                    size(decodeSize.width, decodeSize.height)
-                }
-            }
-            .build()
+        track?.source, track?.coverUrl, track?.recommendationOnly, targetSize, crossfadeEnabled, preferStableArtwork, decodeSize, visibleContent) {
+        buildOptimizedImageRequest(context, url, targetSize, track, crossfadeEnabled,
+            preferStableArtwork, decodeSize, visibleContent)
     }
+}
+
+/** Same identity/cache keys for bounded startup prefetch and the eventual visible target. */
+internal fun buildOptimizedImageRequest(
+    context: android.content.Context,
+    url: String,
+    targetSize: Int,
+    track: MusicTrack?,
+    crossfadeEnabled: Boolean = false,
+    preferStableArtwork: Boolean = true,
+    decodeSize: IntSize? = null,
+    visibleContent: Boolean = true,
+    startupPreparation: Boolean = false
+): ImageRequest {
+    val metadata = ArtworkRequestMetadata(
+        item = track?.toMediaItem(),
+        trackId = track?.id,
+        album = track?.album,
+        providerUrl = url,
+        sourceDimension = mapTargetSizeToArtworkDimension(targetSize),
+        preferStableArtwork = preferStableArtwork,
+        targetSize = targetSize,
+        providerArtworkOnly = false,
+        visibleContent = visibleContent,
+        startupPreparation = startupPreparation
+    )
+    // Re-entering cards can start on a prepared resolved URL without constructing the
+    // repository or sanitizing metadata on Main. The interceptor retains raw fallbacks.
+    val initialUrl = metadata.item?.takeUnless { metadata.providerArtworkOnly }?.let {
+        iTunesArtworkRepository.peekInstance()?.peekMemoryCachedUrl(it, metadata.sourceDimension)
+    }?.takeIf { it.isNotBlank() } ?: url
+    return ImageRequest.Builder(context)
+        .data(initialUrl)
+        .setParameter(ARTWORK_METADATA_PARAMETER, metadata, null)
+        .placeholderMemoryCacheKey(initialUrl.takeIf { it.isNotBlank() })
+        .interceptorDispatcher(Dispatchers.IO)
+        // One process-wide CPU budget, including explicitly opened player covers.
+        .decoderDispatcher(AppDispatchers.CpuBounded)
+        .scale(Scale.FILL)
+        .crossfade(if (crossfadeEnabled) 200 else 0)
+        .allowHardware(true)
+        .bitmapConfig(android.graphics.Bitmap.Config.HARDWARE)
+        .allowRgb565(false)
+        .memoryCachePolicy(CachePolicy.ENABLED)
+        .diskCachePolicy(CachePolicy.ENABLED)
+        .networkCachePolicy(CachePolicy.ENABLED)
+        .apply {
+            if (decodeSize != null && decodeSize.width > 0 && decodeSize.height > 0) {
+                size(decodeSize.width, decodeSize.height)
+            }
+        }
+        .build()
 }

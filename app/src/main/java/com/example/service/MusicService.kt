@@ -296,15 +296,20 @@ class MusicService : MediaLibraryService() {
             .setDataSourceFactory(cacheDataSourceFactory)
 
         val trackSelector = DefaultTrackSelector(this)
-        val player = ExoPlayer.Builder(this, audioOnlyRenderersFactory)
-            .setTrackSelector(trackSelector)
-            .setAudioAttributes(audioAttributes, /* handleAudioFocus = */ true)
-            .setHandleAudioBecomingNoisy(true)
-            .setWakeMode(C.WAKE_MODE_NETWORK)
-            .setMediaSourceFactory(mediaSourceFactory)
-            .setSeekBackIncrementMs(10000L)
-            .setSeekForwardIncrementMs(10000L)
-            .build()
+        // Required application-looper work. Trace it rather than moving Media3
+        // construction onto IO; paused UI restoration no longer cold-binds us.
+        val playerInitialization = com.example.performance.BackgroundWorkCoordinator.trace("MusicService ExoPlayer initialization")
+        val player = try {
+            ExoPlayer.Builder(this, audioOnlyRenderersFactory)
+                .setTrackSelector(trackSelector)
+                .setAudioAttributes(audioAttributes, /* handleAudioFocus = */ true)
+                .setHandleAudioBecomingNoisy(true)
+                .setWakeMode(C.WAKE_MODE_NETWORK)
+                .setMediaSourceFactory(mediaSourceFactory)
+                .setSeekBackIncrementMs(10000L)
+                .setSeekForwardIncrementMs(10000L)
+                .build()
+        } finally { playerInitialization.close() }
 
         exoPlayer = player
         crossfade = com.example.playback.CrossfadeController(player, serviceScope,

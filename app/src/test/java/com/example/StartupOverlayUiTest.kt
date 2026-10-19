@@ -36,6 +36,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import kotlin.math.roundToInt
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = Application::class)
@@ -137,8 +138,9 @@ class StartupOverlayUiTest {
         }
         compose.mainClock.advanceTimeByFrame()
         compose.onNodeWithText("Restoring your last session").assertIsDisplayed()
-        // Two completed tasks out of the 17 required units (including local tabs).
-        compose.onNodeWithText("12%").assertIsDisplayed()
+        // Layout/artwork readiness are real units too; do not freeze the UI
+        // expectation to an obsolete task count.
+        compose.onNodeWithText("${(2f / StartupTask.entries.size * 100).roundToInt()}%").assertIsDisplayed()
         compose.runOnIdle { assertEquals("Task progress only recomposes the popup", 1, hostCompositions) }
         compose.runOnIdle { readiness.value = StartupReadiness(StartupTask.entries.associateWith { StartupStatus.READY }) }
         compose.mainClock.advanceTimeByFrame()

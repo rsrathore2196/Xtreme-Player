@@ -438,11 +438,17 @@ class UnifiedRecommendationEngine(context: Context?,
             ?: "${HomeRecommendationPolicy.metadataKey(seed)}|${seed.durationMs / 1_000L}"
         return "mapping-v1:$identity"
     }
+    private suspend fun decodeCachedTracks(body: String): List<MusicTrack> =
+        // A normal mapping is one small track (or []); avoid a dispatcher hop
+        // for those. Legacy/batched JSON shares the process-wide CPU budget.
+        if (body.length <= 4_096) RecommendationTrackCodec.decode(body)
+        else withContext(AppDispatchers.CpuBounded) { RecommendationTrackCodec.decode(body) }
+
     private suspend fun cachedMatch(seed: MusicTrack, known: Map<String, List<MusicTrack>>): MusicTrack? {
         val now = System.currentTimeMillis()
         val entry = cache?.get(mappingKey(seed))
         if (entry != null && now < entry.expiresAt) {
-            val tracks = RecommendationTrackCodec.decode(entry.body)
+            val tracks = decodeCachedTracks(entry.body)
             tracks.firstOrNull { verified(it) && confidence(seed, it) != null }?.let { return it }
             if (tracks.isEmpty()) return null // Keep genuine negative-cache entries.
             // Older builds cached YouTube-only candidates as verified matches.
@@ -457,14 +463,14 @@ class UnifiedRecommendationEngine(context: Context?,
         val key = mappingKey(seed)
         val hit = cache?.get(key)
         if (hit != null && System.currentTimeMillis() < hit.expiresAt) {
-            val tracks = RecommendationTrackCodec.decode(hit.body)
+            val tracks = decodeCachedTracks(hit.body)
             tracks.firstOrNull { verified(it) && confidence(seed, it) != null }?.let { return it }
             if (tracks.isEmpty()) return null
         }
         return DiscoveryRequestCoordinator.shared(key, essential, network = false) {
             val latest = cache?.get(key)
             if (latest != null && System.currentTimeMillis() < latest.expiresAt) {
-                val tracks = RecommendationTrackCodec.decode(latest.body)
+                val tracks = decodeCachedTracks(latest.body)
                 val verified = tracks.filter { verified(it) && confidence(seed, it) != null }
                 if (verified.isNotEmpty() || tracks.isEmpty()) return@shared verified
             }

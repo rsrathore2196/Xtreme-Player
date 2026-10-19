@@ -644,6 +644,7 @@ fun HomeScreenContent(
                                 ) {
                                     com.example.ui.components.ArtistPortrait(
                                         artist = com.example.data.repository.CatalogArtist("", artist.name),
+                                        deferEnrichment = true,
                                         fallbackArtwork = artist.tracks.firstOrNull { it.coverUrl.isNotBlank() }?.coverUrl,
                                         modifier = Modifier.size(124.8.dp).clip(CircleShape)
                                     )

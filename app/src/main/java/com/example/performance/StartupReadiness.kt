@@ -10,10 +10,13 @@ enum class StartupStatus {
     val terminal: Boolean get() = this == READY || this == FALLBACK_READY || this == UNAVAILABLE
 }
 
-/** Fixed, real units of work. Artwork downloads and future refreshes are not startup prerequisites. */
+/** Real units of initial work. Only the bounded viewport artwork batch is required;
+ * offscreen image enrichment and future refreshes are not startup prerequisites. */
 enum class StartupTask(val group: StartupGroup) {
     SETTINGS(StartupGroup.HOME), HOME_CACHE(StartupGroup.HOME), FAVORITES(StartupGroup.HOME),
     LOCAL_TABS(StartupGroup.HOME),
+    HOME_LAYOUT(StartupGroup.HOME), SEARCH_LAYOUT(StartupGroup.HOME), LIBRARY_LAYOUT(StartupGroup.HOME),
+    INITIAL_ARTWORK(StartupGroup.HOME),
     PERSONALIZATION(StartupGroup.HOME), QUICK(StartupGroup.HOME), ERA(StartupGroup.HOME),
     CHART(StartupGroup.HOME), PERSONALIZED(StartupGroup.HOME), SIMILAR(StartupGroup.HOME),
     INSPIRED(StartupGroup.HOME), HERO(StartupGroup.HOME), PRESENTATION(StartupGroup.HOME),
@@ -23,7 +26,8 @@ enum class StartupTask(val group: StartupGroup) {
 
 @Immutable
 data class StartupReadiness(
-    val tasks: Map<StartupTask, StartupStatus> = StartupTask.entries.associateWith { StartupStatus.PENDING }
+    val tasks: Map<StartupTask, StartupStatus> = StartupTask.entries.associateWith { StartupStatus.PENDING },
+    val presentationGeneration: Long = 0L
 ) {
     val preparationComplete: Boolean get() = tasks.all { (task, status) ->
         task == StartupTask.PRESENTATION || status.terminal
@@ -37,7 +41,9 @@ data class StartupReadiness(
             StartupTask.SETTINGS -> "Restoring your preferences"
             StartupTask.HOME_CACHE -> "Restoring your saved music"
             StartupTask.FAVORITES -> "Syncing your favorite music"
-            StartupTask.LOCAL_TABS -> "Preparing your library"
+            StartupTask.LOCAL_TABS -> "Restoring Search and Library"
+            StartupTask.HOME_LAYOUT, StartupTask.SEARCH_LAYOUT, StartupTask.LIBRARY_LAYOUT -> "Preparing your screens"
+            StartupTask.INITIAL_ARTWORK -> "Preparing your album artwork"
             StartupTask.PERSONALIZATION -> "Preparing your listening preferences"
             StartupTask.RECENT_HISTORY, StartupTask.RECENT_ARTISTS -> "Syncing your listening history"
             StartupTask.PLAYER_SESSION, StartupTask.PLAYER_CONNECTION -> "Restoring your last session"

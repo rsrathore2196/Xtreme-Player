@@ -335,23 +335,10 @@ class PlaybackManager(
             // costs. Observe and reconnect immediately instead of waiting for idle.
             MusicService.liveSession.collect { alive -> if (alive) ensureMediaControllerConnected() }
         }
-        scope.launch {
-            sessionRestored.await()
-            // Restoring a paused session depends on the first UI frame/lifecycle,
-            // never on recommendation discovery or Home cache availability.
-            val coordinator = com.example.performance.BackgroundWorkCoordinator
-            coordinator.awaitFirstFrame()
-            coordinator.uiForeground.first { it }
-            // A paused queue is already restored above. Binding it would start a
-            // service during first composition for no audible playback. A running
-            // service and explicit play requests still connect immediately.
-            if (_uiState.value.currentTrack == null && !MusicService.liveSession.value) return@launch
-            coordinator.startup(com.example.performance.BackgroundWorkCoordinator.StartupPriority.DEFERRED,
-                urgent = { MusicService.liveSession.value }) {
-                if (controller?.isConnected != true && (_uiState.value.currentTrack != null || MusicService.liveSession.value))
-                    ensureMediaControllerConnected()
-            }
-        }
+        // A restored paused queue is metadata-only until an explicit player
+        // command. Do not cold-create MusicService later just to prebind it.
+        // liveSession above reconnects active/external playback immediately;
+        // user commands below still use ensureMediaControllerConnected().
         scope.launch {
             com.example.performance.BackgroundWorkCoordinator.uiForeground.collect { visible ->
                 uiForeground = visible

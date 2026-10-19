@@ -124,31 +124,15 @@ fun MainNavigationScaffold(
     viewModel: PlayerViewModel,
     modifier: Modifier = Modifier
 ) {
+    // Establish the modal's admission boundary before child painters can enqueue
+    // work. Onboarding uses other screens and must never wait for Home artwork.
+    remember { BackgroundWorkCoordinator.beginInitialPresentation() }
     // Only this terminal boundary reaches the host. Progress updates are observed
     // exclusively by the popup; the pager/dock do not recompose for every task.
     val initializing by remember {
         BackgroundWorkCoordinator.startupReadiness.map { !it.complete }.distinctUntilChanged()
     }.collectAsStateWithLifecycle(initialValue = !BackgroundWorkCoordinator.startupReadiness.value.complete)
     if (initializing) com.example.ui.screens.PrepareInitialHome()
-    var retainInactivePages by remember { mutableStateOf(BackgroundWorkCoordinator.startupReadiness.value.complete) }
-    val startupView = androidx.compose.ui.platform.LocalView.current
-    LaunchedEffect(startupView) {
-        BackgroundWorkCoordinator.startupReadiness.first { it.complete }
-        if (!retainInactivePages) {
-            kotlinx.coroutines.withContext(com.example.performance.AppDispatchers.Io) {
-                BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.DEFERRED,
-                    label = "Retained tab preparation") {
-                    kotlinx.coroutines.withContext(com.example.performance.AppDispatchers.Main) {
-                        retainInactivePages = true
-                        // Composition/measurement happens after this state write.
-                        // Keep admission until that actual traversal completes,
-                        // rather than admitting another heavy job immediately.
-                        startupView.awaitStartupContentDraw { }
-                    }
-                }
-            }
-        }
-    }
     val playerUiState by viewModel.navigationPlayerUiState.collectAsStateWithLifecycle()
     val currentPlayingTrackId = playerUiState.currentTrack?.id
     val catalogDetail by viewModel.catalogBrowser.detail.collectAsStateWithLifecycle()
@@ -201,8 +185,9 @@ fun MainNavigationScaffold(
             }
         } finally { navigation.close() }
     }
-    LaunchedEffect(viewModel, selectedTabIndex, catalogDetail != null) {
-        viewModel.prepareCatalogUi(searchVisible = selectedTabIndex == 1, detailVisible = catalogDetail != null)
+    LaunchedEffect(viewModel, selectedTabIndex, catalogDetail != null, initializing) {
+        viewModel.prepareCatalogUi(searchVisible = !initializing && selectedTabIndex == 1,
+            detailVisible = !initializing && catalogDetail != null)
     }
     val tabState = rememberSaveableStateHolder()
     // Allocate these outside AnimatedContent; tab disposal never serializes or
@@ -212,7 +197,7 @@ fun MainNavigationScaffold(
     val libraryListState = rememberLazyListState()
     // Only Settings uses AnimatedContent. Primary tabs share the pager's one
     // position/velocity and are composed lazily as they enter the viewport.
-    val tabTransition = updateTransition(if (selectedTabIndex == 3) 3 else 0, label = "settings_navigation_transition")
+    val tabTransition = updateTransition(if (selectedTabIndex == 3 && !initializing) 3 else 0, label = "settings_navigation_transition")
     var isPlayerExpanded by rememberSaveable { mutableStateOf(false) }
     var isQueueOpen by rememberSaveable { mutableStateOf(false) }
     var isEqualizerOpen by rememberSaveable { mutableStateOf(false) }
@@ -363,7 +348,7 @@ fun MainNavigationScaffold(
                     }
                 }
 
-                if (currentPlaylist == null) {
+                if (currentPlaylist == null || initializing) {
                     val tabContent: @Composable (Int) -> Unit = { tabIndex ->
                       tabState.SaveableStateProvider(tabIndex) {
                         when (tabIndex) {
@@ -383,7 +368,7 @@ fun MainNavigationScaffold(
                                 val catalogSearch by viewModel.catalogBrowser.search.collectAsStateWithLifecycle()
                                 SearchScreen(
                                     searchState = searchState,
-                                    isScreenActive = selectedTabIndex == 1 && !isPlayerExpanded && catalogDetail == null,
+                                    isScreenActive = !initializing && selectedTabIndex == 1 && !isPlayerExpanded && catalogDetail == null,
                                     listState = searchListState,
                                     catalogState = catalogSearch,
                                     onSelectType = viewModel.catalogBrowser::selectType,
@@ -484,8 +469,8 @@ fun MainNavigationScaffold(
                         } else {
                             MainTabPager(
                                 state = tabPagerState,
-                                pageCovered = playerCoversContent || catalogDetail != null,
-                                retainInactivePages = retainInactivePages
+                                pageCovered = !initializing && (playerCoversContent || catalogDetail != null),
+                                prepareStartup = initializing
                             ) { tabIndex ->
                                 tabContent(tabIndex)
                             }

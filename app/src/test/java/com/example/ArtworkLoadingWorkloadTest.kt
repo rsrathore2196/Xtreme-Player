@@ -113,16 +113,15 @@ class ArtworkLoadingWorkloadTest {
         assertEquals(Size(300, 300), chain.size)
     }
 
-    @Test fun cachedProviderStaysVisibleWhileITunesResolvesWithoutAnotherProviderDownload() = runBlocking {
-        var interim: Drawable? = null
-        val repo = repository { assertNotNull("Cached cover must appear before lookup completes", interim); match() }
-        val chain = Chain(request(object : Target {
-            override fun onStart(placeholder: Drawable?) { interim = placeholder }
-        }), cached = setOf(provider))
+    @Test fun sufficientCachedProviderAvoidsRemoteArtworkAndMetadataRequests() = runBlocking {
+        val searches = AtomicInteger()
+        val repo = repository { searches.incrementAndGet(); match() }
+        val chain = Chain(request(), cached = setOf(provider))
         val result = ArtworkResolutionInterceptor { repo }.intercept(chain) as SuccessResult
-        assertNotNull(interim)
-        assertEquals(apple, result.request.data)
-        assertEquals(listOf(apple to true), chain.calls.filter { it.second })
+        assertEquals(provider, result.request.data)
+        assertEquals(DataSource.DISK, result.dataSource)
+        assertEquals(0, searches.get())
+        assertTrue(chain.calls.none { it.second })
     }
 
     @Test fun providerIsFetchedRemotelyOnlyAfterPreferredArtworkIsUnavailable() = runBlocking {
@@ -151,7 +150,7 @@ class ArtworkLoadingWorkloadTest {
         val result = ArtworkResolutionInterceptor { repo }.intercept(chain) as SuccessResult
         assertEquals(apple, result.request.data)
         assertEquals(1, searches.get())
-        assertEquals(listOf(apple to true), chain.calls)
+        assertEquals(listOf(apple to true), chain.calls.filter { it.second })
     }
 
     @Test fun blurryCachedProviderDoesNotPreventARealResolutionImprovement() = runBlocking {

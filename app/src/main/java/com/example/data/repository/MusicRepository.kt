@@ -42,6 +42,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
 import com.example.data.local.UserProfile
@@ -91,6 +92,14 @@ class MusicRepository private constructor(
     private var initialCatalogFlight: InitialCatalogFlight? = null
     private data class PreparedCatalog(val tracks: List<MusicTrack>, val liked: Set<String>, val result: List<MusicTrack>)
     private var preparedCatalog: PreparedCatalog? = null
+    // App-owned snapshots outlive an Activity/ViewModel. Warm recreation can
+    // compose real local rows immediately; the next Room emission remains authoritative.
+    @Volatile var retainedFavoriteTracks: List<MusicTrack> = emptyList()
+        private set
+    @Volatile var retainedRecentlyPlayed: List<MusicTrack> = emptyList()
+        private set
+    @Volatile var retainedPlaylists: List<PlaylistEntity> = emptyList()
+        private set
 
     val catalogBrowser = CatalogRepository()
     // Home's owners and workers share this cap, including discovery ranking.
@@ -219,18 +228,21 @@ class MusicRepository private constructor(
             .distinctUntilChanged()
             .map { list -> list.map { it.toMusicTrack() } }
             .distinctUntilChanged()
+            .onEach { retainedFavoriteTracks = it }
             .flowOn(preparationDispatcher)
     }
 
     fun getRecentlyPlayedTracks(): Flow<List<MusicTrack>> {
         return flow { emitAll(musicDao.getRecentlyPlayedTracks()) }.flowOn(AppDispatchers.Database).distinctUntilChanged()
-            .map { list -> list.map { it.toMusicTrack() } }.flowOn(AppDispatchers.CpuBounded)
+            .map { list -> list.map { it.toMusicTrack() } }
+            .onEach { retainedRecentlyPlayed = it }.flowOn(AppDispatchers.CpuBounded)
     }
 
     fun getAllPlaylists(): Flow<List<PlaylistEntity>> {
         return flow { emitAll(musicDao.getAllPlaylists()) }
             .flowOn(AppDispatchers.Database)
             .distinctUntilChanged()
+            .onEach { retainedPlaylists = it }
             .flowOn(AppDispatchers.CpuBounded)
     }
 

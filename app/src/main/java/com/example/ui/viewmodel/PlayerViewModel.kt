@@ -198,17 +198,17 @@ class PlayerViewModel(
             } else emptyFlow()
         }.stateIn(libraryDataScope, SharingStarted.Lazily, initial)
 
-    val favoriteTracks: StateFlow<List<MusicTrack>> = retainedLibraryData(emptyList(), localLibraryLoaded[0]) {
+    val favoriteTracks: StateFlow<List<MusicTrack>> = retainedLibraryData(repository.retainedFavoriteTracks, localLibraryLoaded[0]) {
         repository.getFavoriteTracks(derivedStateDispatcher)
     }
 
-    val recentlyPlayed: StateFlow<List<MusicTrack>> = retainedLibraryData(emptyList(), localLibraryLoaded[1]) {
+    val recentlyPlayed: StateFlow<List<MusicTrack>> = retainedLibraryData(repository.retainedRecentlyPlayed, localLibraryLoaded[1]) {
         repository.getRecentlyPlayedTracks()
     }
 
     // Keep one foreground observer and its last snapshot instead of querying on every tab entry.
     // Suspend observation in the background without clearing the retained Library content.
-    val playlists: StateFlow<List<PlaylistEntity>> = retainedLibraryData(emptyList(), localLibraryLoaded[2]) { repository.getAllPlaylists() }
+    val playlists: StateFlow<List<PlaylistEntity>> = retainedLibraryData(repository.retainedPlaylists, localLibraryLoaded[2]) { repository.getAllPlaylists() }
 
     private val preparedSettings = (application as? com.example.XtremeMusicApp)?.takeInitialStartupSettings()
     private val initialSettings = preparedSettings ?: com.example.data.local.StartupSettings()
@@ -253,7 +253,10 @@ class PlayerViewModel(
             catalogFavoritesStarted = true
             derivedStateScope.launch {
                 com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
-                repository.observeFavoriteTrackIds().collect { catalogBrowser.updateFavorites(it) }
+                // Reuse the local snapshot/observer already warmed for Library.
+                // First Search entry must not start another Room favorites query.
+                favoriteTracks.map { tracks -> tracks.mapTo(hashSetOf()) { it.id } }
+                    .distinctUntilChanged().collect { catalogBrowser.updateFavorites(it) }
             }
         }
     }
@@ -463,6 +466,12 @@ class PlayerViewModel(
                                     }
                                     withContext(AppDispatchers.Main) { searchDataStarted = true }
                                     localLibraryLoaded.forEach { it.await() }
+                                    withContext(derivedStateDispatcher) {
+                                        catalogBrowser.updateFavorites(favoriteTracks.value.mapTo(hashSetOf()) { it.id })
+                                    }
+                                    withContext(AppDispatchers.Main) {
+                                        prepareCatalogUi(searchVisible = true, detailVisible = false)
+                                    }
                                 } finally { consumers.forEach { it.cancel() } }
                             }
                         }

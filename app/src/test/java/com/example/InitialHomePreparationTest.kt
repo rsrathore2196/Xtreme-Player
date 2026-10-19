@@ -68,6 +68,10 @@ class InitialHomePreparationTest {
             coordinator.startupTask(StartupTask.SETTINGS, StartupStatus.READY)
             // This data-only fixture has no PlayerViewModel/local tab host.
             coordinator.startupTask(StartupTask.LOCAL_TABS, StartupStatus.READY)
+            // This data-only fixture does not mount/measure the retained tab host.
+            listOf(StartupTask.HOME_LAYOUT, StartupTask.SEARCH_LAYOUT, StartupTask.LIBRARY_LAYOUT).forEach {
+                coordinator.startupTask(it, StartupStatus.READY)
+            }
             ShadowSystemClock.advanceBy(Duration.ofSeconds(2))
             val repository = MusicRepository(app)
             player = PlaybackManager(app, repository)

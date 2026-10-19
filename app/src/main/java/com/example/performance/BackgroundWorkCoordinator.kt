@@ -27,12 +27,28 @@ object BackgroundWorkCoordinator {
     private val healthyFrames = AtomicInteger()
     private val preparedDrawAt = AtomicLong()
     val initialPresentationInProgress: Boolean get() = initialPresentationPending.get()
+    /** Data survives recreation; measurements/draws belong to the current window. */
+    fun beginTabPreparation() {
+        if (_startupReadiness.value.complete) return
+        initialPresentationPending.set(true)
+        preparedContentDrawn.set(false)
+        _startupReadiness.update { state ->
+            if (state.complete) state else state.copy(presentationGeneration = state.presentationGeneration + 1L,
+                tasks = state.tasks + listOf(
+                StartupTask.HOME_LAYOUT, StartupTask.SEARCH_LAYOUT, StartupTask.LIBRARY_LAYOUT,
+                StartupTask.PRESENTATION).associateWith { StartupStatus.PENDING })
+        }
+        if (_startupReadiness.value.complete) initialPresentationPending.set(false)
+    }
 
     fun beginInitialPresentation() {
         if (!_startupReadiness.value.complete) initialPresentationPending.set(true)
     }
-    fun startupTask(task: StartupTask, status: StartupStatus) {
-        _startupReadiness.update { it.withStatus(task, status) }
+    fun startupTask(task: StartupTask, status: StartupStatus, presentationGeneration: Long? = null) {
+        _startupReadiness.update {
+            if (presentationGeneration != null && it.presentationGeneration != presentationGeneration) it
+            else it.withStatus(task, status)
+        }
     }
     /** Called by the View tree's actual draw observer, including cached Compose layers. */
     fun initialContentDrawn() {
@@ -46,11 +62,14 @@ object BackgroundWorkCoordinator {
     suspend fun awaitInitialPresentation() { startupReadiness.first { it.complete } }
 
     suspend fun awaitInitialPresentationSettled() {
-        startupReadiness.first { it.preparationComplete }
+        val generation = startupReadiness.value.presentationGeneration
+        startupReadiness.first { it.preparationComplete || it.presentationGeneration != generation }
+        if (startupReadiness.value.presentationGeneration != generation) return
         if (startupReadiness.value.complete) return
         startupTask(StartupTask.PRESENTATION, StartupStatus.RUNNING)
         while (true) {
             currentCoroutineContext().ensureActive()
+            if (startupReadiness.value.presentationGeneration != generation) return
             if (startupReadiness.value.complete) return
             // A hand-off between essential jobs is not a settled UI. Waiting
             // tickets must drain as well; optional tickets remain independent
@@ -72,9 +91,14 @@ object BackgroundWorkCoordinator {
         // Revealing interactive controls is itself a foreground interaction
         // boundary. Reuse the existing idle budget so optional waiters cannot
         // all wake in the popup's exit frames after a slow network lookup.
-        interaction()
-        initialPresentationPending.set(false)
-        startupTask(StartupTask.PRESENTATION, StartupStatus.READY)
+        _startupReadiness.update { state ->
+            if (state.presentationGeneration != generation || !state.preparationComplete) state
+            else state.withStatus(StartupTask.PRESENTATION, StartupStatus.READY)
+        }
+        if (startupReadiness.value.presentationGeneration == generation && startupReadiness.value.complete) {
+            interaction()
+            initialPresentationPending.set(false)
+        }
     }
     internal const val OPTIONAL_IDLE_MS = 15_000L
     internal const val BETWEEN_JOBS_MS = 750L

@@ -116,6 +116,8 @@ object ArtistPhotoRepository {
         // optional Application prewarming must not gate a user-visible image.
         warmupReaders.incrementAndGet()
         try { prewarm(context).await() } finally { warmupReaders.decrementAndGet() }
+        // A navigation wait must never retain an artist identity mutex.
+        com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle()
         locks[(key.hashCode() and Int.MAX_VALUE) % locks.size].withLock {
             val now = System.currentTimeMillis()
             val cached = memory.get(key)?.takeIf { compatible(it, artist) }
@@ -137,7 +139,6 @@ object ArtistPhotoRepository {
             }
             // Visible portraits are demand-driven UI content. Waiting for global
             // idle here starved them behind ongoing artwork downloads/animations.
-            com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle()
             photoSlots.withPermit {
                 var failed = false
                 suspend fun attempt(load: suspend () -> String?): String? = try { withTimeout(6_000L) { image(load()) } }

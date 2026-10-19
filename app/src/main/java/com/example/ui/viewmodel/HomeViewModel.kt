@@ -63,6 +63,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.async
 import kotlinx.coroutines.plus
 import java.util.Calendar
 import androidx.compose.runtime.Immutable
@@ -864,7 +865,7 @@ class HomeViewModel(
             homeScrolling.first { !it }
             BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
             if (!homeVisible.value || homeScrolling.value) continue
-            val essential = !deferredHomeReady && preparedCards.value.quick.tracks.isEmpty() && preparedCards.value.chart.tracks.isEmpty()
+            val essential = preparingInitialHome && preparedCards.value.quick.tracks.isEmpty() && preparedCards.value.chart.tracks.isEmpty()
             // Empty Home content is essential loading, not optional revalidation.
             // Startup work and shimmer frames must not postpone its IO/Default work
             // indefinitely. The existing refresh owner still permits only one pass.
@@ -1123,6 +1124,7 @@ class HomeViewModel(
             }
         }
         ownerScope.launch {
+            initialHomePrepared.await()
             var displayedSeed = recommendationSeed.value
             var displayedListening = _listeningHistoryCard.value
             var displayedFavorites = tasteProfile.value.favoriteRecordings
@@ -1405,6 +1407,7 @@ class HomeViewModel(
                 withTimeoutOrNull(1_000L) { heroSeedTrack.first { it != null } }
             BackgroundWorkCoordinator.startupTask(StartupTask.HERO,
                 if (hero != null) StartupStatus.READY else StartupStatus.UNAVAILABLE)
+            prepareInitialArtwork(hero, ready)
         } catch (e: CancellationException) { throw e }
         catch (e: Exception) {
             android.util.Log.w("HomeViewModel", "Initial Home preparation used retained content", e)
@@ -1414,7 +1417,7 @@ class HomeViewModel(
             }
             preparedCards.value = fallback
             _recommendationCards.value = fallback
-            (Shelf.entries.map { it.startupTask() } + StartupTask.HERO + StartupTask.PERSONALIZATION).forEach {
+            (Shelf.entries.map { it.startupTask() } + StartupTask.HERO + StartupTask.PERSONALIZATION + StartupTask.INITIAL_ARTWORK).forEach {
                 BackgroundWorkCoordinator.startupTask(it, StartupStatus.UNAVAILABLE)
             }
         } finally {
@@ -1423,6 +1426,69 @@ class HomeViewModel(
             startupRecommendationsComplete.complete(Unit)
             homeVisible.value = requestedHomeVisible
         }
+    }
+
+    /** Small viewport batch only. No lower-shelf images or full-resolution player palettes. */
+    private suspend fun prepareInitialArtwork(hero: MusicTrack?, cards: RecommendationCards) {
+        val coordinator = BackgroundWorkCoordinator
+        coordinator.startupTask(StartupTask.INITIAL_ARTWORK, StartupStatus.RUNNING)
+        val app = getApplication<Application>() as? com.example.XtremeMusicApp
+        if (app == null) {
+            coordinator.startupTask(StartupTask.INITIAL_ARTWORK, StartupStatus.UNAVAILABLE)
+            return
+        }
+        val metrics = app.resources.displayMetrics
+        val recents = _listeningHistoryCard.value.tracks.take(4)
+        val firstRow = if (recents.isNotEmpty()) recents else cards.quick.tracks.take(4)
+        // The hero and a thumbnail can represent the same track at different
+        // source/decode sizes. Prepare both actual requests, not just one ID.
+        val requests = (listOfNotNull(hero?.let { it to true }) + firstRow.map { it to false })
+            .distinctBy { (track, heroSize) -> track.id to heroSize }.take(5)
+        if (requests.isEmpty()) {
+            coordinator.startupTask(StartupTask.INITIAL_ARTWORK, StartupStatus.READY)
+            return
+        }
+        var loaded = 0
+        try {
+            coordinator.startup(BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI,
+                label = "Initial viewport artwork") {
+                withTimeoutOrNull(6_500L) {
+                    val loader = app.awaitImageLoader()
+                    for (batch in requests.chunked(2)) {
+                        val results = kotlinx.coroutines.coroutineScope {
+                            batch.map { (track, isHero) -> async(AppDispatchers.Io) {
+                                val target = if (isHero) com.example.ui.util.ImageConfig.HERO_BANNER_SIZE
+                                    else if (recents.isNotEmpty()) 100 else com.example.ui.util.ImageConfig.RECOMMENDATION_CARD_SIZE
+                                val size = if (isHero) androidx.compose.ui.unit.IntSize(
+                                    (metrics.widthPixels - 40 * metrics.density).toInt().coerceIn(1, 1_200),
+                                    (240 * metrics.density).toInt().coerceIn(1, 1_200))
+                                else if (recents.isNotEmpty()) androidx.compose.ui.unit.IntSize(
+                                    kotlin.math.round(52 * metrics.density).toInt().coerceAtLeast(1),
+                                    kotlin.math.round(62.4f * metrics.density).toInt().coerceAtLeast(1))
+                                else androidx.compose.ui.unit.IntSize(
+                                    kotlin.math.round(163.2f * metrics.density).toInt().coerceIn(1, 1_200),
+                                    kotlin.math.round(163.2f * metrics.density).toInt().coerceIn(1, 1_200))
+                                val result = try {
+                                    withTimeoutOrNull(2_750L) {
+                                        loader.execute(com.example.ui.util.buildOptimizedImageRequest(app, track.coverUrl,
+                                            target, track, decodeSize = size, startupPreparation = true))
+                                    }
+                                } catch (e: CancellationException) { throw e }
+                                catch (_: Exception) { null } // One failed cover must not cancel the other requests.
+                                result is coil.request.SuccessResult
+                            } }.map { it.await() }
+                        }
+                        loaded += results.count { it }
+                    }
+                }
+            }
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { android.util.Log.w("HomeViewModel", "Viewport artwork used available cache", e) }
+        coordinator.startupTask(StartupTask.INITIAL_ARTWORK, when {
+            loaded == requests.size -> StartupStatus.READY
+            loaded > 0 -> StartupStatus.FALLBACK_READY
+            else -> StartupStatus.UNAVAILABLE
+        })
     }
 
     fun refreshHome(isExplicitPull: Boolean = true, requestedShelves: Set<Shelf>? = null,
@@ -1480,9 +1546,6 @@ class HomeViewModel(
             pendingExplicitRefresh = false
             val startupBatch = !initialPresentation && !BackgroundWorkCoordinator.startupReadiness.value.complete &&
                 !deferredHomeReady && !initialExplicit && requested.any(bootstrap::contains)
-            val emptyVisible = (recommendationViewport.value + bootstrap).filterTo(mutableSetOf()) {
-                it in requested && preparedCards.value.section(it).tracks.isEmpty()
-            }
             val priority = DiscoveryRequestCoordinator.HomeRefresh(initialExplicit, initialShelf = startupBatch,
                 // Once initial content is prepared, automatic retries/revalidation
                 // are optional even for an empty shelf. A pull promotes its pass.
@@ -1507,7 +1570,9 @@ class HomeViewModel(
                         else if (!activeRefreshIsExplicit) {
                             refreshWaitingForIdle = true
                             try {
-                                if (emptyVisible.isNotEmpty()) awaitHomePresentation() else awaitHomeIdle()
+                                // Empty shelves after initial preparation are still
+                                // optional retries, never a bypass of the 15s gate.
+                                awaitHomeIdle(allowWhenEmpty = false, quietMillis = 15_000L)
                             }
                             finally { if (generation == refreshGeneration) refreshWaitingForIdle = false }
                         }
