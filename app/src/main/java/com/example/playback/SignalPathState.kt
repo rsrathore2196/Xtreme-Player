@@ -27,27 +27,40 @@ data class StreamQualityBadge(
     val label: String get() {
         if (codec.isBlank()) return "Resolving audio"
         val rate = if (sampleRateHz > 0) String.format(Locale.ROOT, "%.1f kHz", sampleRateHz / 1000.0) else ""
-        return if (lossless) listOf(codec, listOfNotNull(bitDepth.takeIf { it > 0 }?.let { "$it-bit" },
-            rate.takeIf(String::isNotEmpty)).joinToString("/")).filter(String::isNotEmpty).joinToString(" • ")
-        else listOf(codec, bitrateKbps.takeIf { it > 0 }?.let { "$it kbps" } ?: rate)
-            .filter(String::isNotEmpty).joinToString(" • ")
+        return if (lossless) {
+            val bitRate = listOfNotNull(bitDepth.takeIf { it > 0 }?.let { "$it-bit" }, rate.takeIf(String::isNotEmpty)).joinToString("/")
+            listOfNotNull(codec, bitRate.takeIf(String::isNotEmpty)).joinToString(" • ")
+        } else {
+            val details = bitrateKbps.takeIf { it > 0 }?.let { "$it kbps" } ?: rate
+            listOfNotNull(codec, details.takeIf(String::isNotEmpty)).joinToString(" • ")
+        }
     }
     companion object {
         fun from(format: Format, fallbackBitrate: Int = 0): StreamQualityBadge {
-            val codec = when (format.sampleMimeType) {
-                MimeTypes.AUDIO_FLAC -> "FLAC"; MimeTypes.AUDIO_ALAC -> "ALAC"; MimeTypes.AUDIO_RAW -> "PCM"
-                MimeTypes.AUDIO_OPUS -> "OPUS"; MimeTypes.AUDIO_AAC -> "AAC"; MimeTypes.AUDIO_MPEG -> "MP3"
-                MimeTypes.AUDIO_VORBIS -> "VORBIS"; else -> format.codecs.orEmpty().uppercase(Locale.ROOT)
+            val mime = format.sampleMimeType
+            val codecs = format.codecs
+            val codec = when {
+                mime == MimeTypes.AUDIO_FLAC -> "FLAC"
+                mime == MimeTypes.AUDIO_ALAC -> "ALAC"
+                mime == MimeTypes.AUDIO_RAW -> "PCM"
+                mime == MimeTypes.AUDIO_OPUS || codecs?.contains("opus", ignoreCase = true) == true -> "OPUS"
+                mime == MimeTypes.AUDIO_AAC || codecs?.contains("mp4a", ignoreCase = true) == true -> "AAC"
+                mime == MimeTypes.AUDIO_MPEG -> "MP3"
+                mime == MimeTypes.AUDIO_VORBIS || codecs?.contains("vorbis", ignoreCase = true) == true -> "VORBIS"
+                !codecs.isNullOrBlank() -> codecs.uppercase(Locale.ROOT)
+                !mime.isNullOrBlank() -> mime.substringAfterLast('/').substringAfterLast('-').uppercase(Locale.ROOT)
+                else -> ""
             }
-            val lossless = format.sampleMimeType in setOf(MimeTypes.AUDIO_FLAC, MimeTypes.AUDIO_ALAC, MimeTypes.AUDIO_RAW)
+            val lossless = mime in setOf(MimeTypes.AUDIO_FLAC, MimeTypes.AUDIO_ALAC, MimeTypes.AUDIO_RAW)
             val bits = when (format.pcmEncoding) {
                 C.ENCODING_PCM_8BIT -> 8; C.ENCODING_PCM_16BIT, C.ENCODING_PCM_16BIT_BIG_ENDIAN -> 16
                 C.ENCODING_PCM_24BIT, C.ENCODING_PCM_24BIT_BIG_ENDIAN -> 24
                 C.ENCODING_PCM_32BIT, C.ENCODING_PCM_32BIT_BIG_ENDIAN -> 32
                 else -> 0 // Decoder float precision is not evidence of the source's bit depth.
             }
-            return StreamQualityBadge(codec, format.averageBitrate.takeIf { it > 0 }?.div(1000)
-                ?: format.peakBitrate.takeIf { it > 0 }?.div(1000) ?: fallbackBitrate,
+            val actualBitrate = format.averageBitrate.takeIf { it > 0 }?.div(1000)
+                ?: format.peakBitrate.takeIf { it > 0 }?.div(1000) ?: fallbackBitrate.takeIf { it > 0 } ?: 0
+            return StreamQualityBadge(codec, actualBitrate,
                 format.sampleRate.coerceAtLeast(0), if (lossless) bits else 0, lossless, true)
         }
     }

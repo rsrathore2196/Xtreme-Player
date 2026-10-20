@@ -424,28 +424,50 @@ class MusicService : MediaLibraryService() {
                     com.example.data.local.AudioQualityPreferences.getSelectedQuality(this@MusicService),
                     uri.getQueryParameter("cap")?.toIntOrNull()?.let { if (uri.scheme == "xtreme-sabr") it * 1000 else it }
                         ?: Int.MAX_VALUE) else null
-                val codec = when {
-                    youtube -> YouTubeAudioStreamService.displayCodec(format.sampleMimeType, format.codecs).ifBlank { resolved?.codec.orEmpty() }
-                    format.sampleMimeType == MimeTypes.AUDIO_FLAC -> "FLAC"
-                    format.sampleMimeType == MimeTypes.AUDIO_ALAC -> "ALAC"
-                    format.sampleMimeType == MimeTypes.AUDIO_AAC -> "AAC"
-                    format.sampleMimeType == MimeTypes.AUDIO_OPUS -> "OPUS"
-                    format.sampleMimeType == MimeTypes.AUDIO_MPEG -> "MP3"
-                    else -> format.codecs.orEmpty().uppercase(java.util.Locale.ROOT)
-                }
                 val bitrate = format.averageBitrate.takeIf { it > 0 }?.div(1000)
-                    ?: resolved?.bitrateKbps ?: item.mediaMetadata.extras?.getInt("bitrate", 0) ?: 0
+                    ?: resolved?.bitrateKbps ?: item.mediaMetadata.extras?.getInt("bitrate", 0)?.takeIf { it > 0 } ?: 0
+                val qualityBadgeObj = com.example.playback.StreamQualityBadge.from(format, bitrate)
+                val codec = qualityBadgeObj.codec.ifBlank {
+                    if (youtube) YouTubeAudioStreamService.displayCodec(format.sampleMimeType, format.codecs).ifBlank { resolved?.codec.orEmpty() }
+                    else when (format.sampleMimeType) {
+                        MimeTypes.AUDIO_FLAC -> "FLAC"
+                        MimeTypes.AUDIO_ALAC -> "ALAC"
+                        MimeTypes.AUDIO_AAC -> "AAC"
+                        MimeTypes.AUDIO_OPUS -> "OPUS"
+                        MimeTypes.AUDIO_MPEG -> "MP3"
+                        else -> format.codecs.orEmpty().uppercase(java.util.Locale.ROOT)
+                    }
+                }
+                val actualBadge = if (qualityBadgeObj.codec.isBlank() && codec.isNotBlank()) {
+                    qualityBadgeObj.copy(codec = codec).label
+                } else qualityBadgeObj.label
+
+                val mediaSource = when {
+                    youtube -> "YOUTUBE"
+                    uri.host == "saavncdn.com" || uri.host?.endsWith(".saavncdn.com") == true || item.mediaId.startsWith("online_") -> "JIOSAAVN"
+                    uri.scheme in setOf("file", "content") -> "LOCAL"
+                    else -> item.mediaMetadata.extras?.getString("media_source").orEmpty().ifBlank { "STREAM" }
+                }
+
                 verifiedSignalUri = uri; verifiedSignalId = item.mediaId
                 verifiedSignalFormat = format; verifiedSignalBitrate = bitrate
                 publishVerifiedSignal()
-                val badge = com.example.playback.StreamQualityBadge.from(format, bitrate).let {
-                    if (it.codec.isBlank()) it.copy(codec = codec) else it
-                }.label
+
                 val before = item.mediaMetadata.extras
-                if (before?.getString("qualityBadge") == badge && before.getBoolean("audio_actual")) return
+                if (before?.getString("qualityBadge") == actualBadge && before.getBoolean("audio_actual")) return
                 val extras = Bundle(before ?: Bundle()).apply {
-                    putInt("bitrate", bitrate); putString("qualityBadge", badge)
-                    putBoolean("isLossless", isLosslessAudio); putBoolean("audio_actual", true)
+                    putInt("bitrate", bitrate)
+                    putString("qualityBadge", actualBadge)
+                    putInt("sample_rate", format.sampleRate.coerceAtLeast(0))
+                    if (isLosslessAudio && qualityBadgeObj.bitDepth > 0) {
+                        putInt("bit_depth", qualityBadgeObj.bitDepth)
+                    } else {
+                        remove("bit_depth")
+                    }
+                    putString("audio_codec", codec)
+                    putString("media_source", mediaSource)
+                    putBoolean("isLossless", isLosslessAudio)
+                    putBoolean("audio_actual", true)
                 }
                 // Metadata-only replacement retains the same source, seek position and decoder.
                 player.replaceMediaItem(player.currentMediaItemIndex, item.buildUpon()
@@ -477,6 +499,12 @@ class MusicService : MediaLibraryService() {
                 }
             }
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                if (mediaItem?.mediaId != verifiedSignalId) {
+                    verifiedSignalUri = null
+                    verifiedSignalId = null
+                    verifiedSignalFormat = null
+                    verifiedSignalBitrate = 0
+                }
                 publishSignalSource(mediaItem)
                 if (sabrRecoveryTrackId != mediaItem?.mediaId) {
                     sourceRecoveryJob?.cancel()

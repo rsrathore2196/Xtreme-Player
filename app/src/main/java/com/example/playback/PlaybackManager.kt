@@ -873,6 +873,15 @@ class PlaybackManager(
                     _uiState.update { it.copy(isLoading = true, errorMessage = null) }
                     return
                 }
+                val failedFallback = losslessFallback
+                if (failedFallback != null && failedFallback.upgradedUrl == player.currentMediaItem?.playbackUri()?.toString()) {
+                    LosslessDiagnostics.record(failedFallback.original.id, LosslessDiagnostics.Reason.DECODER_UNSUPPORTED, "player-error")
+                    restoreLosslessFallback(player, current)
+                    scope.launch(AppDispatchers.Io) {
+                        repository?.rejectLosslessUpgrade(failedFallback.original, failedFallback.upgradedUrl)
+                    }
+                    return
+                }
                 if (restoreLosslessFallback(player, current)) return
                 losslessUpgradeJob?.cancel()
                 val repo = repository
@@ -1040,6 +1049,9 @@ class PlaybackManager(
             if (extras.getBoolean("lossless_invalid")) {
                 LosslessDiagnostics.record(current.id, LosslessDiagnostics.Reason.DECODER_UNSUPPORTED, "active-format")
                 restoreLosslessFallback(player, current)
+                scope.launch(AppDispatchers.Io) {
+                    repository?.rejectLosslessUpgrade(fallback.original, fallback.upgradedUrl)
+                }
                 return
             }
             fallback.audioConfirmed = extras.getBoolean("isLossless")
@@ -1911,6 +1923,7 @@ class PlaybackManager(
 
         try {
             player.seekTo(positionMs)
+            rememberLosslessPosition(player, positionMs)
             positionClock.sample(positionMs, controller?.isPlaying == true, controller?.playbackParameters?.speed ?: 1f)
             _playbackPosition.value = positionMs
             _uiState.update { it.copy(currentPositionMs = positionMs) }

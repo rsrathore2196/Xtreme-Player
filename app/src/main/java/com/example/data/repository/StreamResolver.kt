@@ -114,7 +114,8 @@ internal class StreamResolver(
         catch (_: Exception) { null }
         fun usable(candidate: MusicTrack): Boolean = providerAllowed(candidate) && isValidStreamUrl(candidate.audioUrl) &&
             candidate.audioUrl != rejected && candidate.audioUrl != failedUrl &&
-            candidate.audioUrl !in rejectedUrls && capped(candidate).audioUrl !in rejectedUrls
+            candidate.audioUrl !in rejectedUrls && capped(candidate).audioUrl !in rejectedUrls &&
+            !isLosslessUrlRejected(candidate.audioUrl)
 
         val triedVideos = mutableSetOf<String>()
         suspend fun youtubeExact(request: MusicTrack): MusicTrack? {
@@ -180,7 +181,7 @@ internal class StreamResolver(
             val identity = recordingKey
             // Fast cache check: return verified lossless match if already discovered
             val cachedLossless = getCachedLosslessMatch(track)
-            if (cachedLossless != null && usable(cachedLossless) && supportsLossless(cachedLossless)) {
+            if (cachedLossless != null && usable(cachedLossless) && supportsLossless(cachedLossless) && !isLosslessUrlRejected(cachedLossless.audioUrl)) {
                 return cachedLossless
             }
             if (synchronized(archiveMisses) { (archiveMisses[identity] ?: 0L) > android.os.SystemClock.elapsedRealtime() }) return null
@@ -188,7 +189,7 @@ internal class StreamResolver(
             // This is one TOTAL deadline, including search, item metadata and matching.
             val found = attempt(LOSSLESS_LOOKUP_TIMEOUT_MS) {
                 val candidates = searchLossless("$title ${primary.ifBlank { artist }}".trim())
-                withContext(AppDispatchers.CpuBounded) { candidates.firstOrNull { usable(it) && matchesInitialLossless(track, it) && supportsLossless(it) } }
+                withContext(AppDispatchers.CpuBounded) { candidates.firstOrNull { usable(it) && matchesInitialLossless(track, it) && supportsLossless(it) && !isLosslessUrlRejected(it.audioUrl) } }
                     .also { completed = true }
             }
             // A timeout/partial response is not proof of absence. Only a successful
@@ -241,21 +242,39 @@ internal class StreamResolver(
         allowed: () -> Boolean = { true }
     ): MusicTrack? = withContext(Dispatchers.IO) {
         val cached = getCachedLosslessMatch(track)
-        if (cached != null && cached.audioUrl !in excludedUrls && supportsLossless(cached)) {
+        if (cached != null && cached.audioUrl !in excludedUrls && !isLosslessUrlRejected(cached.audioUrl) && supportsLossless(cached)) {
             return@withContext cached
         }
+        val allExcluded = (excludedUrls + getActiveRejectedUrls()).toSet()
         val result = com.example.data.remote.InternetArchiveApiService.findLosslessRecording(
             track = track,
-            excludedUrls = excludedUrls,
+            excludedUrls = allExcluded,
             allowed = allowed
         )
-        val match = result.tracks.firstOrNull { candidate ->
-            candidate.audioUrl !in excludedUrls &&
-            matchesLosslessUpgrade(track, candidate) &&
-            supportsLossless(candidate)
+        val matches = withContext(AppDispatchers.CpuBounded) {
+            result.tracks.mapNotNull { candidate ->
+                if (candidate.audioUrl in allExcluded ||
+                    isLosslessUrlRejected(candidate.audioUrl) ||
+                    !matchesLosslessUpgrade(track, candidate) ||
+                    !supportsLossless(candidate)) {
+                    if (candidate.audioUrl !in allExcluded && !matchesLosslessUpgrade(track, candidate)) {
+                        com.example.playback.LosslessDiagnostics.record(track.id,
+                            com.example.playback.LosslessDiagnostics.Reason.SOURCE_VERIFICATION_FAILED, "candidate-verification")
+                    }
+                    null
+                } else RecordingIdentity.losslessConfidence(track, candidate)?.let { candidate to it }
+            }.sortedByDescending { it.second }.map { it.first }
         }
+        val match = matches.firstOrNull()
         if (match != null) {
             cacheVerifiedLosslessMatch(track, match)
+        } else {
+            val reason = when {
+                result.failure != null -> result.failure
+                result.tracks.isNotEmpty() -> com.example.playback.LosslessDiagnostics.Reason.NO_MATCH
+                else -> com.example.playback.LosslessDiagnostics.Reason.NO_RESULTS
+            }
+            com.example.playback.LosslessDiagnostics.record(track.id, reason, "discovery")
         }
         match
     }
@@ -267,11 +286,43 @@ internal class StreamResolver(
     companion object {
         const val LOSSLESS_LOOKUP_TIMEOUT_MS = 2_500L
         private val verifiedLosslessCache = LinkedHashMap<String, Pair<MusicTrack, Long>>(128, 0.75f, true)
+        private val rejectedLosslessUrls = LinkedHashMap<String, Long>(256, 0.75f, true)
+
+        fun isLosslessUrlRejected(url: String): Boolean = synchronized(rejectedLosslessUrls) {
+            val expiresAt = rejectedLosslessUrls[url] ?: return false
+            if (expiresAt <= android.os.SystemClock.elapsedRealtime()) {
+                rejectedLosslessUrls.remove(url)
+                false
+            } else {
+                true
+            }
+        }
+
+        fun rejectLosslessUrl(url: String, ttlMs: Long) = synchronized(rejectedLosslessUrls) {
+            rejectedLosslessUrls[url] = android.os.SystemClock.elapsedRealtime() + ttlMs
+            while (rejectedLosslessUrls.size > 256) rejectedLosslessUrls.remove(rejectedLosslessUrls.keys.first())
+        }
+
+        fun getActiveRejectedUrls(): Set<String> = synchronized(rejectedLosslessUrls) {
+            val now = android.os.SystemClock.elapsedRealtime()
+            rejectedLosslessUrls.entries.filter { it.value > now }.map { it.key }.toSet()
+        }
+
+        fun invalidateLosslessMatch(track: MusicTrack, candidateUrl: String? = null) = synchronized(verifiedLosslessCache) {
+            val key = RecordingIdentity.key(track)
+            val entry = verifiedLosslessCache[key]
+            if (entry != null && (candidateUrl == null || entry.first.audioUrl == candidateUrl)) {
+                verifiedLosslessCache.remove(key)
+            }
+        }
 
         fun getCachedLosslessMatch(track: MusicTrack): MusicTrack? = synchronized(verifiedLosslessCache) {
             val key = RecordingIdentity.key(track)
             val entry = verifiedLosslessCache[key] ?: return null
             if (entry.second < android.os.SystemClock.elapsedRealtime()) {
+                verifiedLosslessCache.remove(key)
+                null
+            } else if (isLosslessUrlRejected(entry.first.audioUrl)) {
                 verifiedLosslessCache.remove(key)
                 null
             } else {
@@ -287,6 +338,9 @@ internal class StreamResolver(
 
         fun clearVerifiedLosslessCache() = synchronized(verifiedLosslessCache) {
             verifiedLosslessCache.clear()
+            synchronized(rejectedLosslessUrls) {
+                rejectedLosslessUrls.clear()
+            }
         }
 
         private val presentation = Regex("(?i)\\s*[\\[(](?:official\\s+)?(?:music\\s+)?(?:video|audio|lyric\\s+video|lyrics|visualizer|hd|4k|full\\s+song|from\\s+\"[^\"]+\")[)\\]]")

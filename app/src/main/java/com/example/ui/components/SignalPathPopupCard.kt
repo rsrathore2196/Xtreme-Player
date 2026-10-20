@@ -53,12 +53,12 @@ fun AudioQualityBadge(trackId: String, fallbackText: String, background: Color, 
     content: Color, modifier: Modifier = Modifier, enabled: Boolean = true) {
     val path by AudioSignalPath.state.collectAsStateWithLifecycle()
     val visibility = remember { MutableTransitionState(false) }
-    // Display the actual verified playback format; prevent false Lossless/Hi-Res indicators when on AAC
-    val sanitizedFallback = if (fallbackText.contains("Lossless", ignoreCase = true) && !path.quality.lossless) {
+    // Display the actual verified playback format; prevent false Lossless/Hi-Res indicators when on AAC/lossy
+    val sanitizedFallback = if ((fallbackText.contains("Lossless", ignoreCase = true) || fallbackText.contains("Hi-Res", ignoreCase = true)) && !path.quality.lossless) {
         if (path.trackId == trackId && path.quality.verified && path.quality.codec.isNotBlank()) path.quality.label
         else "HQ Stream"
     } else fallbackText
-    val label = if (path.trackId == trackId && path.quality.verified) path.quality.label else sanitizedFallback
+    val label = if (path.trackId == trackId && path.quality.verified && path.quality.codec.isNotBlank()) path.quality.label else sanitizedFallback
     Box(modifier) {
         Surface(color = Color.Transparent, border = BorderStroke(1.dp, border), shape = RoundedCornerShape(10.dp),
             modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(background)

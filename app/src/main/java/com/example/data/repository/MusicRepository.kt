@@ -410,9 +410,12 @@ class MusicRepository private constructor(
         val key = withContext(AppDispatchers.CpuBounded) { RecordingIdentity.key(track) }
         fun missedRecently() = losslessMisses.get(key)?.let { android.os.SystemClock.elapsedRealtime() < it } == true
         if (missedRecently()) return@withContext null
-        val cached = StreamResolver.getCachedLosslessMatch(track)
-        if (cached != null && (rejectedLosslessUrls.get(cached.audioUrl) ?: 0L) <= android.os.SystemClock.elapsedRealtime()) {
-            return@withContext cached
+        if (losslessPageSearch == null) {
+            val cached = StreamResolver.getCachedLosslessMatch(track)
+            if (cached != null && (rejectedLosslessUrls.get(cached.audioUrl) ?: 0L) <= android.os.SystemClock.elapsedRealtime() &&
+                !StreamResolver.isLosslessUrlRejected(cached.audioUrl)) {
+                return@withContext cached
+            }
         }
         // Reuse the process-wide reference-counted request sharing. Cancelling one
         // consumer cannot cancel a lookup another consumer still needs.
@@ -420,11 +423,19 @@ class MusicRepository private constructor(
             essential = true, network = false) {
             losslessLookup.withLock {
                 if (missedRecently() || !monitor.snapshot().allowsLosslessUpgrade) return@withLock emptyList()
-                val result = if (losslessPageSearch == null) {
-                    val rejected = rejectedLosslessUrls.snapshot().filterValues {
-                        it > android.os.SystemClock.elapsedRealtime()
-                    }.keys
-                    InternetArchiveApiService.findLosslessRecording(track, rejected) { monitor.snapshot().allowsLosslessUpgrade }
+                val rejected = (rejectedLosslessUrls.snapshot().filterValues {
+                    it > android.os.SystemClock.elapsedRealtime()
+                }.keys + StreamResolver.getActiveRejectedUrls()).toSet()
+                val matches = if (losslessPageSearch == null) {
+                    val match = streamResolver.discoverLosslessBackground(track, rejected) { monitor.snapshot().allowsLosslessUpgrade }
+                    if (match == null) {
+                        val reason = com.example.playback.LosslessDiagnostics.last(track.id)?.reason
+                        val ttl = if (reason == com.example.playback.LosslessDiagnostics.Reason.NO_RESULTS) 90_000L else 10_000L
+                        losslessMisses.put(key, android.os.SystemClock.elapsedRealtime() + ttl)
+                        emptyList()
+                    } else {
+                        listOf(match)
+                    }
                 } else {
                     val artist = RecordingIdentity.artistNames(track).firstOrNull()
                         ?: StreamResolver.extractCleanArtist(track.artist)
@@ -443,45 +454,46 @@ class MusicRepository private constructor(
                         tracks.addAll(page.tracks)
                         if (page.tracks.any { StreamResolver.matchesLosslessUpgrade(track, it) }) break
                     }
-                    InternetArchiveApiService.LosslessSearchPage(tracks, isSuccessful = successful,
+                    val result = InternetArchiveApiService.LosslessSearchPage(tracks, isSuccessful = successful,
                         failure = failure, exhaustive = exhaustive)
-                }
-                if (!monitor.snapshot().allowsLosslessUpgrade) {
-                    com.example.playback.LosslessDiagnostics.record(track.id,
-                        com.example.playback.LosslessDiagnostics.Reason.NETWORK_POLICY_BLOCKED, "discovery-policy")
-                    return@withLock emptyList()
-                }
-                val matches = withContext(AppDispatchers.CpuBounded) {
-                    result.tracks.mapNotNull { candidate ->
-                        if (candidate.audioUrl == track.audioUrl ||
-                            (rejectedLosslessUrls.get(candidate.audioUrl) ?: 0L) > android.os.SystemClock.elapsedRealtime() ||
-                            !StreamResolver.matchesLosslessUpgrade(track, candidate)) {
-                            if (candidate.audioUrl != track.audioUrl && !StreamResolver.matchesLosslessUpgrade(track, candidate)) {
-                                com.example.playback.LosslessDiagnostics.record(track.id,
-                                    com.example.playback.LosslessDiagnostics.Reason.SOURCE_VERIFICATION_FAILED, "candidate-verification")
-                            }
-                            null
-                        } else RecordingIdentity.losslessConfidence(track, candidate)?.let { candidate to it }
-                    }.sortedByDescending { it.second }.map { it.first }
-                }
-                if (matches.isEmpty()) {
-                    val reason = when {
-                        result.failure == com.example.playback.LosslessDiagnostics.Reason.NETWORK_TIMEOUT ->
-                            com.example.playback.LosslessDiagnostics.Reason.LOOKUP_TIMEOUT
-                        result.failure != null -> result.failure
-                        result.tracks.isNotEmpty() -> com.example.playback.LosslessDiagnostics.Reason.NO_MATCH
-                        else -> com.example.playback.LosslessDiagnostics.Reason.NO_RESULTS
+                    if (!monitor.snapshot().allowsLosslessUpgrade) {
+                        com.example.playback.LosslessDiagnostics.record(track.id,
+                            com.example.playback.LosslessDiagnostics.Reason.NETWORK_POLICY_BLOCKED, "discovery-policy")
+                        return@withLock emptyList()
                     }
-                    com.example.playback.LosslessDiagnostics.record(track.id, reason, "discovery")
-                    // Never persist timeouts/partial searches as confirmed absence.
-                    val ttl = if (result.isSuccessful && result.exhaustive && result.nextPage == null &&
-                        reason == com.example.playback.LosslessDiagnostics.Reason.NO_RESULTS) 90_000L else 10_000L
-                    losslessMisses.put(key, android.os.SystemClock.elapsedRealtime() + ttl)
+                    val candidates = withContext(AppDispatchers.CpuBounded) {
+                        result.tracks.mapNotNull { candidate ->
+                            if (candidate.audioUrl == track.audioUrl ||
+                                candidate.audioUrl in rejected ||
+                                (rejectedLosslessUrls.get(candidate.audioUrl) ?: 0L) > android.os.SystemClock.elapsedRealtime() ||
+                                StreamResolver.isLosslessUrlRejected(candidate.audioUrl) ||
+                                !StreamResolver.matchesLosslessUpgrade(track, candidate)) {
+                                if (candidate.audioUrl != track.audioUrl && !StreamResolver.matchesLosslessUpgrade(track, candidate)) {
+                                    com.example.playback.LosslessDiagnostics.record(track.id,
+                                        com.example.playback.LosslessDiagnostics.Reason.SOURCE_VERIFICATION_FAILED, "candidate-verification")
+                                }
+                                null
+                            } else RecordingIdentity.losslessConfidence(track, candidate)?.let { candidate to it }
+                        }.sortedByDescending { it.second }.map { it.first }
+                    }
+                    if (candidates.isEmpty()) {
+                        val reason = when {
+                            result.failure != null -> result.failure
+                            result.tracks.isNotEmpty() -> com.example.playback.LosslessDiagnostics.Reason.NO_MATCH
+                            else -> com.example.playback.LosslessDiagnostics.Reason.NO_RESULTS
+                        }
+                        com.example.playback.LosslessDiagnostics.record(track.id, reason, "discovery")
+                        // Never persist timeouts/partial searches as confirmed absence.
+                        val ttl = if (result.isSuccessful && result.exhaustive && result.nextPage == null &&
+                            reason == com.example.playback.LosslessDiagnostics.Reason.NO_RESULTS) 90_000L else 10_000L
+                        losslessMisses.put(key, android.os.SystemClock.elapsedRealtime() + ttl)
+                    }
+                    candidates
                 }
                 matches
             }
         }.firstOrNull()
-        if (found != null) {
+        if (found != null && losslessPageSearch == null) {
             StreamResolver.cacheVerifiedLosslessMatch(track, found)
         }
         found
@@ -498,7 +510,11 @@ class MusicRepository private constructor(
             com.example.playback.LosslessDiagnostics.Reason.TRANSITION_FAILED -> 30_000L
             else -> 10_000L // A slow connection is not proof that a valid file is unavailable.
         }
-        if (candidateUrl != null) rejectedLosslessUrls.put(candidateUrl, android.os.SystemClock.elapsedRealtime() + ttl)
+        if (candidateUrl != null) {
+            rejectedLosslessUrls.put(candidateUrl, android.os.SystemClock.elapsedRealtime() + ttl)
+            StreamResolver.rejectLosslessUrl(candidateUrl, ttl)
+        }
+        StreamResolver.invalidateLosslessMatch(track, candidateUrl)
         losslessMisses.put(RecordingIdentity.key(track), android.os.SystemClock.elapsedRealtime() + 5_000L)
         Unit
     }
