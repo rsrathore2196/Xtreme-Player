@@ -152,9 +152,6 @@ fun SignalPathPopupCard(state: SignalPathState, modifier: Modifier = Modifier) {
                 state.directApproved -> "Verified direct PCM route • Bit-perfect conditions not met"
                 else -> "Verified system route • Hardware conversion not reported by Android"
             })
-            HorizontalDivider(color = colors.textPrimary.copy(alpha = 0.12f))
-            Text("${state.playbackStatus} • ${state.mode}\nBuffer: ${if (state.buffering) "Buffering" else if (state.playbackStatus == "Idle") "Awaiting audio" else "Ready"}  •  Glitches: ${state.glitches}",
-                color = colors.textSecondary, style = MaterialTheme.typography.labelSmall)
         }
     }
 }

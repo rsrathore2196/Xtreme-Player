@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -113,6 +114,7 @@ fun LibraryScreen(
     val appColors = LocalAppColors.current
 
     val currentPlayingId = currentPlayingTrackId ?: playerUiState?.currentTrack?.id
+    val playlistRows = remember(playlists) { playlists.chunked(2) }
 
     Box(
         modifier = modifier
@@ -512,12 +514,24 @@ fun LibraryScreen(
                         )
                     }
 
-                    items(playlists, key = { "pl_${it.playlistId}" }) { playlist ->
-                        PlaylistRowItem(
-                            playlist = playlist,
-                            onClick = { onOpenPlaylist(playlist.playlistId) },
-                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp)
-                        )
+                    items(playlistRows, key = { row -> "pl_row_${row.joinToString("_") { it.playlistId.toString() }}" }) { rowItems ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 20.dp, vertical = 7.dp),
+                            horizontalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            rowItems.forEach { playlist ->
+                                PlaylistGridCard(
+                                    playlist = playlist,
+                                    onClick = { onOpenPlaylist(playlist.playlistId) },
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                            if (rowItems.size == 1) {
+                                Spacer(modifier = Modifier.weight(1f))
+                            }
+                        }
                     }
                 }
             }
@@ -575,50 +589,109 @@ fun LibraryScreen(
 }
 }
 
+/**
+ * Big square playlist card showing high-resolution album art with title and details positioned below.
+ * Displayed 2 side-by-side in a responsive grid.
+ */
+@Composable
+fun PlaylistGridCard(
+    playlist: PlaylistEntity,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val appColors = LocalAppColors.current
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(18.dp))
+            .bouncyClickable(onClick = onClick)
+            .testTag("playlist_card_${playlist.playlistId}")
+    ) {
+        // Big square album art
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(1f)
+                .shadow(
+                    elevation = 4.dp,
+                    shape = RoundedCornerShape(18.dp),
+                    spotColor = if (appColors.isDark) Color.Black.copy(alpha = 0.45f) else appColors.primaryAccent.copy(alpha = 0.20f)
+                )
+                .clip(RoundedCornerShape(18.dp))
+                .background(if (appColors.isDark) appColors.cardBackgroundElevated else Color(0xFFE2E8F0))
+                .border(
+                    BorderStroke(
+                        1.dp,
+                        if (appColors.dynamicGlassEnabled) LiquidGlass.specularBorderBrush(appColors, highlightAlpha = 0.45f)
+                        else Brush.verticalGradient(listOf(appColors.cardBorder, appColors.cardBorder))
+                    ),
+                    RoundedCornerShape(18.dp)
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            if (playlist.coverUrl.isNotBlank()) {
+                AsyncImage(
+                    model = rememberOptimizedImageRequest(playlist.coverUrl, ImageConfig.PLAYLIST_HEADER_SIZE),
+                    contentDescription = playlist.title,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                val fallbackBrush = if (appColors.isAmoled) {
+                    Brush.linearGradient(listOf(Color(0xFF282828), Color(0xFF141414)))
+                } else {
+                    Brush.linearGradient(
+                        listOf(
+                            appColors.primaryAccent.copy(alpha = 0.35f),
+                            appColors.secondaryAccent.copy(alpha = 0.20f)
+                        )
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(fallbackBrush),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                        contentDescription = null,
+                        tint = appColors.primaryAccent,
+                        modifier = Modifier.size(46.dp)
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Playlist name below the big square album art
+        Text(
+            text = playlist.title,
+            color = appColors.textPrimary,
+            fontWeight = FontWeight.Bold,
+            fontSize = 15.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 2.dp)
+        )
+
+        // Description / subtitle below name
+        Text(
+            text = if (playlist.description.isNotBlank()) playlist.description else "Custom Playlist",
+            color = appColors.textSecondary,
+            fontSize = 12.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 2.dp, vertical = 1.dp)
+        )
+    }
+}
+
 @Composable
 fun PlaylistRowItem(
     playlist: PlaylistEntity,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val appColors = LocalAppColors.current
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .liquidGlassCard(appColors, shape = RoundedCornerShape(14.dp), elevation = 1.dp, translucency = 0.90f)
-            .clickable { onClick() }
-            .padding(10.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        AsyncImage(
-            model = rememberOptimizedImageRequest(playlist.coverUrl, ImageConfig.LIST_ITEM_SIZE),
-            contentDescription = null,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier
-                .size(54.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(if (appColors.isDark) appColors.cardBackgroundElevated else Color(0xFFE2E8F0))
-        )
-
-        Spacer(modifier = Modifier.width(14.dp))
-
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = playlist.title,
-                color = appColors.textPrimary,
-                fontWeight = FontWeight.Bold,
-                fontSize = 15.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Spacer(modifier = Modifier.height(2.dp))
-            Text(
-                text = if (playlist.description.isNotBlank()) playlist.description else "Custom Playlist",
-                color = appColors.textSecondary,
-                fontSize = 12.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-    }
+    PlaylistGridCard(playlist = playlist, onClick = onClick, modifier = modifier)
 }
