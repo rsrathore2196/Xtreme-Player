@@ -8,6 +8,8 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -196,13 +198,15 @@ private fun OnboardingContent(
     }
 
     // Dynamic gradient adapting cleanly to current theme colors
-    val backgroundBrush = Brush.verticalGradient(
-        colors = listOf(
-            appColors.scaffoldBackground,
-            appColors.cardBackgroundElevated.copy(alpha = if (isDark) 0.6f else 0.4f),
-            appColors.scaffoldBackground
+    val backgroundBrush = remember(appColors) {
+        Brush.verticalGradient(
+            colors = listOf(
+                appColors.scaffoldBackground,
+                appColors.cardBackgroundElevated.copy(alpha = if (isDark) 0.6f else 0.4f),
+                appColors.scaffoldBackground
+            )
         )
-    )
+    }
 
     val cardBg = appColors.cardBackground
     val cardBorder = appColors.cardBorder
@@ -235,14 +239,15 @@ private fun OnboardingContent(
     ) {
         AnimatedContent(
             targetState = currentStep,
+            modifier = Modifier.fillMaxSize(),
             transitionSpec = {
-                if (targetState == OnboardingStep.DETAILS) {
-                    (slideInHorizontally { width -> width / 2 } + fadeIn()) togetherWith
-                    (slideOutHorizontally { width -> -width / 2 } + fadeOut())
-                } else {
-                    (slideInHorizontally { width -> -width / 2 } + fadeIn()) togetherWith
-                    (slideOutHorizontally { width -> width / 2 } + fadeOut())
-                }
+                val direction = if (targetState == OnboardingStep.DETAILS) 1 else -1
+                // Both pages occupy the viewport. Animate placement/opacity only;
+                // a default spring and size animation add a long settling tail.
+                ((slideInHorizontally(tween(220, easing = FastOutSlowInEasing)) { direction * it / 6 } +
+                    fadeIn(tween(160))) togetherWith
+                    (slideOutHorizontally(tween(220, easing = FastOutSlowInEasing)) { -direction * it / 6 } +
+                        fadeOut(tween(120)))).using(null)
             },
             label = "onboarding_step_crossfade"
         ) { step ->
@@ -250,7 +255,6 @@ private fun OnboardingContent(
                 OnboardingStep.STARTUP -> {
                     OnboardingStartupPage(
                         onStartListening = {
-                            AppHaptics.performTap(context)
                             currentStep = OnboardingStep.DETAILS
                         }
                     )

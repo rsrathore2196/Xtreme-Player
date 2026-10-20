@@ -42,6 +42,12 @@ class SignalPathUiTest {
         compose.onNodeWithText("YouTube Music • OPUS • 160 kbps • 48.0 kHz").assertExists()
         compose.onNodeWithText("Audio Enhancer").assertExists()
         compose.onNodeWithTag("source_audio_enhancer").assertExists()
+        val sourceDot = compose.onNodeWithTag("signal_node_dot_Source", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        val enhancerDot = compose.onNodeWithTag("signal_node_dot_Audio Enhancer", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        val sourceTitle = compose.onNodeWithTag("signal_node_title_Source", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        val enhancerTitle = compose.onNodeWithTag("signal_node_title_Audio Enhancer", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        Assert.assertEquals("Timeline dots must share the same inset", sourceDot.left, enhancerDot.left, .5f)
+        Assert.assertEquals("Enhancer text must align with the source node", sourceTitle.left, enhancerTitle.left, .5f)
         compose.onNodeWithText("Volume / Gain").assertDoesNotExist()
         compose.onNodeWithText("Clarity Enhancer").assertDoesNotExist()
         compose.onNodeWithText("Output Format").assertExists()

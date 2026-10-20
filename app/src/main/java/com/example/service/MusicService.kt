@@ -210,6 +210,24 @@ class MusicService : MediaLibraryService() {
         return item
     }
 
+    private fun audioInputQuality(item: MediaItem, format: Format): com.example.playback.StreamQualityBadge {
+        val decoded = com.example.playback.StreamQualityBadge.from(format)
+        if (decoded.bitrateKbps > 0 || decoded.codec.isBlank() || decoded.lossless) return decoded
+        val uri = item.localConfiguration?.uri ?: return decoded
+        val host = uri.host.orEmpty().lowercase(java.util.Locale.ROOT)
+        // WebM/Opus often has no bitrate in Media3 Format. Use only the exact
+        // resolved representation with a matching decoder codec; never catalog
+        // metadata, the selected ceiling, or the previous provider's rate.
+        val declaredRate = when {
+            YouTubeAudioStreamService.isYouTubeAudio(item.mediaId, uri.toString()) ->
+                YouTubeAudioStreamService.bitrateForPlaybackUri(uri, decoded.codec)
+            decoded.codec == "AAC" && (host == "saavncdn.com" || host.endsWith(".saavncdn.com")) ->
+                SAAVN_AUDIO_RATE.find(uri.path.orEmpty())?.groupValues?.get(1)?.toIntOrNull() ?: 0
+            else -> 0
+        }
+        return if (declaredRate > 0) decoded.copy(bitrateKbps = declaredRate) else decoded
+    }
+
     private fun actualAudioProperties(item: MediaItem, format: Format,
         quality: com.example.playback.StreamQualityBadge, source: String, invalidLossless: Boolean = false): Bundle =
         Bundle(item.mediaMetadata.extras ?: Bundle()).apply {
@@ -325,6 +343,7 @@ class MusicService : MediaLibraryService() {
                     forceRefresh = failedUrl != null, failedUrl = failedUrl) }
                 if (!owns() || resolved.audioUrl == track.audioUrl) return@launch
                 val replacementExtras = Bundle(extras ?: Bundle()).apply {
+                    putLong("jio_start_deadline", 0L); remove("jio_youtube_fallback")
                     putBoolean("audio_actual", false); putBoolean("isLossless", resolved.isLossless)
                     putBoolean("source_transition_pending", true)
                     putBoolean("lossless_upgrade_pending", resolved.isLossless)
@@ -369,7 +388,7 @@ class MusicService : MediaLibraryService() {
                             val expected = if (resolved.isLossless) com.example.playback.LosslessStreamPrebuffer.audioInfo(format) != null
                                 else if (policy.maximum) codec in setOf("AAC", "Opus", "Vorbis")
                                 else codec == (if (YouTubeAudioStreamService.isYouTubeAudio(resolved.id, resolved.audioUrl)) "Opus" else "AAC")
-                            val rate = com.example.playback.StreamQualityBadge.from(format).bitrateKbps
+                            val rate = verifiedSignalBitrate
                             if (expected && (policy.maximum || rate.toLong() * 1000 <= policy.ceiling.maxBitrateBps))
                                 return@withTimeoutOrNull true
                         }
@@ -388,7 +407,11 @@ class MusicService : MediaLibraryService() {
                         val positionNow = com.example.playback.losslessRecoveryPosition(
                             headlessTransition?.second ?: position, player.currentPosition, false)
                         val resumeNow = player.playWhenReady
-                        player.replaceMediaItem(index, item); player.seekTo(index, positionNow)
+                        val restored = item.buildUpon().setMediaMetadata(metadata.buildUpon().setExtras(
+                            Bundle(extras ?: Bundle()).apply {
+                                putLong("jio_start_deadline", 0L); remove("jio_youtube_fallback")
+                            }).build()).build()
+                        player.replaceMediaItem(index, restored); player.seekTo(index, positionNow)
                         player.prepare(); player.playWhenReady = resumeNow
                     } else { player.pause(); player.stop() }
                 }
@@ -574,9 +597,7 @@ class MusicService : MediaLibraryService() {
             ) {
                 val item = currentAudioEventItem(player, eventTime) ?: return
                 val uri = item.localConfiguration?.uri ?: return
-                // Only decoder Format values are verified. Catalog/extractor
-                // estimates and extras from the previous source are not evidence.
-                val quality = com.example.playback.StreamQualityBadge.from(format)
+                val quality = audioInputQuality(item, format)
                 val host = uri.host.orEmpty().lowercase(java.util.Locale.ROOT)
                 val archive = host == "archive.org" || host.endsWith(".archive.org")
                 if (archive && item.mediaMetadata.extras?.getBoolean("isLossless") == true) {
@@ -1236,6 +1257,7 @@ class MusicService : MediaLibraryService() {
     }
 
     companion object {
+        private val SAAVN_AUDIO_RATE = Regex("_(320|160|96|48)\\.(?:mp4|m4a)$", RegexOption.IGNORE_CASE)
         private val ACTUAL_AUDIO_KEYS = arrayOf("audio_codec", "audio_codecs", "audio_mime_type", "bitrate", "sample_rate",
             "bit_depth", "isLossless", "media_source", "audio_actual", "qualityBadge", "lossless_invalid")
         private val _liveSession = kotlinx.coroutines.flow.MutableStateFlow(false)

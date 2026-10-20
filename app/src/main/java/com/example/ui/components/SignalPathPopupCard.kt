@@ -139,14 +139,9 @@ fun SignalPathPopupCard(state: SignalPathState, modifier: Modifier = Modifier) {
                 rate(state.quality.sampleRateHz).takeIf { state.quality.sampleRateHz > 0 && !state.quality.label.contains("kHz") }.orEmpty())
                 .filter(String::isNotEmpty).joinToString(" • ")
             SignalNode("Source", "${state.source} • $sourceDetails")
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.weight(1f)) {
-                    Text("Audio Enhancer", style = MaterialTheme.typography.labelMedium,
-                        color = colors.textPrimary, fontWeight = FontWeight.SemiBold)
-                    Text(if (policy.maximum) "Maximum / Lossless keeps Archive priority; this preference applies to lower qualities."
-                        else "Prefer YouTube Opus source when available. AAC fallback; not lossless.",
-                        style = MaterialTheme.typography.bodySmall, color = colors.textSecondary)
-                }
+            SignalNode("Audio Enhancer",
+                if (policy.maximum) "Maximum / Lossless keeps Archive priority; this preference applies to lower qualities."
+                else "Prefer YouTube Opus source when available. AAC fallback; not lossless.") {
                 Switch(checked = enhancer, onCheckedChange = monitor::setAudioEnhancer,
                     modifier = Modifier.testTag("source_audio_enhancer"))
             }
@@ -179,13 +174,16 @@ fun SignalPathPopupCard(state: SignalPathState, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun SignalNode(title: String, value: String) {
+private fun SignalNode(title: String, value: String, trailing: (@Composable () -> Unit)? = null) {
     val colors = LocalAppColors.current
     Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-        Box(Modifier.padding(top = 5.dp).size(6.dp).clip(CircleShape).background(colors.primaryAccent))
-        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(title, style = MaterialTheme.typography.labelMedium, color = colors.textPrimary, fontWeight = FontWeight.SemiBold)
+        Box(Modifier.padding(top = 5.dp).size(6.dp).clip(CircleShape).background(colors.primaryAccent)
+            .testTag("signal_node_dot_$title"))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, modifier = Modifier.testTag("signal_node_title_$title"),
+                style = MaterialTheme.typography.labelMedium, color = colors.textPrimary, fontWeight = FontWeight.SemiBold)
             Text(value, style = MaterialTheme.typography.bodySmall, color = colors.textSecondary)
         }
+        trailing?.let { Box(Modifier.align(Alignment.CenterVertically)) { it() } }
     }
 }

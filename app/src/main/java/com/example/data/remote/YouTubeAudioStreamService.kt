@@ -227,6 +227,32 @@ object YouTubeAudioStreamService {
             }.build().toString()
     }
     fun cachedForUrl(url: String): AudioStream? = synchronized(cache) { cache.snapshot().values.lastOrNull { it.url == url } }
+
+    /** Representation-declared average rate, not an itag estimate or another source's extras. */
+    fun bitrateForPlaybackUri(uri: Uri, decodedCodec: String): Int = synchronized(cache) {
+        val address = uri.toString()
+        val video = videoIdFromUri(uri)
+        val itag = uri.getQueryParameter("itag")?.toIntOrNull()
+        val length = uri.getQueryParameter("length")?.toLongOrNull()
+        val cap = uri.getQueryParameter("cap")?.toIntOrNull()
+        val sabrKey = if (uri.scheme == "xtreme-sabr") runCatching {
+            SabrSessionRegistry.cacheKeyFromUri(uri)
+        }.getOrNull() else null
+        val opusOnly = uri.getQueryParameter("codec") == "opus"
+        val rates = cache.snapshot().values.asSequence().filter { stream ->
+            stream.bitrateKbps > 0 && stream.codec.equals(decodedCodec, true) && !stream.isHls &&
+                (stream.url == address || sabrKey != null && stream.isSabr && stream.cacheKey == sabrKey &&
+                    cap?.toLong()?.times(1000) == stream.selectionCapBps.toLong() ||
+                    uri.scheme == "xtreme-youtube" && video == stream.videoId &&
+                    !stream.isSabr && itag != null && itag == stream.itag &&
+                    cap != null && cap == stream.selectionCapBps &&
+                    (length == null || length == stream.contentLength)) &&
+                (!opusOnly || stream.codec.equals("opus", true))
+        }.map { it.bitrateKbps }.distinct().take(2).toList()
+        // Ambiguous/stale references stay unknown. Signed URL expiry doesn't
+        // invalidate bitrate evidence for a representation already being decoded.
+        rates.singleOrNull() ?: 0
+    }
     fun cachedStreams(videoId: String): List<AudioStream> = synchronized(cache) {
         cache.snapshot().values.filter { it.videoId == videoId }.distinctBy { it.cacheKey }
     }

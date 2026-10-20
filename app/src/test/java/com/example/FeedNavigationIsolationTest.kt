@@ -5,6 +5,11 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.lazy.LazyListLayoutInfo
+import androidx.compose.foundation.lazy.LazyListPrefetchScope
+import androidx.compose.foundation.lazy.LazyListPrefetchStrategy
+import androidx.compose.foundation.lazy.layout.NestedPrefetchScope
 import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
@@ -87,6 +92,7 @@ class FeedNavigationIsolationTest {
         }
     }
 
+    @OptIn(ExperimentalFoundationApi::class)
     @Test fun pendingOrPublishingFeedDoesNotBlockDockRetargetingOrResetRetainedHomeScroll() {
         val feedReady = MutableStateFlow(false)
         lateinit var pager: PagerState
@@ -99,7 +105,17 @@ class FeedNavigationIsolationTest {
         compose.setContent { MaterialTheme {
             var tab by remember { mutableIntStateOf(0) }
             pager = rememberPagerState(pageCount = { 3 })
-            homeScroll = rememberLazyListState()
+            // Robolectric cannot advance Android's frame deadline while this
+            // fixture deliberately freezes Compose time to inspect mid-animation
+            // retargeting. Disable speculative row prefetch only in the fixture;
+            // otherwise AndroidPrefetchScheduler can endlessly repost onIdle.
+            // Real scrolling, retained rows and the production pager/dock remain.
+            val prefetch = remember { object : LazyListPrefetchStrategy {
+                override fun LazyListPrefetchScope.onScroll(delta: Float, layoutInfo: LazyListLayoutInfo) {}
+                override fun LazyListPrefetchScope.onVisibleItemsUpdated(layoutInfo: LazyListLayoutInfo) {}
+                override fun NestedPrefetchScope.onNestedPrefetch(firstVisibleItemIndex: Int) {}
+            } }
+            homeScroll = rememberLazyListState(prefetchStrategy = prefetch)
             val tabs = remember { listOf(
                 AnimatedBottomBarItem(0, "Home", Icons.Filled.Home, Icons.Outlined.Home),
                 AnimatedBottomBarItem(1, "Search", Icons.Filled.Search, Icons.Outlined.Search),

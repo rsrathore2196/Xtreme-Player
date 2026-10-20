@@ -208,6 +208,70 @@ class LosslessArchivePolicyTest {
         assertEquals(0, field("losslessAttemptCount").getInt(manager))
     }
 
+    @Test fun repeatedLossyPolicyNotificationsDoNotInvalidateAnEnhancerTransition() {
+        set("losslessPolicyAllowed", false)
+        val constructor = PlaybackManager::class.java.declaredClasses.first { it.simpleName == "LosslessFallback" }
+            .declaredConstructors.first { it.parameterCount == 12 }.apply { isAccessible = true }
+        val opus = track.copy(audioUrl = "xtreme-youtube://audio/abcdefghijk/stream.audio?cap=320000&codec=opus",
+            source = "YouTube Music", bitrateKbps = 146, qualityBadge = "Opus • 146 kbps")
+        val fallback = constructor.newInstance(0L, track, opus, 45_000L, initialRequestEpoch,
+            false, false, null, false, true, "HIGH:true:true", true)
+        set("losslessFallback", fallback)
+        repeat(3) { policy(ActiveQualityState(AudioQualityCeiling.HIGH, NetworkConnectionType.CELLULAR)) }
+        assertEquals(initialRequestEpoch, field("losslessRequestEpoch").getLong(manager))
+        assertSame(fallback, field("losslessFallback").get(manager))
+        assertEquals(track, manager.uiState.value.currentTrack)
+    }
+
+    @Test fun sourceOnlyReplacementClearsTheExpiredInitialWatchdogWithoutChangingTheRecording() {
+        val extras = Bundle().apply { putLong("jio_start_deadline", 1L); putBoolean("jio_youtube_fallback", true)
+            putString("source_policy_key", "HIGH:false:true"); putLong("duration", 180_000L) }
+        val original = androidx.media3.common.MediaItem.Builder().setMediaId(track.id).setUri(track.audioUrl)
+            .setMediaMetadata(androidx.media3.common.MediaMetadata.Builder().setExtras(extras).build()).build()
+        val replacement = PlaybackManager::class.java.getDeclaredMethod("forSourceTransition", androidx.media3.common.MediaItem::class.java)
+            .apply { isAccessible = true }.invoke(manager, original) as androidx.media3.common.MediaItem
+        assertEquals(0L, replacement.mediaMetadata.extras!!.getLong("jio_start_deadline"))
+        assertFalse(replacement.mediaMetadata.extras!!.containsKey("jio_youtube_fallback"))
+        assertEquals(original.mediaId, replacement.mediaId)
+        assertEquals(original.localConfiguration!!.uri, replacement.localConfiguration!!.uri)
+        assertEquals("HIGH:false:true", replacement.mediaMetadata.extras!!.getString("source_policy_key"))
+        assertEquals(180_000L, replacement.mediaMetadata.extras!!.getLong("duration"))
+        assertEquals("The original item must stay immutable", 1L, extras.getLong("jio_start_deadline"))
+
+        // Exercise the service watchdog too: returning to AAC long after the
+        // first selection must be allowed to buffer instead of immediately
+        // entering recovery/stopping the now-disallowed Opus fallback.
+        kotlinx.coroutines.test.runTest {
+            var playing = false
+            var recoveryCalls = 0
+            val player = java.lang.reflect.Proxy.newProxyInstance(androidx.media3.common.Player::class.java.classLoader,
+                arrayOf(androidx.media3.common.Player::class.java)) { _, method, _ ->
+                when (method.name) {
+                    "getCurrentMediaItem" -> replacement
+                    "getCurrentMediaItemIndex" -> 0
+                    "getPlayerError" -> null
+                    "getPlayWhenReady" -> true
+                    "isPlaying" -> playing
+                    "getPlaybackState" -> androidx.media3.common.Player.STATE_BUFFERING
+                    else -> error("Unexpected player command: ${method.name}")
+                }
+            } as androidx.media3.common.Player
+            val watchdog = com.example.service.JioSaavnPlaybackFallback(player, this,
+                resolve = { _, _ -> recoveryCalls++; error("A fresh source should have time to buffer") },
+                status = {}, changed = {})
+            watchdog.update()
+            testScheduler.runCurrent()
+            testScheduler.advanceTimeBy(5_999)
+            testScheduler.runCurrent()
+            assertEquals(0, recoveryCalls)
+            playing = true
+            watchdog.update()
+            testScheduler.advanceUntilIdle()
+            assertEquals(0, recoveryCalls)
+            watchdog.cancel()
+        }
+    }
+
     @Test fun repeatedMaximumPolicyKeepsAnActiveLookupAndItsRetryBudget() {
         val job = Job()
         set("losslessUpgradeJob", job)
