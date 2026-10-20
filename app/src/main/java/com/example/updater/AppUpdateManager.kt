@@ -64,6 +64,12 @@ object AppUpdateManager {
     private data class Session(val id: Long, val info: UpdateInfo, val name: String, val created: Long,
         val ready: Boolean = false, val installRequested: Boolean = true, val waitingPermission: Boolean = false)
 
+    private fun extractVersion(value: String): String? {
+        val candidate = value.trim()
+        if (candidate.isEmpty()) return null
+        return Regex("""(?i)(?:^|[^0-9])v?(\d+(?:\.\d+)*)(?!\d)""").find(candidate)?.groupValues?.get(1)
+    }
+
     fun dismissForSession() { _isDismissedForSession.value = true }
     private fun prefs(c: Context) = c.getSharedPreferences("apk_update_session_v2", Context.MODE_PRIVATE)
     private fun manager(c: Context) = c.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
@@ -177,7 +183,7 @@ object AppUpdateManager {
     private fun latestRelease(): UpdateStatus {
         val json = JSONObject(get(LATEST))
         if (json.optBoolean("draft") || json.optBoolean("prerelease")) return UpdateStatus.UpToDate(BuildConfig.VERSION_NAME)
-        val version = json.optString("tag_name").trim().removePrefix("v").removePrefix("V")
+        val version = extractVersion(json.optString("tag_name")) ?: return UpdateStatus.UpToDate(BuildConfig.VERSION_NAME)
         if (!isNewerVersion(version, BuildConfig.VERSION_NAME)) return UpdateStatus.UpToDate(BuildConfig.VERSION_NAME)
         val array = json.optJSONArray("assets")
         val assets = (0 until (array?.length() ?: 0)).mapNotNull { array?.optJSONObject(it) }
@@ -217,7 +223,7 @@ object AppUpdateManager {
     }
     fun isNewerVersion(remoteVersion: String, localVersion: String): Boolean {
         fun parts(v: String): List<Long>? {
-            val numeric = Regex("^[vV]?(\\d+(?:\\.\\d+)*)").find(v.trim())?.groupValues?.get(1) ?: return null
+            val numeric = extractVersion(v) ?: return null
             return numeric.split('.').map { it.toLongOrNull() ?: return null }
         }
         val remote = parts(remoteVersion) ?: return false
