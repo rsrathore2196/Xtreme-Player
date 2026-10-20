@@ -8,7 +8,8 @@ import android.util.LruCache
 object LosslessDiagnostics {
     enum class Reason {
         NO_RESULTS, METADATA_INCOMPLETE, RECORDING_MISMATCH, NETWORK_TIMEOUT,
-        PREBUFFER_FAILED, DECODER_UNSUPPORTED, NETWORK_POLICY_BLOCKED, ACTIVATION_FAILED
+        PREBUFFER_FAILED, DECODER_UNSUPPORTED, NETWORK_POLICY_BLOCKED, ACTIVATION_FAILED,
+        LOOKUP_TIMEOUT, NO_MATCH, INVALID_FORMAT, SOURCE_VERIFICATION_FAILED, TRANSITION_FAILED
     }
     data class Failure(val reason: Reason, val stage: String, val atMs: Long)
     private val failures = LruCache<String, Failure>(128)

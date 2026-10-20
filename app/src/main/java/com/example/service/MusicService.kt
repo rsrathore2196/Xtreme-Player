@@ -13,6 +13,7 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
@@ -417,15 +418,21 @@ class MusicService : MediaLibraryService() {
                     return
                 }
                 val youtube = YouTubeAudioStreamService.isYouTubeAudio(item.mediaId, uri.toString())
-                val saavn = host == "saavncdn.com" || host.endsWith(".saavncdn.com")
-                if (!youtube && !saavn) return
-                val videoId = YouTubeAudioStreamService.videoIdFromUri(uri) ?: item.mediaId.removePrefix("yt_")
+                val isLosslessAudio = format.sampleMimeType in setOf(MimeTypes.AUDIO_FLAC, MimeTypes.AUDIO_ALAC, MimeTypes.AUDIO_RAW)
+                val videoId = if (youtube) (YouTubeAudioStreamService.videoIdFromUri(uri) ?: item.mediaId.removePrefix("yt_")) else ""
                 val resolved = if (youtube) YouTubeAudioStreamService.currentStream(videoId,
                     com.example.data.local.AudioQualityPreferences.getSelectedQuality(this@MusicService),
                     uri.getQueryParameter("cap")?.toIntOrNull()?.let { if (uri.scheme == "xtreme-sabr") it * 1000 else it }
                         ?: Int.MAX_VALUE) else null
-                val codec = YouTubeAudioStreamService.displayCodec(format.sampleMimeType, format.codecs)
-                    .ifBlank { resolved?.codec.orEmpty() }
+                val codec = when {
+                    youtube -> YouTubeAudioStreamService.displayCodec(format.sampleMimeType, format.codecs).ifBlank { resolved?.codec.orEmpty() }
+                    format.sampleMimeType == MimeTypes.AUDIO_FLAC -> "FLAC"
+                    format.sampleMimeType == MimeTypes.AUDIO_ALAC -> "ALAC"
+                    format.sampleMimeType == MimeTypes.AUDIO_AAC -> "AAC"
+                    format.sampleMimeType == MimeTypes.AUDIO_OPUS -> "OPUS"
+                    format.sampleMimeType == MimeTypes.AUDIO_MPEG -> "MP3"
+                    else -> format.codecs.orEmpty().uppercase(java.util.Locale.ROOT)
+                }
                 val bitrate = format.averageBitrate.takeIf { it > 0 }?.div(1000)
                     ?: resolved?.bitrateKbps ?: item.mediaMetadata.extras?.getInt("bitrate", 0) ?: 0
                 verifiedSignalUri = uri; verifiedSignalId = item.mediaId
@@ -438,7 +445,7 @@ class MusicService : MediaLibraryService() {
                 if (before?.getString("qualityBadge") == badge && before.getBoolean("audio_actual")) return
                 val extras = Bundle(before ?: Bundle()).apply {
                     putInt("bitrate", bitrate); putString("qualityBadge", badge)
-                    putBoolean("isLossless", false); putBoolean("audio_actual", true)
+                    putBoolean("isLossless", isLosslessAudio); putBoolean("audio_actual", true)
                 }
                 // Metadata-only replacement retains the same source, seek position and decoder.
                 player.replaceMediaItem(player.currentMediaItemIndex, item.buildUpon()

@@ -138,7 +138,7 @@ class PsychoacousticAudioProcessor : BaseAudioProcessor() {
     private fun limit(sample: Float): Float {
         if (!sample.isFinite()) return 0f
         val a = abs(sample)
-        return if (a <= 0.90f) sample else sign(sample) * (0.90f + 0.10f * tanh((a - 0.90f) / 0.10f))
+        return if (a <= 0.95f) sample else sign(sample) * (0.95f + 0.05f * tanh((a - 0.95f) / 0.05f))
     }
 
     private class Biquad(channels: Int) {

@@ -268,6 +268,16 @@ class PlaybackManager(
             networkQualityMonitor = monitor
             monitor.activeQualityCeiling.collect(::updateLosslessPolicy)
         }
+        scope.launch {
+            AudioEffectsManager.effectsState.collect { effects ->
+                if (effects.crystalClarityEnabled || effects.isEnabled) {
+                    if (_uiState.value.selectedQuality == AudioQuality.HI_RES_LOSSLESS) {
+                        losslessAttemptKey = null
+                        maybeUpgradeToLossless()
+                    }
+                }
+            }
+        }
         SleepTimerManager.addExpirationListener(sleepExpirationListener)
         scope.launch {
             val startup = com.example.performance.BackgroundWorkCoordinator
@@ -698,11 +708,13 @@ class PlaybackManager(
                     if (pendingSelectionId != null && pendingSelectionId != trackId) return
                     if (pendingSelectionId == trackId) pendingSelectionId = null
                     val oldTrack = _uiState.value.currentTrack
-                    if (oldTrack?.id != trackId) {
+                    if (oldTrack?.id != trackId || reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) {
                         recoveryJob?.cancel()
                         recoveryJob = null
+                        recoveryGuard.select(trackId, newRequest = true)
+                    } else {
+                        recoveryGuard.select(trackId)
                     }
-                    recoveryGuard.select(trackId)
                     val serviceSourceTransition = oldTrack?.id == trackId && reason != Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT &&
                         mediaItem.mediaMetadata.extras?.getBoolean("jio_youtube_fallback") == true
                     val sourceOnlyTransition = oldTrack?.id == trackId && reason != Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT &&
@@ -1247,6 +1259,8 @@ class PlaybackManager(
                     if (warmed == null || !warmed.covers(player.currentPosition)) {
                         if (warmed != null) LosslessDiagnostics.record(original.id,
                             LosslessDiagnostics.Reason.PREBUFFER_FAILED, "target-coverage")
+                        else LosslessDiagnostics.record(original.id,
+                            LosslessDiagnostics.Reason.INVALID_FORMAT, "prebuffer-format")
                         repo.rejectLosslessUpgrade(reference, candidate.audioUrl)
                         continue
                     }
@@ -1285,7 +1299,7 @@ class PlaybackManager(
                     } == true
                     if (activated) return@launch
                     if (!ownsRequest()) return@launch
-                    LosslessDiagnostics.record(original.id, LosslessDiagnostics.Reason.ACTIVATION_FAILED, "decoder-activation")
+                    LosslessDiagnostics.record(original.id, LosslessDiagnostics.Reason.TRANSITION_FAILED, "decoder-activation")
                     _uiState.value.currentTrack?.let { restoreLosslessFallback(player, it) }
                     repo.rejectLosslessUpgrade(reference, candidate.audioUrl)
                 }
@@ -1298,7 +1312,7 @@ class PlaybackManager(
                 if (current != null && losslessRequestEpoch == requestEpoch &&
                     losslessFallback?.requestEpoch == requestEpoch && ownsSelection(current.id, generation))
                     restoreLosslessFallback(player, current)
-                LosslessDiagnostics.record(original.id, LosslessDiagnostics.Reason.ACTIVATION_FAILED, "upgrade")
+                LosslessDiagnostics.record(original.id, LosslessDiagnostics.Reason.TRANSITION_FAILED, "upgrade")
                 Log.d(TAG, "Optional lossless upgrade unavailable: ${e.message}")
             } finally {
                 if (losslessRequestEpoch == requestEpoch) {
@@ -1321,9 +1335,11 @@ class PlaybackManager(
             _uiState.value.currentTrack?.let { restoreLosslessFallback(player, it) }
             return
         }
+        val positionDelta = player.currentPosition - fallback.resumePositionMs
+        val positionValid = positionDelta >= -2_000L && positionDelta <= 20_000L
         if (!fallback.audioConfirmed || fallback.generation != selectionGeneration ||
             player.currentMediaItem?.mediaId != fallback.original.id || player.playbackState != Player.STATE_READY ||
-            kotlin.math.abs(player.currentPosition - fallback.resumePositionMs) > 2_000L ||
+            !positionValid ||
             player.currentMediaItem?.playbackUri()?.toString() != fallback.upgradedUrl || player.playerError != null) return
         val current = _uiState.value.currentTrack?.takeIf { it.id == fallback.original.id } ?: return
         val extras = fallback.confirmedAudio ?: player.mediaMetadata.extras ?: return
@@ -1373,6 +1389,9 @@ class PlaybackManager(
     private fun beginSelection(track: MusicTrack): Long {
         pendingRestoredSession = null
         cancelLosslessUpgrade()
+        recoveryJob?.cancel()
+        recoveryJob = null
+        recoveryGuard.select(track.id, newRequest = true)
         val generation = ++selectionGeneration
         pendingSelectionId = track.id
         // Archive's bounded primary attempt must not spend Jio's recovery window.
@@ -1975,6 +1994,10 @@ class PlaybackManager(
             ensureMediaControllerConnected { skipNext() }
             return
         }
+        cancelLosslessUpgrade()
+        recoveryJob?.cancel()
+        recoveryJob = null
+        recoveryGuard.select(null, newRequest = true)
         try {
             if (isCurrentSessionExplicitPlaylist && !player.hasNextMediaItem() && startCollectionRadio()) return
             if (player.hasNextMediaItem()) {
@@ -2008,6 +2031,10 @@ class PlaybackManager(
             ensureMediaControllerConnected { skipPrevious() }
             return
         }
+        cancelLosslessUpgrade()
+        recoveryJob?.cancel()
+        recoveryJob = null
+        recoveryGuard.select(null, newRequest = true)
 
         try {
             val now = System.currentTimeMillis()

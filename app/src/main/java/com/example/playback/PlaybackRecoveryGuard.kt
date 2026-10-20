@@ -46,5 +46,10 @@ internal class PlaybackRecoveryGuard {
     fun rejectedUrls(id: String, token: Long): Set<String> =
         if (isCurrent(id, token)) failedUrls.toSet() else emptySet()
 
-    fun isCurrent(id: String, token: Long): Boolean = trackId == id && generation == token
+    fun invalidate() {
+        generation++
+        attempts = 2
+    }
+
+    fun isCurrent(id: String, token: Long): Boolean = !trackId.isNullOrBlank() && trackId == id && generation == token
 }

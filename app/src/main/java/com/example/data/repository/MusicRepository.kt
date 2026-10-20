@@ -410,9 +410,13 @@ class MusicRepository private constructor(
         val key = withContext(AppDispatchers.CpuBounded) { RecordingIdentity.key(track) }
         fun missedRecently() = losslessMisses.get(key)?.let { android.os.SystemClock.elapsedRealtime() < it } == true
         if (missedRecently()) return@withContext null
+        val cached = StreamResolver.getCachedLosslessMatch(track)
+        if (cached != null && (rejectedLosslessUrls.get(cached.audioUrl) ?: 0L) <= android.os.SystemClock.elapsedRealtime()) {
+            return@withContext cached
+        }
         // Reuse the process-wide reference-counted request sharing. Cancelling one
         // consumer cannot cancel a lookup another consumer still needs.
-        com.example.recommendation.DiscoveryRequestCoordinator.shared("archive-recording:$key",
+        val found = com.example.recommendation.DiscoveryRequestCoordinator.shared("archive-recording:$key",
             essential = true, network = false) {
             losslessLookup.withLock {
                 if (missedRecently() || !monitor.snapshot().allowsLosslessUpgrade) return@withLock emptyList()
@@ -451,14 +455,23 @@ class MusicRepository private constructor(
                     result.tracks.mapNotNull { candidate ->
                         if (candidate.audioUrl == track.audioUrl ||
                             (rejectedLosslessUrls.get(candidate.audioUrl) ?: 0L) > android.os.SystemClock.elapsedRealtime() ||
-                            !StreamResolver.matchesLosslessUpgrade(track, candidate)) null
-                        else RecordingIdentity.losslessConfidence(track, candidate)?.let { candidate to it }
+                            !StreamResolver.matchesLosslessUpgrade(track, candidate)) {
+                            if (candidate.audioUrl != track.audioUrl && !StreamResolver.matchesLosslessUpgrade(track, candidate)) {
+                                com.example.playback.LosslessDiagnostics.record(track.id,
+                                    com.example.playback.LosslessDiagnostics.Reason.SOURCE_VERIFICATION_FAILED, "candidate-verification")
+                            }
+                            null
+                        } else RecordingIdentity.losslessConfidence(track, candidate)?.let { candidate to it }
                     }.sortedByDescending { it.second }.map { it.first }
                 }
                 if (matches.isEmpty()) {
-                    val reason = result.failure ?: if (result.tracks.isNotEmpty())
-                        com.example.playback.LosslessDiagnostics.Reason.RECORDING_MISMATCH
-                        else com.example.playback.LosslessDiagnostics.Reason.NO_RESULTS
+                    val reason = when {
+                        result.failure == com.example.playback.LosslessDiagnostics.Reason.NETWORK_TIMEOUT ->
+                            com.example.playback.LosslessDiagnostics.Reason.LOOKUP_TIMEOUT
+                        result.failure != null -> result.failure
+                        result.tracks.isNotEmpty() -> com.example.playback.LosslessDiagnostics.Reason.NO_MATCH
+                        else -> com.example.playback.LosslessDiagnostics.Reason.NO_RESULTS
+                    }
                     com.example.playback.LosslessDiagnostics.record(track.id, reason, "discovery")
                     // Never persist timeouts/partial searches as confirmed absence.
                     val ttl = if (result.isSuccessful && result.exhaustive && result.nextPage == null &&
@@ -468,14 +481,21 @@ class MusicRepository private constructor(
                 matches
             }
         }.firstOrNull()
+        if (found != null) {
+            StreamResolver.cacheVerifiedLosslessMatch(track, found)
+        }
+        found
     }
 
     internal suspend fun rejectLosslessUpgrade(track: MusicTrack, candidateUrl: String? = null) = withContext(AppDispatchers.CpuBounded) {
         // Reject the failed representation, not every authorized copy of this recording.
         val ttl = when (com.example.playback.LosslessDiagnostics.last(track.id)?.reason) {
             com.example.playback.LosslessDiagnostics.Reason.RECORDING_MISMATCH,
-            com.example.playback.LosslessDiagnostics.Reason.DECODER_UNSUPPORTED -> 300_000L
-            com.example.playback.LosslessDiagnostics.Reason.ACTIVATION_FAILED -> 30_000L
+            com.example.playback.LosslessDiagnostics.Reason.DECODER_UNSUPPORTED,
+            com.example.playback.LosslessDiagnostics.Reason.INVALID_FORMAT,
+            com.example.playback.LosslessDiagnostics.Reason.SOURCE_VERIFICATION_FAILED -> 300_000L
+            com.example.playback.LosslessDiagnostics.Reason.ACTIVATION_FAILED,
+            com.example.playback.LosslessDiagnostics.Reason.TRANSITION_FAILED -> 30_000L
             else -> 10_000L // A slow connection is not proof that a valid file is unavailable.
         }
         if (candidateUrl != null) rejectedLosslessUrls.put(candidateUrl, android.os.SystemClock.elapsedRealtime() + ttl)

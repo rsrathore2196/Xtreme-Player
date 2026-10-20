@@ -25,7 +25,7 @@ internal class StreamResolver(
         OnlineMusicApiService.searchSongs(query, limit = 20, forceRefresh = refresh)
     },
     private val searchLossless: suspend (String) -> List<MusicTrack> = { query ->
-        val page = com.example.data.remote.InternetArchiveApiService.searchLosslessPage(query, pageSize = 4, playableOnly = true)
+        val page = com.example.data.remote.InternetArchiveApiService.searchLosslessPage(query, pageSize = 8, playableOnly = true)
         if (!page.isSuccessful) throw IOException("Incomplete Archive lookup")
         page.tracks
     },
@@ -66,6 +66,7 @@ internal class StreamResolver(
         synchronized(cache) { cache.clear() }
         synchronized(archiveMisses) { archiveMisses.clear() }
         synchronized(archiveAttempts) { archiveAttempts.clear() }
+        clearVerifiedLosslessCache()
     }
 
     suspend fun resolve(track: MusicTrack, preference: com.example.playback.AudioQualityPreference): MusicTrack =
@@ -177,6 +178,11 @@ internal class StreamResolver(
                 forceRefresh || currentSourceOnly || preferYouTube || track.durationMs <= 0L ||
                 title.isBlank() || primary.isBlank()) return null
             val identity = recordingKey
+            // Fast cache check: return verified lossless match if already discovered
+            val cachedLossless = getCachedLosslessMatch(track)
+            if (cachedLossless != null && usable(cachedLossless) && supportsLossless(cachedLossless)) {
+                return cachedLossless
+            }
             if (synchronized(archiveMisses) { (archiveMisses[identity] ?: 0L) > android.os.SystemClock.elapsedRealtime() }) return null
             var completed = false
             // This is one TOTAL deadline, including search, item metadata and matching.
@@ -187,13 +193,17 @@ internal class StreamResolver(
             }
             // A timeout/partial response is not proof of absence. Only a successful
             // initial resolution suppresses the later, broader background lookup.
-            if (found != null) synchronized(archiveAttempts) {
-                archiveAttempts[identity] = android.os.SystemClock.elapsedRealtime() + 180_000L
-                while (archiveAttempts.size > 128) archiveAttempts.remove(archiveAttempts.keys.first())
+            if (found != null) {
+                cacheVerifiedLosslessMatch(track, found)
+                synchronized(archiveAttempts) {
+                    archiveAttempts[identity] = android.os.SystemClock.elapsedRealtime() + 180_000L
+                    while (archiveAttempts.size > 128) archiveAttempts.remove(archiveAttempts.keys.first())
+                }
             }
             if (completed && found == null) synchronized(archiveMisses) {
                 // A first-page startup probe is not an exhaustive recording search.
-                archiveMisses[identity] = android.os.SystemClock.elapsedRealtime() + 15_000L
+                // Keep brief TTL so later background discovery is never permanently blocked.
+                archiveMisses[identity] = android.os.SystemClock.elapsedRealtime() + 10_000L
                 while (archiveMisses.size > 128) archiveMisses.remove(archiveMisses.keys.first())
             }
             return found
@@ -225,12 +235,60 @@ internal class StreamResolver(
     } catch (e: CancellationException) { throw e }
     catch (_: TrackUnavailableException) { null }
 
+    suspend fun discoverLosslessBackground(
+        track: MusicTrack,
+        excludedUrls: Set<String> = emptySet(),
+        allowed: () -> Boolean = { true }
+    ): MusicTrack? = withContext(Dispatchers.IO) {
+        val cached = getCachedLosslessMatch(track)
+        if (cached != null && cached.audioUrl !in excludedUrls && supportsLossless(cached)) {
+            return@withContext cached
+        }
+        val result = com.example.data.remote.InternetArchiveApiService.findLosslessRecording(
+            track = track,
+            excludedUrls = excludedUrls,
+            allowed = allowed
+        )
+        val match = result.tracks.firstOrNull { candidate ->
+            candidate.audioUrl !in excludedUrls &&
+            matchesLosslessUpgrade(track, candidate) &&
+            supportsLossless(candidate)
+        }
+        if (match != null) {
+            cacheVerifiedLosslessMatch(track, match)
+        }
+        match
+    }
+
     private fun withStream(track: MusicTrack, stream: MusicTrack) = track.copy(audioUrl = stream.audioUrl,
         bitrateKbps = stream.bitrateKbps, qualityBadge = stream.qualityBadge,
         isLossless = stream.isLossless, source = stream.source)
 
     companion object {
         const val LOSSLESS_LOOKUP_TIMEOUT_MS = 2_500L
+        private val verifiedLosslessCache = LinkedHashMap<String, Pair<MusicTrack, Long>>(128, 0.75f, true)
+
+        fun getCachedLosslessMatch(track: MusicTrack): MusicTrack? = synchronized(verifiedLosslessCache) {
+            val key = RecordingIdentity.key(track)
+            val entry = verifiedLosslessCache[key] ?: return null
+            if (entry.second < android.os.SystemClock.elapsedRealtime()) {
+                verifiedLosslessCache.remove(key)
+                null
+            } else {
+                entry.first
+            }
+        }
+
+        fun cacheVerifiedLosslessMatch(track: MusicTrack, lossless: MusicTrack) = synchronized(verifiedLosslessCache) {
+            val key = RecordingIdentity.key(track)
+            verifiedLosslessCache[key] = Pair(lossless, android.os.SystemClock.elapsedRealtime() + 600_000L)
+            while (verifiedLosslessCache.size > 128) verifiedLosslessCache.remove(verifiedLosslessCache.keys.first())
+        }
+
+        fun clearVerifiedLosslessCache() = synchronized(verifiedLosslessCache) {
+            verifiedLosslessCache.clear()
+        }
+
         private val presentation = Regex("(?i)\\s*[\\[(](?:official\\s+)?(?:music\\s+)?(?:video|audio|lyric\\s+video|lyrics|visualizer|hd|4k|full\\s+song|from\\s+\"[^\"]+\")[)\\]]")
         private val presentationSuffix = Regex("(?i)\\s*[-|•]\\s*(?:official\\s+)?(?:music\\s+)?(?:video|audio|lyric\\s+video|lyrics|visualizer|hd|4k)\\b(?=\\s*(?:$|[-|•\\[(]))")
         private val officialSuffix = Regex("(?i)\\s+(?:official\\s+(?:music\\s+)?(?:audio|video)|lyric\\s+video)\\b(?:\\s+(?:hd|4k)\\b)?")
