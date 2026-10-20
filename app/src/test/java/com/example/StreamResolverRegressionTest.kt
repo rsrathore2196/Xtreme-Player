@@ -22,6 +22,11 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33], application = Application::class)
 class StreamResolverRegressionTest {
+    // Verified matches are process-wide in the current resolver. Each test owns
+    // its provider responses and must not inherit another fixture's recording.
+    @org.junit.Before fun clearSharedMatches() { StreamResolver.clearVerifiedLosslessCache() }
+    @org.junit.After fun releaseSharedMatches() { StreamResolver.clearVerifiedLosslessCache() }
+
     private val requested = MusicTrack("import_song", "Song", "Artist", "Album", 180000, "cover", "")
     private val youtube = requested.copy(id = "yt_abcdefghijk", source = "YouTube Music")
     private val quality = AudioQuality.ULTRA_HD_320

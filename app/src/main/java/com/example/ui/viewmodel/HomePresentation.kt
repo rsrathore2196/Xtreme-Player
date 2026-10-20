@@ -2,6 +2,7 @@ package com.example.ui.viewmodel
 
 import androidx.compose.runtime.Immutable
 import com.example.data.model.MusicTrack
+import com.example.recommendation.HomeUserMode
 import com.example.recommendation.HomeRecommendationPolicy
 import com.example.recommendation.UnifiedRecommendationEngine.Shelf
 
@@ -87,4 +88,22 @@ internal fun RecommendationCards.enrichFromCache(cached: RecommendationCards,
     val replacement = cached.section(shelf)
     if (current != preview.section(shelf) || replacement.tracks.isEmpty()) result
     else result.withSection(shelf, replacement)
+}
+
+/** Eligibility uses authoritative history, not the initially empty taste StateFlow.
+ * Retained verified sections survive a history error or an incomplete taste load. */
+internal fun eligibleHomeShelves(
+    mode: HomeUserMode,
+    isColdStart: Boolean,
+    hasSeed: Boolean,
+    cards: RecommendationCards
+): Set<com.example.recommendation.UnifiedRecommendationEngine.Shelf> {
+    return buildSet {
+        add(Shelf.QUICK); add(Shelf.CHART)
+        if (mode == HomeUserMode.NEW_USER) return@buildSet
+        if (mode != HomeUserMode.LOADING || cards.era.tracks.isNotEmpty()) add(Shelf.ERA)
+        if (!isColdStart || cards.personalized.tracks.isNotEmpty()) add(Shelf.PERSONALIZED)
+        if (hasSeed || cards.similarArtists.tracks.isNotEmpty()) add(Shelf.SIMILAR)
+        if (hasSeed || cards.inspiredTrack.tracks.isNotEmpty()) add(Shelf.INSPIRED)
+    }
 }

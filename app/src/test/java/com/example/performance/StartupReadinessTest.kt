@@ -4,6 +4,16 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class StartupReadinessTest {
+    @Test fun skippedHistoryDependentWorkIsTerminalWithoutClaimingItWasFetched() {
+        val skipped = StartupReadiness().withStatus(StartupTask.ERA, StartupStatus.SKIPPED)
+        assertTrue(StartupStatus.SKIPPED.terminal)
+        assertEquals(StartupStatus.SKIPPED, skipped.tasks[StartupTask.ERA])
+        assertFalse(skipped.hasUnavailable)
+        assertEquals(1f / StartupTask.entries.size, skipped.progress)
+        assertSame(skipped, skipped.withStatus(StartupTask.ERA, StartupStatus.READY))
+        assertFalse(skipped.preparationComplete)
+    }
+
     @Test fun actualCompletedUnitsDriveProgressAndUnfinishedGroupsNeverReportReady() {
         val empty = StartupReadiness()
         assertEquals(0f, empty.progress)

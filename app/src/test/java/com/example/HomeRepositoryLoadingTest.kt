@@ -18,6 +18,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.*
 import org.junit.Test
@@ -81,6 +83,41 @@ class HomeRepositoryLoadingTest {
             })
             assertTrue(era.all { it.year.toInt() in 1990..2009 })
             assertTrue(regional.all { it.language == "English" })
+
+            cache.put("discovery-v1:US:search:${DiscoveryRequestCoordinator.normalize("english   new releases United States")}",
+                candidates, 86_400_000)
+            val firstPresentation = DiscoveryRequestCoordinator.HomeRefresh(false, initialPresentation = true,
+                essentialShelves = setOf(UnifiedRecommendationEngine.Shelf.QUICK, UnifiedRecommendationEngine.Shelf.CHART))
+            // Exercise the real engine/cache/matching path with the legacy flag
+            // deliberately false: initialPresentation must still cap each shelf.
+            val batches = withTimeout(5_000) { withContext(firstPresentation) {
+                UnifiedRecommendationEngine(app).refresh(profile, "United States",
+                    com.example.recommendation.UserTasteProfile.COLD_START_PROFILE, null,
+                    emptyList(), emptyList(), tracks, false,
+                    shelves = firstPresentation.essentialShelves, startupBatch = false).toList()
+            } }
+            assertEquals(firstPresentation.essentialShelves, batches.flatMap { it.requested }.toSet())
+            val quick = batches.flatMap { it.quick }
+            val chart = batches.flatMap { it.chart.orEmpty() }
+            assertEquals(3, quick.size)
+            assertEquals(3, chart.size)
+            assertTrue((quick + chart).all { UnifiedRecommendationEngine.verified(it) && it.recommendationOnly })
+
+            // A confirmed empty discovery shelf must not suppress the other
+            // completed shelf or trigger unrelated JioSaavn filler/network work.
+            cache.put("discovery-v1:US:search:${DiscoveryRequestCoordinator.normalize("english   new releases United States")}",
+                emptyList(), 86_400_000)
+            cache.put("discovery-v1:US:browse:femusic_home", emptyList(), 86_400_000)
+            val partial = withTimeout(5_000) { withContext(firstPresentation) {
+                UnifiedRecommendationEngine(app).refresh(profile, "United States",
+                    com.example.recommendation.UserTasteProfile.COLD_START_PROFILE, null,
+                    emptyList(), emptyList(), tracks, false,
+                    shelves = firstPresentation.essentialShelves).toList()
+            } }
+            assertTrue(partial.flatMap { it.quick }.isEmpty())
+            assertEquals(3, partial.flatMap { it.chart.orEmpty() }.size)
+
+
         } finally {
             BackgroundWorkCoordinator.scrolling(false)
             BackgroundWorkCoordinator.foreground(false)

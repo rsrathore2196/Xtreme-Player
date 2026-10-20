@@ -87,6 +87,22 @@ class UnifiedRecommendationEngine(context: Context?,
     private fun unavailable(track: MusicTrack) = (failures.value[track.id] ?: 0L) > android.os.SystemClock.elapsedRealtime()
 
     companion object {
+        internal const val INITIAL_SHELF_SIZE = 3
+        internal fun requestedShelfSize(startupBatch: Boolean, initialPresentation: Boolean, fullSize: Int): Int =
+            if (startupBatch || initialPresentation) INITIAL_SHELF_SIZE else fullSize
+
+        /** Independent initial shelves share network/matching limits, not a single
+         * long-lived startup admission lease. Optional shelves remain serialized
+         * by the coordinator, including its idle gate and card spacing. */
+        internal suspend fun prepareShelves(shelves: List<Shelf>, initialPresentation: Boolean,
+            load: suspend (Shelf) -> Unit) = coroutineScope {
+            if (!initialPresentation) shelves.forEach { load(it) }
+            else {
+                val slots = Semaphore(2)
+                shelves.map { shelf -> launch { slots.withPermit { load(shelf) } } }.joinAll()
+            }
+        }
+
         const val SOURCE = "native-discovery-mood-v2"
         const val CHART_TTL = 3 * 60 * 60_000L
         const val CONTEXT_TTL = 6 * 60 * 60_000L
@@ -135,30 +151,31 @@ class UnifiedRecommendationEngine(context: Context?,
         // Only requested/visible shelves are queued. Below-the-fold shelves do no work.
         val requested = ordering.filter { it in shelves }
         val priority = currentCoroutineContext()[DiscoveryRequestCoordinator.HomeRefresh]
-        for (shelf in requested) {
+        val initialPresentation = priority?.initialPresentation == true
+        // The popup path must never accidentally request shelfSize + reserve.
+        val initialBatch = startupBatch || initialPresentation
+        prepareShelves(requested, initialPresentation) { shelf ->
             // Direct compatibility entry points request a specific visible shelf;
             // Home supplies explicit optional/essential demand in its context.
-            val essential = startupBatch || priority == null || shelf in priority.essentialShelves
-            priority?.waitingShelf?.value = shelf
+            val essential = initialBatch || priority == null || shelf in priority.essentialShelves
+            if (!initialPresentation) priority?.waitingShelf?.value = shelf
             try {
-                // Admission owns the complete suspending card unit, not merely
-                // the launch of child workers. The coordinator also spaces cards
-                // across separate refresh passes and keeps playback independent.
-                BackgroundWorkCoordinator.startup(if (essential || force)
-                    BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI else BackgroundWorkCoordinator.StartupPriority.DEFERRED,
-                    urgent = { priority?.requested?.value == true }, cardWork = true,
-                    label = "Home shelf ${shelf.name}") {
-                    priority?.waitingShelf?.value = null
-                    priority?.activeShelf?.value = shelf
+                suspend fun load() {
+                    if (!initialPresentation) {
+                        priority?.waitingShelf?.value = null
+                        priority?.activeShelf?.value = shelf
+                    }
                     withContext(DiscoveryRequestCoordinator.HomeCard(essential)) {
-                        withTimeout(if (priority?.initialPresentation == true) 15_000L else 40_000L) {
+                        // The parent refresh owns one shared cold-start budget.
+                        // No independent 15s wait is added for each initial shelf.
+                        withTimeout(if (initialPresentation) DiscoveryRequestCoordinator.INITIAL_DISCOVERY_BUDGET_MS else 40_000L) {
                             yieldHomeWork()
-                            val candidates = discover(shelf, profile, country, taste, seed, history, favorites, force, variation, false,
-                                initialBatch = startupBatch)
+                            val candidates = discover(shelf, profile, country, taste, seed, history, favorites, force, variation, initialPresentation,
+                                initialBatch = initialBatch)
                                 .filterNot { recent.contains(it.track) || taste.keyFor(it.track) in taste.recentRecordings }
-                            resolveBatches(candidates, shelf, profile, taste, known + history + favorites, false,
-                                recent = recent, maxResults = if (startupBatch) 3 else limits.shelfSize + limits.reserve,
-                                concurrency = if (startupBatch) minOf(2, limits.matchConcurrency) else limits.matchConcurrency).collect { tracks ->
+                            resolveBatches(candidates, shelf, profile, taste, known + history + favorites, initialPresentation,
+                                recent = recent, maxResults = requestedShelfSize(startupBatch, initialPresentation, limits.shelfSize + limits.reserve),
+                                concurrency = if (initialBatch) minOf(2, limits.matchConcurrency) else limits.matchConcurrency).collect { tracks ->
                                 val now = System.currentTimeMillis()
                                 send(Batch(quick = tracks.takeIf { shelf == Shelf.QUICK }.orEmpty(),
                                     era = tracks.takeIf { shelf == Shelf.ERA }.orEmpty(),
@@ -172,13 +189,20 @@ class UnifiedRecommendationEngine(context: Context?,
                         }
                     }
                 }
+                if (initialPresentation) load()
+                else BackgroundWorkCoordinator.startup(if (essential || force)
+                    BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI else BackgroundWorkCoordinator.StartupPriority.DEFERRED,
+                    urgent = { priority?.requested?.value == true }, cardWork = true,
+                    label = "Home shelf ${shelf.name}") { load() }
             } catch (_: TimeoutCancellationException) {
                 currentCoroutineContext().ensureActive() // A canceled parent must not start another card.
             } catch (e: CancellationException) { throw e }
             catch (_: Exception) { /* Keep other shelves and the last verified snapshot. */ }
             finally {
-                priority?.waitingShelf?.value = null
-                priority?.activeShelf?.value = null
+                if (!initialPresentation) {
+                    priority?.waitingShelf?.value = null
+                    priority?.activeShelf?.value = null
+                }
             }
         }
     }.flowOn(ranking)
@@ -277,7 +301,7 @@ class UnifiedRecommendationEngine(context: Context?,
                 }
             }
         } else {
-            if (shelf == Shelf.CHART) pool("charts", "FEmusic_charts", regional = true)
+            if (shelf == Shelf.CHART && !initialBatch) pool("charts", "FEmusic_charts", regional = true)
             val selected = languages.ifEmpty { listOf("") }
             // Balanced rounds cover all selected languages; cap work per refresh and
             // rotate the starting language rather than permanently dropping selections.
@@ -301,8 +325,14 @@ class UnifiedRecommendationEngine(context: Context?,
             }
             // Anonymous editorial discovery is supporting evidence only, never a
             // substitute for selected-language candidates or a claimed official chart.
-            if (found.isEmpty() && languages.isEmpty() && shelf != Shelf.ERA)
+            if (found.isEmpty() && shelf == Shelf.CHART && initialBatch)
+                pool("charts", "FEmusic_charts", regional = true)
+            if (found.isEmpty() && shelf != Shelf.ERA)
                 pool("browse", "FEmusic_home")
+            // Public-feed candidates still pass language filtering and exact
+            // recording/JioSaavn verification; regional defaults never override
+            // explicit preferences.
+
         }
         }
         return rank(found, shelf, profile, taste, moods, variation, essential)

@@ -15,6 +15,11 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33], application = Application::class)
 class QualityTierResolutionTest {
+    // Verified matches are process-wide in the current resolver. Each test owns
+    // its provider responses and must not inherit another fixture's recording.
+    @org.junit.Before fun clearSharedMatches() { StreamResolver.clearVerifiedLosslessCache() }
+    @org.junit.After fun releaseSharedMatches() { StreamResolver.clearVerifiedLosslessCache() }
+
     private val song = MusicTrack("yt_abcdefghijk", "Song (Official Audio)", "Artist", "Album", 180000, "cover", "", source = "YouTube Music")
     private val jio = song.copy(id = "online_match", title = "Song", source = "JIOSAAVN", audioUrl = "https://aac.saavncdn.com/song_320.mp4")
     private val archive = song.copy(id = "ia_album:song.flac", title = "Song", audioUrl = "https://archive.org/download/album/song.flac",

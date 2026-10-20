@@ -5,9 +5,9 @@ import androidx.compose.runtime.Immutable
 enum class StartupGroup { HOME, RECENTS, PLAYER }
 
 enum class StartupStatus {
-    PENDING, RUNNING, READY, FALLBACK_READY, UNAVAILABLE;
+    PENDING, RUNNING, READY, FALLBACK_READY, SKIPPED, UNAVAILABLE;
 
-    val terminal: Boolean get() = this == READY || this == FALLBACK_READY || this == UNAVAILABLE
+    val terminal: Boolean get() = this == READY || this == FALLBACK_READY || this == SKIPPED || this == UNAVAILABLE
 }
 
 /** Real units of initial work. Only the bounded viewport artwork batch is required;

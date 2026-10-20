@@ -115,10 +115,16 @@ class LosslessArchivePolicyTest {
         set("losslessAttemptKey", "0|${track.id}")
         AudioEffectsManager.setEnabled(true)
         AudioEffectsManager.setBandLevel(0, 450)
+        // Drain queued collectors while EQ is enabled too: a conflated final
+        // disabled state must not conceal a forbidden intermediate restart.
+        dispatcher.scheduler.runCurrent()
+        shadowOf(Looper.getMainLooper()).idle()
         val before = manager.uiState.value
         AudioEffectsManager.setEnabled(false)
         val eq = AudioEffectsManager.effectsState.value
         policy(maximum)
+        dispatcher.scheduler.runCurrent()
+        shadowOf(Looper.getMainLooper()).idle()
         assertTrue(job.isActive)
         assertSame(job, field("losslessUpgradeJob").get(manager))
         assertEquals("0|${track.id}", field("losslessAttemptKey").get(manager))

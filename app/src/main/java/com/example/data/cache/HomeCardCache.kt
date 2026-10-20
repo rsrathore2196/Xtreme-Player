@@ -24,7 +24,10 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /** Last successful shelf selection, independent of Activity and process lifetime. */
-data class RecommendationShelfLoad(val context: String, val fetchedAt: Long)
+data class RecommendationShelfLoad(val context: String, val fetchedAt: Long, val partial: Boolean = false) {
+    fun needsRefresh(context: String, now: Long, ttl: Long, allowEnrichment: Boolean): Boolean =
+        this.context != context || now - fetchedAt !in 0 until ttl || partial && allowEnrichment
+}
 
 data class SavedHomeCards(
     val profileKey: String, val signal: String, val generation: Long, val refreshedAt: Long,
@@ -357,7 +360,7 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
             .put("recommendationSource", s.recommendationSource).put("seedKey", s.seedKey)
             .put("seedArtist", s.seedArtist).put("seedTitle", s.seedTitle)
             .put("shelfLoads", JSONObject().apply { s.shelfLoads.forEach { (key, value) ->
-                put(key, JSONObject().put("context", value.context).put("fetchedAt", value.fetchedAt)) } })
+                put(key, JSONObject().put("context", value.context).put("fetchedAt", value.fetchedAt).put("partial", value.partial)) } })
             .put("readyShelves", JSONArray(s.readyShelves.toList()))
             .put("artists", JSONArray(s.artists.map { a -> JSONObject().put("name", a.name)
                 .put("count", a.playCount).put("tracks", ids(a.tracks.take(MAX_TRACKS_PER_LIST))) }))
@@ -405,7 +408,7 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
             tracks(root.optJSONArray("inspiredTrackCandidates")), root.optString("recommendationSource"),
             root.optString("seedKey"), root.optString("seedArtist"), root.optString("seedTitle"),
             root.optJSONObject("shelfLoads")?.let { loads -> loads.keys().asSequence().mapNotNull { key ->
-                loads.optJSONObject(key)?.let { key to RecommendationShelfLoad(it.optString("context"), it.optLong("fetchedAt")) }
+                loads.optJSONObject(key)?.let { key to RecommendationShelfLoad(it.optString("context"), it.optLong("fetchedAt"), it.optBoolean("partial", false)) }
             }.toMap() }.orEmpty(),
             root.optJSONArray("readyShelves")?.let { a -> (0 until a.length()).map { a.optString(it) }.toSet() }.orEmpty(),
             presentationComplete)

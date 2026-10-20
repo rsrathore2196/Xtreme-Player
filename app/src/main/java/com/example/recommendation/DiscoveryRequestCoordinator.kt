@@ -14,6 +14,8 @@ import kotlin.coroutines.EmptyCoroutineContext
 
 /** Shared discovery work: two bounded optional slots and a reserved urgent lane. */
 internal object DiscoveryRequestCoordinator {
+    const val INITIAL_DISCOVERY_BUDGET_MS = 6_000L
+
     /** A pull can promote its existing refresh without launching another pass. */
     class HomeRefresh(requested: Boolean, val initialShelf: Boolean = false,
         val essentialShelves: Set<UnifiedRecommendationEngine.Shelf> = emptySet(),

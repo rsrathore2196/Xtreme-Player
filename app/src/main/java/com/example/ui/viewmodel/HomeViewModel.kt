@@ -20,6 +20,7 @@ import com.example.data.cache.RecommendationShelfLoad
 import com.example.recommendation.HomeRecommendationPolicy
 import com.example.recommendation.DiscoveryRequestCoordinator
 import com.example.recommendation.UserTasteProfile
+import com.example.recommendation.HomeUserMode
 import com.example.recommendation.UserTasteProfileStore
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.update
@@ -132,6 +133,8 @@ class HomeViewModel(
     @Volatile private var preparingInitialHome = !BackgroundWorkCoordinator.startupReadiness.value.complete
     @Volatile private var deferredHomeReady = false
     private val eventsLoaded = CompletableDeferred<Unit>()
+    private val _userMode = MutableStateFlow(HomeUserMode.LOADING)
+    val userMode: StateFlow<HomeUserMode> = _userMode.asStateFlow()
     @Volatile private var recentHistoryUnavailable = false
     private val favoritesLoaded = CompletableDeferred<Unit>()
     private var savedSignal: String? = initialCards?.signal
@@ -196,6 +199,9 @@ class HomeViewModel(
                 rows.forEach { retainedEvents[it.id] = it }
                 lastEventStamps.clear(); stamps.forEach { lastEventStamps[it.id] = it }
                 emit(withContext(workerDispatcher) { retainedEvents.values.sortedWith(compareByDescending<ListeningEventEntity> { it.timestamp }.thenByDescending { it.id }).take(300) })
+                // Count covers the whole database, not just the recent window.
+                // Never infer a new user from a default/failed empty StateFlow.
+                _userMode.value = HomeUserMode.confirmed(count, retainedEvents.isNotEmpty() || stamps.isNotEmpty())
                 // Visible history is ready independently of long-term preparation.
                 historyReadyForRanking.value = true
                 if (stamps.isEmpty()) { cachedHero.value = null; cachedHistory.value = null }
@@ -206,6 +212,7 @@ class HomeViewModel(
         if (error is CancellationException) throw error
         historicalLoadFailed = true
         recentHistoryUnavailable = true
+        _userMode.value = HomeUserMode.UNAVAILABLE
         historyReadyForRanking.value = true
         eventsLoaded.complete(Unit)
         BackgroundWorkCoordinator.startupTask(StartupTask.RECENT_HISTORY,
@@ -304,7 +311,14 @@ class HomeViewModel(
         if (history.ready) TasteInputs(history.events, history.tracks, favorites, preferences, history.complete) else null
     }.filterNotNull().distinctUntilChanged().debounce(300L).mapLatest { inputs ->
         restored.await()
-        eventsLoaded.await(); favoritesLoaded.await(); tasteCacheLoaded.await()
+        eventsLoaded.await(); favoritesLoaded.await()
+        if (_userMode.value == HomeUserMode.NEW_USER) {
+            return@mapLatest TasteSnapshot(inputs, UserTasteProfile.COLD_START_PROFILE.copy(
+                languageAffinities = inputs.preferences.languages.associate {
+                    HomeRecommendationPolicy.normalize(it) to 0.35f
+                }))
+        }
+        tasteCacheLoaded.await()
         // Restarting a screen subscription is not a new listening signal. Keep the same decay
         // snapshot until real data changes, rather than reshuffling on every tab return.
         if (inputs != lastTasteInputs) {
@@ -413,22 +427,26 @@ class HomeViewModel(
 
     // Hidden, zero-height shelves cannot request themselves. Prefetch only the
     // next eligible section as it approaches the viewport, never a full fan-out.
+    private fun eligibleShelves(): Set<Shelf> = eligibleHomeShelves(_userMode.value,
+        tasteProfile.value.isColdStart, activeRecommendationTrack() != null, preparedCards.value)
+
     private fun shelfDemand(allowDeferred: Boolean = false): Set<Shelf> {
+        val eligible = eligibleShelves()
         if (!deferredHomeReady && !allowDeferred) {
             // Cold Home only bootstraps its first shelf. Cached cards stay visible
             // without scheduling discovery for every empty/lower section.
             val emptyVisible = recommendationViewport.value.filterTo(mutableSetOf()) {
                 preparedCards.value.section(it).tracks.isEmpty() && needsShelfLoad(it)
             }
-            return emptyVisible + if (preparedCards.value.quick.tracks.isEmpty() && preparedCards.value.chart.tracks.isEmpty())
-                setOf(Shelf.QUICK) else emptySet()
+            return (emptyVisible + if (preparedCards.value.quick.tracks.isEmpty() && preparedCards.value.chart.tracks.isEmpty())
+                setOf(Shelf.QUICK) else emptySet()).intersect(eligible)
         }
         val visible = recommendationViewport.value
         val next = Shelf.entries.drop((visible.maxOfOrNull { it.ordinal } ?: -1) + 1)
-            .firstOrNull { needsShelfLoad(it) }
+            .firstOrNull { it in eligible && needsShelfLoad(it) }
         val bootstrap = if (preparedCards.value.quick.tracks.isEmpty() && preparedCards.value.chart.tracks.isEmpty())
             setOf(Shelf.QUICK) else emptySet()
-        return visible + listOfNotNull(next) + bootstrap
+        return (visible + listOfNotNull(next) + bootstrap).intersect(eligible)
     }
 
     fun setRecommendationViewport(owner: Any, keys: Set<String>) {
@@ -450,13 +468,14 @@ class HomeViewModel(
     }
 
     private fun needsShelfLoad(shelf: Shelf): Boolean {
+        if (shelf !in eligibleShelves()) return false
         if (shelf == Shelf.PERSONALIZED && tasteProfile.value.isColdStart) return false
         if (shelf in setOf(Shelf.SIMILAR, Shelf.INSPIRED) && activeRecommendationTrack() == null) return false
         val context = shelfContext(shelf)
         val now = System.currentTimeMillis()
         if (shelfAttempts[shelf]?.let { it.context == context && now - it.fetchedAt in 0 until 60_000L } == true) return false
         val ttl = if (shelf in setOf(Shelf.QUICK, Shelf.ERA, Shelf.CHART)) UnifiedRecommendationEngine.CHART_TTL else UnifiedRecommendationEngine.CONTEXT_TTL
-        return shelfLoads[shelf.name]?.let { it.context != context || now - it.fetchedAt !in 0 until ttl } ?: true
+        return shelfLoads[shelf.name]?.needsRefresh(context, now, ttl, allowEnrichment = deferredHomeReady) ?: true
     }
     private fun hideRecentRecommendations(cards: RecommendationCards, recent: List<MusicTrack>,
         taste: UserTasteProfile): RecommendationCards {
@@ -476,7 +495,12 @@ class HomeViewModel(
     val recommendationCards: StateFlow<RecommendationCards> = _recommendationCards.asStateFlow()
     fun sectionState(shelf: Shelf): StateFlow<SectionState> = sectionStates.getValue(shelf)
     private val sectionStates = Shelf.entries.associateWith { shelf ->
-        recommendationCards.map { it.section(shelf) }.distinctUntilChanged()
+        combine(recommendationCards, _userMode) { cards, mode ->
+            val state = cards.section(shelf)
+            if (mode == HomeUserMode.NEW_USER && shelf !in setOf(Shelf.QUICK, Shelf.CHART))
+                state.copy(tracks = emptyList(), isLoading = false, isLoaded = false, isError = false)
+            else state
+        }.distinctUntilChanged()
             .stateIn(dataScope, SharingStarted.Eagerly, _recommendationCards.value.section(shelf))
     }
     val ytmCard get() = sectionState(Shelf.QUICK)
@@ -521,9 +545,11 @@ class HomeViewModel(
     private var savedCandidates: Candidates? = initialCards?.let { candidates.value }
     private val _mostListenedArtists = MutableStateFlow(initialCards?.artists.orEmpty().take(20))
     val mostListenedArtists: StateFlow<List<MostListenedArtist>> = _mostListenedArtists.asStateFlow()
-    val hasListenedArtists = mostListenedArtists.map { it.isNotEmpty() }.distinctUntilChanged()
+    val hasListenedArtists = combine(mostListenedArtists, _userMode) { artists, mode ->
+        mode != HomeUserMode.NEW_USER && artists.isNotEmpty() }.distinctUntilChanged()
         .stateIn(dataScope, SharingStarted.Eagerly, _mostListenedArtists.value.isNotEmpty())
-    val hasRecentlyPlayed = listeningHistoryCard.map { it.tracks.isNotEmpty() }.distinctUntilChanged()
+    val hasRecentlyPlayed = combine(listeningHistoryCard, _userMode) { history, mode ->
+        mode != HomeUserMode.NEW_USER && history.tracks.isNotEmpty() }.distinctUntilChanged()
         .stateIn(dataScope, SharingStarted.Eagerly, _listeningHistoryCard.value.tracks.isNotEmpty())
     private val listeningCardRequests = MutableStateFlow(0L)
     private val pendingCardPlays = linkedMapOf<String, MusicTrack>()
@@ -553,6 +579,17 @@ class HomeViewModel(
                 if (_listeningHistoryCard.value.tracks.isEmpty()) StartupStatus.UNAVAILABLE else StartupStatus.FALLBACK_READY)
             BackgroundWorkCoordinator.startupTask(StartupTask.RECENT_ARTISTS,
                 if (_mostListenedArtists.value.isEmpty()) StartupStatus.UNAVAILABLE else StartupStatus.FALLBACK_READY)
+            return
+        }
+        if (_userMode.value == HomeUserMode.NEW_USER) {
+            // Empty is a completed authoritative result; there is no artist/taste
+            // ranking to prepare. Room will request this again after real playback.
+            _listeningHistoryCard.update { it.copy(tracks = emptyList(), isLoading = false) }
+            _mostListenedArtists.value = emptyList()
+            listeningCardsPublished = true
+            listeningCardsReady.complete(Unit)
+            BackgroundWorkCoordinator.startupTask(StartupTask.RECENT_HISTORY, StartupStatus.READY)
+            BackgroundWorkCoordinator.startupTask(StartupTask.RECENT_ARTISTS, StartupStatus.SKIPPED)
             return
         }
         val longTerm = personalizationHistory.first { it.ready }
@@ -725,6 +762,7 @@ class HomeViewModel(
             sequenceOf(inputs.catalog, pool.quick, pool.era, pool.chart, pool.personalized,
                 pool.similar, pool.inspired, inputs.history, inputs.favorites).flatMap { it.asSequence() },
             limit = 400, checkpoint = { yieldHomePreparation() })
+        val eligible = eligibleShelves()
         val seen = HomeRecommendationPolicy.Recordings()
         val excludedRecent = HomeRecommendationPolicy.Recordings().apply { inputs.recent.forEach { add(it) } }
         fun notRecent(track: MusicTrack) = !excludedRecent.contains(track) && taste.keyFor(track) !in taste.recentRecordings
@@ -736,11 +774,11 @@ class HomeViewModel(
         }
         chart.forEach { seen.add(it) }
         yieldHomePreparation()
-        val era = BackgroundWorkCoordinator.work {
+        val era = if (Shelf.ERA !in eligible) emptyList() else BackgroundWorkCoordinator.work {
             HomeRecommendationPolicy.diversify(fresh(pool.era), HomeRecommendationPolicy.MAX_SHELF_TRACKS, seen)
         }
         yieldHomePreparation()
-        val personalized = if (taste.isColdStart) emptyList() else BackgroundWorkCoordinator.work {
+        val personalized = if (Shelf.PERSONALIZED !in eligible || taste.isColdStart) emptyList() else BackgroundWorkCoordinator.work {
             HomeRecommendationPolicy.diversify(fresh(pool.personalized), HomeRecommendationPolicy.MAX_SHELF_TRACKS, seen)
         }
         yieldHomePreparation()
@@ -749,11 +787,11 @@ class HomeViewModel(
         }
         val relevantSeed = pool.seedKey.isNotBlank() && pool.seedKey == UnifiedRecommendationEngine.seedKey(activeRecommendationTrack())
         yieldHomePreparation()
-        val similar = if (relevantSeed) BackgroundWorkCoordinator.work {
+        val similar = if (relevantSeed && Shelf.SIMILAR in eligible) BackgroundWorkCoordinator.work {
             HomeRecommendationPolicy.diversify(fresh(pool.similar), HomeRecommendationPolicy.MAX_SHELF_TRACKS, seen)
         } else emptyList()
         yieldHomePreparation()
-        val inspired = if (relevantSeed) BackgroundWorkCoordinator.work {
+        val inspired = if (relevantSeed && Shelf.INSPIRED in eligible) BackgroundWorkCoordinator.work {
             HomeRecommendationPolicy.diversify(fresh(pool.inspired), HomeRecommendationPolicy.MAX_SHELF_TRACKS, seen)
         } else emptyList()
         val shown = chart + era + quick + personalized + similar + inspired + _mostListenedArtists.value.flatMap { it.tracks }
@@ -920,7 +958,7 @@ class HomeViewModel(
     @Volatile private var manualRenderGeneration = -1L
     private var pendingSilentRefresh = false
     private var startupRefreshScheduled = false
-    private var startupBootstrapUsed = false
+    private val startupBatchShelves = mutableSetOf<Shelf>()
     private var lastDiscoverySignal: Pair<Set<String>, Set<String>>? = null
 
     fun setHomeVisible(visible: Boolean) {
@@ -1020,7 +1058,9 @@ class HomeViewModel(
     init {
         ownerScope.launch {
             restored.await()
+            eventsLoaded.await()
             try {
+                if (_userMode.value == HomeUserMode.NEW_USER) return@launch
                 val key = profileKey()
                 val cached = BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI) {
                     UserTasteProfileStore.loadAsync(getApplication(), key)
@@ -1047,11 +1087,10 @@ class HomeViewModel(
             awaitHomeIdle(allowWhenEmpty = false, quietMillis = 15_000L)
             deferredHomeReady = true
             _currentStage.value = LoadingStage.PRIORITY_3_BACKGROUND_ENRICHED
-            if (startupBootstrapUsed) {
-                // Top up from cached discovery/mappings; do not repeat already verified lookups.
-                shelfLoads.remove(Shelf.QUICK.name)
-                shelfAttempts.remove(Shelf.QUICK)
-            }
+            // Retry incomplete startup attempts only after genuine idle. Fully
+            // cached shelves retain their TTL; persisted small batches can top up
+            // from discovery/mapping cache across later launches as well.
+            startupBatchShelves.forEach { shelfAttempts.remove(it) }
             refreshHome(false)
             // Optional catalog enrichment is independent of first-shelf readiness.
             ownerScope.launch {
@@ -1194,8 +1233,9 @@ class HomeViewModel(
             if (preparedCards.value.quick.tracks.isNotEmpty() || preparedCards.value.chart.tracks.isNotEmpty())
                 startupRecommendationsComplete.complete(Unit)
             else {
-                shelfLoads.remove(Shelf.QUICK.name)
-                shelfAttempts.remove(Shelf.QUICK)
+                listOf(Shelf.QUICK, Shelf.CHART).forEach {
+                    shelfLoads.remove(it.name); shelfAttempts.remove(it)
+                }
             }
           } finally {
             _currentStage.value = LoadingStage.PRIORITY_2_ESSENTIAL_CONTENT
@@ -1371,30 +1411,27 @@ class HomeViewModel(
             essentialsLoaded.await()
             initialCachePrepared.await()
             BackgroundWorkCoordinator.startupTask(StartupTask.PERSONALIZATION, StartupStatus.RUNNING)
-            val taste = withTimeoutOrNull(8_000L) { tasteSnapshot.first { it.inputs != null } }
+            val newUser = _userMode.value == HomeUserMode.NEW_USER
+            val taste = if (newUser) null else withTimeoutOrNull(8_000L) { tasteSnapshot.first { it.inputs != null } }
             BackgroundWorkCoordinator.startupTask(StartupTask.PERSONALIZATION,
-                if (taste != null) StartupStatus.READY else StartupStatus.FALLBACK_READY)
+                if (newUser) StartupStatus.SKIPPED else if (taste != null) StartupStatus.READY else StartupStatus.FALLBACK_READY)
             val visibleCache = withContext(workerDispatcher) {
                 hideRecentRecommendations(preparedCards.value,
                     recentlyPlayed.value + _listeningHistoryCard.value.tracks + listOfNotNull(activeRecommendationTrack()), tasteProfile.value)
             }
             val missing = Shelf.entries.filterTo(linkedSetOf()) { shelf ->
-                val eligible = when (shelf) {
-                    Shelf.PERSONALIZED -> !tasteProfile.value.isColdStart
-                    Shelf.SIMILAR, Shelf.INSPIRED -> activeRecommendationTrack() != null
-                    else -> true
-                }
+                val eligible = shelf in eligibleShelves()
                 val cached = visibleCache.section(shelf).tracks.isNotEmpty()
                 BackgroundWorkCoordinator.startupTask(shelf.startupTask(), when {
+                    !eligible -> StartupStatus.SKIPPED
                     cached -> StartupStatus.FALLBACK_READY
-                    !eligible -> StartupStatus.READY // No history/seed: a genuine final empty section.
                     else -> StartupStatus.RUNNING
                 })
                 eligible && !cached
             }
             if (missing.isNotEmpty()) {
                 val request = refreshHome(false, missing, initialPresentation = true)
-                val finished = withTimeoutOrNull(40_000L) {
+                val finished = withTimeoutOrNull(DiscoveryRequestCoordinator.INITIAL_DISCOVERY_BUDGET_MS) {
                     request.join()
                     homeRefreshJob?.join()
                     true
@@ -1404,15 +1441,17 @@ class HomeViewModel(
                     homeRefreshJob?.cancelAndJoin()
                 }
             }
-            // Rank/deduplicate once, after the bounded initial pass. No per-track
-            // full-card publication or repeated ranking while the modal is visible.
+            // Complete any last verified batch retained at the shared deadline.
+            // Small prepared shelves were published independently during discovery.
             renderRecommendations()
             val ready = withContext(workerDispatcher) {
                 val cards = hideRecentRecommendations(preparedCards.value,
                     recentlyPlayed.value + _listeningHistoryCard.value.tracks + listOfNotNull(activeRecommendationTrack()), tasteProfile.value)
                 Shelf.entries.fold(cards) { result, shelf ->
                     val section = result.section(shelf)
-                    result.withSection(shelf, section.copy(isLoading = false))
+                    result.withSection(shelf, if (shelf !in eligibleShelves())
+                        section.copy(tracks = emptyList(), isLoading = false, isLoaded = false, isError = false)
+                    else section.copy(isLoading = false))
                 }
             }
             preparedCards.value = ready
@@ -1479,7 +1518,10 @@ class HomeViewModel(
         try {
             coordinator.startup(BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI,
                 label = "Initial viewport artwork") {
-                withTimeoutOrNull(6_500L) {
+                // New-user startup must not add another multi-second image
+                // phase after its shared discovery deadline. Cache hits still
+                // decode at the same display size; unavailable images stay optional.
+                withTimeoutOrNull(if (_userMode.value == HomeUserMode.NEW_USER) 1_500L else 6_500L) {
                     val loader = app.awaitImageLoader()
                     for (batch in requests.chunked(2)) {
                         val results = kotlinx.coroutines.coroutineScope {
@@ -1537,7 +1579,7 @@ class HomeViewModel(
                 setOf(Shelf.QUICK) else emptySet()
             val demand = if (initialPresentation) requestedShelves.orEmpty() else
                 shelfDemand(allowDeferred = isExplicitPull || pendingExplicitRefresh || activeRefreshIsExplicit) + bootstrap
-            val requested = (requestedShelves ?: demand).intersect(demand)
+            val requested = (requestedShelves ?: demand).intersect(demand).intersect(eligibleShelves())
                 .filterTo(mutableSetOf()) { initialPresentation || isExplicitPull || pendingExplicitRefresh || needsShelfLoad(it) }
                 // A failed/negative-cached bootstrap must not discard another
                 // visible shelf's demand and leave a first installation empty.
@@ -1571,8 +1613,8 @@ class HomeViewModel(
             pendingSilentRefresh = false
             val initialExplicit = isExplicitPull || pendingExplicitRefresh || _isRefreshing.value
             pendingExplicitRefresh = false
-            val startupBatch = !initialPresentation && !BackgroundWorkCoordinator.startupReadiness.value.complete &&
-                !deferredHomeReady && !initialExplicit && requested.any(bootstrap::contains)
+            val startupBatch = initialPresentation || (!BackgroundWorkCoordinator.startupReadiness.value.complete &&
+                !deferredHomeReady && !initialExplicit && requested.any(bootstrap::contains))
             val priority = DiscoveryRequestCoordinator.HomeRefresh(initialExplicit, initialShelf = startupBatch,
                 // Once initial content is prepared, automatic retries/revalidation
                 // are optional even for an empty shelf. A pull promotes its pass.
@@ -1580,7 +1622,7 @@ class HomeViewModel(
                 initialPresentation = initialPresentation)
             activeRefreshPriority = priority
             activeRefreshIsExplicit = initialExplicit
-            if (startupBatch) startupBootstrapUsed = true
+            if (startupBatch) startupBatchShelves.addAll(requested)
             _isRefreshing.value = initialExplicit
             if (initialExplicit) _refreshErrorMessage.value = null
             homeRefreshJob = ownerScope.launch {
@@ -1616,7 +1658,7 @@ class HomeViewModel(
                             // Each shelf owns its own admission/deadline. A silent
                             // pass waiting for optional idle must not expire before
                             // it starts; an explicit pull keeps a bounded budget.
-                            val completed = priority.withBudget(40_000L) {
+                            val completed = priority.withBudget(if (initialPresentation) DiscoveryRequestCoordinator.INITIAL_DISCOVERY_BUDGET_MS else 40_000L) {
                                 refreshSuggestions(activeRefreshIsExplicit, requested, startupBatch && !activeRefreshIsExplicit)
                                 true
                             }
@@ -1705,7 +1747,7 @@ class HomeViewModel(
                     (it !in setOf(Shelf.SIMILAR, Shelf.INSPIRED) || sameSeed) }
                 if (successful.isEmpty()) return@collect
                 successful.forEach { shelf ->
-                    shelfLoads[shelf.name] = RecommendationShelfLoad(contexts.getValue(shelf), batch.fetchedAt[shelf] ?: startedAt)
+                    shelfLoads[shelf.name] = RecommendationShelfLoad(contexts.getValue(shelf), batch.fetchedAt[shelf] ?: startedAt, partial = startupBatch)
                     results.getValue(shelf).forEach { fresh[it.id] = it }
                 }
                 if (Shelf.QUICK in successful || Shelf.ERA in successful) lastDiscoveryRefresh = System.currentTimeMillis()
@@ -1728,6 +1770,14 @@ class HomeViewModel(
                         seedArtist = if (updatesSeed) batch.seedArtist else old.seedArtist,
                         seedTitle = if (updatesSeed) batch.seedTitle else old.seedTitle,
                         ready = old.ready.takeIf { trusted }.orEmpty() + successful, contextKey = profileKey(profile))
+                }
+                if (initialPresentation) {
+                    // A slow neighbouring shelf never holds verified content back.
+                    renderRecommendations()
+                    val prepared = preparedCards.value
+                    _recommendationCards.update { displayed -> successful.fold(displayed) { cards, shelf ->
+                        cards.withSection(shelf, prepared.section(shelf))
+                    } }
                 }
             }
             if (requestGeneration == refreshGeneration && profileKey() == profileKey(profile)) {

@@ -21,7 +21,13 @@ class EqualizerSourceIsolationTest {
     private fun applied() = runBlocking { withTimeout(2000) {
         while (PsychoacousticAudioProcessor.settings.get() != AudioEffectsManager.effectsState.value) delay(1)
     } }
-    @Before fun ready() { AudioEffectsManager.resetAll(false); applied() }
+    @Before fun ready() {
+        // A fresh processor has no band snapshot until a real command arrives.
+        // Resetting an already Flat/disabled manager is correctly a no-op.
+        AudioEffectsManager.setEnabled(true)
+        AudioEffectsManager.resetAll(false)
+        applied()
+    }
     @After fun clear() { AudioEffectsManager.resetAll(false); applied(); AudioSignalPath.reset() }
 
     @Test fun equalizerCannotReplaceWorking320KbpsJioAudioWithYoutube() = runBlocking {

@@ -41,11 +41,13 @@ class LosslessArchiveLookupTest {
     } as MusicDao
 
     @Before fun ready() {
+        com.example.data.repository.StreamResolver.clearVerifiedLosslessCache()
         app.getSharedPreferences("xtreme_audio_quality_prefs", 0).edit().clear().commit()
         connect(wifi = true)
     }
 
     @After fun clear() = runBlocking {
+        com.example.data.repository.StreamResolver.clearVerifiedLosslessCache()
         val monitor = NetworkQualityMonitor.getInstance(app)
         val scope = NetworkQualityMonitor::class.java.getDeclaredField("scope").apply { isAccessible = true }.get(monitor) as CoroutineScope
         scope.coroutineContext[Job]?.cancelAndJoin()
@@ -101,6 +103,8 @@ class LosslessArchiveLookupTest {
             }
             val found = repo.findLosslessUpgrade(track)
             assertEquals(archive, found)
+            // The injected provider owns these responses. Production lookups
+            // reuse verified matches; fake provider calls bypass that global cache.
             assertEquals(1, queries)
             assertEquals("online_song", track.id)
             assertEquals("JIOSAAVN", track.source)

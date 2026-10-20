@@ -39,7 +39,7 @@ import org.robolectric.shadows.ShadowSystemClock
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [31], application = Application::class)
 class InitialHomePreparationTest {
-    @Test fun fullCachedShelvesAndAnEmptyHistoryReachPreparedWithoutANetworkBootstrapOrVisibleHome() = runBlocking {
+    @Test fun confirmedEmptyHistoryUsesOnlyCachedDiscoveryShelvesWithoutANetworkBootstrapOrVisibleHome() = runBlocking {
         Dispatchers.setMain(UnconfinedTestDispatcher())
         val app = ApplicationProvider.getApplicationContext<Application>()
         val store = ViewModelStore()
@@ -97,19 +97,37 @@ class InitialHomePreparationTest {
             assertEquals(StartupStatus.READY, ready.status(StartupGroup.RECENTS))
             assertEquals(StartupStatus.READY, ready.status(StartupGroup.PLAYER))
             assertEquals(StartupStatus.FALLBACK_READY, ready.tasks[StartupTask.QUICK])
-            assertEquals(StartupStatus.FALLBACK_READY, ready.tasks[StartupTask.ERA])
+            assertEquals(StartupStatus.SKIPPED, ready.tasks[StartupTask.ERA])
+            assertEquals(com.example.recommendation.HomeUserMode.NEW_USER, home.userMode.value)
+            listOf(StartupTask.PERSONALIZATION, StartupTask.PERSONALIZED, StartupTask.SIMILAR, StartupTask.INSPIRED,
+                StartupTask.RECENT_ARTISTS).forEach { assertEquals("$it must not initialize", StartupStatus.SKIPPED, ready.tasks[it]) }
             assertEquals(StartupStatus.FALLBACK_READY, ready.tasks[StartupTask.CHART])
             assertTrue(home.listeningHistoryCard.value.tracks.isEmpty())
             assertTrue(home.mostListenedArtists.value.isEmpty())
             assertNull(player.uiState.value.currentTrack)
             assertEquals(quick.tracks, home.recommendationCards.value.quick.tracks)
-            assertEquals(era.tracks, home.recommendationCards.value.era.tracks)
+            assertTrue(home.recommendationCards.value.era.tracks.isEmpty())
+            assertFalse(home.eraCard.value.isLoading)
             assertFalse(home.recommendationCards.value.quick.isLoading)
             assertNotNull(home.heroSeedTrack.value)
             coordinator.initialContentDrawn()
             repeat(3) { coordinator.frame(5, 10) }
             withTimeout(2_000L) { coordinator.awaitInitialPresentationSettled() }
             assertTrue(coordinator.startupReadiness.value.complete)
+            val completedPresentation = coordinator.startupReadiness.value
+            val played = track("first-real-play")
+            val database = com.example.data.local.MusicDatabase.getDatabase(app)
+            database.musicDao().insertOrUpdateTrack(com.example.data.local.TrackEntity.fromMusicTrack(played))
+            database.listeningEventDao().insertListeningEvent(com.example.data.local.ListeningEventEntity.fromTrack(
+                played, "real-session", 30_000L, played.durationMs, "ACTUAL_PLAY"))
+            withTimeout(3_000L) {
+                while (home.userMode.value != com.example.recommendation.HomeUserMode.EXISTING_USER) {
+                    shadowOf(Looper.getMainLooper()).idle()
+                    delay(10L)
+                }
+            }
+            assertSame("New history must not restart startup or the modal", completedPresentation,
+                coordinator.startupReadiness.value)
         } finally {
             coordinator.foreground(false)
             store.clear(); player?.release(); cache.close()

@@ -9,6 +9,16 @@ import kotlin.math.exp
 import kotlin.math.abs
 import kotlin.math.ln
 
+/** Only a successful authoritative Room read can establish a new user. */
+enum class HomeUserMode {
+    LOADING, NEW_USER, EXISTING_USER, UNAVAILABLE;
+
+    companion object {
+        fun confirmed(actualPlayCount: Int, hasHistoryRows: Boolean): HomeUserMode =
+            if (actualPlayCount == 0 && !hasHistoryRows) NEW_USER else EXISTING_USER
+    }
+}
+
 data class UserTasteProfile(
     val artistAffinities: Map<String, Float> = emptyMap(),
     val genreAffinities: Map<String, Float> = emptyMap(),

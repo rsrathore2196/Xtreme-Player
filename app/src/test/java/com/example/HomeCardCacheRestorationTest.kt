@@ -59,7 +59,9 @@ class HomeCardCacheRestorationTest {
         return SavedHomeCards(profile, "signal", generation, System.currentTimeMillis(), quick, era, chart,
             SectionState(title = "History"), SectionState(title = "Personalized"), emptyList(),
             quick.tracks, era.tracks, chart.tracks, quick.tracks + era.tracks + chart.tracks,
-            recommendationSource = UnifiedRecommendationEngine.SOURCE, readyShelves = setOf("QUICK", "ERA", "CHART"))
+            recommendationSource = UnifiedRecommendationEngine.SOURCE, readyShelves = setOf("QUICK", "ERA", "CHART"),
+            shelfLoads = mapOf("QUICK" to com.example.data.cache.RecommendationShelfLoad("profile", 123L, partial = true),
+                "ERA" to com.example.data.cache.RecommendationShelfLoad("profile", 123L)))
     }
     private suspend fun writeSnapshot(value: SavedHomeCards) {
         val cache = HomeCardCache(app)
@@ -80,8 +82,11 @@ class HomeCardCacheRestorationTest {
             assertEquals("online_era", preview.era.tracks.single().id)
             assertTrue(preview.presentationComplete)
             assertTrue(preview.quickCandidates.isEmpty())
+            assertTrue(preview.shelfLoads.getValue("QUICK").partial)
+            assertFalse(preview.shelfLoads.getValue("ERA").partial)
             val full = cache.read(profile)!!
             assertEquals(preview.quick.tracks, full.quick.tracks)
+            assertEquals(preview.shelfLoads, full.shelfLoads)
             assertEquals("online_era", full.era.tracks.single().id)
             assertEquals("online_quick", full.quickCandidates.single().id)
         } finally { cache.close() }

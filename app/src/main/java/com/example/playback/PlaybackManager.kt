@@ -268,16 +268,8 @@ class PlaybackManager(
             networkQualityMonitor = monitor
             monitor.activeQualityCeiling.collect(::updateLosslessPolicy)
         }
-        scope.launch {
-            AudioEffectsManager.effectsState.collect { effects ->
-                if (effects.crystalClarityEnabled || effects.isEnabled) {
-                    if (_uiState.value.selectedQuality == AudioQuality.HI_RES_LOSSLESS) {
-                        losslessAttemptKey = null
-                        maybeUpgradeToLossless()
-                    }
-                }
-            }
-        }
+        // EQ is renderer-side DSP only. Lossless discovery is driven by the
+        // active network profile and stable playback, never effect slider edits.
         SleepTimerManager.addExpirationListener(sleepExpirationListener)
         scope.launch {
             val startup = com.example.performance.BackgroundWorkCoordinator
