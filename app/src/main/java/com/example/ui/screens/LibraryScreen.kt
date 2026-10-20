@@ -51,6 +51,8 @@ import androidx.compose.material3.TabRowDefaults
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
@@ -70,7 +72,7 @@ import com.example.ui.theme.liquidGlassButton
 import com.example.ui.theme.liquidGlassCard
 import com.example.ui.theme.liquidGlassPill
 import com.example.ui.util.ImageConfig
-import com.example.ui.util.rememberOptimizedImageRequest
+import com.example.ui.util.rememberPlaylistCoverRequest
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -515,6 +517,10 @@ fun LibraryScreen(
                     }
 
                     items(playlistRows, key = { row -> "pl_row_${row.joinToString("_") { it.playlistId.toString() }}" }) { rowItems ->
+                        val rowKey = remember(rowItems) { "pl_row_${rowItems.joinToString("_") { it.playlistId.toString() }}" }
+                        val rowVisible by remember(listState, rowKey) {
+                            derivedStateOf { listState.layoutInfo.visibleItemsInfo.any { it.key == rowKey } }
+                        }
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -522,11 +528,14 @@ fun LibraryScreen(
                             horizontalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
                             rowItems.forEach { playlist ->
-                                PlaylistGridCard(
-                                    playlist = playlist,
-                                    onClick = { onOpenPlaylist(playlist.playlistId) },
-                                    modifier = Modifier.weight(1f)
-                                )
+                                key(playlist.playlistId) {
+                                    PlaylistGridCard(
+                                        playlist = playlist,
+                                        onClick = { onOpenPlaylist(playlist.playlistId) },
+                                        coverRequestsActive = rowVisible,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
                             }
                             if (rowItems.size == 1) {
                                 Spacer(modifier = Modifier.weight(1f))
@@ -597,7 +606,8 @@ fun LibraryScreen(
 fun PlaylistGridCard(
     playlist: PlaylistEntity,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    coverRequestsActive: Boolean = true
 ) {
     val appColors = LocalAppColors.current
     Column(
@@ -630,7 +640,8 @@ fun PlaylistGridCard(
         ) {
             if (playlist.coverUrl.isNotBlank()) {
                 AsyncImage(
-                    model = rememberOptimizedImageRequest(playlist.coverUrl, ImageConfig.PLAYLIST_HEADER_SIZE),
+                    model = rememberPlaylistCoverRequest(playlist.coverUrl, ImageConfig.PLAYLIST_HEADER_SIZE,
+                        loadAllowed = coverRequestsActive),
                     contentDescription = playlist.title,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize()

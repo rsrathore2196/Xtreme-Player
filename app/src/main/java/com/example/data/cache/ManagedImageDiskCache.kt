@@ -3,6 +3,7 @@ package com.example.data.cache
 import coil.disk.DiskCache
 import com.example.performance.BackgroundWorkCoordinator
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -55,7 +56,8 @@ class ManagedImageDiskCache(private val delegate: DiskCache, private val keyFile
         }
     }
 
-    private fun accessed(key: String) = synchronized(lock) {
+    /** Includes decoded-memory hits without opening a file or persisting on Main. */
+    internal fun recordAccess(key: String) = synchronized(lock) {
         val now = System.currentTimeMillis()
         val previous = accesses[key]
         if (previous != null && now - previous in 0 until 60_000L) return@synchronized
@@ -92,11 +94,11 @@ class ManagedImageDiskCache(private val delegate: DiskCache, private val keyFile
     }
 
     override fun openSnapshot(key: String): DiskCache.Snapshot? = delegate.openSnapshot(key)?.also {
-        accessed(key)
+        recordAccess(key)
         SmartCacheManager.cacheUsageChanged(imageBytes = delegate.size)
     }
     override fun openEditor(key: String): DiskCache.Editor? = delegate.openEditor(key)?.let { editor ->
-        accessed(key)
+        recordAccess(key)
         object : DiskCache.Editor by editor {
             override fun commit() {
                 editor.commit()
@@ -110,7 +112,10 @@ class ManagedImageDiskCache(private val delegate: DiskCache, private val keyFile
         }
     }
     override fun remove(key: String): Boolean = delegate.remove(key).also { removed ->
-        if (removed) SmartCacheManager.cacheUsageChanged(imageBytes = delegate.size)
+        if (removed) {
+            synchronized(lock) { if (accesses.remove(key) != null) accessRevision++ }
+            SmartCacheManager.cacheUsageChanged(imageBytes = delegate.size)
+        }
     }
     @Suppress("OVERRIDE_DEPRECATION")
     override fun get(key: String): DiskCache.Snapshot? = openSnapshot(key)
@@ -136,14 +141,21 @@ class ManagedImageDiskCache(private val delegate: DiskCache, private val keyFile
         // own admission lease; share the same bounded key initialization instead.
         loadKeys()
         val before = delegate.size
-        val keys = synchronized(lock) { accesses.entries.sortedBy { it.value }.map { it.key } }
-        for (key in keys) {
-            if (delegate.size <= targetBytes.coerceAtLeast(0L)) break
-            if (delegate.remove(key)) synchronized(lock) {
-                accesses.remove(key)
-                accessRevision++
-                // The delayed WorkManager owner checkpoints this advisory LRU index.
+        val entries = BackgroundWorkCoordinator.finishBoundedBatch {
+            withContext(com.example.performance.AppDispatchers.CpuBounded) {
+                synchronized(lock) { accesses.toList() }.sortedBy { it.second }
             }
+        }
+        for ((index, entry) in entries.withIndex()) {
+            if (index % 32 == 0) {
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                kotlinx.coroutines.yield()
+            }
+            val (key, lastAccess) = entry
+            if (delegate.size <= targetBytes.coerceAtLeast(0L)) break
+            // Covers accessed since this maintenance snapshot are no longer LRU.
+            if (synchronized(lock) { accesses[key] != lastAccess }) continue
+            remove(key)
         }
         SmartCacheManager.cacheUsageChanged(imageBytes = delegate.size)
         return (before - delegate.size).coerceAtLeast(0L)

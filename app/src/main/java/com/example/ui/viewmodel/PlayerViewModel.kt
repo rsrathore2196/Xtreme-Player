@@ -206,8 +206,8 @@ class PlayerViewModel(
         repository.getRecentlyPlayedTracks()
     }
 
-    // Keep one foreground observer and its last snapshot instead of querying on every tab entry.
-    // Suspend observation in the background without clearing the retained Library content.
+    // Foreground collectors replay the repository's one shared Room snapshot.
+    // Tab changes never restart observation; backgrounding retains the last value.
     val playlists: StateFlow<List<PlaylistEntity>> = retainedLibraryData(repository.retainedPlaylists, localLibraryLoaded[2]) { repository.getAllPlaylists() }
 
     private val preparedSettings = (application as? com.example.XtremeMusicApp)?.takeInitialStartupSettings()

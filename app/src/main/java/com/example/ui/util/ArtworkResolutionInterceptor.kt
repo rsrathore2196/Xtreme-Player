@@ -18,6 +18,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.first
 
 const val ARTWORK_METADATA_PARAMETER = "com.example.artwork.metadata"
@@ -42,6 +44,9 @@ class ArtworkResolutionInterceptor internal constructor(
 ) : Interceptor {
     constructor() : this({ iTunesArtworkRepository.getInstance(it) })
     override suspend fun intercept(chain: Interceptor.Chain): ImageResult {
+        if (chain.request.parameters.value<Boolean>(PLAYLIST_COVER_PARAMETER) == true) {
+            return withContext(com.example.performance.AppDispatchers.Io) { playlistCover(chain) }
+        }
         val metadata = chain.request.parameters.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER)
             ?: return chain.proceed(chain.request)
         if (!metadata.visibleContent) {
@@ -51,6 +56,25 @@ class ArtworkResolutionInterceptor internal constructor(
             awaitCancellation()
         }
         return withContext(com.example.performance.AppDispatchers.Io) { resolve(chain, metadata) }
+    }
+
+    /** Raw playlist cover URLs never need song matching or provider URL upgrades. */
+    private suspend fun playlistCover(chain: Interceptor.Chain): ImageResult {
+        val request = chain.request
+        val cachedRequest = request.newBuilder().networkCachePolicy(CachePolicy.DISABLED).build()
+        val cached = chain.proceed(cachedRequest)
+        if (cached is SuccessResult) return cached
+        com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle()
+        val url = request.data as? String ?: return chain.proceed(request)
+        // Bounded lock stripes deduplicate simultaneous grid/detail downloads.
+        // Recheck Coil's source cache after the preceding request commits it.
+        val lock = playlistCoverFlights[(url.hashCode() and Int.MAX_VALUE) % playlistCoverFlights.size]
+        return lock.withLock {
+            coldArtworkRequests.withPermit {
+                val prepared = chain.proceed(cachedRequest)
+                if (prepared is SuccessResult) prepared else chain.proceed(request)
+            }
+        }
     }
 
     private suspend fun resolve(originalChain: Interceptor.Chain, metadata: ArtworkRequestMetadata): ImageResult {
@@ -196,6 +220,7 @@ class ArtworkResolutionInterceptor internal constructor(
 
     private companion object {
         val coldArtworkRequests = Semaphore(2)
+        val playlistCoverFlights = Array(32) { Mutex() }
         val youtubeThumbnail = Regex("/(?:default|mqdefault|hqdefault|sddefault)\\.jpg")
     }
 }

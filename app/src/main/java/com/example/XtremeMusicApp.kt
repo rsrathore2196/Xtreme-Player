@@ -78,7 +78,7 @@ class XtremeMusicApp : Application(), ImageLoaderFactory, androidx.work.Configur
             .diskCache {
                 val diskCache = DiskCache.Builder()
                     .directory(cacheDir.resolve("image_cache"))
-                    .maxSizeBytes(60L * 1024 * 1024) // 60 MB high-speed disk cache
+                    .maxSizeBytes(com.example.data.cache.SmartCacheManager.ARTWORK_CACHE_MAX_BYTES)
                     .build()
                 com.example.data.cache.ManagedImageDiskCache(diskCache, cacheDir.resolve("artwork_cache_keys.json"))
                     .also { initializedImageDiskCache = it }

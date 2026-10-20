@@ -58,7 +58,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.ui.util.ImageConfig
-import com.example.ui.util.rememberOptimizedImageRequest
+import com.example.ui.util.rememberPlaylistCoverRequest
 import com.example.data.local.PlaylistWithTracks
 import com.example.data.model.MusicTrack
 import com.example.playback.PlayerUiState
@@ -346,7 +346,7 @@ fun PlaylistDetailScreen(
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     AsyncImage(
-                        model = rememberOptimizedImageRequest(playlist.coverUrl, ImageConfig.PLAYLIST_HEADER_SIZE),
+                        model = rememberPlaylistCoverRequest(playlist.coverUrl, ImageConfig.PLAYLIST_HEADER_SIZE),
                         contentDescription = null,
                         contentScale = ContentScale.Crop,
                         modifier = Modifier

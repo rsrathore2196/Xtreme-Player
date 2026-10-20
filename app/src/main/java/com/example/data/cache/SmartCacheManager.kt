@@ -78,6 +78,9 @@ object SmartCacheManager {
     const val QUOTA_LEAN = 40L * 1024L * 1024L // 40 MB Lean
     const val QUOTA_BALANCED = 60L * 1024L * 1024L // 60 MB Balanced (Default)
     const val QUOTA_GENEROUS = 120L * 1024L * 1024L // 120 MB Generous
+    // Coil still owns one bounded persistent cache. Within the shared quota,
+    // reserve up to one third for artwork before trimming audio under pressure.
+    const val ARTWORK_CACHE_MAX_BYTES = 60L * 1024L * 1024L
 
     private val scope = CoroutineScope(SupervisorJob() + AppDispatchers.Io)
     private val maintenanceMutex = Mutex()
@@ -219,16 +222,27 @@ object SmartCacheManager {
             val prefs = getPrefs()
             if (prefs?.getBoolean(KEY_SMART_AUTO_TRIM, true) != false) {
                 val quota = prefs?.getLong(KEY_MAX_QUOTA, QUOTA_BALANCED) ?: QUOTA_BALANCED
-                val audio = MusicCache.getSimpleCache(context).cacheSpace
-                val images = calculateImageCacheBytes(context)
-                if (audio + images > quota) {
-                    // Owner-validated sizes, journal-aware removals; estimates never authorize eviction.
-                    if (images > 0L) trimImageCache(context, (quota - audio).coerceAtLeast(0L))
-                    if (audio > quota * 0.70f) MusicCache.trimAudioCache(context, (quota * 0.50).toLong())
-                }
+                enforceMediaQuota(context, quota)
             }
             reconcileStats(context)
         }
+    }
+
+    /** Audio pressure must not wipe every cover before audio itself is trimmed. */
+    private suspend fun enforceMediaQuota(context: Context, configuredQuota: Long): Long {
+        val quota = configuredQuota.coerceAtLeast(0L)
+        val audioOwner = MusicCache.getSimpleCache(context)
+        val images = calculateImageCacheBytes(context)
+        if (audioOwner.cacheSpace + images <= quota) return 0L
+        val artworkReserve = minOf(images, quota / 3, ARTWORK_CACHE_MAX_BYTES)
+        var freed = 0L
+        val audioTarget = quota - artworkReserve
+        if (audioOwner.cacheSpace > audioTarget) freed += MusicCache.trimAudioCache(context, audioTarget)
+        // Re-read the actual owner after journal-aware audio eviction. Never
+        // authorize artwork deletion using stale pre-trim audio/stat estimates.
+        val artworkTarget = (quota - audioOwner.cacheSpace).coerceAtLeast(0L)
+        if (images > artworkTarget) freed += trimImageCache(context, artworkTarget)
+        return freed
     }
 
     suspend fun clearAudioCache(): Long = maintainCache {
@@ -302,19 +316,12 @@ object SmartCacheManager {
                 freed += OnlineMusicApiService.trimNetworkCache((OnlineMusicApiService.peekNetworkCacheSize() ?: getFolderSize(httpMusicCache)) * 2 / 3)
             }
 
-            // 3/4. Keep recent artwork while removing only complete Coil entries.
-            val imageBytes = ctx.imageLoader.diskCache?.size ?: 0L
-            if (imageBytes > 15L * 1024 * 1024) freed += trimImageCache(ctx, imageBytes * 2 / 3)
+            // 3/4. Preserve reusable covers unless the actual media quota is exceeded.
+            val quota = getPrefs()?.getLong(KEY_MAX_QUOTA, QUOTA_BALANCED) ?: QUOTA_BALANCED
+            freed += enforceMediaQuota(ctx, quota)
 
             // 5. Clear stale metadata cache & in-memory search tokens
             repositoryRef?.clearSearchCache()
-
-            // 6. Compact audio cache if exceeding 65% of current quota
-            val currentAudio = MusicCache.getCacheSize(ctx)
-            val quota = _stats.value.maxQuotaBytes
-            if (currentAudio > (quota * 0.65)) {
-                freed += MusicCache.trimAudioCache(ctx, (quota * 0.50).toLong())
-            }
 
             refreshStats()
             val reportedFreed = if (freed > 0L) formatBytes(freed) else "1.4 MB"

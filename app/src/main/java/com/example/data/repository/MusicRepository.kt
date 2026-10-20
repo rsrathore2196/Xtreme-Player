@@ -43,6 +43,10 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.shareIn
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.retryWhen
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
 import com.example.data.local.UserProfile
@@ -238,13 +242,28 @@ class MusicRepository private constructor(
             .onEach { retainedRecentlyPlayed = it }.flowOn(AppDispatchers.CpuBounded)
     }
 
-    fun getAllPlaylists(): Flow<List<PlaylistEntity>> {
-        return flow { emitAll(musicDao.getAllPlaylists()) }
+    // One app-owned Room observer, started on demand. Re-subscribing after a tab,
+    // Activity or foreground change replays its snapshot without querying again.
+    // Unlike stateIn(emptyList()), replay emits only after the authoritative read.
+    private val playlistSnapshots by lazy {
+        flow { emitAll(musicDao.getAllPlaylists()) }
             .flowOn(AppDispatchers.Database)
             .distinctUntilChanged()
             .onEach { retainedPlaylists = it }
-            .flowOn(AppDispatchers.CpuBounded)
+            .map { Result.success(it) }
+            .retryWhen { _, attempt ->
+                if (attempt >= 2) false else {
+                    kotlinx.coroutines.delay(250L * (attempt + 1))
+                    true
+                }
+            }
+            // Shared upstream errors must still reach the ViewModel's existing
+            // fallback handling, rather than escaping the app-owned scope.
+            .catch { emit(Result.failure(it)) }
+            .shareIn(initialCatalogScope, SharingStarted.Lazily, replay = 1)
     }
+
+    fun getAllPlaylists(): Flow<List<PlaylistEntity>> = playlistSnapshots.map { it.getOrThrow() }
 
     fun getPlaylistWithTracks(playlistId: Long): Flow<PlaylistWithTracks?> {
         return flow { emitAll(musicDao.getPlaylistWithTracks(playlistId)) }
