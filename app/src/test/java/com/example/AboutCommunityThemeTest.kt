@@ -35,6 +35,18 @@ import org.robolectric.annotation.GraphicsMode
 class AboutCommunityThemeTest {
     @get:Rule val compose = createComposeRule()
 
+    @Test fun buildVerificationRemainsWithoutTheRemovedAudioArchitectureDetails() {
+        compose.setContent { MaterialTheme {
+            CompositionLocalProvider(LocalAppColors provides DarkAppColors) {
+                com.example.ui.screens.settings.AboutPage(isDarkMode = true)
+            }
+        } }
+        compose.onNodeWithText("Build Verification").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("STABLE").assertExists()
+        compose.onNodeWithText("Audio Architecture").assertDoesNotExist()
+        compose.onNodeWithText("16-Bit PCM / 5-Band DSP").assertDoesNotExist()
+    }
+
     @Test fun everyCommunityButtonUsesTheCurrentThemeWithReadableTextAndUnchangedLinks() {
         var colors by mutableStateOf(DarkAppColors.copy(primaryAccent = Color(0xFFB416CA)))
         compose.setContent { MaterialTheme {
