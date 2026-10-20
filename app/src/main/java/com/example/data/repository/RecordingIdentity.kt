@@ -150,7 +150,7 @@ internal object RecordingIdentity {
         // Missing artist/duration is not a conflict, but must be replaced by strong evidence.
         if (!knownArtists && !sameCode && !(exactTitle && sameAlbum && timed && delta <= 2_000L)) return null
         if (!timed && !sameCode) return null
-        if (!exactTitle && !sameCode && !(sameArtist && sameAlbum && timed && delta <= 2_000L)) return null
+        if (!exactTitle && !sameCode && !(sameArtist && timed && delta <= 2_000L)) return null
         if (!sameArtist && !sameCode && !(exactTitle && timed && delta <= 2_000L)) return null
         // Album editions/compilations can differ; an explicitly different version cannot.
         val archiveVersion = candidate.album.lowercase(Locale.ROOT)

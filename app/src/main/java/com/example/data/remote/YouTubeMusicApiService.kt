@@ -145,17 +145,18 @@ object YouTubeMusicApiService {
 
     /** Resolve the selected video itself, retaining its identity and metadata. */
     suspend fun resolveAudio(track: MusicTrack, quality: com.example.playback.AudioQuality,
-        forceRefresh: Boolean = false): MusicTrack? {
+        forceRefresh: Boolean = false, requireOpus: Boolean = false, maxBitrateBps: Int? = null): MusicTrack? {
         val stored = android.net.Uri.parse(track.audioUrl)
         val videoId = track.id.removePrefix("yt_").takeIf {
             track.id.startsWith("yt_") && YouTubeAudioStreamService.isVideoId(it)
         } ?: YouTubeAudioStreamService.videoIdFromUri(stored).orEmpty()
         if ((!track.id.startsWith("yt_") && !YouTubeAudioStreamService.isPlaybackUri(track.audioUrl)) ||
             !YouTubeAudioStreamService.isVideoId(videoId)) return null
-        val audio = YouTubeAudioStreamService.resolve(videoId, quality, forceRefresh)
+        val audio = YouTubeAudioStreamService.resolve(videoId, quality, forceRefresh,
+            maxBitrateBps = maxBitrateBps, requireOpus = requireOpus)
         if (audio.videoId != videoId) throw IOException("YouTube returned a different recording")
         // Persist the resolved source identity, not an expiring signed CDN URL.
-        return track.copy(audioUrl = YouTubeAudioStreamService.playbackUri("yt_$videoId", audio.url), bitrateKbps = audio.bitrateKbps,
+        return track.copy(audioUrl = YouTubeAudioStreamService.playbackUri("yt_$videoId", audio.url, requireOpus), bitrateKbps = audio.bitrateKbps,
             qualityBadge = audio.qualityBadge,
             isLossless = false)
     }

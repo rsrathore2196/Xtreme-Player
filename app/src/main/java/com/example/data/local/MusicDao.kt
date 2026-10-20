@@ -15,6 +15,7 @@ interface MusicDao {
     suspend fun mergeTrackMetadata(track: TrackEntity) {
         val existing = getTrackById(track.id)
         val merged = if (existing == null) track else track.copy(
+            primaryArtists = track.primaryArtists.takeUnless { it == "[]" } ?: existing.primaryArtists,
             isLiked = existing.isLiked,
             isCached = existing.isCached || track.isCached,
             lastPlayedAt = existing.lastPlayedAt,
@@ -30,6 +31,7 @@ interface MusicDao {
         val changed = rows.mapNotNull { track ->
             val local = existing[track.id]
             val merged = if (local == null) track else track.copy(isLiked = local.isLiked,
+                primaryArtists = track.primaryArtists.takeUnless { it == "[]" } ?: local.primaryArtists,
                 isCached = local.isCached || track.isCached, lastPlayedAt = local.lastPlayedAt, addedAt = local.addedAt)
             merged.takeIf { it != local }
         }

@@ -41,6 +41,7 @@ import com.example.performance.StartupStatus
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.flatMapLatest
 import com.example.data.repository.MusicRepository
+import com.example.data.repository.ArtistPhotoRepository
 import com.example.playback.PlaybackManager
 import com.example.ui.ai.HomeShelf
 import kotlinx.coroutines.CancellationException
@@ -563,7 +564,7 @@ class HomeViewModel(
     val secondaryShelves: StateFlow<List<HomeShelf>> get() = homeShelves
     fun refreshAll() = refreshHome(isExplicitPull = true)
 
-    private data class ArtistHistory(val plays: List<Pair<String, String>>, val trackIds: List<String>)
+    private data class ArtistHistory(val plays: List<Pair<String, String>>, val trackIds: List<String>, val identityRevision: Long)
     private val appliedCachedArtistSessions = mutableSetOf<String>()
     private suspend fun refreshListeningCards() {
         // Reuse the live Room snapshots; song-start requests add their pending play
@@ -593,8 +594,10 @@ class HomeViewModel(
             return
         }
         val longTerm = personalizationHistory.first { it.ready }
+        val artistIdentityRevision = ArtistPhotoRepository.identities.value
         val pending = pendingCardPlays.toMap()
-        val keepCachedArtists = !longTerm.complete && _mostListenedArtists.value.isNotEmpty()
+        val keepCachedArtists = !longTerm.complete && _mostListenedArtists.value.isNotEmpty() &&
+            rankedIdentityRevision == ArtistPhotoRepository.identities.value
         val cachedArtists = _mostListenedArtists.value
         val priority = when {
             preparingInitialHome -> BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI
@@ -622,12 +625,20 @@ class HomeViewModel(
           }
         }
         currentCoroutineContext().ensureActive()
+        if (artistIdentityRevision != ArtistPhotoRepository.identities.value) {
+            listeningCardRequests.update { it + 1L }
+            return
+        }
         // Essential data is prepared even when a tab transition is underway.
         // Its optional visual publication must not hold startup readiness back.
         listeningCardsReady.complete(Unit)
         if (pending.isEmpty()) {
             homeScrolling.first { !it }
             BackgroundWorkCoordinator.awaitNavigationIdle()
+        }
+        if (artistIdentityRevision != ArtistPhotoRepository.identities.value) {
+            listeningCardRequests.update { it + 1L }
+            return
         }
         listeningCardsPublished = true
         val changed = _listeningHistoryCard.value.tracks != recent || _mostListenedArtists.value != artists
@@ -642,16 +653,20 @@ class HomeViewModel(
         if (changed) savePreparedCards()
     }
 
-    private data class ArtistCredits(val artist: String, val singers: String, val keys: List<String>, val names: Map<String, String>)
+    private data class ArtistCredits(val artist: String, val primary: List<String>, val writer: String,
+        val keys: List<String>, val names: Map<String, String>)
     private var rankedArtistCredits: Map<String, ArtistCredits> = emptyMap()
+    private var rankedIdentityRevision = ArtistPhotoRepository.identities.value
     private var countedArtistPlays: Map<Pair<String, String>, List<String>> = emptyMap()
     private var artistPlayCounts: Map<String, Int> = emptyMap()
-    private var lastArtistHistory: Pair<List<Pair<String, String>>, List<MusicTrack>>? = null
+    private var lastArtistHistory: Triple<List<Pair<String, String>>, List<MusicTrack>, Long>? = null
     private var lastArtistRanking = emptyList<MostListenedArtist>()
     private suspend fun rankListenedArtists(plays: List<Pair<String, String>>, tracks: List<MusicTrack>, immediate: Boolean = false) =
         withContext(workerDispatcher) {
-            val inputs = plays to tracks
+            val identityRevision = ArtistPhotoRepository.identities.value
+            val inputs = Triple(plays, tracks, identityRevision)
             if (lastArtistHistory == inputs) return@withContext lastArtistRanking
+            if (rankedIdentityRevision != identityRevision) rankedArtistCredits = emptyMap()
             suspend fun checkpoint(index: Int) {
                 if (!immediate && index % 128 == 0) yieldHomePreparation()
             }
@@ -659,11 +674,12 @@ class HomeViewModel(
             val credits = mutableMapOf<String, ArtistCredits>()
             byId.entries.forEachIndexed { index, (id, track) ->
                 checkpoint(index)
-                credits[id] = rankedArtistCredits[id]?.takeIf { it.artist == track.artist && it.singers == track.singers } ?: run {
-                    val keys = HomeRecommendationPolicy.artists(track)
-                    val display = keys.associateWith { key -> (track.artist + "," + track.singers).split(',')
-                        .firstOrNull { HomeRecommendationPolicy.normalize(it) == key }?.trim() ?: key }
-                    ArtistCredits(track.artist, track.singers, keys, display)
+                credits[id] = rankedArtistCredits[id]?.takeIf {
+                    it.artist == track.artist && it.primary == track.primaryArtists && it.writer == track.writer
+                } ?: run {
+                    val display = HomeRecommendationPolicy.mainArtists(track)
+                        .associateBy(HomeRecommendationPolicy::mainArtistKey)
+                    ArtistCredits(track.artist, track.primaryArtists, track.writer, display.keys.toList(), display)
                 }
             }
             val current = linkedMapOf<Pair<String, String>, List<String>>()
@@ -700,6 +716,7 @@ class HomeViewModel(
             }
             currentCoroutineContext().ensureActive()
             rankedArtistCredits = credits; countedArtistPlays = current; artistPlayCounts = counts.filterValues { it > 0 }
+            rankedIdentityRevision = identityRevision
             lastArtistHistory = inputs; lastArtistRanking = result
             result
         }
@@ -1292,10 +1309,11 @@ class HomeViewModel(
         ownerScope.launch {
             restored.await()
             eventsLoaded.await()
-            personalizationHistory.filter { it.ready }.map { history ->
+            combine(personalizationHistory.filter { it.ready }, ArtistPhotoRepository.identities) { history, revision -> history to revision }
+                .debounce(300L).map { (history, revision) ->
                 withContext(workerDispatcher) {
                     ArtistHistory(history.events.asSequence().filter(UserTasteProfile::played)
-                        .map { it.sessionId to it.trackId }.distinct().toList(), history.tracks.map { it.id }) to history.tracks
+                        .map { it.sessionId to it.trackId }.distinct().toList(), history.tracks.map { it.id }, revision) to history.tracks
                 }
             }.distinctUntilChanged().collect { listeningCardRequests.update { it + 1 } }
         }

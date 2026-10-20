@@ -11,7 +11,7 @@ import kotlinx.coroutines.asExecutor
 
 @Database(
     entities = [TrackEntity::class, PlaylistEntity::class, PlaylistTrackCrossRef::class, ListeningEventEntity::class, ArtworkCacheEntity::class],
-    version = 8,
+    version = 9,
     exportSchema = true
 )
 abstract class MusicDatabase : RoomDatabase() {
@@ -160,6 +160,12 @@ abstract class MusicDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                addColumnIfNotExists(db, "tracks", "primaryArtists", "TEXT NOT NULL DEFAULT '[]'")
+            }
+        }
+
         val ALL_MIGRATIONS = arrayOf(
             MIGRATION_1_2,
             MIGRATION_2_3,
@@ -168,7 +174,8 @@ abstract class MusicDatabase : RoomDatabase() {
             MIGRATION_5_6,
             MIGRATION_6_7,
             MIGRATION_7_8,
-            MIGRATION_8_7
+            MIGRATION_8_7,
+            MIGRATION_8_9
         )
 
         fun getDatabase(context: Context): MusicDatabase {

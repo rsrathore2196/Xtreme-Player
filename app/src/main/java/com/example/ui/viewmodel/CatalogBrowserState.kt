@@ -59,7 +59,10 @@ internal suspend fun CatalogDetailState.preparePlaybackQueue(fallback: MusicTrac
 
 /** Owned by PlayerViewModel's scope; browsing never changes playback state. */
 class CatalogBrowserState(private val repository: CatalogRepository, private val scope: CoroutineScope,
-    initialQuality: AudioQuality = AudioQuality.ULTRA_HD_320) {
+    initialQuality: AudioQuality = AudioQuality.ULTRA_HD_320,
+    private val verifyPlayback: (suspend (MusicTrack, com.example.playback.PlaybackSourcePolicy) -> Boolean)? = null,
+    private val archiveSearch: (suspend (String, Int, com.example.playback.PlaybackSourcePolicy, List<MusicTrack>) ->
+        com.example.data.remote.InternetArchiveApiService.LosslessSearchPage)? = null) {
     // CPU preparation shares the process budget; generation checks and atomic state
     // updates protect publication. UI control stays on the caller's application scope.
     private val dataScope = scope + AppDispatchers.CpuBounded
@@ -69,6 +72,76 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
     private val _detail = MutableStateFlow<CatalogDetailState?>(null)
     val detail = _detail.asStateFlow()
     private var searchJob: Job? = null
+    private var policySearchJob: Job? = null
+    @Volatile private var sourcePolicy = com.example.playback.PlaybackSourcePolicy(
+        com.example.playback.AudioQualityCeiling.entries.first { it.audioQuality == initialQuality })
+    @Volatile private var policyRevision = 0L
+    @Volatile private var catalogCandidates = emptyList<MusicTrack>()
+    @Volatile private var archiveCandidates = emptyList<MusicTrack>()
+    @Volatile private var archiveNext: Int? = 1
+    private val verifiedSearchIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    fun setSourcePolicy(policy: com.example.playback.PlaybackSourcePolicy) {
+        audioQuality = policy.ceiling.audioQuality
+        val unchanged = sourcePolicy.key == policy.key
+        sourcePolicy = policy
+        if (unchanged) return
+        policyRevision++
+        policySearchJob?.cancel()
+        verifiedSearchIds.clear()
+        // Keep the current query and all JioSaavn results. A late Archive response
+        // cannot reappear after MAX is disabled; saved candidates remain internal.
+        publishEligibleSearch()
+        enrichSearch(_search.value.requestId)
+    }
+
+    private fun publishEligibleSearch() {
+        val policy = sourcePolicy
+        val tracks = catalogCandidates.filter { policy.maximum || !it.id.startsWith("yt_") ||
+            verifyPlayback == null || it.id in verifiedSearchIds } +
+            archiveCandidates.takeIf { policy.allowsArchive }.orEmpty()
+        _search.update { state -> if (state.type !in setOf("All", "Tracks")) state else
+            state.withPage(state.page.copy(tracks = liked(tracks.distinctBy { it.id }),
+                nextPage = state.page.nextPage ?: if (archiveSearch != null && policy.allowsArchive && archiveNext != null) 2 else null)) }
+    }
+
+    private fun enrichSearch(generation: Int, loadArchivePage: Boolean = true) {
+        policySearchJob?.cancel()
+        val state = _search.value
+        if (state.query.isBlank() || state.type !in setOf("All", "Tracks")) return
+        val policy = sourcePolicy
+        val revision = policyRevision
+        fun current() = _search.value.requestId == generation && policyRevision == revision
+        policySearchJob = dataScope.launch {
+            supervisorScope {
+                if (!policy.maximum && verifyPlayback != null) launch {
+                    // Small prioritized batches, independently published. Shared repository
+                    // permits bound matching across repeated queries and both categories.
+                    for (batch in catalogCandidates.filter { it.id.startsWith("yt_") && it.id !in verifiedSearchIds }
+                        .take(12).chunked(2)) {
+                        val verified = batch.map { track -> async(AppDispatchers.Io) {
+                            track.takeIf { verifyPlayback.invoke(it, policy) }
+                        } }.awaitAll().filterNotNull()
+                        if (!current()) return@launch
+                        verifiedSearchIds.addAll(verified.map { it.id })
+                        publishEligibleSearch()
+                    }
+                }
+                if (policy.allowsArchive && archiveSearch != null && loadArchivePage && archiveNext != null) launch {
+                    try {
+                        val page = withTimeoutOrNull(25_000L) { archiveSearch.invoke(state.query.trim(), archiveNext!!, policy,
+                            catalogCandidates.take(2)) }
+                            ?: return@launch
+                        if (!current()) return@launch
+                        archiveCandidates = (archiveCandidates + page.tracks).distinctBy { it.id }
+                        archiveNext = page.nextPage
+                        publishEligibleSearch()
+                    } catch (e: CancellationException) { throw e }
+                    catch (_: Exception) { /* Provider failures never clear usable catalog rows. */ }
+                }
+            }
+        }
+    }
     private var detailJob: Job? = null
     private var favoritesJob: Job? = null
     @Volatile private var favoriteIds: Set<String> = emptySet()
@@ -135,12 +208,16 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
     }
     fun retrySearch() { startSearch(_search.value.query, _search.value.type, debounce = false) }
     fun setAudioQuality(quality: AudioQuality) {
-        if (quality == audioQuality) return
-        audioQuality = quality
+        setSourcePolicy(sourcePolicy.copy(ceiling = com.example.playback.AudioQualityCeiling.entries.first { it.audioQuality == quality }))
     }
     private fun startSearch(query: String, type: String, debounce: Boolean) {
         val generation = ++searchGeneration
         searchJob?.cancel()
+        policySearchJob?.cancel()
+        catalogCandidates = emptyList()
+        archiveCandidates = emptyList()
+        archiveNext = 1
+        verifiedSearchIds.clear()
         _search.value = CatalogSearchState(query = query, type = type, loading = query.isNotBlank(), requestId = generation)
         if (query.isBlank()) return
         val quality = audioQuality
@@ -149,8 +226,13 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
                 if (debounce) delay(300)
                 val result = repository.search(query.trim(), type, quality = quality)
                 ensureActive()
+                if (_search.value.requestId != generation) return@launch
+                catalogCandidates = result.tracks
                 _search.update { if (it.requestId != generation) it else
-                    it.withPage(result.copy(tracks = liked(result.tracks))).copy(loading = false) }
+                    it.withPage(result.copy(tracks = liked(result.tracks.filter { track ->
+                        sourcePolicy.maximum || !track.id.startsWith("yt_") || verifyPlayback == null }))).copy(loading = false) }
+                publishEligibleSearch()
+                enrichSearch(generation)
             } catch (e: CancellationException) { throw e }
             catch (_: Exception) { _search.update { if (it.requestId != generation) it else
                 it.copy(loading = false, error = "Couldn't load results. Tap to retry.") } }
@@ -168,7 +250,7 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
                 val result = repository.search(state.query.trim(), state.type, page, quality, state.page)
                 if (generation != _search.value.requestId) return@launch
                 val tracks = withContext(AppDispatchers.CpuBounded) {
-                    com.example.data.remote.AudioRoutingService.mergeTracks(state.page.tracks + result.tracks)
+                    com.example.data.remote.AudioRoutingService.mergeTracks(catalogCandidates + result.tracks)
                 }
                 if (generation != _search.value.requestId) return@launch
                 val merged = CatalogPage(
@@ -182,8 +264,15 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
                     result.artists.isNotEmpty() && result.artists.all { artist -> state.page.artists.any { it.id == artist.id } } ||
                     result.playlists.isNotEmpty() && result.playlists.all { playlist -> state.page.playlists.any { it.id == playlist.id } }
                 ensureActive()
+                if (_search.value.requestId != generation) return@launch
+                catalogCandidates = tracks
                 _search.update { if (it.requestId != generation) it else it.withPage(merged.copy(nextPage =
-                    if (repeated && result.trackSearchContinuation == null) null else merged.nextPage)).copy(loadingMore = false) }
+                    if (repeated && result.trackSearchContinuation == null) null else merged.nextPage,
+                    tracks = liked(tracks.filter { track -> sourcePolicy.maximum || !track.id.startsWith("yt_") ||
+                        verifyPlayback == null || track.id in verifiedSearchIds }) +
+                        archiveCandidates.takeIf { sourcePolicy.allowsArchive }.orEmpty())).copy(loadingMore = false) }
+                publishEligibleSearch()
+                enrichSearch(generation)
             } catch (e: CancellationException) { throw e }
             catch (_: Exception) { _search.update { if (it.requestId != generation) it else
                 it.copy(loadingMore = false, error = "Couldn't load more. Tap to retry.") } }

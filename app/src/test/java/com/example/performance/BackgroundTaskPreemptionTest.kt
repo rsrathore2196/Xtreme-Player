@@ -61,6 +61,10 @@ class BackgroundTaskPreemptionTest {
                     progress.incrementAndGet()
                     entered.complete(Unit)
                     release.await()
+                    // The test thread can release before await suspends. Cross
+                    // a dispatch boundary so this always tests admission of the
+                    // next CPU batch, rather than racing an already-running one.
+                    yield()
                     progress.incrementAndGet()
                 }
             }
@@ -70,7 +74,7 @@ class BackgroundTaskPreemptionTest {
             coordinator.cancelNonEssentialWork()
             release.complete(Unit)
             delay(100)
-            assertEquals("The continuation must park without a caller checkpoint", 1, progress.get())
+            assertEquals("The next CPU batch must park at its dispatcher boundary", 1, progress.get())
             assertTrue("Preemption must preserve completed work", optional.isActive)
             withTimeout(2_000) { withContext(AppDispatchers.CpuBounded) {
                 coordinator.startup(BackgroundWorkCoordinator.StartupPriority.CRITICAL) { /* playback preparation */ }
@@ -88,7 +92,12 @@ class BackgroundTaskPreemptionTest {
         val optional = launch(AppDispatchers.Io) {
             coordinator.startup(BackgroundWorkCoordinator.StartupPriority.MAINTENANCE) {
                 withContext(AppDispatchers.CpuBounded) {
-                    try { entered.complete(Unit); release.await(); fail("Stale work resumed") }
+                    try {
+                        entered.complete(Unit)
+                        release.await()
+                        yield() // Also cover an early release before await actually suspends.
+                        fail("Stale work resumed")
+                    }
                     finally { cleaned.complete(Unit) }
                 }
             }

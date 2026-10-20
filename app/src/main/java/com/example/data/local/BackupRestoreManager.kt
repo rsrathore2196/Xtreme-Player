@@ -344,6 +344,7 @@ object BackupRestoreManager {
                 tObj.put("isLiked", t.isLiked)
                 tObj.put("isCached", t.isCached)
                 tObj.put("singers", t.singers)
+                tObj.put("primaryArtists", t.primaryArtists)
                 tObj.put("writer", t.writer)
                 tObj.put("language", t.language)
                 tObj.put("year", t.year)
@@ -609,7 +610,8 @@ object BackupRestoreManager {
                     language = stringField(item, "language"), year = stringField(item, "year"),
                     source = stringField(item, "source"),
                     addedAt = longField(item, "addedAt", System.currentTimeMillis()),
-                    lastPlayedAt = longField(item, "lastPlayedAt"), isrc = stringField(item, "isrc")
+                    lastPlayedAt = longField(item, "lastPlayedAt"), isrc = stringField(item, "isrc"),
+                    primaryArtists = stringField(item, "primaryArtists", "[]")
                 )
             }.also { list ->
                 require(list.map { it.id }.distinct().size == list.size) { "Duplicate track IDs in backup" }

@@ -162,8 +162,8 @@ class LosslessArchivePolicyTest {
         val state = field("_uiState").get(manager) as MutableStateFlow<PlayerUiState>
         state.value = state.value.copy(currentTrack = upgraded, queue = listOf(upgraded), qualityBadge = "Lossless")
         val constructor = PlaybackManager::class.java.declaredClasses.first { it.simpleName == "LosslessFallback" }
-            .declaredConstructors.first { it.parameterCount == 8 }.apply { isAccessible = true }
-        val fallback = constructor.newInstance(0L, track, upgraded, 45_000L, 0L, true, true, Bundle())
+            .declaredConstructors.first { it.parameterCount == 12 }.apply { isAccessible = true }
+        val fallback = constructor.newInstance(0L, track, upgraded, 45_000L, 0L, true, true, Bundle(), true, false, null, true)
         set("losslessFallback", fallback)
         val before = manager.uiState.value
         AudioEffectsManager.setEnabled(false)

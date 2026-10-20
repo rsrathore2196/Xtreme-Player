@@ -25,7 +25,9 @@ data class MusicTrack(
     val isLossless: Boolean = false,
     val motionArtworkUrl: String? = null,
     /** Request policy for recommendation queues, not persisted over library metadata. */
-    val recommendationOnly: Boolean = false
+    val recommendationOnly: Boolean = false,
+    /** Recording-level primary credits, never the provider's combined contributor list. */
+    val primaryArtists: List<String> = emptyList()
 ) {
     val streamUrl: String get() = audioUrl
     val coverArtUrl: String get() = coverUrl

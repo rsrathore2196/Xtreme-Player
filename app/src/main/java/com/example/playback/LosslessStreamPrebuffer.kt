@@ -65,10 +65,33 @@ internal object LosslessStreamPrebuffer {
         return AudioInfo(codec, bitrate.coerceAtLeast(0), format.sampleRate, bits)
     }
 
+    /** Prepare a small prefix through the same cache; no extra player or audio focus. */
+    suspend fun warmSource(context: Context, item: MediaItem): Boolean = withContext(com.example.performance.AppDispatchers.Io) {
+        val uri = item.localConfiguration?.uri ?: return@withContext false
+        if (uri.scheme == "xtreme-sabr") return@withContext true // Native session owns its buffer.
+        val source = MusicCache.createCacheDataSourceFactory(context, 3_000, 3_000).createDataSource()
+        try {
+            source.open(androidx.media3.datasource.DataSpec.Builder().setUri(uri).build())
+            val bytes = ByteArray(32 * 1024)
+            var read = 0
+            val deadline = android.os.SystemClock.elapsedRealtime() + 2_000L
+            while (read < 128 * 1024 && android.os.SystemClock.elapsedRealtime() < deadline) {
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                val count = source.read(bytes, 0, bytes.size)
+                if (count < 0) break
+                read += count
+            }
+            read > 0
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) { false }
+        finally { source.close() }
+    }
+
     suspend fun prepare(context: Context, item: MediaItem, expectedDurationMs: Long,
         currentPosition: () -> Long, stillCurrent: () -> Boolean, durationToleranceMs: Long = 5_000L,
         allowUnknownDuration: Boolean = false): Prepared? = withContext(Dispatchers.IO) {
         worker.withLock {
+            LosslessDiagnostics.clear(item.mediaId)
             if (!NetworkQualityMonitor.getInstance(context).snapshot().allowsLosslessUpgrade) {
                 LosslessDiagnostics.record(item.mediaId, LosslessDiagnostics.Reason.NETWORK_POLICY_BLOCKED, "prebuffer")
                 return@withLock null
@@ -136,7 +159,8 @@ internal object LosslessStreamPrebuffer {
                 val nextPosition = PositionHolder()
                 fun step(): Boolean {
                     jobContext.ensureActive()
-                    if (SystemClock.elapsedRealtime() >= deadline) throw IOException("Lossless prebuffer timed out")
+                    if (SystemClock.elapsedRealtime() >= deadline) throw PreparationFailure(
+                        LosslessDiagnostics.Reason.PREBUFFER_FAILED, "Lossless preparation budget reached")
                     return when (extractor.read(input, nextPosition)) {
                         Extractor.RESULT_END_OF_INPUT -> false
                         Extractor.RESULT_SEEK -> { input = openAt(nextPosition.position); true }
@@ -147,7 +171,11 @@ internal object LosslessStreamPrebuffer {
                     throw PreparationFailure(LosslessDiagnostics.Reason.METADATA_INCOMPLETE, "No complete audio format")
                 val verifiedFormat = format ?: return@withLock null
                 val info = audioInfo(verifiedFormat) ?: throw PreparationFailure(
-                    LosslessDiagnostics.Reason.DECODER_UNSUPPORTED, "Container did not contain supported lossless audio")
+                    if (verifiedFormat.sampleMimeType.isNullOrBlank() ||
+                        (verifiedFormat.sampleMimeType in setOf(MimeTypes.AUDIO_FLAC, MimeTypes.AUDIO_ALAC, MimeTypes.AUDIO_RAW) &&
+                            (verifiedFormat.sampleRate <= 0 || verifiedFormat.channelCount <= 0)))
+                        LosslessDiagnostics.Reason.METADATA_INCOMPLETE else LosslessDiagnostics.Reason.DECODER_UNSUPPORTED,
+                    "Container did not contain a complete supported lossless format")
                 if (verifiedFormat.sampleMimeType != MimeTypes.AUDIO_RAW &&
                     MediaCodecUtil.getDecoderInfos(verifiedFormat.sampleMimeType!!, false, false)
                         .none { it.isFormatSupported(verifiedFormat) }) throw PreparationFailure(
@@ -198,6 +226,7 @@ internal object LosslessStreamPrebuffer {
                     } ?: return@withLock null
                     if (warmed.covers(latest)) return@withLock warmed
                 }
+                LosslessDiagnostics.record(item.mediaId, LosslessDiagnostics.Reason.BUFFER_COVERAGE, "prebuffer")
                 null
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) {

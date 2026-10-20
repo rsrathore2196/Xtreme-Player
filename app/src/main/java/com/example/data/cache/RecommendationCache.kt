@@ -91,7 +91,7 @@ internal object RecommendationTrackCodec {
         .put("id", t.id).put("title", t.title).put("artist", t.artist).put("album", t.album)
         .put("duration", t.durationMs).put("cover", t.coverUrl).put("audio", if (t.id.startsWith("yt_")) "" else t.audioUrl)
         .put("bitrate", t.bitrateKbps).put("badge", t.qualityBadge).put("genre", t.genre)
-        .put("singers", t.singers).put("language", t.language).put("year", t.year)
+        .put("singers", t.singers).put("primaryArtists", JSONArray(t.primaryArtists)).put("language", t.language).put("year", t.year)
         .put("source", t.source).put("isrc", t.isrc) }).toString()
     fun decode(body: String): List<MusicTrack> = try {
         val rows = JSONArray(body)
@@ -101,7 +101,9 @@ internal object RecommendationTrackCodec {
                 audioUrl = t.optString("audio"), bitrateKbps = t.optInt("bitrate"), qualityBadge = t.optString("badge"),
                 genre = t.optString("genre", "Unknown"), singers = t.optString("singers"),
                 language = t.optString("language", "Unknown"), year = t.optString("year"),
-                source = t.optString("source"), isrc = t.optString("isrc"))
+                source = t.optString("source"), isrc = t.optString("isrc"), primaryArtists = t.optJSONArray("primaryArtists")?.let { names ->
+                    (0 until names.length()).map { names.optString(it) }.filter(String::isNotBlank)
+                }.orEmpty())
         } }
     } catch (_: Exception) { emptyList() }
 }

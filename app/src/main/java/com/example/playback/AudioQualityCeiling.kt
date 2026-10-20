@@ -46,3 +46,25 @@ data class ActiveQualityState(
     val allowsLosslessUpgrade: Boolean get() = effectiveCeiling == AudioQualityCeiling.MAX &&
         connectionType != NetworkConnectionType.OFFLINE
 }
+
+/** Source policy is independent of catalog identity and renderer/DSP settings. */
+@Immutable
+data class PlaybackSourcePolicy(val ceiling: AudioQualityCeiling, val enhancer: Boolean = false,
+    val online: Boolean = true) {
+    val maximum: Boolean get() = ceiling == AudioQualityCeiling.MAX
+    val preferOpus: Boolean get() = !maximum && enhancer
+    val allowsArchive: Boolean get() = maximum && online
+    val key: String get() = "${ceiling.name}:${preferOpus}:$online"
+    fun acceptsRemoteTrack(track: com.example.data.model.MusicTrack): Boolean {
+        val uri = android.net.Uri.parse(track.audioUrl)
+        if (uri.scheme in setOf("file", "content") || maximum) return true
+        val host = uri.host.orEmpty()
+        val rate = track.bitrateKbps.takeIf { it > 0 } ?: saavnRate.find(track.audioUrl)
+            ?.groupValues?.get(1)?.toIntOrNull() ?: return false
+        if (rate.toLong() * 1000 > ceiling.maxBitrateBps) return false
+        return if (com.example.data.remote.YouTubeAudioStreamService.isYouTubeAudio(track.id, track.audioUrl))
+            preferOpus && track.qualityBadge.contains("Opus", true)
+        else host == "saavncdn.com" || host.endsWith(".saavncdn.com")
+    }
+    private companion object { val saavnRate = Regex("_(320|160|96|48)\\.(?:mp4|m4a)") }
+}

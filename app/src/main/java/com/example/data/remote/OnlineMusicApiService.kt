@@ -370,7 +370,11 @@ object OnlineMusicApiService {
                 value(credit, "name").ifBlank { value(credit, "title") }.takeIf(String::isNotBlank)
             }
         }
-        val performers = (artistNames("primary_artists") + artistNames("featured_artists") +
+        val primaryArtists = artistNames("primary_artists").ifEmpty {
+            field("primary_artists").split(',').map(String::trim)
+                .filter { it.isNotBlank() && !it.equals("null", true) }
+        }.distinct()
+        val performers = (primaryArtists + artistNames("featured_artists") +
             artistNames("artists", performersOnly = true)).distinct()
         val artist = performers.joinToString(", ").ifBlank {
             field("primary_artists").ifBlank { field("singers") }
@@ -396,7 +400,8 @@ object OnlineMusicApiService {
             qualityBadge = if (bitrate > 0) "HD • $bitrate kbps" else "HQ Stream",
             singers = field("singers").ifBlank { performers.joinToString(", ") },
             writer = field("music"), language = field("language").ifBlank { "Unknown" },
-            genre = field("genre").ifBlank { "Unknown" }, year = field("year"), isrc = field("isrc"))
+            genre = field("genre").ifBlank { "Unknown" }, year = field("year"), isrc = field("isrc"),
+            primaryArtists = primaryArtists)
     }
 
     suspend fun fetchSongDetails(songId: String, forceRefresh: Boolean = false): MusicTrack? = withContext(Dispatchers.IO) {

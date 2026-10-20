@@ -87,9 +87,9 @@ object InternetArchiveApiService {
     private class RecordingSearch(val track: MusicTrack, val excludedUrls: Set<String>, val allowed: () -> Boolean) {
         val headers = AtomicInteger(8)
         val items = linkedSetOf<String>()
-        var truncated = false
-        var incomplete = false
-        var failure: Reason? = null
+        @Volatile var truncated = false
+        @Volatile var incomplete = false
+        @Volatile var failure: Reason? = null
     }
 
     /** Collections are discovery hints only. Every returned file still proves its own identity. */
@@ -106,13 +106,17 @@ object InternetArchiveApiService {
                 val pages = plans.associateWith { 1 as Int? }.toMutableMap()
                 // Inspect every relevant strategy before spending the budget on deeper pages.
                 for (round in 0..1) {
-                    for (expression in plans) {
-                        val page = pages[expression] ?: continue
+                    for (batch in plans.chunked(2)) {
                         currentCoroutineContext().ensureActive()
                         if (!allowed()) return@withTimeoutOrNull LosslessSearchPage(isSuccessful = false,
                             failure = Reason.NETWORK_POLICY_BLOCKED, exhaustive = false)
                         if (search.items.size >= 20) { search.truncated = true; return@withTimeoutOrNull null }
-                        val result = searchPage(expression, expression, page, 4, true, search)
+                        val fetched = coroutineScope { batch.mapNotNull { expression ->
+                            pages[expression]?.let { page -> async {
+                                expression to searchPage(expression, expression, page, 4, true, search)
+                            } }
+                        }.awaitAll() }
+                        for ((expression, result) in fetched) {
                         sawCandidates = sawCandidates || result.tracks.isNotEmpty()
                         successful = successful && result.isSuccessful
                         failure = result.failure ?: failure
@@ -123,6 +127,7 @@ object InternetArchiveApiService {
                         }
                         if (matches.isNotEmpty()) return@withTimeoutOrNull result.copy(tracks = matches, failure = null)
                         pages[expression] = result.nextPage
+                        }
                     }
                 }
                 exhausted = pages.values.all { it == null }
@@ -133,6 +138,41 @@ object InternetArchiveApiService {
             found ?: LosslessSearchPage(isSuccessful = false,
                 failure = if (search.truncated) Reason.METADATA_INCOMPLETE else Reason.NETWORK_TIMEOUT, exhaustive = false)
         }
+
+    internal fun originalFileUrl(track: MusicTrack): String? {
+        if (!track.id.startsWith("ia_") || ':' !in track.id) return null
+        val identifier = track.id.removePrefix("ia_").substringBefore(':')
+        val file = track.id.substringAfter(':')
+        if (identifier.isBlank() || file.isBlank() || file.split('/').any { it == ".." }) return null
+        return okhttp3.HttpUrl.Builder().scheme("https").host("archive.org")
+            .addPathSegment("download").addPathSegment(identifier).apply {
+                file.split('/').forEach { addPathSegment(it) }
+            }.build().toString()
+    }
+
+    /** Revalidate an exact file, including its current explicit license; never search a substitute. */
+    internal suspend fun verifyDirectRecording(track: MusicTrack, allowed: () -> Boolean): MusicTrack? =
+        withContext(Dispatchers.IO) {
+            if (!allowed()) return@withContext null
+            val url = track.audioUrl.toHttpUrlOrNull() ?: return@withContext null
+            if (url.scheme != "https" || url.host != "archive.org" || url.pathSegments.firstOrNull() != "download")
+                return@withContext null
+            val identifier = url.pathSegments.getOrNull(1)?.takeIf(String::isNotBlank) ?: return@withContext null
+            val doc = withContext(AppDispatchers.CpuBounded) { JSONObject().put("identifier", identifier) }
+            cachedLosslessItem(doc, RecordingSearch(track, emptySet(), allowed))?.firstOrNull {
+                it.audioUrl == track.audioUrl && RecordingIdentity.losslessConfidence(track, it) != null
+            }
+        }
+
+    internal fun searchExpression(expression: String, targeted: Boolean): String {
+        val collections = "($expression) AND (mediatype:audio OR mediatype:etree OR collection:etree)"
+        // Album-level format indexes may be incomplete. Targeted artist/album/ISRC
+        // searches inspect bounded individual files instead of excluding the item.
+        return if (targeted) collections else collections + " AND " +
+            "(format:(\"FLAC\" OR \"24bit Flac\" OR \"Flac\" OR \"WAV\" OR " +
+            "\"Waveform Audio\" OR \"AIFF\" OR \"ALAC\" OR \"Apple Lossless Audio\" OR \"Apple Lossless\" OR \"Monkey's Audio\" OR " +
+            "\"APE\" OR \"WavPack\" OR \"DSD\"))"
+    }
 
     internal fun recordingQueries(track: MusicTrack): List<String> {
         fun quote(value: String) = "\"${normalized(value)}\""
@@ -254,10 +294,7 @@ object InternetArchiveApiService {
             val result = withTimeoutOrNull(PAGE_TIMEOUT_MS) {
                 try {
                     // Quote normalized terms: user input must not become Lucene operators.
-                    val formattedQuery = "($expression) AND mediatype:(audio) AND " +
-                        "(format:(\"FLAC\" OR \"24bit Flac\" OR \"Flac\" OR \"WAV\" OR " +
-                        "\"Waveform Audio\" OR \"AIFF\" OR \"ALAC\" OR \"Apple Lossless Audio\" OR \"Apple Lossless\" OR \"Monkey's Audio\" OR " +
-                        "\"APE\" OR \"WavPack\" OR \"DSD\"))"
+                    val formattedQuery = searchExpression(expression, targeted = recording != null)
                     val searchUrl = okhttp3.HttpUrl.Builder().scheme("https").host("archive.org")
                         .addPathSegment("advancedsearch.php").addQueryParameter("q", formattedQuery)
                         .addQueryParameter("fl[]", "identifier").addQueryParameter("fl[]", "title")
@@ -449,9 +486,15 @@ object InternetArchiveApiService {
             val request = Request.Builder().url(metadataUrl)
                 .header("User-Agent", "XtremePlayer/2.5.0 (Android)").build()
             val root = JSONObject(requestMetadata(request))
+            if (!authorized(root.optJSONObject("metadata"))) {
+                recording?.failure = Reason.UNAUTHORIZED
+                return emptyList()
+            }
+            val searchHeaders = AtomicInteger(2)
             return parseLosslessItem(doc, root, recording?.track) { url ->
-                if (recording == null) null
-                else if (recording.headers.getAndDecrement() <= 0) {
+                if (recording == null) {
+                    if (searchHeaders.getAndDecrement() > 0) readFlacHeader(url) else null
+                } else if (recording.headers.getAndDecrement() <= 0) {
                     recording.truncated = true
                     null
                 } else if (!withContext(Dispatchers.IO) { recording.allowed() }) null
@@ -582,7 +625,7 @@ object InternetArchiveApiService {
                 val plausible = requested != null && (taggedTitle.isBlank() || genericTitle.matches(fileTitle.trim()) ||
                     CatalogNames.spellingEquivalent(RecordingIdentity.title(requested), titleKey) ||
                     RecordingIdentity.title(requested) in normalized(name))
-                val header = if (requested != null && needsIdentity && plausible && name.endsWith(".flac", true))
+                val header = if (needsIdentity && (requested == null || plausible) && name.endsWith(".flac", true))
                     readHeader(streamUrl) else null
                 if (header != null) {
                     fileTitle = header.title.ifBlank { fileTitle }

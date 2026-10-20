@@ -20,6 +20,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
@@ -54,7 +55,8 @@ fun AudioQualityBadge(trackId: String, fallbackText: String, background: Color, 
     val path by AudioSignalPath.state.collectAsStateWithLifecycle()
     val visibility = remember { MutableTransitionState(false) }
     // Display the actual verified playback format; prevent false Lossless/Hi-Res indicators when on AAC/lossy
-    val sanitizedFallback = if ((fallbackText.contains("Lossless", ignoreCase = true) || fallbackText.contains("Hi-Res", ignoreCase = true)) && !path.quality.lossless) {
+    val sanitizedFallback = if ((fallbackText.contains("Lossless", ignoreCase = true) || fallbackText.contains("Hi-Res", ignoreCase = true)) &&
+        !(path.trackId == trackId && path.quality.lossless && path.quality.verified)) {
         if (path.trackId == trackId && path.quality.verified && path.quality.codec.isNotBlank()) path.quality.label
         else "HQ Stream"
     } else fallbackText
@@ -99,6 +101,10 @@ fun AudioQualityBadge(trackId: String, fallbackText: String, background: Color, 
 @Composable
 fun SignalPathPopupCard(state: SignalPathState, modifier: Modifier = Modifier) {
     val colors = LocalAppColors.current
+    val context = LocalContext.current.applicationContext
+    val monitor = remember(context) { com.example.playback.NetworkQualityMonitor.getInstance(context) }
+    val enhancer by monitor.audioEnhancer.collectAsStateWithLifecycle()
+    val policy by monitor.sourcePolicy.collectAsStateWithLifecycle()
     val rate: (Int) -> String = { if (it > 0) String.format(Locale.ROOT, "%.1f kHz", it / 1000.0) else "Not reported" }
     val solidCardBg = if (colors.isAmoled) Color(0xFF141414) else colors.cardBackground
     val solidCardBorder = colors.cardBorder.copy(alpha = if (colors.isDark) 0.5f else 0.7f)
@@ -133,6 +139,17 @@ fun SignalPathPopupCard(state: SignalPathState, modifier: Modifier = Modifier) {
                 rate(state.quality.sampleRateHz).takeIf { state.quality.sampleRateHz > 0 && !state.quality.label.contains("kHz") }.orEmpty())
                 .filter(String::isNotEmpty).joinToString(" • ")
             SignalNode("Source", "${state.source} • $sourceDetails")
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.weight(1f)) {
+                    Text("Audio Enhancer", style = MaterialTheme.typography.labelMedium,
+                        color = colors.textPrimary, fontWeight = FontWeight.SemiBold)
+                    Text(if (policy.maximum) "Maximum / Lossless keeps Archive priority; this preference applies to lower qualities."
+                        else "Prefer YouTube Opus source when available. AAC fallback; not lossless.",
+                        style = MaterialTheme.typography.bodySmall, color = colors.textSecondary)
+                }
+                Switch(checked = enhancer, onCheckedChange = monitor::setAudioEnhancer,
+                    modifier = Modifier.testTag("source_audio_enhancer"))
+            }
             SignalNode("App Resampler", when {
                 state.inputRateHz <= 0 || state.outputRateHz <= 0 -> "Awaiting audio format"
                 state.appResampling -> "Active — Playback speed / pitch processing"

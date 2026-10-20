@@ -339,6 +339,7 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
         }
         return root.put("profile", s.profileKey).put("signal", s.signal)
             .put("generation", s.generation).put("refreshedAt", s.refreshedAt)
+            .put("mainArtistsVersion", 1)
             .put("chartRefreshedAt", s.chartRefreshedAt)
             .put("tracks", JSONArray(tracks.mapIndexed { index, t ->
                 if (index % 64 == 0) BackgroundWorkCoordinator.yieldToInteraction(bypass = { closing.get() })
@@ -349,6 +350,7 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
                 .put("bitrate", t.bitrateKbps).put("badge", t.qualityBadge).put("genre", t.genre)
                 .put("liked", t.isLiked).put("cached", t.isCached).put("singers", t.singers)
                 .put("writer", t.writer).put("language", t.language).put("year", t.year)
+                .put("primaryArtists", JSONArray(t.primaryArtists))
                 .put("source", t.source).put("isrc", t.isrc).put("lossless", t.isLossless)
                 .put("motion", t.motionArtworkUrl.orEmpty()).put("recommendationOnly", t.recommendationOnly) }))
             .put("quick", section(s.quick)).put("era", section(s.era)).put("chart", section(s.chart))
@@ -383,7 +385,10 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
                 t.optString("audio"), t.optInt("bitrate"), t.optString("badge"), t.optString("genre", "Unknown"),
                 t.optBoolean("liked"), t.optBoolean("cached"), t.optString("singers"), t.optString("writer"),
                 t.optString("language", "Unknown"), t.optString("year"), t.optString("source"),
-                t.optString("isrc"), t.optBoolean("lossless"), t.optString("motion").ifBlank { null }, t.optBoolean("recommendationOnly"))
+                t.optString("isrc"), t.optBoolean("lossless"), t.optString("motion").ifBlank { null }, t.optBoolean("recommendationOnly"),
+                t.optJSONArray("primaryArtists")?.let { names ->
+                    (0 until names.length()).map { names.optString(it) }.filter(String::isNotBlank)
+                }.orEmpty())
                 .takeUnless { it.id.startsWith("xtreme_") || it.audioUrl.contains("soundhelix", true) }
         }.associateBy { it.id }
         fun tracks(ids: JSONArray?): List<MusicTrack> = (0 until (ids?.length() ?: 0))
@@ -392,7 +397,9 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
             val value = root.getJSONObject(name); val list = tracks(value.optJSONArray("tracks"))
             return SectionState(value.getString("title"), value.optString("subtitle"), list, isLoaded = list.isNotEmpty())
         }
-        val artists = root.optJSONArray("artists")
+        // Old counts included secondary credits. Rebuild only this derived shelf
+        // from actual Room history; leave all history and recommendation caches intact.
+        val artists = root.optJSONArray("artists").takeIf { root.optInt("mainArtistsVersion") == 1 }
         val saved = SavedHomeCards(profile, root.optString("signal"), root.optLong("generation"), root.optLong("refreshedAt"),
             section("quick"), section("era"), section("chart"), section("history"), section("personalized"),
             (0 until (artists?.length() ?: 0)).mapNotNull { i ->

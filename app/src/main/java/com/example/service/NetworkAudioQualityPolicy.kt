@@ -9,6 +9,14 @@ import com.example.playback.AudioQualityCeiling
 
 /** Pure, cheap queue-item transformation. Call only for new or upcoming items, never active audio. */
 internal object NetworkAudioQualityPolicy {
+    fun preparedFor(item: MediaItem, policy: com.example.playback.PlaybackSourcePolicy,
+        now: Long = System.currentTimeMillis()): Boolean {
+        val extras = item.mediaMetadata.extras ?: return false
+        return extras.getString("audio_policy_tier") == policy.ceiling.audioQuality.name &&
+            extras.getString("source_policy_key") == policy.key &&
+            now - extras.getLong("audio_policy_checked_at", 0L) in 0L..300_000L
+    }
+
     fun constrain(item: MediaItem, ceilingBps: Int): MediaItem {
         val uri = item.localConfiguration?.uri ?: return item
         if (!uri.isHierarchical) return item
@@ -34,7 +42,9 @@ internal object NetworkAudioQualityPolicy {
             if (uri.scheme == "xtreme-sabr") {
                 val video = YouTubeAudioStreamService.videoIdFromUri(uri) ?: return item
                 target = Uri.Builder().scheme("xtreme-youtube").authority("audio").appendPath(video)
-                    .appendPath("stream.audio").appendQueryParameter("cap", cap.toString()).build()
+                    .appendPath("stream.audio").appendQueryParameter("cap", cap.toString()).apply {
+                        uri.getQueryParameter("codec")?.let { appendQueryParameter("codec", it) }
+                    }.build()
                 resetMime = true
             } else {
                 // A new bitrate may select a different itag/container. No old byte

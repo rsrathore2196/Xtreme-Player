@@ -142,8 +142,8 @@ class XtremeMusicApp : Application(), ImageLoaderFactory, androidx.work.Configur
             coordinator.startup(StartupPriority.DEFERRED, label = "Artwork metadata prewarm") { runCatching { com.example.data.repository.iTunesArtworkRepository.getInstance(this@XtremeMusicApp) }
                 .onFailure { android.util.Log.w("XtremeMusicApp", "Artwork prewarm unavailable", it) } }
             coordinator.startup(StartupPriority.DEFERRED, label = "Playback key prewarm") { runCatching { SecurityConfig.getDESKey(this@XtremeMusicApp) } }
-            // The shared portrait warmup owns its admission. Wrapping its await
-            // in another deferred slot would deadlock that child admission.
+            // Reuse the small shared portrait cache restore. Visible portraits can
+            // request it independently, without waiting for optional prewarming.
             runCatching { com.example.data.repository.ArtistPhotoRepository.prewarm(this@XtremeMusicApp).await() }
                 .onFailure { android.util.Log.w("XtremeMusicApp", "Artist prewarm unavailable", it) }
             coordinator.startup(StartupPriority.DEFERRED, label = "Audio devices prewarm") { runCatching { com.example.playback.AudioDeviceManager.init(this@XtremeMusicApp) }

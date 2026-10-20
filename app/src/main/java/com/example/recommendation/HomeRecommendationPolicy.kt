@@ -2,6 +2,8 @@ package com.example.recommendation
 
 import android.util.LruCache
 import com.example.data.model.MusicTrack
+import com.example.data.repository.CatalogNames
+import com.example.data.repository.ArtistPhotoRepository
 import java.text.Normalizer
 import java.util.Locale
 
@@ -71,6 +73,32 @@ object HomeRecommendationPolicy {
 
     fun artists(track: MusicTrack): List<String> = rawArtists(track)
         .map(::normalize).distinct().sorted()
+
+    private val guestCredit = Regex("(?i)\\s*[(\\[]?\\b(?:feat\\.?|ft\\.?|featuring)\\s+")
+    private val mainCollaboration = Regex("(?i)\\s+(?:&|and|x|×)\\s+|;")
+    private val secondaryRole = Regex("(?i)\\b(?:written|lyrics|lyricist|composed|composer|producer|produced|music director|background vocals)\\b")
+
+    /** Ranking only: keep recording identity/recommendation matching rules independent.
+     * Structured primary credits may name up to three collaborators. Older combined
+     * contributor fields cannot establish that every comma-separated person is primary. */
+    fun mainArtists(track: MusicTrack): List<String> {
+        val verified = track.primaryArtists.isNotEmpty()
+        val writers = track.writer.split(artistSeparator).map(CatalogNames::normalize).toSet()
+        fun eligibleLegacy(name: String) = known(name) && !secondaryRole.containsMatchIn(name) &&
+            CatalogNames.normalize(name) !in writers
+        val names = if (verified) track.primaryArtists else {
+            // Exclude explicitly identified writers before choosing the conservative
+            // first primary credit. Do not promote the remaining comma-separated list.
+            val primary = track.artist.replace(topicSuffix, "").split(guestCredit, limit = 2).first()
+                .split(',').map(CatalogNames::clean).firstOrNull(::eligibleLegacy).orEmpty()
+            primary.split(mainCollaboration)
+        }
+        return names.map(CatalogNames::clean).map { it.replace(topicSuffix, "").trim() }
+            .filter { known(it) && !guestCredit.containsMatchIn(it) && (verified || eligibleLegacy(it)) }
+            .distinctBy(::mainArtistKey).take(3)
+    }
+
+    fun mainArtistKey(name: String): String = CatalogNames.normalize(ArtistPhotoRepository.canonicalName(name))
 
     fun metadataKey(track: MusicTrack): String = metadataKey(track, artists(track))
 

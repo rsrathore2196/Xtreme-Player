@@ -50,11 +50,11 @@ data class MostListenedArtist(
 /** Preserve long-term cached counts until the complete historical baseline is ready. */
 internal fun addPendingArtistPlays(cached: List<MostListenedArtist>, tracks: Collection<MusicTrack>): List<MostListenedArtist> {
     if (tracks.isEmpty()) return cached
-    val artists = cached.associateByTo(linkedMapOf()) { HomeRecommendationPolicy.normalize(it.name) }
-    for (track in tracks) for (key in HomeRecommendationPolicy.artists(track)) {
+    val artists = cached.associateByTo(linkedMapOf()) { HomeRecommendationPolicy.mainArtistKey(it.name) }
+    for (track in tracks) for (name in HomeRecommendationPolicy.mainArtists(track)) {
+        val key = HomeRecommendationPolicy.mainArtistKey(name)
         val previous = artists[key]
-        val display = previous?.name ?: (track.artist + "," + track.singers).split(',')
-            .firstOrNull { HomeRecommendationPolicy.normalize(it) == key }?.trim() ?: key
+        val display = previous?.name ?: name
         artists[key] = MostListenedArtist(display, (previous?.playCount ?: 0) + 1,
             (listOf(track) + previous?.tracks.orEmpty()).distinctBy { it.id }.take(3))
     }

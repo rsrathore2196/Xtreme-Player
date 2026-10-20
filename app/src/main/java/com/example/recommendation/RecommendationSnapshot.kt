@@ -58,6 +58,9 @@ data class RecommendationSnapshot(
                                 genre = tObj.optString("genre", ""),
                                 isLiked = tObj.optBoolean("isLiked", false),
                                 singers = tObj.optString("singers", ""),
+                                primaryArtists = tObj.optJSONArray("primaryArtists")?.let { names ->
+                                    (0 until names.length()).map { names.optString(it) }.filter(String::isNotBlank)
+                                }.orEmpty(),
                                 writer = tObj.optString("writer", ""),
                                 language = tObj.optString("language", "Hindi"),
                                 year = tObj.optString("year", ""),
@@ -103,6 +106,7 @@ data class RecommendationSnapshot(
                                     put("genre", t.genre)
                                     put("isLiked", t.isLiked)
                                     put("singers", t.singers)
+                                    put("primaryArtists", JSONArray(t.primaryArtists))
                                     put("writer", t.writer)
                                     put("language", t.language)
                                     put("year", t.year)

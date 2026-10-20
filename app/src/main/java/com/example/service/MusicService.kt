@@ -59,6 +59,11 @@ class MusicService : MediaLibraryService() {
     private val networkQuality by lazy { com.example.playback.NetworkQualityMonitor.getInstance(this) }
     private var networkQueueJob: Job? = null
     private var applyingNetworkPolicy = false
+    private var policyRevision = 0L
+    private var headlessPolicyOwner: String? = null
+    private var headlessLosslessAttempts = 0
+    private var headlessBackgroundUpgrade = false
+    private var headlessTransition: Pair<String, Long>? = null
     private var volumeObserver: android.database.ContentObserver? = null
     private var volumeJob: Job? = null
     private var crossfade: com.example.playback.CrossfadeController? = null
@@ -84,7 +89,8 @@ class MusicService : MediaLibraryService() {
         networkQueueJob = serviceScope.launch {
             yield() // Coalesce a burst of queue/metadata callbacks.
             val player = exoPlayer ?: return@launch
-            val ceiling = networkQuality.currentMaxBitrateBps
+            val policy = networkQuality.sourcePolicy.value
+            val ceiling = policy.ceiling.maxBitrateBps
             var changed = false
             val start = (player.currentMediaItemIndex + 1).coerceAtLeast(0)
             for (index in start until minOf(player.mediaItemCount, start + 3)) {
@@ -94,13 +100,13 @@ class MusicService : MediaLibraryService() {
                 var after = NetworkAudioQualityPolicy.constrain(before, ceiling)
                 val address = before.localConfiguration?.uri ?: Uri.EMPTY
                 val extras = before.mediaMetadata.extras
-                val checked = extras?.getString("audio_policy_tier") == networkQuality.currentAudioQuality.name &&
-                    System.currentTimeMillis() - (extras?.getLong("audio_policy_checked_at", 0L) ?: 0L) in 0L..300_000L
+                val checked = NetworkAudioQualityPolicy.preparedFor(before, policy)
                 val archive = address.host.orEmpty().let { it == "archive.org" || it.endsWith(".archive.org") }
                 // Only the next item gets Archive prefetch; never resolve an entire playlist.
                 // New quality settings apply ahead of playback, never to the audible item.
                 val needsProvider = !checked && address.scheme !in setOf("file", "content") &&
                     ((ceiling == Int.MAX_VALUE && index == start) ||
+                        (policy.preferOpus && index == start) ||
                         YouTubeAudioStreamService.isYouTubeAudio(before.mediaId, address.toString()) ||
                         (archive && ceiling != Int.MAX_VALUE))
                 if (needsProvider && networkQuality.activeQualityCeiling.value.connectionType != com.example.playback.NetworkConnectionType.OFFLINE) {
@@ -110,6 +116,7 @@ class MusicService : MediaLibraryService() {
                         extras?.getLong("duration", 0L) ?: 0L, metadata.artworkUri?.toString().orEmpty(), address.toString(),
                         bitrateKbps = extras?.getInt("bitrate", 0) ?: 0,
                         source = extras?.getString("media_source").orEmpty(), isrc = extras?.getString("isrc").orEmpty(),
+                        primaryArtists = extras?.getStringArrayList("primaryArtists")?.toList().orEmpty(),
                         isLossless = extras?.getBoolean("isLossless") == true,
                         recommendationOnly = extras?.getBoolean("recommendation_only") == true)
                     val resolved = try { app.repository.resolvePlayableTrack(selected) }
@@ -120,7 +127,8 @@ class MusicService : MediaLibraryService() {
                             putInt("bitrate", resolved.bitrateKbps); putString("qualityBadge", resolved.qualityBadge)
                             putString("media_source", resolved.source); putBoolean("isLossless", resolved.isLossless)
                             putBoolean("audio_actual", false)
-                            putString("audio_policy_tier", networkQuality.currentAudioQuality.name)
+                            putString("audio_policy_tier", policy.ceiling.audioQuality.name)
+                            putString("source_policy_key", policy.key)
                             putLong("audio_policy_checked_at", System.currentTimeMillis())
                         }
                         after = after.buildUpon().setUri(uri).setCustomCacheKey(null)
@@ -132,7 +140,7 @@ class MusicService : MediaLibraryService() {
                 if (after === before) continue
                 ensureActive()
                 // Navigation/advance or another policy update always wins over this result.
-                if (ceiling != networkQuality.currentMaxBitrateBps || index <= player.currentMediaItemIndex ||
+                if (policy.key != networkQuality.sourcePolicy.value.key || index <= player.currentMediaItemIndex ||
                     index >= player.mediaItemCount) continue
                 val current = player.getMediaItemAt(index)
                 if (current.mediaId != before.mediaId || current.localConfiguration?.uri != before.localConfiguration?.uri) continue
@@ -268,6 +276,136 @@ class MusicService : MediaLibraryService() {
     }
 
     @OptIn(UnstableApi::class)
+    /** One transition owner: the connected controller, or this foreground session when headless. */
+    private fun reconcileHeadlessPolicy(policy: com.example.playback.PlaybackSourcePolicy, failedUrl: String? = null) {
+        if (SabrSessionRegistry.controllerHandlesRecovery?.invoke() == true) {
+            sourceRecoveryJob?.cancel()
+            headlessPolicyOwner = null
+            ++policyRevision
+            return
+        }
+        val player = exoPlayer ?: return
+        val item = player.currentMediaItem ?: return
+        val uri = item.localConfiguration?.uri ?: return
+        val owner = "${item.mediaId}:$uri:${policy.key}:$failedUrl"
+        if (headlessPolicyOwner == owner && sourceRecoveryJob?.isActive == true) return
+        sourceRecoveryJob?.cancel()
+        val revision = ++policyRevision
+        headlessTransition = null
+        if (headlessPolicyOwner != owner) headlessLosslessAttempts = 0
+        headlessPolicyOwner = owner
+        headlessBackgroundUpgrade = false
+        if (uri.scheme in setOf("file", "content")) return
+        if (failedUrl == null && policy.maximum && (!policy.allowsArchive || !player.isPlaying ||
+            uri.host.orEmpty().let { it == "archive.org" || it.endsWith(".archive.org") } || headlessLosslessAttempts >= 3)) return
+        val metadata = item.mediaMetadata
+        val extras = metadata.extras
+        val track = MusicTrack(item.mediaId, metadata.title?.toString().orEmpty(), metadata.artist?.toString().orEmpty(),
+            metadata.albumTitle?.toString().orEmpty(), player.duration.takeIf { it > 0 } ?: extras?.getLong("duration", 0L) ?: 0L,
+            metadata.artworkUri?.toString().orEmpty(), uri.toString(), bitrateKbps = extras?.getInt("bitrate") ?: 0,
+            qualityBadge = extras?.getString("qualityBadge").orEmpty(), source = extras?.getString("media_source").orEmpty(),
+            primaryArtists = extras?.getStringArrayList("primaryArtists")?.toList().orEmpty(),
+            isrc = extras?.getString("isrc").orEmpty())
+        if (failedUrl == null && !policy.maximum && policy.acceptsRemoteTrack(track) && (!policy.preferOpus ||
+            YouTubeAudioStreamService.isYouTubeAudio(track.id, track.audioUrl))) return
+        fun owns(expected: Uri = uri) = revision == policyRevision && networkQuality.sourcePolicy.value.key == policy.key &&
+            player.currentMediaItem?.mediaId == item.mediaId && player.currentMediaItem?.localConfiguration?.uri == expected &&
+            SabrSessionRegistry.controllerHandlesRecovery?.invoke() != true
+        sourceRecoveryJob = serviceScope.launch {
+            var activatedUri: Uri? = null
+            try {
+                delay(180L)
+                val resolved = if (policy.maximum && failedUrl == null) {
+                    headlessBackgroundUpgrade = true
+                    delay(3_000L) // Stable audible playback, not a startup admission delay.
+                    if (!owns() || !player.isPlaying) return@launch
+                    headlessLosslessAttempts++
+                    withContext(AppDispatchers.Io) { app.repository.findLosslessUpgrade(track) } ?: return@launch
+                } else withContext(AppDispatchers.Io) { app.repository.resolvePlayableTrack(track,
+                    forceRefresh = failedUrl != null, failedUrl = failedUrl) }
+                if (!owns() || resolved.audioUrl == track.audioUrl) return@launch
+                val replacementExtras = Bundle(extras ?: Bundle()).apply {
+                    putBoolean("audio_actual", false); putBoolean("isLossless", resolved.isLossless)
+                    putBoolean("source_transition_pending", true)
+                    putBoolean("lossless_upgrade_pending", resolved.isLossless)
+                    putString("media_source", resolved.source); putInt("bitrate", resolved.bitrateKbps)
+                    putString("qualityBadge", resolved.qualityBadge); putString("source_policy_key", policy.key)
+                    putStringArrayList("primaryArtists", ArrayList(resolved.primaryArtists))
+                }
+                val replacement = item.buildUpon().setUri(resolved.audioUrl).setMimeType(null)
+                    .setMediaMetadata(metadata.buildUpon().setExtras(replacementExtras).build()).build()
+                if (resolved.isLossless) {
+                    val sameCode = withContext(AppDispatchers.CpuBounded) {
+                        com.example.data.repository.RecordingIdentity.isrc(track.isrc)?.let {
+                            it == com.example.data.repository.RecordingIdentity.isrc(resolved.isrc)
+                        } == true
+                    }
+                    val prepared = com.example.playback.LosslessStreamPrebuffer.prepare(this@MusicService, replacement,
+                        track.durationMs, currentPosition = { player.currentPosition }, stillCurrent = { owns() && player.isPlaying },
+                        durationToleranceMs = if (sameCode) 8_000L else 5_000L, allowUnknownDuration = sameCode)
+                    if (!owns()) return@launch
+                    if (prepared == null || !prepared.covers(player.currentPosition)) {
+                        com.example.playback.LosslessDiagnostics.prebufferRejected(track.id, prepared != null)
+                        app.repository.rejectLosslessUpgrade(track, resolved.audioUrl)
+                        return@launch
+                    }
+                } else if (!com.example.playback.LosslessStreamPrebuffer.warmSource(this@MusicService, replacement))
+                    throw java.io.IOException("Source preparation failed")
+                if (!owns()) return@launch
+                val index = player.currentMediaItemIndex
+                val position = player.currentPosition.coerceAtLeast(0L)
+                val resume = player.playWhenReady
+                val targetUri = Uri.parse(resolved.audioUrl)
+                activatedUri = targetUri
+                headlessTransition = resolved.audioUrl to position
+                headlessBackgroundUpgrade = false
+                player.replaceMediaItem(index, replacement); player.seekTo(index, position)
+                player.prepare(); player.playWhenReady = resume
+                val ready = withTimeoutOrNull(8_000L) {
+                    while (owns(targetUri)) {
+                        val format = verifiedSignalFormat
+                        if (player.playbackState == Player.STATE_READY && verifiedSignalUri == targetUri && format != null) {
+                            val codec = YouTubeAudioStreamService.displayCodec(format.sampleMimeType, format.codecs)
+                            val expected = if (resolved.isLossless) com.example.playback.LosslessStreamPrebuffer.audioInfo(format) != null
+                                else if (policy.maximum) codec in setOf("AAC", "Opus", "Vorbis")
+                                else codec == (if (YouTubeAudioStreamService.isYouTubeAudio(resolved.id, resolved.audioUrl)) "Opus" else "AAC")
+                            val rate = com.example.playback.StreamQualityBadge.from(format).bitrateKbps
+                            if (expected && (policy.maximum || rate.toLong() * 1000 <= policy.ceiling.maxBitrateBps))
+                                return@withTimeoutOrNull true
+                        }
+                        if (player.playerError != null) break
+                        delay(100L)
+                    }
+                    false
+                } == true
+                if (!ready && owns(targetUri) && player.playbackState == Player.STATE_READY &&
+                    !player.playWhenReady && player.playerError == null) return@launch
+                if (!ready && owns(targetUri)) {
+                    com.example.playback.LosslessDiagnostics.record(track.id,
+                        com.example.playback.LosslessDiagnostics.Reason.ACTIVATION_FAILED, "headless-policy")
+                    if (resolved.isLossless) app.repository.rejectLosslessUpgrade(track, resolved.audioUrl)
+                    if (failedUrl == null && policy.acceptsRemoteTrack(track)) {
+                        val positionNow = com.example.playback.losslessRecoveryPosition(
+                            headlessTransition?.second ?: position, player.currentPosition, false)
+                        val resumeNow = player.playWhenReady
+                        player.replaceMediaItem(index, item); player.seekTo(index, positionNow)
+                        player.prepare(); player.playWhenReady = resumeNow
+                    } else { player.pause(); player.stop() }
+                }
+                checkpoint()
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) {
+                if (owns(activatedUri ?: uri) && (failedUrl != null || !policy.acceptsRemoteTrack(track))) {
+                    player.pause(); player.stop()
+                    com.example.playback.LosslessDiagnostics.record(track.id,
+                        com.example.playback.LosslessDiagnostics.Reason.POLICY_SOURCE_UNAVAILABLE, "headless-policy")
+                }
+            } finally {
+                if (revision == policyRevision) { headlessTransition = null; headlessBackgroundUpgrade = false }
+            }
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         serviceScope.launch(AppDispatchers.Io) { com.example.playback.AudioDeviceManager.init(this@MusicService) }
@@ -418,9 +556,10 @@ class MusicService : MediaLibraryService() {
         }.also { contentResolver.registerContentObserver(android.provider.Settings.System.CONTENT_URI, true, it) }
         publishVolume()
         serviceScope.launch {
-            networkQuality.activeQualityCeiling.map { it.effectiveCeiling }.distinctUntilChanged().collect {
+            networkQuality.sourcePolicy.collect { policy ->
                 // Updating ABR constraints cannot re-prepare a progressive source.
                 applyAudioCeiling(trackSelector, player)
+                reconcileHeadlessPolicy(policy)
                 scheduleUpcomingCeilings()
             }
         }
@@ -444,11 +583,20 @@ class MusicService : MediaLibraryService() {
                     val before = item.mediaMetadata.extras
                     val audio = com.example.playback.LosslessStreamPrebuffer.audioInfo(format, quality.bitrateKbps)
                     if (audio == null) {
+                        if (format.sampleMimeType.isNullOrBlank() ||
+                            (format.sampleMimeType in setOf(MimeTypes.AUDIO_FLAC, MimeTypes.AUDIO_ALAC, MimeTypes.AUDIO_RAW) &&
+                                (format.sampleRate <= 0 || format.channelCount <= 0))) {
+                            com.example.playback.LosslessDiagnostics.record(item.mediaId,
+                                com.example.playback.LosslessDiagnostics.Reason.METADATA_INCOMPLETE, "active-format")
+                            return
+                        }
                         com.example.playback.LosslessDiagnostics.record(item.mediaId,
                             com.example.playback.LosslessDiagnostics.Reason.DECODER_UNSUPPORTED, "active-format")
                         updateActualAudioProperties(player, item,
                             actualAudioProperties(item, format, quality, "INTERNET_ARCHIVE", invalidLossless = true),
                             replaceItem = false)
+                        if (SabrSessionRegistry.controllerHandlesRecovery?.invoke() != true && sourceRecoveryJob?.isActive != true)
+                            reconcileHeadlessPolicy(networkQuality.sourcePolicy.value, failedUrl = uri.toString())
                         if (before?.getBoolean("lossless_upgrade_pending") != true) {
                             verifiedSignalUri = uri; verifiedSignalId = item.mediaId
                             verifiedSignalFormat = format; verifiedSignalBitrate = 0
@@ -474,6 +622,13 @@ class MusicService : MediaLibraryService() {
                 verifiedSignalFormat = format; verifiedSignalBitrate = quality.bitrateKbps
                 publishVerifiedSignal()
                 updateActualAudioProperties(player, item, actualAudioProperties(item, format, quality, mediaSource))
+                val policy = networkQuality.sourcePolicy.value
+                val invalidRate = quality.bitrateKbps.toLong() * 1000 > policy.ceiling.maxBitrateBps
+                val invalidCodec = mediaSource == "YOUTUBE" && quality.codec.isNotBlank() &&
+                    (!policy.preferOpus || !quality.codec.equals("opus", true))
+                if (!policy.maximum && (invalidRate || invalidCodec) &&
+                    SabrSessionRegistry.controllerHandlesRecovery?.invoke() != true && sourceRecoveryJob?.isActive != true)
+                    reconcileHeadlessPolicy(policy, failedUrl = uri.toString())
             }
             override fun onAudioSessionIdChanged(
                 eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
@@ -513,11 +668,16 @@ class MusicService : MediaLibraryService() {
                 }
                 applyAudioCeiling(trackSelector, player)
                 scheduleUpcomingCeilings()
+                val policy = networkQuality.sourcePolicy.value
+                if (mediaItem != null && mediaItem.mediaMetadata.extras?.getString("source_policy_key") != policy.key)
+                    reconcileHeadlessPolicy(policy)
             }
             override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
                 applyAudioCeiling(trackSelector, player)
             }
             override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (isPlaying && headlessTransition == null && networkQuality.sourcePolicy.value.maximum)
+                    reconcileHeadlessPolicy(networkQuality.sourcePolicy.value)
                 checkpointJob?.cancel()
                 checkpoint()
                 if (isPlaying) checkpointJob = serviceScope.launch {
@@ -553,7 +713,17 @@ class MusicService : MediaLibraryService() {
                 }
             }
 
+            override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+                val pending = headlessTransition
+                if (pending != null && reason == Player.DISCONTINUITY_REASON_SEEK &&
+                    newPosition.mediaItem?.localConfiguration?.uri?.toString() == pending.first)
+                    headlessTransition = pending.first to newPosition.positionMs.coerceAtLeast(0L)
+            }
+
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                if (headlessBackgroundUpgrade) {
+                    sourceRecoveryJob?.cancel(); sourceRecoveryJob = null; headlessBackgroundUpgrade = false
+                }
                 if (error.isAudioPipelineFailure()) {
                     jioFallback?.cancel()
                     sourceRecoveryJob?.cancel()
@@ -603,6 +773,7 @@ class MusicService : MediaLibraryService() {
                             player.duration.takeIf { it > 0L } ?: extras?.getLong("duration", 0L) ?: 0L,
                             metadata.artworkUri?.toString().orEmpty(), failedUri.toString(),
                             source = extras?.getString("media_source").orEmpty(),
+                            primaryArtists = extras?.getStringArrayList("primaryArtists")?.toList().orEmpty(),
                             isrc = extras?.getString("isrc").orEmpty(),
                             recommendationOnly = extras?.getBoolean("recommendation_only", false) == true)
                         sourceRecoveryJob = serviceScope.launch {
@@ -672,7 +843,8 @@ class MusicService : MediaLibraryService() {
     private fun publishSignalSource(item: MediaItem?) {
         if (item == null) return
         val uri = item.localConfiguration?.uri ?: return
-        if (item.mediaMetadata.extras?.getBoolean("lossless_upgrade_pending") == true) return
+        if (item.mediaMetadata.extras?.getBoolean("lossless_upgrade_pending") == true ||
+            item.mediaMetadata.extras?.getBoolean("source_transition_pending") == true) return
         publishSignalSource(item, uri)
     }
 
@@ -906,6 +1078,7 @@ class MusicService : MediaLibraryService() {
                 putLong("duration", durationMs)
                 putBoolean("isLiked", isLiked); putBoolean("isLossless", isLossless)
                 putString("singers", singers); putString("writer", writer)
+                putStringArrayList("primaryArtists", ArrayList(primaryArtists))
                 putString("language", language); putString("year", year); putString("isrc", isrc)
             }
             return MediaItem.Builder()

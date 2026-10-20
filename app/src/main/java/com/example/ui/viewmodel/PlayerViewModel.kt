@@ -140,7 +140,8 @@ class PlayerViewModel(
     val catalogTracks: StateFlow<List<MusicTrack>> = _catalogTracks.asStateFlow()
 
     val catalogBrowser = CatalogBrowserState(repository.catalogBrowser, viewModelScope,
-        initialQuality = playbackManager.uiState.value.selectedQuality)
+        initialQuality = playbackManager.uiState.value.selectedQuality,
+        verifyPlayback = repository::verifySearchPlayback, archiveSearch = repository::searchArchive)
 
     private val _searchState = MutableStateFlow(SearchUiState())
     fun hasActiveSearch(): Boolean = _searchState.value.let { it.query.isNotBlank() || it.selectedGenre != "All" }
@@ -527,8 +528,8 @@ class PlayerViewModel(
             }
         }
         viewModelScope.launch {
-            playbackManager.uiState.map { it.selectedQuality }.distinctUntilChanged()
-                .collect(catalogBrowser::setAudioQuality)
+            com.example.playback.NetworkQualityMonitor.getInstance(application).sourcePolicy
+                .collect(catalogBrowser::setSourcePolicy)
         }
         viewModelScope.launch(AppDispatchers.Io) {
             _settingsReady.first { it }

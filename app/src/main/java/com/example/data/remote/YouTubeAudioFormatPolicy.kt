@@ -9,7 +9,8 @@ import org.json.JSONObject
 import java.io.IOException
 
 /** Restrict each vocal-track inventory before native selection; never replace the extractor. */
-internal class YouTubeAudioFormatPolicy(private val maxBitrateBps: Int = Int.MAX_VALUE) : Interceptor {
+internal class YouTubeAudioFormatPolicy(private val maxBitrateBps: Int = Int.MAX_VALUE,
+    private val opusOnly: Boolean = false) : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
         val response = chain.proceed(chain.request())
         if (!response.isSuccessful || chain.request().url.encodedPath != "/youtubei/v1/player") return response
@@ -35,6 +36,9 @@ internal class YouTubeAudioFormatPolicy(private val maxBitrateBps: Int = Int.MAX
             val fittingTracks = audioGroups.filterValues { formats -> formats.any { it.optInt("bitrate", 0) in 1..maxBitrateBps } }.keys
             for (index in 0 until entries.length()) {
                 val entry = entries.optJSONObject(index) ?: continue
+                if (opusOnly && !entry.optString("mimeType").contains("opus", true)) {
+                    changed = true; continue
+                }
                 if ((entry.optJSONArray("drmFamilies")?.length() ?: 0) > 0 ||
                     entry.optString("drmTrackType").isNotBlank()) { changed = true; continue }
                 val group = entry.optJSONObject("audioTrack")?.optString("id").orEmpty()

@@ -81,6 +81,21 @@ class NetworkQualityMonitor private constructor(context: Context) {
         policy(type, prefs).also { latest = it }
     }.distinctUntilChanged().stateIn(scope, SharingStarted.WhileSubscribed(5_000), latest)
 
+    val audioEnhancer = AudioQualityPreferences.observeAudioEnhancer(app).distinctUntilChanged()
+        .stateIn(scope, SharingStarted.Eagerly, false)
+    val sourcePolicy = combine(activeQualityCeiling, audioEnhancer) { quality, enhancer ->
+        PlaybackSourcePolicy(quality.effectiveCeiling, enhancer,
+            quality.connectionType != NetworkConnectionType.OFFLINE)
+    }.distinctUntilChanged().stateIn(scope, SharingStarted.Eagerly,
+        PlaybackSourcePolicy(latest.effectiveCeiling, online = false))
+    fun sourcePolicySnapshot(): PlaybackSourcePolicy = snapshot().let {
+        PlaybackSourcePolicy(it.effectiveCeiling, AudioQualityPreferences.isAudioEnhancerEnabled(app),
+            it.connectionType != NetworkConnectionType.OFFLINE)
+    }
+    fun setAudioEnhancer(enabled: Boolean) { scope.launch(preferenceWrites) {
+        AudioQualityPreferences.setAudioEnhancerEnabled(app, enabled)
+    } }
+
     /** Called on resolver/loader IO threads; also works before a UI/service subscribes. */
     fun snapshot(): ActiveQualityState {
         val type = try {

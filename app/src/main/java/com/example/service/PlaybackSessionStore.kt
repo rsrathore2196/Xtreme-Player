@@ -80,6 +80,7 @@ internal object PlaybackSessionStore {
                             .put("duration", extras?.getLong("duration", 0L) ?: 0L)
                             .put("qualityBadge", extras?.getString("qualityBadge").orEmpty()).apply {
                                 listOf("singers", "writer", "language", "year", "isrc").forEach { key -> put(key, extras?.getString(key).orEmpty()) }
+                                put("primaryArtists", JSONArray(extras?.getStringArrayList("primaryArtists").orEmpty()))
                                 put("isLiked", extras?.getBoolean("isLiked", false) ?: false)
                                 put("isLossless", extras?.getBoolean("isLossless", false) ?: false)
                                 put("recommendationOnly", extras?.getBoolean("recommendation_only", false) ?: false)
@@ -158,6 +159,9 @@ internal object PlaybackSessionStore {
                             putString("media_source", entry.optString("source")); putInt("bitrate", entry.optInt("bitrate"))
                             putLong("duration", entry.optLong("duration")); putString("qualityBadge", entry.optString("qualityBadge"))
                             listOf("singers", "writer", "language", "year", "isrc").forEach { key -> putString(key, entry.optString(key)) }
+                            val primary = entry.optJSONArray("primaryArtists")
+                            putStringArrayList("primaryArtists", ArrayList((0 until (primary?.length() ?: 0))
+                                .map { primary!!.getString(it) }.filter(String::isNotBlank)))
                             putBoolean("isLiked", known[id]?.isLiked ?: entry.optBoolean("isLiked"))
                             putBoolean("isLossless", entry.optBoolean("isLossless"))
                             putBoolean("recommendation_only", entry.optBoolean("recommendationOnly"))

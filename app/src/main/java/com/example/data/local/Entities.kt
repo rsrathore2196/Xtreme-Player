@@ -8,7 +8,9 @@ import androidx.room.Ignore
 import androidx.room.Junction
 import androidx.room.PrimaryKey
 import androidx.room.Relation
+import androidx.room.ColumnInfo
 import com.example.data.model.MusicTrack
+import org.json.JSONArray
 
 @Immutable
 @Entity(tableName = "tracks")
@@ -32,7 +34,8 @@ data class TrackEntity(
     val language: String = "",
     val year: String = "",
     val source: String = "HD Stream",
-    val isrc: String = ""
+    val isrc: String = "",
+    @ColumnInfo(defaultValue = "'[]'") val primaryArtists: String = "[]"
 ) {
     fun toMusicTrack(): MusicTrack = MusicTrack(
         id = id,
@@ -56,7 +59,10 @@ data class TrackEntity(
             source.equals("JioSaavn", ignoreCase = true) || source.isBlank() -> "HD Stream"
             else -> source
         },
-        isrc = isrc
+        isrc = isrc,
+        primaryArtists = runCatching { JSONArray(primaryArtists).let { names ->
+            (0 until names.length()).map { names.getString(it) }.filter(String::isNotBlank)
+        } }.getOrDefault(emptyList())
     )
 
     companion object {
@@ -83,7 +89,8 @@ data class TrackEntity(
                 track.source.equals("JioSaavn", ignoreCase = true) || track.source.isBlank() -> "HD Stream"
                 else -> track.source
             },
-            isrc = track.isrc
+            isrc = track.isrc,
+            primaryArtists = JSONArray(track.primaryArtists).toString()
         )
     }
 }

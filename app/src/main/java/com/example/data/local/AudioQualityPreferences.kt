@@ -17,6 +17,7 @@ object AudioQualityPreferences {
     private const val KEY_WIFI_CEILING = "wifi_quality_ceiling"
     private const val KEY_CELLULAR_CEILING = "cellular_quality_ceiling"
     private const val KEY_METERED_WIFI = "treat_metered_wifi_as_cellular"
+    private const val KEY_AUDIO_ENHANCER = "prefer_youtube_opus"
     private fun getPrefs(context: Context): SharedPreferences {
         return ReactiveSettingsRepository.preferences(context, PREFS_NAME)
     }
@@ -66,4 +67,18 @@ object AudioQualityPreferences {
     fun setTreatMeteredWifiAsCellular(context: Context, enabled: Boolean) {
         getPrefs(context).edit().putBoolean(KEY_METERED_WIFI, enabled).apply()
     }
+
+    fun isAudioEnhancerEnabled(context: Context): Boolean = getPrefs(context).getBoolean(KEY_AUDIO_ENHANCER, false)
+    fun setAudioEnhancerEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_AUDIO_ENHANCER, enabled).apply()
+    }
+    fun observeAudioEnhancer(context: Context) = callbackFlow {
+        val prefs = getPrefs(context.applicationContext)
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == null || key == KEY_AUDIO_ENHANCER) trySend(Unit)
+        }
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+        trySend(Unit)
+        awaitClose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+    }.conflate().map { isAudioEnhancerEnabled(context.applicationContext) }.flowOn(Dispatchers.IO)
 }

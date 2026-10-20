@@ -28,12 +28,13 @@ object MusicCache {
         length > 0 && cache.isCached(key, 0L, length)
     }.getOrDefault(false)
 
-    private fun offlineAudio(context: Context, video: String, cap: Int, sabr: Boolean): YouTubeAudioStreamService.AudioStream? {
+    private fun offlineAudio(context: Context, video: String, cap: Int, sabr: Boolean,
+        opusOnly: Boolean = false): YouTubeAudioStreamService.AudioStream? {
         val cached = YouTubeAudioStreamService.cachedStreams(video).filter {
-            it.isSabr == sabr && !it.isHls && fullyCached(context, it.cacheKey, it.contentLength)
+            it.isSabr == sabr && !it.isHls && (!opusOnly || it.codec == "Opus") &&
+                fullyCached(context, it.cacheKey, it.contentLength)
         }
         return cached.filter { it.bitrateKbps.toLong() * 1000 <= cap }.maxByOrNull { it.bitrateKbps }
-            ?: cached.minByOrNull { it.bitrateKbps }
     }
 
     @Volatile
@@ -128,16 +129,18 @@ object MusicCache {
                             value to com.example.data.remote.OnlineMusicApiService.formatUrlForQuality(spec.uri.toString(), value.toString())
                         }.filter { fullyCached(app, it.second) } else emptyList()
                         val available = cached.filter { it.first <= rate }.maxByOrNull { it.first }
-                            ?: cached.minByOrNull { it.first }
+                        if (offline && available == null) throw IOException("No cached audio fits the active quality profile")
                         android.net.Uri.parse(available?.second ?: requested)
                     }.also { boundJioUri = it }
                     spec.buildUpon().setUri(target).setKey(if (target == spec.uri) spec.key else target.toString()).build()
                 } else if (spec.uri.scheme == "xtreme-sabr") {
                     val video = YouTubeAudioStreamService.videoIdFromUri(spec.uri)
                         ?: throw IOException("Invalid SABR recording")
-                    val audio = (if (offline) offlineAudio(app, video, requireNotNull(pinnedCeiling), sabr = true) else null) ?: try { runBlocking(Dispatchers.IO) {
+                    val audio = (if (offline) offlineAudio(app, video, requireNotNull(pinnedCeiling), sabr = true,
+                        opusOnly = spec.uri.getQueryParameter("codec") == "opus") else null) ?:
+                        if (offline) throw IOException("No compatible cached SABR audio") else try { runBlocking(Dispatchers.IO) {
                         YouTubeAudioStreamService.resolveSabr(video, AudioQualityPreferences.getSelectedQuality(app),
-                            maxBitrateBps = pinnedCeiling)
+                            maxBitrateBps = pinnedCeiling, requireOpus = spec.uri.getQueryParameter("codec") == "opus")
                     } } catch (e: InterruptedException) {
                         Thread.currentThread().interrupt(); throw IOException("Audio resolution interrupted", e)
                     } catch (e: Exception) { throw IOException("Couldn't resolve SABR audio", e) }
@@ -151,10 +154,12 @@ object MusicCache {
                 } else if (spec.uri.scheme == "xtreme-youtube") {
                     val videoId = spec.uri.pathSegments.firstOrNull().orEmpty()
                     val hls = spec.uri.lastPathSegment?.endsWith(".m3u8") == true
-                    val audio = (if (offline && !hls) offlineAudio(app, videoId, requireNotNull(pinnedCeiling), sabr = false) else null) ?: try {
+                    val audio = (if (offline && !hls) offlineAudio(app, videoId, requireNotNull(pinnedCeiling), sabr = false,
+                        opusOnly = spec.uri.getQueryParameter("codec") == "opus") else null) ?:
+                        if (offline) throw IOException("No compatible cached YouTube audio") else try {
                         runBlocking(Dispatchers.IO) {
                             YouTubeAudioStreamService.resolve(videoId, AudioQualityPreferences.getSelectedQuality(app), hlsOnly = hls,
-                                maxBitrateBps = pinnedCeiling)
+                                maxBitrateBps = pinnedCeiling, requireOpus = spec.uri.getQueryParameter("codec") == "opus")
                         }
                     } catch (e: InterruptedException) {
                         Thread.currentThread().interrupt()

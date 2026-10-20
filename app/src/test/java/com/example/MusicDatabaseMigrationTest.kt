@@ -193,11 +193,12 @@ class MusicDatabaseMigrationTest {
             val before = createOldDatabase(version)
             openCurrentDatabase().withClose { db ->
                 val sqlite = db.openHelper.writableDatabase // Force the real Room migration and validation.
-                assertEquals(8, sqlite.version)
+                assertEquals(9, sqlite.version)
                 assertPreserved(before, snapshot(sqlite))
                 val oldTrack = requireNotNull(db.musicDao().getTrackById("old_favorite"))
                 assertTrue(oldTrack.isLiked)
                 assertTrue(oldTrack.isCached)
+                assertEquals("[]", oldTrack.primaryArtists)
                 if (version < 3) {
                     assertEquals("", oldTrack.singers)
                     assertEquals("", oldTrack.writer)
@@ -247,7 +248,7 @@ class MusicDatabaseMigrationTest {
 
     @Test
     fun unsupportedFutureDowngradeFailsWithoutDeletingAnyRecords() {
-        val before = createOldDatabase(version = 9, schemaVersion = 8)
+        val before = createOldDatabase(version = 10, schemaVersion = 9)
         val room = openCurrentDatabase()
         try {
             room.openHelper.writableDatabase
@@ -257,8 +258,8 @@ class MusicDatabaseMigrationTest {
         } finally {
             room.close()
         }
-        helper(9).use { original ->
-            assertEquals(9, original.writableDatabase.version)
+        helper(10).use { original ->
+            assertEquals(10, original.writableDatabase.version)
             assertPreserved(before, snapshot(original.writableDatabase))
         }
     }
