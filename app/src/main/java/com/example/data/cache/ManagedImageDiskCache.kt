@@ -95,7 +95,6 @@ class ManagedImageDiskCache(private val delegate: DiskCache, private val keyFile
 
     override fun openSnapshot(key: String): DiskCache.Snapshot? = delegate.openSnapshot(key)?.also {
         recordAccess(key)
-        SmartCacheManager.cacheUsageChanged(imageBytes = delegate.size)
     }
     override fun openEditor(key: String): DiskCache.Editor? = delegate.openEditor(key)?.let { editor ->
         recordAccess(key)
@@ -111,10 +110,12 @@ class ManagedImageDiskCache(private val delegate: DiskCache, private val keyFile
             override fun commitAndGet(): DiskCache.Snapshot? = commitAndOpenSnapshot()
         }
     }
-    override fun remove(key: String): Boolean = delegate.remove(key).also { removed ->
+    override fun remove(key: String): Boolean = removeEntry(key, reportUsage = true)
+
+    private fun removeEntry(key: String, reportUsage: Boolean): Boolean = delegate.remove(key).also { removed ->
         if (removed) {
             synchronized(lock) { if (accesses.remove(key) != null) accessRevision++ }
-            SmartCacheManager.cacheUsageChanged(imageBytes = delegate.size)
+            if (reportUsage) SmartCacheManager.cacheUsageChanged(imageBytes = delegate.size)
         }
     }
     @Suppress("OVERRIDE_DEPRECATION")
@@ -155,7 +156,7 @@ class ManagedImageDiskCache(private val delegate: DiskCache, private val keyFile
             if (delegate.size <= targetBytes.coerceAtLeast(0L)) break
             // Covers accessed since this maintenance snapshot are no longer LRU.
             if (synchronized(lock) { accesses[key] != lastAccess }) continue
-            remove(key)
+            removeEntry(key, reportUsage = false)
         }
         SmartCacheManager.cacheUsageChanged(imageBytes = delegate.size)
         return (before - delegate.size).coerceAtLeast(0L)

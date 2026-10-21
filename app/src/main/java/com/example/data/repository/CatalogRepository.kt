@@ -10,6 +10,7 @@ import com.example.playback.AudioQuality
 import com.example.data.remote.catalogGet
 import com.example.data.remote.catalogRequest
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import okhttp3.OkHttpClient
@@ -19,6 +20,37 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+
+/** Publish completed categories in their existing display order. The callback
+ * consumes prepared data; one slow/failing category cannot withhold the others. */
+internal suspend fun loadSearchCategories(load: suspend (String) -> CatalogPage,
+    onPartial: (suspend (CatalogPage) -> Unit)?): CatalogPage = supervisorScope {
+    val kinds = listOf("Tracks", "Albums", "Artists")
+    val updates = Channel<Pair<Int, CatalogPage?>>(kinds.size)
+    val rows = arrayOfNulls<CatalogPage>(kinds.size)
+    var failed = false
+    fun snapshot() = CatalogPage(tracks = rows[0]?.tracks.orEmpty(), albums = rows[1]?.albums.orEmpty(),
+        artists = rows[2]?.artists.orEmpty(), warning = rows.mapNotNull { it?.warning }.firstOrNull()
+            ?: "Some results couldn't load. Tap to retry.".takeIf { failed })
+    val workers = kinds.mapIndexed { index, kind -> launch {
+        val result = try { load(kind) } catch (cancelled: CancellationException) {
+            currentCoroutineContext().ensureActive()
+            null // A category's own timeout must settle, not strand its siblings.
+        }
+            catch (_: Exception) { null }
+        updates.send(index to result)
+    } }
+    try {
+        repeat(kinds.size) {
+            val (index, page) = updates.receive()
+            rows[index] = page
+            if (page == null) failed = true
+            else onPartial?.invoke(snapshot())
+        }
+        if (rows.all { it == null }) throw IOException("Search unavailable")
+        snapshot()
+    } finally { workers.forEach { it.cancel() }; updates.cancel() }
+}
 
 /** Typed browsing through the app's existing catalog provider and stream URL decoder. */
 class CatalogRepository {
@@ -112,20 +144,12 @@ class CatalogRepository {
         }
     }
     suspend fun search(query: String, type: String, page: Int = 1,
-        quality: AudioQuality = AudioQuality.ULTRA_HD_320, previousPage: CatalogPage? = null
+        quality: AudioQuality = AudioQuality.ULTRA_HD_320, previousPage: CatalogPage? = null,
+        onPartial: (suspend (CatalogPage) -> Unit)? = null
     ): CatalogPage = withContext(AppDispatchers.CpuBounded) {
         if (query.isBlank()) return@withContext CatalogPage()
-        if (type == "All") return@withContext supervisorScope {
-            val tasks = listOf("Tracks", "Albums", "Artists").map { kind -> async {
-                try { search(query, kind, 1, quality) } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
-            } }
-            val results = tasks.awaitAll()
-            if (results.all { it == null }) throw IOException("Search unavailable")
-            CatalogPage(tracks = results[0]?.tracks.orEmpty(), albums = results[1]?.albums.orEmpty(),
-                artists = results[2]?.artists.orEmpty(), warning =
-                    results.mapNotNull { it?.warning }.firstOrNull()
-                        ?: if (results.any { it == null }) "Some results couldn't load. Tap to retry." else null)
-        }
+        if (type == "All") return@withContext loadSearchCategories(
+            load = { kind -> search(query, kind, 1, quality) }, onPartial = onPartial)
         if (type == "Tracks") return@withContext trackSearch(query.trim(), page, previousPage)
         val call = when (type) { "Albums" -> "search.getAlbumResults"; "Artists" -> "search.getArtistResults"; "Playlists" -> "search.getPlaylistResults"; else -> return@withContext CatalogPage() }
         val root = request(call, "q" to query, "p" to page.toString(), "n" to "10")

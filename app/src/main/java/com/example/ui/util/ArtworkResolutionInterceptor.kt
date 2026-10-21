@@ -21,8 +21,18 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.selects.select
 
 const val ARTWORK_METADATA_PARAMETER = "com.example.artwork.metadata"
+
+/** Visibility controls unfinished work, not the content/painter/cache identity. */
+class ArtworkVisibility internal constructor(active: Boolean) {
+    internal val active = MutableStateFlow(active)
+}
 
 /** Raw metadata affects request identity, while the resolved URL remains Coil's cache key. */
 data class ArtworkRequestMetadata(
@@ -35,7 +45,8 @@ data class ArtworkRequestMetadata(
     val targetSize: Int = sourceDimension,
     val providerArtworkOnly: Boolean = false,
     val visibleContent: Boolean = true,
-    val startupPreparation: Boolean = false
+    val startupPreparation: Boolean = false,
+    val visibility: ArtworkVisibility? = null
 )
 
 /** Cached/provider art paints first; optional upgrades remain inside the same cancellable Coil request. */
@@ -49,6 +60,24 @@ class ArtworkResolutionInterceptor internal constructor(
         }
         val metadata = chain.request.parameters.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER)
             ?: return chain.proceed(chain.request)
+        metadata.visibility?.let { visibility ->
+            while (true) {
+                visibility.active.first { it }
+                val result = coroutineScope {
+                    val hidden = async(start = CoroutineStart.UNDISPATCHED) { visibility.active.first { !it } }
+                    val loading = async(com.example.performance.AppDispatchers.Io) { resolve(chain, metadata) }
+                    try {
+                        select<ImageResult?> {
+                            loading.onAwait { it }
+                            hidden.onAwait { null }
+                        }
+                    } finally { hidden.cancel(); loading.cancel() }
+                }
+                // Successful requests finish once. Hiding a retained tab then
+                // leaves its painter intact; only unfinished work resumes later.
+                if (result != null) return result
+            }
+        }
         if (!metadata.visibleContent) {
             // Coil can use its memory placeholder. Do not report a fake failure
             // or decode an unseen file/content URI. Visibility changes the
@@ -68,9 +97,9 @@ class ArtworkResolutionInterceptor internal constructor(
         val url = request.data as? String ?: return chain.proceed(request)
         // Bounded lock stripes deduplicate simultaneous grid/detail downloads.
         // Recheck Coil's source cache after the preceding request commits it.
-        val lock = playlistCoverFlights[(url.hashCode() and Int.MAX_VALUE) % playlistCoverFlights.size]
-        return lock.withLock {
-            coldArtworkRequests.withPermit {
+        val lock = artworkFlights[(url.hashCode() and Int.MAX_VALUE) % artworkFlights.size]
+        return coldArtworkRequests.withPermit {
+            lock.withLock {
                 val prepared = chain.proceed(cachedRequest)
                 if (prepared is SuccessResult) prepared else chain.proceed(request)
             }
@@ -101,7 +130,18 @@ class ArtworkResolutionInterceptor internal constructor(
             val candidate = request.newBuilder().data(url).apply {
                 if (cacheOnly) networkCachePolicy(CachePolicy.DISABLED)
             }.build()
-            val loaded = when (val result = chain.proceed(candidate)) {
+            val result = if (cacheOnly) chain.proceed(candidate) else {
+                val flight = artworkFlights[(url.hashCode() and Int.MAX_VALUE) % artworkFlights.size]
+                if (flight.tryLock()) {
+                    try { chain.proceed(candidate) } finally { flight.unlock() }
+                } else flight.withLock {
+                    // The preceding request may have committed this source at a
+                    // different decode size. Coil still owns the bytes/bitmaps.
+                    val hit = chain.proceed(candidate.newBuilder().networkCachePolicy(CachePolicy.DISABLED).build())
+                    if (hit is SuccessResult) hit else chain.proceed(candidate)
+                }
+            }
+            val loaded = when (result) {
                 is SuccessResult -> result
                 else -> { if (!cacheOnly) lastError = result; null }
             }
@@ -220,7 +260,7 @@ class ArtworkResolutionInterceptor internal constructor(
 
     private companion object {
         val coldArtworkRequests = Semaphore(2)
-        val playlistCoverFlights = Array(32) { Mutex() }
+        val artworkFlights = Array(32) { Mutex() }
         val youtubeThumbnail = Regex("/(?:default|mqdefault|hqdefault|sddefault)\\.jpg")
     }
 }

@@ -34,6 +34,19 @@ abstract class RecommendationCacheDatabase : RoomDatabase() {
     abstract fun entries(): RecommendationCacheDao
 }
 
+/** A transaction acknowledges precisely its captured versions, never a newer put.
+ * Failure/cancellation leaves the pending batch intact for the next bounded retry. */
+internal suspend fun persistRecommendationBatch(pending: MutableMap<String, RecommendationCacheEntry>,
+    commit: suspend (List<RecommendationCacheEntry>) -> Unit): Boolean {
+    val batch = synchronized(pending) { pending.values.toList() }
+    if (batch.isEmpty()) return false
+    commit(batch)
+    synchronized(pending) {
+        batch.forEach { entry -> if (pending[entry.cacheKey] === entry) pending.remove(entry.cacheKey) }
+    }
+    return true
+}
+
 /** Memory hits first; batched writes never delay a matched song or invalidate the library. */
 @OptIn(FlowPreview::class)
 internal class RecommendationCache private constructor(context: Context) {
@@ -52,17 +65,25 @@ internal class RecommendationCache private constructor(context: Context) {
             writes.receiveAsFlow().debounce(2_000L).collect {
                 // Slow lookups must not turn the debounce into one disk commit per song.
                 delay((10_000L - (android.os.SystemClock.elapsedRealtime() - lastWrite)).coerceAtLeast(0))
-                BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.DEFERRED,
-                    requireForeground = false) {
-                val batch = synchronized(pending) { pending.values.toList().also { pending.clear() } }
-                try { if (batch.isNotEmpty()) { database.entries().put(batch); lastWrite = android.os.SystemClock.elapsedRealtime() } }
-                catch (e: CancellationException) { throw e }
-                catch (_: Exception) { /* Memory remains usable; a failed cache write is not a song failure. */ }
+                var attempt = 0
+                while (attempt < 3) {
+                    try {
+                        BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.DEFERRED,
+                            requireForeground = false) {
+                            if (persistRecommendationBatch(pending) { database.entries().put(it) })
+                                lastWrite = android.os.SystemClock.elapsedRealtime()
+                        }
+                        break
+                    } catch (cancelled: CancellationException) { throw cancelled }
+                    catch (_: Exception) {
+                        if (++attempt < 3) delay(500L shl (attempt - 1))
+                    }
                 }
             }
         }
     }
-    suspend fun get(key: String): RecommendationCacheEntry? = memory.get(key) ?: withContext(AppDispatchers.Io) {
+    suspend fun get(key: String): RecommendationCacheEntry? = memory.get(key) ?:
+        synchronized(pending) { pending[key] } ?: withContext(AppDispatchers.Io) {
         try { database.entries().get(key)?.also { memory.put(key, it) } }
         catch (e: CancellationException) { throw e } catch (_: Exception) { null }
     }

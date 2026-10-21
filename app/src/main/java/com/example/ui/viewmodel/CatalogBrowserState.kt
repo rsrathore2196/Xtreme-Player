@@ -185,7 +185,6 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
         val state = _search.value
         if (searchGeneration != generation || state.requestId != generation ||
             state.query.isBlank() || state.type !in setOf("All", "Tracks")) return@synchronized
-        policySearchJob?.cancel()
         val policy = sourcePolicy
         val revision = policyRevision
         fun current() = searchGeneration == generation && _search.value.requestId == generation &&
@@ -210,12 +209,13 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
             }
             addonSearchJob?.start()
         }
-        if (!policy.maximum && verifyPlayback != null) {
+        if (!policy.maximum && verifyPlayback != null && policySearchJob?.isActive != true) {
             policySearchJob = dataScope.launch(start = CoroutineStart.LAZY) {
                 // Small prioritized batches, independently published. Shared repository
                 // permits bound matching across repeated queries and both categories.
-                for (batch in catalogCandidates.filter { it.id.startsWith("yt_") && it.id !in checkedSearchIds }
-                    .chunked(2)) {
+                while (current()) {
+                    val batch = catalogCandidates.filter { it.id.startsWith("yt_") && it.id !in checkedSearchIds }.take(2)
+                    if (batch.isEmpty()) break
                     val verified = batch.map { track -> async(AppDispatchers.Io) {
                         try { track.takeIf { verifyPlayback.invoke(it, policy) } }
                         catch (e: CancellationException) { throw e }
@@ -350,20 +350,27 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
             try {
                 if (debounce) delay(300)
                 enrichSearch(generation, loadArchivePage = false)
-                val result = repository.search(query.trim(), type, quality = quality)
+                suspend fun publishResult(result: CatalogPage, complete: Boolean) {
+                    ensureActive()
+                    if (_search.value.requestId != generation) return
+                    val tracksChanged = synchronized(searchPublicationLock) {
+                        if (_search.value.requestId != generation) return
+                        val changed = catalogCandidates != result.tracks
+                        catalogCandidates = result.tracks
+                        catalogNext = result.nextPage
+                        if (changed) candidateRevision++
+                        changed
+                    }
+                    if (type in setOf("All", "Tracks")) publishEligibleSearch(result,
+                        loading = !complete, generation = generation)
+                    else _search.update { if (it.requestId != generation) it else it.withPage(result).copy(loading = !complete) }
+                    if (complete || tracksChanged) enrichSearch(generation, loadArchivePage = complete)
+                }
+                val result = repository.search(query.trim(), type, quality = quality,
+                    onPartial = { publishResult(it, complete = false) })
                 ensureActive()
                 if (_search.value.requestId != generation) return@launch
-                synchronized(searchPublicationLock) {
-                    if (_search.value.requestId != generation) return@launch
-                    catalogCandidates = result.tracks
-                    catalogNext = result.nextPage
-                    candidateRevision++
-                }
-                if (type in setOf("All", "Tracks")) publishEligibleSearch(result, loading = false, generation = generation)
-                else _search.update { if (it.requestId != generation) it else it.withPage(result).copy(loading = false) }
-                // Publishing ordinary results never awaits the independent Archive
-                // flight; its empty-page fallback can now reuse recording evidence.
-                enrichSearch(generation)
+                publishResult(result, complete = true)
             } catch (e: CancellationException) { throw e }
             catch (_: Exception) { _search.update { if (it.requestId != generation) it else
                 it.copy(loading = false, error = "Couldn't load results. Tap to retry.") } }

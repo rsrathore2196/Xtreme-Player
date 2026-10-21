@@ -95,6 +95,11 @@ data class SearchUiState(
     internal val requestId: Long = 0L
 )
 
+/** Navigation has no dependency on queue enrichment, decoder details or progress. */
+internal fun navigationPlayerSnapshot(state: PlayerUiState) = PlayerUiState(
+    currentTrack = state.currentTrack, isPlaying = state.isPlaying, isLoading = state.isLoading,
+    isAutoplayEnabled = state.isAutoplayEnabled, isInfiniteRadio = state.isInfiniteRadio)
+
 class PlayerViewModel(
     private val repository: MusicRepository,
     private val playbackManager: PlaybackManager,
@@ -106,10 +111,13 @@ class PlayerViewModel(
     val playerUiState: StateFlow<PlayerUiState> = playbackManager.uiState
     // Progress has dedicated flows/providers. It must not invalidate the entire navigation tree.
     // Paused positions remain observable so external seeks still update the stationary player.
-    val navigationPlayerUiState = playerUiState.map { state ->
+    val playbackPresentationState = playerUiState.map { state ->
         state.copy(currentPositionMs = if (state.isPlaying) 0L else state.currentPositionMs, bufferedPositionMs = 0L)
     }.distinctUntilChanged().flowOn(derivedStateDispatcher)
         .stateIn(derivedStateScope, SharingStarted.WhileSubscribed(5_000L), playerUiState.value)
+    val navigationPlayerUiState = playerUiState.map(::navigationPlayerSnapshot)
+        .distinctUntilChanged().flowOn(derivedStateDispatcher)
+        .stateIn(derivedStateScope, SharingStarted.WhileSubscribed(5_000L), navigationPlayerSnapshot(playerUiState.value))
 
     val playbackPosition: StateFlow<Long> = playbackManager.playbackPosition
     val bufferedPosition: StateFlow<Long> = playbackManager.bufferedPosition

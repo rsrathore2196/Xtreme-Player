@@ -5,6 +5,10 @@ import com.example.data.model.MusicTrack
 import com.example.recommendation.HomeUserMode
 import com.example.recommendation.HomeRecommendationPolicy
 import com.example.recommendation.UnifiedRecommendationEngine.Shelf
+import com.example.recommendation.UserTasteProfile
+import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 
 @Immutable
 data class SectionState(
@@ -17,8 +21,10 @@ data class SectionState(
     val errorMessage: String = ""
 )
 
-internal fun SectionState.limitShelf() = if (tracks.size <= HomeRecommendationPolicy.MAX_SHELF_TRACKS) this
-    else copy(tracks = tracks.subList(0, HomeRecommendationPolicy.MAX_SHELF_TRACKS))
+internal fun SectionState.limitShelf(): SectionState {
+    val unique = tracks.distinctBy { it.id }.take(HomeRecommendationPolicy.MAX_SHELF_TRACKS)
+    return if (unique.size == tracks.size) this else copy(tracks = unique)
+}
 
 /** Prioritize bootstrap only while it is eligible; failed attempts cannot starve other cards. */
 internal fun Set<Shelf>.initialCardDemand(bootstrap: Set<Shelf>, automaticStartup: Boolean): Set<Shelf> =
@@ -78,6 +84,84 @@ internal fun RecommendationCards.withSection(shelf: Shelf, section: SectionState
         Shelf.PERSONALIZED -> copy(personalized = section)
         Shelf.SIMILAR -> copy(similarArtists = section)
         Shelf.INSPIRED -> copy(inspiredTrack = section)
+    }
+}
+
+/** Bounded memoization of the existing policy, not a second recommendation engine.
+ * Upstream recording/artist/album constraints are part of the key: an earlier shelf
+ * may change diversity downstream, but an unrelated later shelf cannot rerank it.
+ * Each preparation owns its memo copy, so no lock is held across interaction yields. */
+internal class IncrementalShelfPreparation {
+    private data class LocalKey(val tracks: List<MusicTrack>, val taste: UserTasteProfile,
+        val recent: List<MusicTrack>, val exposure: Set<String>, val enabled: Boolean)
+    private data class Constraint(val aliases: List<String>, val artists: List<String>, val album: String)
+    private data class Entry(val key: LocalKey, val local: List<MusicTrack>,
+        val upstream: List<Constraint>, val selected: List<MusicTrack>)
+    private val memo = AtomicReference<Map<Shelf, Entry>>(emptyMap())
+
+    suspend fun prepare(pools: Map<Shelf, List<MusicTrack>>, eligible: Set<Shelf>,
+        taste: UserTasteProfile, recent: List<MusicTrack>, exposure: Set<String>,
+        relevantSeed: Boolean, checkpoint: suspend () -> Unit): Map<Shelf, List<MusicTrack>> {
+        val before = memo.get()
+        val next = mutableMapOf<Shelf, Entry>()
+        val selected = linkedMapOf<Shelf, List<MusicTrack>>()
+        val seen = HomeRecommendationPolicy.Recordings()
+        val excluded = HomeRecommendationPolicy.Recordings().apply { recent.forEach { add(it) } }
+        val upstream = mutableListOf<Constraint>()
+        for (shelf in listOf(Shelf.CHART, Shelf.ERA, Shelf.PERSONALIZED, Shelf.QUICK, Shelf.SIMILAR, Shelf.INSPIRED)) {
+            checkpoint()
+            val enabled = shelf in eligible && (shelf != Shelf.PERSONALIZED || !taste.isColdStart) &&
+                (shelf !in setOf(Shelf.SIMILAR, Shelf.INSPIRED) || relevantSeed)
+            val key = LocalKey(pools[shelf].orEmpty(), taste, recent,
+                if (shelf == Shelf.CHART) emptySet() else exposure, enabled)
+            val previous = before[shelf]
+            val local = if (previous?.key == key) previous.local else if (!enabled) emptyList() else {
+                fun notRecent(track: MusicTrack) = !excluded.contains(track) && taste.keyFor(track) !in taste.recentRecordings
+                if (shelf == Shelf.CHART) HomeRecommendationPolicy.originals(key.tracks).filter(::notRecent)
+                else key.tracks.filter { track ->
+                    val recording = taste.keyFor(track)
+                    notRecent(track) && ((taste.skipCounts[recording] ?: 0) < 2 || recording in taste.favoriteRecordings)
+                }.sortedBy { HomeRecommendationPolicy.metadataKey(it) in exposure }
+            }
+            val constraints = upstream.toList()
+            val tracks = if (previous?.key == key && previous.upstream == constraints) {
+                previous.selected.also { result -> result.forEach { seen.add(it) } }
+            } else if (shelf == Shelf.CHART) {
+                local.take(HomeRecommendationPolicy.MAX_SHELF_TRACKS).also { result -> result.forEach { seen.add(it) } }
+            } else HomeRecommendationPolicy.diversify(local, HomeRecommendationPolicy.MAX_SHELF_TRACKS, seen)
+            next[shelf] = Entry(key, local, constraints, tracks)
+            selected[shelf] = tracks
+            tracks.forEach { track -> upstream.add(Constraint(HomeRecommendationPolicy.aliases(track),
+                HomeRecommendationPolicy.artists(track), HomeRecommendationPolicy.normalize(track.album))) }
+        }
+        currentCoroutineContext().ensureActive()
+        memo.compareAndSet(before, next)
+        return selected
+    }
+}
+
+/** Only track/exclusion changes invalidate a section's final recent-song filter. */
+internal class RecentRecommendationFilter {
+    private data class Entry(val tracks: List<MusicTrack>, val recent: List<MusicTrack>,
+        val recordings: Set<String>, val aliases: Map<String, String>, val result: List<MusicTrack>)
+    private val memo = AtomicReference<Map<Shelf, Entry>>(emptyMap())
+    fun prepare(cards: RecommendationCards, recent: List<MusicTrack>, taste: UserTasteProfile): RecommendationCards {
+        val before = memo.get()
+        val next = mutableMapOf<Shelf, Entry>()
+        val excluded = HomeRecommendationPolicy.Recordings().apply { recent.forEach { add(it) } }
+        val result = Shelf.entries.fold(cards) { prepared, shelf ->
+            val section = cards.section(shelf)
+            val old = before[shelf]
+            val tracks = if (old != null && old.tracks == section.tracks && old.recent == recent &&
+                old.recordings == taste.recentRecordings && old.aliases == taste.recordingAliases) old.result
+            else section.tracks.filterNot { excluded.contains(it) || taste.keyFor(it) in taste.recentRecordings }
+                .let { if (it.size == section.tracks.size) section.tracks else it }
+            next[shelf] = Entry(section.tracks, recent, taste.recentRecordings, taste.recordingAliases, tracks)
+            prepared.withSection(shelf, if (tracks === section.tracks) section else
+                section.copy(tracks = tracks, isLoaded = tracks.isNotEmpty()))
+        }
+        memo.compareAndSet(before, next)
+        return result
     }
 }
 

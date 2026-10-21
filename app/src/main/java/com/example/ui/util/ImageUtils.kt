@@ -203,12 +203,17 @@ fun rememberOptimizedImageRequest(
 ): ImageRequest {
     val context = LocalContext.current
     val visibleContent = LocalArtworkRequestsActive.current
+    val visibility = remember(context, url, track?.id, track?.title, track?.artist, track?.album,
+        track?.source, track?.coverUrl, track?.recommendationOnly, targetSize, decodeSize) {
+        ArtworkVisibility(visibleContent)
+    }
+    SideEffect { visibility.active.value = visibleContent }
     // Transport URL/bitrate changes do not change artwork. Metadata edits and a larger
     // destination do create a new request, including when a recycled row keeps its ID.
     return remember(context, url, track?.id, track?.title, track?.artist, track?.album,
-        track?.source, track?.coverUrl, track?.recommendationOnly, targetSize, crossfadeEnabled, preferStableArtwork, decodeSize, visibleContent) {
+        track?.source, track?.coverUrl, track?.recommendationOnly, targetSize, crossfadeEnabled, preferStableArtwork, decodeSize, visibility) {
         buildOptimizedImageRequest(context, url, targetSize, track, crossfadeEnabled,
-            preferStableArtwork, decodeSize, visibleContent)
+            preferStableArtwork, decodeSize, visibleContent, visibility = visibility)
     }
 }
 
@@ -222,7 +227,8 @@ internal fun buildOptimizedImageRequest(
     preferStableArtwork: Boolean = true,
     decodeSize: IntSize? = null,
     visibleContent: Boolean = true,
-    startupPreparation: Boolean = false
+    startupPreparation: Boolean = false,
+    visibility: ArtworkVisibility? = null
 ): ImageRequest {
     val metadata = ArtworkRequestMetadata(
         item = track?.toMediaItem(),
@@ -234,7 +240,8 @@ internal fun buildOptimizedImageRequest(
         targetSize = targetSize,
         providerArtworkOnly = false,
         visibleContent = visibleContent,
-        startupPreparation = startupPreparation
+        startupPreparation = startupPreparation,
+        visibility = visibility
     )
     // Re-entering cards can start on a prepared resolved URL without constructing the
     // repository or sanitizing metadata on Main. The interceptor retains raw fallbacks.

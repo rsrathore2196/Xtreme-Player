@@ -130,11 +130,88 @@ class HomeCardCacheRestorationTest {
                 delay(50)
                 val newer = snapshot(generation = 2)
                 cache.save(newer)
+                val retained = cache.peekFull(profile)!!
+                assertEquals(newer.generation, retained.generation)
                 BackgroundWorkCoordinator.scrolling(false)
                 ShadowSystemClock.advanceBy(Duration.ofSeconds(1))
-                assertSame(newer, withTimeout(5_000) { oldRead.await() })
-                assertSame(newer, cache.peekFull(profile))
+                assertSame(retained, withTimeout(5_000) { oldRead.await() })
+                assertSame(retained, cache.peekFull(profile))
             }
         } finally { BackgroundWorkCoordinator.scrolling(false); cache.close() }
+    }
+
+    private suspend fun awaitCheckpoint() = withTimeout(5_000) {
+        val file = java.io.File(app.filesDir, "home_cards_presentation_v1.json")
+        while (!file.exists() || file.length() == 0L) delay(10)
+    }
+
+    @Test fun firstUsablePresentationIsDurableWithoutOptionalAdmissionOrFullPools() = runBlocking {
+        java.io.File(app.filesDir, "home_cards_v1.json").delete()
+        java.io.File(app.filesDir, "home_cards_presentation_v1.json").delete()
+        val cache = HomeCardCache(app)
+        try {
+            // No 15-second optional-idle admission has happened. This checkpoint
+            // must still reach disk before a process termination can run close().
+            cache.savePresentationCheckpoint(snapshot().copy(presentationComplete = false))
+            awaitCheckpoint()
+            clearMemory()
+            val restored = HomeCardCache(app)
+            try {
+                val preview = restored.readInitial(profile)!!
+                assertEquals("online_quick", preview.quick.tracks.single().id)
+                assertFalse(preview.presentationComplete)
+                assertTrue(preview.quickCandidates.isEmpty())
+                assertTrue(preview.checkpointRevision > 0)
+                assertFalse(java.io.File(app.filesDir, "home_cards_v1.json").exists())
+            } finally { restored.close() }
+        } finally { cache.close() }
+    }
+
+    @Test fun newerPresentationSurvivesLateFullEnrichmentWithoutDroppingUntouchedPools() = runBlocking {
+        java.io.File(app.filesDir, "home_cards_presentation_v1.json").delete()
+        val baseline = snapshot()
+        writeSnapshot(baseline)
+        val cache = HomeCardCache(app)
+        try {
+            val old = cache.readInitial(profile)!!
+            val quick = old.quick.copy(tracks = listOf(old.quick.tracks.single().copy(id = "online_new", title = "New recording")))
+            cache.savePresentationCheckpoint(old.copy(quick = quick, generation = 2), initialComplete = true)
+            awaitCheckpoint()
+            clearMemory()
+            val restored = HomeCardCache(app)
+            try {
+                val preview = restored.readInitial(profile)!!
+                val full = restored.read(profile)!!
+                assertEquals(quick.tracks, preview.quick.tracks)
+                assertEquals(quick.tracks, full.quick.tracks)
+                assertEquals(quick.tracks, full.quickCandidates)
+                assertEquals(baseline.eraCandidates, full.eraCandidates)
+                assertEquals(baseline.shelfLoads, full.shelfLoads)
+                assertNull(restored.readInitial("another-profile"))
+            } finally { restored.close() }
+        } finally { cache.close() }
+    }
+
+    @Test fun completedFullWriteCannotBeShadowedByAnOlderPresentationFile() = runBlocking {
+        java.io.File(app.filesDir, "home_cards_presentation_v1.json").delete()
+        val cache = HomeCardCache(app)
+        cache.savePresentationCheckpoint(snapshot())
+        awaitCheckpoint()
+        val newer = snapshot(generation = 2).let { old -> old.copy(
+            quick = old.quick.copy(tracks = listOf(old.quick.tracks.single().copy(title = "Updated recording")))) }
+        cache.save(newer)
+        cache.close()
+        val writer = HomeCardCache::class.java.getDeclaredField("writer").apply { isAccessible = true }
+            .get(cache) as kotlinx.coroutines.Job
+        val presentationWriter = HomeCardCache::class.java.getDeclaredField("presentationWriter").apply { isAccessible = true }
+            .get(cache) as kotlinx.coroutines.Job
+        withTimeout(5_000) { writer.join(); presentationWriter.join() }
+        clearMemory()
+        val restored = HomeCardCache(app)
+        try {
+            val initial = restored.readInitial(profile)!!
+            assertEquals(2L, initial.generation)
+            assertEquals("Updated recording", initial.quick.tracks.single().title)
+        } finally { restored.close() }
     }
 }

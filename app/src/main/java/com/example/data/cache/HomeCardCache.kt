@@ -6,6 +6,7 @@ import android.util.JsonReader
 import android.util.JsonToken
 import com.example.data.model.MusicTrack
 import com.example.recommendation.UnifiedRecommendationEngine
+import com.example.recommendation.HomeRecommendationPolicy
 import com.example.performance.BackgroundWorkCoordinator
 import com.example.performance.AppDispatchers
 import com.example.ui.viewmodel.SectionState
@@ -20,6 +21,7 @@ import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -46,13 +48,52 @@ data class SavedHomeCards(
     val shelfLoads: Map<String, RecommendationShelfLoad> = emptyMap(),
     val readyShelves: Set<String> = emptySet(),
     /** All displayed shelves are present; large discovery pools may still be omitted. */
-    val presentationComplete: Boolean = true
+    val presentationComplete: Boolean = true,
+    val checkpointRevision: Long = 0L
 )
+
+private fun compactPresentation(s: SavedHomeCards) = s.copy(
+    quick = s.quick.copy(tracks = s.quick.tracks.take(12)), era = s.era.copy(tracks = s.era.tracks.take(12)),
+    chart = s.chart.copy(tracks = s.chart.tracks.take(12)), history = s.history.copy(tracks = s.history.tracks.take(30)),
+    personalized = s.personalized.copy(tracks = s.personalized.tracks.take(12)),
+    similarArtists = s.similarArtists.copy(tracks = s.similarArtists.tracks.take(12)),
+    inspiredTrack = s.inspiredTrack.copy(tracks = s.inspiredTrack.tracks.take(12)),
+    quickCandidates = emptyList(), eraCandidates = emptyList(), chartCandidates = emptyList(),
+    personalizedCandidates = emptyList(), similarArtistCandidates = emptyList(), inspiredTrackCandidates = emptyList(),
+    catalog = s.catalog.take(1).ifEmpty { listOfNotNull(s.history.tracks.firstOrNull() ?:
+        s.quick.tracks.firstOrNull() ?: s.chart.tracks.firstOrNull()) },
+    artists = s.artists.take(20).map { it.copy(tracks = it.tracks.take(1)) })
+
+/** A newer compact checkpoint enriches the old full file without discarding its
+ * untouched pools or refreshing TTLs. A newer full snapshot always wins. */
+internal fun mergePresentation(full: SavedHomeCards, preview: SavedHomeCards?): SavedHomeCards {
+    if (preview == null || preview.profileKey != full.profileKey || preview.recommendationSource != full.recommendationSource ||
+        preview.checkpointRevision <= full.checkpointRevision) return full
+    fun section(old: SectionState, fresh: SectionState) = fresh.takeIf { it.tracks.isNotEmpty() } ?: old
+    fun pool(old: List<MusicTrack>, previous: SectionState, fresh: SectionState) =
+        if (fresh.tracks.isNotEmpty() && previous.tracks != fresh.tracks) fresh.tracks else old
+    return preview.copy(
+        generation = maxOf(full.generation, preview.generation),
+        quick = section(full.quick, preview.quick), era = section(full.era, preview.era), chart = section(full.chart, preview.chart),
+        personalized = section(full.personalized, preview.personalized),
+        similarArtists = section(full.similarArtists, preview.similarArtists), inspiredTrack = section(full.inspiredTrack, preview.inspiredTrack),
+        quickCandidates = pool(full.quickCandidates, full.quick, preview.quick),
+        eraCandidates = pool(full.eraCandidates, full.era, preview.era),
+        chartCandidates = pool(full.chartCandidates, full.chart, preview.chart),
+        personalizedCandidates = pool(full.personalizedCandidates, full.personalized, preview.personalized),
+        similarArtistCandidates = pool(full.similarArtistCandidates, full.similarArtists, preview.similarArtists),
+        inspiredTrackCandidates = pool(full.inspiredTrackCandidates, full.inspiredTrack, preview.inspiredTrack),
+        catalog = full.catalog.ifEmpty { preview.catalog },
+        shelfLoads = full.shelfLoads + preview.shelfLoads.filter { (key, load) ->
+            (full.shelfLoads[key]?.fetchedAt ?: 0L) <= load.fetchedAt },
+        readyShelves = full.readyShelves + preview.readyShelves)
+}
 
 @OptIn(FlowPreview::class, ExperimentalCoroutinesApi::class)
 class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = BackgroundWorkCoordinator.optionalCpuDispatcher) {
     private val appContext = context.applicationContext
     private val file = AtomicFile(File(appContext.filesDir, "home_cards_v1.json"))
+    private val presentationFile = AtomicFile(File(appContext.filesDir, "home_cards_presentation_v1.json"))
     private data class Retained(val path: String, val cards: SavedHomeCards)
     companion object {
         private const val MAX_TRACKS_PER_LIST = 40
@@ -60,6 +101,7 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
         private const val MAX_CANDIDATE_TRACKS = 60
         private val memory = AtomicReference<Retained?>(null)
         private val previews = AtomicReference<Retained?>(null)
+        private val checkpointSequence = AtomicLong()
         private val fileMutex = Mutex()
         private val readMutex = Mutex()
         private val preloadScope = CoroutineScope(SupervisorJob() + AppDispatchers.Io)
@@ -80,12 +122,46 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
             }.also { it.start() }
         }
     }
-    fun peekFull(profile: String): SavedHomeCards? = memory.get()?.takeIf {
+    fun peekFull(profile: String): SavedHomeCards? {
+        while (true) {
+            val retained = memory.get()?.takeIf {
+                it.path == file.baseFile.path && it.cards.profileKey == profile
+            } ?: return null
+            val combined = mergePresentation(retained.cards, peekPresentation(profile))
+            if (combined === retained.cards) return combined
+            if (memory.compareAndSet(retained, Retained(retained.path, combined))) return combined
+        }
+    }
+    private fun peekPresentation(profile: String): SavedHomeCards? = previews.get()?.takeIf {
         it.path == file.baseFile.path && it.cards.profileKey == profile
     }?.cards
-    fun peek(profile: String): SavedHomeCards? = peekFull(profile) ?: previews.get()?.takeIf {
-        it.path == file.baseFile.path && it.cards.profileKey == profile
-    }?.cards
+    fun peek(profile: String): SavedHomeCards? {
+        val full = peekFull(profile)
+        val preview = peekPresentation(profile)
+        return if (full == null || preview != null && preview.checkpointRevision > full.checkpointRevision) preview else full
+    }
+
+    /** The small durable checkpoint can be newer than optional candidate-pool persistence. */
+    private suspend fun readPresentation(profile: String): SavedHomeCards? {
+        peekPresentation(profile)?.let { return it }
+        val bytes = fileMutex.withLock {
+            if (!presentationFile.baseFile.exists() || presentationFile.baseFile.length() > 600_000L) null
+            else runCatching { presentationFile.openRead().use { it.readBytes() } }.getOrNull()
+        } ?: return null
+        return withContext(serializationDispatcher) {
+            try {
+                val root = JSONObject(String(bytes))
+                decode(root, profile, presentationComplete = root.optBoolean("presentationComplete", false))
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { null }
+        }?.also { value ->
+            checkpointSequence.updateAndGet { maxOf(it, value.checkpointRevision) }
+            previews.updateAndGet { previous ->
+                if (previous?.path == file.baseFile.path && previous.cards.checkpointRevision > value.checkpointRevision) previous
+                else Retained(file.baseFile.path, value)
+            }
+        }
+    }
 
     /** v4 includes all displayed shelves in a small header ahead of the discovery pools. */
     suspend fun readInitial(profile: String): SavedHomeCards? = withContext(AppDispatchers.Io) {
@@ -93,6 +169,7 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
         peek(profile)?.let { return@withContext it }
         readMutex.withLock {
             peek(profile)?.let { return@withLock it }
+            readPresentation(profile)?.let { return@withLock it }
             val preview = fileMutex.withLock {
                 if (!file.baseFile.exists() || file.baseFile.length() > 4_000_000L) return@withLock null
                 file.openRead().bufferedReader().use { input ->
@@ -218,7 +295,35 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
     private val scope = CoroutineScope(SupervisorJob() + AppDispatchers.Io)
     private val serializationDispatcher = workerDispatcher
     private val writes = Channel<SavedHomeCards>(Channel.CONFLATED)
+    private val presentationWrites = Channel<SavedHomeCards>(Channel.CONFLATED)
     private val closing = AtomicBoolean(false)
+    private var firstCheckpointProfile: String? = null
+    private val presentationWriter = scope.launch {
+        for (snapshot in presentationWrites) {
+            // One small milestone checkpoint, never per-track or behind the optional
+            // idle gate. Shared CPU/IO lanes and fileMutex bound all cache work.
+            var attempt = 0
+            while (isActive && attempt < 3) {
+                try {
+                    if (peekPresentation(snapshot.profileKey) !== snapshot) break
+                    val json = withContext(serializationDispatcher) {
+                        encode(compactPresentation(snapshot), includePreview = false).toString().toByteArray()
+                    }
+                    fileMutex.withLock {
+                        if (peekPresentation(snapshot.profileKey) !== snapshot) return@withLock
+                        val output = presentationFile.startWrite()
+                        try { output.write(json); presentationFile.finishWrite(output) }
+                        catch (error: Exception) { presentationFile.failWrite(output); throw error }
+                    }
+                    break
+                } catch (cancelled: CancellationException) { throw cancelled }
+                catch (error: Exception) {
+                    if (++attempt == 3) android.util.Log.w("HomeCache", "Presentation checkpoint unavailable", error)
+                    else delay(250L shl (attempt - 1))
+                }
+            }
+        }
+    }
     private val writer = scope.launch {
         // Debounce snapshots before building JSON. Closing the channel emits the
         // final pending snapshot immediately, preserving the lifecycle flush.
@@ -238,7 +343,18 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
                     if (memory.get()?.let { it.path == file.baseFile.path && it.cards !== snapshot } == true)
                         return@withLock
                     val output = file.startWrite()
-                    try { output.write(json); file.finishWrite(output) }
+                    try {
+                        output.write(json)
+                        file.finishWrite(output)
+                        // The full file contains the same small header. Do not
+                        // leave an older sidecar shadowing that header next launch,
+                        // or allow a queued older sidecar writer to recreate it.
+                        if (memory.get()?.cards === snapshot &&
+                            (peekPresentation(snapshot.profileKey)?.checkpointRevision ?: 0L) <= snapshot.checkpointRevision) {
+                            previews.set(Retained(file.baseFile.path, snapshot))
+                            presentationFile.delete()
+                        }
+                    }
                     catch (e: Exception) { file.failWrite(output); throw e }
                 }
                 }
@@ -247,15 +363,29 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
         }
     }
     fun save(snapshot: SavedHomeCards) {
-        if (peekFull(snapshot.profileKey) == snapshot) return
-        memory.set(Retained(file.baseFile.path, snapshot))
-        previews.set(null)
-        writes.trySend(snapshot)
+        if (peekFull(snapshot.profileKey)?.copy(checkpointRevision = 0) == snapshot.copy(checkpointRevision = 0)) return
+        val versioned = snapshot.copy(checkpointRevision = checkpointSequence.updateAndGet { maxOf(it, snapshot.checkpointRevision) + 1 })
+        memory.set(Retained(file.baseFile.path, versioned))
+        writes.trySend(versioned)
+    }
+    fun savePresentationCheckpoint(snapshot: SavedHomeCards, initialComplete: Boolean = false) {
+        if (snapshot.recommendationSource != UnifiedRecommendationEngine.SOURCE ||
+            listOf(snapshot.quick, snapshot.chart, snapshot.era, snapshot.personalized,
+                snapshot.similarArtists, snapshot.inspiredTrack).none { it.tracks.isNotEmpty() }) return
+        if (firstCheckpointProfile == snapshot.profileKey && !initialComplete) return
+        val previous = peekPresentation(snapshot.profileKey)
+        firstCheckpointProfile = snapshot.profileKey
+        if (previous != null && compactPresentation(previous).copy(checkpointRevision = 0) ==
+            compactPresentation(snapshot).copy(checkpointRevision = 0)) return
+        val versioned = snapshot.copy(checkpointRevision = checkpointSequence.updateAndGet { maxOf(it, snapshot.checkpointRevision) + 1 })
+        previews.set(Retained(file.baseFile.path, versioned))
+        presentationWrites.trySend(versioned)
     }
     fun close() {
         closing.set(true)
         writes.close()
-        writer.invokeOnCompletion { scope.cancel() }
+        presentationWrites.close()
+        scope.launch { writer.join(); presentationWriter.join(); scope.cancel() }
     }
     suspend fun read(profile: String): SavedHomeCards? {
         // The admitted caller owns decoding and its cooperative checkpoints. A
@@ -264,7 +394,7 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
         val key = preloadKey(appContext, profile)
         while (true) {
             currentCoroutineContext().ensureActive()
-            peekFull(profile)?.let { return it }
+            peekFull(profile)?.let { return mergePresentation(it, peekPresentation(profile)) }
             val completion = CompletableDeferred<SavedHomeCards?>()
             val flight = synchronized(preloads) {
                 preloads[key] ?: completion.also { preloads[key] = it }
@@ -292,11 +422,12 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
 
     private suspend fun readDisk(profile: String): SavedHomeCards? = readDiskOnce(profile)
     private suspend fun readDiskOnce(profile: String): SavedHomeCards? = withContext(AppDispatchers.Io) {
-        peekFull(profile)?.let { return@withContext it }
+        peekFull(profile)?.let { return@withContext mergePresentation(it, peekPresentation(profile)) }
         val before = memory.get()
         try {
+            val presentation = readPresentation(profile)
             val bytes = readMutex.withLock { fileMutex.withLock {
-                if (!file.baseFile.exists() || file.baseFile.length() > 4_000_000L) return@withContext null
+                if (!file.baseFile.exists() || file.baseFile.length() > 4_000_000L) return@withContext presentation
                 file.openRead().use { it.readBytes() }
             } }
             // No disk/cache lock is held while optional decoding yields to touch.
@@ -306,36 +437,39 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
                     decode(readPreparedJson(reader, intArrayOf(0)) as JSONObject, profile, cooperative = true)
                 }
             }
-            decoded?.let {
+            val combined = decoded?.let { mergePresentation(it, peekPresentation(profile) ?: presentation) } ?: presentation
+            combined?.let {
+                checkpointSequence.updateAndGet { revision -> maxOf(revision, it.checkpointRevision) }
                 memory.compareAndSet(before, Retained(file.baseFile.path, it))
-                previews.set(null)
             }
-            peekFull(profile) ?: decoded
+            peekFull(profile)?.let { mergePresentation(it, peekPresentation(profile)) } ?: combined
         } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
     }
-    private suspend fun encode(s: SavedHomeCards, includePreview: Boolean = true): JSONObject {
-        val tracks = (s.catalog.take(MAX_POOL_TRACKS) + s.quickCandidates.take(MAX_CANDIDATE_TRACKS) +
-            s.eraCandidates.take(MAX_CANDIDATE_TRACKS) + s.chartCandidates.take(MAX_CANDIDATE_TRACKS) +
-            s.quick.tracks.take(MAX_TRACKS_PER_LIST) + s.era.tracks.take(MAX_TRACKS_PER_LIST) +
+    private suspend fun encode(snapshot: SavedHomeCards, includePreview: Boolean = true): JSONObject {
+        // Catalog bookkeeping is persistence-only; it must not rerun for every
+        // visible shelf batch. The file only retains this 80-track prefix.
+        val s = if (!includePreview) snapshot else snapshot.copy(catalog = HomeRecommendationPolicy.originalsCooperatively(
+            sequenceOf(snapshot.catalog, snapshot.quickCandidates, snapshot.eraCandidates, snapshot.chartCandidates,
+                snapshot.personalizedCandidates, snapshot.similarArtistCandidates, snapshot.inspiredTrackCandidates,
+                snapshot.history.tracks).flatMap { it.asSequence() }, MAX_POOL_TRACKS,
+            checkpoint = { BackgroundWorkCoordinator.yieldToInteraction(bypass = { closing.get() }) }))
+        // The shared ID table must prefer current presentation metadata over
+        // older copies in candidate/catalog pools (including artwork changes).
+        val tracks = (s.quick.tracks.take(MAX_TRACKS_PER_LIST) + s.era.tracks.take(MAX_TRACKS_PER_LIST) +
             s.chart.tracks.take(MAX_TRACKS_PER_LIST) + s.history.tracks.take(MAX_TRACKS_PER_LIST) +
             s.personalized.tracks.take(MAX_TRACKS_PER_LIST) + s.similarArtists.tracks.take(MAX_TRACKS_PER_LIST) +
-            s.inspiredTrack.tracks.take(MAX_TRACKS_PER_LIST) + s.personalizedCandidates.take(MAX_CANDIDATE_TRACKS) +
-            s.similarArtistCandidates.take(MAX_CANDIDATE_TRACKS) + s.inspiredTrackCandidates.take(MAX_CANDIDATE_TRACKS) +
-            s.artists.flatMap { it.tracks.take(MAX_TRACKS_PER_LIST) }).distinctBy { it.id }
+            s.inspiredTrack.tracks.take(MAX_TRACKS_PER_LIST) + s.artists.flatMap { it.tracks.take(MAX_TRACKS_PER_LIST) } +
+            s.catalog.take(MAX_POOL_TRACKS) + s.quickCandidates.take(MAX_CANDIDATE_TRACKS) +
+            s.eraCandidates.take(MAX_CANDIDATE_TRACKS) + s.chartCandidates.take(MAX_CANDIDATE_TRACKS) +
+            s.personalizedCandidates.take(MAX_CANDIDATE_TRACKS) +
+            s.similarArtistCandidates.take(MAX_CANDIDATE_TRACKS) + s.inspiredTrackCandidates.take(MAX_CANDIDATE_TRACKS)).distinctBy { it.id }
         fun ids(list: List<MusicTrack>) = JSONArray(list.map { it.id })
         fun section(value: SectionState) = JSONObject().put("title", value.title)
             .put("subtitle", value.subtitle).put("tracks", ids(value.tracks.take(MAX_TRACKS_PER_LIST)))
-        val root = JSONObject().put("version", 4).put("presentationComplete", true)
+        val root = JSONObject().put("version", 4).put("presentationComplete", s.presentationComplete)
+            .put("checkpointRevision", s.checkpointRevision)
         if (includePreview) {
-            root.put("preview", encode(s.copy(quick = s.quick.copy(tracks = s.quick.tracks.take(12)),
-                chart = s.chart.copy(tracks = s.chart.tracks.take(12)), history = s.history.copy(tracks = s.history.tracks.take(30)),
-                era = s.era.copy(tracks = s.era.tracks.take(12)),
-                personalized = s.personalized.copy(tracks = s.personalized.tracks.take(12)),
-                similarArtists = s.similarArtists.copy(tracks = s.similarArtists.tracks.take(12)),
-                inspiredTrack = s.inspiredTrack.copy(tracks = s.inspiredTrack.tracks.take(12)),
-                quickCandidates = emptyList(), eraCandidates = emptyList(), chartCandidates = emptyList(),
-                personalizedCandidates = emptyList(), similarArtistCandidates = emptyList(), inspiredTrackCandidates = emptyList(),
-                catalog = s.catalog.take(1), artists = s.artists.take(20).map { it.copy(tracks = it.tracks.take(1)) }), false))
+            root.put("preview", encode(compactPresentation(s), false))
         }
         return root.put("profile", s.profileKey).put("signal", s.signal)
             .put("generation", s.generation).put("refreshedAt", s.refreshedAt)
@@ -374,6 +508,7 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
     private suspend fun decode(root: JSONObject, profile: String, cooperative: Boolean = false,
         presentationComplete: Boolean = true): SavedHomeCards? {
         if (root.optInt("version") !in 1..4 || root.optString("profile") != profile) return null
+        checkpointSequence.updateAndGet { maxOf(it, root.optLong("checkpointRevision")) }
         val array = root.getJSONArray("tracks")
         if (array.length() > 1500) return null
         val records = (0 until array.length()).mapNotNull { i ->
@@ -418,7 +553,7 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
                 loads.optJSONObject(key)?.let { key to RecommendationShelfLoad(it.optString("context"), it.optLong("fetchedAt"), it.optBoolean("partial", false)) }
             }.toMap() }.orEmpty(),
             root.optJSONArray("readyShelves")?.let { a -> (0 until a.length()).map { a.optString(it) }.toSet() }.orEmpty(),
-            presentationComplete)
+            presentationComplete, root.optLong("checkpointRevision"))
         fun verified(list: List<MusicTrack>) = list.filter(UnifiedRecommendationEngine::verified).map { it.copy(recommendationOnly = true) }
         fun clean(section: SectionState): SectionState {
             val tracks = verified(section.tracks)

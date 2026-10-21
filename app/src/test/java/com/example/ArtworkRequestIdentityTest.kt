@@ -69,4 +69,22 @@ class ArtworkRequestIdentityTest {
         assertSame(com.example.performance.AppDispatchers.CpuBounded, request.decoderDispatcher)
         assertEquals(Size(1080, 1080), runBlocking { request.sizeResolver.size() })
     }
+
+    @Test fun retainedTabVisibilityDoesNotRecreateTheArtworkRequest() {
+        var visible by mutableStateOf(true)
+        lateinit var request: ImageRequest
+        compose.setContent {
+            CompositionLocalProvider(LocalArtworkRequestsActive provides visible) {
+                val prepared = rememberOptimizedImageRequest("https://covers.example/retained.jpg")
+                SideEffect { request = prepared }
+            }
+        }
+        compose.waitForIdle()
+        val first = request
+        val visibility = first.parameters.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER)!!.visibility!!
+        compose.runOnIdle { visible = false }
+        compose.runOnIdle { assertSame(first, request); assertFalse(visibility.active.value) }
+        compose.runOnIdle { visible = true }
+        compose.runOnIdle { assertSame(first, request); assertTrue(visibility.active.value) }
+    }
 }

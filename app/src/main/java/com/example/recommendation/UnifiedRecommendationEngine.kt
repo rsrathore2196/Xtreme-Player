@@ -455,7 +455,7 @@ class UnifiedRecommendationEngine(context: Context?,
             }
         }
         if (output.isNotEmpty() && output.size != published) emit(output.take(limits.shelfSize).toList())
-    }.flowOn(if (essential) urgentRanking else ranking)
+    }.distinctUntilChanged().flowOn(if (essential) urgentRanking else ranking)
 
     private fun <T> interleave(groups: List<List<T>>): List<T> = buildList {
         repeat(groups.maxOfOrNull { it.size } ?: 0) { index -> groups.forEach { it.getOrNull(index)?.let(::add) } }

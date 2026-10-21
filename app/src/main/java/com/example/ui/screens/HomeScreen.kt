@@ -585,6 +585,7 @@ fun HomeScreenContent(
                     ?.collectAsStateWithLifecycle()?.value ?: ytmCard
                 SectionCardLayout(
                     state = section,
+                    tracksPrepared = homeViewModel != null,
                     currentPlayingId = currentPlayingId,
                     cardBg = cardBg,
                     cardBorderColor = cardBorderColor,
@@ -666,6 +667,7 @@ fun HomeScreenContent(
                     ?.collectAsStateWithLifecycle()?.value ?: eraCard
                 SectionCardLayout(
                     state = section,
+                    tracksPrepared = homeViewModel != null,
                     currentPlayingId = currentPlayingId,
                     cardBg = cardBg,
                     cardBorderColor = cardBorderColor,
@@ -681,6 +683,7 @@ fun HomeScreenContent(
                     ?.collectAsStateWithLifecycle()?.value ?: countryLanguageCard
                 SectionCardLayout(
                     state = section,
+                    tracksPrepared = homeViewModel != null,
                     currentPlayingId = currentPlayingId,
                     cardBg = cardBg,
                     cardBorderColor = cardBorderColor,
@@ -696,6 +699,7 @@ fun HomeScreenContent(
                     ?.collectAsStateWithLifecycle()?.value ?: personalizedCard
                 SectionCardLayout(
                     state = section,
+                    tracksPrepared = homeViewModel != null,
                     currentPlayingId = currentPlayingId,
                     cardBg = cardBg,
                     cardBorderColor = cardBorderColor,
@@ -707,14 +711,14 @@ fun HomeScreenContent(
             artworkItem(state = listState, key = "card_7_similar_artists", contentType = "song_shelf") {
                 val section = homeViewModel?.sectionState(com.example.recommendation.UnifiedRecommendationEngine.Shelf.SIMILAR)
                     ?.collectAsStateWithLifecycle()?.value ?: similarArtistsCard
-                SectionCardLayout(state = section, currentPlayingId = currentPlayingId,
+                SectionCardLayout(state = section, tracksPrepared = homeViewModel != null, currentPlayingId = currentPlayingId,
                     cardBg = cardBg, cardBorderColor = cardBorderColor, textPrimaryColor = textPrimaryColor,
                     textMutedColor = textMutedColor, onTrackClick = onTrackClick)
             }
             artworkItem(state = listState, key = "card_8_inspired_by_track", contentType = "song_shelf") {
                 val section = homeViewModel?.sectionState(com.example.recommendation.UnifiedRecommendationEngine.Shelf.INSPIRED)
                     ?.collectAsStateWithLifecycle()?.value ?: inspiredTrackCard
-                SectionCardLayout(state = section, currentPlayingId = currentPlayingId,
+                SectionCardLayout(state = section, tracksPrepared = homeViewModel != null, currentPlayingId = currentPlayingId,
                     cardBg = cardBg, cardBorderColor = cardBorderColor, textPrimaryColor = textPrimaryColor,
                     textMutedColor = textMutedColor, onTrackClick = onTrackClick)
             }
@@ -760,15 +764,17 @@ fun SectionCardLayout(
     cardBorderColor: Color,
     textPrimaryColor: Color,
     textMutedColor: Color,
-    onTrackClick: (MusicTrack, List<MusicTrack>) -> Unit
+    onTrackClick: (MusicTrack, List<MusicTrack>) -> Unit,
+    tracksPrepared: Boolean = false
 ) {
     // If no verified tracks and not loading, completely hide the entire shelf
     if (!state.isLoading && state.tracks.isEmpty()) {
         return
     }
 
-    val safeTracks = remember(state.tracks) {
-        state.tracks.distinctBy { it.id }.take(com.example.recommendation.HomeRecommendationPolicy.MAX_SHELF_TRACKS)
+    val safeTracks = remember(state.tracks, tracksPrepared) {
+        if (tracksPrepared) state.tracks else
+            state.tracks.distinctBy { it.id }.take(com.example.recommendation.HomeRecommendationPolicy.MAX_SHELF_TRACKS)
     }
     val shelfListState = rememberLazyListState()
     ObserveHomeScroll(shelfListState)

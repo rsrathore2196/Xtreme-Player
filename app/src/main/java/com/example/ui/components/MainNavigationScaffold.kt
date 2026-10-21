@@ -326,9 +326,10 @@ fun MainNavigationScaffold(
                     modifier = Modifier.graphicsLayer { clip = false }
                 ) {
                     currentPlaylist?.let { playlist ->
+                        val detailPlayer by viewModel.playbackPresentationState.collectAsStateWithLifecycle()
                         PlaylistDetailScreen(
                             playlistWithTracks = playlist,
-                            playerUiState = playerUiState,
+                            playerUiState = detailPlayer,
                             currentPlayingTrackId = currentPlayingTrackId,
                             onBackClick = { viewModel.closePlaylist() },
                             onPlayTrack = { track, queue -> viewModel.playPlaylistTrack(track, queue) },
@@ -478,8 +479,9 @@ fun MainNavigationScaffold(
                 CompositionLocalProvider(LocalVisualEffectsActive provides !playerCoversContent) {
                 catalogDetail?.let { detail ->
                     androidx.compose.runtime.key(detail.destination.key) {
+                        val detailPlayer by viewModel.playbackPresentationState.collectAsStateWithLifecycle()
                         com.example.ui.screens.CatalogDetailScreen(
-                            state = detail, player = playerUiState,
+                            state = detail, player = detailPlayer,
                             onBack = viewModel.catalogBrowser::close,
                             onMore = viewModel.catalogBrowser::loadMoreDetail,
                             onPlay = { track, queue ->
@@ -588,8 +590,9 @@ fun MainNavigationScaffold(
         ) {
             val currentLyrics by viewModel.currentLyrics.collectAsStateWithLifecycle()
             val availableAudioDevices by viewModel.availableAudioDevices.collectAsStateWithLifecycle()
+            val expandedPlayer by viewModel.playbackPresentationState.collectAsStateWithLifecycle()
             ExpandedPlayerScreen(
-                uiState = playerUiState,
+                uiState = expandedPlayer,
                 onMinimize = { isPlayerExpanded = false },
                 onPlayPause = { viewModel.togglePlayPause() },
                 onSeekTo = { viewModel.seekTo(it) },
@@ -617,6 +620,7 @@ fun MainNavigationScaffold(
 
         // QUEUE BOTTOM SHEET
         if (isQueueOpen && !preparingStartup) {
+          PlayerPresentationHost(viewModel) { playerUiState ->
             QueueBottomSheet(
                 queue = playerUiState.queue,
                 currentTrack = playerUiState.currentTrack,
@@ -627,6 +631,7 @@ fun MainNavigationScaffold(
                 nextRecommendedTrack = playerUiState.nextRecommendedTrack,
                 onToggleAutoplay = { viewModel.toggleAutoplay() }
             )
+          }
         }
 
         // EQUALIZER DIALOG
@@ -680,6 +685,13 @@ fun MainNavigationScaffold(
         StartupInitializationOverlay()
     }
 }
+}
+
+@Composable
+private fun PlayerPresentationHost(viewModel: PlayerViewModel,
+    content: @Composable (com.example.playback.PlayerUiState) -> Unit) {
+    val state by viewModel.playbackPresentationState.collectAsStateWithLifecycle()
+    content(state)
 }
 
 /**

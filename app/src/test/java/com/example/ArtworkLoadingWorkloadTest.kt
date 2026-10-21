@@ -87,7 +87,8 @@ class ArtworkLoadingWorkloadTest {
         val failures: Set<String> = emptySet(),
         val cachedDimension: Int = 600,
         override val size: Size = Size(300, 300),
-        val calls: MutableList<Pair<String, Boolean>> = CopyOnWriteArrayList()
+        val calls: MutableList<Pair<String, Boolean>> = CopyOnWriteArrayList(),
+        val onNetwork: suspend (String) -> Unit = {}
     ) : Interceptor.Chain {
         override fun withRequest(request: ImageRequest) = Chain(request, cached, failures, cachedDimension, size, calls)
         override fun withSize(size: Size) = Chain(request, cached, failures, cachedDimension, size, calls)
@@ -97,6 +98,7 @@ class ArtworkLoadingWorkloadTest {
             calls.add(url to remote)
             if ((!remote && url !in cached) || url in failures)
                 return ErrorResult(null, request, IOException("No available image"))
+            if (remote) onNetwork(url)
             val dimension = if (!remote) cachedDimension else 600
             val drawable = BitmapDrawable(context.resources,
                 Bitmap.createBitmap(dimension, dimension, Bitmap.Config.ARGB_8888))
@@ -207,5 +209,50 @@ class ArtworkLoadingWorkloadTest {
         finish.complete(Unit)
         assertEquals(apple, withTimeout(5_000) { second.await() })
         assertEquals(1, searches.get())
+    }
+
+    @Test fun identicalColdArtworkSharesDownloadAndRechecksCoilAfterTheFirstCommit() = runBlocking {
+        val cached = ConcurrentHashMap.newKeySet<String>()
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val downloads = AtomicInteger()
+        val hook: suspend (String) -> Unit = { url ->
+            downloads.incrementAndGet(); entered.complete(Unit); release.await(); cached.add(url)
+        }
+        val first = Chain(request(), cached = cached, onNetwork = hook)
+        val second = Chain(request(), cached = cached, onNetwork = hook)
+        val repo = repository { fail("Sufficient artwork needs no remote lookup"); match() }
+        val interceptor = ArtworkResolutionInterceptor { repo }
+        val one = async { interceptor.intercept(first) }
+        withTimeout(3_000) { entered.await() }
+        val two = async { interceptor.intercept(second) }
+        release.complete(Unit)
+        assertTrue(withTimeout(3_000) { one.await() } is SuccessResult)
+        assertTrue(withTimeout(3_000) { two.await() } is SuccessResult)
+        assertEquals(1, downloads.get())
+    }
+
+    @Test fun hiddenUnfinishedArtworkCancelsNetworkAndResumesOnlyWhenVisible() = runBlocking {
+        val entered = CompletableDeferred<Unit>()
+        val cancelled = CompletableDeferred<Unit>()
+        val downloads = AtomicInteger()
+        val visibility = ArtworkVisibility(true)
+        val visibleRequest = request().newBuilder().setParameter(ARTWORK_METADATA_PARAMETER,
+            ArtworkRequestMetadata(item, provider, 600, visibility = visibility), null).build()
+        val chain = Chain(visibleRequest, onNetwork = {
+            if (downloads.incrementAndGet() == 1) {
+                entered.complete(Unit)
+                try { awaitCancellation() } finally { cancelled.complete(Unit) }
+            }
+        })
+        val repo = repository { fail("No remote metadata lookup needed"); match() }
+        val result = async { ArtworkResolutionInterceptor { repo }.intercept(chain) }
+        withTimeout(3_000) { entered.await() }
+        visibility.active.value = false
+        withTimeout(3_000) { cancelled.await() }
+        assertFalse(result.isCompleted)
+        visibility.active.value = true
+        assertTrue(withTimeout(3_000) { result.await() } is SuccessResult)
+        assertEquals(2, downloads.get())
     }
 }
