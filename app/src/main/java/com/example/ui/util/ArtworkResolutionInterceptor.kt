@@ -17,9 +17,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.async
@@ -55,17 +53,17 @@ class ArtworkResolutionInterceptor internal constructor(
 ) : Interceptor {
     constructor() : this({ iTunesArtworkRepository.getInstance(it) })
     override suspend fun intercept(chain: Interceptor.Chain): ImageResult {
-        if (chain.request.parameters.value<Boolean>(PLAYLIST_COVER_PARAMETER) == true) {
-            return withContext(com.example.performance.AppDispatchers.Io) { playlistCover(chain) }
-        }
+        val playlist = chain.request.parameters.value<Boolean>(PLAYLIST_COVER_PARAMETER) == true
         val metadata = chain.request.parameters.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER)
-            ?: return chain.proceed(chain.request)
-        metadata.visibility?.let { visibility ->
+        if (!playlist && metadata == null) return chain.proceed(chain.request)
+        suspend fun load(): ImageResult = if (playlist) playlistCover(chain) else resolve(chain, checkNotNull(metadata))
+        val visibility = metadata?.visibility ?: chain.request.parameters.value<ArtworkVisibility>(ARTWORK_VISIBILITY_PARAMETER)
+        visibility?.let { visibility ->
             while (true) {
                 visibility.active.first { it }
                 val result = coroutineScope {
                     val hidden = async(start = CoroutineStart.UNDISPATCHED) { visibility.active.first { !it } }
-                    val loading = async(com.example.performance.AppDispatchers.Io) { resolve(chain, metadata) }
+                    val loading = async(com.example.performance.AppDispatchers.Io) { load() }
                     try {
                         select<ImageResult?> {
                             loading.onAwait { it }
@@ -78,31 +76,42 @@ class ArtworkResolutionInterceptor internal constructor(
                 if (result != null) return result
             }
         }
-        if (!metadata.visibleContent) {
+        if (metadata?.visibleContent == false) {
             // Coil can use its memory placeholder. Do not report a fake failure
             // or decode an unseen file/content URI. Visibility changes the
             // remembered request and cancels this suspended painter operation.
             awaitCancellation()
         }
-        return withContext(com.example.performance.AppDispatchers.Io) { resolve(chain, metadata) }
+        return withContext(com.example.performance.AppDispatchers.Io) { load() }
     }
 
     /** Raw playlist cover URLs never need song matching or provider URL upgrades. */
     private suspend fun playlistCover(chain: Interceptor.Chain): ImageResult {
         val request = chain.request
         val cachedRequest = request.newBuilder().networkCachePolicy(CachePolicy.DISABLED).build()
-        val cached = chain.proceed(cachedRequest)
-        if (cached is SuccessResult) return cached
-        com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle()
-        val url = request.data as? String ?: return chain.proceed(request)
-        // Bounded lock stripes deduplicate simultaneous grid/detail downloads.
-        // Recheck Coil's source cache after the preceding request commits it.
+        val memory = chain.proceed(cachedRequest.newBuilder().diskCachePolicy(CachePolicy.DISABLED).build())
+        if (memory is SuccessResult) return memory
+        val url = request.data.toString()
+        return admittedArtwork(url) {
+            val prepared = chain.proceed(cachedRequest)
+            if (prepared is SuccessResult) prepared else chain.proceed(request)
+        }
+    }
+
+    /** Recheck after BOTH resource waits; never wait for navigation holding a slot/URL lock. */
+    private suspend fun <T> admittedArtwork(url: String, startup: Boolean = false, block: suspend () -> T): T {
+        val coordinator = com.example.performance.BackgroundWorkCoordinator
         val lock = artworkFlights[(url.hashCode() and Int.MAX_VALUE) % artworkFlights.size]
-        return coldArtworkRequests.withPermit {
-            lock.withLock {
-                val prepared = chain.proceed(cachedRequest)
-                if (prepared is SuccessResult) prepared else chain.proceed(request)
-            }
+        while (true) {
+            if (!startup) coordinator.awaitNavigationIdle()
+            coldArtworkRequests.acquire()
+            try {
+                lock.lock()
+                try {
+                    if (startup || coordinator.navigationIsIdle())
+                        return coordinator.finishBoundedBatch { coordinator.traceWork("Artwork decode or fetch", block) }
+                } finally { lock.unlock() }
+            } finally { coldArtworkRequests.release() }
         }
     }
 
@@ -124,21 +133,23 @@ class ArtworkResolutionInterceptor internal constructor(
         val attempted = mutableSetOf<String>()
         val cachedImages = mutableMapOf<String, SuccessResult?>()
         var lastError: ImageResult? = null
-        suspend fun load(url: String?, cacheOnly: Boolean = false): SuccessResult? {
+        var initialNetworkBudgetMs = 3_000L
+        suspend fun load(url: String?, cacheOnly: Boolean = false, initialFetch: Boolean = false): SuccessResult? {
             if (url.isNullOrBlank() || !cacheOnly && !attempted.add(url)) return null
             if (cacheOnly && cachedImages.containsKey(url)) return cachedImages[url]
             val candidate = request.newBuilder().data(url).apply {
                 if (cacheOnly) networkCachePolicy(CachePolicy.DISABLED)
             }.build()
-            val result = if (cacheOnly) chain.proceed(candidate) else {
-                val flight = artworkFlights[(url.hashCode() and Int.MAX_VALUE) % artworkFlights.size]
-                if (flight.tryLock()) {
-                    try { chain.proceed(candidate) } finally { flight.unlock() }
-                } else flight.withLock {
-                    // The preceding request may have committed this source at a
-                    // different decode size. Coil still owns the bytes/bitmaps.
+            val result = admittedArtwork(url, metadata.startupPreparation) {
+                if (cacheOnly) chain.proceed(candidate) else {
+                    // Another request can fill the source while we wait for a slot.
                     val hit = chain.proceed(candidate.newBuilder().networkCachePolicy(CachePolicy.DISABLED).build())
-                    if (hit is SuccessResult) hit else chain.proceed(candidate)
+                    if (hit is SuccessResult && sufficientSize(hit, chain.size)) hit else if (!initialFetch) chain.proceed(candidate)
+                    else if (initialNetworkBudgetMs <= 0L) null else {
+                        val started = android.os.SystemClock.elapsedRealtime()
+                        try { withTimeoutOrNull(initialNetworkBudgetMs) { chain.proceed(candidate) } }
+                        finally { initialNetworkBudgetMs -= (android.os.SystemClock.elapsedRealtime() - started).coerceAtLeast(0L) }
+                    }
                 }
             }
             val loaded = when (result) {
@@ -166,7 +177,7 @@ class ArtworkResolutionInterceptor internal constructor(
         suspend fun providerFallback(cacheOnly: Boolean = false, firstUsable: Boolean = false): SuccessResult? {
             var small: SuccessResult? = null
             for (url in providerUrls) {
-                val result = load(url, cacheOnly) ?: continue
+                val result = load(url, cacheOnly, initialFetch = firstUsable) ?: continue
                 if (firstUsable || sufficient(result)) return result
                 if (small == null || result.drawable.intrinsicWidth.toLong() * result.drawable.intrinsicHeight >
                     small.drawable.intrinsicWidth.toLong() * small.drawable.intrinsicHeight) small = result
@@ -213,27 +224,25 @@ class ArtworkResolutionInterceptor internal constructor(
         // Do not delay a usable provider cover behind metadata search or the
         // optional idle budget. Cache misses are rechecked after acquiring a slot.
         if (interim == null) {
-            interim = coldArtworkRequests.withPermit {
-                cachedImages.clear()
-                cachedPreferred() ?: providerFallback(cacheOnly = true) ?:
-                    withTimeoutOrNull(3_000L) { providerFallback(firstUsable = true) }
-            }
+            cachedImages.clear()
+            interim = cachedPreferred() ?: providerFallback(cacheOnly = true) ?:
+                providerFallback(firstUsable = true)
             present(interim)
         }
         val initial = interim
         // Prefetch has no visible target to upgrade. Its caller has a bounded
         // viewport budget; metadata enrichment must never extend that budget.
         if (initial != null && (sufficient(initial) || metadata.startupPreparation || request.target == null)) return initial
-        suspend fun fetchUpgrade(): ImageResult = coldArtworkRequests.withPermit {
+        suspend fun fetchUpgrade(): ImageResult {
             // Requests queued for a permit may now have a cache hit prepared by
             // another card/startup request using the same URL and decode bounds.
             cachedImages.clear()
-            cachedPreferred()?.let { if (sufficient(it)) return@withPermit it }
-            providerFallback(cacheOnly = true)?.let { if (sufficient(it)) return@withPermit it }
+            cachedPreferred()?.let { if (sufficient(it)) return it }
+            providerFallback(cacheOnly = true)?.let { if (sufficient(it)) return it }
             val resolved = if (item != null && repository != null)
                 withTimeoutOrNull(5_000L) { repository.resolveArtwork(item, sourceDimension) } else null
             val preferred = resolved?.takeUnless { it in providerUrls }?.let { load(it) }
-            preferred ?: providerFallback() ?: initial ?: lastError ?: chain.proceed(request)
+            return preferred ?: providerFallback() ?: initial ?: lastError ?: admittedArtwork(request.data.toString(), metadata.startupPreparation) { chain.proceed(request) }
         }
         // A request which began under the modal stays optional even if its
         // dispatcher continuation resumes after the modal has already closed.
@@ -248,6 +257,10 @@ class ArtworkResolutionInterceptor internal constructor(
             } else fetchUpgrade()
         }
     }
+
+    private fun sufficientSize(result: SuccessResult, size: Size): Boolean =
+        result.drawable.intrinsicWidth >= ((size.width as? Dimension.Pixels)?.px ?: 0) &&
+            result.drawable.intrinsicHeight >= ((size.height as? Dimension.Pixels)?.px ?: 0)
 
     private fun upgradeProviderUrl(url: String, sourceDimension: Int): String = when {
         url.contains("150x150.jpg") -> url.replace("150x150.jpg", "500x500.jpg")

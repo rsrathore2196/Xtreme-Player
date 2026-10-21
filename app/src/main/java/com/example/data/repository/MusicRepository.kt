@@ -119,7 +119,6 @@ class MusicRepository private constructor(
     // LRU / in-memory cache to avoid duplicate network calls and prevent rate limiting
     private val searchCache = android.util.LruCache<String, Pair<Long, SearchResultCategory>>(80)
     private val losslessMisses = android.util.LruCache<String, Long>(128)
-    private val losslessLookup = kotlinx.coroutines.sync.Mutex()
     private val rejectedLosslessUrls = android.util.LruCache<String, Long>(64)
     private val streamResolver = StreamResolver()
     private val searchVerificationSlots = kotlinx.coroutines.sync.Semaphore(2)
@@ -304,22 +303,28 @@ class MusicRepository private constructor(
     fun observeFavoriteTrackIds(): Flow<Set<String>> = flow { emitAll(musicDao.observeFavoriteTrackIds()) }
         .flowOn(AppDispatchers.Database).map { it.toSet() }.distinctUntilChanged().flowOn(homeDispatcher)
 
-    fun getFavoriteTracks(preparationDispatcher: kotlinx.coroutines.CoroutineDispatcher = homeDispatcher): Flow<List<MusicTrack>> {
-        return flow { emitAll(musicDao.getFavoriteTracks()) }
-            .flowOn(AppDispatchers.Database)
-            // Room invalidates this query for any track write, including unrelated playback updates.
-            .distinctUntilChanged()
-            .map { list -> list.map { it.toMusicTrack() } }
-            .distinctUntilChanged()
-            .onEach { retainedFavoriteTracks = it }
-            .flowOn(preparationDispatcher)
+    // Replay authoritative snapshots; multiple screens share both Room reads and
+    // entity conversion. No initial empty value is mistaken for a loaded library.
+    private val favoriteSnapshots by lazy {
+        sharedTrackSnapshots(flow { emitAll(musicDao.getFavoriteTracks()) }) { retainedFavoriteTracks = it }
+    }
+    private val recentSnapshots by lazy {
+        sharedTrackSnapshots(flow { emitAll(musicDao.getRecentlyPlayedTracks()) }) { retainedRecentlyPlayed = it }
     }
 
-    fun getRecentlyPlayedTracks(): Flow<List<MusicTrack>> {
-        return flow { emitAll(musicDao.getRecentlyPlayedTracks()) }.flowOn(AppDispatchers.Database).distinctUntilChanged()
-            .map { list -> list.map { it.toMusicTrack() } }
-            .onEach { retainedRecentlyPlayed = it }.flowOn(AppDispatchers.CpuBounded)
-    }
+    private fun sharedTrackSnapshots(rows: Flow<List<TrackEntity>>, retain: (List<MusicTrack>) -> Unit) =
+        rows.flowOn(AppDispatchers.Database).distinctUntilChanged()
+            .map { list -> list.map { it.toMusicTrack() } }.distinctUntilChanged()
+            .onEach(retain).flowOn(AppDispatchers.CpuBounded)
+            .map { Result.success(it) }
+            .retryWhen { _, attempt ->
+                if (attempt >= 2) false else { kotlinx.coroutines.delay(250L * (attempt + 1)); true }
+            }
+            .catch { emit(Result.failure(it)) }
+            .shareIn(initialCatalogScope, SharingStarted.Lazily, replay = 1)
+
+    fun getFavoriteTracks(): Flow<List<MusicTrack>> = favoriteSnapshots.map { it.getOrThrow() }
+    fun getRecentlyPlayedTracks(): Flow<List<MusicTrack>> = recentSnapshots.map { it.getOrThrow() }
 
     // One app-owned Room observer, started on demand. Re-subscribing after a tab,
     // Activity or foreground change replays its snapshot without querying again.
@@ -515,7 +520,7 @@ class MusicRepository private constructor(
 
     internal suspend fun hasRecentLosslessAttempt(track: MusicTrack) = streamResolver.hasRecentLosslessAttempt(track)
 
-    suspend fun findLosslessUpgrade(track: MusicTrack): MusicTrack? = withContext(AppDispatchers.Io) {
+    suspend fun findLosslessUpgrade(track: MusicTrack, automatic: Boolean = false): MusicTrack? = withContext(AppDispatchers.Io) {
         val monitor = context?.let(com.example.playback.NetworkQualityMonitor::getInstance)
         if (monitor?.snapshot()?.allowsLosslessUpgrade != true) {
             com.example.playback.LosslessDiagnostics.record(track.id,
@@ -543,9 +548,9 @@ class MusicRepository private constructor(
         // Reuse the process-wide reference-counted request sharing. Cancelling one
         // consumer cannot cancel a lookup another consumer still needs.
         val found = com.example.recommendation.DiscoveryRequestCoordinator.shared("archive-recording:$key",
-            essential = true, network = false) {
-            losslessLookup.withLock {
-                if (missedRecently() || !monitor.snapshot().allowsLosslessUpgrade) return@withLock emptyList()
+            essential = !automatic, network = false) {
+            run lookup@{
+                if (missedRecently() || !monitor.snapshot().allowsLosslessUpgrade) return@lookup emptyList()
                 val rejected = (rejectedLosslessUrls.snapshot().filterValues {
                     it > android.os.SystemClock.elapsedRealtime()
                 }.keys + StreamResolver.getActiveRejectedUrls()).toSet()
@@ -582,7 +587,7 @@ class MusicRepository private constructor(
                     if (!monitor.snapshot().allowsLosslessUpgrade) {
                         com.example.playback.LosslessDiagnostics.record(track.id,
                             com.example.playback.LosslessDiagnostics.Reason.NETWORK_POLICY_BLOCKED, "discovery-policy")
-                        return@withLock emptyList()
+                        return@lookup emptyList()
                     }
                     val candidates = withContext(AppDispatchers.CpuBounded) {
                         result.tracks.mapNotNull { candidate ->

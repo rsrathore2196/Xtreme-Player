@@ -1,5 +1,6 @@
 package com.example.data.local
 
+import androidx.room.Embedded
 import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
@@ -35,6 +36,9 @@ data class ActualPlayStamp(val id: Long, val trackId: String, val timestamp: Lon
     val playedDurationMs: Long, val trackDurationMs: Long, val completionRatio: Float,
     val completed: Boolean, val skipped: Boolean, val liked: Boolean, val metadata: String)
 
+/** Count and recent identities come from one SQLite read, including an empty database. */
+data class ActualPlaySnapshotRow(val total: Int, @Embedded val stamp: ActualPlayStamp?)
+
 @Dao
 interface ListeningEventDao {
 
@@ -58,6 +62,18 @@ interface ListeningEventDao {
 
     @Query("SELECT id, trackId, timestamp, playedDurationMs, trackDurationMs, completionRatio, completed, skipped, liked, artistId || '|' || artistName || '|' || album || '|' || genre || '|' || language || '|' || sessionId || '|' || source AS metadata FROM listening_events WHERE eventType = 'ACTUAL_PLAY' ORDER BY timestamp DESC LIMIT 250")
     fun observeActualPlayStamps(): Flow<List<ActualPlayStamp>>
+
+    @Query("""
+        SELECT totals.total, recent.* FROM
+        (SELECT COUNT(*) AS total FROM listening_events WHERE eventType = 'ACTUAL_PLAY') AS totals
+        LEFT JOIN (SELECT id, trackId, timestamp, playedDurationMs, trackDurationMs,
+            completionRatio, completed, skipped, liked,
+            artistId || '|' || artistName || '|' || album || '|' || genre || '|' || language || '|' || sessionId || '|' || source AS metadata
+            FROM listening_events WHERE eventType = 'ACTUAL_PLAY'
+            ORDER BY timestamp DESC, id DESC LIMIT 300) AS recent ON 1 = 1
+        ORDER BY recent.timestamp DESC, recent.id DESC
+    """)
+    fun observeActualPlaySnapshot(): Flow<List<ActualPlaySnapshotRow>>
 
     // A scalar invalidation signal preserves older history when rows are deleted or restored.
     @Query("SELECT COUNT(*) FROM listening_events WHERE eventType = 'ACTUAL_PLAY'")

@@ -40,9 +40,10 @@ class StartupResponsivenessBenchmark {
     @Test fun coldOpening() = opening(StartupMode.COLD)
     @Test fun warmReopening() = opening(StartupMode.WARM)
     @Test fun retainedActivityReopening() = opening(StartupMode.HOT)
+    @Test fun rapidTabRetargeting() = opening(StartupMode.WARM, rapidRetargeting = true)
     @Test fun optionalWorkWakeupAndInteraction() = opening(StartupMode.WARM, observeOptionalWakeup = true)
 
-    private fun opening(mode: StartupMode, observeOptionalWakeup: Boolean = false) = benchmark.measureRepeated(
+    private fun opening(mode: StartupMode, observeOptionalWakeup: Boolean = false, rapidRetargeting: Boolean = false) = benchmark.measureRepeated(
         packageName = TARGET,
         metrics = listOf(StartupTimingMetric(), FrameTimingMetric()),
         compilationMode = CompilationMode.Partial(),
@@ -68,13 +69,14 @@ class StartupResponsivenessBenchmark {
             // Deliberately no waitForIdle(): that would skip the reported loading window.
             device.swipe(device.displayWidth / 2, device.displayHeight * 2 / 3,
                 device.displayWidth / 2, device.displayHeight / 3, 50)
-            tab("search")
-            tab("library")
-            tab("search")
-            tab("home")
-            tab("library")
-            tab("home")
+            tab("search", waitForDestination = !rapidRetargeting)
+            tab("library", waitForDestination = !rapidRetargeting)
+            tab("search", waitForDestination = !rapidRetargeting)
+            tab("home", waitForDestination = !rapidRetargeting)
+            tab("library", waitForDestination = !rapidRetargeting)
+            tab("home", waitForDestination = !rapidRetargeting)
         } while (SystemClock.elapsedRealtime() - interactiveStart < 6_000L)
+        check(device.wait(Until.hasObject(By.res("main_tab_0_settled")), 3_000L))
         if (observeOptionalWakeup) {
             // Measurement only: trace across optional admission, then interrupt
             // it. This is not an application startup delay or a UI-idle wait.
@@ -93,10 +95,16 @@ class StartupResponsivenessBenchmark {
         }
     }
 
-    private fun MacrobenchmarkScope.tab(name: String) {
+    private fun MacrobenchmarkScope.tab(name: String, waitForDestination: Boolean = true) {
         val selector = By.res(Pattern.compile("nav_tab_${name}_(active|inactive)"))
         checkNotNull(device.wait(Until.findObject(selector), 2_000L)).click()
         check(device.wait(Until.hasObject(By.res("nav_tab_${name}_active")), 2_000L))
+        if (waitForDestination) {
+            val page = listOf("home", "search", "library").indexOf(name)
+            check(device.wait(Until.hasObject(By.res("main_tab_${page}_settled")), 3_000L)) {
+                "Dock selected $name but its destination did not settle"
+            }
+        }
     }
 
     private companion object { const val TARGET = "com.aistudio.xtremeplayer.vkmz" }

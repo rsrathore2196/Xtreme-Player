@@ -209,7 +209,7 @@ class PlayerViewModel(
         }.stateIn(libraryDataScope, SharingStarted.Lazily, initial)
 
     val favoriteTracks: StateFlow<List<MusicTrack>> = retainedLibraryData(repository.retainedFavoriteTracks, localLibraryLoaded[0]) {
-        repository.getFavoriteTracks(derivedStateDispatcher)
+        repository.getFavoriteTracks()
     }
 
     val recentlyPlayed: StateFlow<List<MusicTrack>> = retainedLibraryData(repository.retainedRecentlyPlayed, localLibraryLoaded[1]) {

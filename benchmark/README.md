@@ -70,3 +70,16 @@ thread scheduling, GC, disk I/O and RenderThread/GPU events: work being on IO/De
 does not establish that it is harmless to frame deadlines. Async sections remain valid
 across coroutine dispatcher switches. Do not infer measured improvement from host
 regression tests, a successful APK build, or the presence of baseline profile rules.
+
+The ordinary journeys now wait for `main_tab_<index>_settled`, which reflects the pager's
+actual settled page and offset, rather than accepting the selected dock label as evidence
+that navigation finished. `rapidTabRetargeting` separately exercises repeated taps while
+slides are still in flight. Neither changes production animation timing.
+
+New trace sections include `Xtreme/Navigation transition`, `Xtreme/Artwork decode or fetch`,
+`Xtreme/Automatic lossless discovery`, and `Xtreme/Automatic lossless prebuffer` (plus the
+service-owned discovery equivalent). Compare active playback on Maximum/Lossless with a
+capped profile, and empty vs large listening histories, alongside the existing cached/cold
+artwork and hot/warm/cold launch cases. Observe both the first six interactive seconds and
+the later optional-work window. Traces are required before changing retained-tab lifecycle
+publication or image memory budgets; these are not established bottlenecks from static code.

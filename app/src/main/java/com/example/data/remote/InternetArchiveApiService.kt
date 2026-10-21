@@ -95,48 +95,57 @@ object InternetArchiveApiService {
     /** Collections are discovery hints only. Every returned file still proves its own identity. */
     internal suspend fun findLosslessRecording(track: MusicTrack, excludedUrls: Set<String> = emptySet(),
         allowed: () -> Boolean = { true }): LosslessSearchPage =
-        withContext(Dispatchers.IO) {
+        withContext(AppDispatchers.Io) {
             val search = RecordingSearch(track, excludedUrls, allowed)
             val plans = withContext(AppDispatchers.CpuBounded) { recordingQueries(track) }
             var successful = true
-            var exhausted = true
             var failure: Reason? = null
             var sawCandidates = false
-            val found = withTimeoutOrNull(BACKGROUND_TIMEOUT_MS) {
-                val pages = plans.associateWith { 1 as Int? }.toMutableMap()
-                // Inspect every relevant strategy before spending the budget on deeper pages.
-                for (round in 0..1) {
-                    for (batch in plans.chunked(2)) {
-                        currentCoroutineContext().ensureActive()
-                        if (!allowed()) return@withTimeoutOrNull LosslessSearchPage(isSuccessful = false,
-                            failure = Reason.NETWORK_POLICY_BLOCKED, exhaustive = false)
-                        if (search.items.size >= 20) { search.truncated = true; return@withTimeoutOrNull null }
-                        val fetched = coroutineScope { batch.mapNotNull { expression ->
-                            pages[expression]?.let { page -> async {
-                                expression to searchPage(expression, expression, page, 4, true, search)
-                            } }
-                        }.awaitAll() }
-                        for ((expression, result) in fetched) {
+            var remainingMs = BACKGROUND_TIMEOUT_MS
+            val pages = plans.associateWith { 1 as Int? }.toMutableMap()
+            val coordinator = com.example.performance.BackgroundWorkCoordinator
+            // Charge only admitted work to the existing network budget. Navigation
+            // pauses are neither network timeouts nor evidence of a missing song.
+            for (round in 0..1) {
+                for (batch in plans.chunked(2)) {
+                    coordinator.awaitOptionalBatch()
+                    currentCoroutineContext().ensureActive()
+                    if (!allowed()) return@withContext LosslessSearchPage(isSuccessful = false,
+                        failure = Reason.NETWORK_POLICY_BLOCKED, exhaustive = false)
+                    if (search.items.size >= 20) return@withContext LosslessSearchPage(isSuccessful = false,
+                        failure = Reason.METADATA_INCOMPLETE, exhaustive = false)
+                    val started = SystemClock.elapsedRealtime()
+                    val fetched = coordinator.finishBoundedBatch {
+                        withTimeoutOrNull(remainingMs) {
+                            coroutineScope { batch.mapNotNull { expression ->
+                                pages[expression]?.let { page -> async {
+                                    val result = searchPage(expression, expression, page, 4, true, search)
+                                    val matches = withContext(AppDispatchers.CpuBounded) {
+                                        result.tracks.filter { it.audioUrl !in excludedUrls }.mapNotNull { candidate ->
+                                            RecordingIdentity.losslessConfidence(track, candidate)?.let { candidate to it }
+                                        }.sortedByDescending { it.second }.map { it.first }
+                                    }
+                                    Triple(expression, result, matches)
+                                } }
+                            }.awaitAll() }
+                        }
+                    } ?: return@withContext LosslessSearchPage(isSuccessful = false,
+                        failure = Reason.NETWORK_TIMEOUT, exhaustive = false)
+                    remainingMs -= (SystemClock.elapsedRealtime() - started).coerceAtLeast(0L)
+                    for ((expression, result, matches) in fetched) {
                         sawCandidates = sawCandidates || result.tracks.isNotEmpty()
                         successful = successful && result.isSuccessful
                         failure = result.failure ?: failure
-                        val matches = withContext(AppDispatchers.CpuBounded) {
-                            result.tracks.filter { it.audioUrl !in excludedUrls }.mapNotNull { candidate ->
-                                RecordingIdentity.losslessConfidence(track, candidate)?.let { candidate to it }
-                            }.sortedByDescending { it.second }.map { it.first }
-                        }
-                        if (matches.isNotEmpty()) return@withTimeoutOrNull result.copy(tracks = matches, failure = null)
+                        if (matches.isNotEmpty()) return@withContext result.copy(tracks = matches, failure = null)
                         pages[expression] = result.nextPage
-                        }
                     }
+                    if (remainingMs <= 0) return@withContext LosslessSearchPage(isSuccessful = false,
+                        failure = Reason.NETWORK_TIMEOUT, exhaustive = false)
                 }
-                exhausted = pages.values.all { it == null }
-                LosslessSearchPage(isSuccessful = successful, failure = failure ?: if (sawCandidates)
-                    Reason.RECORDING_MISMATCH else Reason.NO_RESULTS,
-                    exhaustive = exhausted && !search.truncated)
             }
-            found ?: LosslessSearchPage(isSuccessful = false,
-                failure = if (search.truncated) Reason.METADATA_INCOMPLETE else Reason.NETWORK_TIMEOUT, exhaustive = false)
+            LosslessSearchPage(isSuccessful = successful, failure = failure ?: if (sawCandidates)
+                Reason.RECORDING_MISMATCH else Reason.NO_RESULTS,
+                exhaustive = pages.values.all { it == null } && !search.truncated)
         }
 
     internal fun originalFileUrl(track: MusicTrack): String? {

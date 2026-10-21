@@ -18,6 +18,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.testTag
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.LifecycleOwner
@@ -110,6 +111,10 @@ internal fun MainTabPager(
         val visible by remember(state, index, pageCovered) {
             derivedStateOf { !pageCovered && state.layoutInfo.visiblePagesInfo.any { it.index == index } }
         }
+        val settled by remember(state, index, pageCovered) {
+            derivedStateOf { !pageCovered && state.settledPage == index && !state.isScrollInProgress &&
+                kotlin.math.abs(state.currentPageOffsetFraction) < 0.001f }
+        }
         val parent = LocalLifecycleOwner.current.lifecycle
         val page = remember(parent) { RetainedPageLifecycle(parent) }
         DisposableEffect(page) {
@@ -120,7 +125,8 @@ internal fun MainTabPager(
         SideEffect { page.visible = visible; page.update() }
         CompositionLocalProvider(LocalVisualEffectsActive provides (visible && parentEffectsActive),
             LocalArtworkRequestsActive provides visible, LocalLifecycleOwner provides page) {
-            Box(Modifier.fillMaxSize().graphicsLayer { clip = false }) {
+            Box(Modifier.fillMaxSize().graphicsLayer { clip = false }
+                .testTag(if (settled) "main_tab_${index}_settled" else "main_tab_${index}_retained")) {
                 if (index in mounted) Box(Modifier.fillMaxSize().onGloballyPositioned {
                     if (it.size.width > 0 && it.size.height > 0) measured[index].complete(Unit)
                 }) { content(index) }

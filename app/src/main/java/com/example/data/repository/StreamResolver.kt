@@ -312,7 +312,7 @@ internal class StreamResolver(
         track: MusicTrack,
         excludedUrls: Set<String> = emptySet(),
         allowed: () -> Boolean = { true }
-    ): MusicTrack? = withContext(Dispatchers.IO) {
+    ): MusicTrack? = withContext(AppDispatchers.Io) {
         val cached = getCachedLosslessMatch(track)
         if (cached != null && cached.audioUrl !in excludedUrls && !isLosslessUrlRejected(cached.audioUrl) && supportsLossless(cached)) {
             return@withContext cached

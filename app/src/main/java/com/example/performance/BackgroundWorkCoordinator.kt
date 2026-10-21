@@ -209,6 +209,8 @@ object BackgroundWorkCoordinator {
         return isInteractionIdle() && optionalInteractionIdle(SystemClock.elapsedRealtime())
     }
 
+    internal fun optionalPlaybackWorkMayProceed(): Boolean = optionalCanRun(false) { false }
+
     private suspend fun optionalContext(requireForeground: Boolean, urgent: () -> Boolean = { false }) =
         NonEssentialWork(currentCoroutineContext()[Job], { optionalCanRun(requireForeground, urgent) }) {
             while (!optionalCanRun(requireForeground, urgent)) {
@@ -224,6 +226,12 @@ object BackgroundWorkCoordinator {
     /** Shared flights use their own live urgency, not a single consumer's cancellation. */
     internal suspend fun <T> optionalProcessing(urgent: () -> Boolean = { false }, block: suspend () -> T): T =
         withContext(optionalContext(requireForeground = false, urgent = urgent)) { block() }
+
+    /** Use only between batches, after releasing cache/database/network resources. */
+    internal suspend fun awaitOptionalBatch() {
+        yield()
+        currentCoroutineContext()[NonEssentialWork]?.awaitAdmission?.invoke()
+    }
 
     /** Finish a bounded response/transaction before yielding, never idle with its permit held. */
     internal suspend fun <T> finishBoundedBatch(block: suspend () -> T): T {
@@ -244,7 +252,7 @@ object BackgroundWorkCoordinator {
         if (currentCoroutineContext()[Admission] != null) return traceWork(label, block)
         if (!cardWork && (priority == StartupPriority.CRITICAL || urgent()))
             return withContext(Admission(StartupPriority.CRITICAL)) { work { traceWork(label, block) } }
-        awaitFirstFrame()
+        if (requireForeground || foreground.get()) awaitFirstFrame()
         val ticket = Ticket(priority, requireForeground, cardWork, urgent)
         synchronized(admissionLock) { waiting.add(ticket) }
         var admitted = false
@@ -261,8 +269,8 @@ object BackgroundWorkCoordinator {
                     val essential = ticket.essential()
                     val eligible = waiting.filter { next ->
                         (!next.foregroundOnly || foreground.get()) &&
-                            (next.essential() || homeReady.isCompleted && cachedHomeReady.isCompleted &&
-                                !initialPresentationPending.get()) &&
+                            (next.essential() || !next.foregroundOnly && !foreground.get() ||
+                                homeReady.isCompleted && cachedHomeReady.isCompleted && !initialPresentationPending.get()) &&
                             (!next.cardWork || !cardActive && (lastCardCompleted == 0L ||
                                 now - lastCardCompleted >= BETWEEN_JOBS_MS))
                     }
@@ -275,11 +283,11 @@ object BackgroundWorkCoordinator {
                     }
                     val interacting = foregroundDrawPending.get() || scrolling.get() ||
                         navigationJobs.get() != 0 || now < navigationUntil.get()
-                    val idle15sMet = optionalInteractionIdle(now)
+                    val idle15sMet = !foreground.get() || optionalInteractionIdle(now)
                     val breathingGapMet = lastOptionalCompleted.get() == 0L ||
                         now - lastOptionalCompleted.get() >= BETWEEN_JOBS_MS
-                    val quiet = jobs.get() == 0 && !interacting &&
-                        now - lastSlowFrame.get() >= 250L && idle15sMet && breathingGapMet
+                    val quiet = jobs.get() == 0 && (!foreground.get() ||
+                        !interacting && now - lastSlowFrame.get() >= 250L) && idle15sMet && breathingGapMet
                     if (next === ticket && (if (essential) !essentialActive && !interacting
                         else !optionalActive && !essentialActive && quiet)) {
                         waiting.remove(ticket)
@@ -400,10 +408,12 @@ object BackgroundWorkCoordinator {
     fun navigationBusy(): AutoCloseable {
         navigationJobs.incrementAndGet()
         val work = busy()
+        val section = trace("Navigation transition")
         val closed = AtomicBoolean(false)
         return AutoCloseable {
             if (closed.compareAndSet(false, true)) {
                 navigationJobs.decrementAndGet()
+                section.close()
                 work.close()
             }
         }
@@ -414,14 +424,15 @@ object BackgroundWorkCoordinator {
      * It is safe inside an admitted refresh: that refresh cannot wait on itself.
      * Playback and essential user searches do not use this optional-work gate.
      */
+    internal fun navigationIsIdle(): Boolean = !foregroundDrawPending.get() &&
+        navigationJobs.get() == 0 && SystemClock.elapsedRealtime() >= navigationUntil.get()
+
     suspend fun awaitNavigationIdle(requireForeground: Boolean = false,
         bypass: () -> Boolean = { false }) {
         while (true) {
             currentCoroutineContext().ensureActive()
             if (bypass() || (!requireForeground || foreground.get()) &&
-                !foregroundDrawPending.get() &&
-                navigationJobs.get() == 0 &&
-                SystemClock.elapsedRealtime() >= navigationUntil.get()) return
+                navigationIsIdle()) return
             delay(50L)
         }
     }

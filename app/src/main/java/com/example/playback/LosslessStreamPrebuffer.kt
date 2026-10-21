@@ -35,6 +35,11 @@ import kotlin.math.abs
 /** Validate and warm the shared Media3 cache, without another player, decoder or audio focus. */
 internal object LosslessStreamPrebuffer {
     private val worker = Mutex()
+    private fun currentCheck(automatic: Boolean) {
+        if (automatic && !com.example.performance.BackgroundWorkCoordinator.optionalPlaybackWorkMayProceed())
+            throw PreparationDeferred()
+    }
+    private class PreparationDeferred : RuntimeException()
     private class PreparationFailure(val reason: LosslessDiagnostics.Reason, message: String) : IOException(message)
     data class AudioInfo(val codec: String, val bitrateKbps: Int, val sampleRate: Int, val bitDepth: Int) {
         val isHiRes: Boolean get() = sampleRate >= 44_100 && bitDepth >= 16 &&
@@ -89,8 +94,33 @@ internal object LosslessStreamPrebuffer {
 
     suspend fun prepare(context: Context, item: MediaItem, expectedDurationMs: Long,
         currentPosition: () -> Long, stillCurrent: () -> Boolean, durationToleranceMs: Long = 5_000L,
-        allowUnknownDuration: Boolean = false): Prepared? = withContext(Dispatchers.IO) {
+        allowUnknownDuration: Boolean = false, automatic: Boolean = false): Prepared? {
+        val coordinator = com.example.performance.BackgroundWorkCoordinator
+        suspend fun attempt(): Prepared? = coordinator.finishBoundedBatch {
+            prepareAttempt(context, item, expectedDurationMs, currentPosition, stillCurrent,
+                durationToleranceMs, allowUnknownDuration, automatic)
+        }
+        if (!automatic) return attempt()
+        while (withContext(Dispatchers.Main.immediate) { stillCurrent() }) {
+            try {
+                return coordinator.startup(com.example.performance.BackgroundWorkCoordinator.StartupPriority.DEFERRED, requireForeground = false,
+                    label = "Automatic lossless prebuffer") { attempt() }
+            } catch (_: PreparationDeferred) {
+                // The byte cache survives; all extractor/cache locks and the
+                // coordinator lease have closed. A gesture is not a bad FLAC.
+            }
+        }
+        return null
+    }
+
+    private suspend fun prepareAttempt(context: Context, item: MediaItem, expectedDurationMs: Long,
+        currentPosition: () -> Long, stillCurrent: () -> Boolean, durationToleranceMs: Long,
+        allowUnknownDuration: Boolean, automatic: Boolean): Prepared? = withContext(com.example.performance.AppDispatchers.Io) {
         worker.withLock {
+            fun checkpoint() {
+                currentCheck(automatic)
+            }
+            checkpoint() // Recheck after waiting for the single preparation worker.
             LosslessDiagnostics.clear(item.mediaId)
             if (!NetworkQualityMonitor.getInstance(context).snapshot().allowsLosslessUpgrade) {
                 LosslessDiagnostics.record(item.mediaId, LosslessDiagnostics.Reason.NETWORK_POLICY_BLOCKED, "prebuffer")
@@ -106,6 +136,7 @@ internal object LosslessStreamPrebuffer {
             var bytes = 0L
             val reader = DataReader { buffer, offset, length ->
                 jobContext.ensureActive()
+                checkpoint()
                 if (SystemClock.elapsedRealtime() >= deadline || bytes >= maxBytes)
                     throw PreparationFailure(LosslessDiagnostics.Reason.PREBUFFER_FAILED, "Optional preparation budget reached")
                 source.read(buffer, offset, minOf(length.toLong(), maxBytes - bytes).toInt())
@@ -115,6 +146,7 @@ internal object LosslessStreamPrebuffer {
             var fullLength = C.LENGTH_UNSET.toLong()
             fun openAt(position: Long): DefaultExtractorInput {
                 jobContext.ensureActive()
+                checkpoint()
                 // This is optional preparation, not the audible stream. Never
                 // open another Archive range after a capped-network handover.
                 if (!NetworkQualityMonitor.getInstance(context).snapshot().allowsLosslessUpgrade)
@@ -159,6 +191,7 @@ internal object LosslessStreamPrebuffer {
                 val nextPosition = PositionHolder()
                 fun step(): Boolean {
                     jobContext.ensureActive()
+                    checkpoint()
                     if (SystemClock.elapsedRealtime() >= deadline) throw PreparationFailure(
                         LosslessDiagnostics.Reason.PREBUFFER_FAILED, "Lossless preparation budget reached")
                     return when (extractor.read(input, nextPosition)) {
@@ -229,6 +262,7 @@ internal object LosslessStreamPrebuffer {
                 LosslessDiagnostics.record(item.mediaId, LosslessDiagnostics.Reason.BUFFER_COVERAGE, "prebuffer")
                 null
             } catch (e: CancellationException) { throw e }
+            catch (e: PreparationDeferred) { throw e }
             catch (e: Exception) {
                 val reason = when (e) {
                     is PreparationFailure -> e.reason

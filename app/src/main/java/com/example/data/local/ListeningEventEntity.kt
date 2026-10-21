@@ -15,7 +15,8 @@ import com.example.data.model.MusicTrack
         Index("trackId"),
         Index("artistName"),
         Index("timestamp"),
-        Index("sessionId")
+        Index("sessionId"),
+        Index(value = ["eventType", "timestamp", "id"])
     ]
 )
 data class ListeningEventEntity(

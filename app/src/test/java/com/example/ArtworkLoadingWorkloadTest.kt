@@ -255,4 +255,63 @@ class ArtworkLoadingWorkloadTest {
         assertTrue(withTimeout(3_000) { result.await() } is SuccessResult)
         assertEquals(2, downloads.get())
     }
+    @Test fun unfinishedPlaylistCoverPausesWhileHiddenWithoutRecreatingItsRequest() = runBlocking {
+        val visibility = ArtworkVisibility(true)
+        val entered = CompletableDeferred<Unit>()
+        val cancelled = CompletableDeferred<Unit>()
+        val downloads = AtomicInteger()
+        val cover = ImageRequest.Builder(context).data(provider).size(300, 300)
+            .setParameter(PLAYLIST_COVER_PARAMETER, true, null)
+            .setParameter(ARTWORK_VISIBILITY_PARAMETER, visibility, null).build()
+        val chain = Chain(cover, onNetwork = {
+            if (downloads.incrementAndGet() == 1) {
+                entered.complete(Unit)
+                try { awaitCancellation() } finally { cancelled.complete(Unit) }
+            }
+        })
+        val result = async { ArtworkResolutionInterceptor { error("Playlist has no song metadata") }.intercept(chain) }
+        try {
+            withTimeout(3_000) { entered.await() }
+            visibility.active.value = false
+            withTimeout(3_000) { cancelled.await() }
+            assertFalse(result.isCompleted)
+            visibility.active.value = true
+            assertTrue(withTimeout(3_000) { result.await() } is SuccessResult)
+            assertEquals(2, downloads.get())
+        } finally { result.cancelAndJoin() }
+    }
+
+    @Test fun coldArtworkWaitsForNavigation() = runBlocking {
+        val coordinator = com.example.performance.BackgroundWorkCoordinator
+        val lease = coordinator.navigationBusy()
+        val chain = Chain(request())
+        val result = async { ArtworkResolutionInterceptor { repository { match() } }.intercept(chain) }
+        try {
+            delay(100)
+            assertFalse(result.isCompleted)
+            assertTrue(chain.calls.none { it.second })
+        } finally { lease.close() }
+        assertTrue(withTimeout(3_000) { result.await() } is SuccessResult)
+    }
+
+    @Test fun navigationBeginningDuringASlotWaitPreventsANewNetworkBatch() = runBlocking {
+        val coordinator = com.example.performance.BackgroundWorkCoordinator
+        val slots = ArtworkResolutionInterceptor::class.java.getDeclaredField("coldArtworkRequests")
+            .apply { isAccessible = true }.get(null) as kotlinx.coroutines.sync.Semaphore
+        slots.acquire(); slots.acquire()
+        val chain = Chain(request())
+        val result = async { ArtworkResolutionInterceptor { repository { match() } }.intercept(chain) }
+        var lease: AutoCloseable? = null
+        try {
+            delay(100) // Let the request reach the occupied resource, not a fake UI delay.
+            lease = coordinator.navigationBusy()
+            slots.release(); slots.release()
+            delay(100)
+            assertFalse(result.isCompleted)
+            assertTrue(chain.calls.none { it.second })
+            lease.close(); lease = null
+            assertTrue(withTimeout(3_000) { result.await() } is SuccessResult)
+        } finally { lease?.close(); result.cancelAndJoin() }
+    }
+
 }

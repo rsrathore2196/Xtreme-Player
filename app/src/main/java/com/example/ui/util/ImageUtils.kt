@@ -6,7 +6,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
@@ -22,7 +22,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 /** Hidden retained tabs may reuse memory images, but never fetch/decode unseen artwork. */
-val LocalArtworkRequestsActive = staticCompositionLocalOf { true }
+val LocalArtworkRequestsActive = compositionLocalOf { true }
+
+internal const val ARTWORK_VISIBILITY_PARAMETER = "com.example.artwork.visibility"
 
 internal const val PLAYLIST_COVER_PARAMETER = "com.example.artwork.playlist_cover"
 
@@ -35,17 +37,20 @@ fun rememberPlaylistCoverRequest(
 ): ImageRequest? {
     val context = LocalContext.current
     val active = LocalArtworkRequestsActive.current && loadAllowed
+    val visibility = remember(context, url, targetSize) { ArtworkVisibility(active) }
+    SideEffect { visibility.active.value = active }
     val previouslyRequested = remember(url) { mutableStateOf(false) }
     // Keep an existing painter/request when a retained tab hides. Never start
     // artwork for a hidden, never-visited row, including lazy precomposition.
     SideEffect { if (active) previouslyRequested.value = true }
     if (url.isBlank() || !active && !previouslyRequested.value) return null
     val dimension = mapTargetSizeToArtworkDimension(targetSize)
-    return remember(context, url, dimension) {
+    return remember(context, url, dimension, visibility) {
         val memoryKey = "playlist-cover:$dimension:$url"
         ImageRequest.Builder(context)
             .data(url)
             .setParameter(PLAYLIST_COVER_PARAMETER, true, null)
+            .setParameter(ARTWORK_VISIBILITY_PARAMETER, visibility, null)
             .memoryCacheKey(memoryKey)
             .placeholderMemoryCacheKey(memoryKey)
             // Grid/detail decode identities may differ, but share the original file.

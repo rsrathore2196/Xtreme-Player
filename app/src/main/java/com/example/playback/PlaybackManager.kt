@@ -1,5 +1,6 @@
 package com.example.playback
 
+import com.example.performance.BackgroundWorkCoordinator
 import com.example.performance.AppDispatchers
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.toMutableStateList
@@ -1414,11 +1415,16 @@ class PlaybackManager(
                     val duration = player.duration.takeIf { it > 0L } ?: original.durationMs
                     if (duration <= 0L || duration - player.currentPosition < 10_000L) return@launch
                     if (losslessAttemptCount >= 3) return@launch
-                    losslessAttemptCount++
-                    losslessLookupStarted = true
-                    losslessRetryAfterMs = android.os.SystemClock.elapsedRealtime() + 10_000L
                     val reference = original.copy(durationMs = duration)
-                    val lossless = withContext(AppDispatchers.Io) { repo.findLosslessUpgrade(reference) }
+                    val lossless = BackgroundWorkCoordinator.startup(
+                        BackgroundWorkCoordinator.StartupPriority.DEFERRED, requireForeground = false,
+                        label = "Automatic lossless discovery") {
+                        if (!stillCurrent()) return@startup null
+                        losslessAttemptCount++
+                        losslessLookupStarted = true
+                        losslessRetryAfterMs = android.os.SystemClock.elapsedRealtime() + 10_000L
+                        withContext(AppDispatchers.Io) { repo.findLosslessUpgrade(reference, automatic = true) }
+                    }
                     if (!stillCurrent()) return@launch
                     if (lossless == null) {
                         if (LosslessDiagnostics.last(original.id)?.reason == LosslessDiagnostics.Reason.NO_RESULTS) return@launch
@@ -1434,7 +1440,7 @@ class PlaybackManager(
                     }
                     val warmed = LosslessStreamPrebuffer.prepare(context, candidate.toMediaItem(), duration,
                         currentPosition = { player.currentPosition }, stillCurrent = ::stillCurrent,
-                        durationToleranceMs = if (sameCode) 8_000L else 5_000L, allowUnknownDuration = sameCode)
+                        durationToleranceMs = if (sameCode) 8_000L else 5_000L, allowUnknownDuration = sameCode, automatic = true)
                     if (!stillCurrent()) return@launch
                     if (warmed == null || !warmed.covers(player.currentPosition)) {
                         LosslessDiagnostics.prebufferRejected(original.id, warmed != null)
@@ -1493,7 +1499,8 @@ class PlaybackManager(
                 Log.d(TAG, "Optional lossless upgrade unavailable: ${e.message}")
             } finally {
                 if (losslessRequestEpoch == requestEpoch) {
-                    if (losslessAttemptKey == key && !losslessLookupStarted) losslessAttemptKey = null
+                    if (losslessAttemptKey == key && (!losslessLookupStarted ||
+                        !player.isPlaying && losslessFallback == null && losslessAttemptCount < 3)) losslessAttemptKey = null
                 }
             }
         }

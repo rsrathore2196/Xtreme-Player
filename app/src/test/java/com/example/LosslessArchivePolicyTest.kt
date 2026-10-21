@@ -241,7 +241,9 @@ class LosslessArchivePolicyTest {
         // Exercise the service watchdog too: returning to AAC long after the
         // first selection must be allowed to buffer instead of immediately
         // entering recovery/stopping the now-disallowed Opus fallback.
-        kotlinx.coroutines.test.runTest {
+        // This watchdog owns its own timer. Do not advance application-owned
+        // startup admission loops, which use Android's monotonic clock.
+        kotlinx.coroutines.test.runTest(StandardTestDispatcher(kotlinx.coroutines.test.TestCoroutineScheduler())) {
             var playing = false
             var recoveryCalls = 0
             val player = java.lang.reflect.Proxy.newProxyInstance(androidx.media3.common.Player::class.java.classLoader,

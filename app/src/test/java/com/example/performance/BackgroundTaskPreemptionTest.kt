@@ -179,4 +179,21 @@ class BackgroundTaskPreemptionTest {
             assertEquals("verified response", withTimeout(2_000) { work.await() })
         } finally { work.cancelAndJoin() }
     }
+    @Test fun automaticPlaybackAdmissionYieldsToDockButCriticalWorkRemainsImmediate() = runBlocking {
+        coordinator.cancelNonEssentialWork()
+        val optional = async(AppDispatchers.Io) {
+            coordinator.startup(BackgroundWorkCoordinator.StartupPriority.DEFERRED,
+                requireForeground = false) { "optional" }
+        }
+        try {
+            assertEquals("play", withTimeout(1_000) {
+                coordinator.startup(BackgroundWorkCoordinator.StartupPriority.CRITICAL) { "play" }
+            })
+            delay(100)
+            assertFalse(optional.isCompleted)
+            ShadowSystemClock.advanceBy(Duration.ofSeconds(16))
+            assertEquals("optional", withTimeout(3_000) { optional.await() })
+        } finally { optional.cancelAndJoin() }
+    }
+
 }

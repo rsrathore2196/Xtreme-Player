@@ -337,8 +337,13 @@ class MusicService : MediaLibraryService() {
                     headlessBackgroundUpgrade = true
                     delay(3_000L) // Stable audible playback, not a startup admission delay.
                     if (!owns() || !player.isPlaying) return@launch
-                    headlessLosslessAttempts++
-                    withContext(AppDispatchers.Io) { app.repository.findLosslessUpgrade(track) } ?: return@launch
+                    com.example.performance.BackgroundWorkCoordinator.startup(
+                        com.example.performance.BackgroundWorkCoordinator.StartupPriority.DEFERRED,
+                        requireForeground = false, label = "Service automatic lossless discovery") {
+                        if (!owns() || !player.isPlaying) return@startup null
+                        headlessLosslessAttempts++
+                        withContext(AppDispatchers.Io) { app.repository.findLosslessUpgrade(track, automatic = true) }
+                    } ?: return@launch
                 } else withContext(AppDispatchers.Io) { app.repository.resolvePlayableTrack(track,
                     forceRefresh = failedUrl != null, failedUrl = failedUrl) }
                 if (!owns() || resolved.audioUrl == track.audioUrl) return@launch
@@ -361,7 +366,7 @@ class MusicService : MediaLibraryService() {
                     }
                     val prepared = com.example.playback.LosslessStreamPrebuffer.prepare(this@MusicService, replacement,
                         track.durationMs, currentPosition = { player.currentPosition }, stillCurrent = { owns() && player.isPlaying },
-                        durationToleranceMs = if (sameCode) 8_000L else 5_000L, allowUnknownDuration = sameCode)
+                        durationToleranceMs = if (sameCode) 8_000L else 5_000L, allowUnknownDuration = sameCode, automatic = headlessBackgroundUpgrade)
                     if (!owns()) return@launch
                     if (prepared == null || !prepared.covers(player.currentPosition)) {
                         com.example.playback.LosslessDiagnostics.prebufferRejected(track.id, prepared != null)

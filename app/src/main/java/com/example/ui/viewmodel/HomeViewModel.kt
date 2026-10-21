@@ -173,13 +173,15 @@ class HomeViewModel(
             BackgroundWorkCoordinator.startupTask(StartupTask.RECENT_HISTORY, StartupStatus.RUNNING)
             var previousCount = -1
             var previousIds: Set<Long>? = null
-            combine(listeningEventDao.observeActualPlayStamps(),
-                listeningEventDao.observeActualPlayCount().distinctUntilChanged()) { stamps, count -> stamps to count }
-                .flowOn(dataDispatcher).collect { (stamps, count) ->
+            listeningEventDao.observeActualPlaySnapshot().distinctUntilChanged()
+                .flowOn(dataDispatcher).collect { snapshot ->
+                val stamps = snapshot.mapNotNull { it.stamp }
+                val count = snapshot.first().total
                 val ids = stamps.mapTo(mutableSetOf()) { it.id }
-                val reloadHistory = previousIds != ids || previousCount != count
                 val rebuildOlder = previousCount >= 0 && (count < previousCount || count > previousCount + 1 ||
-                    count == previousCount && previousIds != ids || historicalLoadFailed && count != previousCount)
+                    count == previousCount && previousIds != ids || count != previousCount && previousIds == ids ||
+                    historicalLoadFailed && count != previousCount)
+                val reloadHistory = previousIds == null || rebuildOlder
                 // Only the visible recent window is reactive. Older personalization
                 // data is loaded separately, in cancellable keyset batches.
                 if (reloadHistory) {
@@ -188,8 +190,6 @@ class HomeViewModel(
                     }
                     retainedEvents.clear()
                     history.forEach { retainedEvents[it.id] = it }
-                    previousIds = ids
-                    previousCount = count
                     lastEventStamps.clear()
                 }
                 val changed = if (reloadHistory) emptyList() else stamps.filter { lastEventStamps[it.id] != it }.map { it.id }
@@ -198,6 +198,9 @@ class HomeViewModel(
                 val pages = changed.chunked(900)
                 val rows = withContext(dataDispatcher) { pages.flatMap { listeningEventDao.getEventsByIds(it) } }
                 rows.forEach { retainedEvents[it.id] = it }
+                retainedEvents.keys.retainAll(ids)
+                previousIds = ids
+                previousCount = count
                 lastEventStamps.clear(); stamps.forEach { lastEventStamps[it.id] = it }
                 emit(withContext(workerDispatcher) { retainedEvents.values.sortedWith(compareByDescending<ListeningEventEntity> { it.timestamp }.thenByDescending { it.id }).take(300) })
                 // Count covers the whole database, not just the recent window.
@@ -586,6 +589,25 @@ class HomeViewModel(
             BackgroundWorkCoordinator.startupTask(StartupTask.RECENT_ARTISTS, StartupStatus.SKIPPED)
             return
         }
+        if (!preparingInitialHome && pendingCardPlays.isNotEmpty()) {
+            val pending = pendingCardPlays.toMap()
+            val cachedArtists = _mostListenedArtists.value
+            val newPlays = pending.filter { (session, track) -> session !in appliedCachedArtistSessions &&
+                (session to track.id) !in countedArtistPlays }
+            val (recent, artists) = withContext(workerDispatcher) {
+                val byId = rows.tracks.associateBy { it.id }
+                val seen = HomeRecommendationPolicy.Recordings()
+                val recent = (pending.values.toList().asReversed().asSequence() +
+                    events.asSequence().filter(UserTasteProfile::played).mapNotNull { byId[it.trackId] })
+                    .filter(seen::add).take(30).toList()
+                recent to addPendingArtistPlays(cachedArtists, newPlays.values)
+            }
+            _listeningHistoryCard.update { it.copy(tracks = recent, isLoaded = recent.isNotEmpty(), isLoading = false) }
+            if (_mostListenedArtists.value != artists) _mostListenedArtists.value = artists
+            appliedCachedArtistSessions.addAll(newPlays.keys)
+            // Full historical reconciliation is optional. A new play must never
+            // promote a 5,000-event ranking pass to the critical playback lane.
+        }
         val longTerm = personalizationHistory.first { it.ready }
         val artistIdentityRevision = ArtistPhotoRepository.identities.value
         val pending = pendingCardPlays.toMap()
@@ -594,13 +616,19 @@ class HomeViewModel(
         val cachedArtists = _mostListenedArtists.value
         val priority = when {
             preparingInitialHome -> BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI
-            pending.isNotEmpty() -> BackgroundWorkCoordinator.StartupPriority.CRITICAL
             else -> BackgroundWorkCoordinator.StartupPriority.DEFERRED
         }
         val (recent, artists, committed) = BackgroundWorkCoordinator.startup(priority, label = "Listening cards prepare") {
           withContext(workerDispatcher) {
-            val played = longTerm.events.filter(UserTasteProfile::played)
-            val recorded = played.mapTo(mutableSetOf()) { it.sessionId to it.trackId }
+            val played = ArrayList<ListeningEventEntity>()
+            val recorded = mutableSetOf<Pair<String, String>>()
+            longTerm.events.forEachIndexed { index, event ->
+                if (index % 128 == 0) yieldHomePreparation()
+                if (UserTasteProfile.played(event)) {
+                    played.add(event)
+                    recorded.add(event.sessionId to event.trackId)
+                }
+            }
             val uncommitted = pending.filter { (session, track) -> (session to track.id) !in recorded }
             val liveTracks = uncommitted.values.toList().asReversed()
             val metadata = rows.tracks
@@ -613,7 +641,7 @@ class HomeViewModel(
                 played.map { it.sessionId to it.trackId }
             val artists = if (keepCachedArtists) addPendingArtistPlays(cachedArtists,
                 pending.filterKeys { it !in appliedCachedArtistSessions }.values)
-            else rankListenedArtists(plays, tracks, immediate = pending.isNotEmpty())
+            else rankListenedArtists(plays, tracks)
             Triple(recentTracks, artists, recorded)
           }
         }
@@ -625,7 +653,7 @@ class HomeViewModel(
         // Essential data is prepared even when a tab transition is underway.
         // Its optional visual publication must not hold startup readiness back.
         listeningCardsReady.complete(Unit)
-        if (pending.isEmpty()) {
+        if (!preparingInitialHome) {
             homeScrolling.first { !it }
             BackgroundWorkCoordinator.awaitNavigationIdle()
         }
@@ -638,9 +666,9 @@ class HomeViewModel(
         if (_listeningHistoryCard.value.tracks != recent || _listeningHistoryCard.value.isLoading)
             _listeningHistoryCard.update { it.copy(tracks = recent, isLoaded = recent.isNotEmpty(), isLoading = false) }
         if (_mostListenedArtists.value != artists) _mostListenedArtists.value = artists
-        if (keepCachedArtists) appliedCachedArtistSessions.addAll(pending.keys)
-        else appliedCachedArtistSessions.clear()
+        appliedCachedArtistSessions.addAll(pending.keys)
         pendingCardPlays.entries.removeAll { (it.key to it.value.id) in committed }
+        if (!keepCachedArtists) appliedCachedArtistSessions.retainAll(pendingCardPlays.keys)
         BackgroundWorkCoordinator.startupTask(StartupTask.RECENT_HISTORY, StartupStatus.READY)
         BackgroundWorkCoordinator.startupTask(StartupTask.RECENT_ARTISTS, StartupStatus.READY)
         if (changed) savePreparedCards()
@@ -654,14 +682,14 @@ class HomeViewModel(
     private var artistPlayCounts: Map<String, Int> = emptyMap()
     private var lastArtistHistory: Triple<List<Pair<String, String>>, List<MusicTrack>, Long>? = null
     private var lastArtistRanking = emptyList<MostListenedArtist>()
-    private suspend fun rankListenedArtists(plays: List<Pair<String, String>>, tracks: List<MusicTrack>, immediate: Boolean = false) =
+    private suspend fun rankListenedArtists(plays: List<Pair<String, String>>, tracks: List<MusicTrack>) =
         withContext(workerDispatcher) {
             val identityRevision = ArtistPhotoRepository.identities.value
             val inputs = Triple(plays, tracks, identityRevision)
             if (lastArtistHistory == inputs) return@withContext lastArtistRanking
             if (rankedIdentityRevision != identityRevision) rankedArtistCredits = emptyMap()
             suspend fun checkpoint(index: Int) {
-                if (!immediate && index % 128 == 0) yieldHomePreparation()
+                if (index % 128 == 0) yieldHomePreparation()
             }
             val byId = tracks.associateBy { it.id }
             val credits = mutableMapOf<String, ArtistCredits>()

@@ -123,4 +123,41 @@ class LosslessPrebufferRegressionTest {
         assertNull(LosslessStreamPrebuffer.prepare(app, item("song.flac"), 20_000,
             { error("Capped profile must not read the player") }, { error("Capped profile must not reach Main") }))
     }
+    @Test fun optionalPreparationReleasesItsWorkerDuringNavigationWithoutRejectingTheFile() = runBlocking {
+        val coordinator = com.example.performance.BackgroundWorkCoordinator
+        coordinator.firstFrameRendered(); coordinator.cachedHomeRestored(); coordinator.homeContentReady()
+        coordinator.foreground(true); coordinator.frame(2, 1)
+        ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(16))
+        val navigation = CompletableDeferred<AutoCloseable>()
+        val reads = java.util.concurrent.atomic.AtomicInteger()
+        val bytes = javaClass.getResourceAsStream("/audio/unindexed-silence.flac")!!.use { it.readBytes() }
+        server.createContext("/paused.flac") { exchange ->
+            if (reads.incrementAndGet() == 1) navigation.complete(coordinator.navigationBusy())
+            exchange.sendResponseHeaders(200, 0)
+            exchange.responseBody.use { it.write(bytes) }; exchange.close()
+        }
+        val candidate = item("paused.flac")
+        val optional = async { LosslessStreamPrebuffer.prepare(app, candidate, 24_000,
+            { 6_000 }, { true }, automatic = true) }
+        var lease: AutoCloseable? = null
+        try {
+            lease = withTimeout(5_000) { navigation.await() }
+            // Required preparation is independent of optional idle admission and
+            // cannot be held behind a paused worker/cache lock.
+            val explicit = withTimeout(10_000) { LosslessStreamPrebuffer.prepare(app, item("song.flac"),
+                24_000, { 6_000 }, { true }) }
+            assertNotNull(explicit)
+            assertFalse(optional.isCompleted)
+            assertNull(LosslessDiagnostics.last(candidate.mediaId))
+            lease.close(); lease = null
+            coordinator.foreground(false)
+            ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(16))
+            val resumed = withTimeout(10_000) { optional.await() }
+            assertNotNull(resumed)
+            assertTrue(resumed!!.covers(6_000))
+        } finally {
+            lease?.close(); optional.cancelAndJoin(); coordinator.foreground(false)
+        }
+    }
+
 }
