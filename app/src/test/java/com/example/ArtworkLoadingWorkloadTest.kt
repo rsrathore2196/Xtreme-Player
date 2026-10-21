@@ -53,6 +53,9 @@ class ArtworkLoadingWorkloadTest {
     @Before fun setup() {
         Dispatchers.setMain(UnconfinedTestDispatcher())
         lookupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        // Robolectric's Android clock does not advance with real coroutine delays.
+        com.example.performance.BackgroundWorkCoordinator.interaction()
+        org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(300))
     }
     @After fun teardown() {
         runBlocking { lookupScope.coroutineContext[Job]!!.cancelAndJoin() }
@@ -312,6 +315,80 @@ class ArtworkLoadingWorkloadTest {
             lease.close(); lease = null
             assertTrue(withTimeout(3_000) { result.await() } is SuccessResult)
         } finally { lease?.close(); result.cancelAndJoin() }
+    }
+
+    @Test fun coldArtworkPausesDuringScrollAndResumesWithoutTheOptionalFifteenSecondGate() = runBlocking {
+        val coordinator = com.example.performance.BackgroundWorkCoordinator
+        val scrollOwner = Any()
+        coordinator.scrolling(scrollOwner, true)
+        val networkStarted = CompletableDeferred<Unit>()
+        val chain = Chain(request(), onNetwork = { networkStarted.complete(Unit) })
+        val result = async { ArtworkResolutionInterceptor { repository { match() } }.intercept(chain) }
+        try {
+            assertNull("A fling must not admit cold artwork", withTimeoutOrNull(2_000) { networkStarted.await() })
+            assertFalse(result.isCompleted)
+            assertTrue(chain.calls.none { it.second })
+            coordinator.scrolling(scrollOwner, false)
+            org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(300))
+            assertTrue(withTimeout(3_000) { result.await() } is SuccessResult)
+        } finally { coordinator.scrolling(scrollOwner, false); result.cancelAndJoin() }
+    }
+
+    @Test fun sufficientMemoryArtworkStillDisplaysDuringAScroll() = runBlocking {
+        val coordinator = com.example.performance.BackgroundWorkCoordinator
+        val scrollOwner = Any()
+        coordinator.scrolling(scrollOwner, true)
+        try {
+            val chain = Chain(request(), cached = setOf(provider))
+            val result = withTimeout(1_000) {
+                ArtworkResolutionInterceptor { error("Memory hit needs no repository") }.intercept(chain)
+            }
+            assertTrue(result is SuccessResult)
+            assertEquals(1, chain.calls.size)
+            assertTrue(chain.calls.none { it.second })
+        } finally { coordinator.scrolling(scrollOwner, false) }
+    }
+
+    @Test fun scrollingBeginningDuringASlotWaitReleasesResourcesUntilIdle() = runBlocking {
+        val coordinator = com.example.performance.BackgroundWorkCoordinator
+        val scrollOwner = Any()
+        val slots = ArtworkResolutionInterceptor::class.java.getDeclaredField("coldArtworkRequests")
+            .apply { isAccessible = true }.get(null) as kotlinx.coroutines.sync.Semaphore
+        slots.acquire(); slots.acquire()
+        var holdingSlots = true
+        val chain = Chain(request())
+        val result = async { ArtworkResolutionInterceptor { repository { match() } }.intercept(chain) }
+        try {
+            delay(100)
+            coordinator.scrolling(scrollOwner, true)
+            slots.release(); slots.release(); holdingSlots = false
+            delay(100)
+            assertFalse(result.isCompleted)
+            assertTrue(chain.calls.none { it.second })
+            assertEquals("Idle wait must release both resource permits", 2, slots.availablePermits)
+            coordinator.scrolling(scrollOwner, false)
+            org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(300))
+            assertTrue(withTimeout(3_000) { result.await() } is SuccessResult)
+        } finally {
+            if (holdingSlots) { slots.release(); slots.release() }
+            coordinator.scrolling(scrollOwner, false)
+            result.cancelAndJoin()
+        }
+    }
+
+    @Test fun explicitStartupArtworkKeepsItsBoundedPreparationPath() = runBlocking {
+        val coordinator = com.example.performance.BackgroundWorkCoordinator
+        val scrollOwner = Any()
+        coordinator.scrolling(scrollOwner, true)
+        try {
+            val initial = request().newBuilder().setParameter(ARTWORK_METADATA_PARAMETER,
+                ArtworkRequestMetadata(item, provider, 600, startupPreparation = true), null).build()
+            val chain = Chain(initial)
+            assertTrue(withTimeout(3_000) {
+                ArtworkResolutionInterceptor { repository { match() } }.intercept(chain)
+            } is SuccessResult)
+            assertTrue(chain.calls.any { it.second })
+        } finally { coordinator.scrolling(scrollOwner, false) }
     }
 
 }

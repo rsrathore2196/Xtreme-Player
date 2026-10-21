@@ -98,17 +98,20 @@ class ArtworkResolutionInterceptor internal constructor(
         }
     }
 
-    /** Recheck after BOTH resource waits; never wait for navigation holding a slot/URL lock. */
+    /** Recheck after BOTH resource waits; never wait for interaction holding a slot/URL lock. */
     private suspend fun <T> admittedArtwork(url: String, startup: Boolean = false, block: suspend () -> T): T {
         val coordinator = com.example.performance.BackgroundWorkCoordinator
         val lock = artworkFlights[(url.hashCode() and Int.MAX_VALUE) % artworkFlights.size]
         while (true) {
-            if (!startup) coordinator.awaitNavigationIdle()
+            // Visible cache misses need the short gesture-idle gate, not optional
+            // enrichment's fifteen-second admission. Explicit startup prefetch is
+            // already bounded by the initial presentation's own artwork budget.
+            if (!startup) coordinator.yieldToInteraction(awaitFrameQuiet = false)
             coldArtworkRequests.acquire()
             try {
                 lock.lock()
                 try {
-                    if (startup || coordinator.navigationIsIdle())
+                    if (startup || coordinator.isInteractionIdle(awaitFrameQuiet = false))
                         return coordinator.finishBoundedBatch { coordinator.traceWork("Artwork decode or fetch", block) }
                 } finally { lock.unlock() }
             } finally { coldArtworkRequests.release() }
@@ -166,8 +169,8 @@ class ArtworkResolutionInterceptor internal constructor(
             return (bitmap?.width ?: result.drawable.intrinsicWidth) >= requiredWidth &&
                 (bitmap?.height ?: result.drawable.intrinsicHeight) >= requiredHeight
         }
-        // Instant memory hits need no navigation gate. Disk decoding and cold
-        // work wait until an active pager/player transition has completed.
+        // Instant memory hits need no interaction gate. Disk decoding and cold
+        // work wait until scrolling, dragging and navigation have settled.
         if (request.data is String && request.data.toString().startsWith("http")) {
             val memory = chain.proceed(request.newBuilder().diskCachePolicy(CachePolicy.DISABLED)
                 .networkCachePolicy(CachePolicy.DISABLED).build())
