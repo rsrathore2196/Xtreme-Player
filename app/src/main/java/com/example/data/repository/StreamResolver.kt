@@ -60,7 +60,7 @@ internal class StreamResolver(
 ) {
     private data class CachedStream(val track: MusicTrack, val expiresAt: Long)
     private data class StreamKey(val id: String, val quality: AudioQuality, val recommendation: Boolean, val cap: Int,
-        val recording: String, val policy: String?)
+        val recording: String, val policy: String?, val selectedArchiveUrl: String? = null)
     private val archiveAttempts = LinkedHashMap<String, Long>()
     suspend fun hasRecentLosslessAttempt(track: MusicTrack): Boolean = withContext(AppDispatchers.CpuBounded) {
         val key = RecordingIdentity.key(track)
@@ -88,7 +88,12 @@ internal class StreamResolver(
         val deadline = jioDeadlineMs.takeIf { it > 0L } ?: (android.os.SystemClock.elapsedRealtime() + 6_000L +
             if (quality == AudioQuality.HI_RES_LOSSLESS && maxBitrateBps == Int.MAX_VALUE) LOSSLESS_LOOKUP_TIMEOUT_MS else 0L)
         val recordingKey = withContext(AppDispatchers.CpuBounded) { RecordingIdentity.key(track) }
-        val key = StreamKey(track.id, quality, track.recommendationOnly, maxBitrateBps, recordingKey, sourcePolicy?.key)
+        val selectedArchive = archiveTransport(track.audioUrl) &&
+            (track.id.startsWith("ia_") || track.source.equals("INTERNET_ARCHIVE", true))
+        // A catalog identity can survive a verified cross-provider match. An
+        // explicitly selected Archive file must not hit that identity's AAC cache.
+        val key = StreamKey(track.id, quality, track.recommendationOnly, maxBitrateBps, recordingKey, sourcePolicy?.key,
+            track.audioUrl.takeIf { selectedArchive })
         fun capped(candidate: MusicTrack): MusicTrack {
             val host = uriHost(candidate.audioUrl).orEmpty()
             if (host != "saavncdn.com" && !host.endsWith(".saavncdn.com")) return candidate
@@ -123,7 +128,8 @@ internal class StreamResolver(
         else {
             val cached = synchronized(cache) { cache[key]?.takeIf { it.expiresAt > System.currentTimeMillis() }?.track }
             if (cached != null && providerAllowed(cached) && cached.audioUrl != failedUrl &&
-                cached.audioUrl !in rejectedUrls) {
+                cached.audioUrl !in rejectedUrls && (!selectedArchive ||
+                    cached.audioUrl == track.audioUrl && cached.isLossless)) {
                 if (!YouTubeAudioStreamService.isYouTubeAudio(cached.id, cached.audioUrl))
                     return@withContext withStream(track, capped(cached))
                 // Reuse the verified recording mapping; only refresh its expiring
@@ -261,11 +267,12 @@ internal class StreamResolver(
                 if (remaining == 0L) return null
                 return attempt(remaining) { jioExact() ?: standardFallback() }
             }
-            if (sourcePolicy?.maximum == true && track.id.startsWith("ia_") && archiveTransport(track.audioUrl)) {
+            if (sourcePolicy?.maximum == true && selectedArchive) {
                 val direct = if (sourcePolicy.allowsArchive) attempt(12_000L) {
                     verifyArchive(track)
                 } else null
-                direct?.takeIf { usable(it) && supportsLossless(it) } ?: boundedJio() ?: youtubeFallback()
+                direct?.takeIf { it.audioUrl == track.audioUrl && usable(it) && supportsLossless(it) }
+                    ?: boundedJio() ?: youtubeFallback()
             } else if (sourcePolicy != null && !sourcePolicy.maximum) {
                 if (sourcePolicy.preferOpus) {
                     val opus = attempt(18_000L) { (youtubeExact(track) ?: youtubeFallback())?.takeIf(::providerAllowed) }

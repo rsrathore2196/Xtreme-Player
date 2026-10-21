@@ -128,10 +128,11 @@ class MusicRepository private constructor(
     internal suspend fun verifySearchPlayback(track: MusicTrack, policy: com.example.playback.PlaybackSourcePolicy): Boolean =
         withContext(AppDispatchers.Io) {
             if (policy.maximum || !track.id.startsWith("yt_")) return@withContext true
-            val key = "${track.id}:${policy.key}"
+            val identity = withContext(AppDispatchers.CpuBounded) { RecordingIdentity.key(track) }
+            val key = "${track.id}:$identity:${policy.key}"
             searchAvailability.get(key)?.takeIf { it.second > android.os.SystemClock.elapsedRealtime() }
                 ?.let { return@withContext it.first }
-            com.example.recommendation.DiscoveryRequestCoordinator.shared("search-playable:${track.id}:${policy.key}",
+            com.example.recommendation.DiscoveryRequestCoordinator.shared("search-playable:$key",
                 essential = true, network = false) {
                 searchVerificationSlots.acquire()
                 try {
@@ -162,28 +163,43 @@ class MusicRepository private constructor(
         val monitor = com.example.playback.NetworkQualityMonitor.getInstance(app)
         if (!policy.allowsArchive || monitor.sourcePolicySnapshot().key != policy.key)
             return@withContext InternetArchiveApiService.LosslessSearchPage()
-        var result = InternetArchiveApiService.searchLosslessPage(query, page, pageSize = 4, playableOnly = true)
-        // Track titles are often absent from a collection's searchable title.
-        // Reuse catalog recording/album evidence and the shared paginated lookup.
-        if (page == 1 && result.tracks.isEmpty()) {
-            for (recording in recordings.take(2)) {
-                val matched = findLosslessUpgrade(recording)
-                if (matched != null) {
-                    result = result.copy(tracks = listOf(matched))
-                    break
+        var result = InternetArchiveApiService.LosslessSearchPage(isSuccessful = false, exhaustive = false)
+        val playable = mutableListOf<MusicTrack>()
+        val complete = kotlinx.coroutines.withTimeoutOrNull(40_000L) {
+            result = InternetArchiveApiService.searchLosslessPage(query, page, pageSize = 4, playableOnly = true)
+            // Collection titles can omit song names. Reuse bounded recording/album
+            // discovery only for a genuinely empty first page, never after downgrade.
+            if (page == 1 && result.tracks.isEmpty()) {
+                kotlinx.coroutines.withTimeoutOrNull(5_000L) {
+                    for (recording in recordings.take(2)) {
+                        if (monitor.sourcePolicySnapshot().key != policy.key) break
+                        val matched = findLosslessUpgrade(recording)
+                        if (matched != null) {
+                            result = result.copy(tracks = listOf(matched))
+                            break
+                        }
+                    }
                 }
             }
+            var incomplete = !result.isSuccessful
+            for (track in result.tracks.take(4)) {
+                if (monitor.sourcePolicySnapshot().key != policy.key) break
+                val item = androidx.media3.common.MediaItem.Builder().setMediaId(track.id).setUri(track.audioUrl).build()
+                val prepared = kotlinx.coroutines.withTimeoutOrNull(6_000L) {
+                    com.example.playback.LosslessStreamPrebuffer.prepare(app, item, track.durationMs,
+                        currentPosition = { 0L }, stillCurrent = { monitor.sourcePolicySnapshot().key == policy.key })
+                }
+                if (prepared != null) playable.add(track.copy(qualityBadge = prepared.audio.badge,
+                    bitrateKbps = prepared.audio.bitrateKbps)) else incomplete = true
+            }
+            if (incomplete) result = result.copy(isSuccessful = false, exhaustive = false)
+            true
         }
-        val playable = mutableListOf<MusicTrack>()
-        for (track in result.tracks.take(4)) {
-            if (monitor.sourcePolicySnapshot().key != policy.key) break
-            val item = androidx.media3.common.MediaItem.Builder().setMediaId(track.id).setUri(track.audioUrl).build()
-            val prepared = com.example.playback.LosslessStreamPrebuffer.prepare(app, item, track.durationMs,
-                currentPosition = { 0L }, stillCurrent = { monitor.sourcePolicy.value.key == policy.key })
-            if (prepared != null) playable.add(track.copy(qualityBadge = prepared.audio.badge,
-                bitrateKbps = prepared.audio.bitrateKbps))
-        }
-        result.copy(tracks = playable)
+        // A slow/unavailable later file cannot erase already validated files, or
+        // poison the provider cache with a falsely exhaustive empty result.
+        if (complete == null) result = result.copy(isSuccessful = false, exhaustive = false,
+            failure = com.example.playback.LosslessDiagnostics.Reason.NETWORK_TIMEOUT)
+        result.copy(tracks = playable.toList())
     }
     private val chartClient by lazy { OkHttpClient.Builder().connectTimeout(8, TimeUnit.SECONDS).readTimeout(10, TimeUnit.SECONDS).build() }
 

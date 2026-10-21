@@ -22,7 +22,7 @@ import kotlin.coroutines.coroutineContext
 
 data class RoutedSearchResult(val tracks: List<MusicTrack>, val isLossless: Boolean)
 
-/** One metadata-only search policy, independent of playback quality. Archive is upgrade-only. */
+/** JioSaavn/YouTube catalog aggregation. The browser adds policy-gated, verified Archive files independently. */
 object AudioRoutingService {
     private val requests = Semaphore(2)
     data class SearchPage(
@@ -61,17 +61,23 @@ object AudioRoutingService {
     }
 
     private fun providerRank(track: MusicTrack): Int = when {
+        isArchiveResult(track) -> 2
         track.id.startsWith("online_") -> 0
         track.id.startsWith("yt_") -> 1
         else -> 2
     }
+
+    internal fun isArchiveResult(track: MusicTrack): Boolean = track.id.startsWith("ia_") ||
+        track.source.equals("INTERNET_ARCHIVE", true) || android.net.Uri.parse(track.audioUrl).host.orEmpty().let {
+            it == "archive.org" || it.endsWith(".archive.org")
+        }
 
     /** Replace an equivalent upload at its existing position; never replace a distinct song. */
     fun mergeTracks(tracks: List<MusicTrack>): List<MusicTrack> {
         val result = mutableListOf<MusicTrack>()
         val identities = mutableListOf<RecordingIdentity.Signature>()
         for (track in tracks) {
-            if (track.id.startsWith("ia_") || track.source.equals("INTERNET_ARCHIVE", true) ||
+            if (isArchiveResult(track) ||
                 track.id.startsWith("xtreme_") || track.audioUrl.contains("soundhelix", true)) continue
             val identity = RecordingIdentity.signature(track)
             val existing = result.indices.firstOrNull { result[it].id == track.id ||
@@ -84,7 +90,11 @@ object AudioRoutingService {
         return result
     }
 
-    fun rankTracks(query: String, tracks: List<MusicTrack>): List<MusicTrack> = mergeTracks(tracks)
+    fun rankTracks(query: String, tracks: List<MusicTrack>, includeArchive: Boolean = false,
+        deduplicateRecordings: Boolean = true): List<MusicTrack> =
+        (if (deduplicateRecordings) mergeTracks(tracks) +
+            if (includeArchive) tracks.filter(::isArchiveResult).distinctBy { it.id } else emptyList()
+        else tracks.filter { includeArchive || !isArchiveResult(it) }.distinctBy { it.id })
         .mapNotNull { track ->
             val relevance = maxOf(CatalogNames.score(query, track.title, listOf(track.artist, track.album)),
                 CatalogNames.score(StreamResolver.extractCleanTitle(query),

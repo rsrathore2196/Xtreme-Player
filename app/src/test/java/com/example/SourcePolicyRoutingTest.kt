@@ -120,6 +120,48 @@ class SourcePolicyRoutingTest {
         assertEquals(archive.id, result.id); assertEquals(jio.audioUrl, result.audioUrl); assertFalse(result.isLossless)
     }
 
+    @Test fun temporaryArchiveFallbackCacheCannotOverrideTheNextExplicitFileSelection() = runBlocking {
+        var available = false
+        var verifications = 0
+        val resolver = StreamResolver(searchStandard = { _, _ -> listOf(jio) }, fetchById = { _, _ -> jio },
+            supportsLossless = { true }, verifyArchive = { requested ->
+                verifications++; requested.takeIf { available }
+            })
+        val policy = PlaybackSourcePolicy(AudioQualityCeiling.MAX)
+        val fallback = resolver.resolve(archive, policy.ceiling.audioQuality, sourcePolicy = policy)
+        assertEquals(jio.audioUrl, fallback.audioUrl)
+        available = true
+        val direct = resolver.resolve(archive, policy.ceiling.audioQuality, sourcePolicy = policy)
+        assertEquals(archive.audioUrl, direct.audioUrl)
+        assertEquals(archive.id, direct.id)
+        assertEquals(archive.source, direct.source)
+        assertTrue(direct.isLossless)
+        assertEquals(2, verifications)
+    }
+
+    @Test fun selectedArchiveTransportWithACatalogIdBypassesCachedAac() = runBlocking {
+        var verifications = 0
+        val resolver = StreamResolver(searchStandard = { _, _ -> listOf(jio) }, fetchById = { _, _ -> jio },
+            supportsLossless = { true }, verifyArchive = { verifications++; it })
+        val policy = PlaybackSourcePolicy(AudioQualityCeiling.MAX)
+        assertEquals(jio.audioUrl, resolver.resolve(jio, policy.ceiling.audioQuality, sourcePolicy = policy).audioUrl)
+        val selected = archive.copy(id = jio.id)
+        val direct = resolver.resolve(selected, policy.ceiling.audioQuality, sourcePolicy = policy)
+        assertEquals(selected.audioUrl, direct.audioUrl)
+        assertEquals(selected.id, direct.id)
+        assertEquals(selected.coverUrl, direct.coverUrl)
+        assertTrue(direct.isLossless)
+        assertEquals(1, verifications)
+    }
+
+    @Test fun aDifferentArchiveFileCannotReplaceTheExplicitlySelectedFile() = runBlocking {
+        val other = archive.copy(audioUrl = "https://archive.org/download/other/song.flac")
+        val result = resolver(verifiedArchive = other).resolve(archive, AudioQuality.HI_RES_LOSSLESS,
+            sourcePolicy = PlaybackSourcePolicy(AudioQualityCeiling.MAX))
+        assertEquals(jio.audioUrl, result.audioUrl)
+        assertFalse(result.isLossless)
+    }
+
     @Test fun maximumKeepsTheSelectedYoutubeVideoAndDoesNotApplyOpusPreference() = runBlocking {
         val aac = opus.copy(qualityBadge = "AAC • 128 kbps", bitrateKbps = 128)
         for (enhancer in listOf(false, true)) {
