@@ -366,41 +366,11 @@ fun MusicPlaybackPage(
 
                 HorizontalDivider(color = dividerColor, thickness = 1.dp, modifier = Modifier.padding(vertical = 12.dp))
 
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(end = 12.dp)
-                    ) {
-                        Text(
-                            text = "16-bit PCM Hardware Output",
-                            fontSize = 13.5.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = textPrimary
-                        )
-                        Text(
-                            text = "Direct hardware rendering bypass for studio DAC",
-                            fontSize = 11.sp,
-                            color = textMuted
-                        )
-                    }
-                    Surface(
-                        shape = RoundedCornerShape(6.dp),
-                        color = accentColor.copy(alpha = 0.15f)
-                    ) {
-                        Text(
-                            text = "ACTIVE",
-                            fontSize = 9.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = accentColor,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
-                        )
-                    }
-                }
+                OutputPrecisionSetting(
+                    selected = playerExperience.outputPrecision,
+                    skipSilence = playerExperience.skipSilence,
+                    onSelect = { com.example.data.local.OtherSettingsPreferences.setOutputPrecision(settingsContext, it) }
+                )
 
                 HorizontalDivider(color = dividerColor, thickness = 1.dp, modifier = Modifier.padding(vertical = 12.dp))
 

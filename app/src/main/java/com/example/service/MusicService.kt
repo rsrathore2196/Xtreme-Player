@@ -67,6 +67,7 @@ class MusicService : MediaLibraryService() {
     private var volumeObserver: android.database.ContentObserver? = null
     private var volumeJob: Job? = null
     private var crossfade: com.example.playback.CrossfadeController? = null
+    private val outputPrecision = java.util.concurrent.atomic.AtomicReference(com.example.playback.OutputPrecision.PCM_16)
     private var verifiedSignalUri: Uri? = null
     private var verifiedSignalId: String? = null
     private var verifiedSignalFormat: Format? = null
@@ -473,18 +474,22 @@ class MusicService : MediaLibraryService() {
             }
         }
 
+        // Memory-backed preferences are preloaded by the app; no disk access here.
+        outputPrecision.set(com.example.data.local.OtherSettingsPreferences.playerExperienceSettings(this).outputPrecision)
         // 3. Audio-only Renderers Factory: suppresses video codecs and uses software-prioritized selector
         fun audioRenderersFactory(reportSignalPath: Boolean) = object : DefaultRenderersFactory(this) {
             override fun buildAudioSink(context: android.content.Context, enableFloatOutput: Boolean,
                 enableAudioTrackPlaybackParams: Boolean): androidx.media3.exoplayer.audio.AudioSink =
                 com.example.playback.BitPerfectAudioSink(context, reportSignalPath = reportSignalPath,
-                    allowDirect = { reportSignalPath && crossfade?.enabled != true })
+                    allowDirect = { reportSignalPath && crossfade?.enabled != true },
+                    outputPrecision = { outputPrecision.get() })
             override fun buildAudioRenderers(context: android.content.Context, extensionRendererMode: Int,
                 mediaCodecSelector: MediaCodecSelector, enableDecoderFallback: Boolean,
                 audioSink: androidx.media3.exoplayer.audio.AudioSink, eventHandler: android.os.Handler,
                 eventListener: androidx.media3.exoplayer.audio.AudioRendererEventListener, out: java.util.ArrayList<Renderer>) {
                 // Request native integer decoding only for an exact supported USB profile.
-                // All other routes retain Media3's high-precision float preference.
+                // The sink converts the decoder's PCM to the selected output
+                // precision, allowing live changes without recreating the decoder.
                 out.add(object : androidx.media3.exoplayer.audio.MediaCodecAudioRenderer(context, codecAdapterFactory,
                     mediaCodecSelector, enableDecoderFallback, eventHandler, eventListener, audioSink) {
                     override fun getMediaFormat(format: Format, codecMimeType: String, codecMaxInputSize: Int,
@@ -567,8 +572,10 @@ class MusicService : MediaLibraryService() {
             })
         serviceScope.launch {
             com.example.data.local.OtherSettingsPreferences.observePlayerExperience(this@MusicService).collect {
-                if (com.example.playback.PsychoacousticAudioProcessor.spatialEnabled != it.spatialAudio ||
+                if (outputPrecision.get() != it.outputPrecision ||
+                    com.example.playback.PsychoacousticAudioProcessor.spatialEnabled != it.spatialAudio ||
                     player.skipSilenceEnabled != it.skipSilence) crossfade?.cancelTransition()
+                outputPrecision.set(it.outputPrecision)
                 com.example.playback.PsychoacousticAudioProcessor.spatialEnabled = it.spatialAudio
                 player.skipSilenceEnabled = it.skipSilence
                 crossfade?.setEnabled(it.crossfade)

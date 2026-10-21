@@ -115,6 +115,29 @@ class PlayerExperienceSettingsTest {
             reopened.awaitPendingWrites()
         }
     }
+    @Test fun outputPrecisionPersistsAcrossRecreationAndDoesNotChangeDspOrSilenceSettings() = runBlocking {
+        ReactiveSettingsRepository(app).use { repository ->
+            repository.preload()
+            val context = client(repository)
+            assertEquals(com.example.playback.OutputPrecision.PCM_16,
+                OtherSettingsPreferences.playerExperienceSettings(context).outputPrecision)
+            OtherSettingsPreferences.setOutputPrecision(context, com.example.playback.OutputPrecision.FLOAT_32)
+            val observed = withTimeout(2_000) { OtherSettingsPreferences.observePlayerExperience(context).first() }
+            assertEquals(com.example.playback.OutputPrecision.FLOAT_32, observed.outputPrecision)
+            assertFalse(observed.spatialAudio); assertFalse(observed.skipSilence); assertFalse(observed.crossfade)
+            repository.awaitPendingWrites()
+        }
+        ReactiveSettingsRepository(app).use { reopened ->
+            reopened.preload()
+            val context = client(reopened)
+            assertEquals(com.example.playback.OutputPrecision.FLOAT_32,
+                OtherSettingsPreferences.playerExperienceSettings(context).outputPrecision)
+            OtherSettingsPreferences.setOutputPrecision(context, com.example.playback.OutputPrecision.PCM_16)
+            reopened.awaitPendingWrites()
+            assertEquals(com.example.playback.OutputPrecision.PCM_16,
+                OtherSettingsPreferences.playerExperienceSettings(context).outputPrecision)
+        }
+    }
     @Test fun lyricsAwakeAndAddonConfigurationSurviveRecreationWithoutEnablingByDefault() = runBlocking {
         ReactiveSettingsRepository(app).use { repository ->
             repository.preload()

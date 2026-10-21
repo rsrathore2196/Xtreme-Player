@@ -511,7 +511,7 @@ private fun ThemesAppUiOverview(
                             color = appColors.textPrimary
                         )
                         Text(
-                            text = "BitChord-inspired AGSL lens distortion & backdrop blur on Mini Player and bottom bar. Toggle off for low-end hardware.",
+                            text = "Dynamic AGSL lens distortion & backdrop blur on Mini Player and bottom bar. Toggle off for low-end hardware.",
                             fontSize = 11.sp,
                             color = appColors.textMuted
                         )

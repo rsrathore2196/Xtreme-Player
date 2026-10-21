@@ -32,7 +32,8 @@ data class PlayerExperienceSettings(
     val highContrastTypography: Boolean = false,
     val crossfade: Boolean = false,
     val spatialAudio: Boolean = false,
-    val skipSilence: Boolean = false
+    val skipSilence: Boolean = false,
+    val outputPrecision: com.example.playback.OutputPrecision = com.example.playback.OutputPrecision.PCM_16
 )
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
@@ -97,6 +98,7 @@ object OtherSettingsPreferences {
     private const val KEY_CROSSFADE = "playback_crossfade_enabled"
     private const val KEY_SPATIAL_AUDIO = "playback_spatial_audio"
     private const val KEY_SKIP_SILENCE = "playback_skip_silence"
+    private const val KEY_OUTPUT_PRECISION = "playback_output_precision"
     private const val KEY_KEEP_LYRICS_AWAKE = "keep_lyrics_screen_awake"
     private const val KEY_ADDON_ENABLED = "streaming_addon_enabled"
     private const val KEY_ADDON_URL = "streaming_addon_url"
@@ -130,7 +132,8 @@ object OtherSettingsPreferences {
     fun playerExperienceSettings(context: Context): PlayerExperienceSettings = getPrefs(context).let {
         PlayerExperienceSettings(it.getBoolean(KEY_ALBUM_GLOW, true),
             it.getBoolean(KEY_HIGH_CONTRAST, false), it.getBoolean(KEY_CROSSFADE, false),
-            it.getBoolean(KEY_SPATIAL_AUDIO, false), it.getBoolean(KEY_SKIP_SILENCE, false))
+            it.getBoolean(KEY_SPATIAL_AUDIO, false), it.getBoolean(KEY_SKIP_SILENCE, false),
+            com.example.playback.OutputPrecision.fromStored(it.getString(KEY_OUTPUT_PRECISION, null)))
     }
 
     /** Reuse the preloaded memory preferences and ordered IO persistence, including restores. */
@@ -138,7 +141,7 @@ object OtherSettingsPreferences {
         val prefs = getPrefs(context.applicationContext)
         val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
             if (key == null || key == KEY_ALBUM_GLOW || key == KEY_HIGH_CONTRAST || key == KEY_CROSSFADE ||
-                key == KEY_SPATIAL_AUDIO || key == KEY_SKIP_SILENCE) trySend(Unit)
+                key == KEY_SPATIAL_AUDIO || key == KEY_SKIP_SILENCE || key == KEY_OUTPUT_PRECISION) trySend(Unit)
         }
         prefs.registerOnSharedPreferenceChangeListener(listener)
         trySend(Unit)
@@ -160,6 +163,9 @@ object OtherSettingsPreferences {
     }
     fun setSkipSilence(context: Context, enabled: Boolean) {
         getPrefs(context).edit().putBoolean(KEY_SKIP_SILENCE, enabled).apply()
+    }
+    fun setOutputPrecision(context: Context, precision: com.example.playback.OutputPrecision) {
+        getPrefs(context).edit().putString(KEY_OUTPUT_PRECISION, precision.name).apply()
     }
 
     private fun getPrefs(context: Context): SharedPreferences {

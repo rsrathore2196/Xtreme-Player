@@ -151,7 +151,8 @@ class SpatialAndSilencePlaybackTest {
     @Test fun togglesDrainPartialWritesAndRestoreFloatWithoutReplacingTheTrackOrLosingPcm() {
         val original = SinkProbe()
         val created = mutableListOf<Pair<Boolean, SinkProbe>>()
-        val sink = BitPerfectAudioSink(app, original.sink) { skip, _ ->
+        val sink = BitPerfectAudioSink(app, original.sink,
+            outputPrecision = { OutputPrecision.FLOAT_32 }, floatRouteSupported = { true }) { skip, _ ->
             SinkProbe().also { created.add(skip to it) }.sink
         }
         sink.configure(pcm(), 0, null); sink.setVolume(.75f); sink.play()
@@ -179,7 +180,7 @@ class SpatialAndSilencePlaybackTest {
         sink.release()
     }
 
-    @Test fun actualMedia3SinkUsesItsSilenceProcessingPathForFloatInputAndRestoresFloatWhenOff() {
+    @Test fun actualMedia3SinkUsesSilenceProcessingAndRestoresDecoderFloatSupportWhenOff() {
         val sink = BitPerfectAudioSink(app, allowDirect = { false })
         assertEquals(AudioSink.SINK_FORMAT_SUPPORTED_DIRECTLY, sink.getFormatSupport(pcm()))
         sink.setSkipSilenceEnabled(true)
