@@ -21,8 +21,8 @@ android {
     applicationId = "com.aistudio.xtremeplayer.vkmz"
     minSdk = 24
     targetSdk = 36
-    versionCode = 9
-    versionName = "1.9.0"
+    versionCode = 10
+    versionName = "2.0"
 
     // Optional authenticated lyrics routes; public providers work without these values.
     for (keyName in listOf("PAXSENIX_API_KEY", "MUSIXMATCH_API_KEY")) {
@@ -145,6 +145,7 @@ dependencies {
   implementation(libs.coil.compose)
   implementation(libs.media3.exoplayer)
   implementation(libs.media3.exoplayer.hls)
+  implementation(libs.media3.exoplayer.dash)
   implementation(libs.media3.session)
   implementation(libs.media3.ui)
   implementation(libs.media3.common)

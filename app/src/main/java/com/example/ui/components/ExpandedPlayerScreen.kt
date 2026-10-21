@@ -293,6 +293,10 @@ fun ExpandedPlayerScreen(
     var isSleepTimerOpen by remember { mutableStateOf(false) }
     var isFlipped by remember(track.id) { mutableStateOf(false) }
     var showLyrics by remember(track.id) { mutableStateOf(false) }
+    val integrationsFlow = remember(context) { com.example.data.local.OtherSettingsPreferences.observePlaybackIntegrations(context) }
+    val integrations by integrationsFlow.collectAsStateWithLifecycle(
+        initialValue = com.example.data.local.OtherSettingsPreferences.playbackIntegrations(context))
+    KeepLyricsScreenAwake(showLyrics && isScreenVisible, integrations.keepLyricsAwake)
     var maximizeLyrics by remember(track.id) { mutableStateOf(false) }
     val lyricsExpanded = showLyrics && maximizeLyrics
     val lyricsExpansion = animateFloatAsState(

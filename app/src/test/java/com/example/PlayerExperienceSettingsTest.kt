@@ -89,4 +89,54 @@ class PlayerExperienceSettingsTest {
             }
         }
     }
+
+    @Test fun spatialAndSilenceAreOffByDefaultAndPersistIndependently() = runBlocking {
+        ReactiveSettingsRepository(app).use { repository ->
+            repository.preload()
+            val context = client(repository)
+            assertFalse(OtherSettingsPreferences.playerExperienceSettings(context).spatialAudio)
+            assertFalse(OtherSettingsPreferences.playerExperienceSettings(context).skipSilence)
+            OtherSettingsPreferences.setSpatialAudio(context, true)
+            assertTrue(OtherSettingsPreferences.playerExperienceSettings(context).spatialAudio)
+            assertFalse(OtherSettingsPreferences.playerExperienceSettings(context).skipSilence)
+            OtherSettingsPreferences.setSkipSilence(context, true)
+            val observed = withTimeout(2_000) { OtherSettingsPreferences.observePlayerExperience(context).first() }
+            assertTrue(observed.spatialAudio); assertTrue(observed.skipSilence)
+            assertFalse(observed.crossfade)
+            repository.awaitPendingWrites()
+        }
+        ReactiveSettingsRepository(app).use { reopened ->
+            reopened.preload()
+            val context = client(reopened)
+            assertTrue(OtherSettingsPreferences.playerExperienceSettings(context).spatialAudio)
+            assertTrue(OtherSettingsPreferences.playerExperienceSettings(context).skipSilence)
+            OtherSettingsPreferences.setSpatialAudio(context, false)
+            assertTrue(OtherSettingsPreferences.playerExperienceSettings(context).skipSilence)
+            reopened.awaitPendingWrites()
+        }
+    }
+    @Test fun lyricsAwakeAndAddonConfigurationSurviveRecreationWithoutEnablingByDefault() = runBlocking {
+        ReactiveSettingsRepository(app).use { repository ->
+            repository.preload()
+            val context = client(repository)
+            val defaults = OtherSettingsPreferences.playbackIntegrations(context)
+            assertFalse(defaults.keepLyricsAwake); assertFalse(defaults.addonEnabled)
+            OtherSettingsPreferences.saveStreamingAddon(context, "https://personal.example/addon", "Personal")
+            assertFalse(OtherSettingsPreferences.playbackIntegrations(context).addonEnabled)
+            OtherSettingsPreferences.setKeepLyricsAwake(context, true)
+            OtherSettingsPreferences.setStreamingAddonEnabled(context, true)
+            repository.awaitPendingWrites()
+        }
+        ReactiveSettingsRepository(app).use { reopened ->
+            reopened.preload()
+            val context = client(reopened)
+            val restored = OtherSettingsPreferences.playbackIntegrations(context)
+            assertTrue(restored.keepLyricsAwake); assertTrue(restored.addonEnabled)
+            assertEquals("Personal", restored.addonName)
+            OtherSettingsPreferences.saveStreamingAddon(context, "", "")
+            assertFalse(OtherSettingsPreferences.playbackIntegrations(context).addonEnabled)
+            assertTrue(OtherSettingsPreferences.playbackIntegrations(context).keepLyricsAwake)
+            reopened.awaitPendingWrites()
+        }
+    }
 }

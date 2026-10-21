@@ -108,6 +108,9 @@ internal class StreamResolver(
             (!track.id.startsWith("online_") || forceRefresh || preferYouTube)
         fun providerAllowed(candidate: MusicTrack): Boolean {
             if (!isValidStreamUrl(candidate.audioUrl)) return false
+            // Custom transports are admitted only by the opt-in add-on resolver.
+            // A saved URL must not bypass a subsequently disabled add-on.
+            if (candidate.source.startsWith("Streaming Addon:")) return false
             if (sourcePolicy == null || sourcePolicy.maximum) return true
             if (archiveTransport(candidate.audioUrl)) return false
             if (YouTubeAudioStreamService.isYouTubeAudio(candidate.id, candidate.audioUrl))

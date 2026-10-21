@@ -20,7 +20,6 @@ import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.common.util.Util
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
-import androidx.media3.exoplayer.audio.ForwardingAudioSink
 import java.nio.ByteBuffer
 import kotlin.math.abs
 
@@ -31,21 +30,43 @@ import kotlin.math.abs
  */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class BitPerfectAudioSink private constructor(
-    private val context: Context, private val shared: AudioSink,
+    private val context: Context, private var shared: AudioSink,
     private val observation: TrackObservation,
-    private val allowDirect: () -> Boolean
-) : ForwardingAudioSink(shared) {
+    private val allowDirect: () -> Boolean,
+    private val sharedFactory: ((Boolean, Int) -> AudioSink)? = null
+) : AudioSink {
     constructor(context: Context, reportSignalPath: Boolean = true, allowDirect: () -> Boolean = { true }) :
         this(context.applicationContext, TrackObservation(reportSignalPath), allowDirect)
-    internal constructor(context: Context, shared: AudioSink) :
-        this(context.applicationContext, shared, TrackObservation(false), { false })
+    internal constructor(context: Context, shared: AudioSink, sharedFactory: ((Boolean, Int) -> AudioSink)? = null) :
+        this(context.applicationContext, shared, TrackObservation(false), { false }, sharedFactory)
     private constructor(context: Context, observation: TrackObservation, allowDirect: () -> Boolean) : this(context,
-        DefaultAudioSink.Builder(context).setEnableFloatOutput(true).setEnableAudioTrackPlaybackParams(true)
-            .setAudioTrackProvider { config, attributes, sessionId ->
-                DefaultAudioSink.AudioTrackProvider.DEFAULT.getAudioTrack(config, attributes, sessionId).also {
-                    observation.attach(it, false, null)
-                }
-            }.build(), observation, allowDirect)
+        sharedSink(context, observation, false), observation, allowDirect,
+        { skip, channels -> sharedSink(context, observation, skip, channels) })
+
+    companion object {
+        internal const val MIN_SILENCE_US = 1_000_000L
+        internal fun silenceProcessor(channels: Int = 2) = androidx.media3.exoplayer.audio.SilenceSkippingAudioProcessor(
+            // Media3 1.5.1 sizes its silence byte buffer from a frame count.
+            // Compensate for bytes/frame to retain the intended ONE second on
+            // mono/stereo/multichannel, rather than shortening musical pauses.
+            MIN_SILENCE_US * channels * 2,
+            androidx.media3.exoplayer.audio.SilenceSkippingAudioProcessor.DEFAULT_SILENCE_RETENTION_RATIO,
+            androidx.media3.exoplayer.audio.SilenceSkippingAudioProcessor.DEFAULT_MAX_SILENCE_TO_KEEP_DURATION_US,
+            androidx.media3.exoplayer.audio.SilenceSkippingAudioProcessor.DEFAULT_MIN_VOLUME_TO_KEEP_PERCENTAGE,
+            androidx.media3.exoplayer.audio.SilenceSkippingAudioProcessor.DEFAULT_SILENCE_THRESHOLD_LEVEL)
+        private fun sharedSink(context: Context, observation: TrackObservation, skip: Boolean, channels: Int = 2): AudioSink =
+            DefaultAudioSink.Builder(context)
+                // Media3 omits silence skipping on float output. Use its PCM16
+                // processing path only while requested, restoring float when off.
+                .setEnableFloatOutput(!skip).setEnableAudioTrackPlaybackParams(true)
+                .setAudioProcessorChain(DefaultAudioSink.DefaultAudioProcessorChain(emptyArray<AudioProcessor>(),
+                    silenceProcessor(channels), androidx.media3.common.audio.SonicAudioProcessor()))
+                .setAudioTrackProvider { config, attributes, sessionId ->
+                    DefaultAudioSink.AudioTrackProvider.DEFAULT.getAudioTrack(config, attributes, sessionId).also {
+                        observation.attach(it, false, null)
+                    }
+                }.build()
+    }
 
     private fun publishSignal(block: (SignalPathState) -> SignalPathState) {
         if (observation.reportSignalPath) AudioSignalPath.update(block)
@@ -64,7 +85,8 @@ class BitPerfectAudioSink private constructor(
     }
     fun preferredPcmEncoding(source: Format): Int? {
         sourceFormat(source)
-        return if (allowDirect() && Build.VERSION.SDK_INT >= 34 && volume == 1f && parameters == PlaybackParameters.DEFAULT && !skipSilence)
+        return if (allowDirect() && Build.VERSION.SDK_INT >= 34 && volume == 1f && parameters == PlaybackParameters.DEFAULT &&
+            !skipSilence && !PsychoacousticAudioProcessor.spatialEnabled)
             NativeUsb.preferredEncoding(context, source, attributes, preferred) else null
     }
     private var attributes = AudioAttributes.DEFAULT
@@ -76,6 +98,18 @@ class BitPerfectAudioSink private constructor(
     private var volume = 1f
     private var parameters = PlaybackParameters.DEFAULT
     private var skipSilence = false
+    private var sharedSkipSilence = false
+    private var sharedProcessingChannels = 2
+    private var sharedDraining = false
+    private var previousPositionUs = AudioSink.CURRENT_POSITION_NOT_SET
+    private var configuredBufferSize = 0
+    private var configuredChannels: IntArray? = null
+    private var playerId: androidx.media3.exoplayer.analytics.PlayerId? = null
+    private var clock: androidx.media3.common.util.Clock? = null
+    private var auxEffect = androidx.media3.common.AuxEffectInfo(0, 0f)
+    private var streamOffsetUs = 0L
+    private var tunneling = false
+    private var offloadMode = AudioSink.OFFLOAD_MODE_DISABLED
     private var startUs = C.TIME_UNSET
     private var bytesWritten = 0L
     private var headWrap = 0L
@@ -94,19 +128,37 @@ class BitPerfectAudioSink private constructor(
     private var pendingConfiguration: PendingConfiguration? = null
 
     // Decode compressed formats instead of offloading them around the custom DSP.
-    override fun getFormatSupport(format: Format): Int = if (format.sampleMimeType == MimeTypes.AUDIO_RAW &&
+    override fun getFormatSupport(format: Format): Int = if (skipSilence && format.sampleMimeType == MimeTypes.AUDIO_RAW)
+        shared.getFormatSupport(format) else if (format.sampleMimeType == MimeTypes.AUDIO_RAW &&
         format.pcmEncoding in intArrayOf(C.ENCODING_PCM_8BIT, C.ENCODING_PCM_16BIT, C.ENCODING_PCM_24BIT,
             C.ENCODING_PCM_32BIT, C.ENCODING_PCM_FLOAT)) AudioSink.SINK_FORMAT_SUPPORTED_DIRECTLY
-        else if (format.sampleMimeType == MimeTypes.AUDIO_RAW) super.getFormatSupport(format) else AudioSink.SINK_FORMAT_UNSUPPORTED
+        else if (format.sampleMimeType == MimeTypes.AUDIO_RAW) shared.getFormatSupport(format) else AudioSink.SINK_FORMAT_UNSUPPORTED
     override fun supportsFormat(format: Format) = getFormatSupport(format) != AudioSink.SINK_FORMAT_UNSUPPORTED
-    override fun setListener(listener: AudioSink.Listener) { this.listener = listener; super.setListener(listener) }
-    override fun setAudioAttributes(audioAttributes: AudioAttributes) {
-        attributes = audioAttributes; super.setAudioAttributes(audioAttributes)
+    override fun setListener(listener: AudioSink.Listener) { this.listener = listener; shared.setListener(listener) }
+    override fun setPlayerId(playerId: androidx.media3.exoplayer.analytics.PlayerId?) {
+        this.playerId = playerId; shared.setPlayerId(playerId)
     }
-    override fun setAudioSessionId(audioSessionId: Int) { sessionId = audioSessionId; super.setAudioSessionId(audioSessionId) }
+    override fun setClock(clock: androidx.media3.common.util.Clock) { this.clock = clock; shared.setClock(clock) }
+    override fun getFormatOffloadSupport(format: Format) = shared.getFormatOffloadSupport(format)
+    override fun getAudioAttributes() = attributes
+    override fun setAuxEffectInfo(auxEffectInfo: androidx.media3.common.AuxEffectInfo) {
+        auxEffect = auxEffectInfo; shared.setAuxEffectInfo(auxEffectInfo)
+    }
+    override fun setOutputStreamOffsetUs(outputStreamOffsetUs: Long) {
+        streamOffsetUs = outputStreamOffsetUs; shared.setOutputStreamOffsetUs(outputStreamOffsetUs)
+    }
+    override fun enableTunnelingV21() { tunneling = true; shared.enableTunnelingV21() }
+    override fun disableTunneling() { tunneling = false; shared.disableTunneling() }
+    override fun setOffloadMode(offloadMode: Int) { this.offloadMode = offloadMode; shared.setOffloadMode(offloadMode) }
+    override fun setOffloadDelayPadding(delayInFrames: Int, paddingInFrames: Int) =
+        shared.setOffloadDelayPadding(delayInFrames, paddingInFrames)
+    override fun setAudioAttributes(audioAttributes: AudioAttributes) {
+        attributes = audioAttributes; shared.setAudioAttributes(audioAttributes)
+    }
+    override fun setAudioSessionId(audioSessionId: Int) { sessionId = audioSessionId; shared.setAudioSessionId(audioSessionId) }
     override fun setPreferredDevice(audioDeviceInfo: AudioDeviceInfo?) {
         preferred = audioDeviceInfo; native?.track?.setPreferredDevice(audioDeviceInfo)
-        super.setPreferredDevice(audioDeviceInfo)
+        shared.setPreferredDevice(audioDeviceInfo)
         observation.refresh()
     }
     override fun configure(inputFormat: Format, specifiedBufferSize: Int, outputChannels: IntArray?) {
@@ -119,6 +171,8 @@ class BitPerfectAudioSink private constructor(
         closeNative()
         directUnavailable = false
         format = inputFormat
+        configuredBufferSize = specifiedBufferSize
+        configuredChannels = outputChannels?.clone()
         resetCounters()
         val identityChannels = outputChannels == null || outputChannels.size == inputFormat.channelCount && outputChannels.withIndex().all { it.index == it.value }
         // Float is exact for a known 24-bit FLAC/ALAC source. Repack its integer
@@ -128,13 +182,15 @@ class BitPerfectAudioSink private constructor(
         val nativeKey = "${inputFormat.pcmEncoding}|${inputFormat.sampleRate}|${inputFormat.channelCount}|${preferred?.id}"
         native = if (allowDirect() && Build.VERSION.SDK_INT >= 34 && failedDirectFormat != nativeKey && identityChannels &&
             (sourceEncoding == C.ENCODING_INVALID || sourceEncoding == nativeFormat.pcmEncoding) && parameters == PlaybackParameters.DEFAULT &&
-            volume == 1f && !skipSilence && inputFormat.encoderDelay == 0 && inputFormat.encoderPadding == 0)
+            volume == 1f && !skipSilence && !PsychoacousticAudioProcessor.spatialEnabled &&
+            inputFormat.encoderDelay == 0 && inputFormat.encoderPadding == 0)
             NativeUsb.open(context, nativeFormat, attributes, preferred, sessionId, specifiedBufferSize) else null
         native?.let { lease ->
             shared.flush()
             observation.attach(lease.track, true, lease)
             publishSignal { it.copy(inputRateHz = inputFormat.sampleRate, outputRateHz = lease.track.sampleRate,
-                dspActive = false, eqActive = false, directApproved = true, mode = "Direct") }
+                dspActive = false, eqActive = false, spatialActive = false, skipSilenceActive = false,
+                directApproved = true, mode = "Direct") }
             listener?.onAudioTrackInitialized(AudioSink.AudioTrackConfig(lease.encoding,
                 inputFormat.sampleRate, lease.track.channelConfiguration, false, false, lease.bufferBytes))
             if (playing) lease.track.play()
@@ -142,14 +198,43 @@ class BitPerfectAudioSink private constructor(
         }
         configureShared(inputFormat, specifiedBufferSize, outputChannels)
     }
-    private fun configureShared(inputFormat: Format, specifiedBufferSize: Int, outputChannels: IntArray?) {
+    private fun configureShared(inputFormat: Format, specifiedBufferSize: Int, outputChannels: IntArray?, resetProcessor: Boolean = true) {
+        if (sharedFactory != null && (sharedDraining || sharedSkipSilence != skipSilence ||
+            skipSilence && sharedProcessingChannels != inputFormat.channelCount)) replaceSharedSink()
+        val spatial = PsychoacousticAudioProcessor.spatialEnabled && inputFormat.channelCount == 2
         publishSignal { it.copy(inputRateHz = inputFormat.sampleRate, bitPerfect = false,
             directApproved = false, mode = "Shared", eqActive = AudioEffectsManager.effectsState.value.isEnabled,
-            dspActive = AudioEffectsManager.effectsState.value.isEnabled) }
-        processor.configure(AudioProcessor.AudioFormat(inputFormat)); processor.flush()
-        super.configure(inputFormat, specifiedBufferSize, outputChannels)
-        super.setPlaybackParameters(parameters)
-        if (playing) super.play()
+            spatialActive = spatial, skipSilenceActive = skipSilence,
+            dspActive = AudioEffectsManager.effectsState.value.isEnabled || spatial || skipSilence) }
+        if (resetProcessor) { processor.configure(AudioProcessor.AudioFormat(inputFormat)); processor.flush() }
+        shared.configure(inputFormat, specifiedBufferSize, outputChannels)
+        shared.setPlaybackParameters(parameters)
+        shared.setSkipSilenceEnabled(skipSilence)
+        if (playing) shared.play()
+    }
+
+    /** Only the audio thread swaps sinks, after draining accepted PCM. The MediaItem,
+     * decoder, source, queue and position are retained; signed streams are not resolved again.
+     */
+    private fun replaceSharedSink() {
+        val factory = sharedFactory ?: return
+        val replacement = factory(skipSilence, format.channelCount)
+        shared.release()
+        shared = replacement
+        sharedSkipSilence = skipSilence
+        sharedProcessingChannels = format.channelCount
+        sharedDraining = false
+        listener?.let(shared::setListener)
+        playerId?.let(shared::setPlayerId)
+        clock?.let(shared::setClock)
+        shared.setAudioAttributes(attributes)
+        shared.setAudioSessionId(sessionId)
+        shared.setPreferredDevice(preferred)
+        shared.setAuxEffectInfo(auxEffect)
+        shared.setOutputStreamOffsetUs(streamOffsetUs)
+        shared.setOffloadMode(offloadMode)
+        if (tunneling) shared.enableTunnelingV21() else shared.disableTunneling()
+        shared.setVolume(volume)
     }
 
     override fun handleBuffer(buffer: ByteBuffer, presentationTimeUs: Long, encodedAccessUnitCount: Int): Boolean {
@@ -160,16 +245,30 @@ class BitPerfectAudioSink private constructor(
         }
         // Route loss changes only the sink. Drain the already-written native audio,
         // then continue at the next unconsumed PCM buffer without a queue/source reset.
-        if (native != null && directUnavailable && nativeInput == null) {
+        if (native != null && (directUnavailable || PsychoacousticAudioProcessor.spatialEnabled) && nativeInput == null) {
             if (hasPendingData()) return false
             closeNative(); directUnavailable = false
             configureShared(format, 0, null)
         }
         val lease = native
         if (lease == null) {
+            if (sharedFactory != null && (sharedDraining || sharedSkipSilence != skipSilence) &&
+                pending == null && bypassInput == null) {
+                if (!sharedDraining) {
+                    previousPositionUs = shared.getCurrentPositionUs(false)
+                    sharedDraining = true
+                }
+                shared.playToEndOfStream()
+                if (shared.hasPendingData()) return false
+                shared.getCurrentPositionUs(true).takeUnless { it == AudioSink.CURRENT_POSITION_NOT_SET }
+                    ?.let { previousPositionUs = it }
+                configureShared(format.buildUpon().setEncoderDelay(0).build(), configuredBufferSize,
+                    configuredChannels, resetProcessor = false)
+            }
+            publishProcessingState()
             if (bypassInput != null) {
                 check(bypassInput === buffer)
-                return super.handleBuffer(buffer, presentationTimeUs, encodedAccessUnitCount).also { done ->
+                return shared.handleBuffer(buffer, presentationTimeUs, encodedAccessUnitCount).also { done ->
                     if (done) bypassInput = null
                     observation.health()
                 }
@@ -178,15 +277,15 @@ class BitPerfectAudioSink private constructor(
             // consume only part of this output and call back with the SAME input.
             if (pending != null) {
                 check(pendingInput === buffer)
-            } else if (PsychoacousticAudioProcessor.settings.get().isEnabled && buffer.hasRemaining()) {
+            } else if (processor.isProcessing && buffer.hasRemaining()) {
                 processor.queueInput(buffer)
                 pending = processor.output
                 pendingInput = buffer
-            } else return super.handleBuffer(buffer, presentationTimeUs, encodedAccessUnitCount).also { done ->
+            } else return shared.handleBuffer(buffer, presentationTimeUs, encodedAccessUnitCount).also { done ->
                 if (!done) bypassInput = buffer
                 observation.health()
             }
-            val done = super.handleBuffer(pending!!, presentationTimeUs, encodedAccessUnitCount)
+            val done = shared.handleBuffer(pending!!, presentationTimeUs, encodedAccessUnitCount)
             observation.health()
             if (done) { pending = null; pendingInput = null }
             return done
@@ -239,18 +338,19 @@ class BitPerfectAudioSink private constructor(
         lastHead = head
         return headWrap + head
     }
-    override fun getCurrentPositionUs(sourceEnded: Boolean): Long = if (native == null) super.getCurrentPositionUs(sourceEnded)
+    override fun getCurrentPositionUs(sourceEnded: Boolean): Long = if (native == null) shared.getCurrentPositionUs(sourceEnded)
+        .let { if (it == AudioSink.CURRENT_POSITION_NOT_SET) previousPositionUs else it }
         else if (startUs == C.TIME_UNSET) AudioSink.CURRENT_POSITION_NOT_SET
         else startUs + minOf(playedFrames(), writtenFrames()) * 1_000_000L / format.sampleRate
     private fun writtenFrames() = bytesWritten / Util.getPcmFrameSize(native?.encoding ?: format.pcmEncoding, format.channelCount)
-    override fun hasPendingData() = if (native == null) super.hasPendingData() else playedFrames() < writtenFrames()
-    override fun isEnded() = if (native == null) super.isEnded() else draining && !hasPendingData()
-    override fun playToEndOfStream() { if (native == null) super.playToEndOfStream() else draining = true }
-    override fun handleDiscontinuity() { if (native == null) super.handleDiscontinuity() else discontinuity = true }
-    override fun play() { playing = true; lastWriteMs = 0; native?.track?.play() ?: super.play() }
-    override fun pause() { playing = false; native?.track?.pause() ?: super.pause() }
+    override fun hasPendingData() = if (native == null) shared.hasPendingData() else playedFrames() < writtenFrames()
+    override fun isEnded() = if (native == null) shared.isEnded() else draining && !hasPendingData()
+    override fun playToEndOfStream() { if (native == null) shared.playToEndOfStream() else draining = true }
+    override fun handleDiscontinuity() { if (native == null) shared.handleDiscontinuity() else discontinuity = true }
+    override fun play() { playing = true; lastWriteMs = 0; native?.track?.play() ?: shared.play() }
+    override fun pause() { playing = false; native?.track?.pause() ?: shared.pause() }
     override fun setVolume(volume: Float) {
-        this.volume = volume; native?.track?.setVolume(volume); super.setVolume(volume)
+        this.volume = volume; native?.track?.setVolume(volume); shared.setVolume(volume)
         observation.unity = volume == 1f && parameters == PlaybackParameters.DEFAULT
         observation.refresh()
         publishSignal { it.copy(appVolume = volume) }
@@ -262,15 +362,18 @@ class BitPerfectAudioSink private constructor(
         native?.track?.let { track ->
             track.playbackParams = android.media.PlaybackParams().allowDefaults()
                 .setSpeed(playbackParameters.speed).setPitch(playbackParameters.pitch)
-        } ?: super.setPlaybackParameters(playbackParameters)
+        } ?: shared.setPlaybackParameters(playbackParameters)
         observation.unity = volume == 1f && parameters == PlaybackParameters.DEFAULT
         observation.refresh()
     }
-    override fun getPlaybackParameters() = if (native != null) parameters else super.getPlaybackParameters()
+    override fun getPlaybackParameters() = if (native != null) parameters else shared.getPlaybackParameters()
     override fun setSkipSilenceEnabled(skipSilenceEnabled: Boolean) {
-        skipSilence = skipSilenceEnabled; super.setSkipSilenceEnabled(skipSilenceEnabled)
+        skipSilence = skipSilenceEnabled
+        if (skipSilenceEnabled && native != null) directUnavailable = true
+        if (sharedFactory == null || sharedSkipSilence == skipSilenceEnabled && !sharedDraining)
+            shared.setSkipSilenceEnabled(skipSilenceEnabled)
     }
-    override fun getSkipSilenceEnabled() = if (native != null) false else super.getSkipSilenceEnabled()
+    override fun getSkipSilenceEnabled() = if (native != null) false else shared.getSkipSilenceEnabled()
     override fun flush() {
         native?.track?.let { it.pause(); it.flush() }
         pendingConfiguration?.let {
@@ -278,12 +381,23 @@ class BitPerfectAudioSink private constructor(
             closeNative()
             configure(it.format, it.bufferSize, it.channels)
         }
-        resetCounters(); processor.flush(); super.flush()
+        resetCounters(); processor.flush(); shared.flush()
         if (playing) native?.track?.play()
     }
     private fun resetCounters() {
         startUs = C.TIME_UNSET; bytesWritten = 0; headWrap = 0; lastHead = 0
         lastWriteMs = 0; draining = false; discontinuity = false; pending = null; pendingInput = null; bypassInput = null; nativeInput = null
+        previousPositionUs = AudioSink.CURRENT_POSITION_NOT_SET
+    }
+    private var lastProcessingState = -1
+    private fun publishProcessingState() {
+        val eq = PsychoacousticAudioProcessor.settings.get().isEnabled
+        val spatial = PsychoacousticAudioProcessor.spatialEnabled && format.channelCount == 2
+        val key = (if (eq) 1 else 0) or (if (spatial) 2 else 0) or (if (sharedSkipSilence) 4 else 0)
+        if (lastProcessingState == key) return
+        lastProcessingState = key
+        publishSignal { it.copy(eqActive = eq, spatialActive = spatial, skipSilenceActive = sharedSkipSilence,
+            dspActive = eq || spatial || sharedSkipSilence) }
     }
     private fun closeNative() {
         native?.let {
@@ -295,8 +409,8 @@ class BitPerfectAudioSink private constructor(
         }
         native = null
     }
-    override fun reset() { pendingConfiguration = null; closeNative(); observation.detach(); processor.reset(); resetCounters(); super.reset() }
-    override fun release() { pendingConfiguration = null; closeNative(); observation.detach(); processor.reset(); super.release() }
+    override fun reset() { pendingConfiguration = null; closeNative(); observation.detach(); processor.reset(); resetCounters(); shared.reset() }
+    override fun release() { pendingConfiguration = null; closeNative(); observation.detach(); processor.reset(); shared.release() }
 
     private data class DirectLease(val track: AudioTrack, val bufferBytes: Int, val encoding: Int,
         val clear: () -> Unit, val approved: () -> Boolean)
@@ -405,7 +519,10 @@ class BitPerfectAudioSink private constructor(
                     outputRouteVerified = route != null,
                     mode = if (approved) "Direct" else if (Build.VERSION.SDK_INT >= 29 && audio.isOffloadedPlayback) "Offload" else "Shared",
                     eqActive = !direct && AudioEffectsManager.effectsState.value.isEnabled,
-                    dspActive = !direct && AudioEffectsManager.effectsState.value.isEnabled) }
+                    spatialActive = !direct && audio.channelCount == 2 && PsychoacousticAudioProcessor.spatialEnabled,
+                    skipSilenceActive = !direct && it.skipSilenceActive,
+                    dspActive = !direct && (AudioEffectsManager.effectsState.value.isEnabled ||
+                        audio.channelCount == 2 && PsychoacousticAudioProcessor.spatialEnabled || it.skipSilenceActive)) }
             }
         }
         fun health() {

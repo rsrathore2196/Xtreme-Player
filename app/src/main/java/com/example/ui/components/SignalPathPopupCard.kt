@@ -154,7 +154,9 @@ fun SignalPathPopupCard(state: SignalPathState, modifier: Modifier = Modifier) {
             SignalNode("DSP Chain", when {
                 state.bitPerfect -> "Bypassed (Bit-Perfect)"
                 state.directApproved -> "Bypassed (Direct PCM)"
-                state.dspActive -> "Active — Equalizer"
+                state.dspActive -> "Active — " + listOfNotNull(
+                    "Equalizer".takeIf { state.eqActive }, "Spatial Audio".takeIf { state.spatialActive },
+                    "Skip Silence".takeIf { state.skipSilenceActive }).joinToString(" + ")
                 else -> "Bypassed (Pure)"
             })
             SignalNode("Tempo", String.format(Locale.ROOT, "%.2f×", state.playbackSpeed) +

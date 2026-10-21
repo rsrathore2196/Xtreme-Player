@@ -23,10 +23,16 @@ import com.example.performance.AppDispatchers
 data class LyricsSettings(val provider: String = "Auto", val textSizeSp: Int = 32, val ready: Boolean = false)
 
 @Immutable
+data class PlaybackIntegrationSettings(val keepLyricsAwake: Boolean = false,
+    val addonEnabled: Boolean = false, val addonUrl: String = "", val addonName: String = "")
+
+@Immutable
 data class PlayerExperienceSettings(
     val dynamicAlbumGlow: Boolean = true,
     val highContrastTypography: Boolean = false,
-    val crossfade: Boolean = false
+    val crossfade: Boolean = false,
+    val spatialAudio: Boolean = false,
+    val skipSilence: Boolean = false
 )
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
@@ -89,17 +95,50 @@ object OtherSettingsPreferences {
     private const val KEY_ALBUM_GLOW = "player_dynamic_album_glow"
     private const val KEY_HIGH_CONTRAST = "player_high_contrast_typography"
     private const val KEY_CROSSFADE = "playback_crossfade_enabled"
+    private const val KEY_SPATIAL_AUDIO = "playback_spatial_audio"
+    private const val KEY_SKIP_SILENCE = "playback_skip_silence"
+    private const val KEY_KEEP_LYRICS_AWAKE = "keep_lyrics_screen_awake"
+    private const val KEY_ADDON_ENABLED = "streaming_addon_enabled"
+    private const val KEY_ADDON_URL = "streaming_addon_url"
+    private const val KEY_ADDON_NAME = "streaming_addon_name"
+
+    fun playbackIntegrations(context: Context) = getPrefs(context).let {
+        PlaybackIntegrationSettings(it.getBoolean(KEY_KEEP_LYRICS_AWAKE, false),
+            it.getBoolean(KEY_ADDON_ENABLED, false), it.getString(KEY_ADDON_URL, "").orEmpty(),
+            it.getString(KEY_ADDON_NAME, "").orEmpty())
+    }
+    fun observePlaybackIntegrations(context: Context) = callbackFlow {
+        val prefs = getPrefs(context.applicationContext)
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == null || key in setOf(KEY_KEEP_LYRICS_AWAKE, KEY_ADDON_ENABLED, KEY_ADDON_URL, KEY_ADDON_NAME)) trySend(Unit)
+        }
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+        trySend(Unit)
+        awaitClose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+    }.conflate().map { playbackIntegrations(context.applicationContext) }.distinctUntilChanged().flowOn(AppDispatchers.Io)
+    fun setKeepLyricsAwake(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_KEEP_LYRICS_AWAKE, enabled).apply()
+    }
+    fun setStreamingAddonEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_ADDON_ENABLED, enabled && playbackIntegrations(context).addonUrl.isNotBlank()).apply()
+    }
+    fun saveStreamingAddon(context: Context, url: String, name: String) {
+        getPrefs(context).edit().putString(KEY_ADDON_URL, url).putString(KEY_ADDON_NAME, name)
+            .also { if (url.isBlank()) it.putBoolean(KEY_ADDON_ENABLED, false) }.apply()
+    }
 
     fun playerExperienceSettings(context: Context): PlayerExperienceSettings = getPrefs(context).let {
         PlayerExperienceSettings(it.getBoolean(KEY_ALBUM_GLOW, true),
-            it.getBoolean(KEY_HIGH_CONTRAST, false), it.getBoolean(KEY_CROSSFADE, false))
+            it.getBoolean(KEY_HIGH_CONTRAST, false), it.getBoolean(KEY_CROSSFADE, false),
+            it.getBoolean(KEY_SPATIAL_AUDIO, false), it.getBoolean(KEY_SKIP_SILENCE, false))
     }
 
     /** Reuse the preloaded memory preferences and ordered IO persistence, including restores. */
     fun observePlayerExperience(context: Context) = callbackFlow {
         val prefs = getPrefs(context.applicationContext)
         val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-            if (key == null || key == KEY_ALBUM_GLOW || key == KEY_HIGH_CONTRAST || key == KEY_CROSSFADE) trySend(Unit)
+            if (key == null || key == KEY_ALBUM_GLOW || key == KEY_HIGH_CONTRAST || key == KEY_CROSSFADE ||
+                key == KEY_SPATIAL_AUDIO || key == KEY_SKIP_SILENCE) trySend(Unit)
         }
         prefs.registerOnSharedPreferenceChangeListener(listener)
         trySend(Unit)
@@ -115,6 +154,12 @@ object OtherSettingsPreferences {
     }
     fun setCrossfade(context: Context, enabled: Boolean) {
         getPrefs(context).edit().putBoolean(KEY_CROSSFADE, enabled).apply()
+    }
+    fun setSpatialAudio(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_SPATIAL_AUDIO, enabled).apply()
+    }
+    fun setSkipSilence(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_SKIP_SILENCE, enabled).apply()
     }
 
     private fun getPrefs(context: Context): SharedPreferences {

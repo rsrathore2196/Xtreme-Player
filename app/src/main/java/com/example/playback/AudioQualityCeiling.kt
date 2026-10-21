@@ -56,6 +56,7 @@ data class PlaybackSourcePolicy(val ceiling: AudioQualityCeiling, val enhancer: 
     val allowsArchive: Boolean get() = maximum && online
     val key: String get() = "${ceiling.name}:${preferOpus}:$online"
     fun acceptsRemoteTrack(track: com.example.data.model.MusicTrack): Boolean {
+        if (com.example.data.remote.StreamingAddons.isVerified(track.audioUrl, this)) return true
         val uri = android.net.Uri.parse(track.audioUrl)
         if (uri.scheme in setOf("file", "content") || maximum) return true
         val host = uri.host.orEmpty()

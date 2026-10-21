@@ -120,6 +120,14 @@ class SourcePolicyRoutingTest {
         assertEquals(archive.id, result.id); assertEquals(jio.audioUrl, result.audioUrl); assertFalse(result.isLossless)
     }
 
+    @Test fun savedAddonTransportCannotBypassTheOrdinaryResolverAfterAddonRoutingIsDisabled() = runBlocking {
+        val saved = jio.copy(audioUrl = "https://personal.example/song.flac", source = "Streaming Addon: Personal")
+        val result = resolver().resolve(saved, AudioQuality.HI_RES_LOSSLESS,
+            sourcePolicy = PlaybackSourcePolicy(AudioQualityCeiling.MAX))
+        assertEquals(jio.audioUrl, result.audioUrl)
+        assertFalse(result.source.startsWith("Streaming Addon:"))
+    }
+
     @Test fun temporaryArchiveFallbackCacheCannotOverrideTheNextExplicitFileSelection() = runBlocking {
         var available = false
         var verifications = 0

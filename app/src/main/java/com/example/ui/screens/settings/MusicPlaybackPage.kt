@@ -348,6 +348,23 @@ fun MusicPlaybackPage(
                 }
 
                 HorizontalDivider(color = dividerColor, thickness = 1.dp, modifier = Modifier.padding(vertical = 12.dp))
+                PlaybackProcessingSettingRow(
+                    title = "Spatial Audio",
+                    description = "Stereo widening & crossfeed — best with headphones",
+                    checked = playerExperience.spatialAudio,
+                    onCheckedChange = { com.example.data.local.OtherSettingsPreferences.setSpatialAudio(settingsContext, it) },
+                    tag = "switch_spatial_audio"
+                )
+                HorizontalDivider(color = dividerColor, thickness = 1.dp, modifier = Modifier.padding(vertical = 12.dp))
+                PlaybackProcessingSettingRow(
+                    title = "Skip Silence",
+                    description = "Shorten silent passages over 1 second (uses 16-bit PCM)",
+                    checked = playerExperience.skipSilence,
+                    onCheckedChange = { com.example.data.local.OtherSettingsPreferences.setSkipSilence(settingsContext, it) },
+                    tag = "switch_skip_silence"
+                )
+
+                HorizontalDivider(color = dividerColor, thickness = 1.dp, modifier = Modifier.padding(vertical = 12.dp))
 
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -426,5 +443,20 @@ fun MusicPlaybackPage(
         }
 
         Spacer(modifier = Modifier.height(24.dp))
+    }
+}
+
+@Composable
+private fun PlaybackProcessingSettingRow(title: String, description: String, checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit, tag: String) {
+    val colors = LocalAppColors.current
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween) {
+        Column(Modifier.weight(1f).padding(end = 12.dp)) {
+            Text(title, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold, color = colors.textPrimary)
+            Text(description, fontSize = 11.sp, color = colors.textMuted)
+        }
+        Switch(checked = checked, onCheckedChange = onCheckedChange,
+            colors = liquidGlassSwitchColors(colors), modifier = Modifier.testTag(tag))
     }
 }

@@ -139,6 +139,8 @@ fun OtherSettingsPage(
             .verticalScroll(rememberScrollState())
             .padding(16.dp)
     ) {
+        PlaybackIntegrationsSection()
+        Spacer(Modifier.height(16.dp))
         // 1. Smart Storage & Cache Management Card
         Box(
             modifier = Modifier

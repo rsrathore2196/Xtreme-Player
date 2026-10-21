@@ -551,6 +551,7 @@ class MusicService : MediaLibraryService() {
                         .setBufferDurationsMs(1_000, 8_000, 500, 500).build())
                     .setWakeMode(C.WAKE_MODE_NETWORK)
                     .build().apply {
+                        skipSilenceEnabled = player.skipSilenceEnabled
                         val selected = com.example.playback.AudioDeviceManager.availableDevices.value.firstOrNull { it.isSelected }
                         if (selected != null) {
                             val manager = getSystemService(android.media.AudioManager::class.java)
@@ -561,6 +562,10 @@ class MusicService : MediaLibraryService() {
             })
         serviceScope.launch {
             com.example.data.local.OtherSettingsPreferences.observePlayerExperience(this@MusicService).collect {
+                if (com.example.playback.PsychoacousticAudioProcessor.spatialEnabled != it.spatialAudio ||
+                    player.skipSilenceEnabled != it.skipSilence) crossfade?.cancelTransition()
+                com.example.playback.PsychoacousticAudioProcessor.spatialEnabled = it.spatialAudio
+                player.skipSilenceEnabled = it.skipSilence
                 crossfade?.setEnabled(it.crossfade)
             }
         }
@@ -1105,6 +1110,7 @@ class MusicService : MediaLibraryService() {
             return MediaItem.Builder()
                 .setMediaId(id)
                 .setUri(YouTubeAudioStreamService.playbackUri(id, audioUrl))
+                .setMimeType(com.example.data.remote.StreamingAddons.mime(audioUrl))
                 .setRequestMetadata(MediaItem.RequestMetadata.Builder().setMediaUri(
                     Uri.parse(YouTubeAudioStreamService.playbackUri(id, audioUrl))).build())
                 .setMediaMetadata(

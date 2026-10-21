@@ -73,6 +73,7 @@ data class SignalPathState(
     val directApproved: Boolean = false, val outputDevice: String = "System output", val outputType: String = "Unknown",
     val dspActive: Boolean = false, val clarityEnabled: Boolean = false,
     val eqActive: Boolean = false,
+    val spatialActive: Boolean = false, val skipSilenceActive: Boolean = false,
     val appVolume: Float = 1f, val systemVolume: Int = 0, val systemVolumeMax: Int = 0,
     val mode: String = "Shared", val buffering: Boolean = false, val glitches: Int = 0,
     val outputEncoding: Int = C.ENCODING_INVALID, val outputChannels: Int = 0,

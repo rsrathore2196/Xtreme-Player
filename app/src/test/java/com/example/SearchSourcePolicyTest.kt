@@ -251,4 +251,49 @@ class SearchSourcePolicyTest {
         assertEquals(archive.audioUrl, ranked.first().audioUrl)
         assertEquals("INTERNET_ARCHIVE", ranked.first().source)
     }
+
+    @Test fun streamingAddonRowsAreIndependentAndOtherSettingsDoNotRepeatTheirLookup() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val calls = java.util.concurrent.atomic.AtomicInteger()
+        val custom = jio.copy(id = "addon_personal:c29uZw", source = "Streaming Addon: Personal", audioUrl = "")
+        val browser = CatalogBrowserState(CatalogRepository(), scope, addonSearch = { _, _ ->
+            calls.incrementAndGet(); listOf(custom)
+        })
+        val settings = com.example.data.local.PlaybackIntegrationSettings(addonEnabled = true,
+            addonUrl = "https://personal.example")
+        try {
+            seed(browser, listOf(jio))
+            assertEquals(0, calls.get())
+            browser.setStreamingAddon(settings)
+            awaitCondition { browser.search.value.page.tracks.any { it.id == custom.id } }
+            assertTrue(browser.search.value.page.tracks.any { it.id == jio.id })
+            browser.setStreamingAddon(settings.copy(keepLyricsAwake = true))
+            assertEquals(1, calls.get())
+            browser.setStreamingAddon(settings.copy(addonEnabled = false))
+            assertEquals(listOf(jio.id), browser.search.value.page.tracks.map { it.id })
+            assertEquals("Song", browser.search.value.query)
+        } finally { scope.cancel() }
+    }
+
+    @Test fun lateStreamingAddonSearchCannotReappearAfterItIsDisabled() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val entered = CompletableDeferred<Unit>(); val released = CompletableDeferred<Unit>(); val finished = CompletableDeferred<Unit>()
+        val browser = CatalogBrowserState(CatalogRepository(), scope, addonSearch = { _, _ ->
+            entered.complete(Unit)
+            withContext(NonCancellable) { released.await() }
+            finished.complete(Unit)
+            listOf(jio.copy(id = "addon_personal:c29uZw", source = "Streaming Addon: Personal"))
+        })
+        val settings = com.example.data.local.PlaybackIntegrationSettings(addonEnabled = true, addonUrl = "https://personal.example")
+        try {
+            seed(browser, listOf(jio))
+            browser.setStreamingAddon(settings)
+            withTimeout(3000) { entered.await() }
+            browser.setStreamingAddon(settings.copy(addonEnabled = false))
+            released.complete(Unit)
+            withTimeout(3000) { finished.await() }
+            awaitCondition { browser.search.value.page.tracks == listOf(jio) }
+            assertEquals("Song", browser.search.value.query)
+        } finally { released.complete(Unit); scope.cancel() }
+    }
 }

@@ -1692,7 +1692,11 @@ class PlaybackManager(
                 awaitController()
                 val resolved = if (needsResolution) withContext(AppDispatchers.Io) {
                     (repo ?: throw IllegalStateException("Music catalogue is unavailable. Please try again."))
-                        .resolvePlayableTrack(track, jioDeadlineMs = jioDeadline)
+                        .resolvePlayableTrack(track, jioDeadlineMs = jioDeadline, onAddonLookupFinished = { elapsed ->
+                            withContext(Dispatchers.Main.immediate) {
+                                if (ownsSelection(track.id, generation)) initialJioDeadlineMs = jioDeadline + elapsed
+                            }
+                        })
                 } else track
                 if (isActive && ownsSelection(track.id, generation)) {
                     pendingPolicyRestart = null
@@ -1709,7 +1713,8 @@ class PlaybackManager(
     }
 
     private suspend fun playTrackInternal(track: MusicTrack, queue: List<MusicTrack>, isExplicitPlaylist: Boolean = false) {
-        if (track.audioUrl.isBlank() || Uri.parse(track.audioUrl).scheme !in setOf("http", "https", "file", "content", "xtreme-youtube", "xtreme-sabr")) {
+        if (track.audioUrl.isBlank() || (Uri.parse(track.audioUrl).scheme !in setOf("http", "https", "file", "content", "xtreme-youtube", "xtreme-sabr") &&
+            com.example.data.remote.StreamingAddons.mime(track.audioUrl) != androidx.media3.common.MimeTypes.APPLICATION_MPD)) {
             showPlaybackFailure("No playable stream is available for '${track.title}'.")
             return
         }
@@ -2479,6 +2484,7 @@ class PlaybackManager(
         val mediaItem = MediaItem.Builder()
             .setMediaId(id)
             .setUri(com.example.data.remote.YouTubeAudioStreamService.playbackUri(id, effectiveUrl))
+            .setMimeType(com.example.data.remote.StreamingAddons.mime(effectiveUrl))
             .setRequestMetadata(MediaItem.RequestMetadata.Builder().setMediaUri(Uri.parse(
                 com.example.data.remote.YouTubeAudioStreamService.playbackUri(id, effectiveUrl))).build())
             .setMediaMetadata(

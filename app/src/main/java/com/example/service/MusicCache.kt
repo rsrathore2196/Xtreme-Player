@@ -185,7 +185,8 @@ object MusicCache {
                     val audio = YouTubeAudioStreamService.cachedForUrl(spec.uri.toString())
                     spec.buildUpon().setKey(audio?.takeUnless { it.isHls }?.cacheKey ?: spec.key)
                         .setHttpRequestHeaders(spec.httpRequestHeaders + YouTubeAudioStreamService.headersFor(spec.uri.toString())).build()
-                } else spec
+                } else spec.buildUpon().setHttpRequestHeaders(spec.httpRequestHeaders +
+                    com.example.data.remote.StreamingAddons.headers(spec.uri.toString())).build()
             }
         }
     }

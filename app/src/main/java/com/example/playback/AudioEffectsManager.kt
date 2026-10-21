@@ -160,7 +160,7 @@ object AudioEffectsManager {
             PsychoacousticAudioProcessor.settings.set(request.state)
             AudioSignalPath.update { it.copy(clarityEnabled = request.state.crystalClarityEnabled,
                 eqActive = request.state.isEnabled && !it.directApproved,
-                dspActive = request.state.isEnabled && !it.directApproved) }
+                dspActive = (request.state.isEnabled || it.spatialActive || it.skipSilenceActive) && !it.directApproved) }
         }
     }
 

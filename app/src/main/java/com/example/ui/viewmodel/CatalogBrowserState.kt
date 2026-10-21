@@ -63,7 +63,8 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
     initialQuality: AudioQuality = AudioQuality.ULTRA_HD_320,
     private val verifyPlayback: (suspend (MusicTrack, com.example.playback.PlaybackSourcePolicy) -> Boolean)? = null,
     private val archiveSearch: (suspend (String, Int, com.example.playback.PlaybackSourcePolicy, List<MusicTrack>) ->
-        com.example.data.remote.InternetArchiveApiService.LosslessSearchPage)? = null) {
+        com.example.data.remote.InternetArchiveApiService.LosslessSearchPage)? = null,
+    private val addonSearch: (suspend (String, com.example.playback.PlaybackSourcePolicy) -> List<MusicTrack>)? = null) {
     // CPU preparation shares the process budget; generation checks and atomic state
     // updates protect publication. UI control stays on the caller's application scope.
     private val dataScope = scope + AppDispatchers.CpuBounded
@@ -76,6 +77,10 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
     private var policySearchJob: Job? = null
     private var archiveSearchJob: Job? = null
     private var archivePaginationJob: Job? = null
+    private var addonSearchJob: Job? = null
+    @Volatile private var addonConfigurationKey = ""
+    private var addonRequestKey: String? = null
+    @Volatile private var addonCandidates = emptyList<MusicTrack>()
     @Volatile private var sourcePolicy = com.example.playback.PlaybackSourcePolicy(
         com.example.playback.AudioQualityCeiling.entries.first { it.audioQuality == initialQuality })
     @Volatile private var policyRevision = 0L
@@ -90,8 +95,26 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
 
     private fun archiveTrack(track: MusicTrack) = com.example.data.remote.AudioRoutingService.isArchiveResult(track)
     private fun eligible(track: MusicTrack, policy: com.example.playback.PlaybackSourcePolicy): Boolean =
-        if (archiveTrack(track)) policy.allowsArchive else policy.maximum || !track.id.startsWith("yt_") ||
+        if (track.id.startsWith("addon_")) addonConfigurationKey.isNotBlank() else if (archiveTrack(track)) policy.allowsArchive else policy.maximum || !track.id.startsWith("yt_") ||
             verifyPlayback == null || track.id in verifiedSearchIds
+
+    fun setStreamingAddon(settings: com.example.data.local.PlaybackIntegrationSettings) {
+        val key = settings.addonUrl.takeIf { settings.addonEnabled }.orEmpty()
+        synchronized(searchPublicationLock) {
+            if (addonConfigurationKey == key) return
+            addonConfigurationKey = key
+            addonSearchJob?.cancel()
+            addonRequestKey = null
+            addonCandidates = emptyList()
+            candidateRevision++
+        }
+        if (key.isBlank()) _search.update { state -> state.copy(
+            page = state.page.copy(tracks = state.page.tracks.filterNot { it.id.startsWith("addon_") }),
+            display = state.display.copy(songs = state.display.songs.filterNot { it.id.startsWith("addon_") },
+                top = state.display.top.filterNot { it.track?.id?.startsWith("addon_") == true })) }
+        dataScope.launch { publishEligibleSearch() }
+        enrichSearch(_search.value.requestId, loadArchivePage = false)
+    }
 
     fun setSourcePolicy(policy: com.example.playback.PlaybackSourcePolicy) {
         audioQuality = policy.ceiling.audioQuality
@@ -139,7 +162,7 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
             val revision = policyRevision
             val policy = sourcePolicy
             val tracks = catalogCandidates.filter { !archiveTrack(it) && eligible(it, policy) } +
-                archiveCandidates.takeIf { policy.allowsArchive }.orEmpty()
+                archiveCandidates.takeIf { policy.allowsArchive }.orEmpty() + addonCandidates
             val ranked = com.example.data.remote.AudioRoutingService.rankTracks(state.query, tracks,
                 includeArchive = policy.allowsArchive, deduplicateRecordings = false)
             // Build presentation on CpuBounded, outside the publication lock.
@@ -167,6 +190,26 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
         val revision = policyRevision
         fun current() = searchGeneration == generation && _search.value.requestId == generation &&
             policyRevision == revision && sourcePolicy.key == policy.key
+        val addonKey = "$generation|${policy.key}|$addonConfigurationKey"
+        if (addonSearch != null && addonConfigurationKey.isNotBlank() && addonRequestKey != addonKey) {
+            addonSearchJob?.cancel()
+            addonRequestKey = addonKey
+            addonCandidates = emptyList()
+            candidateRevision++
+            addonSearchJob = dataScope.launch(start = CoroutineStart.LAZY) {
+                try {
+                    val tracks = withContext(AppDispatchers.Io) { addonSearch.invoke(state.query, policy) }
+                    synchronized(searchPublicationLock) {
+                        if (!current() || addonRequestKey != addonKey) return@launch
+                        addonCandidates = tracks.distinctBy { it.id }
+                        candidateRevision++
+                    }
+                    publishEligibleSearch(loading = false, generation = generation)
+                } catch (e: CancellationException) { throw e }
+                catch (_: Exception) { /* Optional server failure leaves normal search intact. */ }
+            }
+            addonSearchJob?.start()
+        }
         if (!policy.maximum && verifyPlayback != null) {
             policySearchJob = dataScope.launch(start = CoroutineStart.LAZY) {
                 // Small prioritized batches, independently published. Shared repository
@@ -287,11 +330,14 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
         policySearchJob?.cancel()
         archiveSearchJob?.cancel()
         archivePaginationJob?.cancel()
+        addonSearchJob?.cancel()
         synchronized(searchPublicationLock) {
             catalogCandidates = emptyList()
             archiveCandidates = emptyList()
             archiveNext = 1
             catalogNext = null
+            addonCandidates = emptyList()
+            addonRequestKey = null
             verifiedSearchIds.clear()
             checkedSearchIds.clear()
             candidateRevision++
@@ -303,6 +349,7 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
         searchJob = dataScope.launch {
             try {
                 if (debounce) delay(300)
+                enrichSearch(generation, loadArchivePage = false)
                 val result = repository.search(query.trim(), type, quality = quality)
                 ensureActive()
                 if (_search.value.requestId != generation) return@launch

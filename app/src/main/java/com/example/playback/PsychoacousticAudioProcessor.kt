@@ -16,6 +16,7 @@ import kotlin.math.*
 class PsychoacousticAudioProcessor : BaseAudioProcessor() {
     companion object {
         internal val settings = AtomicReference(AudioEffectsState())
+        @Volatile internal var spatialEnabled = false
         private const val RAMP_FRAMES = 512
     }
     private var last: AudioEffectsState? = null
@@ -24,6 +25,8 @@ class PsychoacousticAudioProcessor : BaseAudioProcessor() {
     private var targetGain = 1f
     private var width = 1f
     private var targetWidth = 1f
+    private val spatial = StereoSpatializer()
+    internal val isProcessing: Boolean get() = settings.get().isEnabled || spatialEnabled || spatial.active
 
     override fun onConfigure(inputAudioFormat: AudioProcessor.AudioFormat): AudioProcessor.AudioFormat {
         if (inputAudioFormat.encoding !in intArrayOf(C.ENCODING_PCM_8BIT, C.ENCODING_PCM_16BIT,
@@ -36,10 +39,12 @@ class PsychoacousticAudioProcessor : BaseAudioProcessor() {
     override fun onFlush() {
         filters = Array(7) { Biquad(inputAudioFormat.channelCount.coerceAtLeast(1)) }
         last = null; gain = 1f; width = 1f
+        spatial.configure(inputAudioFormat.sampleRate, inputAudioFormat.channelCount)
     }
 
     override fun queueInput(inputBuffer: ByteBuffer) {
         val state = settings.get()
+        spatial.setEnabled(spatialEnabled)
         val frameBytes = inputAudioFormat.bytesPerFrame
         val frames = inputBuffer.remaining() / frameBytes
         if (frames == 0) return
@@ -48,7 +53,7 @@ class PsychoacousticAudioProcessor : BaseAudioProcessor() {
             C.ENCODING_PCM_24BIT_BIG_ENDIAN, C.ENCODING_PCM_32BIT_BIG_ENDIAN)
         val order = if (bigEndian) ByteOrder.BIG_ENDIAN else ByteOrder.LITTLE_ENDIAN
         val output = replaceOutputBuffer(bytes).order(order)
-        if (!state.isEnabled) {
+        if (!state.isEnabled && !spatial.active) {
             val limit = inputBuffer.limit()
             inputBuffer.limit(inputBuffer.position() + bytes)
             output.put(inputBuffer)
@@ -68,16 +73,23 @@ class PsychoacousticAudioProcessor : BaseAudioProcessor() {
             width += (targetWidth - width) / RAMP_FRAMES
             var left = 0f
             var right = 0f
+            if (channels == 2) {
+                spatial.process(read(inputBuffer), read(inputBuffer))
+                left = spatial.left; right = spatial.right
+            }
             for (channel in 0 until channels) {
-                var sample = read(inputBuffer) * gain
-                for (filter in filters) sample = filter.process(sample, channel)
+                var sample = if (channels == 2) { if (channel == 0) left else right } else read(inputBuffer)
+                if (state.isEnabled) {
+                    sample *= gain
+                    for (filter in filters) sample = filter.process(sample, channel)
+                }
                 if (channels == 2) {
                     if (channel == 0) left = sample else right = sample
                 } else write(output, limit(sample))
             }
             if (channels == 2) {
                 val mid = (left + right) * 0.5f
-                val side = (left - right) * 0.5f * width
+                val side = (left - right) * 0.5f * if (state.isEnabled) width else 1f
                 write(output, limit(mid + side)); write(output, limit(mid - side))
             }
         }

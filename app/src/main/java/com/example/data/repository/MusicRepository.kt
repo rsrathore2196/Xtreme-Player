@@ -444,7 +444,8 @@ class MusicRepository private constructor(
         preferYouTube: Boolean = false,
         jioDeadlineMs: Long = 0L,
         currentSourceOnly: Boolean = false,
-        rejectedUrls: Set<String> = emptySet()
+        rejectedUrls: Set<String> = emptySet(),
+        onAddonLookupFinished: (suspend (Long) -> Unit)? = null
     ): MusicTrack = withContext(AppDispatchers.Io) {
         val sourcePolicy = context?.let { com.example.playback.NetworkQualityMonitor.getInstance(it).sourcePolicySnapshot() }
         val preference = com.example.playback.AudioQualityPreference.from(sourcePolicy?.ceiling?.audioQuality
@@ -452,7 +453,20 @@ class MusicRepository private constructor(
         val quality = preference.legacy
         try {
             com.example.recommendation.DiscoveryRequestCoordinator.playback {
-                streamResolver.resolve(track, quality, forceRefresh, failedUrl, preferYouTube = preferYouTube, jioDeadlineMs = jioDeadlineMs,
+                var resolverDeadline = jioDeadlineMs
+                if (sourcePolicy != null && (!currentSourceOnly || track.source.startsWith("Streaming Addon:")) &&
+                    com.example.data.local.OtherSettingsPreferences.playbackIntegrations(context).addonEnabled) {
+                    val started = android.os.SystemClock.elapsedRealtime()
+                    val custom = com.example.data.remote.StreamingAddons.resolve(context, track, sourcePolicy,
+                        rejectedUrls + listOfNotNull(failedUrl))
+                    val elapsed = android.os.SystemClock.elapsedRealtime() - started
+                    // The opt-in server's bounded lookup cannot spend JioSaavn's
+                    // own six-second selection/buffering watchdog budget.
+                    if (jioDeadlineMs > 0L) resolverDeadline += elapsed
+                    onAddonLookupFinished?.invoke(elapsed)
+                    if (custom != null) return@playback custom
+                }
+                streamResolver.resolve(track, quality, forceRefresh, failedUrl, preferYouTube = preferYouTube, jioDeadlineMs = resolverDeadline,
                     currentSourceOnly = currentSourceOnly, rejectedUrls = rejectedUrls,
                     maxBitrateBps = sourcePolicy?.ceiling?.maxBitrateBps ?: Int.MAX_VALUE, sourcePolicy = sourcePolicy)
             }
