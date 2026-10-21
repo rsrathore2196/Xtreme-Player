@@ -61,7 +61,7 @@ internal fun PlaybackIntegrationsSection() {
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), singleLine = true,
             shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth().testTag("streaming_addon_url"))
         Spacer(Modifier.height(6.dp))
-        Text("LastWave-compatible manifest, search and stream endpoints. Enabled add-ons are tried for new tracks; normal providers remain available.",
+        Text("Compatible manifest, search and stream endpoints. Enabled add-ons are tried for new tracks; normal providers remain available.",
             color = colors.textMuted, fontSize = 11.sp)
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End,
             verticalAlignment = Alignment.CenterVertically) {
