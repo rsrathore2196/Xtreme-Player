@@ -6,7 +6,7 @@ import org.json.JSONArray
 object RecentSearchPreferences {
     private const val PREFS_NAME = "xtreme_recent_searches_prefs"
     private const val KEY_RECENT_SEARCHES = "recent_search_queries"
-    private const val MAX_RECENT_SEARCHES = 5
+    private const val MAX_RECENT_SEARCHES = 6
 
     fun getRecentSearches(context: Context): List<String> {
         val prefs = ReactiveSettingsRepository.preferences(context, PREFS_NAME)
