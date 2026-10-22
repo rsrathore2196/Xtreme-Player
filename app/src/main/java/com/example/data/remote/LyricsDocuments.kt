@@ -84,8 +84,8 @@ internal object LyricsDocuments {
     /** Stable ties retain source preference; availability/timing always outranks provider order. */
     private val providerOrder = listOf(
         "PaxSenix", "BetterLyrics", "BetterLyrics Portato", "BiniLyrics",
-        "LyricsPlus", "Lrc.Red", "Musixmatch", "KuGou", "LrcLib", "Unison",
-        "Genius", "YouTube captions", "YouTube Music"
+        "LyricsPlus", "PaxSenix Spotify", "PaxSenix Musixmatch", "Lrc.Red",
+        "Musixmatch", "KuGou", "LrcLib", "Unison", "Genius"
     )
     val comparator: Comparator<TrackLyrics> = compareBy<TrackLyrics> { quality(it) }
         .thenBy { (assessment(it).coverage * 20).toInt() }
@@ -180,6 +180,10 @@ internal object LyricsDocuments {
     fun providerPreferenceRank(provider: String): Int {
         val p = provider.lowercase()
         return when {
+            // PaxSenix Spotify: Authenticated Spotify search and lyrics (placed after LyricsPlus, before Lrc.Red)
+            p.contains("paxsenix") && p.contains("spotify") -> 84
+            // PaxSenix Musixmatch: Authenticated Musixmatch lyrics (placed after LyricsPlus, before Lrc.Red)
+            p.contains("paxsenix") && (p.contains("musixmatch") || p.contains("mxm")) -> 82
             // 1. PaxSenix : Apple Music Style Syllable Lyrics
             p.contains("paxsenix") || p.contains("pax") -> 110
             // 2. BetterLyrics : Word by Word Syllable Lyrics

@@ -65,6 +65,8 @@ object OtherSettingsPreferences {
         "BetterLyrics Portato",
         "BiniLyrics",
         "LyricsPlus",
+        "PaxSenix Spotify",
+        "PaxSenix Musixmatch",
         "Lrc.Red",
         "Musixmatch",
         "KuGou",
@@ -80,6 +82,10 @@ object OtherSettingsPreferences {
         "BetterLyrics Portato" to "syllable-synchronized Alternative",
         "BiniLyrics" to "High-quality, word-by-word karaoke-style TTML",
         "LyricsPlus" to "Granular syllable-level tracking and timed",
+        "PaxSenix Spotify" to "Authenticated Spotify search and lyrics",
+        "PaxSenix: Spotify" to "Authenticated Spotify search and lyrics",
+        "PaxSenix Musixmatch" to "Authenticated Musixmatch lyrics",
+        "PaxSenix: Musixmatch" to "Authenticated Musixmatch lyrics",
         "Lrc.Red" to "Clean, standard line-by-line synchronized Lyrics",
         "Musixmatch" to "Comprehensive coverage for Global and New Releases",
         "KuGou" to "Eastern Asian Pop Music and Regional Lyrics",
@@ -90,7 +96,10 @@ object OtherSettingsPreferences {
 
     fun getProviderDescription(provider: String): String {
         return LYRICS_PROVIDER_DESCRIPTIONS[provider]
-            ?: LYRICS_PROVIDER_DESCRIPTIONS.entries.firstOrNull { it.key.equals(provider, ignoreCase = true) }?.value
+            ?: LYRICS_PROVIDER_DESCRIPTIONS.entries.firstOrNull {
+                it.key.equals(provider, ignoreCase = true) ||
+                it.key.replace(":", "").equals(provider.replace(":", ""), ignoreCase = true)
+            }?.value
             ?: ""
     }
 

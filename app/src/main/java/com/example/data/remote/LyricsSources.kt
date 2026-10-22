@@ -38,9 +38,7 @@ internal class LyricsSources(private val identity: SongIdentity) {
         var best = initial
         // 1. PaxSenix : Apple Music Style Syllable Lyrics
         val pref1PaxSenix = listOf(
-            Source("PaxSenix") { paxApple() },
-            Source("PaxSenix: Spotify") { pax("spotify") },
-            Source("PaxSenix: Musixmatch") { pax("musixmatch") }
+            Source("PaxSenix") { paxApple() }
         )
         // 2. BetterLyrics : Word by Word Syllable Lyrics
         val pref2BetterLyrics = listOf(
@@ -57,6 +55,14 @@ internal class LyricsSources(private val identity: SongIdentity) {
         // 5. LyricsPlus : Granular syllable-level tracking and timed
         val pref5LyricsPlus = listOf(
             Source("LyricsPlus") { plus() }
+        )
+        // PaxSenix Spotify: Authenticated Spotify search and lyrics
+        val pref5bPaxSpotify = listOf(
+            Source("PaxSenix Spotify") { pax("spotify") }
+        )
+        // PaxSenix Musixmatch: Authenticated Musixmatch lyrics
+        val pref5cPaxMusixmatch = listOf(
+            Source("PaxSenix Musixmatch") { pax("musixmatch") }
         )
         // 6. Lrc.Red : Clean, standard line-by-line synchronized Lyrics
         val pref6LrcRed = listOf(
@@ -90,13 +96,15 @@ internal class LyricsSources(private val identity: SongIdentity) {
         try {
             if (preferredProvider != "Auto") {
                 val allSources = pref1PaxSenix + pref2BetterLyrics + pref3BetterLyricsPortato +
-                    pref4BiniLyrics + pref5LyricsPlus + pref6LrcRed + pref7Musixmatch +
-                    pref8KuGou + pref9LrcLib + pref10Unison + pref11Genius + prefFallback
+                    pref4BiniLyrics + pref5LyricsPlus + pref5bPaxSpotify + pref5cPaxMusixmatch +
+                    pref6LrcRed + pref7Musixmatch + pref8KuGou + pref9LrcLib + pref10Unison +
+                    pref11Genius + prefFallback
                 val matching = allSources.filter {
                     it.name.equals(preferredProvider, ignoreCase = true) ||
+                    it.name.replace(":", "").equals(preferredProvider.replace(":", ""), ignoreCase = true) ||
                     (preferredProvider.equals("Lrc.Red", ignoreCase = true) && it.name.equals("lrc.red", ignoreCase = true)) ||
                     (preferredProvider.equals("LrcLib", ignoreCase = true) && it.name.equals("lrclib", ignoreCase = true)) ||
-                    (preferredProvider.equals("PaxSenix", ignoreCase = true) && it.name.startsWith("PaxSenix", ignoreCase = true))
+                    (preferredProvider.equals("PaxSenix", ignoreCase = true) && it.name == "PaxSenix")
                 }
                 for (source in matching) {
                     val candidate = safely { withTimeoutOrNull(10_000L) { source.fetch() } }
@@ -144,6 +152,8 @@ internal class LyricsSources(private val identity: SongIdentity) {
                     prioritized(pref3BetterLyricsPortato, 3_000L)
                     prioritized(pref4BiniLyrics, 3_000L)
                     prioritized(pref5LyricsPlus, 3_000L)
+                    prioritized(pref5bPaxSpotify, 3_000L)
+                    prioritized(pref5cPaxMusixmatch, 3_000L)
                     prioritized(pref6LrcRed, 3_000L)
                     prioritized(pref7Musixmatch, 3_000L)
                     prioritized(pref8KuGou, 2_500L)
@@ -266,7 +276,7 @@ internal class LyricsSources(private val identity: SongIdentity) {
             } }
             hit?.optString("id")?.takeIf(String::isNotBlank)?.let { get(url("https://api.paxsenix.org/lyrics/spotify", "id" to it), key) }
         } else get(url("https://api.paxsenix.org/lyrics/musixmatch", "t" to title, "a" to artist, "d" to duration), key)
-        val name = "PaxSenix: ${if (source == "spotify") "Spotify" else "Musixmatch"}"
+        val name = "PaxSenix ${if (source == "spotify") "Spotify" else "Musixmatch"}"
         parse(body, name)?.let { return it }
         val fallback = get(url("https://api.paxsenix.org/lyrics/lrcget", "q" to "$title $artist"), key) ?: return null
         val json = runCatching { org.json.JSONTokener(fallback).nextValue() }.getOrNull() ?: return null

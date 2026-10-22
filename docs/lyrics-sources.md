@@ -6,23 +6,21 @@ remain in use. No provider timestamps are eased or shifted to create apparent sy
 
 Available sources, in tie-break order:
 
-| Source | Route / format |
-| --- | --- |
-| lrc.red | ISRC TTML; validated title/artist/duration search otherwise |
-| BiniLyrics | Recording search on lyrics-api.binimum.org, then TTML document |
-| BetterLyrics | getLyrics; TTML, enhanced LRC or timed JSON |
-| BetterLyrics Portato | qq/getLyrics; QRC/karaoke timestamps |
-| PaxSenix | Public Apple lyrics by validated Apple catalog song ID |
-| PaxSenix: Spotify | Authenticated Spotify search and lyrics |
-| PaxSenix: Musixmatch | Authenticated Musixmatch lyrics |
-| LyricsPlus | Syllable JSON, with duration queries in seconds |
-| Unison | Community TTML, enhanced LRC, line LRC or plain text |
-| Musixmatch | Official API when configured; public LyricsPlus Musixmatch routes otherwise |
-| YouTube captions | Transcript for the exact playing YouTube video ID |
-| LRCLIB | Validated line LRC and plain lyrics |
-| YouTube Music | Lyrics tab for the exact playing YouTube video ID |
-| KuGou | Validated lyric search and base64 LRC |
-| Genius | Validated song page, lyrics containers only |
+| Source | Route / format | Description |
+| --- | --- | --- |
+| PaxSenix | Public Apple lyrics by validated Apple catalog song ID | Apple Music Style Syllable Lyrics |
+| BetterLyrics | getLyrics; TTML, enhanced LRC or timed JSON | Word by Word Syllable Lyrics |
+| BetterLyrics Portato | qq/getLyrics; QRC/karaoke timestamps | syllable-synchronized Alternative |
+| BiniLyrics | Recording search on lyrics-api.binimum.org, then TTML document | High-quality, word-by-word karaoke-style TTML |
+| LyricsPlus | Syllable JSON, with duration queries in seconds | Granular syllable-level tracking and timed |
+| PaxSenix Spotify | Authenticated Spotify search and lyrics | Authenticated Spotify search and lyrics |
+| PaxSenix Musixmatch | Authenticated Musixmatch lyrics | Authenticated Musixmatch lyrics |
+| Lrc.Red | ISRC TTML; validated title/artist/duration search otherwise | Clean, standard line-by-line synchronized Lyrics |
+| Musixmatch | Official API when configured; public LyricsPlus Musixmatch routes otherwise | Comprehensive coverage for Global and New Releases |
+| KuGou | Validated lyric search and base64 LRC | Eastern Asian Pop Music and Regional Lyrics |
+| LrcLib | Validated line LRC and plain lyrics | Crowd-indexed line-synced lyrics. |
+| Unison | Community TTML, enhanced LRC, line LRC or plain text | Host Manual Text or Time Corrections |
+| Genius | Validated song page, lyrics containers only | un-synced plain text and contextual fallback |
 
 Potentially rich sources are queried with four concurrent lookups and per-source
 12-second deadlines. An actual syllable-timed document ranks ahead of word timing,
