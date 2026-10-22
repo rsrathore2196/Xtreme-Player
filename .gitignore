@@ -16,3 +16,10 @@
 local.properties
 .env
 debug.keystore
+
+# AI Studio artifacts, plans, and generated assets
+.aistudio/
+.aistudio
+aistudio/
+**/aistudio/**
+public/assets/aistudio/
