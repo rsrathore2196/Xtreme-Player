@@ -8,6 +8,7 @@ import com.example.data.remote.OnlineMusicApiService
 import com.example.data.remote.YouTubeAudioStreamService
 import com.example.data.remote.YouTubeMusicApiService
 import com.example.playback.AudioQuality
+import com.example.playback.AudioQualityCeiling
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
@@ -68,6 +69,7 @@ internal class StreamResolver(
     }
     private val archiveMisses = LinkedHashMap<String, Long>()
     private val cache = LinkedHashMap<StreamKey, CachedStream>(128, 0.75f, true)
+    private var localVersion = invalidationVersion.get()
     val cacheSize: Int get() = synchronized(cache) { cache.size }
     fun clear() {
         synchronized(cache) { cache.clear() }
@@ -83,8 +85,17 @@ internal class StreamResolver(
         failedUrl: String? = null, @Suppress("UNUSED_PARAMETER") deferLossless: Boolean = true,
         preferYouTube: Boolean = false, jioDeadlineMs: Long = 0L, maxBitrateBps: Int = Int.MAX_VALUE,
         currentSourceOnly: Boolean = false, rejectedUrls: Set<String> = emptySet(),
-        sourcePolicy: com.example.playback.PlaybackSourcePolicy? = null
+        sourcePolicy: com.example.playback.PlaybackSourcePolicy? = null,
+        sourceOrder: List<String> = listOf("addon", "jiosaavn", "internet_archive", "youtube"),
+        enabledSources: Set<String> = setOf("addon", "jiosaavn", "internet_archive", "youtube"),
+        resolveAddon: (suspend () -> MusicTrack?)? = null
     ): MusicTrack = withContext(Dispatchers.IO) {
+        if (localVersion != invalidationVersion.get()) {
+            synchronized(cache) { cache.clear() }
+            synchronized(archiveMisses) { archiveMisses.clear() }
+            synchronized(archiveAttempts) { archiveAttempts.clear() }
+            localVersion = invalidationVersion.get()
+        }
         val deadline = jioDeadlineMs.takeIf { it > 0L } ?: (android.os.SystemClock.elapsedRealtime() + 6_000L +
             if (quality == AudioQuality.HI_RES_LOSSLESS && maxBitrateBps == Int.MAX_VALUE) LOSSLESS_LOOKUP_TIMEOUT_MS else 0L)
         val recordingKey = withContext(AppDispatchers.CpuBounded) { RecordingIdentity.key(track) }
@@ -108,16 +119,25 @@ internal class StreamResolver(
             (!track.id.startsWith("online_") || forceRefresh || preferYouTube)
         fun providerAllowed(candidate: MusicTrack): Boolean {
             if (!isValidStreamUrl(candidate.audioUrl)) return false
-            // Custom transports are admitted only by the opt-in add-on resolver.
-            // A saved URL must not bypass a subsequently disabled add-on.
-            if (candidate.source.startsWith("Streaming Addon:")) return false
-            if (sourcePolicy == null || sourcePolicy.maximum) return true
-            if (archiveTransport(candidate.audioUrl)) return false
-            if (YouTubeAudioStreamService.isYouTubeAudio(candidate.id, candidate.audioUrl))
-                return sourcePolicy.preferOpus && candidate.qualityBadge.startsWith("Opus", true) &&
-                    candidate.bitrateKbps > 0 && candidate.bitrateKbps.toLong() * 1000 <= maxBitrateBps
+            if (candidate.source.startsWith("Streaming Addon:")) {
+                return "addon" in enabledSources && (sourcePolicy == null || sourcePolicy.maximum)
+            }
+            if (archiveTransport(candidate.audioUrl)) {
+                return "internet_archive" in enabledSources && (sourcePolicy == null || sourcePolicy.maximum)
+            }
             val host = uriHost(candidate.audioUrl).orEmpty()
-            return host == "saavncdn.com" || host.endsWith(".saavncdn.com")
+            if (host == "saavncdn.com" || host.endsWith(".saavncdn.com")) {
+                if ("jiosaavn" !in enabledSources) return false
+                if (sourcePolicy != null && sourcePolicy.ceiling != AudioQualityCeiling.HIGH &&
+                    sourcePolicy.ceiling != AudioQualityCeiling.MAX) return false
+                return true
+            }
+            if (YouTubeAudioStreamService.isYouTubeAudio(candidate.id, candidate.audioUrl)) {
+                return sourcePolicy == null || !sourcePolicy.preferOpus ||
+                    (candidate.qualityBadge.startsWith("Opus", true) &&
+                        candidate.bitrateKbps > 0 && candidate.bitrateKbps.toLong() * 1000 <= maxBitrateBps)
+            }
+            return sourcePolicy == null || sourcePolicy.maximum
         }
         // Local/downloaded audio remains usable offline and never needs provider substitution.
         if (uriScheme(track.audioUrl) in setOf("file", "content")) return@withContext track
@@ -133,15 +153,19 @@ internal class StreamResolver(
             if (cached != null && providerAllowed(cached) && cached.audioUrl != failedUrl &&
                 cached.audioUrl !in rejectedUrls && (!selectedArchive ||
                     cached.audioUrl == track.audioUrl && cached.isLossless)) {
-                if (!YouTubeAudioStreamService.isYouTubeAudio(cached.id, cached.audioUrl))
-                    return@withContext withStream(track, capped(cached))
-                // Reuse the verified recording mapping; only refresh its expiring
-                // transport through InnerTubeX, never repeat the metadata search.
-                if (sourcePolicy?.preferOpus == true) {
-                    val refreshed = try { withTimeoutOrNull(12_000L) { resolveOpus(cached, quality, false, maxBitrateBps) } }
-                    catch (cancelled: CancellationException) { throw cancelled }
-                    catch (_: Exception) { null }
-                    if (refreshed != null && providerAllowed(refreshed)) return@withContext withStream(track, refreshed)
+                val cachedSource = sourceOf(cached)
+                val higherPrioritySourceExists = sourceOrder.takeWhile { it != cachedSource }.any { it in enabledSources }
+                if (cachedSource in enabledSources && !higherPrioritySourceExists) {
+                    if (!YouTubeAudioStreamService.isYouTubeAudio(cached.id, cached.audioUrl))
+                        return@withContext withStream(track, capped(cached))
+                    // Reuse the verified recording mapping; only refresh its expiring
+                    // transport through InnerTubeX, never repeat the metadata search.
+                    if (sourcePolicy?.preferOpus == true) {
+                        val refreshed = try { withTimeoutOrNull(12_000L) { resolveOpus(cached, quality, false, maxBitrateBps) } }
+                        catch (cancelled: CancellationException) { throw cancelled }
+                        catch (_: Exception) { null }
+                        if (refreshed != null && providerAllowed(refreshed)) return@withContext withStream(track, refreshed)
+                    }
                 }
             }
         }
@@ -257,6 +281,9 @@ internal class StreamResolver(
         }
         val resolved = withTimeoutOrNull(65_000L) {
             suspend fun boundedJio(): MusicTrack? {
+                if ("jiosaavn" !in enabledSources) return null
+                if (sourcePolicy != null && sourcePolicy.ceiling != AudioQualityCeiling.HIGH &&
+                    sourcePolicy.ceiling != AudioQualityCeiling.MAX) return null
                 if (preferYouTube && sourcePolicy == null) return null
                 if (!forceRefresh && sourcePolicy != null) {
                     val saved = synchronized(cache) { cache[key.copy(policy = sourcePolicy.copy(enhancer = false).key)]
@@ -270,26 +297,44 @@ internal class StreamResolver(
                 if (remaining == 0L) return null
                 return attempt(remaining) { jioExact() ?: standardFallback() }
             }
-            if (sourcePolicy?.maximum == true && selectedArchive) {
-                val direct = if (sourcePolicy.allowsArchive) attempt(12_000L) {
-                    verifyArchive(track)
-                } else null
-                direct?.takeIf { it.audioUrl == track.audioUrl && usable(it) && supportsLossless(it) }
-                    ?: boundedJio() ?: youtubeFallback()
-            } else if (sourcePolicy != null && !sourcePolicy.maximum) {
-                if (sourcePolicy.preferOpus) {
-                    val opus = attempt(18_000L) { (youtubeExact(track) ?: youtubeFallback())?.takeIf(::providerAllowed) }
-                    if (opus == null) com.example.playback.LosslessDiagnostics.record(track.id,
-                        com.example.playback.LosslessDiagnostics.Reason.OPUS_UNAVAILABLE, "opus-resolution")
-                    opus ?: boundedJio()
-                } else boundedJio()
-            } else if (currentSourceOnly) {
+            suspend fun resolveArchiveSource(): MusicTrack? {
+                if ("internet_archive" !in enabledSources) return null
+                if (sourcePolicy != null && !sourcePolicy.maximum) return null
+                if (selectedArchive) {
+                    val direct = if (sourcePolicy?.allowsArchive == true || sourcePolicy == null) attempt(12_000L) {
+                        verifyArchive(track)
+                    } else null
+                    return direct?.takeIf { it.audioUrl == track.audioUrl && usable(it) && supportsLossless(it) }
+                }
+                return archive()
+            }
+            suspend fun resolveYouTubeSource(): MusicTrack? {
+                return youtubeExact(track) ?: youtubeFallback()
+            }
+
+            if (currentSourceOnly) {
                 if (archiveTransport(track.audioUrl)) null
                 else if (youtubeSelection) youtubeExact(track) else attempt(6_000L) { jioExact() }
-            } else if (sourcePolicy?.maximum == true) {
-                if (youtubeSelection) youtubeExact(track) ?: boundedJio() ?: youtubeFallback()
-                else boundedJio() ?: youtubeExact(track) ?: youtubeFallback()
-            } else archive() ?: boundedJio() ?: youtubeExact(track) ?: youtubeFallback()
+            } else if (preferYouTube) {
+                resolveYouTubeSource() ?: boundedJio()
+            } else if (selectedArchive && sourcePolicy?.maximum == true) {
+                resolveArchiveSource() ?: boundedJio() ?: resolveYouTubeSource()
+            } else {
+                var chosen: MusicTrack? = null
+                for (sourceId in sourceOrder) {
+                    if (sourceId !in enabledSources) continue
+                    chosen = when (sourceId) {
+                        "addon" -> if (sourcePolicy == null || sourcePolicy.maximum) resolveAddon?.invoke() else null
+                        "jiosaavn" -> boundedJio()
+                        "internet_archive" -> resolveArchiveSource()
+                        "youtube" -> resolveYouTubeSource()
+                        else -> null
+                    }
+                    if (chosen != null) break
+                }
+                // YouTube Music is the final and always available option to play the songs
+                chosen ?: resolveYouTubeSource()
+            }
         } ?: throw TrackUnavailableException(track.title)
         coroutineContext.ensureActive()
         val result = withStream(track, capped(resolved))
@@ -518,5 +563,20 @@ internal class StreamResolver(
             .replace(unknownArtists, "").trim()
         internal fun matches(requested: MusicTrack, candidate: MusicTrack): Boolean =
             RecordingIdentity.fallbackConfidence(requested, candidate) != null
+
+        internal val invalidationVersion = java.util.concurrent.atomic.AtomicInteger(0)
+
+        fun invalidateCache() {
+            invalidationVersion.incrementAndGet()
+            clearVerifiedLosslessCache()
+        }
+
+        internal fun sourceOf(candidate: MusicTrack): String {
+            if (candidate.source.startsWith("Streaming Addon:")) return "addon"
+            if (archiveTransport(candidate.audioUrl) || candidate.id.startsWith("ia_") || candidate.source.equals("INTERNET_ARCHIVE", true)) return "internet_archive"
+            val host = uriHost(candidate.audioUrl).orEmpty()
+            if (host == "saavncdn.com" || host.endsWith(".saavncdn.com") || candidate.id.startsWith("online_") || candidate.source == "JIOSAAVN") return "jiosaavn"
+            return "youtube"
+        }
     }
 }

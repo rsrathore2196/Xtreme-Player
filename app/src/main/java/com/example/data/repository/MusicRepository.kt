@@ -459,21 +459,44 @@ class MusicRepository private constructor(
         try {
             com.example.recommendation.DiscoveryRequestCoordinator.playback {
                 var resolverDeadline = jioDeadlineMs
-                if (sourcePolicy != null && (!currentSourceOnly || track.source.startsWith("Streaming Addon:")) &&
-                    com.example.data.local.OtherSettingsPreferences.playbackIntegrations(context).addonEnabled) {
-                    val started = android.os.SystemClock.elapsedRealtime()
-                    val custom = com.example.data.remote.StreamingAddons.resolve(context, track, sourcePolicy,
-                        rejectedUrls + listOfNotNull(failedUrl))
-                    val elapsed = android.os.SystemClock.elapsedRealtime() - started
-                    // The opt-in server's bounded lookup cannot spend JioSaavn's
-                    // own six-second selection/buffering watchdog budget.
-                    if (jioDeadlineMs > 0L) resolverDeadline += elapsed
-                    onAddonLookupFinished?.invoke(elapsed)
-                    if (custom != null) return@playback custom
-                }
-                streamResolver.resolve(track, quality, forceRefresh, failedUrl, preferYouTube = preferYouTube, jioDeadlineMs = resolverDeadline,
-                    currentSourceOnly = currentSourceOnly, rejectedUrls = rejectedUrls,
-                    maxBitrateBps = sourcePolicy?.ceiling?.maxBitrateBps ?: Int.MAX_VALUE, sourcePolicy = sourcePolicy)
+                val effectiveOrder = context?.let { com.example.data.local.PlaybackSourcesPreferences.getSourcesOrder(it) }
+                    ?: com.example.data.local.PlaybackSourcesPreferences.DEFAULT_ORDER
+                val effectiveCeiling = sourcePolicy?.ceiling ?: com.example.playback.AudioQualityCeiling.MAX
+                val enabledSet = context?.let { ctx ->
+                    effectiveOrder.filter { id ->
+                        com.example.data.local.PlaybackSourcesPreferences.isSourceEnabled(ctx, id) &&
+                        com.example.data.local.PlaybackSourcesPreferences.isQualityAllowed(id, effectiveCeiling)
+                    }.toSet()
+                } ?: com.example.data.local.PlaybackSourcesPreferences.DEFAULT_ORDER.toSet()
+
+                streamResolver.resolve(
+                    track = track,
+                    quality = quality,
+                    forceRefresh = forceRefresh,
+                    failedUrl = failedUrl,
+                    preferYouTube = preferYouTube,
+                    jioDeadlineMs = resolverDeadline,
+                    currentSourceOnly = currentSourceOnly,
+                    rejectedUrls = rejectedUrls,
+                    maxBitrateBps = sourcePolicy?.ceiling?.maxBitrateBps ?: Int.MAX_VALUE,
+                    sourcePolicy = sourcePolicy,
+                    sourceOrder = effectiveOrder,
+                    enabledSources = enabledSet,
+                    resolveAddon = if (context != null && sourcePolicy != null &&
+                        enabledSet.contains(com.example.data.local.PlaybackSourcesPreferences.ID_ADDON) &&
+                        com.example.data.local.OtherSettingsPreferences.playbackIntegrations(context).addonUrl.isNotBlank()) {
+                        suspend {
+                            val started = android.os.SystemClock.elapsedRealtime()
+                            val custom = com.example.data.remote.StreamingAddons.resolve(
+                                context, track, sourcePolicy, rejectedUrls + listOfNotNull(failedUrl)
+                            )
+                            val elapsed = android.os.SystemClock.elapsedRealtime() - started
+                            if (jioDeadlineMs > 0L) resolverDeadline += elapsed
+                            onAddonLookupFinished?.invoke(elapsed)
+                            custom
+                        }
+                    } else null
+                )
             }
         } catch (e: TrackUnavailableException) {
             if (track.recommendationOnly && !currentSourceOnly) recommendations.markUnavailable(track)

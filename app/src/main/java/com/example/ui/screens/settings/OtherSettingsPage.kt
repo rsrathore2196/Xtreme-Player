@@ -93,10 +93,34 @@ import com.example.ui.theme.bouncyClickable
 @Composable
 fun OtherSettingsPage(
     isDarkMode: Boolean,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onNestedPageChanged: (String?, String?, (() -> Boolean)?) -> Unit = { _, _, _ -> }
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
+
+    var showSourcesScreen by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
+    val currentNavigationCallback by androidx.compose.runtime.rememberUpdatedState(onNestedPageChanged)
+
+    androidx.compose.runtime.LaunchedEffect(showSourcesScreen) {
+        if (showSourcesScreen) {
+            currentNavigationCallback("Sources", "SOURCES_FULLSCREEN") {
+                showSourcesScreen = false
+                true
+            }
+        } else {
+            currentNavigationCallback(null, null, null)
+        }
+    }
+
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose { currentNavigationCallback(null, null, null) }
+    }
+
+    if (showSourcesScreen) {
+        SourcesScreen(onNavigateBack = { showSourcesScreen = false })
+        return
+    }
 
     val appColors = LocalAppColors.current
     val cardBg = appColors.cardBackground
@@ -139,7 +163,7 @@ fun OtherSettingsPage(
             .verticalScroll(rememberScrollState())
             .padding(16.dp)
     ) {
-        PlaybackIntegrationsSection()
+        PlaybackIntegrationsSection(onOpenSourcesScreen = { showSourcesScreen = true })
         Spacer(Modifier.height(16.dp))
         // 1. Smart Storage & Cache Management Card
         Box(

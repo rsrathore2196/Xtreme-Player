@@ -1,0 +1,6 @@
+{
+  "summary":  "Implementation plan for the modular Streaming Addons / Playback Sources management screen, drag-and-drop preference ordering, network streaming quality gating, and StreamResolver playback routing.",
+  "updatedAt":  "2026-10-22T12:52:14.212084849Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}

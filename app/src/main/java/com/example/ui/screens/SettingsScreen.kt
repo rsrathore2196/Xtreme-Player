@@ -165,23 +165,25 @@ fun SettingsScreen(
             .testTag("settings_screen")
     ) {
         // Top Navigation Bar
-        SettingsTopBar(
-            selectedCategory = if (isViewingProfileDetail) null else selectedCategory,
-            subPageTitle = if (isViewingProfileDetail) "Profile" else subPageTitle,
-            subPageSubtitle = if (isViewingProfileDetail) "Account attributes & languages" else subPageSubtitle,
-            isDarkMode = isDarkMode,
-            onBackClick = {
-                if (isViewingProfileDetail) {
-                    isViewingProfileDetail = false
-                } else if (selectedCategory != null) {
-                    if (subPageBackAction?.invoke() != true) {
-                        selectedCategory = null
+        if (subPageSubtitle != "SOURCES_FULLSCREEN") {
+            SettingsTopBar(
+                selectedCategory = if (isViewingProfileDetail) null else selectedCategory,
+                subPageTitle = if (isViewingProfileDetail) "Profile" else subPageTitle,
+                subPageSubtitle = if (isViewingProfileDetail) "Account attributes & languages" else subPageSubtitle,
+                isDarkMode = isDarkMode,
+                onBackClick = {
+                    if (isViewingProfileDetail) {
+                        isViewingProfileDetail = false
+                    } else if (selectedCategory != null) {
+                        if (subPageBackAction?.invoke() != true) {
+                            selectedCategory = null
+                        }
+                    } else {
+                        onNavigateBackToHome()
                     }
-                } else {
-                    onNavigateBackToHome()
                 }
-            }
-        )
+            )
+        }
 
         if (isViewingProfileDetail) {
             ProfileDetailPage(
@@ -261,7 +263,12 @@ fun SettingsScreen(
                     }
                     SettingsCategory.OTHER_SETTINGS -> {
                         OtherSettingsPage(
-                            isDarkMode = isDarkMode
+                            isDarkMode = isDarkMode,
+                            onNestedPageChanged = { title, subtitle, back ->
+                                if (selectedCategory == SettingsCategory.OTHER_SETTINGS) {
+                                    subPageTitle = title; subPageSubtitle = subtitle; subPageBackAction = back
+                                }
+                            }
                         )
                     }
                     SettingsCategory.BACKUP_RESTORE -> {
