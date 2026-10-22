@@ -498,14 +498,6 @@ object ThemePresets {
         bottomSheetGradientName = "Clean Crystal"
     )
 
-    // Backward compatibility aliases
-    val LastWaveOceanicGlass = OceanicGlass
-    val LastWaveNebulaGlass = NebulaGlass
-    val LastWaveMatrixGlass = MatrixGlass
-    val LastWaveSolarGlass = SolarGlass
-    val LastWaveGlacierGlass = GlacierGlass
-    val LastWaveSakuraGlass = SakuraGlass
-
     val allPresets: List<AppThemePreset> = listOf(
         // Dark Presets
         StudioNight,
@@ -531,7 +523,7 @@ object ThemePresets {
     val lightPresets: List<AppThemePreset> = allPresets.filter { !it.isDark }
 
     fun findById(id: String): AppThemePreset? {
-        val sanitized = id.removePrefix("lastwave_").trim()
+        val sanitized = id.removePrefix("glass_").trim()
         return allPresets.find {
             it.id.equals(id, ignoreCase = true) ||
                     it.id.equals(sanitized, ignoreCase = true) ||
@@ -540,7 +532,7 @@ object ThemePresets {
     }
 
     fun findByName(name: String): AppThemePreset? {
-        val sanitized = name.replace("LastWave", "", ignoreCase = true).trim()
+        val sanitized = name.replace("Glass", "", ignoreCase = true).trim()
         return allPresets.find {
             it.name.equals(name, ignoreCase = true) ||
                     it.name.equals(sanitized, ignoreCase = true) ||

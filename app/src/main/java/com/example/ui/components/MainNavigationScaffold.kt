@@ -141,7 +141,7 @@ fun MainNavigationScaffold(
 
     val context = LocalContext.current
     var selectedTabIndex by rememberSaveable { mutableIntStateOf(0) }
-    // Like LastWave, one lazy pager owns the page position. Selection changes on
+    // One lazy pager owns the page position. Selection changes on
     // tap, never from currentPage halfway through a slide (which retriggers pills).
     val tabPagerState = rememberPagerState(
         initialPage = selectedTabIndex.coerceIn(0, 2),
@@ -170,7 +170,7 @@ fun MainNavigationScaffold(
                     // behind it without adding an unrelated horizontal animation.
                     tabPagerState.scrollToPage(selectedTabIndex)
                 } else {
-                    // Pager's default critically damped spring matches LastWave's
+                    // Pager's default critically damped spring gives a smooth
                     // full-width page slide, without overlapping slide/fade clocks.
                     tabPagerState.animateScrollToPage(selectedTabIndex)
                 }

@@ -1,4 +1,4 @@
-/* LastWave HTTP Addon protocol adaptation; GPL-3.0. See third_party/lastwave/NOTICE.md. */
+/* HTTP Addon protocol client; GPL-3.0. */
 package com.example.data.remote
 
 import android.content.Context
@@ -26,7 +26,7 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 /** User-installed HTTP provider. No requests, client construction or services while disabled.
- * Uses LastWave's manifest/search/stream protocol, not an arbitrary audio proxy.
+ * Uses standard manifest/search/stream protocol, not an arbitrary audio proxy.
  * Requests are bounded/cancellable and every catalog substitution proves recording identity.
  */
 object StreamingAddons {

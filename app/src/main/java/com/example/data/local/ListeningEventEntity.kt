@@ -6,7 +6,7 @@ import androidx.room.PrimaryKey
 import com.example.data.model.MusicTrack
 
 /**
- * Detailed listening history and user taste event entity inspired by BitChord.
+ * Detailed listening history and user taste event entity.
  * Records explicit and implicit user feedback signals with millisecond accuracy.
  */
 @Entity(

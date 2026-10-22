@@ -27,7 +27,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 /**
- * LastWave's two independent motions: selection controls pill width, while a
+ * Two independent motions: selection controls pill width, while a
  * touch springs the entire glass dock to 1.12x and back (0.5 damping / 300 stiffness).
  * Read progress in layer/draw blocks, never in the Home or navigation composition.
  */

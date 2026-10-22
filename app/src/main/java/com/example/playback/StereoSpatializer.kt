@@ -1,13 +1,11 @@
 /*
- * Adapted from BitChord's SpatialAudioProcessor (GPL-3.0).
- * https://github.com/kushagrasinghx/BitChord
- * See third_party/bitchord/NOTICE.md and LICENSE-GPL-3.0.txt.
+ * Stereo spatial audio processor; GPL-3.0.
  */
 package com.example.playback
 
 import kotlin.math.roundToInt
 
-/** BitChord's stereo mid/side widening and 15 ms low-pass crossfeed.
+/** Stereo mid/side widening and 15 ms low-pass crossfeed.
  * Owned by one renderer, entirely on its audio thread. No per-frame allocations.
  * Mono/multichannel are untouched. This is stereo virtualization, not Atmos.
  */

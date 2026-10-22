@@ -17,7 +17,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /**
- * Automix & Infinite Queue Manager inspired by BitChord.
+ * Automix & Infinite Queue Manager.
  *
  * Extends the playback queue continuously in the background:
  * - Trigger Condition: Evaluates when remaining queue length <= 3 or on track transitions.

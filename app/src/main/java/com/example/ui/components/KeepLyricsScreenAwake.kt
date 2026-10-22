@@ -8,7 +8,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
-/** LastWave's lyrics-only screen-on behavior; no wake lock or background service. */
+/** Lyrics-only screen-on behavior; no wake lock or background service. */
 @Composable
 internal fun KeepLyricsScreenAwake(visible: Boolean, enabled: Boolean) {
     val view = LocalView.current

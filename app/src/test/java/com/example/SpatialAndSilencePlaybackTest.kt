@@ -33,7 +33,7 @@ class SpatialAndSilencePlaybackTest {
         AudioSignalPath.reset()
     }
 
-    @Test fun spatialMatchesBitChordWidthDelayCrossfeedAndOutputGain() {
+    @Test fun spatialMatchesWidthDelayCrossfeedAndOutputGain() {
         val spatial = StereoSpatializer()
         spatial.configure(48000, 2); spatial.setEnabled(true)
         repeat(600) { spatial.process(.1f, 0f) }

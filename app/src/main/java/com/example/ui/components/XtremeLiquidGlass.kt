@@ -40,8 +40,8 @@ import com.example.ui.theme.LocalAppColors
 val LocalDynamicGlassEnabled = compositionLocalOf { true }
 
 /**
- * One shared RenderNode source, using the same vendored Kyant backdrop renderer
- * as BitChord. Controls remain outside their source; no bitmap readback or frame loop.
+ * One shared RenderNode source, using vendored Kyant backdrop renderer.
+ * Controls remain outside their source; no bitmap readback or frame loop.
  */
 class LiquidGlassBackdrop internal constructor(internal val source: LayerBackdrop) {
     internal var sampleScale by mutableFloatStateOf(XtremeLiquidGlassDefaults.BackdropSampleScale)
@@ -61,7 +61,7 @@ fun rememberLiquidGlassBackdrop(captureVisibleRegions: Boolean = false): LiquidG
 object XtremeLiquidGlassDefaults {
     val BlurRadius: Dp = 20.dp
     // Floating chrome needs a clearer backdrop than large frosted surfaces.
-    // Keep the same lens/rim finish, with LastWave's neutral 8dp blur balance.
+    // Keep the same lens/rim finish, with neutral 8dp blur balance.
     val FloatingDockBlurRadius: Dp = 8.dp
     const val FloatingDockTintAlpha: Float = 0.04f
     const val FloatingDockDarkFillAlpha: Float = 0.24f
@@ -73,7 +73,7 @@ object XtremeLiquidGlassDefaults {
     const val BackdropSampleScale: Float = 0.33f
 }
 
-/** BitChord's record-once source: composite that display list instead of drawing twice. */
+/** Record-once source: composite that display list instead of drawing twice. */
 @Composable
 fun Modifier.xtremeSharedBackdropSource(
     enabled: Boolean = true,
@@ -123,7 +123,7 @@ fun Modifier.xtremeLiquidGlassBackground(
     val effects: com.example.ui.components.backdrop.BackdropEffectScope.() -> Unit =
         remember(radius, processingScale, lensSize, pressDepth, shape, interaction) {
             {
-                // The same small touch response as LastWave; at rest the
+                // Small touch response; at rest the
                 // existing blur/lens recipe is unchanged. These reads belong
                 // to the backdrop node, not the screen's composition.
                 val press = interaction?.pressProgress?.coerceAtLeast(0f) ?: 0f

@@ -314,9 +314,7 @@ object XtremeGradients {
 // LIQUID GLASS COLOR SYSTEM
 // =========================================================================
 
-typealias LiquidGlassColors = LastWaveColors
-
-object LastWaveColors {
+object LiquidGlassColors {
     // 1. Oceanic Abyssal Void & Luminous Azure Glass
     val OceanicCanvas = Color(0xFF030712)
     val OceanicCard = Color(0xFF0B1220)

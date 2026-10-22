@@ -51,7 +51,7 @@ remain available. Musixmatch uses the public aggregator when no official key is
 configured. These values become application BuildConfig fields, so use only keys
 intended for distribution in a client application.
 
-Endpoint/schema references were inspected from the publicly available provider
-adapters at https://github.com/kushagrasinghx/BitChord/tree/main/shared/src/jvmSharedMain/kotlin/com/music/bitchord/data/lyrics .
+Endpoint/schema references were inspected from publicly available provider
+documentation and open specifications.
 Live provider calls could not be verified in the cloud workspace because its
 network policy blocks those domains. No tests were run at the user's request.
