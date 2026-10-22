@@ -643,6 +643,17 @@ class PlayerViewModel(
         val identity = SongIdentity.from(track)
         lyricsLookupComplete = false
         if (_currentLyrics.value?.trackId != track.id || forceRefresh) _currentLyrics.value = null
+
+        // Check if custom .lrc lyrics are saved and active for this specific track
+        if (com.example.data.local.CustomLyricsManager.isCustomLyricsActive(application, track)) {
+            val custom = com.example.data.local.CustomLyricsManager.getCustomLyrics(application, track)
+            if (custom != null) {
+                _currentLyrics.value = custom
+                lyricsLookupComplete = true
+                return
+            }
+        }
+
         lyricsJob = viewModelScope.launch(AppDispatchers.Io) {
             fun stillSelected(): Boolean = lyricsRequestGeneration.get() == generation &&
                 playbackManager.uiState.value.currentTrack?.let(SongIdentity::from) == identity

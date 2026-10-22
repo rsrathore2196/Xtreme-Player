@@ -267,7 +267,12 @@ fun LyricsProviderSelectionPopup(
     currentProvider: String,
     onSelectProvider: (String) -> Unit,
     onDismissRequest: () -> Unit,
-    appColors: AppThemeColors = LocalAppColors.current
+    appColors: AppThemeColors = LocalAppColors.current,
+    allowImport: Boolean = false,
+    isCustomSelected: Boolean = false,
+    hasCustomLyrics: Boolean = false,
+    onImportLyrics: () -> Unit = {},
+    onSelectCustomLyrics: () -> Unit = {}
 ) {
     Dialog(
         onDismissRequest = onDismissRequest,
@@ -334,8 +339,60 @@ fun LyricsProviderSelectionPopup(
                             .heightIn(max = 380.dp)
                             .verticalScroll(rememberScrollState())
                     ) {
+                        if (allowImport) {
+                            Surface(
+                                onClick = {
+                                    if (hasCustomLyrics && !isCustomSelected) {
+                                        onSelectCustomLyrics()
+                                        onDismissRequest()
+                                    } else {
+                                        onImportLyrics()
+                                    }
+                                },
+                                shape = RoundedCornerShape(16.dp),
+                                color = if (isCustomSelected) appColors.primaryAccent.copy(alpha = 0.12f) else Color.Transparent,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 3.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    RadioButton(
+                                        selected = isCustomSelected,
+                                        onClick = null,
+                                        colors = RadioButtonDefaults.colors(
+                                            selectedColor = appColors.primaryAccent,
+                                            unselectedColor = appColors.textMuted
+                                        )
+                                    )
+                                    Spacer(Modifier.width(12.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            text = "Import Lyrics",
+                                            style = MaterialTheme.typography.bodyMedium.copy(
+                                                fontWeight = if (isCustomSelected) FontWeight.Bold else FontWeight.Medium,
+                                                color = if (isCustomSelected) appColors.primaryAccent else appColors.textPrimary,
+                                                fontSize = 14.sp
+                                            )
+                                        )
+                                        Text(
+                                            text = "Import Custom Lyrics .lrc file",
+                                            style = MaterialTheme.typography.bodySmall.copy(
+                                                color = appColors.textMuted,
+                                                fontSize = 11.sp
+                                            )
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
                         OtherSettingsPreferences.LYRICS_PROVIDERS.forEach { provider ->
-                            val isSelected = currentProvider == provider
+                            val isSelected = !isCustomSelected && currentProvider.equals(provider, ignoreCase = true)
                             Surface(
                                 onClick = {
                                     onSelectProvider(provider)
@@ -371,9 +428,10 @@ fun LyricsProviderSelectionPopup(
                                                 fontSize = 14.sp
                                             )
                                         )
-                                        if (provider == "Auto") {
+                                        val description = OtherSettingsPreferences.getProviderDescription(provider)
+                                        if (description.isNotBlank()) {
                                             Text(
-                                                text = "Prioritizes PaxSenix, BetterLyrics & fast verified sources",
+                                                text = description,
                                                 style = MaterialTheme.typography.bodySmall.copy(
                                                     color = appColors.textMuted,
                                                     fontSize = 11.sp

@@ -1,0 +1,6 @@
+{
+  "summary":  "Implementation plan for custom .lrc lyrics import in the Music Player popup, track-specific persistence, line/word-by-word timing support, haptic feedback default off, and visible APK generation.",
+  "updatedAt":  "2026-10-22T07:09:14.101380516Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}

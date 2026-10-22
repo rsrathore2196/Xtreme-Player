@@ -82,12 +82,15 @@ internal object LyricsDocuments {
     }
 
     /** Stable ties retain source preference; availability/timing always outranks provider order. */
-    private val providerOrder = listOf("lrc.red", "BiniLyrics", "BetterLyrics", "BetterLyrics Portato", "PaxSenix",
-        "PaxSenix: Spotify", "PaxSenix: Musixmatch", "LyricsPlus", "Unison", "YouTube captions", "KuGou", "LRCLIB", "Musixmatch", "YouTube Music", "Genius")
+    private val providerOrder = listOf(
+        "PaxSenix", "BetterLyrics", "BetterLyrics Portato", "BiniLyrics",
+        "LyricsPlus", "Lrc.Red", "Musixmatch", "KuGou", "LrcLib", "Unison",
+        "Genius", "YouTube captions", "YouTube Music"
+    )
     val comparator: Comparator<TrackLyrics> = compareBy<TrackLyrics> { quality(it) }
         .thenBy { (assessment(it).coverage * 20).toInt() }
         .thenBy { assessment(it).textLength / 25 }
-        .thenBy { -providerOrder.indexOf(it.provider).let { index -> if (index < 0) providerOrder.size else index } }
+        .thenBy { providerPreferenceRank(it.provider) }
 
     data class TimingAssessment(val tier: Int, val coverage: Double, val syllableCoverage: Double,
         val textLength: Int, val complete: Boolean)
@@ -177,14 +180,30 @@ internal object LyricsDocuments {
     fun providerPreferenceRank(provider: String): Int {
         val p = provider.lowercase()
         return when {
-            p.contains("paxsenix") || p.contains("pax") -> 100
-            p.contains("betterlyrics") || p.contains("portato") || p.contains("potato") -> 90
-            p.contains("binilyrics") || p.contains("bini") || p.contains("lyricsplus") || p.contains("lrc.red") || p.contains("unison") -> 80
-            p.contains("musixmatch") -> 60
+            // 1. PaxSenix : Apple Music Style Syllable Lyrics
+            p.contains("paxsenix") || p.contains("pax") -> 110
+            // 2. BetterLyrics : Word by Word Syllable Lyrics
+            p == "betterlyrics" -> 100
+            // 3. BetterLyrics Portato : syllable-synchronized Alternative
+            p.contains("portato") || p.contains("potato") -> 95
+            // 4. BiniLyrics : High-quality, word-by-word karaoke-style TTML
+            p.contains("binilyrics") || p.contains("bini") -> 90
+            // 5. LyricsPlus : Granular syllable-level tracking and timed
+            p.contains("lyricsplus") -> 85
+            // 6. Lrc.Red : Clean, standard line-by-line synchronized Lyrics
+            p.contains("lrc.red") || p == "lrcred" -> 80
+            // 7. Musixmatch : Comprehensive coverage for Global and New Releases
+            p.contains("musixmatch") -> 70
+            // 8. KuGou : Eastern Asian Pop Music and Regional Lyrics
+            p.contains("kugou") -> 60
+            // 9. LrcLib : Crowd-indexed line-synced lyrics.
             p.contains("lrclib") -> 50
-            p.contains("youtube") || p.contains("caption") || p.contains("kugou") -> 30
-            p.contains("genius") -> 10
-            else -> 40
+            // 10. Unison : Host Manual Text or Time Corrections
+            p.contains("unison") -> 40
+            // 11. Genius : un-synced plain text and contextual fallback
+            p.contains("genius") -> 20
+            p.contains("youtube") || p.contains("caption") -> 10
+            else -> 30
         }
     }
 

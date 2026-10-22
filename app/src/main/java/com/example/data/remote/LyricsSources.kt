@@ -36,53 +36,80 @@ internal class LyricsSources(private val identity: SongIdentity) {
 
     suspend fun lookup(initial: TrackLyrics?, preferredProvider: String = "Auto", onCandidate: (TrackLyrics) -> Unit): TrackLyrics? = supervisorScope {
         var best = initial
-        // 1st preference: PaxSenix (Apple, Spotify, Musixmatch endpoints)
+        // 1. PaxSenix : Apple Music Style Syllable Lyrics
         val pref1PaxSenix = listOf(
             Source("PaxSenix") { paxApple() },
             Source("PaxSenix: Spotify") { pax("spotify") },
             Source("PaxSenix: Musixmatch") { pax("musixmatch") }
         )
-        // 2nd preference: BetterLyrics & BetterLyrics Portato (potato)
+        // 2. BetterLyrics : Word by Word Syllable Lyrics
         val pref2BetterLyrics = listOf(
-            Source("BetterLyrics") { better("getLyrics", "BetterLyrics") },
+            Source("BetterLyrics") { better("getLyrics", "BetterLyrics") }
+        )
+        // 3. BetterLyrics Portato : syllable-synchronized Alternative
+        val pref3BetterLyricsPortato = listOf(
             Source("BetterLyrics Portato") { better("qq/getLyrics", "BetterLyrics Portato") }
         )
-        // 3rd preference: BiniLyrics & LyricsPlus (along with lrc.red / Unison)
-        val pref3BiniAndPlus = listOf(
-            Source("BiniLyrics") { bini(this@supervisorScope) },
-            Source("LyricsPlus") { plus() },
-            Source("lrc.red") { lrcRed(this@supervisorScope) },
-            Source("Unison") { unison() }
+        // 4. BiniLyrics : High-quality, word-by-word karaoke-style TTML
+        val pref4BiniLyrics = listOf(
+            Source("BiniLyrics") { bini(this@supervisorScope) }
         )
-        // 5th preference: Musixmatch
-        val pref5Musixmatch = listOf(
+        // 5. LyricsPlus : Granular syllable-level tracking and timed
+        val pref5LyricsPlus = listOf(
+            Source("LyricsPlus") { plus() }
+        )
+        // 6. Lrc.Red : Clean, standard line-by-line synchronized Lyrics
+        val pref6LrcRed = listOf(
+            Source("Lrc.Red") { lrcRed(this@supervisorScope) }
+        )
+        // 7. Musixmatch : Comprehensive coverage for Global and New Releases
+        val pref7Musixmatch = listOf(
             Source("Musixmatch") { musixmatch() }
         )
-        // 6th preference: LRCLIB (used for instant fast availability)
-        val pref6LrcLib = listOf(
-            Source("LRCLIB") { lrclib() }
+        // 8. KuGou : Eastern Asian Pop Music and Regional Lyrics
+        val pref8KuGou = listOf(
+            Source("KuGou") { kugou() }
         )
-        // 7th preference: Remaining options (YouTube captions, KuGou, YouTube Music)
-        val pref7Remaining = listOf(
+        // 9. LrcLib : Crowd-indexed line-synced lyrics.
+        val pref9LrcLib = listOf(
+            Source("LrcLib") { lrclib() }
+        )
+        // 10. Unison : Host Manual Text or Time Corrections
+        val pref10Unison = listOf(
+            Source("Unison") { unison() }
+        )
+        // 11. Genius : un-synced plain text and contextual fallback
+        val pref11Genius = listOf(
+            Source("Genius") { genius() }
+        )
+        val prefFallback = listOf(
             Source("YouTube captions") { captions() },
-            Source("KuGou") { kugou() },
             Source("YouTube Music") { youtubeMusic() }
         )
         val latest = AtomicReference(initial)
         try {
             if (preferredProvider != "Auto") {
-                val allSources = pref1PaxSenix + pref2BetterLyrics + pref3BiniAndPlus +
-                    pref5Musixmatch + pref6LrcLib + pref7Remaining + listOf(Source("Genius") { genius() })
-                val selected = allSources.firstOrNull { it.name == preferredProvider }
-                val candidate = selected?.let { source -> safely { withTimeoutOrNull(12_000L) { source.fetch() } } }
-                    ?.takeIf { LyricsDocuments.verified(identity, it) }
-                if (candidate != null && LyricsDocuments.meaningfulUpgrade(candidate, best)) {
-                    best = candidate
-                    onCandidate(candidate)
+                val allSources = pref1PaxSenix + pref2BetterLyrics + pref3BetterLyricsPortato +
+                    pref4BiniLyrics + pref5LyricsPlus + pref6LrcRed + pref7Musixmatch +
+                    pref8KuGou + pref9LrcLib + pref10Unison + pref11Genius + prefFallback
+                val matching = allSources.filter {
+                    it.name.equals(preferredProvider, ignoreCase = true) ||
+                    (preferredProvider.equals("Lrc.Red", ignoreCase = true) && it.name.equals("lrc.red", ignoreCase = true)) ||
+                    (preferredProvider.equals("LrcLib", ignoreCase = true) && it.name.equals("lrclib", ignoreCase = true)) ||
+                    (preferredProvider.equals("PaxSenix", ignoreCase = true) && it.name.startsWith("PaxSenix", ignoreCase = true))
+                }
+                for (source in matching) {
+                    val candidate = safely { withTimeoutOrNull(10_000L) { source.fetch() } }
+                        ?.takeIf { LyricsDocuments.verified(identity, it) }
+                    if (candidate != null && LyricsDocuments.meaningfulUpgrade(candidate, best)) {
+                        best = candidate
+                        onCandidate(candidate)
+                        if (LyricsDocuments.quality(candidate) >= 2) break
+                    }
                 }
                 return@supervisorScope best
             }
-            withTimeoutOrNull(18_000L) {
+            withTimeoutOrNull(20_000L) {
                 channelFlow {
                     suspend fun publish(source: Source) {
                         val candidate = safely { withTimeoutOrNull(6_000L) { source.fetch() } }
@@ -104,23 +131,28 @@ internal class LyricsSources(private val identity: SongIdentity) {
                             }
                         }
                     }
-                    // Fast availability channel: LRCLIB responds instantly (<300ms) for immediate display
+                    // Fast availability channel: LrcLib responds instantly (<300ms) for immediate display
                     val fastFallback = launch {
-                        publish(Source("LRCLIB") { lrclib() })
+                        publish(Source("LrcLib") { lrclib() })
                         if (videoId != null && latest.get()?.let { LyricsDocuments.quality(it) >= 1 } != true) {
                             publish(Source("YouTube Music") { youtubeMusic() })
                         }
                     }
-                    // Flow follows preference order strictly: PaxSenix -> BetterLyrics -> Bini/Plus -> Musixmatch
-                    prioritized(pref1PaxSenix, 5_500L)
-                    prioritized(pref2BetterLyrics, 4_500L)
-                    prioritized(pref3BiniAndPlus, 3_500L)
-                    prioritized(pref5Musixmatch, 3_000L)
+                    // Strictly prioritize matching user specified preference order:
+                    prioritized(pref1PaxSenix, 4_500L)
+                    prioritized(pref2BetterLyrics, 3_500L)
+                    prioritized(pref3BetterLyricsPortato, 3_000L)
+                    prioritized(pref4BiniLyrics, 3_000L)
+                    prioritized(pref5LyricsPlus, 3_000L)
+                    prioritized(pref6LrcRed, 3_000L)
+                    prioritized(pref7Musixmatch, 3_000L)
+                    prioritized(pref8KuGou, 2_500L)
                     fastFallback.join()
-                    // 7th preference fallback: captions, kugou, genius
+                    prioritized(pref9LrcLib, 2_000L)
+                    prioritized(pref10Unison, 2_000L)
+                    // 11. Genius & Remaining fallbacks
                     if (latest.get()?.let { LyricsDocuments.quality(it) >= 1 } != true) {
-                        prioritized(pref7Remaining, 3_000L)
-                        withTimeoutOrNull(3_000L) { publish(Source("Genius") { genius() }) }
+                        prioritized(pref11Genius + prefFallback, 3_000L)
                     }
                 }.firstOrNull { candidate ->
                     if (LyricsDocuments.meaningfulUpgrade(candidate, best)) {
@@ -168,11 +200,11 @@ internal class LyricsSources(private val identity: SongIdentity) {
     }
     private fun isrc(value: String?): String? = value?.replace("-", "")?.uppercase()?.takeIf { it.matches(Regex("[A-Z]{2}[A-Z0-9]{3}[0-9]{7}")) }
     private suspend fun lrcRed(scope: CoroutineScope): TrackLyrics? {
-        isrc(identity.isrc)?.let { code -> parse(shared(scope, "https://lrc.red/s/$code.ttml"), "lrc.red")?.let { return it } }
+        isrc(identity.isrc)?.let { code -> parse(shared(scope, "https://lrc.red/s/$code.ttml"), "Lrc.Red")?.let { return it } }
         val json = get(url("https://lrc.red/search.json", "q" to "$title $artist"))?.let(::JSONObject) ?: return null
         val hit = array(json.optJSONArray("hits")).firstOrNull { matches(it.optString("title"), it.optString("artist"), it.optDouble("duration", 0.0)) } ?: return null
         val code = isrc(hit.optString("isrc")) ?: return null
-        return parse(shared(scope, "https://lrc.red/s/$code.ttml"), "lrc.red")
+        return parse(shared(scope, "https://lrc.red/s/$code.ttml"), "Lrc.Red")
     }
     private suspend fun bini(scope: CoroutineScope): TrackLyrics? {
         val address = isrc(identity.isrc)?.let { url("https://lyrics-api.binimum.org/", "isrc" to it) }
@@ -298,14 +330,14 @@ internal class LyricsSources(private val identity: SongIdentity) {
             direct?.let { raw ->
                 val row = runCatching { JSONObject(raw) }.getOrNull()
                 if (row != null && matches(row.optString("trackName"), row.optString("artistName"), row.optDouble("duration", 0.0)))
-                    best = parse(raw, "LRCLIB")
+                    best = parse(raw, "LrcLib")
             }
             if (best?.isSynced == true) return best
         }
         val body = get(url("https://lrclib.net/api/search", "track_name" to title, "artist_name" to artist)) ?: return best
         val candidates = array(runCatching { JSONArray(body) }.getOrNull())
             .filter { matches(it.optString("trackName"), it.optString("artistName"), it.optDouble("duration", 0.0)) }
-            .mapNotNull { parse(it.toString(), "LRCLIB") }
+            .mapNotNull { parse(it.toString(), "LrcLib") }
         return (candidates + listOfNotNull(best)).maxWithOrNull(LyricsDocuments.comparator)
     }
     private suspend fun kugou(): TrackLyrics? {

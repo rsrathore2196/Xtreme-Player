@@ -22,6 +22,17 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import android.net.Uri
+import android.widget.Toast
+import androidx.core.content.ContextCompat
+import android.content.pm.PackageManager
+import android.os.Build
+import android.Manifest
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
@@ -329,6 +340,73 @@ fun ExpandedPlayerScreen(
     val lyricsPreferences = remember(context) { com.example.data.local.OtherSettingsPreferences.observeLyricsSettings(context) }
     val lyricsSettings by lyricsPreferences.collectAsStateWithLifecycle()
     val displayedLyricsProvider = lyrics?.provider?.takeIf { it.isNotBlank() } ?: lyricsSettings.provider
+
+    val coroutineScope = rememberCoroutineScope()
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            showLyricsProviderPopup = false
+            coroutineScope.launch(AppDispatchers.Io) {
+                try {
+                    val content = context.contentResolver.openInputStream(uri)?.use { stream ->
+                        stream.bufferedReader(Charsets.UTF_8).readText()
+                    }
+                    if (!content.isNullOrBlank()) {
+                        val saved = com.example.data.local.CustomLyricsManager.saveCustomLyrics(context, track, content)
+                        withContext(kotlinx.coroutines.Dispatchers.Main) {
+                            if (saved) {
+                                onRetryLyrics()
+                                Toast.makeText(context, "Custom lyrics imported successfully", Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(context, "Failed to save custom lyrics", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    } else {
+                        withContext(kotlinx.coroutines.Dispatchers.Main) {
+                            Toast.makeText(context, "Selected .lrc file is empty", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                } catch (e: Exception) {
+                    withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        Toast.makeText(context, "Error importing file: ${e.localizedMessage ?: "Unknown error"}", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        }
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted: Boolean ->
+        if (isGranted) {
+            try {
+                filePickerLauncher.launch(arrayOf("text/*", "application/octet-stream", "*/*"))
+            } catch (_: Exception) {
+                filePickerLauncher.launch(arrayOf("*/*"))
+            }
+        } else {
+            Toast.makeText(context, "Storage permission is required to import lyrics", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    val launchImportFlow = {
+        val needsPermission = Build.VERSION.SDK_INT <= 32 &&
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.READ_EXTERNAL_STORAGE
+            ) != PackageManager.PERMISSION_GRANTED
+
+        if (needsPermission) {
+            permissionLauncher.launch(Manifest.permission.READ_EXTERNAL_STORAGE)
+        } else {
+            try {
+                filePickerLauncher.launch(arrayOf("text/*", "application/octet-stream", "*/*"))
+            } catch (_: Exception) {
+                filePickerLauncher.launch(arrayOf("*/*"))
+            }
+        }
+    }
 
     val fallbackDevices by AudioDeviceManager.availableDevices.collectAsStateWithLifecycle()
     val effectiveDevices = if (availableAudioDevices.isNotEmpty()) availableAudioDevices else fallbackDevices
@@ -2042,14 +2120,33 @@ fun ExpandedPlayerScreen(
         )
     }
     if (showLyricsProviderPopup) {
+        val hasCustomLyrics = remember(track.id, lyrics) {
+            com.example.data.local.CustomLyricsManager.hasCustomLyrics(context, track)
+        }
+        val isCustomSelected = remember(track.id, lyrics?.provider, hasCustomLyrics) {
+            hasCustomLyrics && (lyrics?.provider == com.example.data.local.CustomLyricsManager.PROVIDER_NAME ||
+                com.example.data.local.CustomLyricsManager.isCustomLyricsActive(context, track))
+        }
+
         LyricsProviderSelectionPopup(
             currentProvider = lyricsSettings.provider,
             onSelectProvider = { provider ->
+                com.example.data.local.CustomLyricsManager.setCustomLyricsActive(context, track, false)
                 com.example.data.local.OtherSettingsPreferences.setLyricsProvider(context, provider)
                 onRetryLyrics()
             },
             onDismissRequest = { showLyricsProviderPopup = false },
-            appColors = appColors
+            appColors = appColors,
+            allowImport = true,
+            isCustomSelected = isCustomSelected,
+            hasCustomLyrics = hasCustomLyrics,
+            onImportLyrics = {
+                launchImportFlow()
+            },
+            onSelectCustomLyrics = {
+                com.example.data.local.CustomLyricsManager.setCustomLyricsActive(context, track, true)
+                onRetryLyrics()
+            }
         )
     }
         }
