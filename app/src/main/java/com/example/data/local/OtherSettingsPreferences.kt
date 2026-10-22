@@ -5,6 +5,9 @@ import android.content.SharedPreferences
 import androidx.compose.runtime.Immutable
 import com.example.performance.AppDispatchers
 import com.example.playback.OutputPrecision
+import com.example.playback.PlaybackSource
+import com.example.playback.PlaybackSourceKind
+import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -34,8 +37,15 @@ data class PlaybackIntegrationSettings(
     val keepLyricsAwake: Boolean = false,
     val addonEnabled: Boolean = false,
     val addonUrl: String = "",
-    val addonName: String = ""
-)
+    val addonName: String = "",
+    val sources: List<PlaybackSource> = emptyList()
+) {
+    fun sourceList(ceiling: com.example.playback.AudioQualityCeiling): List<PlaybackSource> = sources.ifEmpty {
+        val legacy = if (addonUrl.isNotBlank()) listOf(PlaybackSource(PlaybackSource.addonId(addonUrl),
+            PlaybackSourceKind.ADDON, addonName.ifBlank { "Custom server" }, addonEnabled, addonUrl)) else emptyList()
+        legacy + PlaybackSource.defaults(ceiling)
+    }
+}
 
 @Immutable
 data class PlayerExperienceSettings(
@@ -211,11 +221,21 @@ object OtherSettingsPreferences {
             keepLyricsAwake = prefs.getBoolean(KEY_KEEP_LYRICS_AWAKE, false),
             addonEnabled = prefs.getBoolean(KEY_ADDON_ENABLED, false),
             addonUrl = prefs.getString(KEY_ADDON_URL, "") ?: "",
-            addonName = prefs.getString(KEY_ADDON_NAME, "") ?: ""
+            addonName = prefs.getString(KEY_ADDON_NAME, "") ?: "",
+            sources = PlaybackSourcesPreferences.snapshot(context)
         )
     }
 
-    fun observePlaybackIntegrations(context: Context): Flow<PlaybackIntegrationSettings> {
+    suspend fun loadPlaybackSources(context: Context) = PlaybackSourcesPreferences.load(context)
+    fun savePlaybackSources(context: Context, sources: List<PlaybackSource>) = PlaybackSourcesPreferences.save(context, sources)
+    fun observePlaybackIntegrations(context: Context): Flow<PlaybackIntegrationSettings> = merge(
+        observeLegacyPlaybackIntegrations(context).map { Unit }, PlaybackSourcesPreferences.changes(context)
+    ).conflate().map {
+        val sources = loadPlaybackSources(context)
+        playbackIntegrations(context).copy(sources = sources)
+    }.distinctUntilChanged().flowOn(AppDispatchers.Io)
+
+    private fun observeLegacyPlaybackIntegrations(context: Context): Flow<PlaybackIntegrationSettings> {
         val keys = setOf(KEY_KEEP_LYRICS_AWAKE, KEY_ADDON_ENABLED, KEY_ADDON_URL, KEY_ADDON_NAME)
         return callbackFlow {
             val app = context.applicationContext

@@ -80,6 +80,11 @@ internal object PlaybackSessionStore {
                             .put("duration", extras?.getLong("duration", 0L) ?: 0L)
                             .put("qualityBadge", extras?.getString("qualityBadge").orEmpty()).apply {
                                 listOf("singers", "writer", "language", "year", "isrc").forEach { key -> put(key, extras?.getString(key).orEmpty()) }
+                                put("enhancerOrigin", JSONObject().apply {
+                                    com.example.playback.SourceTransitionOrigin.keys.forEach { key ->
+                                        if (extras?.containsKey(key) == true) put(key, extras.get(key))
+                                    }
+                                })
                                 put("primaryArtists", JSONArray(extras?.getStringArrayList("primaryArtists").orEmpty()))
                                 put("isLiked", extras?.getBoolean("isLiked", false) ?: false)
                                 put("isLossless", extras?.getBoolean("isLossless", false) ?: false)
@@ -165,6 +170,13 @@ internal object PlaybackSessionStore {
                             putBoolean("isLiked", known[id]?.isLiked ?: entry.optBoolean("isLiked"))
                             putBoolean("isLossless", entry.optBoolean("isLossless"))
                             putBoolean("recommendation_only", entry.optBoolean("recommendationOnly"))
+                            entry.optJSONObject("enhancerOrigin")?.let { origin ->
+                                com.example.playback.SourceTransitionOrigin.keys.forEach { key -> when (val value = origin.opt(key)) {
+                                    is Boolean -> putBoolean(key, value)
+                                    is Number -> putInt(key, value.toInt())
+                                    is String -> putString(key, value)
+                                } }
+                            }
                         }).build()
                     MediaItem.Builder().setMediaId(id).setUri(url).setMediaMetadata(metadata).build()
                 } }

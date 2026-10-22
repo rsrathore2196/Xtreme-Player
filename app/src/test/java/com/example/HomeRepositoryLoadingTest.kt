@@ -40,10 +40,10 @@ class HomeRepositoryLoadingTest {
         val retainedCatalog = MusicRepository::class.java.getDeclaredField("memoryCachedCatalog").apply { isAccessible = true }
         retainedCatalog.set(null, null)
         val tracks = (1..16).map { index -> MusicTrack(
-            id = "online_home$index", title = "Original Song $index", artist = "Artist $index",
+            id = "yt_" + index.toString().padStart(11, '0'), title = "Original Song $index", artist = "Artist $index",
             album = "Album $index", durationMs = 180_000, coverUrl = "https://artwork.example/$index.jpg",
             audioUrl = "https://aac.saavncdn.com/song${index}_320.mp4", language = "English", year = "1998",
-            isCached = true, source = "JIOSAAVN") }
+            isCached = true, source = "YouTube Music") }
         try {
             db.musicDao().insertOrUpdateTracks(tracks.map(TrackEntity::fromMusicTrack))
             val repo = MusicRepository(db.musicDao(), app)
@@ -54,8 +54,8 @@ class HomeRepositoryLoadingTest {
             assertEquals(tracks.map { it.id }.toSet(), initial.map { it.id }.toSet())
             assertTrue(initial.all(UnifiedRecommendationEngine::verified))
 
-            // Supply genuine-shaped discovery metadata and known verified mappings,
-            // rather than depending on live YouTube/JioSaavn availability in a unit test.
+            // Supply original YouTube catalog metadata, without a JioSaavn mapping
+            // or live provider availability check.
             val candidates = tracks.mapIndexed { index, track -> track.copy(
                 id = "yt_" + index.toString().padStart(11, '0'), audioUrl = "", source = "YouTube Music") }
             for ((operation, query) in listOf("charts" to "FEmusic_charts",
@@ -79,7 +79,7 @@ class HomeRepositoryLoadingTest {
             assertEquals(10, regional.size)
             assertEquals(10, era.size)
             assertTrue((regional + era).all {
-                UnifiedRecommendationEngine.verified(it) && it.recommendationOnly && it.source == "JIOSAAVN"
+                UnifiedRecommendationEngine.verified(it) && it.recommendationOnly && it.source == "YouTube Music"
             })
             assertTrue(era.all { it.year.toInt() in 1990..2009 })
             assertTrue(regional.all { it.language == "English" })
@@ -97,8 +97,8 @@ class HomeRepositoryLoadingTest {
                     shelves = firstPresentation.essentialShelves, startupBatch = false).toList()
             } }
             assertEquals(firstPresentation.essentialShelves, batches.flatMap { it.requested }.toSet())
-            val quick = batches.flatMap { it.quick }
-            val chart = batches.flatMap { it.chart.orEmpty() }
+            val quick = batches.last { it.quick.isNotEmpty() }.quick
+            val chart = batches.last { !it.chart.isNullOrEmpty() }.chart.orEmpty()
             assertEquals(3, quick.size)
             assertEquals(3, chart.size)
             assertTrue((quick + chart).all { UnifiedRecommendationEngine.verified(it) && it.recommendationOnly })
@@ -115,7 +115,7 @@ class HomeRepositoryLoadingTest {
                     shelves = firstPresentation.essentialShelves).toList()
             } }
             assertTrue(partial.flatMap { it.quick }.isEmpty())
-            assertEquals(3, partial.flatMap { it.chart.orEmpty() }.size)
+            assertEquals(3, partial.last { !it.chart.isNullOrEmpty() }.chart.orEmpty().size)
 
 
         } finally {
@@ -131,14 +131,13 @@ class HomeRepositoryLoadingTest {
         }
     }
 
-    @Test fun legacyProviderLabelsStillRequireVerifiedCatalogAndCdnIdentity() {
-        val restored = MusicTrack("online_song", "Song", "Artist", "Album", 180_000,
-            "cover", "https://aac.saavncdn.com/song_320.mp4", source = "HD Stream")
-        assertTrue(UnifiedRecommendationEngine.verified(restored))
-        assertFalse(UnifiedRecommendationEngine.verified(restored.copy(id = "yt_abcdefghijk")))
-        assertFalse(UnifiedRecommendationEngine.verified(restored.copy(audioUrl = "https://audio.example/song.mp4")))
-        assertFalse(UnifiedRecommendationEngine.verified(restored.copy(audioUrl = "https://saavncdn.com.evil.example/song.mp4")))
-        assertFalse(UnifiedRecommendationEngine.verified(restored.copy(source = "YouTube Music")))
-        assertFalse(UnifiedRecommendationEngine.verified(restored.copy(isLossless = true)))
+    @Test fun recommendationsRequireRealYoutubeCatalogIdentityNotJioAvailability() {
+        val song = MusicTrack("yt_abcdefghijk", "Song", "Artist", "Album", 180_000,
+            "https://images.example/cover.jpg", "", bitrateKbps = 0, source = "YouTube Music")
+        assertTrue(UnifiedRecommendationEngine.verified(song))
+        assertFalse(UnifiedRecommendationEngine.verified(song.copy(id = "online_old")))
+        assertFalse(UnifiedRecommendationEngine.verified(song.copy(id = "yt_bad")))
+        assertFalse(UnifiedRecommendationEngine.verified(song.copy(title = "Song (Karaoke)")))
+        assertFalse(UnifiedRecommendationEngine.verified(song.copy(isLossless = true)))
     }
 }

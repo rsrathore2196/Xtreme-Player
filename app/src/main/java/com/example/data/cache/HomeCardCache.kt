@@ -574,8 +574,8 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
             chartCandidates = verified(saved.chartCandidates), personalizedCandidates = verified(saved.personalizedCandidates),
             similarArtistCandidates = verified(saved.similarArtistCandidates), inspiredTrackCandidates = verified(saved.inspiredTrackCandidates),
             catalog = verified(saved.catalog),
-            // Keep usable cached Jio tracks visible, but refill shelves whose old
-            // snapshots included unsupported provider candidates on next demand.
+            // Keep usable cached catalog tracks visible; refill shelves containing
+            // unsupported catalog identities on their next demand.
             shelfLoads = saved.shelfLoads - rejectedShelves,
             readyShelves = saved.readyShelves - rejectedShelves) else saved.copy(
                 quick = SectionState(title = "Quick Picks"), era = SectionState(title = "Era-Specific Hits"),

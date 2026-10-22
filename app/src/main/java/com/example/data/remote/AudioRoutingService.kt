@@ -10,8 +10,6 @@ import com.example.data.repository.StreamResolver
 import com.example.recommendation.OriginalMusicFilter
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Semaphore
@@ -22,7 +20,7 @@ import kotlin.coroutines.coroutineContext
 
 data class RoutedSearchResult(val tracks: List<MusicTrack>, val isLossless: Boolean)
 
-/** JioSaavn/YouTube catalog aggregation. The browser adds policy-gated, verified Archive files independently. */
+/** YouTube-first song catalog with a provider-failure fallback. The browser adds policy-gated, verified Archive files independently. */
 object AudioRoutingService {
     private val requests = Semaphore(2)
     data class SearchPage(
@@ -41,16 +39,21 @@ object AudioRoutingService {
             } catch (e: TimeoutCancellationException) { coroutineContext.ensureActive(); null }
             catch (e: CancellationException) { throw e }
             catch (_: Exception) { null }
-            val jio = standardPage?.let { page -> async {
-                request { OnlineMusicApiService.searchSongPage(cleaned, limit = limit, page = page) }
-            } }
-            val youtube = if (fetchYouTube) async {
-                request { YouTubeMusicApiService.searchSongsPage(cleaned, youtubeContinuation, useInnerTubeX = true) }
+            // Song discovery uses the original YouTube catalog. Only an API
+            // failure falls back to JioSaavn; a normal page never waits on or
+            // verifies against a second catalog.
+            val extended = if (fetchYouTube) request {
+                withContext(AppDispatchers.Io) {
+                    YouTubeMusicApiService.searchSongsPage(cleaned, youtubeContinuation, useInnerTubeX = true)
+                }
             } else null
-            val standard = jio?.await(); val extended = youtube?.await()
-            SearchPage(rankTracks(query, standard?.tracks.orEmpty() + extended?.tracks.orEmpty()),
-                standard?.nextPage, extended?.continuation, jio != null && standard == null,
-                youtube != null && extended == null)
+            val useStandard = extended == null && (!fetchYouTube || youtubeContinuation == null)
+            val standard = if (useStandard && standardPage != null) request {
+                withContext(AppDispatchers.Io) { OnlineMusicApiService.searchSongPage(cleaned, limit = limit, page = standardPage) }
+            } else null
+            SearchPage(rankTracks(query, extended?.tracks ?: standard?.tracks.orEmpty()),
+                standard?.nextPage, extended?.continuation, useStandard && standard == null,
+                fetchYouTube && extended == null)
         }
     }
 
@@ -62,8 +65,8 @@ object AudioRoutingService {
 
     private fun providerRank(track: MusicTrack): Int = when {
         isArchiveResult(track) -> 2
-        track.id.startsWith("online_") -> 0
-        track.id.startsWith("yt_") -> 1
+        track.id.startsWith("yt_") -> 0
+        track.id.startsWith("online_") -> 1
         else -> 2
     }
 

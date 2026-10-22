@@ -36,7 +36,7 @@ class StreamingAddonIntegrationTest {
     private val maximum = PlaybackSourcePolicy(AudioQualityCeiling.MAX)
 
     @Before fun setup() = runBlocking {
-        withContext(Dispatchers.IO) { app.getSharedPreferences("xtreme_other_settings", 0).edit().clear().commit() }
+        withContext(Dispatchers.IO) { app.getSharedPreferences("xtreme_other_settings", 0).edit().clear().commit(); app.getSharedPreferences("xtreme_playback_sources_prefs", 0).edit().clear().commit() }
         repository = ReactiveSettingsRepository(app)
         repository.preload()
         context = object : ContextWrapper(app) {
@@ -70,6 +70,39 @@ class StreamingAddonIntegrationTest {
     private fun enable() {
         OtherSettingsPreferences.saveStreamingAddon(context, base, "My Music")
         OtherSettingsPreferences.setStreamingAddonEnabled(context, true)
+    }
+
+    @Test fun multipleSavedServersRetainSeparateIdentitiesAndCanBeDisabledIndividually() = runBlocking {
+        val secondBase = base.replace("/a/token", "/b/token")
+        server.createContext("/b/token/") { exchange ->
+            requests.add(exchange.requestURI.toString())
+            val response = when {
+                exchange.requestURI.path.endsWith("search") -> """{"tracks":[{"id":"right","title":"Song","artist":"Artist","album":"Album","duration":180}]}"""
+                else -> """{"url":"$secondBase/song.flac","codec":"flac","bitrate":1411200}"""
+            }.toByteArray()
+            exchange.sendResponseHeaders(200, response.size.toLong())
+            exchange.responseBody.use { it.write(response) }; exchange.close()
+        }
+        fun custom(url: String, name: String) = com.example.playback.PlaybackSource(
+            com.example.playback.PlaybackSource.addonId(url), com.example.playback.PlaybackSourceKind.ADDON, name, baseUrl = url)
+        val first = custom(base, "First"); val second = custom(secondBase, "Second")
+        val sources = listOf(first, second) + com.example.playback.PlaybackSource.builtIns
+        OtherSettingsPreferences.savePlaybackSources(context, sources)
+        withTimeout(3000) { while (OtherSettingsPreferences.loadPlaybackSources(context) != sources) delay(10) }
+        val policy = maximum.copy(sources = sources)
+        val tracks = StreamingAddons.search(context, "Song", policy)
+        assertEquals(3, tracks.size)
+        assertTrue(tracks.any { StreamingAddons.ownsTrack(first, it.id) })
+        val selected = tracks.single { StreamingAddons.ownsTrack(second, it.id) }
+        val played = StreamingAddons.resolve(context, selected, policy, source = second)!!
+        assertEquals(selected.id, played.id); assertEquals("$secondBase/song.flac", played.audioUrl)
+        assertTrue(StreamingAddons.isVerified(played.audioUrl, policy))
+        val changed = sources.map { if (it.id == second.id) it.copy(enabled = false) else it }
+        OtherSettingsPreferences.savePlaybackSources(context, changed)
+        withTimeout(3000) { while (OtherSettingsPreferences.loadPlaybackSources(context) != changed) delay(10) }
+        assertFalse(StreamingAddons.isVerified(played.audioUrl, policy.copy(sources = changed)))
+        assertNull(StreamingAddons.resolve(context, selected, policy.copy(sources = changed), source = second))
+        assertEquals(2, StreamingAddons.search(context, "Song", policy.copy(sources = changed)).size)
     }
 
     @Test fun manifestConnectionNormalizesUrlAndSavingDoesNotEnableStreaming() = runBlocking {
@@ -112,17 +145,14 @@ class StreamingAddonIntegrationTest {
         assertEquals(1, requests.count { it.contains("/search?") })
     }
 
-    @Test fun lossyQualityCeilingsRejectAnOversizedOrUnknownBitrateWithoutMislabelingIt() = runBlocking {
+    @Test fun restrictedQualitiesDoNotContactAnyCustomServer() = runBlocking {
         enable()
-        val policy = PlaybackSourcePolicy(AudioQualityCeiling.DATA_SAVER)
-        assertNull(StreamingAddons.resolve(context, song, policy))
-        assertTrue(requests.all { "quality=low" in it })
-        stream = { """{"data":{"url":"$base/song.aac","codec":"aac","format":"aac","bitrate":96000}}""" }
-        val another = song.copy(id = "online_another")
-        val aac = StreamingAddons.resolve(context, another, policy)!!
-        assertEquals(96, aac.bitrateKbps); assertFalse(aac.isLossless)
-        assertTrue(policy.acceptsRemoteTrack(aac))
-        assertFalse(PlaybackSourcePolicy(AudioQualityCeiling.DATA_SAVER).acceptsRemoteTrack(aac.copy(audioUrl = "$base/unregistered.aac")))
+        for (ceiling in listOf(AudioQualityCeiling.DATA_SAVER, AudioQualityCeiling.NORMAL, AudioQualityCeiling.HIGH)) {
+            val policy = PlaybackSourcePolicy(ceiling)
+            assertNull(StreamingAddons.resolve(context, song, policy))
+            assertTrue(StreamingAddons.search(context, "Song", policy).isEmpty())
+        }
+        assertTrue(requests.isEmpty())
     }
 
     @Test fun disablingAddonDuringLookupPreventsLateResultsFromBeingActivated() = runBlocking {

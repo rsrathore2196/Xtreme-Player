@@ -37,11 +37,9 @@ class SearchSourcePolicyTest {
     }
     private suspend fun awaitCondition(test: () -> Boolean) = withTimeout(3_000) { while (!test()) delay(10) }
 
-    @Test fun lowerQualityImmediatelyRemovesArchiveAndUnverifiedYoutubeWithoutClearingQueryOrJio() = runBlocking {
+    @Test fun lowerQualityRemovesArchiveWhileKeepingOriginalYoutubeAndJioRows() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        val verify = CompletableDeferred<Boolean>()
         val browser = CatalogBrowserState(CatalogRepository(), scope,
-            verifyPlayback = { _, _ -> verify.await() },
             archiveSearch = { _, _, _, _ -> InternetArchiveApiService.LosslessSearchPage(listOf(archive)) })
         try {
             seed(browser)
@@ -49,9 +47,7 @@ class SearchSourcePolicyTest {
             awaitCondition { browser.search.value.page.tracks.any { it.id == archive.id } }
             browser.setSourcePolicy(PlaybackSourcePolicy(AudioQualityCeiling.HIGH))
             assertEquals("Song", browser.search.value.query)
-            assertEquals(listOf(jio.id), browser.search.value.page.tracks.map { it.id })
-            verify.complete(true)
-            awaitCondition { browser.search.value.page.tracks.any { it.id == youtube.id } }
+            assertEquals(setOf(jio.id, youtube.id), browser.search.value.page.tracks.map { it.id }.toSet())
             assertFalse(browser.search.value.page.tracks.any { it.id == archive.id })
         } finally { scope.cancel() }
     }
@@ -61,8 +57,7 @@ class SearchSourcePolicyTest {
         val started = CompletableDeferred<Unit>()
         val release = CompletableDeferred<Unit>()
         val finished = CompletableDeferred<Unit>()
-        val browser = CatalogBrowserState(CatalogRepository(), scope, verifyPlayback = { _, _ -> false },
-            archiveSearch = { _, _, _, _ ->
+        val browser = CatalogBrowserState(CatalogRepository(), scope, archiveSearch = { _, _, _, _ ->
                 started.complete(Unit)
                 withContext(NonCancellable) { release.await() }
                 finished.complete(Unit)
@@ -75,60 +70,46 @@ class SearchSourcePolicyTest {
             browser.setSourcePolicy(PlaybackSourcePolicy(AudioQualityCeiling.NORMAL))
             release.complete(Unit)
             withTimeout(3_000) { finished.await() }
-            awaitCondition { browser.search.value.page.tracks == listOf(jio) }
+            awaitCondition { browser.search.value.page.tracks.map { it.id }.toSet() == setOf(jio.id, youtube.id) }
             assertEquals("Song", browser.search.value.query)
         } finally { release.complete(Unit); scope.cancel() }
     }
 
-    @Test fun enhancerChangesRecheckYoutubeEligibilityWhileKeepingJioVisible() = runBlocking {
+    @Test fun enhancerChangesDoNotHideOriginalYoutubeCatalogRows() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        val browser = CatalogBrowserState(CatalogRepository(), scope, verifyPlayback = { _, policy -> policy.preferOpus })
+        val browser = CatalogBrowserState(CatalogRepository(), scope)
         try {
             seed(browser)
-            browser.setSourcePolicy(PlaybackSourcePolicy(AudioQualityCeiling.DATA_SAVER, enhancer = true))
-            awaitCondition { browser.search.value.page.tracks.any { it.id == youtube.id } }
-            browser.setSourcePolicy(PlaybackSourcePolicy(AudioQualityCeiling.DATA_SAVER, enhancer = false))
-            assertEquals(listOf(jio.id), browser.search.value.page.tracks.map { it.id })
+            for (enhancer in listOf(true, false, true, false)) {
+                browser.setSourcePolicy(PlaybackSourcePolicy(AudioQualityCeiling.DATA_SAVER, enhancer))
+                assertEquals(setOf(jio.id, youtube.id), browser.search.value.page.tracks.map { it.id }.toSet())
+            }
         } finally { scope.cancel() }
     }
 
-    @Test fun failedYoutubeRowsCannotStarveLaterRowsAndVerificationStaysBounded() = runBlocking {
+    @Test fun youtubeRowsPublishTogetherWithoutAvailabilityWorkers() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        val active = java.util.concurrent.atomic.AtomicInteger()
-        val peak = java.util.concurrent.atomic.AtomicInteger()
-        val checked = java.util.concurrent.atomic.AtomicInteger()
         val tracks = (0..15).map { youtube.copy(id = "yt_aaaaaaaaa${it.toString().padStart(2, '0')}", title = "Song $it") }
-        val browser = CatalogBrowserState(CatalogRepository(), scope, verifyPlayback = { track, _ ->
-            peak.accumulateAndGet(active.incrementAndGet(), ::maxOf)
-            try {
-                delay(10)
-                checked.incrementAndGet()
-                val index = track.id.takeLast(2).toInt()
-                if (index == 0) throw java.io.IOException("Transient lookup failure")
-                index >= 14
-            } finally { active.decrementAndGet() }
-        }, archiveSearch = { _, _, _, _ -> error("Lower-quality search must not query Archive") })
+        val browser = CatalogBrowserState(CatalogRepository(), scope,
+            archiveSearch = { _, _, _, _ -> error("Lower-quality search must not query Archive") })
         try {
             seed(browser, listOf(jio) + tracks)
             browser.setSourcePolicy(PlaybackSourcePolicy(AudioQualityCeiling.HIGH, enhancer = true))
-            awaitCondition { checked.get() == 16 && browser.search.value.page.tracks.size == 3 }
-            assertEquals(setOf(jio.id, tracks[14].id, tracks[15].id), browser.search.value.page.tracks.map { it.id }.toSet())
-            assertTrue(peak.get() in 1..2)
+            assertEquals((listOf(jio) + tracks).map { it.id }.toSet(), browser.search.value.page.tracks.map { it.id }.toSet())
         } finally { scope.cancel() }
     }
 
     @Test fun cachedArchiveRowsReturnWithoutAnotherLookupAndKeepTheirOwnMetadata() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val calls = java.util.concurrent.atomic.AtomicInteger()
-        val browser = CatalogBrowserState(CatalogRepository(), scope, verifyPlayback = { _, _ -> false },
-            archiveSearch = { _, _, _, _ -> calls.incrementAndGet()
+        val browser = CatalogBrowserState(CatalogRepository(), scope, archiveSearch = { _, _, _, _ -> calls.incrementAndGet()
                 InternetArchiveApiService.LosslessSearchPage(listOf(archive), nextPage = 2) })
         try {
             seed(browser)
             browser.setSourcePolicy(PlaybackSourcePolicy(AudioQualityCeiling.MAX))
             awaitCondition { browser.search.value.page.tracks.any { it.id == archive.id } }
             browser.setSourcePolicy(PlaybackSourcePolicy(AudioQualityCeiling.DATA_SAVER))
-            assertEquals(listOf(jio.id), browser.search.value.page.tracks.map { it.id })
+            assertEquals(setOf(jio.id, youtube.id), browser.search.value.page.tracks.map { it.id }.toSet())
             browser.setSourcePolicy(PlaybackSourcePolicy(AudioQualityCeiling.MAX))
             awaitCondition { browser.search.value.page.tracks.any { it.id == archive.id } }
             assertEquals(archive, browser.search.value.page.tracks.single { it.id == archive.id })
@@ -142,8 +123,7 @@ class SearchSourcePolicyTest {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val pages = java.util.concurrent.CopyOnWriteArrayList<Int>()
         val second = archive.copy(id = "ia_album:second.flac", audioUrl = "https://archive.org/download/album/second.flac")
-        val browser = CatalogBrowserState(CatalogRepository(), scope, verifyPlayback = { _, _ -> true },
-            archiveSearch = { _, page, _, _ -> pages.add(page)
+        val browser = CatalogBrowserState(CatalogRepository(), scope, archiveSearch = { _, page, _, _ -> pages.add(page)
                 InternetArchiveApiService.LosslessSearchPage(listOf(if (page == 1) archive else second),
                     nextPage = if (page == 1) 2 else null) })
         try {
@@ -173,8 +153,7 @@ class SearchSourcePolicyTest {
         val started = CompletableDeferred<Unit>()
         val released = CompletableDeferred<Unit>()
         val finished = CompletableDeferred<Unit>()
-        val browser = CatalogBrowserState(CatalogRepository(), scope, verifyPlayback = { _, _ -> false },
-            archiveSearch = { _, page, _, _ ->
+        val browser = CatalogBrowserState(CatalogRepository(), scope, archiveSearch = { _, page, _, _ ->
                 if (page == 2) { started.complete(Unit); withContext(NonCancellable) { released.await() }; finished.complete(Unit) }
                 InternetArchiveApiService.LosslessSearchPage(listOf(archive), nextPage = 2)
             })
@@ -186,11 +165,11 @@ class SearchSourcePolicyTest {
             withTimeout(3_000) { started.await() }
             browser.setSourcePolicy(PlaybackSourcePolicy(AudioQualityCeiling.NORMAL))
             assertFalse(browser.search.value.loadingMore)
-            assertEquals(listOf(jio.id), browser.search.value.page.tracks.map { it.id })
+            assertEquals(setOf(jio.id, youtube.id), browser.search.value.page.tracks.map { it.id }.toSet())
             assertNull(browser.search.value.page.nextPage)
             released.complete(Unit)
             withTimeout(3_000) { finished.await() }
-            awaitCondition { browser.search.value.page.tracks == listOf(jio) }
+            awaitCondition { browser.search.value.page.tracks.map { it.id }.toSet() == setOf(jio.id, youtube.id) }
         } finally { released.complete(Unit); scope.cancel() }
     }
 
@@ -217,29 +196,16 @@ class SearchSourcePolicyTest {
         } finally { released.complete(Unit); scope.cancel() }
     }
 
-    @Test fun lateOpusVerificationCannotMakeAnUnmatchedRowPlayableAfterEnhancerIsDisabled() = runBlocking {
+    @Test fun rapidQualityAndEnhancerChangesPreserveYoutubeMetadata() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        val started = CompletableDeferred<Unit>()
-        val released = CompletableDeferred<Unit>()
-        val finished = CompletableDeferred<Unit>()
-        val browser = CatalogBrowserState(CatalogRepository(), scope, verifyPlayback = { _, policy ->
-            if (policy.preferOpus) {
-                started.complete(Unit)
-                withContext(NonCancellable) { released.await() }
-                finished.complete(Unit)
-                true
-            } else false
-        })
+        val browser = CatalogBrowserState(CatalogRepository(), scope)
         try {
             seed(browser)
-            browser.setSourcePolicy(PlaybackSourcePolicy(AudioQualityCeiling.HIGH, enhancer = true))
-            withTimeout(3_000) { started.await() }
-            browser.setSourcePolicy(PlaybackSourcePolicy(AudioQualityCeiling.HIGH, enhancer = false))
-            released.complete(Unit)
-            withTimeout(3_000) { finished.await() }
-            awaitCondition { browser.search.value.page.tracks == listOf(jio) }
+            for (quality in AudioQualityCeiling.entries) for (enhancer in listOf(true, false))
+                browser.setSourcePolicy(PlaybackSourcePolicy(quality, enhancer))
+            assertEquals(youtube, browser.search.value.page.tracks.single { it.id == youtube.id })
             assertEquals("Song", browser.search.value.query)
-        } finally { released.complete(Unit); scope.cancel() }
+        } finally { scope.cancel() }
     }
 
     @Test fun archiveResultsUseTheExistingRelevanceRankingWithoutLosingTheirProvider() {
@@ -255,7 +221,7 @@ class SearchSourcePolicyTest {
     @Test fun streamingAddonRowsAreIndependentAndOtherSettingsDoNotRepeatTheirLookup() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val calls = java.util.concurrent.atomic.AtomicInteger()
-        val custom = jio.copy(id = "addon_personal:c29uZw", source = "Streaming Addon: Personal", audioUrl = "")
+        val custom = jio.copy(id = com.example.data.remote.StreamingAddons.catalogTrackId("https://personal.example", "song"), source = "Streaming Addon: Personal", audioUrl = "")
         val browser = CatalogBrowserState(CatalogRepository(), scope, addonSearch = { _, _ ->
             calls.incrementAndGet(); listOf(custom)
         })
@@ -263,6 +229,7 @@ class SearchSourcePolicyTest {
             addonUrl = "https://personal.example")
         try {
             seed(browser, listOf(jio))
+            browser.setSourcePolicy(PlaybackSourcePolicy(AudioQualityCeiling.MAX))
             assertEquals(0, calls.get())
             browser.setStreamingAddon(settings)
             awaitCondition { browser.search.value.page.tracks.any { it.id == custom.id } }
@@ -282,11 +249,12 @@ class SearchSourcePolicyTest {
             entered.complete(Unit)
             withContext(NonCancellable) { released.await() }
             finished.complete(Unit)
-            listOf(jio.copy(id = "addon_personal:c29uZw", source = "Streaming Addon: Personal"))
+            listOf(jio.copy(id = com.example.data.remote.StreamingAddons.catalogTrackId("https://personal.example", "song"), source = "Streaming Addon: Personal"))
         })
         val settings = com.example.data.local.PlaybackIntegrationSettings(addonEnabled = true, addonUrl = "https://personal.example")
         try {
             seed(browser, listOf(jio))
+            browser.setSourcePolicy(PlaybackSourcePolicy(AudioQualityCeiling.MAX))
             browser.setStreamingAddon(settings)
             withTimeout(3000) { entered.await() }
             browser.setStreamingAddon(settings.copy(addonEnabled = false))

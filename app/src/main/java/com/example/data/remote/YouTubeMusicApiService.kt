@@ -431,7 +431,7 @@ object YouTubeMusicApiService {
                 language = r.optString("language", "Unknown").ifBlank { "Unknown" },
                 year = releaseYear,
                 isrc = r.optString("isrc", ""),
-                source = "Extended Stream"
+                source = "YouTube Music"
             )
         } catch (e: Exception) {
             return null
@@ -764,7 +764,7 @@ object YouTubeMusicApiService {
                     bitrateKbps = 0,
                     qualityBadge = "HQ Stream",
                     genre = "Unknown",
-                    source = "Extended Stream"
+                    source = "YouTube Music"
                 )
             }
         }
@@ -791,7 +791,7 @@ object YouTubeMusicApiService {
                     bitrateKbps = 0,
                     qualityBadge = "HQ Stream",
                     genre = "Unknown",
-                    source = "Extended Stream"
+                    source = "YouTube Music"
                 )
             }
         }

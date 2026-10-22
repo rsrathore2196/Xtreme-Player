@@ -37,6 +37,17 @@ class SourcePolicyRoutingTest {
         assertEquals("96000", uri.getQueryParameter("cap"))
     }
 
+    @Test fun installedArchiveStreamRemainsUsableFromCacheOfflineWithoutAProviderLookup() = runBlocking {
+        val policy = PlaybackSourcePolicy(AudioQualityCeiling.MAX, online = false)
+        val resolver = StreamResolver(searchLossless = { error("Offline must not search Archive") },
+            searchStandard = { _, _ -> error("Offline must not search Jio") },
+            resolveYouTube = { _, _, _, _ -> error("Offline must not extract YouTube") })
+        assertFalse(policy.allowsArchive)
+        assertTrue(policy.acceptsRemoteTrack(archive))
+        assertEquals(archive, resolver.resolve(archive, policy.ceiling.audioQuality, sourcePolicy = policy))
+    }
+
+    private val archiveFirst = listOf(PlaybackSource.archive, PlaybackSource.jio, PlaybackSource.youtube)
     private val song = MusicTrack("yt_abcdefghijk", "Song", "Artist", "Album", 180_000, "cover", "",
         source = "YouTube Music", isLiked = true)
     private val jio = song.copy(id = "online_match", source = "JIOSAAVN",
@@ -48,27 +59,27 @@ class SourcePolicyRoutingTest {
 
     private fun resolver(standard: List<MusicTrack> = listOf(jio), extractedOpus: MusicTrack? = opus,
         verifiedArchive: MusicTrack? = archive, youtube: MusicTrack? = opus) = StreamResolver(
-        searchStandard = { _, _ -> standard }, searchLossless = { error("No foreground Archive search") },
+        searchStandard = { _, _ -> standard }, searchLossless = { emptyList() },
         fetchById = { _, _ -> standard.firstOrNull() }, searchYouTube = { listOf(song) },
-        resolveYouTube = { request, _, _ -> youtube?.copy(id = request.id) },
+        resolveYouTube = { request, _, _, _ -> youtube?.copy(id = request.id) },
         supportsLossless = { true }, resolveOpus = { request, _, _, _ -> extractedOpus?.copy(id = request.id) },
         verifyArchive = { verifiedArchive })
 
-    @Test fun cappedEnhancerOffAlwaysUsesMatchingJioAndPreservesSelectionIdentity() = runBlocking {
+    @Test fun cappedModesPreferYoutubeAndPreserveCatalogIdentityWithEnhancerOff() = runBlocking {
         for (ceiling in AudioQualityCeiling.entries.filter { it != AudioQualityCeiling.MAX }) {
             val result = resolver().resolve(song, ceiling.audioQuality,
                 maxBitrateBps = ceiling.maxBitrateBps, sourcePolicy = PlaybackSourcePolicy(ceiling))
             assertEquals(song.id, result.id); assertEquals(song.title, result.title)
             assertEquals(song.coverUrl, result.coverUrl); assertTrue(result.isLiked)
-            assertEquals("JIOSAAVN", result.source); assertFalse(result.isLossless)
-            assertTrue(result.audioUrl.endsWith("_${ceiling.maxBitrateBps / 1000}.mp4"))
+            assertEquals("YouTube Music", result.source); assertFalse(result.isLossless)
+            assertEquals(opus.audioUrl, result.audioUrl)
         }
     }
 
-    @Test fun cappedEnhancerOnUsesVerifiedOpusWithinEveryCeiling() = runBlocking {
+    @Test fun enhancerKeepsYoutubeWhenHigherSourcesAreUnavailableWithinTheCeiling() = runBlocking {
         for (ceiling in AudioQualityCeiling.entries.filter { it != AudioQualityCeiling.MAX }) {
             val policy = PlaybackSourcePolicy(ceiling, enhancer = true)
-            val result = resolver().resolve(song, ceiling.audioQuality,
+            val result = resolver(standard = emptyList()).resolve(song, ceiling.audioQuality,
                 maxBitrateBps = ceiling.maxBitrateBps, sourcePolicy = policy)
             assertEquals(opus.audioUrl, result.audioUrl)
             assertEquals("YouTube Music", result.source); assertFalse(result.isLossless)
@@ -76,29 +87,31 @@ class SourcePolicyRoutingTest {
         }
     }
 
-    @Test fun aacVorbisUnknownAndOverCeilingStreamsNeverQualifyAsOpus() = runBlocking {
-        val policy = PlaybackSourcePolicy(AudioQualityCeiling.DATA_SAVER, true)
+    @Test fun missingOpusStillAllowsSupportedYoutubeAudioBeforeJio() = runBlocking {
+        val policy = PlaybackSourcePolicy(AudioQualityCeiling.HIGH, true)
+        val aac = opus.copy(audioUrl = "xtreme-youtube://audio/abcdefghijk/stream.audio?cap=320000",
+            qualityBadge = "AAC • 80 kbps")
         for (bad in listOf(opus.copy(qualityBadge = "AAC • 80 kbps"), opus.copy(qualityBadge = "Vorbis • 80 kbps"),
-            opus.copy(bitrateKbps = 0), opus.copy(bitrateKbps = 160))) {
-            val result = resolver(extractedOpus = bad).resolve(song, policy.ceiling.audioQuality,
+            opus.copy(bitrateKbps = 640))) {
+            val result = resolver(standard = emptyList(), extractedOpus = bad, youtube = aac).resolve(song, policy.ceiling.audioQuality,
                 maxBitrateBps = policy.ceiling.maxBitrateBps, sourcePolicy = policy)
-            assertTrue(result.audioUrl.endsWith("_96.mp4")); assertEquals("JIOSAAVN", result.source)
+            assertEquals("AAC • 80 kbps", result.qualityBadge)
+            assertEquals("YouTube Music", result.source)
         }
     }
 
-    @Test fun enhancerOffCannotUseYoutubeEvenDuringRecoveryWhenJioIsUnavailable() = runBlocking {
-        try {
-            resolver(standard = emptyList()).resolve(song, AudioQuality.ULTRA_HD_320, preferYouTube = true,
-                sourcePolicy = PlaybackSourcePolicy(AudioQualityCeiling.HIGH))
-            fail("A different provider may not bypass the active policy")
-        } catch (_: TrackUnavailableException) { }
+    @Test fun enhancerOffStillUsesYoutubeWhenJioIsUnavailable() = runBlocking {
+        val result = resolver(standard = emptyList()).resolve(song, AudioQuality.ULTRA_HD_320,
+            sourcePolicy = PlaybackSourcePolicy(AudioQualityCeiling.HIGH))
+        assertEquals("YouTube Music", result.source)
+        assertEquals(opus.audioUrl, result.audioUrl)
     }
 
     @Test fun wrongJioRecordingCannotMakeAYoutubeResultPlayable() = runBlocking {
         for (wrong in listOf(jio.copy(title = "Song (Live)"), jio.copy(artist = "Different Artist"),
             jio.copy(title = "Song (Remix)"), jio.copy(durationMs = 240_000))) {
             try {
-                resolver(standard = listOf(wrong)).resolve(song, AudioQuality.ULTRA_HD_320,
+                resolver(standard = listOf(wrong), extractedOpus = null, youtube = null).resolve(song, AudioQuality.ULTRA_HD_320,
                     sourcePolicy = PlaybackSourcePolicy(AudioQualityCeiling.HIGH))
                 fail("Conflicting recording must be unavailable")
             } catch (_: TrackUnavailableException) { }
@@ -108,7 +121,7 @@ class SourcePolicyRoutingTest {
     @Test fun maximumIgnoresEnhancerAndResolvesSelectedArchiveFileDirectly() = runBlocking {
         for (enhancer in listOf(false, true)) {
             val result = resolver(standard = emptyList(), extractedOpus = null).resolve(archive, AudioQuality.HI_RES_LOSSLESS,
-                sourcePolicy = PlaybackSourcePolicy(AudioQualityCeiling.MAX, enhancer))
+                sourcePolicy = PlaybackSourcePolicy(AudioQualityCeiling.MAX, enhancer, sources = archiveFirst))
             assertEquals(archive.audioUrl, result.audioUrl); assertEquals(archive.id, result.id)
             assertTrue(result.isLossless); assertEquals("INTERNET_ARCHIVE", result.source)
         }
@@ -116,14 +129,14 @@ class SourcePolicyRoutingTest {
 
     @Test fun unverifiedArchiveFileFallsBackOnlyToTheSameRecording() = runBlocking {
         val result = resolver(verifiedArchive = null).resolve(archive, AudioQuality.HI_RES_LOSSLESS,
-            sourcePolicy = PlaybackSourcePolicy(AudioQualityCeiling.MAX))
+            sourcePolicy = PlaybackSourcePolicy(AudioQualityCeiling.MAX, sources = archiveFirst))
         assertEquals(archive.id, result.id); assertEquals(jio.audioUrl, result.audioUrl); assertFalse(result.isLossless)
     }
 
     @Test fun savedAddonTransportCannotBypassTheOrdinaryResolverAfterAddonRoutingIsDisabled() = runBlocking {
         val saved = jio.copy(audioUrl = "https://personal.example/song.flac", source = "Streaming Addon: Personal")
         val result = resolver().resolve(saved, AudioQuality.HI_RES_LOSSLESS,
-            sourcePolicy = PlaybackSourcePolicy(AudioQualityCeiling.MAX))
+            sourcePolicy = PlaybackSourcePolicy(AudioQualityCeiling.MAX, sources = archiveFirst))
         assertEquals(jio.audioUrl, result.audioUrl)
         assertFalse(result.source.startsWith("Streaming Addon:"))
     }
@@ -134,8 +147,9 @@ class SourcePolicyRoutingTest {
         val resolver = StreamResolver(searchStandard = { _, _ -> listOf(jio) }, fetchById = { _, _ -> jio },
             supportsLossless = { true }, verifyArchive = { requested ->
                 verifications++; requested.takeIf { available }
-            })
-        val policy = PlaybackSourcePolicy(AudioQualityCeiling.MAX)
+            },
+        searchYouTube = { emptyList() }, resolveOpus = { _, _, _, _ -> null }, resolveYouTube = { _, _, _, _ -> null })
+        val policy = PlaybackSourcePolicy(AudioQualityCeiling.MAX, sources = archiveFirst)
         val fallback = resolver.resolve(archive, policy.ceiling.audioQuality, sourcePolicy = policy)
         assertEquals(jio.audioUrl, fallback.audioUrl)
         available = true
@@ -150,8 +164,9 @@ class SourcePolicyRoutingTest {
     @Test fun selectedArchiveTransportWithACatalogIdBypassesCachedAac() = runBlocking {
         var verifications = 0
         val resolver = StreamResolver(searchStandard = { _, _ -> listOf(jio) }, fetchById = { _, _ -> jio },
-            supportsLossless = { true }, verifyArchive = { verifications++; it })
-        val policy = PlaybackSourcePolicy(AudioQualityCeiling.MAX)
+            supportsLossless = { true }, verifyArchive = { verifications++; it },
+        searchYouTube = { emptyList() }, resolveOpus = { _, _, _, _ -> null }, resolveYouTube = { _, _, _, _ -> null })
+        val policy = PlaybackSourcePolicy(AudioQualityCeiling.MAX, sources = archiveFirst)
         assertEquals(jio.audioUrl, resolver.resolve(jio, policy.ceiling.audioQuality, sourcePolicy = policy).audioUrl)
         val selected = archive.copy(id = jio.id)
         val direct = resolver.resolve(selected, policy.ceiling.audioQuality, sourcePolicy = policy)
@@ -165,17 +180,17 @@ class SourcePolicyRoutingTest {
     @Test fun aDifferentArchiveFileCannotReplaceTheExplicitlySelectedFile() = runBlocking {
         val other = archive.copy(audioUrl = "https://archive.org/download/other/song.flac")
         val result = resolver(verifiedArchive = other).resolve(archive, AudioQuality.HI_RES_LOSSLESS,
-            sourcePolicy = PlaybackSourcePolicy(AudioQualityCeiling.MAX))
+            sourcePolicy = PlaybackSourcePolicy(AudioQualityCeiling.MAX, sources = archiveFirst))
         assertEquals(jio.audioUrl, result.audioUrl)
         assertFalse(result.isLossless)
     }
 
-    @Test fun maximumKeepsTheSelectedYoutubeVideoAndDoesNotApplyOpusPreference() = runBlocking {
+    @Test fun maximumFallsBackToJioBeforeYoutubeRegardlessOfEnhancer() = runBlocking {
         val aac = opus.copy(qualityBadge = "AAC • 128 kbps", bitrateKbps = 128)
         for (enhancer in listOf(false, true)) {
             val result = resolver(youtube = aac, extractedOpus = null).resolve(song, AudioQuality.HI_RES_LOSSLESS,
-                sourcePolicy = PlaybackSourcePolicy(AudioQualityCeiling.MAX, enhancer))
-            assertEquals(aac.audioUrl, result.audioUrl); assertEquals("AAC • 128 kbps", result.qualityBadge)
+                sourcePolicy = PlaybackSourcePolicy(AudioQualityCeiling.MAX, enhancer, sources = archiveFirst))
+            assertEquals(jio.audioUrl, result.audioUrl); assertEquals("AAC • 320 kbps", result.qualityBadge)
         }
     }
 
@@ -183,7 +198,8 @@ class SourcePolicyRoutingTest {
         val started = CompletableDeferred<Unit>()
         val stopped = CompletableDeferred<Unit>()
         val resolver = StreamResolver(searchStandard = { _, _ -> error("Cancellation is not unavailability") },
-            resolveOpus = { _, _, _, _ -> started.complete(Unit); try { awaitCancellation() } finally { stopped.complete(Unit) } })
+            resolveOpus = { _, _, _, _ -> started.complete(Unit); try { awaitCancellation() } finally { stopped.complete(Unit) } },
+        searchYouTube = { emptyList() }, resolveYouTube = { _, _, _, _ -> null })
         val lookup = async { resolver.resolve(song, AudioQuality.ULTRA_HD_320,
             sourcePolicy = PlaybackSourcePolicy(AudioQualityCeiling.HIGH, true)) }
         withTimeout(3_000) { started.await() }
@@ -219,7 +235,8 @@ class SourcePolicyRoutingTest {
 
     @Test fun anOfflineSourceNeverTriggersProviderSearchOrExtraction() = runBlocking {
         val resolver = StreamResolver(searchStandard = { _, _ -> error("Offline discovery") },
-            searchLossless = { error("Offline Archive lookup") }, resolveOpus = { _, _, _, _ -> error("Offline extraction") })
+            searchLossless = { error("Offline Archive lookup") }, resolveOpus = { _, _, _, _ -> error("Offline extraction") },
+        searchYouTube = { emptyList() }, resolveYouTube = { _, _, _, _ -> null })
         val result = resolver.resolve(jio, AudioQuality.ULTRA_HD_320,
             sourcePolicy = PlaybackSourcePolicy(AudioQualityCeiling.HIGH, online = false))
         assertEquals(jio.audioUrl, result.audioUrl)

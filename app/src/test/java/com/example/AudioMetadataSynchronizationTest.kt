@@ -38,6 +38,24 @@ class AudioMetadataSynchronizationTest {
         MusicService::class.java.getDeclaredMethod("sameAudioProperties", Bundle::class.java, Bundle::class.java)
             .apply { isAccessible = true }.invoke(owner, before, after) as Boolean
 
+    @Test fun headlessActivationAcceptsSupportedYoutubeFallbackWithoutAssumingOpus() {
+        val owner = service
+        val method = MusicService::class.java.getDeclaredMethod("resolvedFormatMatches",
+            com.example.data.model.MusicTrack::class.java, Format::class.java).apply { isAccessible = true }
+        val track = com.example.data.model.MusicTrack("online_original", "Song", "Artist", "Album", 180000,
+            "cover", "xtreme-youtube://audio/abcdefghijk/stream.audio?cap=160000", qualityBadge = "AAC • 128 kbps")
+        fun matches(candidate: com.example.data.model.MusicTrack, format: Format) = method.invoke(owner, candidate, format) as Boolean
+        val opus = Format.Builder().setSampleMimeType(MimeTypes.AUDIO_OPUS).setCodecs("opus").build()
+        assertTrue(matches(track, aac()))
+        assertFalse(matches(track.copy(qualityBadge = "Opus • 128 kbps"), aac()))
+        assertTrue(matches(track.copy(qualityBadge = "Opus • 128 kbps"), opus))
+        val jio = track.copy(audioUrl = "https://aac.saavncdn.com/song_160.mp4")
+        assertTrue(matches(jio, aac()))
+        assertFalse(matches(jio, opus))
+        assertFalse(matches(track.copy(isLossless = true), aac()))
+        assertTrue(matches(track.copy(isLossless = true), flac()))
+    }
+
     @Test fun everyActualPropertyIsComparedEvenIfTheVisibleBadgeIsIdentical() {
         val owner = service
         val first = properties(owner, item(), aac(), "JIOSAAVN")

@@ -9,6 +9,11 @@ import com.example.data.repository.RecordingIdentity
 import com.example.performance.AppDispatchers
 import com.example.playback.AudioQualityCeiling
 import com.example.playback.PlaybackSourcePolicy
+import com.example.playback.PlaybackSource
+import com.example.playback.PlaybackSourceKind
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Semaphore
@@ -32,7 +37,7 @@ import kotlin.coroutines.resumeWithException
 object StreamingAddons {
     data class Manifest(val name: String, val baseUrl: String)
     private data class Transport(val headers: Map<String, String>, val mime: String?, val bitrate: Int,
-        val expires: Long, val headerScope: String?)
+        val expires: Long, val headerScope: String?, val sourceId: String)
     private val transports = ConcurrentHashMap<String, Transport>()
     private data class Cached(val track: MusicTrack?, val expires: Long)
     private val resolutions = ConcurrentHashMap<String, Cached>()
@@ -92,7 +97,7 @@ object StreamingAddons {
             require(resources == null || resources.length() == 0 || (0 until resources.length()).any {
                 resources.optString(it).lowercase() in setOf("search", "stream")
             }) { "This manifest does not provide music search or streaming" }
-            Manifest(root.optString("name").ifBlank { root.optString("id") }.ifBlank { "Custom server" }, base)
+            Manifest(root.optString("name").ifBlank { root.optString("id") }.ifBlank { "Custom server" }.trim().take(100), base)
         }
     }
     private fun quality(ceiling: AudioQualityCeiling) = when (ceiling) {
@@ -102,8 +107,11 @@ object StreamingAddons {
     }
     private fun fingerprint(base: String): String = java.security.MessageDigest.getInstance("SHA-256")
         .digest(base.toByteArray()).take(8).joinToString("") { "%02x".format(it) }
-    private fun rowId(base: String, id: String) = "addon_${fingerprint(base)}:" +
+    internal fun catalogTrackId(base: String, id: String) = "addon_${fingerprint(base)}:" +
         android.util.Base64.encodeToString(id.toByteArray(), android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP or android.util.Base64.NO_PADDING)
+    fun ownsTrack(source: PlaybackSource, id: String): Boolean =
+        source.kind == PlaybackSourceKind.ADDON && id.startsWith("addon_${fingerprint(source.baseUrl)}:")
+    fun fromSource(url: String, sourceId: String): Boolean = transports[url]?.sourceId == sourceId
     private fun providerId(base: String, id: String): String? {
         val prefix = "addon_${fingerprint(base)}:"
         if (!id.startsWith(prefix)) return null
@@ -127,7 +135,7 @@ object StreamingAddons {
                 val row = rows.optJSONObject(index) ?: return@mapNotNull null
                 val id = row.optString("id"); val title = row.optString("title"); val artist = row.optString("artist")
                 if (id.isBlank() || title.isBlank() || artist.isBlank()) return@mapNotNull null
-                MusicTrack(rowId(base, id), title, artist, row.optString("album"),
+                MusicTrack(catalogTrackId(base, id), title, artist, row.optString("album"),
                     (row.optDouble("duration", 0.0) * 1000).toLong().coerceAtLeast(0),
                     row.optString("artworkURL", row.optString("artworkUrl", "")), "",
                     source = "Streaming Addon: $name", isrc = row.optString("isrc"), qualityBadge = "Custom stream")
@@ -138,54 +146,76 @@ object StreamingAddons {
         val first = search(base, name, query, ceiling)
         return if (first.isEmpty() && ceiling == AudioQualityCeiling.MAX) search(base, name, query, ceiling, "lossless") else first
     }
+    private suspend fun activeAddons(context: Context, policy: PlaybackSourcePolicy): List<PlaybackSource> {
+        OtherSettingsPreferences.loadPlaybackSources(context)
+        val configured = if (policy.sources.isEmpty()) OtherSettingsPreferences.playbackIntegrations(context)
+            .sourceList(policy.ceiling) else policy.configuredSources
+        return configured.filter { it.kind == PlaybackSourceKind.ADDON && it.enabled &&
+            it.available(policy.ceiling) && it.baseUrl.isNotBlank() }
+    }
+    private suspend fun stillEnabled(context: Context, source: PlaybackSource, policy: PlaybackSourcePolicy): Boolean {
+        OtherSettingsPreferences.loadPlaybackSources(context)
+        return OtherSettingsPreferences.playbackIntegrations(context).sourceList(policy.ceiling)
+            .any { it.id == source.id && it.enabled && it.baseUrl == source.baseUrl && it.available(policy.ceiling) }
+    }
     suspend fun search(context: Context, query: String, policy: PlaybackSourcePolicy): List<MusicTrack> = withContext(AppDispatchers.Io) {
-        val settings = OtherSettingsPreferences.playbackIntegrations(context)
-        if (!settings.addonEnabled || settings.addonUrl.isBlank() || !policy.online || query.isBlank()) return@withContext emptyList()
-        val found = withTimeoutOrNull(10_000L) { searchPreferred(settings.addonUrl, settings.addonName, query, policy.ceiling) }.orEmpty()
-        val current = OtherSettingsPreferences.playbackIntegrations(context)
-        found.takeIf { current.addonEnabled && current.addonUrl == settings.addonUrl }.orEmpty()
+        if (!policy.online || query.isBlank()) return@withContext emptyList()
+        val sources = activeAddons(context, policy)
+        val completed = ConcurrentHashMap<String, List<MusicTrack>>()
+        // Retain successful servers if another server times out. Existing HTTP
+        // permits bound all servers together, not a separate pool for each URL.
+        withTimeoutOrNull(12_000L) { coroutineScope {
+            sources.map { source -> async {
+                try {
+                    val found = com.example.recommendation.DiscoveryRequestCoordinator.shared(
+                        "addon-search:${source.id}:${query.trim()}:${policy.key}", essential = true, network = false) {
+                        searchPreferred(source.baseUrl, source.name, query, policy.ceiling)
+                    }
+                    if (stillEnabled(context, source, policy)) completed[source.id] = found
+                } catch (e: CancellationException) { throw e } catch (_: Exception) { }
+            } }.awaitAll()
+        } }
+        sources.flatMap { completed[it.id].orEmpty() }
     }
     suspend fun resolve(context: Context, track: MusicTrack, policy: PlaybackSourcePolicy,
-        rejected: Set<String> = emptySet()): MusicTrack? = withContext(AppDispatchers.Io) {
-        val settings = OtherSettingsPreferences.playbackIntegrations(context)
-        if (!settings.addonEnabled || settings.addonUrl.isBlank() || !policy.online || track.recommendationOnly)
-            return@withContext null
+        rejected: Set<String> = emptySet(), source: PlaybackSource? = null): MusicTrack? = withContext(AppDispatchers.Io) {
+        if (!policy.online) return@withContext null
+        val active = activeAddons(context, policy)
+        val selectedSource = (if (source == null) active.firstOrNull() else source.takeIf { it in active })
+            ?: return@withContext null
         val key = withContext(AppDispatchers.CpuBounded) {
-            "${fingerprint(settings.addonUrl)}:${track.id}:${RecordingIdentity.key(track)}:${policy.key}"
+            "${selectedSource.id}:${track.id}:${RecordingIdentity.key(track)}:${policy.key}"
         }
         val cached = resolutions[key]?.takeIf { it.expires > System.currentTimeMillis() }
         fun reuse(value: MusicTrack?) = value?.let { track.copy(audioUrl = it.audioUrl, source = it.source,
             isLossless = it.isLossless, bitrateKbps = it.bitrateKbps, qualityBadge = it.qualityBadge) }
         if (cached != null && (cached.track == null || cached.track.audioUrl !in rejected && isVerified(cached.track.audioUrl, policy))) {
-            val current = OtherSettingsPreferences.playbackIntegrations(context)
-            return@withContext reuse(cached.track).takeIf { current.addonEnabled && current.addonUrl == settings.addonUrl }
+            return@withContext reuse(cached.track).takeIf { stillEnabled(context, selectedSource, policy) }
         }
         val result = com.example.recommendation.DiscoveryRequestCoordinator.shared("addon:$key:${rejected.hashCode()}",
             essential = true, network = false) {
-            val value = resolveUncached(context, track, policy, rejected)
+            val value = resolveUncached(context, selectedSource, track, policy, rejected)
             if (resolutions.size >= 128) resolutions.entries.minByOrNull { it.value.expires }?.let { resolutions.remove(it.key) }
             resolutions[key] = Cached(value, System.currentTimeMillis() + if (value == null) 5_000L else 120_000L)
             listOfNotNull(value)
         }.firstOrNull()
-        val current = OtherSettingsPreferences.playbackIntegrations(context)
-        reuse(result).takeIf { current.addonEnabled && current.addonUrl == settings.addonUrl }
+        reuse(result).takeIf { stillEnabled(context, selectedSource, policy) }
     }
-    private suspend fun resolveUncached(context: Context, track: MusicTrack, policy: PlaybackSourcePolicy,
-        rejected: Set<String> = emptySet()): MusicTrack? = withContext(AppDispatchers.Io) {
-        val settings = OtherSettingsPreferences.playbackIntegrations(context)
-        if (!settings.addonEnabled || settings.addonUrl.isBlank() || !policy.online || track.recommendationOnly ||
-            Uri.parse(track.audioUrl).scheme in setOf("file", "content") || track.id.startsWith("ia_")) return@withContext null
-        val base = settings.addonUrl
+    private suspend fun resolveUncached(context: Context, source: PlaybackSource, track: MusicTrack, policy: PlaybackSourcePolicy,
+        rejected: Set<String>): MusicTrack? = withContext(AppDispatchers.Io) {
+        if (!source.available(policy.ceiling) || !policy.online ||
+            Uri.parse(track.audioUrl).scheme in setOf("file", "content")) return@withContext null
+        val base = source.baseUrl
         val selected = providerId(base, track.id)
         try {
             withTimeoutOrNull(8_000L) {
                 val candidates = if (selected != null) listOf(track) else {
-                    val found = searchPreferred(base, settings.addonName, "${track.title} ${track.artist}", policy.ceiling)
+                    val found = searchPreferred(base, source.name, "${track.title} ${track.artist}", policy.ceiling)
                     withContext(AppDispatchers.CpuBounded) { found.mapNotNull { candidate ->
                         RecordingIdentity.fallbackConfidence(track, candidate)?.let { candidate to it }
                     }.sortedByDescending { it.second }.take(2).map { it.first } }
                 }
-                val tiers = if (policy.maximum) listOf("hi_res", "lossless", "high") else listOf(quality(policy.ceiling))
+                val tiers = listOf("hi_res", "lossless", "high")
                 for (tier in tiers) for (candidate in candidates) {
                     val id = providerId(base, candidate.id) ?: continue
                     val url = requireNotNull(base.toHttpUrlOrNull()).newBuilder().addPathSegment("stream").addPathSegment(id)
@@ -194,17 +224,17 @@ object StreamingAddons {
                         catch (_: IOException) { continue }
                     val resolved = withContext(AppDispatchers.CpuBounded) { parseStream(body, base, track, candidate, policy) }
                         ?: continue
-                    val current = OtherSettingsPreferences.playbackIntegrations(context)
-                    if (!current.addonEnabled || current.addonUrl != base) return@withTimeoutOrNull null
+                    if (!stillEnabled(context, source, policy)) return@withTimeoutOrNull null
                     if (resolved.audioUrl !in rejected) return@withTimeoutOrNull resolved
                 }
                 null
             }
         } catch (e: CancellationException) { throw e }
-        catch (_: Exception) { null } // Normal providers remain available.
+        catch (_: Exception) { null }
     }
     internal fun parseStream(body: String, base: String, requested: MusicTrack, candidate: MusicTrack,
         policy: PlaybackSourcePolicy): MusicTrack? {
+        if (!policy.maximum) return null
         val root = JSONObject(body)
         val value = root.optJSONObject("stream") ?: root.optJSONObject("data") ?: root
         if (value.optBoolean("encrypted", false)) return null
@@ -249,12 +279,13 @@ object StreamingAddons {
         if (transports.size >= 128) transports.entries.minByOrNull { it.value.expires }?.let { transports.remove(it.key) }
         val scope = stream.toHttpUrlOrNull()?.toString() ?: Regex("<BaseURL[^>]*>\\s*(https?://[^<]+)\\s*</BaseURL>")
             .find(inlineXml)?.groupValues?.get(1)?.trim()?.replace("&amp;", "&")?.toHttpUrlOrNull()?.toString()
-        transports[stream] = Transport(headers, mime, bitrate, minOf(expires - 5_000L, now + 180_000L), scope)
+        transports[stream] = Transport(headers, mime, bitrate, minOf(expires - 5_000L, now + 180_000L), scope, PlaybackSource.addonId(base))
         return requested.copy(audioUrl = stream, source = candidate.source, bitrateKbps = bitrate,
             isLossless = codec in setOf("flac", "alac", "pcm", "wav"), qualityBadge = "Custom stream")
     }
     fun isVerified(url: String, policy: PlaybackSourcePolicy): Boolean = transports[url]?.let {
-        it.expires > System.currentTimeMillis() && (policy.maximum || it.bitrate > 0 && it.bitrate.toLong() * 1000 <= policy.ceiling.maxBitrateBps)
+        it.expires > System.currentTimeMillis() && policy.maximum && (policy.sources.isEmpty() ||
+            policy.playbackSources.any { source -> source.kind == PlaybackSourceKind.ADDON && source.id == it.sourceId })
     } == true
     fun headers(url: String): Map<String, String> {
         // Resolution TTLs forbid reuse for a NEW selection. An existing HLS/DASH

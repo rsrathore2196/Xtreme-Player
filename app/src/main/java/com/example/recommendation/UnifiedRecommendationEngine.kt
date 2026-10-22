@@ -3,24 +3,17 @@ package com.example.recommendation
 import com.example.performance.AppDispatchers
 
 import android.content.Context
-import android.net.Uri
 import com.example.performance.BackgroundWorkCoordinator
 import com.example.data.cache.RecommendationCache
-import com.example.data.cache.RecommendationTrackCodec
 import com.example.data.local.UserProfile
 import com.example.data.model.MusicTrack
-import com.example.data.remote.OnlineMusicApiService
 import com.example.data.repository.CatalogNames
 import com.example.data.repository.RecordingIdentity
 import com.example.data.repository.StreamResolver
 import kotlinx.coroutines.*
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
-import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 /** One metadata-discovery / local-ranking / verified-catalog pipeline for Home and radio. */
@@ -48,10 +41,7 @@ class UnifiedRecommendationEngine(context: Context?,
     private val discovery = YouTubeRecommendationDiscovery(cache)
     private val ranking = BackgroundWorkCoordinator.optionalCpuDispatcher
     private val urgentRanking = AppDispatchers.CpuBounded
-    private val matching = Semaphore(limits.matchConcurrency.coerceIn(1, 4))
     private val discoveryWorkers = Semaphore(2)
-    private val starts = Mutex()
-    private var nextStart = 0L
     private val indic = Regex("[\u0900-\u097f\u0a00-\u0a7f]")
     @androidx.annotation.RequiresApi(29)
     private object IndicRomanizer {
@@ -103,25 +93,16 @@ class UnifiedRecommendationEngine(context: Context?,
             }
         }
 
-        const val SOURCE = "native-discovery-mood-v2"
+        const val SOURCE = "native-discovery-mood-v3-youtube"
         const val CHART_TTL = 3 * 60 * 60_000L
         const val CONTEXT_TTL = 6 * 60 * 60_000L
-        private const val MATCH_TTL = 7 * 24 * 60 * 60_000L
-        private const val MISS_TTL = 30 * 60_000L
         fun seedKey(track: MusicTrack?): String = track?.let { HomeRecommendationPolicy.metadataKey(it) }.orEmpty()
-        fun verified(track: MusicTrack): Boolean {
-            // Room historically stores JioSaavn's source as this display label.
-            // The stable catalog ID and actual CDN below still prove the provider.
-            val jioSource = track.source.equals("JIOSAAVN", true) || track.source.equals("HD Stream", true)
-            if (!track.id.startsWith("online_") || track.id.length <= 7 ||
-                !jioSource || track.isLossless ||
-                !OriginalMusicFilter.isHomeRecommendation(track) ||
-                !StreamResolver.isValidStreamUrl(track.audioUrl)) return false
-            val uri = Uri.parse(track.audioUrl)
-            val host = uri.host.orEmpty().lowercase(java.util.Locale.ROOT)
-            return uri.scheme in setOf("https", "http") &&
-                (host == "saavncdn.com" || host.endsWith(".saavncdn.com"))
-        }
+        /** A real YouTube catalog identity is sufficient for a Home card. Audio
+         * extraction belongs to playback, never to recommendation presentation. */
+        fun verified(track: MusicTrack): Boolean = track.id.startsWith("yt_") &&
+            com.example.data.remote.YouTubeAudioStreamService.isVideoId(track.id.removePrefix("yt_")) &&
+            track.title.isNotBlank() && track.artist.isNotBlank() && !track.isLossless &&
+            OriginalMusicFilter.isHomeRecommendation(track)
         fun language(value: String): String = when (val name = CatalogNames.normalize(value)) {
             "panjabi", "pa" -> "punjabi"; "hin", "hi" -> "hindi"; "eng", "en" -> "english"
             else -> name
@@ -391,14 +372,6 @@ class UnifiedRecommendationEngine(context: Context?,
         val languageCounts = mutableMapOf<String, Int>()
         val languageQuota = (limits.shelfSize + selected.size.coerceAtLeast(1) - 1) / selected.size.coerceAtLeast(1)
         var published = 0
-        // All verified cache hits are considered before any unresolved search starts.
-        val knownIndex = buildMap<String, MutableList<MusicTrack>> {
-            known.filter(::verified).forEach { track ->
-                getOrPut("title:" + RecordingIdentity.title(track).replace(" ", "")) { mutableListOf() }.add(track)
-                RecordingIdentity.isrc(track.isrc)?.let { getOrPut("isrc:$it") { mutableListOf() }.add(track) }
-            }
-        }
-        val cached = mutableListOf<Pair<Candidate, MusicTrack?>>()
         fun add(c: Candidate, track: MusicTrack?) {
             if (output.size >= maxResults) return
             val candidateTrack = track ?: c.track.takeIf { verified(it) }
@@ -407,7 +380,8 @@ class UnifiedRecommendationEngine(context: Context?,
                 recent != null && (taste.keyFor(candidateTrack) in taste.recentRecordings || recent.contains(c.track))) return
             val lang = language(candidateTrack.language)
             if (selected.isNotEmpty() && (if (HomeRecommendationPolicy.known(lang)) lang !in selected else c.language !in selected && !c.related)) return
-            if (shelf == Shelf.ERA && candidateTrack.year.toIntOrNull()?.let { it !in 1990..2009 } != false) return
+            if (shelf == Shelf.ERA && (candidateTrack.year.toIntOrNull()?.let { it !in 1990..2009 }
+                    ?: !c.era)) return
             val actualLanguage = lang.takeIf(HomeRecommendationPolicy::known) ?: c.language
             if (selected.size > 1 && actualLanguage in selected && (languageCounts[actualLanguage] ?: 0) >= languageQuota) return
             val key = taste.keyFor(candidateTrack)
@@ -417,42 +391,19 @@ class UnifiedRecommendationEngine(context: Context?,
             if ((artists[artist] ?: 0) >= 2 || HomeRecommendationPolicy.known(candidateTrack.album) && (albums[album] ?: 0) >= 2) return
             seen.add(candidateTrack); artists[artist] = (artists[artist] ?: 0) + 1; albums[album] = (albums[album] ?: 0) + 1
             languageCounts[actualLanguage] = (languageCounts[actualLanguage] ?: 0) + 1
-            output.add(candidateTrack.copy(source = "JIOSAAVN", recommendationOnly = true))
+            output.add(candidateTrack.copy(recommendationOnly = true))
         }
+        // Discovery already returns stable YouTube IDs and original metadata.
+        // Keep the same ranked order, diversity and language rules; no provider
+        // availability lookup or artwork work gates a prepared shelf.
         for ((index, candidate) in candidates.withIndex()) {
+            currentCoroutineContext().ensureActive()
             if (!essential && index % 4 == 0) yieldHomeWork()
-            val track = cachedMatch(candidate.track, knownIndex)
-            cached.add(candidate to track)
-            add(candidate, track)
-            if (output.size >= maxResults) break
-        }
-        if (output.isNotEmpty()) { emit(output.take(limits.shelfSize)); published = output.size }
-        if (output.size >= maxResults) return@flow
-        withTimeoutOrNull(if (essential) 14_000L else 25_000L) {
-            coroutineScope {
-                val cursor = AtomicInteger()
-                val missing = cached.filter { it.second == null }
-                val results = Channel<Pair<Candidate, MusicTrack?>>(concurrency.coerceIn(1, limits.matchConcurrency))
-                val workers = List(minOf(concurrency.coerceIn(1, limits.matchConcurrency), missing.size)) { launch(AppDispatchers.Io) {
-                    while (isActive) {
-                        val candidate = missing.getOrNull(cursor.getAndIncrement())?.first ?: break
-                        if (!essential) yieldHomeWork()
-                        results.send(candidate to match(candidate.track, essential))
-                    }
-                } }
-                val closer = launch { workers.joinAll(); results.close() }
-                try {
-                    for ((candidate, track) in results) {
-                        // Retain completed matches immediately. Presentation is
-                        // gated separately; only admitting the next lookup yields.
-                        add(candidate, track)
-                        if (output.size >= published + (if (published == 0) 1 else 3)) {
-                            emit(output.take(limits.shelfSize).toList()); published = output.size
-                        }
-                        if (output.size >= maxResults) break
-                    }
-                } finally { workers.forEach { it.cancel() }; closer.cancel(); results.cancel() }
+            add(candidate, candidate.track)
+            if (output.size >= published + (if (published == 0) 1 else 3)) {
+                emit(output.take(limits.shelfSize).toList()); published = output.size
             }
+            if (output.size >= maxResults) break
         }
         if (output.isNotEmpty() && output.size != published) emit(output.take(limits.shelfSize).toList())
     }.distinctUntilChanged().flowOn(if (essential) urgentRanking else ranking)
@@ -461,92 +412,4 @@ class UnifiedRecommendationEngine(context: Context?,
         repeat(groups.maxOfOrNull { it.size } ?: 0) { index -> groups.forEach { it.getOrNull(index)?.let(::add) } }
     }
 
-    private fun mappingKey(seed: MusicTrack): String {
-        // Different video uploads of the same timed recording share both matches
-        // and in-flight work. Version-bearing metadata remains part of the key.
-        val identity = RecordingIdentity.isrc(seed.isrc)?.let { "isrc:$it" }
-            ?: "${HomeRecommendationPolicy.metadataKey(seed)}|${seed.durationMs / 1_000L}"
-        return "mapping-v1:$identity"
-    }
-    private suspend fun decodeCachedTracks(body: String): List<MusicTrack> =
-        // A normal mapping is one small track (or []); avoid a dispatcher hop
-        // for those. Legacy/batched JSON shares the process-wide CPU budget.
-        if (body.length <= 4_096) RecommendationTrackCodec.decode(body)
-        else withContext(AppDispatchers.CpuBounded) { RecommendationTrackCodec.decode(body) }
-
-    private suspend fun cachedMatch(seed: MusicTrack, known: Map<String, List<MusicTrack>>): MusicTrack? {
-        val now = System.currentTimeMillis()
-        val entry = cache?.get(mappingKey(seed))
-        if (entry != null && now < entry.expiresAt) {
-            val tracks = decodeCachedTracks(entry.body)
-            tracks.firstOrNull { verified(it) && confidence(seed, it) != null }?.let { return it }
-            if (tracks.isEmpty()) return null // Keep genuine negative-cache entries.
-            // Older builds cached YouTube-only candidates as verified matches.
-            // Do not let those entries suppress a real JioSaavn lookup.
-        }
-        val local = known["title:" + RecordingIdentity.title(seed).replace(" ", "")].orEmpty() +
-            RecordingIdentity.isrc(seed.isrc)?.let { known["isrc:$it"] }.orEmpty()
-        return local.firstOrNull { confidence(seed, it) != null }
-            ?.also { cache?.put(mappingKey(seed), listOf(it), MATCH_TTL) }
-    }
-    private suspend fun match(seed: MusicTrack, essential: Boolean): MusicTrack? {
-        val key = mappingKey(seed)
-        val hit = cache?.get(key)
-        if (hit != null && System.currentTimeMillis() < hit.expiresAt) {
-            val tracks = decodeCachedTracks(hit.body)
-            tracks.firstOrNull { verified(it) && confidence(seed, it) != null }?.let { return it }
-            if (tracks.isEmpty()) return null
-        }
-        return DiscoveryRequestCoordinator.shared(key, essential, network = false) {
-            val latest = cache?.get(key)
-            if (latest != null && System.currentTimeMillis() < latest.expiresAt) {
-                val tracks = decodeCachedTracks(latest.body)
-                val verified = tracks.filter { verified(it) && confidence(seed, it) != null }
-                if (verified.isNotEmpty() || tracks.isEmpty()) return@shared verified
-            }
-            val queries = listOf("${StreamResolver.extractCleanTitle(seed.title, seed.artist)} ${CustomRecommendationQueryWrapper.extractPrimaryArtist(seed)}",
-                romanized(seed).let { translated -> "${StreamResolver.extractCleanTitle(translated.title, translated.artist)} ${CustomRecommendationQueryWrapper.extractPrimaryArtist(translated)}" },
-                "${StreamResolver.extractCleanTitle(seed.title, seed.artist)} ${StreamResolver.extractCleanArtist(seed.artist)}").distinct()
-            var successfulResponse = false
-            var resolved: MusicTrack? = null
-            for (query in queries.take(2)) {
-                val matches = try {
-                    DiscoveryRequestCoordinator.network(essential) {
-                        // Matching capacity is acquired only after priority/gesture admission.
-                        matching.withPermit {
-                            starts.withLock {
-                                val wait = nextStart - android.os.SystemClock.elapsedRealtime()
-                                if (wait > 0) delay(wait)
-                                nextStart = android.os.SystemClock.elapsedRealtime() + 250L
-                            }
-                            withTimeoutOrNull(4_500L) { OnlineMusicApiService.searchSongs(query, limit = 8) }
-                        }
-                    }
-                } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
-                if (matches != null) successfulResponse = true
-                val ranked = withContext(if (essential) urgentRanking else ranking) { matches.orEmpty().mapNotNull { track ->
-                    if (!track.id.startsWith("online_") || !track.source.equals("JIOSAAVN", true) ||
-                        !OriginalMusicFilter.isHomeRecommendation(track)) null else confidence(seed, track)?.let { track to it }
-                }.sortedByDescending { it.second }.take(2).map { it.first } }
-                for (candidate in ranked) {
-                    if (verified(candidate)) { resolved = candidate; break }
-                    // Some catalog search responses omit the encrypted media field.
-                    // Fetch details only for a high-confidence match, never unrelated hits.
-                    val detailed = try { DiscoveryRequestCoordinator.network(essential) {
-                        matching.withPermit { withTimeoutOrNull(3_000L) { OnlineMusicApiService.fetchSongDetails(candidate.id.removePrefix("online_")) } }
-                    } } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
-                    if (detailed != null && verified(detailed) && withContext(if (essential) urgentRanking else ranking) {
-                            confidence(seed, detailed) != null }) {
-                        resolved = detailed; break
-                    }
-                }
-                if (resolved != null) break
-            }
-            val tracks = listOfNotNull(resolved)
-            withContext(if (essential) urgentRanking else ranking) {
-                if (resolved != null || successfulResponse) cache?.put(key, tracks, if (resolved != null) MATCH_TTL else MISS_TTL)
-            }
-            tracks
-        }.firstOrNull { verified(it) && confidence(seed, it) != null }
-    }
 }

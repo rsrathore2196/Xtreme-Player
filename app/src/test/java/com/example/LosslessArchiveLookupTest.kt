@@ -41,6 +41,7 @@ class LosslessArchiveLookupTest {
     } as MusicDao
 
     @Before fun ready() {
+        clear() // No process-wide monitor may retain another Robolectric Application.
         com.example.data.repository.StreamResolver.clearVerifiedLosslessCache()
         app.getSharedPreferences("xtreme_audio_quality_prefs", 0).edit().clear().commit()
         connect(wifi = true)
@@ -82,6 +83,8 @@ class LosslessArchiveLookupTest {
             for (quality in listOf(AudioQualityCeiling.HIGH, AudioQualityCeiling.NORMAL, AudioQualityCeiling.DATA_SAVER)) {
                 AudioQualityPreferences.setWifiQualityCeiling(app, if (wifi) quality else AudioQualityCeiling.MAX)
                 AudioQualityPreferences.setCellularQualityCeiling(app, if (wifi) AudioQualityCeiling.MAX else quality)
+                assertEquals("The requested capped profile must be authoritative before discovery", quality,
+                    NetworkQualityMonitor.getInstance(app).snapshot().effectiveCeiling)
                 assertNull(repo.findLosslessUpgrade(track))
             }
         }

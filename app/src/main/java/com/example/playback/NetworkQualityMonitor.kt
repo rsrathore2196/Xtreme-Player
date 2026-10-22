@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicReference
 
@@ -81,19 +82,24 @@ class NetworkQualityMonitor private constructor(context: Context) {
         policy(type, prefs).also { latest = it }
     }.distinctUntilChanged().stateIn(scope, SharingStarted.WhileSubscribed(5_000), latest)
 
-    val audioEnhancer = AudioQualityPreferences.observeAudioEnhancer(app).distinctUntilChanged()
+    private val enhancerSelection = AudioQualityPreferences.observeEnhancerSelection(app).distinctUntilChanged()
+        .stateIn(scope, SharingStarted.Eagerly, false to false)
+    val audioEnhancer = enhancerSelection.map { it.first }.distinctUntilChanged()
         .stateIn(scope, SharingStarted.Eagerly, false)
-    val sourcePolicy = combine(activeQualityCeiling, audioEnhancer) { quality, enhancer ->
-        PlaybackSourcePolicy(quality.effectiveCeiling, enhancer,
-            quality.connectionType != NetworkConnectionType.OFFLINE)
+    val sourcePolicy = combine(activeQualityCeiling, enhancerSelection,
+        com.example.data.local.OtherSettingsPreferences.observePlaybackIntegrations(app)) { quality, enhancer, integrations ->
+        PlaybackSourcePolicy(quality.effectiveCeiling, enhancer.first,
+            quality.connectionType != NetworkConnectionType.OFFLINE, integrations.sourceList(quality.effectiveCeiling), returnToYouTube = enhancer.second)
     }.distinctUntilChanged().stateIn(scope, SharingStarted.Eagerly,
         PlaybackSourcePolicy(latest.effectiveCeiling, online = false))
     fun sourcePolicySnapshot(): PlaybackSourcePolicy = snapshot().let {
         PlaybackSourcePolicy(it.effectiveCeiling, AudioQualityPreferences.isAudioEnhancerEnabled(app),
-            it.connectionType != NetworkConnectionType.OFFLINE)
+            it.connectionType != NetworkConnectionType.OFFLINE,
+            com.example.data.local.OtherSettingsPreferences.playbackIntegrations(app).sourceList(it.effectiveCeiling),
+            returnToYouTube = AudioQualityPreferences.returnToYouTube(app))
     }
-    fun setAudioEnhancer(enabled: Boolean) { scope.launch(preferenceWrites) {
-        AudioQualityPreferences.setAudioEnhancerEnabled(app, enabled)
+    fun setAudioEnhancer(enabled: Boolean, returnToYouTube: Boolean = false) { scope.launch(preferenceWrites) {
+        AudioQualityPreferences.setAudioEnhancerEnabled(app, enabled, returnToYouTube)
     } }
 
     /** Called on resolver/loader IO threads; also works before a UI/service subscribes. */

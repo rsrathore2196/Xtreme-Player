@@ -18,6 +18,7 @@ object AudioQualityPreferences {
     private const val KEY_CELLULAR_CEILING = "cellular_quality_ceiling"
     private const val KEY_METERED_WIFI = "treat_metered_wifi_as_cellular"
     private const val KEY_AUDIO_ENHANCER = "prefer_youtube_opus"
+    private const val KEY_RETURN_TO_YOUTUBE = "enhancer_return_to_youtube"
     private fun getPrefs(context: Context): SharedPreferences {
         return ReactiveSettingsRepository.preferences(context, PREFS_NAME)
     }
@@ -69,9 +70,20 @@ object AudioQualityPreferences {
     }
 
     fun isAudioEnhancerEnabled(context: Context): Boolean = getPrefs(context).getBoolean(KEY_AUDIO_ENHANCER, false)
-    fun setAudioEnhancerEnabled(context: Context, enabled: Boolean) {
-        getPrefs(context).edit().putBoolean(KEY_AUDIO_ENHANCER, enabled).apply()
+    fun returnToYouTube(context: Context): Boolean = getPrefs(context).getBoolean(KEY_RETURN_TO_YOUTUBE, false)
+    fun setAudioEnhancerEnabled(context: Context, enabled: Boolean, returnToYouTube: Boolean = false) {
+        getPrefs(context).edit().putBoolean(KEY_AUDIO_ENHANCER, enabled)
+            .putBoolean(KEY_RETURN_TO_YOUTUBE, !enabled && returnToYouTube).apply()
     }
+    /** Read both values together so an automatic On → Off request is one policy change. */
+    fun observeEnhancerSelection(context: Context) = callbackFlow {
+        val prefs = getPrefs(context.applicationContext)
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == null || key == KEY_AUDIO_ENHANCER || key == KEY_RETURN_TO_YOUTUBE) trySend(Unit)
+        }
+        prefs.registerOnSharedPreferenceChangeListener(listener); trySend(Unit)
+        awaitClose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+    }.conflate().map { isAudioEnhancerEnabled(context) to returnToYouTube(context) }.flowOn(Dispatchers.IO)
     fun observeAudioEnhancer(context: Context) = callbackFlow {
         val prefs = getPrefs(context.applicationContext)
         val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->

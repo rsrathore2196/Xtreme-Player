@@ -61,7 +61,6 @@ internal suspend fun CatalogDetailState.preparePlaybackQueue(fallback: MusicTrac
 /** Owned by PlayerViewModel's scope; browsing never changes playback state. */
 class CatalogBrowserState(private val repository: CatalogRepository, private val scope: CoroutineScope,
     initialQuality: AudioQuality = AudioQuality.ULTRA_HD_320,
-    private val verifyPlayback: (suspend (MusicTrack, com.example.playback.PlaybackSourcePolicy) -> Boolean)? = null,
     private val archiveSearch: (suspend (String, Int, com.example.playback.PlaybackSourcePolicy, List<MusicTrack>) ->
         com.example.data.remote.InternetArchiveApiService.LosslessSearchPage)? = null,
     private val addonSearch: (suspend (String, com.example.playback.PlaybackSourcePolicy) -> List<MusicTrack>)? = null) {
@@ -74,7 +73,6 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
     private val _detail = MutableStateFlow<CatalogDetailState?>(null)
     val detail = _detail.asStateFlow()
     private var searchJob: Job? = null
-    private var policySearchJob: Job? = null
     private var archiveSearchJob: Job? = null
     private var archivePaginationJob: Job? = null
     private var addonSearchJob: Job? = null
@@ -89,17 +87,21 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
     @Volatile private var archiveCandidates = emptyList<MusicTrack>()
     @Volatile private var archiveNext: Int? = 1
     @Volatile private var catalogNext: Int? = null
-    private val verifiedSearchIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
-    private val checkedSearchIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private val searchPublicationLock = Any()
 
+    private var addonSettings = com.example.data.local.PlaybackIntegrationSettings()
+    private fun addonEligible(track: MusicTrack, policy: com.example.playback.PlaybackSourcePolicy): Boolean =
+        addonSettings.sourceList(policy.ceiling).any { source -> source.enabled && source.available(policy.ceiling) &&
+            com.example.data.remote.StreamingAddons.ownsTrack(source, track.id) }
     private fun archiveTrack(track: MusicTrack) = com.example.data.remote.AudioRoutingService.isArchiveResult(track)
     private fun eligible(track: MusicTrack, policy: com.example.playback.PlaybackSourcePolicy): Boolean =
-        if (track.id.startsWith("addon_")) addonConfigurationKey.isNotBlank() else if (archiveTrack(track)) policy.allowsArchive else policy.maximum || !track.id.startsWith("yt_") ||
-            verifyPlayback == null || track.id in verifiedSearchIds
+        if (track.id.startsWith("addon_")) addonEligible(track, policy) else if (archiveTrack(track)) policy.allowsArchive else true
 
     fun setStreamingAddon(settings: com.example.data.local.PlaybackIntegrationSettings) {
-        val key = settings.addonUrl.takeIf { settings.addonEnabled }.orEmpty()
+        addonSettings = settings
+        val key = settings.sourceList(sourcePolicy.ceiling).filter {
+            it.kind == com.example.playback.PlaybackSourceKind.ADDON && it.enabled && it.available(sourcePolicy.ceiling)
+        }.joinToString(",") { it.id }
         synchronized(searchPublicationLock) {
             if (addonConfigurationKey == key) return
             addonConfigurationKey = key
@@ -108,10 +110,10 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
             addonCandidates = emptyList()
             candidateRevision++
         }
-        if (key.isBlank()) _search.update { state -> state.copy(
-            page = state.page.copy(tracks = state.page.tracks.filterNot { it.id.startsWith("addon_") }),
-            display = state.display.copy(songs = state.display.songs.filterNot { it.id.startsWith("addon_") },
-                top = state.display.top.filterNot { it.track?.id?.startsWith("addon_") == true })) }
+        _search.update { state -> state.copy(
+            page = state.page.copy(tracks = state.page.tracks.filter { !it.id.startsWith("addon_") || addonEligible(it, sourcePolicy) }),
+            display = state.display.copy(songs = state.display.songs.filter { !it.id.startsWith("addon_") || addonEligible(it, sourcePolicy) },
+                top = state.display.top.filter { row -> row.track?.let { !it.id.startsWith("addon_") || addonEligible(it, sourcePolicy) } != false })) }
         dataScope.launch { publishEligibleSearch() }
         enrichSearch(_search.value.requestId, loadArchivePage = false)
     }
@@ -123,14 +125,12 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
         synchronized(searchPublicationLock) {
             sourcePolicy = policy
             policyRevision++
-            verifiedSearchIds.clear()
-            checkedSearchIds.clear()
             candidateRevision++
-            policySearchJob?.cancel()
             archiveSearchJob?.cancel()
             archivePaginationJob?.cancel()
         }
-        // Keep the current query and all JioSaavn results. A late Archive response
+        setStreamingAddon(addonSettings)
+        // Keep the current query and original catalog results. A late Archive response
         // cannot reappear after MAX is disabled; saved candidates remain internal.
         _search.update { state ->
             val page = state.page.copy(tracks = state.page.tracks.filter { eligible(it, policy) },
@@ -208,30 +208,6 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
                 catch (_: Exception) { /* Optional server failure leaves normal search intact. */ }
             }
             addonSearchJob?.start()
-        }
-        if (!policy.maximum && verifyPlayback != null && policySearchJob?.isActive != true) {
-            policySearchJob = dataScope.launch(start = CoroutineStart.LAZY) {
-                // Small prioritized batches, independently published. Shared repository
-                // permits bound matching across repeated queries and both categories.
-                while (current()) {
-                    val batch = catalogCandidates.filter { it.id.startsWith("yt_") && it.id !in checkedSearchIds }.take(2)
-                    if (batch.isEmpty()) break
-                    val verified = batch.map { track -> async(AppDispatchers.Io) {
-                        try { track.takeIf { verifyPlayback.invoke(it, policy) } }
-                        catch (e: CancellationException) { throw e }
-                        catch (_: Exception) { null }
-                    } }.awaitAll().filterNotNull()
-                    synchronized(searchPublicationLock) {
-                        if (!current()) return@launch
-                        checkedSearchIds.addAll(batch.map { it.id })
-                        verifiedSearchIds.addAll(verified.map { it.id })
-                        candidateRevision++
-                    }
-                    publishEligibleSearch(generation = generation)
-                    yield()
-                }
-            }
-            policySearchJob?.start()
         }
         if (policy.allowsArchive && archiveSearch != null && !state.loading && loadArchivePage &&
             archiveNext != null && archiveSearchJob?.isActive != true) {
@@ -327,7 +303,6 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
     private fun startSearch(query: String, type: String, debounce: Boolean) {
         val generation = ++searchGeneration
         searchJob?.cancel()
-        policySearchJob?.cancel()
         archiveSearchJob?.cancel()
         archivePaginationJob?.cancel()
         addonSearchJob?.cancel()
@@ -338,8 +313,6 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
             catalogNext = null
             addonCandidates = emptyList()
             addonRequestKey = null
-            verifiedSearchIds.clear()
-            checkedSearchIds.clear()
             candidateRevision++
         }
         _search.value = CatalogSearchState(query = query, type = type, loading = query.isNotBlank(), requestId = generation,

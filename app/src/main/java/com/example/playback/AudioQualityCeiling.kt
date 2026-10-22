@@ -50,22 +50,62 @@ data class ActiveQualityState(
 /** Source policy is independent of catalog identity and renderer/DSP settings. */
 @Immutable
 data class PlaybackSourcePolicy(val ceiling: AudioQualityCeiling, val enhancer: Boolean = false,
-    val online: Boolean = true) {
+    val online: Boolean = true, val sources: List<PlaybackSource> = emptyList(),
+    val returnToYouTube: Boolean = false) {
     val maximum: Boolean get() = ceiling == AudioQualityCeiling.MAX
-    val preferOpus: Boolean get() = !maximum && enhancer
-    val allowsArchive: Boolean get() = maximum && online
-    val key: String get() = "${ceiling.name}:${preferOpus}:$online"
+    val preferOpus: Boolean get() = ceiling == AudioQualityCeiling.HIGH
+    val configuredSources: List<PlaybackSource> get() = sources.ifEmpty { PlaybackSource.defaults(ceiling) }
+    val playbackSources: List<PlaybackSource> get() {
+        val enabled = configuredSources.filter { it.enabled && it.available(ceiling) &&
+            (it.kind != PlaybackSourceKind.ADDON || it.baseUrl.isNotBlank()) }
+        // YouTube remains the final safety net even when every switch is off.
+        return if (enabled.any { it.kind == PlaybackSourceKind.YOUTUBE }) enabled else enabled + PlaybackSource.youtube
+    }
+    /** Explicit enhancement considers eligible alternatives before the base YouTube stream. */
+    val resolutionSources: List<PlaybackSource> get() = if (returnToYouTube && !enhancer)
+        playbackSources.filter { it.kind == PlaybackSourceKind.YOUTUBE } + playbackSources.filter { it.kind != PlaybackSourceKind.YOUTUBE }
+        else if (enhancer)
+        playbackSources.filter { it.kind != PlaybackSourceKind.YOUTUBE } + playbackSources.filter { it.kind == PlaybackSourceKind.YOUTUBE }
+        else playbackSources
+    fun allows(kind: PlaybackSourceKind): Boolean = playbackSources.any { it.kind == kind }
+    val allowsArchive: Boolean get() = maximum && online && allows(PlaybackSourceKind.INTERNET_ARCHIVE)
+    val key: String get() = "sources-v5:${ceiling.name}:$enhancer:$returnToYouTube:$online:" +
+        playbackSources.joinToString(",") { it.id }
+    /** Only an activated decoder format can make the switch automatically reflect a preferred source. */
+    fun automaticallyEnhanced(state: SignalPathState): Boolean {
+        if (returnToYouTube || !state.quality.verified || state.quality.codec.isBlank() || state.trackId.isBlank() ||
+            state.quality.bitrateKbps.toLong() * 1000 > ceiling.maxBitrateBps) return false
+        val preferred = playbackSources.first()
+        return preferred.kind != PlaybackSourceKind.YOUTUBE && preferred.id == state.sourceId &&
+            (preferred.kind != PlaybackSourceKind.INTERNET_ARCHIVE || state.quality.lossless)
+    }
+    fun isPreferred(track: com.example.data.model.MusicTrack): Boolean {
+        val first = resolutionSources.first()
+        val host = android.net.Uri.parse(track.audioUrl).host.orEmpty()
+        return when (first.kind) {
+            PlaybackSourceKind.YOUTUBE -> com.example.data.remote.YouTubeAudioStreamService.isYouTubeAudio(track.id, track.audioUrl)
+            PlaybackSourceKind.JIOSAAVN -> host == "saavncdn.com" || host.endsWith(".saavncdn.com")
+            PlaybackSourceKind.INTERNET_ARCHIVE -> host == "archive.org" || host.endsWith(".archive.org")
+            PlaybackSourceKind.ADDON -> com.example.data.remote.StreamingAddons.fromSource(track.audioUrl, first.id)
+        }
+    }
     fun acceptsRemoteTrack(track: com.example.data.model.MusicTrack): Boolean {
         if (com.example.data.remote.StreamingAddons.isVerified(track.audioUrl, this)) return true
         val uri = android.net.Uri.parse(track.audioUrl)
-        if (uri.scheme in setOf("file", "content") || maximum) return true
+        if (uri.scheme in setOf("file", "content")) return true
+        val archive = uri.host.orEmpty().let { it == "archive.org" || it.endsWith(".archive.org") }
+        if (archive) return maximum && allows(PlaybackSourceKind.INTERNET_ARCHIVE)
+        if (track.source.startsWith("Streaming Addon:")) return false
         val host = uri.host.orEmpty()
+        val youtube = com.example.data.remote.YouTubeAudioStreamService.isYouTubeAudio(track.id, track.audioUrl)
         val rate = track.bitrateKbps.takeIf { it > 0 } ?: saavnRate.find(track.audioUrl)
-            ?.groupValues?.get(1)?.toIntOrNull() ?: return false
-        if (rate.toLong() * 1000 > ceiling.maxBitrateBps) return false
-        return if (com.example.data.remote.YouTubeAudioStreamService.isYouTubeAudio(track.id, track.audioUrl))
-            preferOpus && track.qualityBadge.contains("Opus", true)
-        else host == "saavncdn.com" || host.endsWith(".saavncdn.com")
+            ?.groupValues?.get(1)?.toIntOrNull()
+        if (rate != null && rate.toLong() * 1000 > ceiling.maxBitrateBps) return false
+        // A missing representation bitrate is unknown, never a manufactured value.
+        // Virtual YouTube streams carry the extractor's enforced ceiling instead.
+        if (youtube) return rate != null || uri.getQueryParameter("cap")?.toIntOrNull()
+            ?.let { it <= ceiling.maxBitrateBps } == true
+        return allows(PlaybackSourceKind.JIOSAAVN) && rate != null && (host == "saavncdn.com" || host.endsWith(".saavncdn.com"))
     }
     private companion object { val saavnRate = Regex("_(320|160|96|48)\\.(?:mp4|m4a)") }
 }

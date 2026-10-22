@@ -3,6 +3,9 @@ package com.example.ui.screens.settings
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -65,10 +68,11 @@ fun SourcesScreen(
 
     val sourcesFlow = remember(context) { PlaybackSourcesPreferences.observeSources(context) }
     val sources by sourcesFlow.collectAsStateWithLifecycle(initialValue = PlaybackSourcesPreferences.getSources(context))
-    val addonSettingsFlow = remember(context) { OtherSettingsPreferences.observePlaybackIntegrations(context) }
-    val addonSettings by addonSettingsFlow.collectAsStateWithLifecycle(initialValue = OtherSettingsPreferences.playbackIntegrations(context))
 
+
+    val canAddAddon = sources.count { it.iconType == PlaybackSourcesPreferences.ID_ADDON } < 16
     var showAddAddonDialog by remember { mutableStateOf(false) }
+    var editingAddon by remember { mutableStateOf<PlaybackSourcesPreferences.SourceItem?>(null) }
     var draggingIndex by remember { mutableStateOf<Int?>(null) }
 
     Scaffold(
@@ -89,7 +93,8 @@ fun SourcesScreen(
                 },
                 actions = {
                     IconButton(
-                        onClick = { showAddAddonDialog = true },
+                        onClick = { editingAddon = null; showAddAddonDialog = true },
+                        enabled = canAddAddon,
                         modifier = Modifier.testTag("sources_add_button")
                     ) {
                         Icon(
@@ -110,7 +115,7 @@ fun SourcesScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(rememberScrollState()).testTag("streaming_sources_page")
                 .padding(horizontal = 20.dp, vertical = 8.dp)
         ) {
             Text(
@@ -187,6 +192,7 @@ fun SourcesScreen(
                     )
             ) {
                 sources.forEachIndexed { index, item ->
+                    key(item.id) {
                     val isDragging = draggingIndex == index
                     val dragScale by animateFloatAsState(targetValue = if (isDragging) 1.02f else 1f, label = "dragScale")
 
@@ -199,6 +205,10 @@ fun SourcesScreen(
                         SourceItemRow(
                             index = index + 1,
                             item = item,
+                            onConfigure = { editingAddon = item; showAddAddonDialog = true },
+                            onMoveUp = { PlaybackSourcesPreferences.swapSources(context, index, index - 1) },
+                            onMoveDown = { PlaybackSourcesPreferences.swapSources(context, index, index + 1) },
+                            canMoveUp = index > 0, canMoveDown = index < sources.lastIndex,
                             onToggle = { enabled ->
                                 PlaybackSourcesPreferences.setSourceEnabled(context, item.id, enabled)
                             },
@@ -224,8 +234,8 @@ fun SourcesScreen(
                             color = colors.dividerColor.copy(alpha = 0.35f)
                         )
                     }
+                    }
                 }
-
                 HorizontalDivider(
                     modifier = Modifier.padding(horizontal = 16.dp),
                     color = colors.dividerColor.copy(alpha = 0.35f)
@@ -233,7 +243,8 @@ fun SourcesScreen(
 
                 // Add an addon bottom button inside the card
                 Surface(
-                    onClick = { showAddAddonDialog = true },
+                    onClick = { editingAddon = null; showAddAddonDialog = true },
+                    enabled = canAddAddon,
                     color = Color.Transparent,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -271,8 +282,7 @@ fun SourcesScreen(
                                 )
                             )
                             Text(
-                                text = if (addonSettings.addonUrl.isNotBlank()) "Addon connected: ${addonSettings.addonName.ifBlank { "Custom" }}"
-                                    else "Connect external FLAC or high-quality server",
+                                text = "Connect another compatible high-quality server",
                                 style = MaterialTheme.typography.bodySmall.copy(
                                     color = colors.textMuted,
                                     fontSize = 12.sp
@@ -289,17 +299,15 @@ fun SourcesScreen(
 
     if (showAddAddonDialog) {
         AddAddonDialog(
-            currentUrl = addonSettings.addonUrl,
-            currentName = addonSettings.addonName,
+            currentUrl = editingAddon?.url.orEmpty(),
+            currentName = editingAddon?.name.orEmpty(),
             onDismiss = { showAddAddonDialog = false },
             onSave = { url, name ->
-                OtherSettingsPreferences.saveStreamingAddon(context, url, name)
-                PlaybackSourcesPreferences.setSourceEnabled(context, PlaybackSourcesPreferences.ID_ADDON, url.isNotBlank())
+                PlaybackSourcesPreferences.saveAddon(context, url, name, editingAddon?.id)
                 showAddAddonDialog = false
             },
             onRemove = {
-                OtherSettingsPreferences.saveStreamingAddon(context, "", "")
-                PlaybackSourcesPreferences.setSourceEnabled(context, PlaybackSourcesPreferences.ID_ADDON, false)
+                editingAddon?.id?.let { PlaybackSourcesPreferences.remove(context, it) }
                 showAddAddonDialog = false
             }
         )
@@ -311,6 +319,11 @@ private fun SourceItemRow(
     index: Int,
     item: PlaybackSourcesPreferences.SourceItem,
     onToggle: (Boolean) -> Unit,
+    onConfigure: () -> Unit,
+    onMoveUp: () -> Unit,
+    onMoveDown: () -> Unit,
+    canMoveUp: Boolean,
+    canMoveDown: Boolean,
     onDragDelta: (Float) -> Unit,
     onDragStart: () -> Unit,
     onDragEnd: () -> Unit,
@@ -325,7 +338,7 @@ private fun SourceItemRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .padding(horizontal = 16.dp, vertical = 14.dp).testTag("source_row_${item.id}"),
         verticalAlignment = Alignment.CenterVertically
     ) {
         // Priority Number
@@ -342,7 +355,7 @@ private fun SourceItemRow(
         // Source Icon
         Box(
             modifier = Modifier
-                .size(38.dp)
+                .size(38.dp).clickable(enabled = item.iconType == "addon", onClick = onConfigure)
                 .background(
                     if (isAllowed) appColors.primaryAccent.copy(alpha = 0.12f)
                     else appColors.dividerColor.copy(alpha = 0.2f),
@@ -401,7 +414,7 @@ private fun SourceItemRow(
         Spacer(modifier = Modifier.width(8.dp))
 
         // Switch or Always on
-        if (item.isAlwaysOn || item.id == PlaybackSourcesPreferences.ID_YOUTUBE) {
+        if (item.isAlwaysOn) {
             Surface(
                 shape = RoundedCornerShape(12.dp),
                 color = appColors.primaryAccent.copy(alpha = 0.12f),
@@ -434,9 +447,9 @@ private fun SourceItemRow(
         Spacer(modifier = Modifier.width(6.dp))
 
         // Drag handle
-        Box(
+        Column(
             modifier = Modifier
-                .size(38.dp)
+                .width(30.dp)
                 .pointerInput(item.id) {
                     detectDragGestures(
                         onDragStart = {
@@ -458,14 +471,22 @@ private fun SourceItemRow(
                         }
                     )
                 },
-            contentAlignment = Alignment.Center
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            IconButton(onClick = onMoveUp, enabled = canMoveUp,
+                modifier = Modifier.size(26.dp).testTag("source_up_${item.id}")) {
+                Icon(Icons.Default.ArrowUpward, "Move ${item.name} up", modifier = Modifier.size(17.dp))
+            }
             Icon(
                 imageVector = Icons.Default.DragHandle,
                 contentDescription = "Reorder ${item.name}",
                 tint = appColors.textMuted.copy(alpha = 0.65f),
-                modifier = Modifier.size(22.dp)
+                modifier = Modifier.size(18.dp)
             )
+            IconButton(onClick = onMoveDown, enabled = canMoveDown,
+                modifier = Modifier.size(26.dp).testTag("source_down_${item.id}")) {
+                Icon(Icons.Default.ArrowDownward, "Move ${item.name} down", modifier = Modifier.size(17.dp))
+            }
         }
     }
 }
@@ -495,7 +516,7 @@ private fun AddAddonDialog(
     val colors = LocalAppColors.current
 
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!busy) onDismiss() },
         title = {
             Text(
                 text = if (currentUrl.isNotBlank()) "Streaming Addon" else "Add Streaming Addon",
@@ -526,7 +547,7 @@ private fun AddAddonDialog(
                     label = { Text("Server URL") },
                     placeholder = { Text("https://example.com/token") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                    singleLine = true,
+                    singleLine = true, enabled = !busy,
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier
                         .fillMaxWidth()
@@ -571,13 +592,13 @@ private fun AddAddonDialog(
             Row {
                 if (currentUrl.isNotBlank()) {
                     TextButton(
-                        onClick = onRemove,
+                        onClick = onRemove, enabled = !busy,
                         colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
                     ) {
                         Text("Remove")
                     }
                 }
-                TextButton(onClick = onDismiss) {
+                TextButton(onClick = onDismiss, enabled = !busy) {
                     Text("Cancel")
                 }
             }

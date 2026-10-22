@@ -65,12 +65,10 @@ class LosslessArchivePolicyTest {
         AudioEffectsManager.resetAll(false)
         manager = PlaybackManager(app)
         // Let the actual async monitor finish its initial OFFLINE -> Wi-Fi
-        // transition before installing a fake Archive job. Otherwise that valid
-        // startup policy change can cancel the job, depending on test order.
+        // transition before checking explicit source transitions.
         awaitCondition {
             val monitor = field("networkQualityMonitor").get(manager) as? NetworkQualityMonitor
-            monitor?.activeQualityCeiling?.value == maximum &&
-                field("losslessPolicyAllowed").getBoolean(manager)
+            monitor?.activeQualityCeiling?.value == maximum && manager.uiState.value.selectedQuality == AudioQuality.HI_RES_LOSSLESS
         }
         initialRequestEpoch = field("losslessRequestEpoch").getLong(manager)
         @Suppress("UNCHECKED_CAST")
@@ -109,10 +107,9 @@ class LosslessArchivePolicyTest {
             .apply { isAccessible = true }.invoke(manager, value)
     }
 
-    @Test fun equalizerControlsKeepTheAutomaticMaximumRequestAndPreservePlayback() {
+    @Test fun equalizerControlsKeepTheExplicitSourceTransitionAndPreservePlayback() {
         val job = Job()
-        set("losslessUpgradeJob", job)
-        set("losslessAttemptKey", "0|${track.id}")
+        set("youtubeQualityJob", job)
         AudioEffectsManager.setEnabled(true)
         AudioEffectsManager.setBandLevel(0, 450)
         // Drain queued collectors while EQ is enabled too: a conflated final
@@ -126,30 +123,25 @@ class LosslessArchivePolicyTest {
         dispatcher.scheduler.runCurrent()
         shadowOf(Looper.getMainLooper()).idle()
         assertTrue(job.isActive)
-        assertSame(job, field("losslessUpgradeJob").get(manager))
-        assertEquals("0|${track.id}", field("losslessAttemptKey").get(manager))
+        assertSame(job, field("youtubeQualityJob").get(manager))
         assertEquals(before, manager.uiState.value)
         assertEquals(eq, AudioEffectsManager.effectsState.value)
         assertEquals(initialRequestEpoch, field("losslessRequestEpoch").getLong(manager))
     }
 
-    @Test fun automaticQualityUpgradeRemainsIndependentAndRepeatedPolicyEmissionsDoNotRestartIt() {
-        val job = Job()
-        set("losslessUpgradeJob", job)
-        policy(maximum)
-        assertTrue(job.isActive)
-        policy(maximum)
-        policy(maximum)
-        assertSame(job, field("losslessUpgradeJob").get(manager))
+    @Test fun repeatedQualityNotificationsDoNotStartArchiveDiscovery() {
+        repeat(3) { policy(maximum) }
+        assertNull(field("youtubeQualityJob").get(manager))
         assertEquals(initialRequestEpoch, field("losslessRequestEpoch").getLong(manager))
+        assertEquals(track, manager.uiState.value.currentTrack)
     }
 
-    @Test fun equalizerEditsDoNotCancelAnAutomaticMaximumLookup() = runBlocking {
+    @Test fun equalizerEditsDoNotCancelAnExplicitSourceTransition() = runBlocking {
         val job = Job()
-        set("losslessUpgradeJob", job)
+        set("youtubeQualityJob", job)
         AudioEffectsManager.setBandLevel(0, 500)
         dispatcher.scheduler.runCurrent()
-        assertTrue("EQ edits must not cancel lossless discovery", job.isActive)
+        assertTrue("EQ edits must not cancel an explicit provider transition", job.isActive)
         dispatcher.scheduler.runCurrent()
         assertTrue(job.isActive)
         assertEquals(AudioQuality.HI_RES_LOSSLESS, manager.uiState.value.selectedQuality)
@@ -171,45 +163,37 @@ class LosslessArchivePolicyTest {
         assertSame(fallback, field("losslessFallback").get(manager))
         assertEquals(before, manager.uiState.value)
 
-        // Maximum remains eligible independently of equalizer controls; the
-        // current source and any automatic preparation remain untouched.
+        // Equalizer edits preserve both the current recording and any explicit
+        // transition owned by the source-policy coordinator.
         val pendingBetterCopy = Job()
         set("losslessRequestEpoch", 1L)
-        set("losslessUpgradeJob", pendingBetterCopy)
+        set("youtubeQualityJob", pendingBetterCopy)
         policy(maximum)
         assertTrue(pendingBetterCopy.isActive)
         assertSame(fallback, field("losslessFallback").get(manager))
         assertEquals(before, manager.uiState.value)
     }
 
-    @Test fun everyNonMaximumProfileOrOfflineStateCancelsPreparationWithoutReplacingAudio() {
-        for (value in AudioQualityCeiling.entries.filter { it != AudioQualityCeiling.MAX }
-            .map { ActiveQualityState(it, NetworkConnectionType.CELLULAR) } +
-            ActiveQualityState(AudioQualityCeiling.MAX, NetworkConnectionType.OFFLINE)) {
+    @Test fun explicitPolicyChangesCancelObsoleteSourceRequestsWithoutChangingDisplayedMetadata() {
+        for (ceiling in AudioQualityCeiling.entries) {
             val job = Job()
-            set("losslessUpgradeJob", job)
-            policy(value)
+            set("youtubeQualityJob", job)
+            PlaybackManager::class.java.getDeclaredMethod("reconcileSourcePolicy", PlaybackSourcePolicy::class.java,
+                Boolean::class.javaPrimitiveType, String::class.java).apply { isAccessible = true }
+                .invoke(manager, PlaybackSourcePolicy(ceiling), true, null)
             assertTrue(job.isCancelled)
             assertEquals(track, manager.uiState.value.currentTrack)
             assertEquals(45_000L, manager.uiState.value.currentPositionMs)
-            assertEquals("AAC • 320 kbps", manager.uiState.value.qualityBadge)
         }
     }
 
-    @Test fun newSelectionInvalidatesTheOldRequestAndClearsOnlyItsRetryState() {
-        val job = Job()
-        set("losslessUpgradeJob", job)
-        set("losslessRetryAfterMs", 123_000L)
-        set("losslessAttemptCount", 3)
+    @Test fun newSelectionInvalidatesTheOldSourceTransitionEpoch() {
         PlaybackManager::class.java.getDeclaredMethod("cancelLosslessUpgrade").apply { isAccessible = true }.invoke(manager)
-        assertTrue(job.isCancelled)
         assertEquals(initialRequestEpoch + 1L, field("losslessRequestEpoch").getLong(manager))
-        assertEquals(0L, field("losslessRetryAfterMs").getLong(manager))
-        assertEquals(0, field("losslessAttemptCount").getInt(manager))
+        assertNull(field("losslessFallback").get(manager))
     }
 
     @Test fun repeatedLossyPolicyNotificationsDoNotInvalidateAnEnhancerTransition() {
-        set("losslessPolicyAllowed", false)
         val constructor = PlaybackManager::class.java.declaredClasses.first { it.simpleName == "LosslessFallback" }
             .declaredConstructors.first { it.parameterCount == 12 }.apply { isAccessible = true }
         val opus = track.copy(audioUrl = "xtreme-youtube://audio/abcdefghijk/stream.audio?cap=320000&codec=opus",
@@ -274,13 +258,15 @@ class LosslessArchivePolicyTest {
         }
     }
 
-    @Test fun repeatedMaximumPolicyKeepsAnActiveLookupAndItsRetryBudget() {
-        val job = Job()
-        set("losslessUpgradeJob", job)
-        set("losslessAttemptCount", 2)
-        policy(maximum)
-        assertSame(job, field("losslessUpgradeJob").get(manager))
-        assertEquals(2, field("losslessAttemptCount").getInt(manager))
+    @Test fun archiveCatalogIdentityCannotMarkYoutubePlaybackAsLossless() {
+        val item = androidx.media3.common.MediaItem.Builder().setMediaId("ia_album:song.flac")
+            .setUri("xtreme-youtube://audio/abcdefghijk/stream.audio?cap=320000")
+            .setMediaMetadata(androidx.media3.common.MediaMetadata.Builder().setTitle("Song").setArtist("Artist")
+                .setExtras(Bundle().apply { putString("media_source", "YOUTUBE"); putBoolean("isLossless", false) }).build()).build()
+        val actual = PlaybackManager::class.java.getDeclaredMethod("controllerTrack", androidx.media3.common.MediaItem::class.java)
+            .apply { isAccessible = true }.invoke(manager, item) as MusicTrack
+        assertFalse(actual.isLossless)
+        assertEquals(item.mediaId, actual.id)
     }
 
     @Test fun recoveryUsesLatestValidPositionAndNeverAcceptsAnInitializationResetToZero() {

@@ -209,7 +209,7 @@ class ReactiveSettingsRepository(private val context: Context) : AutoCloseable {
     companion object {
         private val mainHandler = Handler(Looper.getMainLooper())
         private val startupFiles = listOf("xtreme_theme_prefs", "xtreme_user_profile_prefs",
-            "xtreme_other_settings", "xtreme_audio_quality_prefs", "playback_sleep_timer",
+            "xtreme_other_settings", "xtreme_playback_sources_prefs", "xtreme_audio_quality_prefs", "playback_sleep_timer",
             "xtreme_backup_preferences", "xtreme_smart_cache_preferences")
 
         fun preferences(context: Context, name: String): SharedPreferences =

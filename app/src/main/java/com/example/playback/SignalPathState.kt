@@ -78,7 +78,7 @@ data class SignalPathState(
     val mode: String = "Shared", val buffering: Boolean = false, val glitches: Int = 0,
     val outputEncoding: Int = C.ENCODING_INVALID, val outputChannels: Int = 0,
     val outputRouteVerified: Boolean = false, val playbackSpeed: Float = 1f, val pitch: Float = 1f,
-    val playbackStatus: String = "Idle"
+    val playbackStatus: String = "Idle", val sourceId: String = "", val enhancerOriginalSourceId: String = ""
 ) {
     val status: String get() = when { bitPerfect -> "Bit-Perfect"; dspActive -> "Enhanced"; else -> "High Quality" }
     val outputFormat: String get() {
@@ -102,15 +102,17 @@ object AudioSignalPath {
     val state = mutable.asStateFlow()
     internal fun update(block: (SignalPathState) -> SignalPathState) { mutable.update(block) }
     internal fun reset() { mutable.value = SignalPathState() }
-    internal fun source(id: String, provider: String) = update { old ->
-        if (old.trackId == id && old.source == provider) old else old.copy(trackId = id, source = provider,
+    internal fun source(id: String, provider: String, sourceId: String = "", originalSourceId: String = "") = update { old ->
+        if (old.trackId == id && old.source == provider && old.sourceId == sourceId) {
+            if (old.enhancerOriginalSourceId == originalSourceId) old else old.copy(enhancerOriginalSourceId = originalSourceId)
+        } else old.copy(trackId = id, source = provider, sourceId = sourceId, enhancerOriginalSourceId = originalSourceId,
             quality = StreamQualityBadge(), glitches = 0)
     }
     internal fun format(id: String, value: Format, bitrate: Int) = update { old ->
         if (old.trackId != id) old else old.copy(quality = StreamQualityBadge.from(value, bitrate))
     }
-    internal fun verifiedSource(id: String, provider: String, value: Format, bitrate: Int) = update { old ->
-        old.copy(trackId = id, source = provider, quality = StreamQualityBadge.from(value, bitrate),
+    internal fun verifiedSource(id: String, provider: String, value: Format, bitrate: Int, sourceId: String = "", originalSourceId: String = "") = update { old ->
+        old.copy(trackId = id, source = provider, sourceId = sourceId, enhancerOriginalSourceId = originalSourceId, quality = StreamQualityBadge.from(value, bitrate),
             glitches = if (old.trackId == id) old.glitches else 0)
     }
 }

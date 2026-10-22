@@ -103,8 +103,10 @@ fun SignalPathPopupCard(state: SignalPathState, modifier: Modifier = Modifier) {
     val colors = LocalAppColors.current
     val context = LocalContext.current.applicationContext
     val monitor = remember(context) { com.example.playback.NetworkQualityMonitor.getInstance(context) }
-    val enhancer by monitor.audioEnhancer.collectAsStateWithLifecycle()
     val policy by monitor.sourcePolicy.collectAsStateWithLifecycle()
+    val automaticEnhancement = policy.automaticallyEnhanced(state)
+    val enhancer = policy.enhancer || automaticEnhancement
+    val returnToYouTube = automaticEnhancement && (state.enhancerOriginalSourceId.isBlank() || state.enhancerOriginalSourceId == state.sourceId)
     val rate: (Int) -> String = { if (it > 0) String.format(Locale.ROOT, "%.1f kHz", it / 1000.0) else "Not reported" }
     val solidCardBg = if (colors.isAmoled) Color(0xFF141414) else colors.cardBackground
     val solidCardBorder = colors.cardBorder.copy(alpha = if (colors.isDark) 0.5f else 0.7f)
@@ -140,9 +142,9 @@ fun SignalPathPopupCard(state: SignalPathState, modifier: Modifier = Modifier) {
                 .filter(String::isNotEmpty).joinToString(" • ")
             SignalNode("Source", "${state.source} • $sourceDetails")
             SignalNode("Audio Enhancer",
-                if (policy.maximum) "Maximum / Lossless keeps Archive priority; this preference applies to lower qualities."
-                else "Prefer YouTube Opus source when available. AAC fallback; not lossless.") {
-                Switch(checked = enhancer, onCheckedChange = monitor::setAudioEnhancer,
+                if (returnToYouTube) "Already using your highest preferred available source. Turn off to return to YouTube Music."
+                else "Try higher-quality enabled sources within your active quality limit. Turn off to restore the original source.") {
+                Switch(checked = enhancer, onCheckedChange = { enabled -> monitor.setAudioEnhancer(enabled, returnToYouTube = !enabled && returnToYouTube) },
                     modifier = Modifier.testTag("source_audio_enhancer"))
             }
             SignalNode("App Resampler", when {

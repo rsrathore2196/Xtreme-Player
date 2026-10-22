@@ -149,7 +149,7 @@ class PlayerViewModel(
 
     val catalogBrowser = CatalogBrowserState(repository.catalogBrowser, viewModelScope,
         initialQuality = playbackManager.uiState.value.selectedQuality,
-        verifyPlayback = repository::verifySearchPlayback, archiveSearch = repository::searchArchive,
+        archiveSearch = repository::searchArchive,
         addonSearch = { query, policy -> com.example.data.remote.StreamingAddons.search(application, query, policy) })
 
     private val _searchState = MutableStateFlow(SearchUiState())

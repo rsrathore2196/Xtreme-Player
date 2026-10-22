@@ -30,13 +30,14 @@ class StreamResolverRegressionTest {
     private val requested = MusicTrack("import_song", "Song", "Artist", "Album", 180000, "cover", "")
     private val youtube = requested.copy(id = "yt_abcdefghijk", source = "YouTube Music")
     private val quality = AudioQuality.ULTRA_HD_320
-    private val expired = "https://audio.example/expired.m4a"
-    private val fresh = "https://audio.example/fresh.m4a"
+    private val expired = "https://aac.saavncdn.com/expired.m4a"
+    private val fresh = "https://aac.saavncdn.com/fresh.m4a"
 
     // Every provider boundary is controlled; these checks never need live APIs.
     private fun resolver(search: suspend (String, Boolean) -> List<MusicTrack>) = StreamResolver(
         searchStandard = search, searchLossless = { emptyList() }, fetchById = { _, _ -> null },
-        resolveYouTube = { _, _, _ -> null }, searchYouTube = { emptyList() })
+        resolveYouTube = { _, _, _, _ -> null }, searchYouTube = { emptyList() },
+        resolveOpus = { _, _, _, _ -> null })
 
     @Test fun unavailableSongNeverReceivesDemoAudioOrCacheEntry() = runBlocking {
         val resolver = resolver { _, _ -> emptyList() }
@@ -50,8 +51,8 @@ class StreamResolverRegressionTest {
     }
 
     @Test fun wrongRecordingIsRejectedAndMatchingCandidateKeepsRequestedIdentity() = runBlocking {
-        val wrongArtist = requested.copy(id = "online_wrong", artist = "Someone Else", audioUrl = "https://audio.example/wrong.m4a")
-        val remix = requested.copy(id = "online_remix", title = "Song Remix", audioUrl = "https://audio.example/remix.m4a")
+        val wrongArtist = requested.copy(id = "online_wrong", artist = "Someone Else", audioUrl = "https://aac.saavncdn.com/wrong.m4a")
+        val remix = requested.copy(id = "online_remix", title = "Song Remix", audioUrl = "https://aac.saavncdn.com/remix.m4a")
         val match = requested.copy(id = "online_provider", audioUrl = fresh, isLiked = false)
         val resolver = resolver { _, _ -> listOf(wrongArtist, remix, match) }
         val result = resolver.resolve(youtube.copy(isLiked = true), quality)
@@ -99,18 +100,19 @@ class StreamResolverRegressionTest {
             searchStandard = { _, _ -> standardCalls.incrementAndGet(); emptyList() },
             searchLossless = { archiveCalls.incrementAndGet(); emptyList() },
             fetchById = { _, _ -> null },
-            resolveYouTube = { _, _, _ ->
+            resolveYouTube = { _, _, _, _ ->
                 started.complete(Unit)
                 try { awaitCancellation() } finally { stopped.complete(Unit) }
-            }, searchYouTube = { fail("Cancelled selection must not search another video"); emptyList() })
+            }, searchYouTube = { fail("Cancelled selection must not search another video"); emptyList() },
+        resolveOpus = { _, _, _, _ -> null })
         val selection = async { resolver.resolve(youtube, AudioQuality.HI_RES_LOSSLESS) }
         try {
             withTimeout(5_000) { started.await() }
             selection.cancelAndJoin()
             assertTrue(selection.isCancelled)
             assertTrue(stopped.isCompleted)
-            assertTrue(standardCalls.get() > 0)
-            assertEquals(1, archiveCalls.get())
+            assertEquals(0, standardCalls.get())
+            assertEquals(0, archiveCalls.get())
             assertEquals(0, resolver.cacheSize)
         } finally { selection.cancelAndJoin() }
     }
@@ -118,8 +120,9 @@ class StreamResolverRegressionTest {
     @Test fun providerCancellationIsPropagatedWithoutFallback() = runBlocking {
         val resolver = StreamResolver(
             searchStandard = { _, _ -> emptyList() },
-            resolveYouTube = { _, _, _ -> throw CancellationException("selected track changed") },
-            searchYouTube = { fail("Cancellation must not trigger YouTube search"); emptyList() })
+            resolveYouTube = { _, _, _, _ -> throw CancellationException("selected track changed") },
+            searchYouTube = { fail("Cancellation must not trigger YouTube search"); emptyList() },
+        resolveOpus = { _, _, _, _ -> null })
         try {
             resolver.resolve(youtube, quality)
             fail("Expected cancellation")
@@ -132,11 +135,12 @@ class StreamResolverRegressionTest {
     @Test fun exactYouTubeSelectionPlaysWhenJioIsUnavailable() = runBlocking {
         val resolver = StreamResolver(
             searchStandard = { _, _ -> emptyList() },
-            resolveYouTube = { track, selectedQuality, _ ->
+            resolveYouTube = { track, selectedQuality, _, _ ->
                 assertEquals(youtube.id, track.id)
                 assertEquals(quality, selectedQuality)
                 track.copy(audioUrl = "xtreme-youtube://audio/abcdefghijk?itag=251", bitrateKbps = 160)
-            }, searchYouTube = { fail("Exact video is playable"); emptyList() })
+            }, searchYouTube = { fail("Exact video is playable"); emptyList() },
+        resolveOpus = { _, _, _, _ -> null })
         val result = resolver.resolve(youtube, quality)
         assertEquals(youtube.id, result.id)
         assertEquals("xtreme-youtube://audio/abcdefghijk?itag=251", result.audioUrl)

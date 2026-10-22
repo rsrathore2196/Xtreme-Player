@@ -135,16 +135,10 @@ class PlaybackManager(
     private var recoveryJob: Job? = null
     private var youtubeQualityJob: Job? = null
     private var appliedSourcePolicyKey: String? = null
+    private var appliedEnhancer = false
+    @Volatile private var enhancerOrigin: SourceTransitionOrigin? = null
     private var pendingPolicyRestart: (() -> Unit)? = null
-    private var losslessUpgradeJob: Job? = null
-    private var losslessAttemptKey: String? = null
-    private var losslessNetworkBlockedKey: String? = null
-    private var losslessLookupStarted = false
     private var losslessRequestEpoch = 0L
-    private var losslessRetryAfterMs = 0L
-    private var losslessAttemptCount = 0
-    private var losslessPlaybackStableSinceMs: Long? = null
-    private var losslessPolicyAllowed = false
     private var losslessTransitionId: String? = null
     private data class LosslessFallback(val generation: Long, val original: MusicTrack,
         val upgraded: MusicTrack, var resumePositionMs: Long, val requestEpoch: Long,
@@ -276,8 +270,8 @@ class PlaybackManager(
                 reconcileSourcePolicy(policy)
             }
         }
-        // EQ is renderer-side DSP only. Lossless discovery is driven by the
-        // active network profile and stable playback, never effect slider edits.
+        // EQ remains renderer-side DSP. Provider resolution is selection/policy driven,
+        // never an effect edit or automatic background Archive upgrade.
         SleepTimerManager.addExpirationListener(sleepExpirationListener)
         scope.launch {
             val startup = com.example.performance.BackgroundWorkCoordinator
@@ -354,36 +348,15 @@ class PlaybackManager(
         }
     }
 
-    /** Only the active network quality profile controls automatic lossless discovery. */
+    /** Source changes are resolved explicitly by reconcileSourcePolicy, never by a playback timer. */
     private fun updateLosslessPolicy(policy: ActiveQualityState) {
         val quality = policy.effectiveCeiling.audioQuality
         _uiState.update { if (it.selectedQuality == quality) it else it.copy(selectedQuality = quality) }
-        val allowed = policy.allowsLosslessUpgrade
-        if (!allowed) {
-            // Enhancer changes in a lossy profile must not invalidate or roll
-            // back the generic source transition owned by reconcileSourcePolicy.
-            if (losslessPolicyAllowed || losslessUpgradeJob != null || losslessFallback?.expectedLossless == true)
-                stopPendingLosslessUpgrade()
-            val current = _uiState.value.currentTrack
-            if (pendingSelectionId == null && current != null && controller?.currentMediaItem?.mediaId == current.id)
-                losslessNetworkBlockedKey = "$selectionGeneration|${current.id}"
-        } else if (!losslessPolicyAllowed) {
-            losslessNetworkBlockedKey = null
-            if (losslessUpgradeJob?.isActive != true) losslessAttemptCount = 0
-            maybeUpgradeToLossless()
-        }
-        losslessPolicyAllowed = allowed
     }
 
     /** Cancel pending preparation. Active policy reconciliation owns any required downgrade. */
     private fun stopPendingLosslessUpgrade() {
         ++losslessRequestEpoch
-        losslessUpgradeJob?.cancel()
-        losslessUpgradeJob = null
-        losslessAttemptKey = null
-        losslessLookupStarted = false
-        if (losslessFallback?.let { it.expectedLossless && !it.activated } == true)
-            _uiState.value.currentTrack?.let { track -> controller?.let { restoreLosslessFallback(it, track) } }
     }
 
     private fun policyAllows(track: MusicTrack, policy: PlaybackSourcePolicy): Boolean {
@@ -393,6 +366,8 @@ class PlaybackManager(
     /** Same selection/epoch/fallback owner as Archive upgrades; never a second player. */
     private fun reconcileSourcePolicy(policy: PlaybackSourcePolicy, force: Boolean = false, failedUrl: String? = null) {
         if (!force && appliedSourcePolicyKey == policy.key) return
+        val enhancerTurnedOn = policy.enhancer && !appliedEnhancer
+        appliedEnhancer = policy.enhancer
         appliedSourcePolicyKey = policy.key
         youtubeQualityJob?.cancel()
         if (pendingSelectionId != null && playResolutionJob?.isActive == true) {
@@ -408,30 +383,44 @@ class PlaybackManager(
         // A rapid second toggle can arrive while the previous source is audible
         // but still awaiting its Format acknowledgement. Resolve from the actual
         // installed transport without rolling it back (or pausing it) first.
-        val original = losslessFallback?.takeIf {
-            !it.expectedLossless && !it.activated && it.original.id == displayed.id &&
+        val original = (losslessFallback?.takeIf {
+            !it.activated && it.original.id == displayed.id &&
                 it.upgradedUrl == player.currentMediaItem?.playbackUri()?.toString()
-        }?.upgraded ?: displayed
+        }?.upgraded ?: displayed).let { track ->
+            // Catalog discovery can omit duration. The active decoder's duration
+            // provides recording evidence for an explicit source enhancement.
+            if (track.durationMs <= 0L && player.duration > 0L) track.copy(durationMs = player.duration) else track
+        }
         if (player.currentMediaItem?.mediaId != original.id || Uri.parse(original.audioUrl).scheme in setOf("file", "content")) return
         recoveryJob?.cancel()
-        if (policy.maximum && failedUrl == null) {
-            if (losslessFallback?.let { !it.expectedLossless && !it.activated } == true) {
-                stopPendingLosslessUpgrade()
-                losslessFallback = null
-                applyActualAudioProperties(player, player.sessionExtras.getBundle("active_audio"))
-            }
-            if (losslessUpgradeJob?.isActive != true) {
-                losslessAttemptCount = 0; losslessAttemptKey = null; losslessNetworkBlockedKey = null
-            }
-            maybeUpgradeToLossless()
-            return
+        val remembered = enhancerOrigin?.takeIf { it.track.id == original.id }
+            ?: SourceTransitionOrigin.read(player.currentMediaItem, original)
+        val origin = remembered ?: if (enhancerTurnedOn) SourceTransitionOrigin.capture(original, policy) else null
+        if (origin != null) enhancerOrigin = origin
+        val restoring = !policy.enhancer && (origin != null || policy.returnToYouTube)
+        if (enhancerTurnedOn && remembered == null && origin != null) {
+            val item = player.currentMediaItem ?: return
+            val saved = Bundle(item.mediaMetadata.extras ?: Bundle()).apply { SourceTransitionOrigin.write(this, origin) }
+            player.replaceMediaItem(player.currentMediaItemIndex, item.buildUpon().setMediaMetadata(
+                item.mediaMetadata.buildUpon().setExtras(saved).build()).build())
         }
+        if (!restoring && policy.maximum && failedUrl == null && original.isLossless && policyAllows(original, policy) && policy.isPreferred(original)) return
         stopPendingLosslessUpgrade()
         if (losslessFallback?.let { it.activated || !it.expectedLossless } == true) losslessFallback = null
         val generation = selectionGeneration
         val epoch = ++losslessRequestEpoch
         val originalUri = player.currentMediaItem?.playbackUri()?.toString()
         val repo = repository ?: return
+        if (restoring && !policy.returnToYouTube && origin?.track?.audioUrl == originalUri && policyAllows(original, policy)) {
+            enhancerOrigin = null
+            val item = player.currentMediaItem ?: return
+            val cleared = Bundle(item.mediaMetadata.extras ?: Bundle()).apply {
+                SourceTransitionOrigin.write(this, null); putString("source_policy_key", policy.key)
+            }
+            player.replaceMediaItem(player.currentMediaItemIndex, item.buildUpon().setMediaMetadata(
+                item.mediaMetadata.buildUpon().setExtras(cleared).build()).build())
+            return
+        }
         fun owns() = epoch == losslessRequestEpoch && ownsSelection(original.id, generation) &&
             NetworkQualityMonitor.getInstance(context).sourcePolicy.value.key == policy.key &&
             player.currentMediaItem?.mediaId == original.id
@@ -440,15 +429,33 @@ class PlaybackManager(
                 delay(180L) // Coalesce rapid settings changes, never player/touch commands.
                 if (!owns()) return@launch
                 val isYoutube = com.example.data.remote.YouTubeAudioStreamService.isYouTubeAudio(original.id, original.audioUrl)
-                if (failedUrl == null && policyAllows(original, policy) && (!policy.preferOpus || isYoutube)) return@launch
-                val resolved = withContext(AppDispatchers.Io) { repo.resolvePlayableTrack(original,
-                    forceRefresh = failedUrl != null, failedUrl = failedUrl) }
+                if (!restoring && !enhancerTurnedOn && failedUrl == null && policyAllows(original, policy) && policy.isPreferred(original) &&
+                    isYoutube && !policy.maximum) return@launch
+                val resolved = withContext(AppDispatchers.Io) { repo.resolvePlayableTrack(if (restoring && !policy.returnToYouTube) origin!!.track else original,
+                    forceRefresh = failedUrl != null, failedUrl = failedUrl,
+                    preferredSourceId = if (policy.returnToYouTube && !policy.enhancer) PlaybackSource.youtube.id else origin?.sourceId.takeIf { restoring }, manualUpgrade = enhancerTurnedOn) }
                 if (!owns() || player.currentMediaItem?.playbackUri()?.toString() != originalUri) return@launch
-                if (resolved.audioUrl == original.audioUrl) return@launch
-                val media = resolved.toMediaItem().forSourceTransition()
-                val prepared = if (resolved.isLossless) LosslessStreamPrebuffer.prepare(context, media, original.durationMs,
+                if (resolved.audioUrl == originalUri) {
+                    if (restoring) {
+                        enhancerOrigin = null
+                        val item = player.currentMediaItem ?: return@launch
+                        val saved = Bundle(item.mediaMetadata.extras ?: Bundle()).apply {
+                            SourceTransitionOrigin.write(this, null); putString("source_policy_key", policy.key)
+                        }
+                        player.replaceMediaItem(player.currentMediaItemIndex, item.buildUpon().setMediaMetadata(
+                            item.mediaMetadata.buildUpon().setExtras(saved).build()).build())
+                    }
+                    return@launch
+                }
+                val transport = original.copy(audioUrl = resolved.audioUrl, source = resolved.source,
+                    bitrateKbps = resolved.bitrateKbps, qualityBadge = resolved.qualityBadge, isLossless = resolved.isLossless)
+                val media = transport.toMediaItem().forSourceTransition()
+                val warmed = if (resolved.isLossless) LosslessStreamPrebuffer.prepare(context, media, original.durationMs,
                     currentPosition = { losslessRecoveryPosition(_playbackPosition.value, player.currentPosition, true) },
-                    stillCurrent = ::owns) != null else LosslessStreamPrebuffer.warmSource(context, media)
+                    stillCurrent = ::owns) else null
+                val prepared = if (resolved.isLossless) warmed?.covers(
+                    losslessRecoveryPosition(_playbackPosition.value, player.currentPosition, true)) == true
+                    else LosslessStreamPrebuffer.warmSource(context, media)
                 if (!prepared || !owns()) throw java.io.IOException("Source preparation failed")
                 val index = player.currentMediaItemIndex
                 if (index !in activeQueue.indices || player.currentMediaItem?.playbackUri()?.toString() != originalUri) return@launch
@@ -457,7 +464,7 @@ class PlaybackManager(
                 val replacement = original.copy(audioUrl = media.localConfiguration!!.uri.toString(), source = resolved.source,
                     qualityBadge = resolved.qualityBadge, bitrateKbps = resolved.bitrateKbps, isLossless = resolved.isLossless)
                 losslessFallback = LosslessFallback(generation, original, replacement, position, epoch,
-                    expectedLossless = resolved.isLossless, expectedOpus = policy.preferOpus && isYoutubeSource(replacement),
+                    expectedLossless = resolved.isLossless, expectedOpus = isYoutubeSource(replacement) && resolved.qualityBadge.contains("Opus", true),
                     policyKey = policy.key, originalUsable = failedUrl == null)
                 losslessTransitionId = original.id
                 val extras = Bundle(media.mediaMetadata.extras ?: Bundle()).apply {
@@ -465,6 +472,7 @@ class PlaybackManager(
                     putBoolean("source_transition_pending", true)
                     putBoolean("lossless_upgrade_pending", resolved.isLossless)
                     putString("audio_policy_tier", policy.ceiling.audioQuality.name)
+                    SourceTransitionOrigin.write(this, origin.takeIf { policy.enhancer })
                 }
                 player.replaceMediaItem(index, media.buildUpon().setMediaMetadata(
                     media.mediaMetadata.buildUpon().setExtras(extras).build()).build())
@@ -480,6 +488,7 @@ class PlaybackManager(
                     }
                     false
                 } == true
+                if (activated && restoring) enhancerOrigin = null
                 if (!activated && owns() && player.playbackState == Player.STATE_READY &&
                     !player.playWhenReady && player.playerError == null) return@launch
                 if (!activated && owns()) {
@@ -632,7 +641,7 @@ class PlaybackManager(
             language = extras?.getString("language") ?: "Unknown", year = extras?.getString("year").orEmpty(),
             isrc = extras?.getString("isrc").orEmpty(),
             source = source.ifBlank { if (item.mediaId.startsWith("yt_")) "Extended Stream" else "HD Stream" },
-            isLossless = item.mediaId.startsWith("ia_") || extras?.getBoolean("isLossless", false) == true,
+            isLossless = extras?.getBoolean("isLossless", false) == true,
             recommendationOnly = extras?.getBoolean("recommendation_only", false) == true)
     }
 
@@ -699,8 +708,7 @@ class PlaybackManager(
             updateProgressValues()
             publishListeningState(player, newPlay = true)
             if (player.isPlaying) {
-                losslessPlaybackStableSinceMs = android.os.SystemClock.elapsedRealtime()
-                startProgressTicker(); maybeUpgradeToLossless()
+                startProgressTicker()
             }
         }
         player.addListener(object : Player.Listener {
@@ -729,11 +737,8 @@ class PlaybackManager(
                 if (isPlaying) autoplaySuppressedBySleepTimer = false
                 _uiState.update { it.copy(isPlaying = isPlaying) }
                 if (isPlaying) {
-                    if (losslessPlaybackStableSinceMs == null)
-                        losslessPlaybackStableSinceMs = android.os.SystemClock.elapsedRealtime()
                     startProgressTicker()
                     confirmLosslessActivation(player)
-                    maybeUpgradeToLossless()
                     // Genuinely playing: persist track into Room DB listening history immediately
                     val current = _uiState.value.currentTrack
                     networkQualityMonitor?.sourcePolicy?.value?.let { policy ->
@@ -752,13 +757,9 @@ class PlaybackManager(
                         }
                     }
                 } else {
-                    losslessPlaybackStableSinceMs = null
                     stopProgressTicker()
                     if (losslessFallback == null && youtubeQualityJob?.isActive != true) {
                         ++losslessRequestEpoch
-                        losslessUpgradeJob?.cancel()
-                        losslessUpgradeJob = null
-                        losslessAttemptKey = null
                     }
                 }
                 Log.d(TAG, "Playing state changed: $isPlaying")
@@ -852,7 +853,6 @@ class PlaybackManager(
                     if (oldTrack?.id != trackId) {
                         youtubeQualityJob?.cancel()
                         cancelLosslessUpgrade()
-                        if (player.isPlaying) losslessPlaybackStableSinceMs = android.os.SystemClock.elapsedRealtime()
                     }
                     if (sourceOnlyTransition) losslessTransitionId = null
                     // Keep the original quality and queue snapshot until this replacement
@@ -901,7 +901,6 @@ class PlaybackManager(
                     listeningPlayRestart = listeningPlayRestart || newListeningPlay
                     // Changing only the transport preserves the listening session and lyrics identity.
                     if (sourceOnlyTransition) return
-                    if (player.isPlaying) maybeUpgradeToLossless()
 
                     // Keep player/queue access on Main; only persistence runs on IO.
                     scope.launch {
@@ -1025,7 +1024,6 @@ class PlaybackManager(
                     return
                 }
                 if (restoreLosslessFallback(player, current)) return
-                losslessUpgradeJob?.cancel()
                 val policy = NetworkQualityMonitor.getInstance(context).sourcePolicy.value
                 if (!policyAllows(current, policy)) {
                     if (youtubeQualityJob?.isActive != true) reconcileSourcePolicy(policy, force = true)
@@ -1339,14 +1337,6 @@ class PlaybackManager(
 
     private fun cancelLosslessUpgrade() {
         ++losslessRequestEpoch
-        losslessUpgradeJob?.cancel()
-        losslessUpgradeJob = null
-        losslessAttemptKey = null
-        losslessNetworkBlockedKey = null
-        losslessLookupStarted = false
-        losslessRetryAfterMs = 0L
-        losslessAttemptCount = 0
-        losslessPlaybackStableSinceMs = null
         losslessFallback = null
         losslessTransitionId = null
     }
@@ -1359,151 +1349,6 @@ class PlaybackManager(
             player.currentMediaItem?.playbackUri()?.toString() != fallback.upgradedUrl) return
         if (positionMs > 0L || positionMs == 0L && fallback.resumePositionMs <= 2_000L)
             fallback.resumePositionMs = positionMs
-    }
-
-    /** MAX enables automatic upgrades independently of all equalizer controls. */
-    private fun maybeUpgradeToLossless() {
-        val state = _uiState.value
-        if (state.selectedQuality != AudioQuality.HI_RES_LOSSLESS || pendingSelectionId != null) return
-        val networkKey = "$selectionGeneration|${state.currentTrack?.id}"
-        if (!NetworkQualityMonitor.getInstance(context).allowsLosslessUpgrade) {
-            losslessNetworkBlockedKey = networkKey
-            state.currentTrack?.let { LosslessDiagnostics.record(it.id,
-                LosslessDiagnostics.Reason.NETWORK_POLICY_BLOCKED, "admission") }
-            return
-        }
-        if (losslessNetworkBlockedKey == networkKey) return
-        val player = controller ?: return
-        if (player.applicationLooper != android.os.Looper.getMainLooper() || !player.isPlaying) return
-        val original = state.currentTrack ?: return
-        if (player.currentMediaItem?.mediaId != original.id || original.isLossless) return
-        val repo = repository ?: return
-        val generation = selectionGeneration
-        val key = "$generation|${original.id}"
-        if (losslessUpgradeJob?.isActive == true || losslessFallback?.activated == false ||
-            losslessAttemptCount >= 3 ||
-            losslessAttemptKey == key) return
-        val requestEpoch = ++losslessRequestEpoch
-        losslessAttemptKey = key
-        losslessLookupStarted = false
-        if (losslessPlaybackStableSinceMs == null)
-            losslessPlaybackStableSinceMs = android.os.SystemClock.elapsedRealtime()
-        fun ownsRequest(): Boolean = losslessRequestEpoch == requestEpoch && ownsSelection(original.id, generation) &&
-            pendingSelectionId == null && _uiState.value.selectedQuality == AudioQuality.HI_RES_LOSSLESS &&
-            NetworkQualityMonitor.getInstance(context).allowsLosslessUpgrade && player.currentMediaItem?.mediaId == original.id
-        fun stillCurrent(): Boolean = ownsRequest() && player.isPlaying &&
-            _uiState.value.currentTrack?.audioUrl == original.audioUrl
-        losslessUpgradeJob = scope.launch {
-            try {
-                delay((losslessRetryAfterMs - android.os.SystemClock.elapsedRealtime()).coerceAtLeast(0L))
-                val playingSince = losslessPlaybackStableSinceMs ?: return@launch
-                delay((playingSince + 3_000L - android.os.SystemClock.elapsedRealtime()).coerceAtLeast(0L))
-                if (!stillCurrent()) return@launch
-                val buffered = withTimeoutOrNull(6_000L) {
-                    while (stillCurrent() && player.bufferedPosition - player.currentPosition < 1_000L) delay(250L)
-                    stillCurrent()
-                } == true
-                // Some progressive/SABR sessions under-report bufferedPosition.
-                // Continuous READY playback is valid evidence after this bounded wait.
-                if (!buffered && (!stillCurrent() || player.playbackState != Player.STATE_READY || player.playerError != null))
-                    return@launch
-                // Three bounded attempts, with exponential backoff. Completed matches and
-                // partial metadata are reused; confirmed absence does not cause a retry loop.
-                for (attempt in 0..2) {
-                    if (attempt > 0) delay(10_000L shl (attempt - 1))
-                    if (!stillCurrent()) return@launch
-                    val duration = player.duration.takeIf { it > 0L } ?: original.durationMs
-                    if (duration <= 0L || duration - player.currentPosition < 10_000L) return@launch
-                    if (losslessAttemptCount >= 3) return@launch
-                    val reference = original.copy(durationMs = duration)
-                    val lossless = BackgroundWorkCoordinator.startup(
-                        BackgroundWorkCoordinator.StartupPriority.DEFERRED, requireForeground = false,
-                        label = "Automatic lossless discovery") {
-                        if (!stillCurrent()) return@startup null
-                        losslessAttemptCount++
-                        losslessLookupStarted = true
-                        losslessRetryAfterMs = android.os.SystemClock.elapsedRealtime() + 10_000L
-                        withContext(AppDispatchers.Io) { repo.findLosslessUpgrade(reference, automatic = true) }
-                    }
-                    if (!stillCurrent()) return@launch
-                    if (lossless == null) {
-                        if (LosslessDiagnostics.last(original.id)?.reason == LosslessDiagnostics.Reason.NO_RESULTS) return@launch
-                        continue
-                    }
-                    if (duration - player.currentPosition < 8_000L) return@launch
-                    val candidate = original.copy(audioUrl = lossless.audioUrl, bitrateKbps = lossless.bitrateKbps,
-                        qualityBadge = lossless.qualityBadge, isLossless = true, source = lossless.source)
-                    val sameCode = withContext(AppDispatchers.CpuBounded) {
-                        com.example.data.repository.RecordingIdentity.isrc(original.isrc)?.let {
-                            it == com.example.data.repository.RecordingIdentity.isrc(lossless.isrc)
-                        } == true
-                    }
-                    val warmed = LosslessStreamPrebuffer.prepare(context, candidate.toMediaItem(), duration,
-                        currentPosition = { player.currentPosition }, stillCurrent = ::stillCurrent,
-                        durationToleranceMs = if (sameCode) 8_000L else 5_000L, allowUnknownDuration = sameCode, automatic = true)
-                    if (!stillCurrent()) return@launch
-                    if (warmed == null || !warmed.covers(player.currentPosition)) {
-                        LosslessDiagnostics.prebufferRejected(original.id, warmed != null)
-                        repo.rejectLosslessUpgrade(reference, candidate.audioUrl)
-                        continue
-                    }
-                    val index = player.currentMediaItemIndex
-                    if (index !in activeQueue.indices) return@launch
-                    val position = player.currentPosition.coerceAtLeast(0L)
-                    val resume = player.playWhenReady
-                    val latest = _uiState.value.currentTrack ?: return@launch
-                    val replacement = latest.copy(audioUrl = candidate.audioUrl, bitrateKbps = warmed.audio.bitrateKbps,
-                        qualityBadge = warmed.audio.badge, isLossless = true, source = candidate.source)
-                    losslessFallback = LosslessFallback(generation, latest, replacement, position, requestEpoch)
-                    losslessTransitionId = latest.id
-                    val resolvedItem = replacement.toMediaItem()
-                    val item = resolvedItem.buildUpon().setMediaMetadata(
-                        resolvedItem.mediaMetadata.buildUpon().setExtras(Bundle(
-                            resolvedItem.mediaMetadata.extras ?: Bundle()).apply {
-                                putBoolean("audio_actual", false)
-                                putBoolean("lossless_upgrade_pending", true)
-                                putInt("sample_rate", warmed.audio.sampleRate)
-                                putInt("bit_depth", warmed.audio.bitDepth)
-                                putString("audio_codec", warmed.audio.codec)
-                            }).build()).build()
-                    player.replaceMediaItem(index, item)
-                    player.seekTo(index, position)
-                    player.prepare()
-                    player.playWhenReady = resume
-                    val activated = withTimeoutOrNull(8_000L) {
-                        while (ownsRequest() && player.currentMediaItem?.playbackUri()?.toString() == replacement.audioUrl) {
-                            applyActualAudioProperties(player, player.sessionExtras.getBundle("active_audio"))
-                            confirmLosslessActivation(player)
-                            if (losslessFallback?.activated == true) return@withTimeoutOrNull true
-                            if (player.playerError != null) break
-                            delay(100L)
-                        }
-                        false
-                    } == true
-                    if (activated) return@launch
-                    if (!ownsRequest()) return@launch
-                    LosslessDiagnostics.record(original.id, LosslessDiagnostics.Reason.TRANSITION_FAILED, "decoder-activation")
-                    _uiState.value.currentTrack?.let { restoreLosslessFallback(player, it) }
-                    repo.rejectLosslessUpgrade(reference, candidate.audioUrl)
-                }
-            } catch (e: CancellationException) {
-                if (losslessRequestEpoch == requestEpoch && losslessFallback?.activated == false)
-                    _uiState.value.currentTrack?.let { restoreLosslessFallback(player, it) }
-                throw e
-            } catch (e: Exception) {
-                val current = _uiState.value.currentTrack
-                if (current != null && losslessRequestEpoch == requestEpoch &&
-                    losslessFallback?.requestEpoch == requestEpoch && ownsSelection(current.id, generation))
-                    restoreLosslessFallback(player, current)
-                LosslessDiagnostics.record(original.id, LosslessDiagnostics.Reason.TRANSITION_FAILED, "upgrade")
-                Log.d(TAG, "Optional lossless upgrade unavailable: ${e.message}")
-            } finally {
-                if (losslessRequestEpoch == requestEpoch) {
-                    if (losslessAttemptKey == key && (!losslessLookupStarted ||
-                        !player.isPlaying && losslessFallback == null && losslessAttemptCount < 3)) losslessAttemptKey = null
-                }
-            }
-        }
     }
 
     /** Commit source/quality only after Media3 reports the matching lossless input ready. */
@@ -1586,10 +1431,10 @@ class PlaybackManager(
         recoveryGuard.select(track.id, newRequest = true)
         val generation = ++selectionGeneration
         pendingSelectionId = track.id
-        // Archive's bounded primary attempt must not spend Jio's recovery window.
-        initialJioDeadlineMs = android.os.SystemClock.elapsedRealtime() + 6_000L +
-            if ((networkQualityMonitor?.currentAudioQuality ?: _uiState.value.selectedQuality) == AudioQuality.HI_RES_LOSSLESS)
-                com.example.data.repository.StreamResolver.LOSSLESS_LOOKUP_TIMEOUT_MS else 0L
+        enhancerOrigin = null
+        // Jio's watchdog begins only after Jio is selected as the fallback;
+        // YouTube/Archive discovery must never consume its buffering window.
+        initialJioDeadlineMs = 0L
         selectionContext = listOf(track) // Replaced by the owned CPU-prepared queue below.
         val previous = _uiState.value.currentTrack
         if (previous != null && previous.id != track.id && controller?.currentMediaItem?.mediaId == previous.id) {
@@ -1706,6 +1551,9 @@ class PlaybackManager(
                         })
                 } else track
                 if (isActive && ownsSelection(track.id, generation)) {
+                    val host = Uri.parse(resolved.audioUrl).host.orEmpty()
+                    initialJioDeadlineMs = if (host == "saavncdn.com" || host.endsWith(".saavncdn.com"))
+                        android.os.SystemClock.elapsedRealtime() + 6_000L else 0L
                     pendingPolicyRestart = null
                     playTrackInternal(resolved, ownedQueue, isExplicitPlaylist)
                 }
@@ -2516,6 +2364,7 @@ class PlaybackManager(
                         putString("singers", singers); putString("writer", writer)
                         putStringArrayList("primaryArtists", ArrayList(primaryArtists))
                         putString("language", language); putString("year", year); putString("isrc", isrc)
+                        SourceTransitionOrigin.write(this, enhancerOrigin?.takeIf { it.track.id == id })
                     })
                     .build()
             )

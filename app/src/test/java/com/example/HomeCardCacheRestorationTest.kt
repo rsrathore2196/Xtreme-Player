@@ -50,9 +50,10 @@ class HomeCardCacheRestorationTest {
             (field.get(null) as AtomicReference<*>).set(null)
         }
     }
+    private fun video(id: String) = "yt_" + id.padEnd(11, '_').take(11)
     private fun snapshot(generation: Long = 1): SavedHomeCards {
-        fun track(id: String) = MusicTrack("online_$id", "Song $id", "Real Artist", "Original Album",
-            180_000, "https://artwork/$id.jpg", "https://aac.saavncdn.com/$id.mp4", source = "JIOSAAVN",
+        fun track(id: String) = MusicTrack(video(id), "Song $id", "Real Artist", "Original Album",
+            180_000, "https://artwork/$id.jpg", "", bitrateKbps = 0, qualityBadge = "YouTube Music", source = "YouTube Music",
             recommendationOnly = true)
         fun section(id: String) = SectionState(title = id, tracks = listOf(track(id)), isLoaded = true)
         val quick = section("quick"); val era = section("era"); val chart = section("chart")
@@ -78,8 +79,8 @@ class HomeCardCacheRestorationTest {
         val cache = HomeCardCache(app)
         try {
             val preview = cache.readInitial(profile)!!
-            assertEquals("online_quick", preview.quick.tracks.single().id)
-            assertEquals("online_era", preview.era.tracks.single().id)
+            assertEquals(video("quick"), preview.quick.tracks.single().id)
+            assertEquals(video("era"), preview.era.tracks.single().id)
             assertTrue(preview.presentationComplete)
             assertTrue(preview.quickCandidates.isEmpty())
             assertTrue(preview.shelfLoads.getValue("QUICK").partial)
@@ -87,8 +88,8 @@ class HomeCardCacheRestorationTest {
             val full = cache.read(profile)!!
             assertEquals(preview.quick.tracks, full.quick.tracks)
             assertEquals(preview.shelfLoads, full.shelfLoads)
-            assertEquals("online_era", full.era.tracks.single().id)
-            assertEquals("online_quick", full.quickCandidates.single().id)
+            assertEquals(video("era"), full.era.tracks.single().id)
+            assertEquals(video("quick"), full.quickCandidates.single().id)
         } finally { cache.close() }
     }
 
@@ -112,9 +113,9 @@ class HomeCardCacheRestorationTest {
         val cache = HomeCardCache(app)
         try {
             val preview = cache.readInitial(profile)!!
-            assertEquals("online_quick", preview.quick.tracks.single().id)
+            assertEquals(video("quick"), preview.quick.tracks.single().id)
             assertFalse(preview.presentationComplete)
-            assertEquals("online_era", cache.read(profile)!!.eraCandidates.single().id)
+            assertEquals(video("era"), cache.read(profile)!!.eraCandidates.single().id)
         } finally { cache.close() }
     }
 
@@ -158,7 +159,7 @@ class HomeCardCacheRestorationTest {
             val restored = HomeCardCache(app)
             try {
                 val preview = restored.readInitial(profile)!!
-                assertEquals("online_quick", preview.quick.tracks.single().id)
+                assertEquals(video("quick"), preview.quick.tracks.single().id)
                 assertFalse(preview.presentationComplete)
                 assertTrue(preview.quickCandidates.isEmpty())
                 assertTrue(preview.checkpointRevision > 0)
@@ -174,7 +175,7 @@ class HomeCardCacheRestorationTest {
         val cache = HomeCardCache(app)
         try {
             val old = cache.readInitial(profile)!!
-            val quick = old.quick.copy(tracks = listOf(old.quick.tracks.single().copy(id = "online_new", title = "New recording")))
+            val quick = old.quick.copy(tracks = listOf(old.quick.tracks.single().copy(id = video("new"), title = "New recording")))
             cache.savePresentationCheckpoint(old.copy(quick = quick, generation = 2), initialComplete = true)
             awaitCheckpoint()
             clearMemory()
