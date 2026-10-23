@@ -190,6 +190,8 @@ class BitPerfectAudioSink private constructor(
         closeNative()
         directUnavailable = false
         format = inputFormat
+        publishSignal { it.copy(decoderEncoding = inputFormat.pcmEncoding,
+            dspEncoding = inputFormat.pcmEncoding, dspRateHz = inputFormat.sampleRate) }
         configuredBufferSize = specifiedBufferSize
         configuredChannels = outputChannels?.clone()
         resetCounters()
@@ -586,6 +588,7 @@ class BitPerfectAudioSink private constructor(
                         else -> "System output"
                     }, outputRateHz = audio.sampleRate, bitPerfect = pure, directApproved = approved,
                     outputEncoding = audio.audioFormat, outputChannels = audio.channelCount,
+                    bufferSizeFrames = audio.bufferSizeInFrames, bufferCapacityFrames = audio.bufferCapacityInFrames,
                     outputRouteVerified = route != null,
                     mode = if (approved) "Direct" else if (Build.VERSION.SDK_INT >= 29 && audio.isOffloadedPlayback) "Offload" else "Shared",
                     eqActive = !direct && AudioEffectsManager.effectsState.value.isEnabled,
@@ -607,7 +610,8 @@ class BitPerfectAudioSink private constructor(
             track?.let { runCatching { it.removeOnRoutingChangedListener(routeListener) } }
             track = null; lease = null; direct = false
             publishSignal { it.copy(outputEncoding = C.ENCODING_INVALID, outputChannels = 0,
-                outputRouteVerified = false, outputRateHz = 0, directApproved = false, bitPerfect = false) }
+                outputRouteVerified = false, outputRateHz = 0, directApproved = false, bitPerfect = false,
+                bufferSizeFrames = 0, bufferCapacityFrames = 0) }
         }
     }
 }

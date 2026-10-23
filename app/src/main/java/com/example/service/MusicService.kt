@@ -70,6 +70,9 @@ class MusicService : MediaLibraryService() {
     private var verifiedSignalId: String? = null
     private var verifiedSignalFormat: Format? = null
     private var verifiedSignalBitrate = 0
+    private var verifiedDecoderId: String? = null
+    private var verifiedDecoderUri: Uri? = null
+    private var verifiedDecoderName: String? = null
     private val app: XtremeMusicApp get() = application as XtremeMusicApp
 
     private fun applyAudioCeiling(selector: DefaultTrackSelector, player: Player) {
@@ -735,6 +738,18 @@ class MusicService : MediaLibraryService() {
                     SabrSessionRegistry.controllerHandlesRecovery?.invoke() != true && sourceRecoveryJob?.isActive != true)
                     reconcileHeadlessPolicy(policy, failedUrl = uri.toString())
             }
+            override fun onAudioDecoderInitialized(
+                eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
+                decoderName: String, initializedTimestampMs: Long, initializationDurationMs: Long
+            ) {
+                val item = currentAudioEventItem(player, eventTime) ?: return
+                verifiedDecoderId = item.mediaId
+                verifiedDecoderUri = item.localConfiguration?.uri
+                verifiedDecoderName = decoderName
+                publishSignalSource(item)
+                com.example.playback.AudioSignalPath.decoder(item.mediaId,
+                    item.localConfiguration?.uri?.toString().orEmpty(), decoderName)
+            }
             override fun onAudioSessionIdChanged(
                 eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
                 audioSessionId: Int
@@ -959,8 +974,9 @@ class MusicService : MediaLibraryService() {
         }
         val sourceId = com.example.playback.SourceTransitionOrigin.sourceId(item.mediaId, uri, networkQuality.sourcePolicy.value).orEmpty()
         val originalSourceId = item.mediaMetadata.extras?.getString("enhancer_origin_id").orEmpty()
-        if (format == null) com.example.playback.AudioSignalPath.source(item.mediaId, provider, sourceId, originalSourceId)
-        else com.example.playback.AudioSignalPath.verifiedSource(item.mediaId, provider, format, bitrate, sourceId, originalSourceId)
+        if (format == null) com.example.playback.AudioSignalPath.source(item.mediaId, provider, sourceId, originalSourceId, uri.toString())
+        else com.example.playback.AudioSignalPath.verifiedSource(item.mediaId, provider, format, bitrate, sourceId, originalSourceId, uri.toString(),
+            verifiedDecoderName.takeIf { verifiedDecoderId == item.mediaId && verifiedDecoderUri == uri })
     }
 
     private fun publishVerifiedSignal() {

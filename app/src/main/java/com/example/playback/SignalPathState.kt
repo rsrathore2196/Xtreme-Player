@@ -24,6 +24,12 @@ data class StreamQualityBadge(
     val codec: String = "", val bitrateKbps: Int = 0, val sampleRateHz: Int = 0,
     val bitDepth: Int = 0, val lossless: Boolean = false, val verified: Boolean = false
 ) {
+    /** Compact source-quality classification; never infer depth from decoder/output precision. */
+    val badgeLabel: String get() = when {
+        verified && lossless && bitDepth >= 24 && sampleRateHz >= 48_000 -> "Hi-Res Lossless"
+        verified && lossless && bitDepth >= 16 && sampleRateHz >= 44_100 -> "Lossless"
+        else -> label
+    }
     val label: String get() {
         if (codec.isBlank()) return "Resolving audio"
         val rate = if (sampleRateHz > 0) String.format(Locale.ROOT, "%.1f kHz", sampleRateHz / 1000.0) else ""
@@ -78,11 +84,40 @@ data class SignalPathState(
     val mode: String = "Shared", val buffering: Boolean = false, val glitches: Int = 0,
     val outputEncoding: Int = C.ENCODING_INVALID, val outputChannels: Int = 0,
     val outputRouteVerified: Boolean = false, val playbackSpeed: Float = 1f, val pitch: Float = 1f,
-    val playbackStatus: String = "Idle", val sourceId: String = "", val enhancerOriginalSourceId: String = ""
+    val playbackStatus: String = "Idle", val sourceId: String = "", val enhancerOriginalSourceId: String = "",
+    val streamUri: String = "", val sourceChannels: Int = 0,
+    val decoderName: String = "", val decoderEncoding: Int = C.ENCODING_INVALID,
+    val dspEncoding: Int = C.ENCODING_INVALID, val dspRateHz: Int = 0,
+    val bufferSizeFrames: Int = 0, val bufferCapacityFrames: Int = 0
 ) {
     val status: String get() = when { bitPerfect -> "Bit-Perfect"; dspActive -> "Enhanced"; else -> "High Quality" }
     val outputFormat: String get() {
-        val encoding = when (outputEncoding) {
+        val encoding = pcmEncodingLabel(outputEncoding)
+        val channels = channelLabel(outputChannels).takeUnless { it == "—" }.orEmpty()
+        val rate = outputRateHz.takeIf { it > 0 }?.let { String.format(Locale.ROOT, "%.1f kHz", it / 1000.0) }.orEmpty()
+        return listOf(encoding, rate, channels).filter(String::isNotEmpty).joinToString(" • ")
+    }
+    val sourcePcmDataRateKbps: Long? get() = if (quality.verified && quality.lossless && quality.bitDepth > 0 &&
+        quality.sampleRateHz > 0 && sourceChannels > 0) quality.sampleRateHz.toLong() * quality.bitDepth * sourceChannels / 1000 else null
+
+    val sourcePrecisionReduced: Boolean get() {
+        if (!quality.verified || !quality.lossless || quality.bitDepth <= 0) return false
+        val decoderBits = pcmPrecisionBits(decoderEncoding).takeIf { it > 0 } ?: Int.MAX_VALUE
+        val outputBits = pcmPrecisionBits(outputEncoding).takeIf { it > 0 } ?: Int.MAX_VALUE
+        return minOf(decoderBits, outputBits) < quality.bitDepth
+    }
+
+    companion object {
+        // IEEE float32 carries every 24-bit integer sample exactly, not every 32-bit one.
+        private fun pcmPrecisionBits(encoding: Int): Int = when (encoding) {
+            C.ENCODING_PCM_8BIT -> 8
+            C.ENCODING_PCM_16BIT, C.ENCODING_PCM_16BIT_BIG_ENDIAN -> 16
+            C.ENCODING_PCM_24BIT, C.ENCODING_PCM_24BIT_BIG_ENDIAN, C.ENCODING_PCM_FLOAT -> 24
+            C.ENCODING_PCM_32BIT, C.ENCODING_PCM_32BIT_BIG_ENDIAN -> 32
+            else -> 0
+        }
+        fun channelLabel(channels: Int): String = when (channels) { 1 -> "Mono"; 2 -> "Stereo"; in 3..32 -> "$channels (Surround)"; else -> "—" }
+        fun pcmEncodingLabel(encoding: Int): String = when (encoding) {
             C.ENCODING_PCM_FLOAT -> "32-bit float PCM"
             C.ENCODING_PCM_8BIT -> "8-bit PCM"
             C.ENCODING_PCM_16BIT, C.ENCODING_PCM_16BIT_BIG_ENDIAN -> "16-bit PCM"
@@ -90,9 +125,6 @@ data class SignalPathState(
             C.ENCODING_PCM_32BIT, C.ENCODING_PCM_32BIT_BIG_ENDIAN -> "32-bit PCM"
             else -> "Format not reported"
         }
-        val channels = when (outputChannels) { 1 -> "Mono"; 2 -> "Stereo"; in 3..32 -> "$outputChannels channels"; else -> "" }
-        val rate = outputRateHz.takeIf { it > 0 }?.let { String.format(Locale.ROOT, "%.1f kHz", it / 1000.0) }.orEmpty()
-        return listOf(encoding, rate, channels).filter(String::isNotEmpty).joinToString(" • ")
     }
 }
 
@@ -102,17 +134,23 @@ object AudioSignalPath {
     val state = mutable.asStateFlow()
     internal fun update(block: (SignalPathState) -> SignalPathState) { mutable.update(block) }
     internal fun reset() { mutable.value = SignalPathState() }
-    internal fun source(id: String, provider: String, sourceId: String = "", originalSourceId: String = "") = update { old ->
-        if (old.trackId == id && old.source == provider && old.sourceId == sourceId) {
+    internal fun source(id: String, provider: String, sourceId: String = "", originalSourceId: String = "", uri: String = "") = update { old ->
+        if (old.trackId == id && old.source == provider && old.sourceId == sourceId && old.streamUri == uri) {
             if (old.enhancerOriginalSourceId == originalSourceId) old else old.copy(enhancerOriginalSourceId = originalSourceId)
         } else old.copy(trackId = id, source = provider, sourceId = sourceId, enhancerOriginalSourceId = originalSourceId,
-            quality = StreamQualityBadge(), glitches = 0)
+            streamUri = uri, quality = StreamQualityBadge(), glitches = 0,
+            sourceChannels = 0, decoderName = "")
     }
     internal fun format(id: String, value: Format, bitrate: Int) = update { old ->
-        if (old.trackId != id) old else old.copy(quality = StreamQualityBadge.from(value, bitrate))
+        if (old.trackId != id) old else old.copy(quality = StreamQualityBadge.from(value, bitrate), sourceChannels = value.channelCount.coerceAtLeast(0))
     }
-    internal fun verifiedSource(id: String, provider: String, value: Format, bitrate: Int, sourceId: String = "", originalSourceId: String = "") = update { old ->
-        old.copy(trackId = id, source = provider, sourceId = sourceId, enhancerOriginalSourceId = originalSourceId, quality = StreamQualityBadge.from(value, bitrate),
+    internal fun decoder(id: String, uri: String, name: String) = update { old ->
+        if (old.trackId == id && old.streamUri == uri) old.copy(decoderName = name) else old
+    }
+    internal fun verifiedSource(id: String, provider: String, value: Format, bitrate: Int, sourceId: String = "", originalSourceId: String = "", uri: String = "", decoderNameOverride: String? = null) = update { old ->
+        old.copy(trackId = id, source = provider, sourceId = sourceId, enhancerOriginalSourceId = originalSourceId, quality = StreamQualityBadge.from(value, bitrate), streamUri = uri,
+            sourceChannels = value.channelCount.coerceAtLeast(0),
+            decoderName = decoderNameOverride ?: old.decoderName.takeIf { old.trackId == id && old.streamUri == uri }.orEmpty(),
             glitches = if (old.trackId == id) old.glitches else 0)
     }
 }

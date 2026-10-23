@@ -1,193 +1,247 @@
 package com.example.ui.components
 
 import androidx.compose.animation.*
-import androidx.compose.animation.core.MutableTransitionState
-import androidx.compose.animation.core.spring
-import androidx.compose.foundation.BorderStroke
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.InsertDriveFile
+import androidx.compose.material.icons.automirrored.rounded.VolumeUp
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.Memory
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.*
-import androidx.compose.ui.window.Popup
-import androidx.compose.ui.window.PopupPositionProvider
-import androidx.compose.ui.window.PopupProperties
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.playback.AudioEffectsManager
 import com.example.playback.AudioSignalPath
 import com.example.playback.SignalPathState
 import com.example.ui.theme.LocalAppColors
 import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
 
-/** Horizontal position belongs to the player viewport, never the changing badge label. */
-internal class SignalPathPopupPositionProvider(private val marginPx: Int) : PopupPositionProvider {
-    override fun calculatePosition(anchorBounds: IntRect, windowSize: IntSize,
-        layoutDirection: LayoutDirection, popupContentSize: IntSize): IntOffset {
-        val availableX = (windowSize.width - popupContentSize.width).coerceAtLeast(0)
-        val insetX = minOf(marginPx, availableX / 2)
-        val x = (availableX / 2).coerceIn(insetX, availableX - insetX)
-        val availableY = (windowSize.height - popupContentSize.height).coerceAtLeast(0)
-        val insetY = minOf(marginPx, availableY / 2)
-        val y = (anchorBounds.top - popupContentSize.height - marginPx).coerceIn(insetY, availableY - insetY)
-        return IntOffset(x, y)
-    }
-}
-
-/** Collect at the badge, not at the player root: volume/buffer events do not recompose lyrics/art. */
+/** Only this small subtree observes live audio data; artwork/lyrics never observe animation frames. */
 @Composable
-fun AudioQualityBadge(trackId: String, fallbackText: String, background: Color, border: Color,
-    content: Color, modifier: Modifier = Modifier, enabled: Boolean = true) {
+fun AudioQualityBadge(trackId: String, @Suppress("UNUSED_PARAMETER") fallbackText: String,
+    background: Color, border: Color, content: Color, modifier: Modifier = Modifier, enabled: Boolean = true) {
     val path by AudioSignalPath.state.collectAsStateWithLifecycle()
-    val visibility = remember { MutableTransitionState(false) }
-    // Display the actual verified playback format; prevent false Lossless/Hi-Res indicators when on AAC/lossy
-    val sanitizedFallback = if ((fallbackText.contains("Lossless", ignoreCase = true) || fallbackText.contains("Hi-Res", ignoreCase = true)) &&
-        !(path.trackId == trackId && path.quality.lossless && path.quality.verified)) {
-        if (path.trackId == trackId && path.quality.verified && path.quality.codec.isNotBlank()) path.quality.label
-        else "HQ Stream"
-    } else fallbackText
-    val label = if (path.trackId == trackId && path.quality.verified && path.quality.codec.isNotBlank()) path.quality.label else sanitizedFallback
-    Box(modifier) {
-        Surface(color = Color.Transparent, border = BorderStroke(1.dp, border), shape = RoundedCornerShape(10.dp),
-            modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(background)
-                .clickable(enabled = enabled, role = Role.Button, onClickLabel = "Show signal path") { visibility.targetState = true }
-                .padding(horizontal = 2.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)) {
-                Box(Modifier.size(6.dp).clip(CircleShape).background(content))
-                Spacer(Modifier.width(6.dp))
-                Text(label, style = MaterialTheme.typography.labelSmall.copy(color = content,
-                    fontWeight = FontWeight.ExtraBold, fontSize = 10.sp, letterSpacing = 0.5.sp), maxLines = 1)
-            }
+    var showPipeline by remember(trackId) { mutableStateOf(false) }
+    val current = path.takeIf { it.trackId == trackId } ?: SignalPathState()
+    val label = current.quality.takeIf { it.verified && it.codec.isNotBlank() }?.badgeLabel ?: "Resolving audio"
+    Surface(color = background, border = androidx.compose.foundation.BorderStroke(1.dp, border),
+        shape = RoundedCornerShape(10.dp), modifier = modifier.clip(RoundedCornerShape(10.dp))
+            .clickable(enabled = enabled, role = Role.Button, onClickLabel = "Show audio pipeline") { showPipeline = true }) {
+        Row(Modifier.padding(horizontal = 10.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(6.dp).clip(androidx.compose.foundation.shape.CircleShape).background(content))
+            Spacer(Modifier.width(6.dp))
+            Text(label, style = MaterialTheme.typography.labelSmall.copy(color = content,
+                fontWeight = FontWeight.ExtraBold, fontSize = 10.sp, letterSpacing = 0.5.sp), maxLines = 1)
         }
-        if (visibility.currentState || visibility.targetState || !visibility.isIdle) {
-            val marginPx = with(LocalDensity.current) { 16.dp.roundToPx() }
-            val position = remember(marginPx) { SignalPathPopupPositionProvider(marginPx) }
-            Popup(popupPositionProvider = position, onDismissRequest = { visibility.targetState = false },
-                properties = PopupProperties(focusable = true)) {
-                // Compose's Android PopupLayout supplies its own elevated rectangular
-                // window outline, independently of the card's Surface shadow.
-                val popupView = LocalView.current
-                DisposableEffect(popupView) {
-                    val host = popupView.rootView
-                    val previousElevation = host.elevation
-                    host.elevation = 0f
-                    onDispose { host.elevation = previousElevation }
-                }
-                AnimatedVisibility(visibleState = visibility,
-                    enter = scaleIn(spring(dampingRatio = 0.84f, stiffness = 650f), initialScale = 0.94f) +
-                        fadeIn(spring(stiffness = 650f)) + expandVertically(spring(dampingRatio = 0.9f, stiffness = 650f)),
-                    exit = scaleOut(spring(stiffness = 750f), targetScale = 0.96f) + fadeOut(spring(stiffness = 750f))) {
-                    SignalPathPopupCard(if (path.trackId == trackId) path else SignalPathState())
-                }
-            }
+    }
+    if (showPipeline) AudioPipelineDialog(current) { showPipeline = false }
+}
+
+@Composable
+private fun AudioPipelineDialog(state: SignalPathState, onDismiss: () -> Unit) {
+    val visible = remember { MutableTransitionState(false).apply { targetState = true } }
+    val dismiss = { visible.targetState = false }
+    LaunchedEffect(visible.currentState, visible.targetState, visible.isIdle) {
+        if (visible.isIdle && !visible.currentState && !visible.targetState) onDismiss()
+    }
+    Dialog(onDismissRequest = dismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        val view = LocalView.current
+        DisposableEffect(view) {
+            val root = view.rootView
+            val elevation = root.elevation
+            root.elevation = 0f
+            onDispose { root.elevation = elevation }
+        }
+        AnimatedVisibility(visibleState = visible,
+            enter = fadeIn(tween(180)) + scaleIn(tween(220, easing = FastOutSlowInEasing), initialScale = 0.95f),
+            exit = fadeOut(tween(120)) + scaleOut(tween(140), targetScale = 0.97f)) {
+            SignalPathPopupCard(state, Modifier.padding(16.dp), onClose = dismiss)
         }
     }
 }
 
-@Composable
-fun SignalPathPopupCard(state: SignalPathState, modifier: Modifier = Modifier) {
-    val colors = LocalAppColors.current
-    val context = LocalContext.current.applicationContext
-    val monitor = remember(context) { com.example.playback.NetworkQualityMonitor.getInstance(context) }
-    val policy by monitor.sourcePolicy.collectAsStateWithLifecycle()
-    val automaticEnhancement = policy.automaticallyEnhanced(state)
-    val enhancer = policy.enhancer || automaticEnhancement
-    val returnToYouTube = automaticEnhancement && (state.enhancerOriginalSourceId.isBlank() || state.enhancerOriginalSourceId == state.sourceId)
-    val rate: (Int) -> String = { if (it > 0) String.format(Locale.ROOT, "%.1f kHz", it / 1000.0) else "Not reported" }
-    val solidCardBg = if (colors.isAmoled) Color(0xFF141414) else colors.cardBackground
-    val solidCardBorder = colors.cardBorder.copy(alpha = if (colors.isDark) 0.5f else 0.7f)
-    val availableHeight = (LocalConfiguration.current.screenHeightDp.dp - 32.dp).coerceAtLeast(1.dp)
+private fun rate(hz: Int): String = if (hz > 0) String.format(Locale.ROOT, "%.1f kHz", hz / 1000.0) else "—"
+private fun encoding(value: Int): String = SignalPathState.pcmEncodingLabel(value).takeUnless { it == "Format not reported" } ?: "—"
 
-    Surface(
-        modifier = modifier
-            .widthIn(max = 350.dp)
-            .width(330.dp)
-            .heightIn(max = minOf(450.dp, availableHeight))
-            .testTag("signal_path_popup"),
-        shape = RoundedCornerShape(24.dp),
-        color = solidCardBg,
-        border = BorderStroke(1.2.dp, solidCardBorder),
-        shadowElevation = 0.dp
-    ) {
-        Column(
-            modifier = Modifier
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween,
-                modifier = Modifier.fillMaxWidth()) {
-                Text("Signal Path", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = colors.textPrimary)
-                Surface(shape = CircleShape, color = colors.primaryAccent.copy(alpha = 0.18f)) {
-                    Text(state.status, Modifier.padding(horizontal = 9.dp, vertical = 4.dp), color = colors.primaryAccent,
-                        style = MaterialTheme.typography.labelSmall)
+/** Source, decoder and client output are separate measurements. Unknown hardware data stays unknown. */
+@Composable
+fun SignalPathPopupCard(state: SignalPathState, modifier: Modifier = Modifier, onClose: () -> Unit = {}) {
+    val colors = LocalAppColors.current
+    val effects by AudioEffectsManager.effectsState.collectAsStateWithLifecycle()
+    val cardColor = if (colors.isAmoled) Color(0xFF121212) else colors.cardBackground
+    val height = (LocalConfiguration.current.screenHeightDp - 48).coerceAtLeast(120).dp
+    val textColor = colors.textPrimary
+    val muted = colors.textSecondary
+    val quality = state.quality
+    val known = quality.verified
+    val centers = remember { mutableStateMapOf<Int, Offset>() }
+    val bodyCoordinates = remember { arrayOfNulls<LayoutCoordinates>(1) }
+    // Reading progress only in Canvas avoids re-composing or re-measuring the rows each frame.
+    val pulse = rememberVisibleInfiniteFloat(0f, 1f,
+        infiniteRepeatable(tween(2400, easing = LinearEasing), RepeatMode.Restart), "pipeline_signal",
+        active = state.playbackStatus == "Playing")
+    val flowAlpha = animateFloatAsState(if (state.playbackStatus == "Playing") 1f else 0f,
+        tween(if (state.playbackStatus == "Playing") 450 else 320), label = "pipeline_power")
+
+    Surface(shape = RoundedCornerShape(26.dp), color = cardColor, tonalElevation = 0.dp, shadowElevation = 0.dp,
+        modifier = modifier.widthIn(max = 320.dp).fillMaxWidth().heightIn(max = height).testTag("signal_path_popup")) {
+        Column {
+            Box(Modifier.fillMaxWidth()) {
+                Column(Modifier.fillMaxWidth().padding(horizontal = 40.dp, vertical = 19.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("Audio Pipeline", fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = textColor, textAlign = TextAlign.Center)
+                    Text("Live signal path, decoder to output", Modifier.padding(top = 4.dp), fontSize = 13.sp,
+                        lineHeight = 17.sp, color = muted, textAlign = TextAlign.Center)
+                }
+                FilledTonalIconButton(onClick = onClose,
+                    colors = IconButtonDefaults.filledTonalIconButtonColors(containerColor = textColor.copy(alpha = 0.08f), contentColor = textColor),
+                    modifier = Modifier.align(Alignment.TopEnd).padding(top = 8.dp, end = 8.dp).size(28.dp).testTag("pipeline_close")) {
+                    Icon(Icons.Rounded.Close, contentDescription = "Close audio pipeline", modifier = Modifier.size(16.dp))
                 }
             }
-            val sourceDetails = listOf(state.quality.label,
-                rate(state.quality.sampleRateHz).takeIf { state.quality.sampleRateHz > 0 && !state.quality.label.contains("kHz") }.orEmpty())
-                .filter(String::isNotEmpty).joinToString(" • ")
-            SignalNode("Source", "${state.source} • $sourceDetails")
-            SignalNode("Audio Enhancer",
-                if (returnToYouTube) "Already using your highest preferred available source. Turn off to return to YouTube Music."
-                else "Try higher-quality enabled sources within your active quality limit. Turn off to restore the original source.") {
-                Switch(checked = enhancer, onCheckedChange = { enabled -> monitor.setAudioEnhancer(enabled, returnToYouTube = !enabled && returnToYouTube) },
-                    modifier = Modifier.testTag("source_audio_enhancer"))
+            Box(Modifier.weight(1f, fill = false).heightIn(max = 420.dp).verticalScroll(rememberScrollState())
+                .testTag("audio_pipeline_body")) {
+                Box(Modifier.fillMaxWidth().onGloballyPositioned { bodyCoordinates[0] = it }) {
+                    Canvas(Modifier.matchParentSize().graphicsLayer {}) {
+                        val points = (0..4).mapNotNull { centers[it] }
+                        if (points.size != 5) return@Canvas
+                        val radius = 11.5.dp.toPx()
+                        val start = points.first().y
+                        val length = points.last().y - start
+                        val progress = pulse.value
+                        val power = flowAlpha.value
+                        val headY = start + (progress / 0.85f).coerceIn(0f, 1f) * length
+                        val fade = (1f - ((progress - 0.85f) / 0.1f).coerceIn(0f, 1f)) * power
+                        points.zipWithNext().forEach { (from, to) ->
+                            val top = from.y + radius
+                            val bottom = to.y - radius
+                            if (bottom <= top) return@forEach
+                            drawLine(textColor.copy(alpha = 0.2f + 0.06f * power), Offset(from.x, top),
+                                Offset(from.x, bottom), 2.dp.toPx())
+                            val tail = max(top, headY - 38.dp.toPx())
+                            val lead = min(bottom, headY + 8.dp.toPx())
+                            if (fade > 0.01f && lead > tail) {
+                                val glow = Brush.verticalGradient(listOf(Color.Transparent, textColor.copy(alpha = 0.8f * fade), Color.Transparent),
+                                    headY - 38.dp.toPx(), headY + 8.dp.toPx())
+                                drawLine(glow, Offset(from.x, tail), Offset(from.x, lead), 5.dp.toPx(), StrokeCap.Round, alpha = 0.3f)
+                                drawLine(glow, Offset(from.x, tail), Offset(from.x, lead), 2.dp.toPx(), StrokeCap.Round)
+                            }
+                        }
+                        points.forEach { point ->
+                            val activation = (1f - abs(headY - point.y) / 24.dp.toPx()).coerceIn(0f, 1f) * fade
+                            drawCircle(cardColor, radius, point)
+                            drawCircle(Brush.radialGradient(listOf(textColor.copy(alpha = 0.07f + activation * 0.23f), Color.Transparent),
+                                point, radius + 5.dp.toPx()), radius + 5.dp.toPx(), point)
+                            drawCircle(textColor.copy(alpha = 0.35f + activation * 0.55f), radius, point, style = Stroke(1.dp.toPx()))
+                        }
+                    }
+                    Column(Modifier.fillMaxWidth()) {
+                        @Composable fun stage(index: Int, title: String, icon: ImageVector, rows: List<Pair<String, String>>) {
+                            HorizontalDivider(Modifier.padding(start = 50.dp, end = 16.dp), color = colors.dividerColor.copy(alpha = 0.6f))
+                            Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 16.dp, top = 18.dp, bottom = 22.dp)) {
+                                Icon(icon, contentDescription = null, tint = muted,
+                                    modifier = Modifier.size(24.dp).onGloballyPositioned { coordinates ->
+                                        bodyCoordinates[0]?.takeIf { it.isAttached && coordinates.isAttached }?.let { root ->
+                                            val position = root.localPositionOf(coordinates, Offset(coordinates.size.width / 2f, coordinates.size.height / 2f))
+                                            if (centers[index] != position) centers[index] = position
+                                        }
+                                    })
+                                Spacer(Modifier.width(14.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(title, color = muted, fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                                        letterSpacing = 0.4.sp, modifier = Modifier.padding(bottom = 8.dp).testTag("pipeline_stage_$index"))
+                                    rows.forEach { (label, value) ->
+                                        Text(buildAnnotatedString {
+                                            withStyle(SpanStyle(fontWeight = FontWeight.SemiBold)) { append("$label: ") }
+                                            append(value)
+                                        }, color = textColor, fontSize = 13.sp, lineHeight = 19.sp,
+                                            modifier = Modifier.padding(vertical = 1.dp).testTag("pipeline_${index}_$label"))
+                                    }
+                                }
+                            }
+                        }
+                        stage(0, "TRACK INFO", Icons.AutoMirrored.Rounded.InsertDriveFile, listOf(
+                            "Source" to state.source.takeIf { known }.orEmpty().ifBlank { "—" },
+                            "Format" to quality.codec.takeIf { known && it.isNotBlank() }.orEmpty().ifBlank { "—" },
+                            "Bit Depth" to if (known && quality.lossless && quality.bitDepth > 0) "${quality.bitDepth}-bit" else "—",
+                            "Sample Rate" to rate(quality.sampleRateHz.takeIf { known } ?: 0),
+                            "Bitrate" to quality.bitrateKbps.takeIf { known && it > 0 }?.let { "$it kbps" }.orEmpty().ifBlank { "—" },
+                            "PCM Data Rate" to state.sourcePcmDataRateKbps?.let { "$it kbps" }.orEmpty().ifBlank { "—" },
+                            "Channels" to SignalPathState.channelLabel(state.sourceChannels.takeIf { known } ?: 0)))
+                        stage(1, "DECODER", Icons.Rounded.Memory, listOf(
+                            "Decoder Name" to state.decoderName.ifBlank { "—" }, "Format" to encoding(state.decoderEncoding)))
+                        val ratesKnown = state.inputRateHz > 0 && state.outputRateHz > 0
+                        val sameRate = ratesKnown && state.inputRateHz == state.outputRateHz && !state.appResampling
+                        stage(2, "RESAMPLER", Icons.Rounded.Tune, listOf(
+                            "I/O Rate" to "${rate(state.inputRateHz)} → ${rate(state.outputRateHz)}",
+                            "Type" to when { !ratesKnown -> "—"; sameRate -> "None"; state.appResampling -> "Speed / pitch processing"; else -> "Sample rate conversion" },
+                            "Cutoff" to "—", "Quality" to when { !ratesKnown -> "—"; sameRate -> "Passthrough"; else -> "Processed" }))
+                        val buffer = if (state.bufferSizeFrames > 0 && state.outputRateHz > 0)
+                            "${state.bufferSizeFrames * 1000L / state.outputRateHz} ms, ${state.bufferSizeFrames} frames" +
+                                if (state.bufferCapacityFrames > 0) " (capacity ${state.bufferCapacityFrames})" else "" else "—"
+                        stage(3, "DSP", Icons.Rounded.GraphicEq, listOf(
+                            "PCM Format" to encoding(state.dspEncoding), "Sample Rate" to rate(state.dspRateHz),
+                            "Gain" to "—", "Measured" to "Not measured",
+                            "EQ Preset" to if (state.eqActive) effects.selectedPreset else "Flat (bypassed)",
+                            "Stereo Expand" to if (state.eqActive) "${100 + effects.virtualizerStrength.coerceIn(0, 1000) * 30 / 1000}% (configured)" else "100% (bypassed)",
+                            "Effects" to listOfNotNull("Equalizer".takeIf { state.eqActive }, "Spatial Audio".takeIf { state.spatialActive },
+                                "Skip Silence".takeIf { state.skipSilenceActive }).joinToString(" + ").ifBlank { "Bypassed" },
+                            "Tempo" to String.format(Locale.ROOT, "%.2f× • pitch %.2f×", state.playbackSpeed, state.pitch),
+                            "Buffers" to buffer, "Output API" to "AudioTrack",
+                            "Bit-exact" to when { state.sourcePrecisionReduced -> "No — source precision reduced"; state.bitPerfect -> "Verified direct PCM • DSP bypassed"; state.appVolume != 1f -> "No — digital volume attenuation"; state.dspActive || state.appResampling -> "No — samples processed";
+                                state.decoderEncoding == androidx.media3.common.C.ENCODING_INVALID || state.outputEncoding == androidx.media3.common.C.ENCODING_INVALID -> "Not yet verified";
+                                state.decoderEncoding != state.outputEncoding -> "PCM format conversion • shared system path";
+                                else -> "App bypassed • system mixing not verified" }))
+                        stage(4, "OUTPUT DEVICE", Icons.AutoMirrored.Rounded.VolumeUp, listOf(
+                            "Device Name" to state.outputDevice, "Route" to state.outputType,
+                            "Transport" to "AudioTrack • ${state.mode}",
+                            "Direct" to if (state.directApproved) "Active (verified direct route)" else "Not active (shared path)",
+                            "AudioTrack" to state.outputFormat,
+                            "System" to if (state.directApproved) "Direct path • mixer bypassed" else "Mixer / HAL format not exposed by Android",
+                            "Route Verified" to if (state.outputRouteVerified) "Yes" else "Not yet verified",
+                            "Buffer" to if (state.buffering) "Buffering" else state.playbackStatus,
+                            "Glitches" to state.glitches.toString()))
+                    }
+                }
             }
-            SignalNode("App Resampler", when {
-                state.inputRateHz <= 0 || state.outputRateHz <= 0 -> "Awaiting audio format"
-                state.appResampling -> "Active — Playback speed / pitch processing"
-                state.inputRateHz == state.outputRateHz -> "Bypassed — ${rate(state.inputRateHz)} / ${rate(state.outputRateHz)}"
-                else -> "Active — ${rate(state.inputRateHz)} → ${rate(state.outputRateHz)}"
-            })
-            SignalNode("DSP Chain", when {
-                state.bitPerfect -> "Bypassed (Bit-Perfect)"
-                state.directApproved -> "Bypassed (Direct PCM)"
-                state.dspActive -> "Active — " + listOfNotNull(
-                    "Equalizer".takeIf { state.eqActive }, "Spatial Audio".takeIf { state.spatialActive },
-                    "Skip Silence".takeIf { state.skipSilenceActive }).joinToString(" + ")
-                else -> "Bypassed (Pure)"
-            })
-            SignalNode("Tempo", String.format(Locale.ROOT, "%.2f×", state.playbackSpeed) +
-                if (state.pitch == 1f) " • Pitch unchanged" else String.format(Locale.ROOT, " • Pitch %.2f×", state.pitch))
-            SignalNode("Android Mixer", if (state.bitPerfect) "Bit-Perfect Direct" else if (state.directApproved)
-                "Direct PCM • ${rate(state.outputRateHz)}" else "Shared AudioTrack • ${rate(state.outputRateHz)} (client)")
-            SignalNode("Output Device", "${state.outputDevice} • ${state.outputType}")
-            SignalNode("Output Format", state.outputFormat)
-            SignalNode("Output Result", when {
-                !state.outputRouteVerified -> "Actual hardware route not yet verified"
-                state.bitPerfect -> "Verified USB direct route • DSP bypassed"
-                state.directApproved -> "Verified direct PCM route • Bit-perfect conditions not met"
-                else -> "Verified system route • Hardware conversion not reported by Android"
-            })
         }
-    }
-}
-
-@Composable
-private fun SignalNode(title: String, value: String, trailing: (@Composable () -> Unit)? = null) {
-    val colors = LocalAppColors.current
-    Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-        Box(Modifier.padding(top = 5.dp).size(6.dp).clip(CircleShape).background(colors.primaryAccent)
-            .testTag("signal_node_dot_$title"))
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(title, modifier = Modifier.testTag("signal_node_title_$title"),
-                style = MaterialTheme.typography.labelMedium, color = colors.textPrimary, fontWeight = FontWeight.SemiBold)
-            Text(value, style = MaterialTheme.typography.bodySmall, color = colors.textSecondary)
-        }
-        trailing?.let { Box(Modifier.align(Alignment.CenterVertically)) { it() } }
     }
 }

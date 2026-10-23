@@ -5,12 +5,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.*
+import androidx.media3.common.C
 import com.example.playback.*
 import com.example.ui.components.AudioQualityBadge
-import com.example.ui.components.SignalPathPopupPositionProvider
-import androidx.compose.ui.unit.*
-import androidx.compose.ui.geometry.*
 import org.junit.*
+import org.junit.Assert.*
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
@@ -21,48 +20,79 @@ import org.robolectric.annotation.GraphicsMode
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class SignalPathUiTest {
     @get:Rule val compose = createComposeRule()
-    @After fun clear() { AudioEffectsManager.resetAll(false); AudioSignalPath.reset() }
-    @Test fun badgeOpensCompactSignalPathAndShowsActualLossyFormat() {
-        AudioSignalPath.update { SignalPathState(trackId = "playing", source = "YouTube Music",
-            quality = StreamQualityBadge("OPUS", 160, 48000, verified = true),
-            outputDevice = "Bluetooth TWS", outputType = "Bluetooth", inputRateHz = 48000, outputRateHz = 48000) }
+    @After fun clear() { AudioSignalPath.reset() }
+    private fun showBadge() {
         compose.setContent { MaterialTheme {
             AudioQualityBadge("playing", "Lossless", Color.DarkGray, Color.White, Color.White)
         } }
-        compose.onNodeWithText("OPUS • 160 kbps").assertExists().performClick()
-        compose.onNodeWithText("Signal Path").assertExists()
-        compose.runOnIdle {
-            val popup = android.view.inspector.WindowInspector.getGlobalWindowViews()
-                .firstOrNull { it.javaClass.simpleName == "PopupLayout" }
-            Assert.assertNotNull("The real popup window must be present", popup)
-            Assert.assertEquals("No framework window shadow behind the card", 0f, popup!!.elevation)
-        }
-        compose.onNodeWithText("High Quality").assertExists()
-        compose.onNodeWithText("Bypassed (Pure)").assertExists()
-        compose.onNodeWithText("YouTube Music • OPUS • 160 kbps • 48.0 kHz").assertExists()
-        compose.onNodeWithText("Audio Enhancer").assertExists()
-        compose.onNodeWithTag("source_audio_enhancer").assertExists()
-        val sourceDot = compose.onNodeWithTag("signal_node_dot_Source", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
-        val enhancerDot = compose.onNodeWithTag("signal_node_dot_Audio Enhancer", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
-        val sourceTitle = compose.onNodeWithTag("signal_node_title_Source", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
-        val enhancerTitle = compose.onNodeWithTag("signal_node_title_Audio Enhancer", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
-        Assert.assertEquals("Timeline dots must share the same inset", sourceDot.left, enhancerDot.left, .5f)
-        Assert.assertEquals("Enhancer text must align with the source node", sourceTitle.left, enhancerTitle.left, .5f)
-        compose.onNodeWithText("Volume / Gain").assertDoesNotExist()
-        compose.onNodeWithText("Clarity Enhancer").assertDoesNotExist()
-        compose.onNodeWithText("Output Format").assertExists()
-        compose.onNodeWithText("Output Result").assertExists()
-        compose.onNodeWithText("Bit-Perfect", substring = true).assertDoesNotExist()
     }
-    @Test fun popupRemainsCenteredWhenBadgeTextOrAnchorPositionChanges() {
-        val position = SignalPathPopupPositionProvider(16)
-        val window = IntSize(1080, 1920)
-        val popup = IntSize(900, 1200)
-        val first = position.calculatePosition(IntRect(100, 1400, 400, 1450), window, LayoutDirection.Ltr, popup)
-        val changed = position.calculatePosition(IntRect(500, 1400, 1030, 1450), window, LayoutDirection.Rtl, popup)
-        Assert.assertEquals(first, changed)
-        Assert.assertEquals(90, first.x)
-        val tiny = position.calculatePosition(IntRect.Zero, IntSize(300, 300), LayoutDirection.Ltr, IntSize(300, 300))
-        Assert.assertEquals(IntOffset.Zero, tiny)
+    private fun playing() = SignalPathState(trackId = "playing", source = "YouTube Music",
+        quality = StreamQualityBadge("OPUS", 160, 48000, verified = true), sourceChannels = 2,
+        decoderName = "c2.android.opus.decoder", decoderEncoding = C.ENCODING_PCM_16BIT,
+        dspEncoding = C.ENCODING_PCM_16BIT, dspRateHz = 48000,
+        outputDevice = "Bluetooth TWS", outputType = "Bluetooth", inputRateHz = 48000, outputRateHz = 48000,
+        outputEncoding = C.ENCODING_PCM_16BIT, bufferSizeFrames = 24000)
+
+    @Test fun badgeOpensPipelineWithActualStagesAndACompactCloseButton() {
+        AudioSignalPath.update { playing() }
+        showBadge()
+        compose.onNodeWithText("OPUS • 160 kbps").performClick()
+        compose.onNodeWithText("Audio Pipeline").assertExists()
+        compose.onNodeWithText("Live signal path, decoder to output").assertExists()
+        compose.onNodeWithTag("pipeline_0_Source").assertTextEquals("Source: YouTube Music")
+        compose.onNodeWithTag("pipeline_0_Format").assertTextEquals("Format: OPUS")
+        compose.onNodeWithTag("pipeline_0_Bit Depth").assertTextEquals("Bit Depth: —")
+        compose.onNodeWithTag("pipeline_0_Bitrate").assertTextEquals("Bitrate: 160 kbps")
+        compose.onNodeWithTag("pipeline_1_Decoder Name").assertTextEquals("Decoder Name: c2.android.opus.decoder")
+        compose.onNodeWithText("Audio Enhancer").assertDoesNotExist()
+        compose.onNodeWithTag("source_audio_enhancer").assertDoesNotExist()
+        compose.onNodeWithText("Done").assertDoesNotExist()
+        val close = compose.onNodeWithTag("pipeline_close").fetchSemanticsNode().boundsInRoot
+        compose.onNodeWithTag("pipeline_3_Buffers").performScrollTo().assertTextEquals("Buffers: 500 ms, 24000 frames")
+        compose.onNodeWithTag("pipeline_4_System").performScrollTo()
+            .assertTextEquals("System: Mixer / HAL format not exposed by Android")
+        assertEquals(close, compose.onNodeWithTag("pipeline_close").fetchSemanticsNode().boundsInRoot)
+        compose.onNodeWithContentDescription("Close audio pipeline").assertIsDisplayed().performClick()
+        compose.waitForIdle()
+        compose.onNodeWithTag("signal_path_popup").assertDoesNotExist()
+    }
+
+    @Test fun hiResBadgeKeepsDetailedFlacMeasurementsInsideThePopup() {
+        AudioSignalPath.update { playing().copy(source = "Custom lossless server", sourceChannels = 2,
+            decoderName = "c2.android.flac.decoder", decoderEncoding = C.ENCODING_PCM_FLOAT,
+            inputRateHz = 96000, outputRateHz = 96000, dspEncoding = C.ENCODING_PCM_FLOAT, dspRateHz = 96000,
+            outputEncoding = C.ENCODING_PCM_FLOAT,
+            quality = StreamQualityBadge("FLAC", 2831, 96000, 24, lossless = true, verified = true)) }
+        showBadge()
+        compose.onNodeWithText("Hi-Res Lossless").performClick()
+        compose.onNodeWithTag("pipeline_0_Source").assertTextEquals("Source: Custom lossless server")
+        compose.onNodeWithTag("pipeline_0_Format").assertTextEquals("Format: FLAC")
+        compose.onNodeWithTag("pipeline_0_Bit Depth").assertTextEquals("Bit Depth: 24-bit")
+        compose.onNodeWithTag("pipeline_0_Sample Rate").assertTextEquals("Sample Rate: 96.0 kHz")
+        compose.onNodeWithTag("pipeline_0_Bitrate").assertTextEquals("Bitrate: 2831 kbps")
+        compose.onNodeWithTag("pipeline_0_PCM Data Rate").assertTextEquals("PCM Data Rate: 4608 kbps")
+    }
+
+    @Test fun oldTrackOrUnverifiedFallbackCannotProduceLosslessBadges() {
+        AudioSignalPath.update { playing().copy(trackId = "previous", quality =
+            StreamQualityBadge("FLAC", 1000, 96000, 24, lossless = true, verified = true)) }
+        showBadge()
+        compose.onNodeWithText("Resolving audio").assertExists()
+        compose.onNodeWithText("Hi-Res Lossless").assertDoesNotExist()
+        compose.runOnIdle { AudioSignalPath.update { it.copy(trackId = "playing", quality = it.quality.copy(verified = false)) } }
+        compose.onNodeWithText("Resolving audio").assertExists()
+    }
+
+    @Test fun popupStaysCenteredAsPlaybackFormatAndBadgeLengthChange() {
+        AudioSignalPath.update { playing() }
+        showBadge()
+        compose.onNodeWithText("OPUS • 160 kbps").performClick()
+        val before = compose.onNodeWithTag("signal_path_popup").fetchSemanticsNode().boundsInRoot
+        compose.runOnIdle { AudioSignalPath.update { it.copy(source = "Internet Archive",
+            quality = StreamQualityBadge("FLAC", 1700, 44100, 24, lossless = true, verified = true)) } }
+        compose.onNodeWithTag("pipeline_0_Source").assertTextEquals("Source: Internet Archive")
+        val after = compose.onNodeWithTag("signal_path_popup").fetchSemanticsNode().boundsInRoot
+        assertEquals(before.center.x, after.center.x, 0.5f)
+        assertEquals(before.width, after.width, 0.5f)
     }
 }

@@ -90,6 +90,8 @@ import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Repeat
@@ -2533,6 +2535,8 @@ private fun PlayerOptionsMenu(
                 )
             }
 
+            if (expanded) SourceUpgradeMenuItem(track.id, onDismissRequest, itemIconBg, appColors)
+
             // Action 1: Add to Queue
             DropdownMenuItem(
                 text = {
@@ -2798,3 +2802,34 @@ private fun AnimatedContentTransitionScope<Boolean>.lyricsArtworkTransition(): C
         delayMillis = if (targetState) 160 else 0,
         easing = FastOutSlowInEasing
     )) togetherWith fadeOut(tween(220, easing = FastOutSlowInEasing))).using(null)
+
+/** Kept next to the player menu so source selection never becomes a DSP setting. */
+@Composable
+internal fun SourceUpgradeMenuItem(trackId: String, onDismiss: () -> Unit,
+    iconBackground: Color = Color.Transparent,
+    colors: com.example.ui.theme.AppThemeColors = LocalAppColors.current) {
+    val context = LocalContext.current.applicationContext
+    val monitor = remember(context) { com.example.playback.NetworkQualityMonitor.getInstance(context) }
+    val policy by monitor.sourcePolicy.collectAsStateWithLifecycle()
+    val path by com.example.playback.AudioSignalPath.state.collectAsStateWithLifecycle()
+    val current = path.trackId == trackId && path.quality.verified && path.sourceId.isNotBlank()
+    val automatic = current && policy.automaticallyEnhanced(path)
+    val upgraded = policy.enhancer || automatic
+    val returnToYouTube = automatic && (path.enhancerOriginalSourceId.isBlank() || path.enhancerOriginalSourceId == path.sourceId)
+    DropdownMenuItem(
+        text = { Text(if (upgraded) "Revert to Original" else "Upgrade Audio",
+            style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, color = colors.textPrimary) },
+        leadingIcon = {
+            Box(Modifier.size(34.dp).clip(CircleShape).background(iconBackground), contentAlignment = Alignment.Center) {
+                Icon(if (upgraded) Icons.AutoMirrored.Filled.Undo else Icons.Default.AutoAwesome, contentDescription = null,
+                    tint = colors.primaryAccent, modifier = Modifier.size(18.dp))
+            }
+        },
+        enabled = current,
+        onClick = {
+            AppHaptics.performTap(context)
+            monitor.setAudioEnhancer(!upgraded, returnToYouTube = upgraded && returnToYouTube)
+            onDismiss()
+        }, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp).testTag("player_audio_upgrade")
+    )
+}

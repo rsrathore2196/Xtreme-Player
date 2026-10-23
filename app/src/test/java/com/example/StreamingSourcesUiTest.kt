@@ -28,6 +28,7 @@ class StreamingSourcesUiTest {
     private val app get() = ApplicationProvider.getApplicationContext<Context>()
     @Before fun startFreshMonitor() { stopMonitor() }
     @After fun stopMonitor() {
+        AudioSignalPath.reset()
         val field = NetworkQualityMonitor::class.java.getDeclaredField("instance").apply { isAccessible = true }
         (field.get(null) as? NetworkQualityMonitor)?.let { monitor ->
             (NetworkQualityMonitor::class.java.getDeclaredField("scope").apply { isAccessible = true }.get(monitor) as CoroutineScope).cancel()
@@ -84,19 +85,48 @@ class StreamingSourcesUiTest {
         }
         val monitor = NetworkQualityMonitor.getInstance(app)
         val eqBefore = AudioEffectsManager.effectsState.value
+        AudioSignalPath.update { SignalPathState(trackId = "yt_abcdefghijk",
+            source = "JioSaavn", sourceId = PlaybackSource.jio.id,
+            quality = StreamQualityBadge("AAC", 320, 44100, verified = true)) }
         compose.setContent { MaterialTheme {
-            com.example.ui.components.SignalPathPopupCard(SignalPathState(trackId = "yt_abcdefghijk",
-                source = "JioSaavn", sourceId = PlaybackSource.jio.id,
-                quality = StreamQualityBadge("AAC", 320, 44100, verified = true)))
+            com.example.ui.components.SourceUpgradeMenuItem("yt_abcdefghijk", onDismiss = {})
         } }
         compose.waitUntil(10000) { shadowOf(Looper.getMainLooper()).idle();
             monitor.sourcePolicy.value.ceiling == AudioQualityCeiling.HIGH && monitor.sourcePolicy.value.playbackSources.first().id == "jiosaavn" }
-        compose.onNodeWithTag("source_audio_enhancer").assertIsOn().performClick()
+        compose.onNodeWithText("Revert to Original").assertIsEnabled().performClick()
         compose.waitUntil(5000) { shadowOf(Looper.getMainLooper()).idle(); monitor.sourcePolicy.value.returnToYouTube }
-        compose.onNodeWithTag("source_audio_enhancer").assertIsOff()
+        compose.onNodeWithText("Upgrade Audio").assertExists()
         assertFalse(monitor.sourcePolicy.value.enhancer)
         assertEquals(PlaybackSource.youtube.id, monitor.sourcePolicy.value.resolutionSources.first().id)
         assertEquals(eqBefore, AudioEffectsManager.effectsState.value)
+    }
+
+    @Test fun menuButtonUpgradesAndRevertsWithoutASwitchOrDspChanges() = runBlocking {
+        OtherSettingsPreferences.savePlaybackSources(app, PlaybackSource.builtIns)
+        withTimeout(3000) { while (OtherSettingsPreferences.loadPlaybackSources(app) != PlaybackSource.builtIns) delay(10) }
+        withContext(Dispatchers.IO) {
+            AudioQualityPreferences.setCellularQualityCeiling(app, AudioQualityCeiling.MAX)
+            AudioQualityPreferences.setWifiQualityCeiling(app, AudioQualityCeiling.MAX)
+            AudioQualityPreferences.setAudioEnhancerEnabled(app, false)
+        }
+        val monitor = NetworkQualityMonitor.getInstance(app)
+        AudioSignalPath.update { SignalPathState(trackId = "playing", sourceId = PlaybackSource.youtube.id,
+            source = "YouTube Music", quality = StreamQualityBadge("OPUS", 160, 48000, verified = true)) }
+        var dismissed = 0
+        val eqBefore = AudioEffectsManager.effectsState.value
+        compose.setContent { MaterialTheme {
+            com.example.ui.components.SourceUpgradeMenuItem("playing", onDismiss = { dismissed++ })
+        } }
+        compose.waitUntil(10000) { shadowOf(Looper.getMainLooper()).idle(); monitor.sourcePolicy.value.ceiling == AudioQualityCeiling.MAX }
+        compose.onNodeWithText("Upgrade Audio").assertIsEnabled().performClick()
+        compose.waitUntil(5000) { shadowOf(Looper.getMainLooper()).idle(); monitor.sourcePolicy.value.enhancer }
+        compose.onNodeWithText("Revert to Original").performClick()
+        compose.waitUntil(5000) { shadowOf(Looper.getMainLooper()).idle(); !monitor.sourcePolicy.value.enhancer }
+        assertEquals(2, dismissed)
+        assertFalse(monitor.sourcePolicy.value.returnToYouTube)
+        assertEquals(eqBefore, AudioEffectsManager.effectsState.value)
+        compose.onAllNodes(isToggleable()).assertCountEquals(0)
+        Unit
     }
 
 }

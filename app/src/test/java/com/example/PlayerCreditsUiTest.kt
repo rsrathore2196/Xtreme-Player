@@ -11,6 +11,15 @@ import com.example.ui.components.ExpandedPlayerScreen
 import com.example.ui.components.LocalDynamicGlassEnabled
 import com.example.ui.theme.DarkAppColors
 import com.example.ui.theme.LocalAppColors
+import org.junit.Before
+import org.junit.After
+import com.example.playback.AudioSignalPath
+import com.example.playback.NetworkQualityMonitor
+import com.example.playback.PlaybackSource
+import androidx.media3.common.Format
+import androidx.media3.common.MimeTypes
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.cancel
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -23,6 +32,14 @@ import org.robolectric.annotation.GraphicsMode
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class PlayerCreditsUiTest {
     @get:Rule val compose = createComposeRule()
+    @Before @After fun resetSignalAndMonitor() {
+        AudioSignalPath.reset()
+        val field = NetworkQualityMonitor::class.java.getDeclaredField("instance").apply { isAccessible = true }
+        (field.get(null) as? NetworkQualityMonitor)?.let {
+            (NetworkQualityMonitor::class.java.getDeclaredField("scope").apply { isAccessible = true }.get(it) as CoroutineScope).cancel()
+        }
+        field.set(null, null)
+    }
 
     @Test fun portraitShowsTwoSingersAndKeepsQualityInTheBadgeOnly() = checkCredits()
 
@@ -33,6 +50,10 @@ class PlayerCreditsUiTest {
     private fun checkCredits() {
         val song = MusicTrack("credits-track", "Song Title", "Composer, Producer, Lead", "Album Name",
             180_000, "", "", singers = "Lead, Guest, Third Singer", qualityBadge = "AAC • 320 kbps")
+        // Requested/catalog quality alone is never verification of the playing stream.
+        AudioSignalPath.source(song.id, "JioSaavn", sourceId = PlaybackSource.jio.id)
+        AudioSignalPath.format(song.id, Format.Builder().setSampleMimeType(MimeTypes.AUDIO_AAC)
+            .setAverageBitrate(320000).setSampleRate(44100).setChannelCount(2).build(), 0)
         compose.mainClock.autoAdvance = false
         compose.setContent {
             MaterialTheme {
@@ -49,6 +70,11 @@ class PlayerCreditsUiTest {
         compose.onNodeWithText("Lead, Guest").assertIsDisplayed()
         compose.onNodeWithText("Composer, Producer, Lead • Album Name").assertDoesNotExist()
         compose.onNodeWithTag("expanded_player_play_pause").assertHasClickAction()
+        compose.onNodeWithTag("player_options_button").performClick()
+        compose.mainClock.advanceTimeBy(350)
+        compose.onNodeWithTag("player_audio_upgrade").assertExists()
+        compose.onNodeWithText("Add to Queue").performClick()
+        compose.mainClock.advanceTimeBy(350)
         compose.onNodeWithTag("flip_album_art_card").performClick()
         compose.mainClock.advanceTimeBy(1200)
         compose.onNodeWithText("Audio Fidelity").assertDoesNotExist()
