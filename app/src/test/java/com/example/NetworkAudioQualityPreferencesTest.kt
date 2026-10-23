@@ -20,6 +20,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.*
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -33,6 +34,16 @@ import org.robolectric.shadows.ShadowNetworkInfo
 @Config(sdk = [33], application = Application::class)
 @Suppress("DEPRECATION")
 class NetworkAudioQualityPreferencesTest {
+    @Before fun clearPreviousApplicationMonitor() = runBlocking {
+        val instance = NetworkQualityMonitor::class.java.getDeclaredField("instance").apply { isAccessible = true }
+        (instance.get(null) as? NetworkQualityMonitor)?.let { monitor ->
+            val scope = NetworkQualityMonitor::class.java.getDeclaredField("scope").apply { isAccessible = true }
+                .get(monitor) as CoroutineScope
+            scope.coroutineContext[Job]?.cancelAndJoin()
+        }
+        instance.set(null, null)
+    }
+
     @Test fun testAudioRouting3TierHierarchy() = runBlocking {
         val app = ApplicationProvider.getApplicationContext<Application>()
         app.getSharedPreferences("xtreme_audio_quality_prefs", 0).edit().clear().commit()

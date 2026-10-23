@@ -33,7 +33,8 @@ class StreamingAddonIntegrationTest {
     private val requests = CopyOnWriteArrayList<String>()
     private var stream: () -> String = { "" }
     private val song = MusicTrack("online_song", "Song", "Artist", "Album", 180_000, "cover", "https://aac.saavncdn.com/song_320.mp4")
-    private val maximum = PlaybackSourcePolicy(AudioQualityCeiling.MAX)
+    private val maximum get() = PlaybackSourcePolicy(AudioQualityCeiling.MAX,
+        sources = OtherSettingsPreferences.playbackIntegrations(context).sourceList(AudioQualityCeiling.MAX))
 
     @Before fun setup() = runBlocking {
         withContext(Dispatchers.IO) { app.getSharedPreferences("xtreme_other_settings", 0).edit().clear().commit(); app.getSharedPreferences("xtreme_playback_sources_prefs", 0).edit().clear().commit() }
@@ -67,9 +68,16 @@ class StreamingAddonIntegrationTest {
     @After fun cleanup() = runBlocking {
         repository.awaitPendingWrites(); repository.close(); server.stop(0)
     }
-    private fun enable() {
+    private suspend fun enable() {
         OtherSettingsPreferences.saveStreamingAddon(context, base, "My Music")
         OtherSettingsPreferences.setStreamingAddonEnabled(context, true)
+        val sources = listOf(com.example.playback.PlaybackSource(
+            com.example.playback.PlaybackSource.addonId(base), com.example.playback.PlaybackSourceKind.ADDON,
+            "My Music", baseUrl = base)) + com.example.playback.PlaybackSource.builtIns
+        OtherSettingsPreferences.savePlaybackSources(context, sources)
+        withTimeout(3_000) {
+            while (OtherSettingsPreferences.loadPlaybackSources(context) != sources) delay(10)
+        }
     }
 
     @Test fun multipleSavedServersRetainSeparateIdentitiesAndCanBeDisabledIndividually() = runBlocking {
@@ -163,7 +171,13 @@ class StreamingAddonIntegrationTest {
         try {
             val playback = async(Dispatchers.IO) { StreamingAddons.resolve(context, song, maximum) }
             withTimeout(3000) { entered.await() }
-            OtherSettingsPreferences.setStreamingAddonEnabled(context, false)
+            val disabled = OtherSettingsPreferences.loadPlaybackSources(context).map {
+                if (it.baseUrl == base) it.copy(enabled = false) else it
+            }
+            OtherSettingsPreferences.savePlaybackSources(context, disabled)
+            withTimeout(3_000) {
+                while (OtherSettingsPreferences.loadPlaybackSources(context) != disabled) delay(10)
+            }
             released.complete(Unit)
             assertNull(withTimeout(3000) { playback.await() })
         } finally { released.complete(Unit) }

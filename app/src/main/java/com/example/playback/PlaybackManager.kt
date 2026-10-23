@@ -282,7 +282,7 @@ class PlaybackManager(
             val monitor = withContext(AppDispatchers.Io) { NetworkQualityMonitor.getInstance(context) }
             networkQualityMonitor = monitor
             monitor.sourcePolicy.collect { policy ->
-                updateLosslessPolicy(monitor.activeQualityCeiling.value)
+                if (policy.ready) updateLosslessPolicy(policy.ceiling)
                 reconcileSourcePolicy(policy)
             }
         }
@@ -365,8 +365,8 @@ class PlaybackManager(
     }
 
     /** Source changes are resolved explicitly by reconcileSourcePolicy, never by a playback timer. */
-    private fun updateLosslessPolicy(policy: ActiveQualityState) {
-        val quality = policy.effectiveCeiling.audioQuality
+    private fun updateLosslessPolicy(ceiling: AudioQualityCeiling) {
+        val quality = ceiling.audioQuality
         _uiState.update { if (it.selectedQuality == quality) it else it.copy(selectedQuality = quality) }
     }
 

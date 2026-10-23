@@ -105,9 +105,9 @@ internal class StreamResolver(
         if (manualUpgrade) synchronized(archiveMisses) { archiveMisses.remove(recordingKey) }
         val archiveUrl = com.example.data.remote.InternetArchiveApiService.originalFileUrl(track)
             ?: track.audioUrl.takeIf { archiveTransport(it) }
-        val selectedArchive = archiveUrl != null && track.id.startsWith("ia_")
-        // A catalog identity can survive a verified cross-provider match. An
-        // explicitly selected Archive file must not hit that identity's AAC cache.
+        val selectedArchive = archiveUrl != null
+        // Cross-provider playback retains its catalog ID. Revalidate a known
+        // Archive file before reusing that identity's cached lossy fallback.
         val key = StreamKey(track.id, quality, track.recommendationOnly, ceilingBps, recordingKey, policy.key,
             archiveUrl.takeIf { selectedArchive }, preferredSourceId, currentSourceOnly, manualUpgrade)
         fun capped(candidate: MusicTrack): MusicTrack {

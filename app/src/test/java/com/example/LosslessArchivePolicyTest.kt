@@ -68,7 +68,8 @@ class LosslessArchivePolicyTest {
         // transition before checking explicit source transitions.
         awaitCondition {
             val monitor = field("networkQualityMonitor").get(manager) as? NetworkQualityMonitor
-            monitor?.activeQualityCeiling?.value == maximum && manager.uiState.value.selectedQuality == AudioQuality.HI_RES_LOSSLESS
+            monitor?.sourcePolicy?.value?.let { it.ready && it.ceiling == maximum.effectiveCeiling } == true &&
+                manager.uiState.value.selectedQuality == AudioQuality.HI_RES_LOSSLESS
         }
         initialRequestEpoch = field("losslessRequestEpoch").getLong(manager)
         @Suppress("UNCHECKED_CAST")
@@ -118,8 +119,8 @@ class LosslessArchivePolicyTest {
         assertNull(field("playResolutionJob").get(manager))
     }
     private fun policy(value: ActiveQualityState) {
-        PlaybackManager::class.java.getDeclaredMethod("updateLosslessPolicy", ActiveQualityState::class.java)
-            .apply { isAccessible = true }.invoke(manager, value)
+        PlaybackManager::class.java.getDeclaredMethod("updateLosslessPolicy", AudioQualityCeiling::class.java)
+            .apply { isAccessible = true }.invoke(manager, value.effectiveCeiling)
     }
 
     @Test fun equalizerControlsKeepTheExplicitSourceTransitionAndPreservePlayback() {
@@ -194,8 +195,9 @@ class LosslessArchivePolicyTest {
             val job = Job()
             set("youtubeQualityJob", job)
             PlaybackManager::class.java.getDeclaredMethod("reconcileSourcePolicy", PlaybackSourcePolicy::class.java,
-                Boolean::class.javaPrimitiveType, String::class.java).apply { isAccessible = true }
-                .invoke(manager, PlaybackSourcePolicy(ceiling), true, null)
+                Boolean::class.javaPrimitiveType, String::class.java, MusicTrack::class.java,
+                Boolean::class.javaPrimitiveType).apply { isAccessible = true }
+                .invoke(manager, PlaybackSourcePolicy(ceiling), true, null, null, false)
             assertTrue(job.isCancelled)
             assertEquals(track, manager.uiState.value.currentTrack)
             assertEquals(45_000L, manager.uiState.value.currentPositionMs)
@@ -258,8 +260,8 @@ class LosslessArchivePolicyTest {
                 }
             } as androidx.media3.common.Player
             val watchdog = com.example.service.JioSaavnPlaybackFallback(player, this,
-                resolve = { _, _ -> recoveryCalls++; error("A fresh source should have time to buffer") },
-                status = {}, changed = {})
+                requestRecovery = { _, _ -> recoveryCalls++; error("A fresh source should have time to buffer") },
+                status = {})
             watchdog.update()
             testScheduler.runCurrent()
             testScheduler.advanceTimeBy(5_999)

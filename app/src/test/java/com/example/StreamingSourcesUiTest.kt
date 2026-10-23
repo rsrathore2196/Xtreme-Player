@@ -105,7 +105,7 @@ class StreamingSourcesUiTest {
         compose.onNodeWithTag("switch_source_jiosaavn").performScrollTo().performClick()
         compose.waitUntil(5000) { shadowOf(Looper.getMainLooper()).idle();
             OtherSettingsPreferences.playbackIntegrations(app).sources.firstOrNull { it.id == "jiosaavn" }?.enabled == false }
-        compose.onNodeWithTag("switch_source_youtube").assertDoesNotExist()
+        compose.onNodeWithTag("switch_source_youtube").assertIsOn().assertIsEnabled()
         assertEquals(5, OtherSettingsPreferences.playbackIntegrations(app).sources.size)
     }
     @Test fun alreadyPreferredVerifiedSourceShowsOnAndOffRequestsYoutubeWithoutEnablingDsp() = runBlocking {
@@ -126,7 +126,8 @@ class StreamingSourcesUiTest {
             com.example.ui.components.SourceUpgradeMenuItem("yt_abcdefghijk", onDismiss = {})
         } }
         compose.waitUntil(10000) { shadowOf(Looper.getMainLooper()).idle();
-            monitor.sourcePolicy.value.ceiling == AudioQualityCeiling.HIGH && monitor.sourcePolicy.value.playbackSources.first().id == "jiosaavn" }
+            monitor.sourcePolicy.value.ceiling == AudioQualityCeiling.HIGH &&
+                monitor.sourcePolicy.value.playbackSources.map { it.id } == listOf("youtube", "jiosaavn") }
         compose.onNodeWithText("Revert to Original").assertIsEnabled().performClick()
         compose.waitUntil(5000) { shadowOf(Looper.getMainLooper()).idle(); monitor.sourcePolicy.value.returnToYouTube }
         compose.onNodeWithText("Revert to Original").assertExists()

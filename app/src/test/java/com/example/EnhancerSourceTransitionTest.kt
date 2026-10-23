@@ -114,11 +114,11 @@ class EnhancerSourceTransitionTest {
     }
 
     @Test fun returningOneSongToYoutubeDoesNotPinTheNextSongOrChangeSourcePreferences() {
-        val policy = PlaybackSourcePolicy(AudioQualityCeiling.HIGH, returnToYouTube = true,
+        val policy = PlaybackSourcePolicy(AudioQualityCeiling.MAX, returnToYouTube = true,
             requestTrackId = video.id, requestRevision = 1L)
         assertEquals(PlaybackSourceKind.YOUTUBE, policy.resolutionSourcesFor(video.id).first().kind)
-        assertEquals(PlaybackSourceKind.JIOSAAVN, policy.resolutionSourcesFor("yt_nexttrackid").first().kind)
-        assertEquals(PlaybackSourceKind.JIOSAAVN, policy.playbackSources.first().kind)
+        assertEquals(PlaybackSourceKind.INTERNET_ARCHIVE, policy.resolutionSourcesFor("yt_nexttrackid").first().kind)
+        assertEquals(PlaybackSourceKind.INTERNET_ARCHIVE, policy.playbackSources.first().kind)
     }
 
     @Test fun reducedNetworkQualityUsesYoutubeWhenBothCurrentAndOriginalSourcesAreBlocked() {

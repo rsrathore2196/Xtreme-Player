@@ -22,8 +22,8 @@ not run as part of this change. It fails with a preparation message if no real s
 rather than silently producing a profile missing the player path. It never manually refreshes
 Home or searches for music; existing recommendation caching, viewport loading and bounded request coordination apply.
 
-The consumer plugin saves the combined output to `app/src/main/baseline-prof.txt` (and startup
-rules to `startup-prof.txt`) for review and commit. Existing profile rules remain in place until
+The consumer plugin saves the combined output to `app/src/main/baselineProfiles/baseline-prof.txt` (and startup
+rules to `startup-prof.txt` in the same directory) for review and commit. Existing profile rules remain in place until
 collection succeeds. Release builds package the checked-in profile with ProfileInstaller and
 do not run a device, benchmark or generation task: `automaticGenerationDuringBuild = false`.
 Use a release build to assess AOT improvements; debug builds do not represent release performance.

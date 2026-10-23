@@ -40,11 +40,27 @@ class LosslessArchiveLookupTest {
         error("Archive discovery must not query Room: ${method.name}")
     } as MusicDao
 
-    @Before fun ready() {
+    @Before fun ready() = runBlocking {
         clear() // No process-wide monitor may retain another Robolectric Application.
         com.example.data.repository.StreamResolver.clearVerifiedLosslessCache()
         app.getSharedPreferences("xtreme_audio_quality_prefs", 0).edit().clear().commit()
+        com.example.data.local.PlaybackSourcesPreferences.save(app, PlaybackSource.builtIns)
+        withTimeout(3_000) {
+            while (com.example.data.local.PlaybackSourcesPreferences.load(app) != PlaybackSource.builtIns) delay(10)
+        }
         connect(wifi = true)
+    }
+
+    @Test fun disabledArchiveCannotIssueRequestsEvenWithMaximumSelected() = runBlocking {
+        val sources = PlaybackSource.builtIns.map { it.copy(enabled = it.kind == PlaybackSourceKind.YOUTUBE) }
+        com.example.data.local.PlaybackSourcesPreferences.save(app, sources)
+        withTimeout(3_000) {
+            while (com.example.data.local.PlaybackSourcesPreferences.load(app) != sources) delay(10)
+        }
+        val repo = MusicRepository(dao, app) { _, _ -> error("Disabled Archive must never be searched") }
+        assertEquals(AudioQualityCeiling.MAX, NetworkQualityMonitor.getInstance(app).snapshot().effectiveCeiling)
+        assertNull(repo.findLosslessUpgrade(track))
+        assertEquals(LosslessDiagnostics.Reason.NETWORK_POLICY_BLOCKED, LosslessDiagnostics.last(track.id)?.reason)
     }
 
     @After fun clear() = runBlocking {

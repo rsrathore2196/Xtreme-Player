@@ -96,7 +96,7 @@ baselineProfile {
   automaticGenerationDuringBuild = false
   saveInSrc = true
   mergeIntoMain = true
-  baselineProfileOutputDir = "."
+  baselineProfileOutputDir = "baselineProfiles"
 }
 
 ksp {

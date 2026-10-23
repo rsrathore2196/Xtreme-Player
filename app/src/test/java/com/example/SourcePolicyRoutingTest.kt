@@ -85,9 +85,9 @@ class SourcePolicyRoutingTest {
                 maxBitrateBps = ceiling.maxBitrateBps, sourcePolicy = PlaybackSourcePolicy(ceiling))
             assertEquals(song.id, result.id); assertEquals(song.title, result.title)
             assertEquals(song.coverUrl, result.coverUrl); assertTrue(result.isLiked)
-            assertEquals(if (ceiling == AudioQualityCeiling.HIGH) "JIOSAAVN" else "YouTube Music", result.source)
+            assertEquals("YouTube Music", result.source)
             assertFalse(result.isLossless)
-            assertEquals(if (ceiling == AudioQualityCeiling.HIGH) jio.audioUrl else opus.audioUrl, result.audioUrl)
+            assertEquals(opus.audioUrl, result.audioUrl)
         }
     }
 
@@ -174,10 +174,10 @@ class SourcePolicyRoutingTest {
         assertEquals(2, verifications)
     }
 
-    @Test fun selectedArchiveTransportWithACatalogIdBypassesCachedAac() = runBlocking {
+    @Test fun archiveTransportWithOriginalCatalogIdentityIsRevalidatedBeforeReusingCachedAac() = runBlocking {
         var verifications = 0
         val resolver = StreamResolver(searchStandard = { _, _ -> listOf(jio) }, fetchById = { _, _ -> jio },
-            supportsLossless = { true }, verifyArchive = { verifications++; it },
+            supportsLossless = { true }, verifyArchive = { verifications++; it }, searchLossless = { emptyList() },
         searchYouTube = { emptyList() }, resolveYouTube = { _, _, _, _ -> null })
         val policy = PlaybackSourcePolicy(AudioQualityCeiling.MAX, sources = archiveFirst)
         assertEquals(jio.audioUrl, resolver.resolve(jio, policy.ceiling.audioQuality, sourcePolicy = policy).audioUrl)
@@ -188,6 +188,22 @@ class SourcePolicyRoutingTest {
         assertEquals(selected.coverUrl, direct.coverUrl)
         assertTrue(direct.isLossless)
         assertEquals(1, verifications)
+    }
+
+    @Test fun knownArchiveTransportCannotBypassADisabledProviderOrALossyCeiling() = runBlocking {
+        val selected = archive.copy(id = song.id)
+        for (policy in listOf(PlaybackSourcePolicy(AudioQualityCeiling.HIGH),
+            PlaybackSourcePolicy(AudioQualityCeiling.MAX, sources = PlaybackSource.newInstallDefaults))) {
+            val resolver = StreamResolver(searchLossless = { error("Archive is not eligible") },
+                verifyArchive = { error("A known file cannot bypass source permissions") },
+                searchStandard = { _, _ -> error("The selected YouTube recording is available") },
+                resolveYouTube = { request, _, _, _ -> opus.copy(id = request.id) })
+            val result = resolver.resolve(selected, policy.ceiling.audioQuality, sourcePolicy = policy)
+            assertEquals(selected.id, result.id)
+            assertEquals(opus.audioUrl, result.audioUrl)
+            assertEquals("YouTube Music", result.source)
+            assertFalse(result.isLossless)
+        }
     }
 
     @Test fun aDifferentArchiveFileCannotReplaceTheExplicitlySelectedFile() = runBlocking {

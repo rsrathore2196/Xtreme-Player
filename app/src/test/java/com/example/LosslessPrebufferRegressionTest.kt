@@ -12,10 +12,14 @@ import androidx.media3.exoplayer.mediacodec.MediaCodecUtil
 import androidx.media3.datasource.cache.SimpleCache
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.local.AudioQualityPreferences
+import com.example.data.local.PlaybackSourcesPreferences
+import com.example.data.model.MusicTrack
+import com.example.data.remote.StreamingAddons
 import com.example.playback.*
 import com.example.service.MusicCache
 import com.sun.net.httpserver.HttpServer
 import java.net.InetSocketAddress
+import org.json.JSONObject
 import kotlinx.coroutines.*
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.setMain
@@ -36,8 +40,9 @@ import org.robolectric.shadows.*
 class LosslessPrebufferRegressionTest {
     private val app get() = ApplicationProvider.getApplicationContext<Context>()
     private lateinit var server: HttpServer
+    private lateinit var source: PlaybackSource
 
-    @Before fun prepare() {
+    @Before fun prepare() = runBlocking {
         Dispatchers.setMain(UnconfinedTestDispatcher())
         AudioQualityPreferences.setWifiQualityCeiling(app, AudioQualityCeiling.MAX)
         val manager = shadowOf(app.getSystemService(ConnectivityManager::class.java))
@@ -73,6 +78,11 @@ class LosslessPrebufferRegressionTest {
             }
             start()
         }
+        val base = "http://127.0.0.1:${server.address.port}"
+        source = PlaybackSource(PlaybackSource.addonId(base), PlaybackSourceKind.ADDON, "Local fixture", baseUrl = base)
+        val sources = listOf(source) + PlaybackSource.builtIns
+        PlaybackSourcesPreferences.save(app, sources)
+        withTimeout(3_000) { while (PlaybackSourcesPreferences.load(app) != sources) delay(10) }
     }
     @After fun cleanup() = runBlocking {
         server.stop(0)
@@ -90,8 +100,16 @@ class LosslessPrebufferRegressionTest {
         }
         Dispatchers.resetMain()
     }
-    private fun item(path: String) = MediaItem.Builder().setMediaId(path)
-        .setUri("http://127.0.0.1:${server.address.port}/$path").build()
+    private fun item(path: String): MediaItem {
+        val url = "${source.baseUrl}/$path"
+        val track = MusicTrack(path, "Song", "Artist", "Album", 24_000, "cover", url,
+            source = "Streaming Addon: Local fixture")
+        // Prebuffer tests start after provider verification. Register this local
+        // transport through the real parser so source-policy checks stay active.
+        checkNotNull(StreamingAddons.parseStream(JSONObject().put("url", url).put("codec", "flac").toString(),
+            source.baseUrl, track, track, PlaybackSourcePolicy(AudioQualityCeiling.MAX, sources = listOf(source))))
+        return MediaItem.Builder().setMediaId(path).setUri(url).build()
+    }
 
     @Test fun realUnindexedChunkedFlacIsPreparedAtThePlayingPositionWithoutAnotherPlayer() = runBlocking {
         val item = item("song.flac")
@@ -122,6 +140,17 @@ class LosslessPrebufferRegressionTest {
         AudioQualityPreferences.setWifiQualityCeiling(app, AudioQualityCeiling.HIGH)
         assertNull(LosslessStreamPrebuffer.prepare(app, item("song.flac"), 20_000,
             { error("Capped profile must not read the player") }, { error("Capped profile must not reach Main") }))
+    }
+    @Test fun disabledSourceRejectsEvenAnAlreadyRegisteredAndCachedTransport() = runBlocking {
+        val candidate = item("song.flac")
+        assertNotNull(LosslessStreamPrebuffer.prepare(app, candidate, 24_000, { 6_000 }, { true }))
+        assertTrue(withContext(Dispatchers.IO) { MusicCache.fullyCached(app, candidate.localConfiguration!!.uri.toString()) })
+        val sources = listOf(source.copy(enabled = false)) + PlaybackSource.builtIns
+        PlaybackSourcesPreferences.save(app, sources)
+        withTimeout(3_000) { while (PlaybackSourcesPreferences.load(app) != sources) delay(10) }
+        assertNull(LosslessStreamPrebuffer.prepare(app, candidate, 24_000,
+            { error("Disabled source must not read the player") }, { error("Disabled source must not reach Main") }))
+        assertEquals(LosslessDiagnostics.Reason.NETWORK_POLICY_BLOCKED, LosslessDiagnostics.last(candidate.mediaId)?.reason)
     }
     @Test fun optionalPreparationReleasesItsWorkerDuringNavigationWithoutRejectingTheFile() = runBlocking {
         val coordinator = com.example.performance.BackgroundWorkCoordinator
