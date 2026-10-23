@@ -122,12 +122,20 @@ internal object LosslessStreamPrebuffer {
             }
             checkpoint() // Recheck after waiting for the single preparation worker.
             LosslessDiagnostics.clear(item.mediaId)
-            if (!NetworkQualityMonitor.getInstance(context).snapshot().allowsLosslessUpgrade) {
+            val uri = item.localConfiguration?.uri ?: return@withLock null
+            fun allowed(): Boolean {
+                if (uri.scheme in setOf("file", "content")) return true
+                val policy = NetworkQualityMonitor.getInstance(context).sourcePolicySnapshot()
+                if (!policy.maximum || !policy.online) return false
+                val host = uri.host.orEmpty().lowercase(java.util.Locale.ROOT)
+                return if (host == "archive.org" || host.endsWith(".archive.org")) policy.allowsArchive
+                    else com.example.data.remote.StreamingAddons.isVerified(uri.toString(), policy)
+            }
+            if (!allowed()) {
                 LosslessDiagnostics.record(item.mediaId, LosslessDiagnostics.Reason.NETWORK_POLICY_BLOCKED, "prebuffer")
                 return@withLock null
             }
             if (!withContext(Dispatchers.Main.immediate) { stillCurrent() }) return@withLock null
-            val uri = item.localConfiguration?.uri ?: return@withLock null
             val source = MusicCache.createCacheDataSourceFactory(context.applicationContext,
                 connectTimeoutMs = 5_000, readTimeoutMs = 5_000).createDataSource()
             val deadline = SystemClock.elapsedRealtime() + 20_000L
@@ -149,7 +157,7 @@ internal object LosslessStreamPrebuffer {
                 checkpoint()
                 // This is optional preparation, not the audible stream. Never
                 // open another Archive range after a capped-network handover.
-                if (!NetworkQualityMonitor.getInstance(context).snapshot().allowsLosslessUpgrade)
+                if (!allowed())
                     throw PreparationFailure(LosslessDiagnostics.Reason.NETWORK_POLICY_BLOCKED, "Active profile changed")
                 if (opened) source.close()
                 opened = true

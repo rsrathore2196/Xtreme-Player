@@ -50,15 +50,18 @@ data class ActiveQualityState(
 /** Source policy is independent of catalog identity and renderer/DSP settings. */
 @Immutable
 data class PlaybackSourcePolicy(val ceiling: AudioQualityCeiling, val enhancer: Boolean = false,
-    val online: Boolean = true, val sources: List<PlaybackSource> = emptyList(),
-    val returnToYouTube: Boolean = false, val requestRevision: Long = 0L, val requestTrackId: String = "") {
+    val online: Boolean = true, val sources: List<PlaybackSource> = PlaybackSource.defaults(ceiling),
+    val returnToYouTube: Boolean = false, val requestRevision: Long = 0L, val requestTrackId: String = "", val ready: Boolean = true) {
     val maximum: Boolean get() = ceiling == AudioQualityCeiling.MAX
     val preferOpus: Boolean get() = ceiling == AudioQualityCeiling.HIGH
-    val configuredSources: List<PlaybackSource> get() = PlaybackSource.ordered(sources.ifEmpty { PlaybackSource.defaults(ceiling) })
+    val configuredSources: List<PlaybackSource> get() = PlaybackSource.ordered(sources)
     val playbackSources: List<PlaybackSource> get() {
         val enabled = configuredSources.filter { it.enabled && it.available(ceiling) &&
             (it.kind != PlaybackSourceKind.ADDON || it.baseUrl.isNotBlank()) }
-        return enabled
+        val builtInOrder = if (maximum) listOf(PlaybackSourceKind.INTERNET_ARCHIVE, PlaybackSourceKind.JIOSAAVN, PlaybackSourceKind.YOUTUBE)
+            else listOf(PlaybackSourceKind.YOUTUBE, PlaybackSourceKind.JIOSAAVN)
+        return enabled.filter { it.kind == PlaybackSourceKind.ADDON } +
+            builtInOrder.flatMap { kind -> enabled.filter { it.kind == kind } }
     }
     val resolutionSources: List<PlaybackSource> get() = resolutionSourcesFor(requestTrackId)
     fun returnsToYouTube(trackId: String): Boolean = returnToYouTube && !enhancer &&
@@ -70,9 +73,10 @@ data class PlaybackSourcePolicy(val ceiling: AudioQualityCeiling, val enhancer: 
         playbackSources.filter { it.kind == PlaybackSourceKind.YOUTUBE } + playbackSources.filter { it.kind != PlaybackSourceKind.YOUTUBE }
         else playbackSources
     fun allows(kind: PlaybackSourceKind): Boolean = playbackSources.any { it.kind == kind }
+    fun sourceId(kind: PlaybackSourceKind): String? = configuredSources.firstOrNull { it.kind == kind }?.id
     val allowsArchive: Boolean get() = maximum && online && allows(PlaybackSourceKind.INTERNET_ARCHIVE)
-    val key: String get() = "sources-v6:${ceiling.name}:$enhancer:$returnToYouTube:$online:$requestRevision:$requestTrackId:" +
-        playbackSources.joinToString(",") { it.id }
+    val key: String get() = "sources-v7:${ceiling.name}:$enhancer:$returnToYouTube:$online:$requestRevision:$requestTrackId:$ready:" +
+        playbackSources.joinToString(",") { "${it.id}:${it.kind.name}:${it.baseUrl.hashCode()}" }
     /** Only an activated decoder format can make the switch automatically reflect a preferred source. */
     fun automaticallyEnhanced(state: SignalPathState): Boolean {
         if (!state.quality.verified || state.quality.codec.isBlank() || state.trackId.isBlank() ||
@@ -85,12 +89,12 @@ data class PlaybackSourcePolicy(val ceiling: AudioQualityCeiling, val enhancer: 
     }
     fun hasVerifiedUpgrade(state: SignalPathState): Boolean = state.quality.verified && state.quality.codec.isNotBlank() &&
         state.trackId.isNotBlank() && state.sourceId.isNotBlank() &&
-        state.sourceId != PlaybackSource.youtube.id &&
+        state.sourceId != sourceId(PlaybackSourceKind.YOUTUBE) &&
         ((state.enhancerOriginalSourceId.isNotBlank() && state.enhancerOriginalUri.isNotBlank() &&
             state.streamUri.isNotBlank() && state.enhancerOriginalSourceId != state.sourceId &&
             state.enhancerOriginalUri != state.streamUri) || automaticallyEnhanced(state))
     fun isPreferred(track: com.example.data.model.MusicTrack): Boolean {
-        val first = resolutionSourcesFor(track.id).first()
+        val first = resolutionSourcesFor(track.id).firstOrNull() ?: return false
         val host = android.net.Uri.parse(track.audioUrl).host.orEmpty()
         return when (first.kind) {
             PlaybackSourceKind.YOUTUBE -> com.example.data.remote.YouTubeAudioStreamService.isYouTubeAudio(track.id, track.audioUrl)
@@ -110,7 +114,7 @@ data class PlaybackSourcePolicy(val ceiling: AudioQualityCeiling, val enhancer: 
             saavnRate.find(uri.path.orEmpty())?.groupValues?.get(1) == "320" && bitrateKbps <= 336
     }
     fun acceptsRemoteTrack(track: com.example.data.model.MusicTrack): Boolean {
-        if (com.example.data.remote.StreamingAddons.isVerified(track.audioUrl, this)) return true
+        if (com.example.data.remote.StreamingAddons.allowsRegisteredTransport(track.audioUrl, this)) return true
         val uri = android.net.Uri.parse(track.audioUrl)
         if (uri.scheme in setOf("file", "content")) return true
         val archive = uri.host.orEmpty().let { it == "archive.org" || it.endsWith(".archive.org") }
@@ -123,8 +127,8 @@ data class PlaybackSourcePolicy(val ceiling: AudioQualityCeiling, val enhancer: 
         if (rate != null && !acceptsStreamBitrate(rate, uri)) return false
         // A missing representation bitrate is unknown, never a manufactured value.
         // Virtual YouTube streams carry the extractor's enforced ceiling instead.
-        if (youtube) return rate != null || com.example.data.remote.YouTubeAudioStreamService.bitrateCapFromUri(uri)
-            ?.let { it <= ceiling.maxBitrateBps } == true
+        if (youtube) return allows(PlaybackSourceKind.YOUTUBE) && (rate != null ||
+            com.example.data.remote.YouTubeAudioStreamService.bitrateCapFromUri(uri)?.let { it <= ceiling.maxBitrateBps } == true)
         return allows(PlaybackSourceKind.JIOSAAVN) && rate != null && (host == "saavncdn.com" || host.endsWith(".saavncdn.com"))
     }
     private companion object { val saavnRate = Regex("_(320|160|96|48)\\.(?:mp4|m4a)(?:$|[?#])") }

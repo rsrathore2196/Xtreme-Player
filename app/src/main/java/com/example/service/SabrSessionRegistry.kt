@@ -39,6 +39,7 @@ internal class SabrStreamChangedException(val replacement: YouTubeAudioStreamSer
 internal object SabrSessionRegistry {
     /** Invoked only on the player's application looper; no UI lifetime is required for fallback. */
     @Volatile var controllerHandlesRecovery: (() -> Boolean)? = null
+    @Volatile var requestSourceRecovery: ((String, String) -> Boolean)? = null
     private data class Descriptor(val audio: YouTubeAudioStreamService.AudioStream, val quality: AudioQuality)
     private val descriptors = android.util.LruCache<String, Descriptor>(64)
     private val replacements = android.util.LruCache<String, YouTubeAudioStreamService.AudioStream>(16)
@@ -111,7 +112,7 @@ internal object SabrSessionRegistry {
         var descriptor = descriptors.get(uri.toString())
         if (descriptor == null) {
             val resolved = YouTubeAudioStreamService.resolveSabr(videoId, selectedQuality,
-                maxBitrateBps = uri.getQueryParameter("cap")?.toIntOrNull()?.takeIf { it > 0 }?.times(1000))
+                maxBitrateBps = YouTubeAudioStreamService.bitrateCapFromUri(uri))
             if (resolved.url != uri.toString()) {
                 recordReplacement(uri.toString(), resolved)
                 throw SabrStreamChangedException(resolved)
@@ -138,7 +139,7 @@ internal object SabrSessionRegistry {
                     sessions.remove(victim.key)
                     unused.add(victim)
                 }
-                Session(descriptor.audio, selectedQuality, File(root, UUID.randomUUID().toString()))
+                Session(descriptor.audio, selectedQuality, File(root, UUID.randomUUID().toString()), context.applicationContext)
                     .also { sessions[key] = it }
             }
             session.attach(position)
@@ -178,7 +179,8 @@ internal object SabrSessionRegistry {
     internal class Session(
         private var audio: YouTubeAudioStreamService.AudioStream,
         @Volatile private var quality: AudioQuality,
-        private val folder: File
+        private val folder: File,
+        private val context: Context
     ) {
         val key = audio.cacheKey
         val contentLength = audio.contentLength
@@ -397,6 +399,11 @@ internal object SabrSessionRegistry {
         }
 
         private suspend fun refreshClient(excludeCurrent: Boolean) {
+            com.example.data.local.OtherSettingsPreferences.loadPlaybackSources(context)
+            val policy = com.example.playback.NetworkQualityMonitor.getInstance(context).sourcePolicySnapshot()
+            if (!policy.online || !policy.allows(com.example.playback.PlaybackSourceKind.YOUTUBE))
+                throw com.example.playback.PlaybackDiagnostics.Failure(com.example.playback.PlaybackDiagnostics.Reason.POLICY,
+                    com.example.playback.PlaybackDiagnostics.Stage.LOADING)
             // Routine signed-session renewal is not a transport failure. Only
             // failed-client attempts consume the bounded recovery budget.
             if (excludeCurrent && clientRecoveries++ >= 2) throw IOException("SABR client retry limit reached")
@@ -405,7 +412,7 @@ internal object SabrSessionRegistry {
                 YouTubeAudioStreamService.reject(audio.videoId, audio.url, audio.clientId)
             } else YouTubeAudioStreamService.invalidate(audio.videoId)
             val refreshed = YouTubeAudioStreamService.resolveSabr(audio.videoId, quality, excluded.toSet(),
-                maxBitrateBps = audio.selectionCapBps)
+                maxBitrateBps = minOf(audio.selectionCapBps, policy.ceiling.maxBitrateBps))
             if (refreshed.cacheKey != key) {
                 recordReplacement(audio.url, refreshed)
                 throw SabrStreamChangedException(refreshed)

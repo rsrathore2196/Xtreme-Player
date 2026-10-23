@@ -44,8 +44,8 @@ class StreamingSourcesUiTest {
         val monitor = NetworkQualityMonitor.getInstance(app)
         compose.setContent { MaterialTheme { SourcesScreen(onNavigateBack = {}) } }
         compose.waitUntil(10000) { shadowOf(Looper.getMainLooper()).idle(); monitor.sourcePolicy.value.ceiling == AudioQualityCeiling.NORMAL }
-        compose.onNodeWithTag("switch_source_youtube").assertDoesNotExist()
-        compose.onNodeWithTag("badge_always_on_youtube").assertExists()
+        compose.onNodeWithTag("switch_source_youtube").assertIsOn().assertIsEnabled()
+        compose.onNodeWithTag("badge_always_on_youtube").assertDoesNotExist()
         compose.onNodeWithTag("source_up_youtube").assertDoesNotExist()
         compose.onNodeWithTag("source_down_youtube").assertDoesNotExist()
         compose.onNodeWithTag("switch_source_jiosaavn").assertIsOff().assertIsNotEnabled()

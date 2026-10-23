@@ -42,36 +42,15 @@ class UnifiedRecommendationEngine(context: Context?,
     private val ranking = BackgroundWorkCoordinator.optionalCpuDispatcher
     private val urgentRanking = AppDispatchers.CpuBounded
     private val discoveryWorkers = Semaphore(2)
-    private val indic = Regex("[\u0900-\u097f\u0a00-\u0a7f]")
-    @androidx.annotation.RequiresApi(29)
-    private object IndicRomanizer {
-        private val converter = android.icu.text.Transliterator.getInstance("Any-Latin; NFD; [:Nonspacing Mark:] Remove; NFC")
-        fun convert(track: MusicTrack): MusicTrack = synchronized(converter) {
-            track.copy(title = converter.transliterate(track.title), artist = converter.transliterate(track.artist),
-                singers = converter.transliterate(track.singers))
-        }
-    }
-    private fun romanized(track: MusicTrack): MusicTrack {
-        // Public ICU transliteration starts at API 29. Older supported devices
-        // retain Unicode-safe identity matching, with no unsupported class loading.
-        if (android.os.Build.VERSION.SDK_INT < 29 || !indic.containsMatchIn(track.title + track.artist + track.singers)) return track
-        return IndicRomanizer.convert(track)
-    }
-    private fun confidence(seed: MusicTrack, candidate: MusicTrack): Int? {
-        RecordingIdentity.fallbackConfidence(seed, candidate, durationToleranceMs = 5_000L)?.let { return it }
-        val first = romanized(seed); val second = romanized(candidate)
-        if (first === seed && second === candidate) return null
-        // Transliteration supplies alternate spelling only. The same artist,
-        // version, ISRC-conflict and tight duration checks still apply unchanged.
-        return RecordingIdentity.fallbackConfidence(first, second, durationToleranceMs = 3_000L, requireDuration = true)
-    }
+    private fun confidence(seed: MusicTrack, candidate: MusicTrack): Int? =
+        RecordingIdentity.providerConfidence(seed, candidate, durationToleranceMs = 5_000L)
     private val rotation = AtomicLong()
     private val failures = MutableStateFlow<Map<String, Long>>(emptyMap())
     val unavailable: StateFlow<Map<String, Long>> = failures.asStateFlow()
     internal fun markUnavailable(track: MusicTrack) {
         if (!track.recommendationOnly) return
         val now = android.os.SystemClock.elapsedRealtime()
-        failures.update { previous -> (previous.filterValues { it > now } + (track.id to (now + 10 * 60_000L)))
+        failures.update { previous -> (previous.filterValues { it > now } + (track.id to (now + 30_000L)))
             .entries.toList().takeLast(128).associate { it.key to it.value } }
     }
     private fun unavailable(track: MusicTrack) = (failures.value[track.id] ?: 0L) > android.os.SystemClock.elapsedRealtime()

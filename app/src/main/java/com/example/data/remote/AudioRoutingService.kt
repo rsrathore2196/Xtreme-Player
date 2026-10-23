@@ -39,19 +39,19 @@ object AudioRoutingService {
             } catch (e: TimeoutCancellationException) { coroutineContext.ensureActive(); null }
             catch (e: CancellationException) { throw e }
             catch (_: Exception) { null }
-            // Song discovery uses the original YouTube catalog. Only an API
-            // failure falls back to JioSaavn; a normal page never waits on or
-            // verifies against a second catalog.
+            // A successful but empty/unusable page also needs catalog fallback.
+            // Never replay Jio's first page after a later YouTube continuation fails.
             val extended = if (fetchYouTube) request {
                 withContext(AppDispatchers.Io) {
                     YouTubeMusicApiService.searchSongsPage(cleaned, youtubeContinuation, useInnerTubeX = true)
                 }
             } else null
-            val useStandard = extended == null && (!fetchYouTube || youtubeContinuation == null)
+            val youtubeTracks = rankTracks(query, extended?.tracks.orEmpty())
+            val useStandard = youtubeTracks.isEmpty() && standardPage != null
             val standard = if (useStandard && standardPage != null) request {
                 withContext(AppDispatchers.Io) { OnlineMusicApiService.searchSongPage(cleaned, limit = limit, page = standardPage) }
             } else null
-            SearchPage(rankTracks(query, extended?.tracks ?: standard?.tracks.orEmpty()),
+            SearchPage(youtubeTracks.ifEmpty { rankTracks(query, standard?.tracks.orEmpty()) },
                 standard?.nextPage, extended?.continuation, useStandard && standard == null,
                 fetchYouTube && extended == null)
         }

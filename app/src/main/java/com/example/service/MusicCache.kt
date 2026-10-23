@@ -110,6 +110,28 @@ object MusicCache {
             ResolvingDataSource(cached.createDataSource()) { spec ->
                 val host = spec.uri.host.orEmpty()
                 val saavn = host == "saavncdn.com" || host.endsWith(".saavncdn.com")
+                val youtube = spec.uri.scheme in setOf("xtreme-sabr", "xtreme-youtube") ||
+                    YouTubeAudioStreamService.isMediaUrl(spec.uri.toString())
+                val archive = host == "archive.org" || host.endsWith(".archive.org")
+                val addon = com.example.data.remote.StreamingAddons.hasRegisteredTransport(spec.uri.toString())
+                if (youtube || saavn || archive || addon) {
+                    if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper())
+                        throw IOException("Audio admission must run on the Media3 loader thread")
+                    runBlocking(Dispatchers.IO) { com.example.data.local.OtherSettingsPreferences.loadPlaybackSources(app) }
+                    val active = com.example.playback.NetworkQualityMonitor.getInstance(app).sourcePolicySnapshot()
+                    val allowed = when {
+                        addon -> com.example.data.remote.StreamingAddons.allowsRegisteredTransport(spec.uri.toString(), active)
+                        youtube -> active.allows(com.example.playback.PlaybackSourceKind.YOUTUBE)
+                        saavn -> active.allows(com.example.playback.PlaybackSourceKind.JIOSAAVN)
+                        else -> active.maximum && active.allows(com.example.playback.PlaybackSourceKind.INTERNET_ARCHIVE)
+                    }
+                    if (!allowed) throw com.example.playback.PlaybackDiagnostics.Failure(
+                        com.example.playback.PlaybackDiagnostics.Reason.POLICY, com.example.playback.PlaybackDiagnostics.Stage.LOADING)
+                    // Keep byte offsets pinned to the representation, but never let
+                    // its next renewal exceed a newly lowered active-network cap.
+                    pinnedCeiling = pinnedCeiling?.let { minOf(it, active.ceiling.maxBitrateBps) }
+                    offline = !active.online
+                }
                 if (spec.uri.scheme in setOf("xtreme-sabr", "xtreme-youtube") || saavn) {
                     if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper())
                         throw IOException("Audio resolution must run on the Media3 loader thread")

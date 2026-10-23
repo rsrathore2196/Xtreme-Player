@@ -40,7 +40,7 @@ class PlaybackSourcePreferenceTest {
         assertTrue(saved.single { it.kind == PlaybackSourceKind.JIOSAAVN }.enabled)
         assertTrue(saved.single { it.kind == PlaybackSourceKind.YOUTUBE }.enabled)
         assertFalse(saved.single { it.kind == PlaybackSourceKind.INTERNET_ARCHIVE }.enabled)
-        assertEquals(listOf(PlaybackSourceKind.JIOSAAVN, PlaybackSourceKind.YOUTUBE),
+        assertEquals(listOf(PlaybackSourceKind.YOUTUBE, PlaybackSourceKind.JIOSAAVN),
             PlaybackSourcePolicy(AudioQualityCeiling.HIGH, sources = saved).playbackSources.map { it.kind })
     }
 
@@ -52,17 +52,21 @@ class PlaybackSourcePreferenceTest {
             assertEquals(ordered, policy.configuredSources)
             assertFalse(policy.allowsArchive)
         }
-        assertEquals(listOf(PlaybackSourceKind.JIOSAAVN, PlaybackSourceKind.YOUTUBE),
+        assertEquals(listOf(PlaybackSourceKind.YOUTUBE, PlaybackSourceKind.JIOSAAVN),
             PlaybackSourcePolicy(AudioQualityCeiling.HIGH, sources = ordered).playbackSources.map { it.kind })
         assertEquals(ordered, PlaybackSourcePolicy(AudioQualityCeiling.MAX, sources = ordered).playbackSources)
     }
 
-    @Test fun everySwitchOffStillLeavesYoutubeAsTheLastSafetyNet() = runBlocking {
+    @Test fun explicitlyDisabledSourcesNeverBecomeSafetyFallbacks() = runBlocking {
         val policy = PlaybackSourcePolicy(AudioQualityCeiling.MAX, sources = PlaybackSource.builtIns.map { it.copy(enabled = false) })
-        assertEquals(listOf(PlaybackSource.youtube), policy.playbackSources)
+        assertTrue(policy.playbackSources.isEmpty())
         val resolver = StreamResolver(searchStandard = { _, _ -> error("Jio is off") },
-            searchLossless = { error("Archive is off") }, resolveYouTube = { track, _, _, cap -> youtube(track, cap) })
-        assertEquals("YouTube Music", resolver.resolve(video, AudioQuality.HI_RES_LOSSLESS, sourcePolicy = policy).source)
+            searchLossless = { error("Archive is off") }, resolveYouTube = { _, _, _, _ -> error("YouTube is off") })
+        try {
+            resolver.resolve(video, AudioQuality.HI_RES_LOSSLESS, sourcePolicy = policy)
+            fail("An all-disabled policy must be reported, not overwritten")
+        } catch (error: TrackUnavailableException) { assertTrue(error.message.orEmpty().contains("No playback source")) }
+        assertTrue(PlaybackSourcePolicy(AudioQualityCeiling.HIGH, sources = emptyList()).playbackSources.isEmpty())
     }
 
     @Test fun builtInRanksAreFixedAndDisablingJioUsesYoutube() = runBlocking {
@@ -70,13 +74,13 @@ class PlaybackSourcePreferenceTest {
         val resolver = StreamResolver(searchStandard = { _, _ -> searches++; listOf(jio) },
             searchLossless = { error("High excludes Archive") }, resolveYouTube = { track, _, _, cap -> youtube(track, cap) })
         val preferred = PlaybackSourcePolicy(AudioQualityCeiling.HIGH, sources = listOf(PlaybackSource.jio, PlaybackSource.youtube, PlaybackSource.archive))
-        assertEquals("JIOSAAVN", resolver.resolve(video, preferred.ceiling.audioQuality, sourcePolicy = preferred).source)
+        assertEquals("YouTube Music", resolver.resolve(video, preferred.ceiling.audioQuality, sourcePolicy = preferred).source)
         val changed = preferred.copy(sources = listOf(PlaybackSource.youtube, PlaybackSource.jio, PlaybackSource.archive))
         assertEquals(preferred.key, changed.key)
-        assertEquals("JIOSAAVN", resolver.resolve(video, changed.ceiling.audioQuality, sourcePolicy = changed).source)
+        assertEquals("YouTube Music", resolver.resolve(video, changed.ceiling.audioQuality, sourcePolicy = changed).source)
         val disabled = changed.copy(sources = changed.sources.map { if (it.kind == PlaybackSourceKind.JIOSAAVN) it.copy(enabled = false) else it })
         assertEquals("YouTube Music", resolver.resolve(video, disabled.ceiling.audioQuality, sourcePolicy = disabled).source)
-        assertTrue(searches >= 1)
+        assertEquals(0, searches)
     }
 
     @Test fun lowerQualitiesNeverContactJioArchiveOrCustomServersEvenWhenEnabled() = runBlocking {
@@ -128,7 +132,7 @@ class PlaybackSourcePreferenceTest {
         OtherSettingsPreferences.savePlaybackSources(app, sources.reversed())
         withTimeout(3000) { while (OtherSettingsPreferences.loadPlaybackSources(app) != PlaybackSource.ordered(sources.reversed())) delay(10) }
         assertEquals(PlaybackSource.ordered(sources.reversed()), OtherSettingsPreferences.playbackIntegrations(app).sources)
-        assertTrue(OtherSettingsPreferences.playbackIntegrations(app).sources.last().enabled)
+        assertFalse(OtherSettingsPreferences.playbackIntegrations(app).sources.last().enabled)
     }
     @Test fun legacyOrderAndFlagsMigrateWithoutDroppingTheConfiguredServer() = runBlocking {
         val app = ApplicationProvider.getApplicationContext<Context>()
@@ -146,7 +150,7 @@ class PlaybackSourcePreferenceTest {
         assertTrue(migrated.first().enabled)
         assertEquals(listOf(PlaybackSourceKind.ADDON, PlaybackSourceKind.INTERNET_ARCHIVE,
             PlaybackSourceKind.JIOSAAVN, PlaybackSourceKind.YOUTUBE), migrated.map { it.kind })
-        assertTrue(migrated.single { it.kind == PlaybackSourceKind.YOUTUBE }.enabled)
+        assertFalse(migrated.single { it.kind == PlaybackSourceKind.YOUTUBE }.enabled)
         PlaybackSourcesPreferences.save(app, migrated)
         withTimeout(3000) { while (withContext(Dispatchers.IO) {
             app.getSharedPreferences("xtreme_playback_sources_prefs", 0).getString("sources_v2", null)
@@ -171,7 +175,7 @@ class PlaybackSourcePreferenceTest {
         assertTrue(saved.filter { it.kind == PlaybackSourceKind.ADDON }.none { it.enabled })
     }
 
-    @Test fun onlyAddonRowsCanReorderAndYoutubeCannotBeDisabledThroughPreferences() = runBlocking {
+    @Test fun onlyAddonRowsCanReorderAndEveryProviderCanBeDisabled() = runBlocking {
         val app = ApplicationProvider.getApplicationContext<Context>()
         val first = custom("https://first.example"); val second = custom("https://second.example")
         val initial = listOf(first, second) + PlaybackSource.builtIns
@@ -187,7 +191,7 @@ class PlaybackSourcePreferenceTest {
         PlaybackSourcesPreferences.setSourceEnabled(app, first.id, false)
         withTimeout(3000) { while (PlaybackSourcesPreferences.load(app).single { it.id == first.id }.enabled) delay(10) }
         assertEquals(reordered.map { it.id }, PlaybackSourcesPreferences.load(app).map { it.id })
-        assertTrue(PlaybackSourcesPreferences.load(app).last().enabled)
+        assertFalse(PlaybackSourcesPreferences.load(app).last().enabled)
         PlaybackSourcesPreferences.reorderAddons(app, listOf(first.id, PlaybackSource.youtube.id, "removed-server"))
         withTimeout(3000) { while (PlaybackSourcesPreferences.load(app).firstOrNull()?.id != first.id) delay(10) }
         val afterDrop = PlaybackSourcesPreferences.load(app)

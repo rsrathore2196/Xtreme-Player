@@ -33,7 +33,8 @@ object PlaybackSourcesPreferences {
     fun snapshot(context: Context): List<PlaybackSource> {
         val raw = prefs(context).getString(KEY_CONFIG, null)
         val value = memory.get()
-        return value.sources.takeIf { value.key == raw }.orEmpty()
+        return if (value.key == raw) value.sources else
+            if (raw != null) PlaybackSource.ordered(emptyList()) else emptyList()
     }
 
     private fun legacy(context: Context, preferences: SharedPreferences): List<PlaybackSource> {
@@ -47,36 +48,49 @@ object PlaybackSourcesPreferences {
                 preferences.getBoolean("source_enabled_addon", old.addonEnabled), url)
         }
         val ids = order?.split(',')?.map(String::trim).orEmpty()
-        val builtin = PlaybackSource.builtIns.map { it.copy(enabled = preferences.getBoolean("source_enabled_${it.id}", true)) }
+        val builtin = PlaybackSource.builtIns.map { it.copy(enabled = preferences.getBoolean("source_enabled_${it.id}", it.id in ids)) }
         val available = builtin + listOfNotNull(custom)
         return PlaybackSource.ordered(ids.mapNotNull { id -> if (id == ID_ADDON) custom else available.find { it.id == id } } + available)
     }
 
-    suspend fun load(context: Context): List<PlaybackSource> = withContext(AppDispatchers.Io) {
+    suspend fun load(context: Context): List<PlaybackSource> = com.example.performance.BackgroundWorkCoordinator.finishBoundedBatch {
+        readCurrent(context)
+    }
+
+    // Finish this small settings transaction before yielding: an optional reader
+    // must never park with the lock needed by a foreground playback request.
+    private suspend fun readCurrent(context: Context): List<PlaybackSource> = withContext(AppDispatchers.Io) {
         reads.withLock {
             val preferences = prefs(context)
-            val raw = preferences.getString(KEY_CONFIG, null)
-            if (raw == null) return@withLock legacy(context, preferences).also { memory.set(Snapshot(null, it)) }
-            memory.get().takeIf { it.key == raw }?.let { return@withLock it.sources }
-            val parsed = withContext(AppDispatchers.CpuBounded) {
-                runCatching {
-                    val array = JSONArray(raw)
-                    (0 until minOf(array.length(), 19)).mapNotNull { index ->
-                        val row = array.optJSONObject(index) ?: return@mapNotNull null
-                        val kind = PlaybackSourceKind.entries.firstOrNull { it.name == row.optString("kind") } ?: return@mapNotNull null
-                        if (kind != PlaybackSourceKind.ADDON) PlaybackSource.builtIns.first { it.kind == kind }
-                            .copy(enabled = row.optBoolean("enabled", true))
-                        else {
-                            val url = runCatching { com.example.data.remote.StreamingAddons.normalize(row.optString("url")) }
-                                .getOrNull() ?: return@mapNotNull null
-                            PlaybackSource(PlaybackSource.addonId(url), kind, row.optString("name").take(100).ifBlank { "Custom server" },
-                                row.optBoolean("enabled", false), url)
-                        }
-                    }.let(PlaybackSource::ordered)
-                }.getOrElse { legacy(context, preferences) }
+            var loaded: Snapshot? = null
+            while (loaded == null) {
+                currentCoroutineContext().ensureActive()
+                val raw = preferences.getString(KEY_CONFIG, null)
+                val cached = memory.get().takeIf { raw != null && it.key == raw }
+                val parsed = if (raw == null) legacy(context, preferences) else cached?.sources
+                    ?: withContext(AppDispatchers.CpuBounded) {
+                        runCatching {
+                            val array = JSONArray(raw)
+                            (0 until minOf(array.length(), 19)).mapNotNull { index ->
+                                val row = array.optJSONObject(index) ?: return@mapNotNull null
+                                val kind = PlaybackSourceKind.entries.firstOrNull { it.name == row.optString("kind") } ?: return@mapNotNull null
+                                if (kind != PlaybackSourceKind.ADDON) {
+                                    val builtin = PlaybackSource.builtIns.first { it.kind == kind }
+                                    builtin.copy(id = row.optString("id").ifBlank { builtin.id },
+                                        name = row.optString("name").take(100).ifBlank { builtin.name },
+                                        enabled = row.optBoolean("enabled", false), baseUrl = row.optString("url"))
+                                } else {
+                                    val url = runCatching { com.example.data.remote.StreamingAddons.normalize(row.optString("url")) }
+                                        .getOrNull() ?: return@mapNotNull null
+                                    PlaybackSource(row.optString("id").ifBlank { PlaybackSource.addonId(url) }, kind,
+                                        row.optString("name").take(100).ifBlank { "Custom server" }, row.optBoolean("enabled", false), url)
+                                }
+                            }.let(PlaybackSource::ordered)
+                        }.getOrElse { withContext(AppDispatchers.Io) { PlaybackSource.ordered(legacy(context, preferences)) } }
+                    }
+                if (preferences.getString(KEY_CONFIG, null) == raw) loaded = Snapshot(raw, parsed)
             }
-            if (preferences.getString(KEY_CONFIG, null) == raw) memory.set(Snapshot(raw, parsed))
-            parsed
+            checkNotNull(loaded).also(memory::set).sources
         }
     }
 
@@ -84,11 +98,13 @@ object PlaybackSourcesPreferences {
         val snapshot = PlaybackSource.ordered(sources.filter { it.kind == PlaybackSourceKind.ADDON }.take(16) +
             sources.filter { it.kind != PlaybackSourceKind.ADDON })
         val raw = withContext(AppDispatchers.CpuBounded) { JSONArray().apply { snapshot.forEach { source ->
-            put(JSONObject().put("kind", source.kind.name).put("name", source.name)
+            put(JSONObject().put("id", source.id).put("kind", source.kind.name).put("name", source.name)
                 .put("enabled", source.enabled).put("url", source.baseUrl))
         } }.toString() }
-        memory.set(Snapshot(raw, snapshot))
-        prefs(context).edit().putString(KEY_CONFIG, raw).apply()
+        reads.withLock {
+            memory.set(Snapshot(raw, snapshot))
+            prefs(context).edit().putString(KEY_CONFIG, raw).apply()
+        }
     }
     fun save(context: Context, sources: List<PlaybackSource>) {
         val app = context.applicationContext
@@ -103,7 +119,7 @@ object PlaybackSourcesPreferences {
         } }
     }
     fun setSourceEnabled(context: Context, sourceId: String, enabled: Boolean) = mutate(context) { sources ->
-        sources.map { if (it.id == sourceId && it.kind != PlaybackSourceKind.YOUTUBE) it.copy(enabled = enabled) else it }
+        sources.map { if (it.id == sourceId) it.copy(enabled = enabled) else it }
     }
     fun swapSources(context: Context, fromIndex: Int, toIndex: Int) = mutate(context) { sources ->
         sources.toMutableList().apply {
@@ -158,18 +174,19 @@ object PlaybackSourcesPreferences {
             }
             val allowed = source.available(ceiling)
             SourceItem(source.id, source.name, when (source.kind) {
-                PlaybackSourceKind.YOUTUBE -> "Lossy • Full catalogue • Radio • Safety fallback"
+                PlaybackSourceKind.YOUTUBE -> "Lossy • Full catalogue • Radio"
                 PlaybackSourceKind.JIOSAAVN -> "Verified recording matches • AAC up to 320 kbps"
                 PlaybackSourceKind.INTERNET_ARCHIVE -> "Verified, authorized lossless recordings"
                 PlaybackSourceKind.ADDON -> "Custom streaming server"
             }, source.kind in setOf(PlaybackSourceKind.ADDON, PlaybackSourceKind.INTERNET_ARCHIVE), type,
-                source.enabled, allowed, isAlwaysOn = source.kind == PlaybackSourceKind.YOUTUBE,
+                source.enabled, allowed,
                 qualityRequirementText = if (allowed) null else
                     if (source.kind == PlaybackSourceKind.JIOSAAVN) "Requires High or Maximum/Lossless"
                     else "Requires Maximum/Lossless", url = source.baseUrl)
         }
     }
-    fun getActiveSourceName(context: Context): String = getSources(context).firstOrNull { it.isEffectiveActive }?.name ?: "YouTube Music"
+    fun getActiveSourceName(context: Context): String = NetworkQualityMonitor.getInstance(context).sourcePolicy.value
+        .playbackSources.firstOrNull()?.name ?: "No enabled source"
     fun observeSources(context: Context): Flow<List<SourceItem>> = combine(
         OtherSettingsPreferences.observePlaybackIntegrations(context), NetworkQualityMonitor.getInstance(context).activeQualityCeiling
     ) { _, _ -> getSources(context) }.distinctUntilChanged().flowOn(AppDispatchers.Io)

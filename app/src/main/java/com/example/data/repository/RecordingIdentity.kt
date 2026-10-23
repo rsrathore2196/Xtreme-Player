@@ -22,9 +22,9 @@ internal object RecordingIdentity {
         StreamResolver.extractCleanTitle(track.title, track.artist).replace(featured, ""))
 
     fun artistNames(track: MusicTrack): List<String> {
-        val credits = track.artist.takeUnless {
+        val credits = track.primaryArtists.takeIf { it.isNotEmpty() }?.joinToString(", ") ?: track.artist.takeUnless {
             CatalogNames.normalize(StreamResolver.extractCleanArtist(it)) in unknown
-        } ?: track.singers
+        }.orEmpty()
         val feature = featured.find(track.title)?.groupValues?.get(1).orEmpty()
         return (artistSeparators.split(credits) + artistSeparators.split(feature))
             .map { CatalogNames.normalize(StreamResolver.extractCleanArtist(it)) }
@@ -119,6 +119,27 @@ internal object RecordingIdentity {
             (if (exactArtist) 35 else if (closeArtist) 25 else 0) +
             (if (timed) 20 - (delta / 1_000L).toInt() else 0) +
             (if (a.album != null && a.album == b.album) 5 else 0)
+    }
+
+    private val indic = Regex("[\u0900-\u097f\u0a00-\u0a7f]")
+    @androidx.annotation.RequiresApi(29)
+    private object IndicRomanizer {
+        private val converter = android.icu.text.Transliterator.getInstance("Any-Latin; NFD; [:Nonspacing Mark:] Remove; NFC")
+        fun convert(track: MusicTrack): MusicTrack = synchronized(converter) {
+            track.copy(title = converter.transliterate(track.title), artist = converter.transliterate(track.artist),
+                primaryArtists = track.primaryArtists.map { converter.transliterate(it) })
+        }
+    }
+
+    /** Alternate spelling is evidence only with matching versions/artists and a tight duration. */
+    fun providerConfidence(requested: MusicTrack, candidate: MusicTrack, durationToleranceMs: Long? = null): Int? {
+        fallbackConfidence(requested, candidate, durationToleranceMs)?.let { return it }
+        if (android.os.Build.VERSION.SDK_INT < 29 ||
+            !indic.containsMatchIn(requested.title + requested.artist + requested.primaryArtists.joinToString() +
+                candidate.title + candidate.artist + candidate.primaryArtists.joinToString())) return null
+        val first = IndicRomanizer.convert(requested)
+        val second = IndicRomanizer.convert(candidate)
+        return fallbackConfidence(first, second, durationToleranceMs = minOf(durationToleranceMs ?: 3_000L, 3_000L), requireDuration = true)
     }
 
     /** Archive file tags may be sparse; require independent recording evidence, not upload names.

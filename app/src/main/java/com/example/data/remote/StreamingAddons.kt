@@ -37,7 +37,7 @@ import kotlin.coroutines.resumeWithException
 object StreamingAddons {
     data class Manifest(val name: String, val baseUrl: String)
     private data class Transport(val headers: Map<String, String>, val mime: String?, val bitrate: Int,
-        val expires: Long, val headerScope: String?, val sourceId: String)
+        val expires: Long, val headerScope: String?, val sourceId: String, val baseUrl: String)
     private val transports = ConcurrentHashMap<String, Transport>()
     private data class Cached(val track: MusicTrack?, val expires: Long)
     private val resolutions = ConcurrentHashMap<String, Cached>()
@@ -148,8 +148,7 @@ object StreamingAddons {
     }
     private suspend fun activeAddons(context: Context, policy: PlaybackSourcePolicy): List<PlaybackSource> {
         OtherSettingsPreferences.loadPlaybackSources(context)
-        val configured = if (policy.sources.isEmpty()) OtherSettingsPreferences.playbackIntegrations(context)
-            .sourceList(policy.ceiling) else policy.configuredSources
+        val configured = policy.configuredSources
         return configured.filter { it.kind == PlaybackSourceKind.ADDON && it.enabled &&
             it.available(policy.ceiling) && it.baseUrl.isNotBlank() }
     }
@@ -212,7 +211,7 @@ object StreamingAddons {
                 val candidates = if (selected != null) listOf(track) else {
                     val found = searchPreferred(base, source.name, "${track.title} ${track.artist}", policy.ceiling)
                     withContext(AppDispatchers.CpuBounded) { found.mapNotNull { candidate ->
-                        RecordingIdentity.fallbackConfidence(track, candidate)?.let { candidate to it }
+                        RecordingIdentity.providerConfidence(track, candidate)?.let { candidate to it }
                     }.sortedByDescending { it.second }.take(2).map { it.first } }
                 }
                 val tiers = listOf("hi_res", "lossless", "high")
@@ -222,7 +221,7 @@ object StreamingAddons {
                         .addQueryParameter("quality", tier).addQueryParameter("atmos", "none").build()
                     val body = try { get(url) } catch (e: CancellationException) { throw e }
                         catch (_: IOException) { continue }
-                    val resolved = withContext(AppDispatchers.CpuBounded) { parseStream(body, base, track, candidate, policy) }
+                    val resolved = withContext(AppDispatchers.CpuBounded) { parseStream(body, base, track, candidate, policy, source.id) }
                         ?: continue
                     if (!stillEnabled(context, source, policy)) return@withTimeoutOrNull null
                     if (resolved.audioUrl !in rejected) return@withTimeoutOrNull resolved
@@ -233,7 +232,7 @@ object StreamingAddons {
         catch (_: Exception) { null }
     }
     internal fun parseStream(body: String, base: String, requested: MusicTrack, candidate: MusicTrack,
-        policy: PlaybackSourcePolicy): MusicTrack? {
+        policy: PlaybackSourcePolicy, sourceId: String = PlaybackSource.addonId(base)): MusicTrack? {
         if (!policy.maximum) return null
         val root = JSONObject(body)
         val value = root.optJSONObject("stream") ?: root.optJSONObject("data") ?: root
@@ -279,29 +278,39 @@ object StreamingAddons {
         if (transports.size >= 128) transports.entries.minByOrNull { it.value.expires }?.let { transports.remove(it.key) }
         val scope = stream.toHttpUrlOrNull()?.toString() ?: Regex("<BaseURL[^>]*>\\s*(https?://[^<]+)\\s*</BaseURL>")
             .find(inlineXml)?.groupValues?.get(1)?.trim()?.replace("&amp;", "&")?.toHttpUrlOrNull()?.toString()
-        transports[stream] = Transport(headers, mime, bitrate, minOf(expires - 5_000L, now + 180_000L), scope, PlaybackSource.addonId(base))
+        transports[stream] = Transport(headers, mime, bitrate, minOf(expires - 5_000L, now + 180_000L), scope, sourceId, base)
         return requested.copy(audioUrl = stream, source = candidate.source, bitrateKbps = bitrate,
             isLossless = codec in setOf("flac", "alac", "pcm", "wav"), qualityBadge = "Custom stream")
     }
     fun isVerified(url: String, policy: PlaybackSourcePolicy): Boolean = transports[url]?.let {
-        it.expires > System.currentTimeMillis() && policy.maximum && (policy.sources.isEmpty() ||
-            policy.playbackSources.any { source -> source.kind == PlaybackSourceKind.ADDON && source.id == it.sourceId })
+        it.expires > System.currentTimeMillis() && policy.maximum &&
+            policy.playbackSources.any { source -> source.kind == PlaybackSourceKind.ADDON && source.id == it.sourceId && source.baseUrl == it.baseUrl }
     } == true
-    fun headers(url: String): Map<String, String> {
-        // Resolution TTLs forbid reuse for a NEW selection. An existing HLS/DASH
-        // session still needs its origin-scoped headers after that TTL elapses.
-        // The registry stays bounded; URL expiry is enforced separately above.
-        transports[url]?.let { return it.headers }
-        val target = url.toHttpUrlOrNull() ?: return emptyMap()
-        // A manifest's segment headers stay within the same origin and directory;
-        // never forward a custom server's Authorization/Cookie to another host.
+    // An active manifest can outlive its new-selection TTL. Keep origin-scoped
+    // loading permission separate from reusable URL freshness.
+    fun hasRegisteredTransport(url: String): Boolean = transportFor(url) != null
+    fun allowsRegisteredTransport(url: String, policy: PlaybackSourcePolicy): Boolean = transportFor(url)?.let { transport ->
+        policy.maximum && policy.playbackSources.any { it.kind == PlaybackSourceKind.ADDON &&
+            it.id == transport.sourceId && it.baseUrl == transport.baseUrl }
+    } == true
+    private fun transportFor(url: String): Transport? {
+        transports[url]?.let { return it }
+        val target = url.toHttpUrlOrNull() ?: return null
         return transports.entries.firstOrNull { (_, transport) ->
             val origin = transport.headerScope?.toHttpUrlOrNull()
             transport.mime in setOf(androidx.media3.common.MimeTypes.APPLICATION_MPD,
                 androidx.media3.common.MimeTypes.APPLICATION_M3U8) && origin != null &&
                 origin.scheme == target.scheme && origin.host == target.host && origin.port == target.port &&
                 target.encodedPath.startsWith(origin.encodedPath.substringBeforeLast('/') + "/")
-        }?.value?.headers.orEmpty()
+        }?.value
+    }
+    fun headers(url: String): Map<String, String> {
+        // Resolution TTLs forbid reuse for a NEW selection. An existing HLS/DASH
+        // session still needs its origin-scoped headers after that TTL elapses.
+        // The registry stays bounded; URL expiry is enforced separately above.
+        // A manifest's segment headers stay within the same origin and directory;
+        // never forward a custom server's Authorization/Cookie to another host.
+        return transportFor(url)?.headers.orEmpty()
     }
     fun mime(url: String): String? = transports[url]?.mime
 }

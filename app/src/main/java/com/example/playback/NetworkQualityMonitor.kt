@@ -87,12 +87,12 @@ class NetworkQualityMonitor private constructor(context: Context) {
     val audioEnhancer = enhancerSelection.map { it.enabled }.distinctUntilChanged()
         .stateIn(scope, SharingStarted.Eagerly, false)
     val sourcePolicy = combine(activeQualityCeiling, enhancerSelection,
-        com.example.data.local.OtherSettingsPreferences.observePlaybackIntegrations(app)) { quality, enhancer, integrations ->
-        PlaybackSourcePolicy(quality.effectiveCeiling, enhancer.enabled,
-            quality.connectionType != NetworkConnectionType.OFFLINE, integrations.sourceList(quality.effectiveCeiling),
-            returnToYouTube = enhancer.returnToYouTube, requestRevision = enhancer.revision, requestTrackId = enhancer.trackId)
+        com.example.data.local.OtherSettingsPreferences.observePlaybackIntegrations(app)) { _, _, _ ->
+        // The upstream StateFlows start with placeholders. Read the current IO-backed
+        // snapshot after source loading so a warm session is never downgraded by them.
+        sourcePolicySnapshot()
     }.distinctUntilChanged().stateIn(scope, SharingStarted.Eagerly,
-        PlaybackSourcePolicy(latest.effectiveCeiling, online = false))
+        PlaybackSourcePolicy(latest.effectiveCeiling, online = false, sources = emptyList(), ready = false))
     fun sourcePolicySnapshot(): PlaybackSourcePolicy = snapshot().let {
         val selection = AudioQualityPreferences.enhancerSelection(app)
         PlaybackSourcePolicy(it.effectiveCeiling, selection.enabled,

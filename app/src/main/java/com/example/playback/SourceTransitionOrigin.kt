@@ -19,9 +19,9 @@ internal data class SourceTransitionOrigin(val track: MusicTrack, val sourceId: 
         fun sourceId(trackId: String, uri: Uri, policy: PlaybackSourcePolicy): String? {
             val host = uri.host.orEmpty()
             return when {
-                YouTubeAudioStreamService.isYouTubeAudio(trackId, uri.toString()) -> PlaybackSource.youtube.id
-                host == "saavncdn.com" || host.endsWith(".saavncdn.com") -> PlaybackSource.jio.id
-                host == "archive.org" || host.endsWith(".archive.org") -> PlaybackSource.archive.id
+                YouTubeAudioStreamService.isYouTubeAudio(trackId, uri.toString()) -> policy.sourceId(PlaybackSourceKind.YOUTUBE)
+                host == "saavncdn.com" || host.endsWith(".saavncdn.com") -> policy.sourceId(PlaybackSourceKind.JIOSAAVN)
+                host == "archive.org" || host.endsWith(".archive.org") -> policy.sourceId(PlaybackSourceKind.INTERNET_ARCHIVE)
                 else -> policy.playbackSources.firstOrNull { it.kind == PlaybackSourceKind.ADDON &&
                     StreamingAddons.fromSource(uri.toString(), it.id) }?.id
             }

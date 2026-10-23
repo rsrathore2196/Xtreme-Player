@@ -1,6 +1,7 @@
 package com.example.data.remote
 
 import com.example.performance.AppDispatchers
+import com.example.playback.PlaybackDiagnostics
 
 import android.net.Uri
 import androidx.media3.common.C
@@ -181,11 +182,41 @@ object YouTubeAudioStreamService {
                     it.encodedPath.startsWith("/api/manifest/")))
     } == true
     fun isYouTubeAudio(trackId: String, url: String) = isPlaybackUri(url) || isMediaUrl(url) ||
+        runCatching { pageVideoId(Uri.parse(url)) != null }.getOrDefault(false) ||
         trackId.startsWith("yt_") && (url.isBlank() || url.startsWith("yt_"))
     fun isPlaybackUri(url: String) = url.startsWith("xtreme-youtube://audio/") || url.startsWith("xtreme-sabr://audio/")
+    /** A different ceiling alone does not require restarting identical audio bytes. */
+    internal fun sameRepresentation(first: String, second: String): Boolean {
+        if (!first.startsWith("xtreme-youtube://") || !second.startsWith("xtreme-youtube://")) return false
+        return runCatching {
+            val a = Uri.parse(first); val b = Uri.parse(second)
+            val itag = a.getQueryParameter("itag")?.toIntOrNull()?.takeIf { it > 0 } ?: return@runCatching false
+            val length = a.getQueryParameter("length")?.toLongOrNull()?.takeIf { it > 0 } ?: return@runCatching false
+            videoIdFromUri(a) != null && videoIdFromUri(a) == videoIdFromUri(b) &&
+                itag == b.getQueryParameter("itag")?.toIntOrNull() && length == b.getQueryParameter("length")?.toLongOrNull() &&
+                a.path == b.path && a.getQueryParameter("session") == b.getQueryParameter("session")
+        }.getOrDefault(false)
+    }
     fun videoIdFromUri(uri: Uri): String? = uri.takeIf {
         it.scheme in setOf("xtreme-youtube", "xtreme-sabr") && it.host == "audio"
     }?.pathSegments?.firstOrNull()?.takeIf(::isVideoId)
+    /** Catalog IDs and shared/legacy page URLs are inputs, never playable URLs. */
+    fun videoIdFromReference(trackId: String, url: String): String? =
+        trackId.removePrefix("yt_").takeIf { trackId.startsWith("yt_") && isVideoId(it) }
+            ?: runCatching { Uri.parse(url).let { videoIdFromUri(it) ?: pageVideoId(it) } }.getOrNull()
+
+    private fun pageVideoId(uri: Uri): String? {
+        if (uri.scheme !in setOf("https", "http")) return null
+        val host = uri.host.orEmpty().lowercase(java.util.Locale.ROOT)
+        val id = when {
+            host == "youtu.be" -> uri.pathSegments.firstOrNull()
+            host == "youtube.com" || host.endsWith(".youtube.com") ->
+                if (uri.pathSegments.firstOrNull() in setOf("shorts", "embed", "live")) uri.pathSegments.getOrNull(1)
+                else uri.getQueryParameter("v")
+            else -> null
+        }
+        return id?.takeIf(::isVideoId)
+    }
     /** Direct references use bits/s; SABR references persist kilobits/s. */
     fun bitrateCapFromUri(uri: Uri): Int? {
         if (videoIdFromUri(uri) == null) return null
@@ -358,6 +389,7 @@ object YouTubeAudioStreamService {
                                 }
                                     ?: return@transport null
                                 if (extracted.videoId != videoId || !isMediaUrl(extracted.audioUrl) || extracted.sabrBootstrap != null) {
+                                    failure = PlaybackDiagnostics.Failure(PlaybackDiagnostics.Reason.UNSUPPORTED_TRANSPORT, PlaybackDiagnostics.Stage.VALIDATION)
                                     excluded.add(extracted.profileId)
                                     return@repeat
                                 }
@@ -410,13 +442,22 @@ object YouTubeAudioStreamService {
                         }
                     }
                     if (hlsOnly != true) {
-                        val sabr = lookupSabr(videoId, quality, rejectedClients(videoId) + setOfNotNull(excludedClient), cap, requireOpus)
-                        cache.put(key, sabr)
-                        cache.put(videoId + ":" + cap + ":false" + if (requireOpus) ":opus" else "", sabr)
-                        return@lookup sabr
+                        try {
+                            val sabr = lookupSabr(videoId, quality, rejectedClients(videoId) + setOfNotNull(excludedClient), cap, requireOpus)
+                            cache.put(key, sabr)
+                            cache.put(videoId + ":" + cap + ":false" + if (requireOpus) ":opus" else "", sabr)
+                            return@lookup sabr
+                        } catch (cancelled: CancellationException) { throw cancelled }
+                        catch (error: Exception) {
+                            // An unavailable transport is not evidence that an earlier
+                            // network failure was a permanent absence of this recording.
+                            if (failure?.let(PlaybackDiagnostics::reason) !in setOf(PlaybackDiagnostics.Reason.NETWORK,
+                                    PlaybackDiagnostics.Reason.TIMEOUT)) failure = error
+                        }
                     }
-                    throw IOException("YouTube did not provide an accessible compatible audio stream", failure)
-                } ?: throw IOException("YouTube audio resolution timed out")
+                    throw PlaybackDiagnostics.Failure(failure?.let(PlaybackDiagnostics::reason) ?: PlaybackDiagnostics.Reason.NO_FORMAT,
+                        PlaybackDiagnostics.Stage.EXTRACTION)
+                } ?: throw PlaybackDiagnostics.Failure(PlaybackDiagnostics.Reason.TIMEOUT, PlaybackDiagnostics.Stage.EXTRACTION)
             }
         }
     }
@@ -452,7 +493,7 @@ object YouTubeAudioStreamService {
                 currentCoroutineContext().ensureActive()
                 val extracted = extractor.extract(videoId, hints, excludedClients = excluded,
                     audioQuality = YouTubeAudioFormatPolicy.quality(cap, attempt))
-                    ?: throw IOException("No anonymous SABR audio client is available for this recording")
+                    ?: throw PlaybackDiagnostics.Failure(PlaybackDiagnostics.Reason.NO_FORMAT, PlaybackDiagnostics.Stage.EXTRACTION)
                 excluded.add(extracted.profileId)
                 val bootstrap = extracted.sabrBootstrap ?: return@repeat
                 if (extracted.videoId != videoId || bootstrap.videoId != videoId ||
@@ -478,8 +519,8 @@ object YouTubeAudioStreamService {
                     return@withTimeoutOrNull stream
                 }
             }
-            throw IOException("YouTube did not provide a compatible SABR audio representation")
-        } ?: throw IOException("SABR audio resolution timed out")
+            throw PlaybackDiagnostics.Failure(PlaybackDiagnostics.Reason.NO_FORMAT, PlaybackDiagnostics.Stage.EXTRACTION)
+        } ?: throw PlaybackDiagnostics.Failure(PlaybackDiagnostics.Reason.TIMEOUT, PlaybackDiagnostics.Stage.EXTRACTION)
     }
 
     internal fun sabrChunks(stream: AudioStream, startMs: Long): Flow<SabrChunk> =

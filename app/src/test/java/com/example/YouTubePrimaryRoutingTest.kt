@@ -72,23 +72,23 @@ class YouTubePrimaryRoutingTest {
         }
     }
 
-    @Test fun enabledJioUsesItsFixedRankWithoutChangingOriginalCatalogOrArtwork() = runBlocking {
+    @Test fun highTriesYoutubeThenJioWithoutChangingCatalogOrArtwork() = runBlocking {
         val calls = mutableListOf<String>()
         val resolver = StreamResolver(searchYouTube = { error("Known video ID") },
             resolveYouTube = { _, _, _, _ -> calls += "youtube"; null },
             searchStandard = { _, _ -> calls += "jio"; listOf(original) })
         val result = resolver.resolve(video, AudioQuality.ULTRA_HD_320)
-        assertEquals(listOf("jio"), calls)
+        assertEquals(listOf("youtube", "jio"), calls)
         assertEquals(video.id, result.id); assertEquals(video.coverUrl, result.coverUrl)
         assertEquals("JIOSAAVN", result.source); assertEquals(320, result.bitrateKbps)
     }
 
-    @Test fun unavailableJioFallsBackToTheSameYoutubeCatalogRecording() = runBlocking {
+    @Test fun workingHighYoutubeDoesNotContactFallbackCatalogs() = runBlocking {
         val calls = mutableListOf<String>()
         val resolver = StreamResolver(searchStandard = { _, _ -> calls += "jio"; emptyList() },
             resolveYouTube = { track, _, _, cap -> calls += "youtube"; resolved(track, cap) })
         val result = resolver.resolve(video, AudioQuality.ULTRA_HD_320)
-        assertEquals("jio", calls.first()); assertEquals("youtube", calls.last())
+        assertEquals(listOf("youtube"), calls)
         assertEquals("YouTube Music", result.source)
         assertEquals(video.id, result.id); assertEquals(video.coverUrl, result.coverUrl)
     }

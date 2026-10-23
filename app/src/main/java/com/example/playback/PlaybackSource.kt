@@ -24,8 +24,8 @@ data class PlaybackSource(val id: String, val kind: PlaybackSourceKind, val name
         /** Only user-added servers have a user-defined order; built-in fallback ranks are fixed. */
         fun ordered(sources: List<PlaybackSource>): List<PlaybackSource> {
             val unique = sources.distinctBy { it.id }
-            return (unique + builtIns.filter { builtin -> unique.none { it.kind == builtin.kind } })
-                .map { if (it.kind == PlaybackSourceKind.YOUTUBE) youtube else it }
+            return (unique + builtIns.filter { builtin -> unique.none { it.kind == builtin.kind } }
+                .map { it.copy(enabled = false) })
                 .sortedBy { when (it.kind) {
                     PlaybackSourceKind.ADDON -> 0
                     PlaybackSourceKind.INTERNET_ARCHIVE -> 1

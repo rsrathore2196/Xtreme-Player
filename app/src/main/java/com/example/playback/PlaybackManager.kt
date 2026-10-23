@@ -127,6 +127,17 @@ class PlaybackManager(
             com.example.service.SabrSessionRegistry.controllerHandlesRecovery = value?.let { connected ->
                 { connected.applicationLooper == android.os.Looper.myLooper() && connected.isConnected }
             }
+            com.example.service.SabrSessionRegistry.requestSourceRecovery = value?.let { connected ->
+                { id: String, uri: String ->
+                    if (connected.applicationLooper != android.os.Looper.myLooper() || !connected.isConnected ||
+                        connected.currentMediaItem?.mediaId != id || connected.currentMediaItem?.playbackUri()?.toString() != uri) false
+                    else {
+                        if (youtubeQualityJob?.isActive != true) reconcileSourcePolicy(
+                            NetworkQualityMonitor.getInstance(context).sourcePolicy.value, force = true, failedUrl = uri)
+                        true
+                    }
+                }
+            }
         }
     private var controllerReady = CompletableDeferred<MediaController>()
     private val sessionRestored = CompletableDeferred<Unit>()
@@ -134,7 +145,10 @@ class PlaybackManager(
     private var progressTickerJob: Job? = null
     private var recoveryJob: Job? = null
     private var youtubeQualityJob: Job? = null
+    private var losslessDiscoveryJob: Job? = null
+    private var losslessDiscoveryKey: String? = null
     private var appliedSourcePolicyKey: String? = null
+    private var appliedQualityCeiling: AudioQualityCeiling? = null
     private var appliedEnhancer = false
     private var appliedSourceRequestRevision = 0L
     @Volatile private var enhancerOrigin: SourceTransitionOrigin? = null
@@ -358,7 +372,45 @@ class PlaybackManager(
 
     /** Cancel pending preparation. Active policy reconciliation owns any required downgrade. */
     private fun stopPendingLosslessUpgrade() {
+        losslessDiscoveryJob?.cancel()
+        losslessDiscoveryJob = null
         ++losslessRequestEpoch
+    }
+
+    /** Discovery owns no player mutations. The existing transition owner commits a verified result. */
+    private fun scheduleLosslessDiscovery(policy: PlaybackSourcePolicy) {
+        val player = controller ?: return
+        val track = _uiState.value.currentTrack ?: return
+        if (!policy.allowsArchive || policy.returnsToYouTube(track.id) || track.isLossless || !player.isPlaying ||
+            pendingSelectionId != null || youtubeQualityJob?.isActive == true || recoveryJob?.isActive == true ||
+            losslessFallback?.let { !it.activated } == true) return
+        val uri = player.currentMediaItem?.playbackUri()?.toString() ?: return
+        if (player.currentMediaItem?.mediaId != track.id || Uri.parse(uri).scheme in setOf("file", "content")) return
+        val key = "${track.id}:$uri:${policy.key}"
+        if (losslessDiscoveryKey == key) return
+        losslessDiscoveryJob?.cancel()
+        losslessDiscoveryKey = key
+        val generation = selectionGeneration
+        val epoch = losslessRequestEpoch
+        val repo = repository ?: return
+        val recording = if (track.durationMs <= 0L && player.duration > 0L) track.copy(durationMs = player.duration) else track
+        losslessDiscoveryJob = scope.launch {
+            try {
+                val candidate = com.example.performance.BackgroundWorkCoordinator.startup(
+                    com.example.performance.BackgroundWorkCoordinator.StartupPriority.DEFERRED, requireForeground = false,
+                    label = "Lossless recording discovery") { repo.findLosslessUpgrade(recording, automatic = true) }
+                if (candidate == null || epoch != losslessRequestEpoch || !ownsSelection(track.id, generation) ||
+                    !player.isPlaying || recoveryJob?.isActive == true || youtubeQualityJob?.isActive == true ||
+                    player.currentMediaItem?.playbackUri()?.toString() != uri ||
+                    networkQualityMonitor?.sourcePolicy?.value?.key != policy.key) return@launch
+                // Release discovery's admission before the prebuffer requests its own slot.
+                losslessDiscoveryJob = null
+                reconcileSourcePolicy(policy, force = true, preparedSource = candidate, automatic = true)
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) {
+                LosslessDiagnostics.record(track.id, LosslessDiagnostics.Reason.PREBUFFER_FAILED, "background-discovery")
+            }
+        }
     }
 
     private fun policyAllows(track: MusicTrack, policy: PlaybackSourcePolicy): Boolean {
@@ -366,12 +418,18 @@ class PlaybackManager(
     }
 
     /** Same selection/epoch/fallback owner as Archive upgrades; never a second player. */
-    private fun reconcileSourcePolicy(policy: PlaybackSourcePolicy, force: Boolean = false, failedUrl: String? = null) {
+    private fun reconcileSourcePolicy(policy: PlaybackSourcePolicy, force: Boolean = false, failedUrl: String? = null,
+        preparedSource: MusicTrack? = null, automatic: Boolean = false) {
+        if (!policy.ready) return
         if (!force && appliedSourcePolicyKey == policy.key) return
+        val qualityRaised = appliedQualityCeiling?.let { policy.ceiling.maxBitrateBps > it.maxBitrateBps } == true
+        appliedQualityCeiling = policy.ceiling
         val enhancerChangedToOn = policy.enhancer && !appliedEnhancer
         appliedEnhancer = policy.enhancer
         appliedSourcePolicyKey = policy.key
         youtubeQualityJob?.cancel()
+        losslessDiscoveryJob?.cancel()
+        losslessDiscoveryJob = null
         if (pendingSelectionId != null && playResolutionJob?.isActive == true) {
             val restart = pendingPolicyRestart ?: return
             playResolutionJob?.cancel()
@@ -427,16 +485,17 @@ class PlaybackManager(
         youtubeQualityJob = scope.launch {
             AudioSignalPath.sourceRequest(original.id, true, "controller:$epoch")
             try {
-                delay(180L) // Coalesce rapid settings changes, never player/touch commands.
+                if (!automatic) delay(180L) // Coalesce settings changes, never player/touch commands.
                 if (!owns()) return@launch
                 val isYoutube = com.example.data.remote.YouTubeAudioStreamService.isYouTubeAudio(original.id, original.audioUrl)
-                if (!restoring && !enhancerTurnedOn && failedUrl == null && policyAllows(original, policy) && policy.isPreferred(original) &&
+                if (!restoring && !enhancerTurnedOn && !qualityRaised && failedUrl == null && policyAllows(original, policy) && policy.isPreferred(original) &&
                     isYoutube && !policy.maximum) return@launch
-                val resolved = withContext(AppDispatchers.Io) { repo.resolvePlayableTrack(if (restoring && !returnToYouTube) origin!!.track else original,
+                val resolved = preparedSource ?: withContext(AppDispatchers.Io) { repo.resolvePlayableTrack(if (restoring && !returnToYouTube) origin!!.track else original,
                     forceRefresh = failedUrl != null, failedUrl = failedUrl,
-                    preferredSourceId = if (returnToYouTube) PlaybackSource.youtube.id else origin?.sourceId.takeIf { restoring }, manualUpgrade = enhancerTurnedOn) }
+                    preferredSourceId = if (returnToYouTube) policy.sourceId(PlaybackSourceKind.YOUTUBE) else origin?.sourceId.takeIf { restoring }, manualUpgrade = enhancerTurnedOn) }
                 if (!owns() || player.currentMediaItem?.playbackUri()?.toString() != originalUri) return@launch
-                if (resolved.audioUrl == originalUri) {
+                if (resolved.audioUrl == originalUri || failedUrl == null && originalUri != null &&
+                    com.example.data.remote.YouTubeAudioStreamService.sameRepresentation(originalUri, resolved.audioUrl)) {
                     if (restoring) {
                         enhancerOrigin = null
                         val item = player.currentMediaItem ?: return@launch
@@ -453,14 +512,27 @@ class PlaybackManager(
                 }
                 val transport = original.copy(audioUrl = resolved.audioUrl, source = resolved.source,
                     bitrateKbps = resolved.bitrateKbps, qualityBadge = resolved.qualityBadge, isLossless = resolved.isLossless)
-                val media = transport.toMediaItem().forSourceTransition()
+                val media = transport.toMediaItem(preparedPolicy = policy).forSourceTransition()
+                val sameCode = withContext(AppDispatchers.CpuBounded) {
+                    com.example.data.repository.RecordingIdentity.isrc(original.isrc)?.let {
+                        it == com.example.data.repository.RecordingIdentity.isrc(resolved.isrc)
+                    } == true
+                }
                 val warmed = if (resolved.isLossless) LosslessStreamPrebuffer.prepare(context, media, original.durationMs,
                     currentPosition = { losslessRecoveryPosition(_playbackPosition.value, player.currentPosition, true) },
-                    stillCurrent = ::owns) else null
+                    stillCurrent = ::owns, durationToleranceMs = if (sameCode) 8_000L else 5_000L,
+                    allowUnknownDuration = sameCode, automatic = automatic) else null
                 val prepared = if (resolved.isLossless) warmed?.covers(
                     losslessRecoveryPosition(_playbackPosition.value, player.currentPosition, true)) == true
                     else LosslessStreamPrebuffer.warmSource(context, media)
-                if (!prepared || !owns()) throw java.io.IOException("Source preparation failed")
+                if (!owns()) return@launch
+                if (!prepared) {
+                    if (resolved.isLossless) {
+                        LosslessDiagnostics.prebufferRejected(original.id, warmed != null)
+                        withContext(AppDispatchers.Io) { repo.rejectLosslessUpgrade(original, resolved.audioUrl) }
+                    }
+                    throw PlaybackDiagnostics.Failure(PlaybackDiagnostics.Reason.NO_FORMAT, PlaybackDiagnostics.Stage.PREBUFFER)
+                }
                 val index = player.currentMediaItemIndex
                 if (index !in activeQueue.indices || player.currentMediaItem?.playbackUri()?.toString() != originalUri) return@launch
                 val position = losslessRecoveryPosition(_playbackPosition.value, player.currentPosition, true)
@@ -500,19 +572,33 @@ class PlaybackManager(
                     !player.playWhenReady && player.playerError == null) return@launch
                 if (!activated && owns()) {
                     LosslessDiagnostics.record(original.id, LosslessDiagnostics.Reason.ACTIVATION_FAILED, "source-policy")
+                    withContext(AppDispatchers.Io) {
+                        PlaybackDiagnostics.record(original.id, policy,
+                            policy.configuredSources.firstOrNull { it.id == SourceTransitionOrigin.sourceId(original.id, Uri.parse(replacement.audioUrl), policy) }?.kind,
+                            PlaybackDiagnostics.Stage.ACTIVATION, PlaybackDiagnostics.Reason.TIMEOUT)
+                        if (resolved.isLossless) repo.rejectLosslessUpgrade(original, resolved.audioUrl)
+                    }
+                    if (!owns()) return@launch
                     restoreLosslessFallback(player, original)
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) {
+            catch (error: Exception) {
                 if (!owns()) return@launch
-                LosslessDiagnostics.record(original.id, LosslessDiagnostics.Reason.POLICY_SOURCE_UNAVAILABLE, "source-policy")
+                if (LosslessDiagnostics.last(original.id)?.stage != "prebuffer")
+                    LosslessDiagnostics.record(original.id, LosslessDiagnostics.Reason.POLICY_SOURCE_UNAVAILABLE, "source-policy")
                 if (losslessFallback?.requestEpoch == epoch) restoreLosslessFallback(player, original)
                 else if (failedUrl != null || !policyAllows(original, policy)) {
                     player.pause(); player.stop()
-                    showPlaybackFailure("This recording is unavailable at the selected streaming quality.")
+                    showPlaybackFailure((error as? TrackUnavailableException)?.message
+                        ?: "This recording is unavailable at the selected streaming quality.")
                 }
             } finally {
                 AudioSignalPath.sourceRequest(original.id, false, "controller:$epoch")
+                // A fresh discovery uses the same owner, and only enters after the current job releases it.
+                if (owns() && preparedSource == null) {
+                    youtubeQualityJob = null
+                    scheduleLosslessDiscovery(policy)
+                }
             }
         }
     }
@@ -753,6 +839,7 @@ class PlaybackManager(
                     networkQualityMonitor?.sourcePolicy?.value?.let { policy ->
                         if (current != null && losslessFallback == null && !policyAllows(current, policy))
                             reconcileSourcePolicy(policy, force = true)
+                        else scheduleLosslessDiscovery(policy)
                     }
                     if (current != null && losslessFallback == null) {
                         scope.launch(AppDispatchers.Io) {
@@ -993,6 +1080,15 @@ class PlaybackManager(
             }
 
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                losslessDiscoveryJob?.cancel()
+                losslessDiscoveryJob = null
+                losslessDiscoveryKey = null
+                val failedItem = player.currentMediaItem
+                val failedAddress = failedItem?.playbackUri()?.toString().orEmpty()
+                val failedPolicy = networkQualityMonitor?.sourcePolicy?.value
+                if (failedItem != null && failedPolicy != null) scope.launch(AppDispatchers.Io) {
+                    PlaybackDiagnostics.playerFailure(failedItem.mediaId, failedPolicy, failedAddress, error)
+                }
                 if (pendingSelectionId != null) return
                 val player = controller ?: run {
                     showPlaybackFailure("Player not initialized")
@@ -1005,6 +1101,18 @@ class PlaybackManager(
                 // An old player's error must not supersede a newer pending selection.
                 val curMediaId = player.currentMediaItem?.mediaId
                 if (!curMediaId.isNullOrBlank() && curMediaId != current.id) return
+                if (current.isLossless && losslessFallback == null && !error.isAudioPipelineFailure() &&
+                    Uri.parse(current.audioUrl).scheme !in setOf("file", "content")) {
+                    val reason = when (error.errorCode) {
+                        androidx.media3.common.PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED -> LosslessDiagnostics.Reason.DECODER_UNSUPPORTED
+                        androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT -> LosslessDiagnostics.Reason.NETWORK_TIMEOUT
+                        else -> LosslessDiagnostics.Reason.ACTIVATION_FAILED
+                    }
+                    scope.launch(AppDispatchers.Io) {
+                        LosslessDiagnostics.record(current.id, reason, "player-error")
+                        repository?.rejectLosslessUpgrade(current, current.audioUrl)
+                    }
+                }
                 if (error.isAudioPipelineFailure()) {
                     // Re-extracting another provider cannot repair an AudioTrack
                     // or DSP failure and would unnecessarily change this recording.
@@ -1050,7 +1158,7 @@ class PlaybackManager(
                     failedUri.getQueryParameter("itag") == null
                 val token = recoveryGuard.claim(current.id, initialSelection = initialTransportSelection)
                 if (repo == null || token == null) {
-                    if (!advanceFailedYouTubeFallback(player)) showPlaybackFailure("Unable to play '${current.title}'. Please try again.")
+                    showPlaybackFailure("Unable to play '${current.title}'. Please try again.")
                     return
                 }
                 val failedUrl = failedUri?.toString() ?: current.audioUrl
@@ -1073,7 +1181,7 @@ class PlaybackManager(
                             val resolved = if (next != null) {
                                 current.copy(
                                     audioUrl = com.example.data.remote.YouTubeAudioStreamService.playbackUri("yt_${next.videoId}", next.url),
-                                    bitrateKbps = next.bitrateKbps, qualityBadge = next.qualityBadge, isLossless = false)
+                                    bitrateKbps = next.bitrateKbps, qualityBadge = next.qualityBadge, isLossless = false, source = "YouTube Music")
                             } else if (retryCurrent) {
                                 delay(300L)
                                 current
@@ -1084,7 +1192,9 @@ class PlaybackManager(
                             if (!recoveryGuard.isCurrent(current.id, activeToken) ||
                                 _uiState.value.currentTrack?.id != current.id ||
                                 player.currentMediaItem?.mediaId != current.id) return@launch
-                            val replacement = resolved.toMediaItem()
+                            val currentPolicy = NetworkQualityMonitor.getInstance(context).sourcePolicy.value
+                            if (currentPolicy.key != policy.key || !policyAllows(resolved, currentPolicy)) return@launch
+                            val replacement = resolved.toMediaItem(preparedPolicy = currentPolicy)
                             val address = replacement.localConfiguration?.uri?.toString().orEmpty()
                             if (!retryCurrent && !com.example.data.remote.YouTubeAudioStreamService.isPlaybackUri(address) &&
                                 address in blocked) throw TrackUnavailableException(current.title)
@@ -1112,8 +1222,7 @@ class PlaybackManager(
                                 transport = null
                                 continue
                             }
-                            if (!advanceFailedYouTubeFallback(player))
-                                showPlaybackFailure(e.message ?: "Unable to resolve a playable stream.")
+                            showPlaybackFailure(e.message ?: "Unable to resolve a playable stream.")
                             return@launch
                         }
                     }
@@ -1167,34 +1276,16 @@ class PlaybackManager(
                     isLoading = player.playbackState == Player.STATE_BUFFERING, errorMessage = null) }
                 publishListeningState(player, newPlay = false)
             }
-            "failed" -> if (!player.hasNextMediaItem()) showPlaybackFailure(status.getString("message") ?: "Playback is unavailable.")
+            "failed" -> showPlaybackFailure(status.getString("message") ?: "Playback is unavailable.")
         }
     }
 
-    private fun advanceFailedYouTubeFallback(player: MediaController): Boolean {
-        if (player.currentMediaItem?.mediaMetadata?.extras?.getBoolean("jio_youtube_fallback") != true ||
-            !player.hasNextMediaItem()) return false
-        player.seekToNextMediaItem(); player.prepare(); player.play()
-        return true
-    }
-
-    internal suspend fun continueAfterUnavailableSelection(track: MusicTrack, queue: List<MusicTrack>, explicit: Boolean, message: String?) {
+    internal suspend fun continueAfterUnavailableSelection(track: MusicTrack, @Suppress("UNUSED_PARAMETER") queue: List<MusicTrack>,
+        @Suppress("UNUSED_PARAMETER") explicit: Boolean, message: String?) {
         val generation = selectionGeneration
         if (!ownsSelection(track.id, generation)) return
-        val sources = networkQualityMonitor?.sourcePolicy?.value?.playbackSources.orEmpty()
-        if (sources.size == 1 && sources.single().kind == PlaybackSourceKind.YOUTUBE) {
-            // A provider-wide extraction failure must not churn through every
-            // Home/playlist candidate without ever playing the selected song.
-            showPlaybackFailure(message ?: "YouTube Music is temporarily unavailable. Please try again.")
-            return
-        }
-        val next = withContext(AppDispatchers.CpuBounded) {
-            val index = queue.indexOfFirst { it.id == track.id }
-            if (index >= 0) queue.asSequence().drop(index + 1).firstOrNull { it.id != track.id } else null
-        }
-        if (!ownsSelection(track.id, generation)) return
-        if (next != null) playTrack(next, queue, explicit)
-        else showPlaybackFailure(message ?: "This track is unavailable.")
+        // Provider fallback must keep the selected recording and queue intact.
+        showPlaybackFailure(message ?: "This recording is unavailable from the enabled sources. Please try again.")
     }
 
     private fun MediaItem.playbackUri(): Uri? = localConfiguration?.uri ?: requestMetadata.mediaUri
@@ -1211,7 +1302,7 @@ class PlaybackManager(
         val exceedsCap = !policy.acceptsStreamBitrate(extras.getInt("bitrate", 0), Uri.parse(address))
         val actualTrack = current.copy(audioUrl = address, qualityBadge = extras.getString("qualityBadge").orEmpty(),
             bitrateKbps = extras.getInt("bitrate", current.bitrateKbps))
-        val wrongProvider = !policy.maximum && extras.getString("audio_codec").orEmpty().isNotBlank() && !policyAllows(actualTrack, policy)
+        val wrongProvider = extras.getString("audio_codec").orEmpty().isNotBlank() && !policyAllows(actualTrack, policy)
         if (fallback == null && (extras.getBoolean("lossless_invalid") || exceedsCap || wrongProvider)) {
             LosslessDiagnostics.record(current.id, LosslessDiagnostics.Reason.SOURCE_VERIFICATION_FAILED, "active-format")
             if (youtubeQualityJob?.isActive != true) reconcileSourcePolicy(policy, force = true, failedUrl = address)
@@ -1249,9 +1340,10 @@ class PlaybackManager(
             qualityBadge = extras.getString("qualityBadge").orEmpty(),
             bitrateKbps = if (address.contains("saavncdn.com")) current.bitrateKbps else extras.getInt("bitrate"),
             isLossless = extras.getBoolean("isLossless"))
-        if (updated == current) return
+        if (updated == current) { scheduleLosslessDiscovery(policy); return }
         replaceQueueTrack(player.currentMediaItemIndex, updated)
         _uiState.update { it.copy(currentTrack = updated, qualityBadge = updated.qualityBadge, queue = queueSnapshot()) }
+        scheduleLosslessDiscovery(policy)
     }
 
     private fun showPlaybackFailure(message: String) {
@@ -1353,6 +1445,8 @@ class PlaybackManager(
     }
 
     private fun cancelLosslessUpgrade() {
+        losslessDiscoveryJob?.cancel()
+        losslessDiscoveryJob = null
         _uiState.value.currentTrack?.id?.let { AudioSignalPath.sourceRequest(it, false) }
         ++losslessRequestEpoch
         losslessFallback = null
@@ -1436,7 +1530,7 @@ class PlaybackManager(
             replaceQueueTrack(index, original)
             _uiState.update { it.copy(currentTrack = original, qualityBadge = original.qualityBadge,
                 errorMessage = null, queue = queueSnapshot()) }
-            val restored = original.toMediaItem().forSourceTransition()
+            val restored = original.toMediaItem(preparedPolicy = NetworkQualityMonitor.getInstance(context).sourcePolicy.value).forSourceTransition()
             val restoredExtras = Bundle(restored.mediaMetadata.extras ?: Bundle()).apply {
                 SourceTransitionOrigin.write(this, fallback.previousOrigin)
             }
@@ -1455,6 +1549,7 @@ class PlaybackManager(
 
     /** Own the requested identity before native callbacks or asynchronous lookup can run. */
     private fun beginSelection(track: MusicTrack): Long {
+        losslessDiscoveryKey = null
         youtubeQualityJob?.cancel()
         pendingRestoredSession = null
         cancelLosslessUpgrade()
@@ -1586,12 +1681,12 @@ class PlaybackManager(
                     val host = Uri.parse(resolved.audioUrl).host.orEmpty()
                     initialJioDeadlineMs = if (host == "saavncdn.com" || host.endsWith(".saavncdn.com"))
                         android.os.SystemClock.elapsedRealtime() + 6_000L else 0L
-                    pendingPolicyRestart = null
                     playTrackInternal(resolved, ownedQueue, isExplicitPlaylist)
+                    if (ownsSelection(track.id, generation)) pendingPolicyRestart = null
                 }
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) {
-                Log.e(TAG, "Failed resolving track stream: ${e.message}", e)
+                Log.e(TAG, "Track resolution failed: ${e.javaClass.simpleName}")
                 if (ownsSelection(track.id, generation)) {
                     continueAfterUnavailableSelection(track, ownedQueue, isExplicitPlaylist, e.message)
                 }
@@ -1613,8 +1708,13 @@ class PlaybackManager(
         }
 
         val generation = selectionGeneration
-        val networkPolicy = withContext(AppDispatchers.Io) { NetworkQualityMonitor.getInstance(context).snapshot() }
-        _uiState.update { it.copy(selectedQuality = networkPolicy.effectiveCeiling.audioQuality) }
+        val preparedPolicy = withContext(AppDispatchers.Io) { NetworkQualityMonitor.getInstance(context).sourcePolicySnapshot() }
+        if (!ownsSelection(track.id, generation)) return
+        if (!preparedPolicy.acceptsRemoteTrack(track)) {
+            pendingPolicyRestart?.invoke()
+            return
+        }
+        _uiState.update { it.copy(selectedQuality = preparedPolicy.ceiling.audioQuality) }
         var autoplayEnabled: Boolean
         var targetQuality: AudioQuality
         var prepared: Triple<SnapshotStateList<MusicTrack>, List<MediaItem>, Int>
@@ -1629,7 +1729,7 @@ class PlaybackManager(
                     (queue.map { if (it.id == track.id) track else it } + track)
                         .filter { it.hasQueueSource() }.distinctBy { it.id }.toMutableStateList()
                 }
-                Triple(tracks, tracks.map { it.toMediaItem(targetQuality) },
+                Triple(tracks, tracks.map { queued -> queued.toMediaItem(targetQuality, preparedPolicy.takeIf { queued.id == track.id }) },
                     tracks.indexOfFirst { it.id == track.id }.coerceAtLeast(0))
             }
             if (!ownsSelection(track.id, generation)) return
@@ -2350,7 +2450,8 @@ class PlaybackManager(
             remove("jio_youtube_fallback")
         }).build()).build()
 
-    private fun MusicTrack.toMediaItem(targetQuality: AudioQuality = _uiState.value.selectedQuality): MediaItem {
+    private fun MusicTrack.toMediaItem(targetQuality: AudioQuality = _uiState.value.selectedQuality,
+        preparedPolicy: PlaybackSourcePolicy? = null): MediaItem {
         val availableBitrate = saavnBitrateFor(targetQuality)
         val effectiveUrl = if (audioUrl.contains("saavncdn.com")) {
             com.example.data.remote.OnlineMusicApiService.formatUrlForQuality(audioUrl, availableBitrate.toString())
@@ -2391,8 +2492,11 @@ class PlaybackManager(
                         putLong("duration", durationMs)
                         putBoolean("isLiked", isLiked)
                         putBoolean("isLossless", isLossless)
-                        if (id == _uiState.value.currentTrack?.id)
-                            putString("source_policy_key", networkQualityMonitor?.sourcePolicy?.value?.key)
+                        if (preparedPolicy != null) {
+                            putString("source_policy_key", preparedPolicy.key)
+                            putString("audio_policy_tier", preparedPolicy.ceiling.audioQuality.name)
+                            putLong("audio_policy_checked_at", System.currentTimeMillis())
+                        }
                         putString("singers", singers); putString("writer", writer)
                         putStringArrayList("primaryArtists", ArrayList(primaryArtists))
                         putString("language", language); putString("year", year); putString("isrc", isrc)
