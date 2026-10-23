@@ -23,8 +23,12 @@ data class PlaybackSource(val id: String, val kind: PlaybackSourceKind, val name
         val newInstallDefaults = builtIns.map { it.copy(enabled = it.kind == PlaybackSourceKind.YOUTUBE) }
         /** Only user-added servers have a user-defined order; built-in fallback ranks are fixed. */
         fun ordered(sources: List<PlaybackSource>): List<PlaybackSource> {
-            val unique = sources.distinctBy { it.id }
-            return (unique + builtIns.filter { builtin -> unique.none { it.kind == builtin.kind } }
+            // YouTube is the permanent catalog/playback safety source. Repair old
+            // disabled/renamed entries without changing any optional provider's choice.
+            val unique = sources.filterNot { it.kind == PlaybackSourceKind.YOUTUBE || it.id == youtube.id }
+                .distinctBy { it.id }
+            return (unique + youtube + builtIns.filter { builtin -> builtin.kind != PlaybackSourceKind.YOUTUBE &&
+                unique.none { it.kind == builtin.kind } }
                 .map { it.copy(enabled = false) })
                 .sortedBy { when (it.kind) {
                     PlaybackSourceKind.ADDON -> 0

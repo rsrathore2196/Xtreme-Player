@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title></title></head><body>
+<script>
+"use strict";
+// Only the locally bundled host and the official attestation VM run in this page.
+(() => {
+    let signals = [], mintToken, shutdown;
+    const fail = (id, stage) => Attestation.failed(id, stage);
+    window.audioAttestation = {
+        async start(script, program, globalName) {
+            try {
+                (new Function(script))();
+                const snapshot = await new Promise((resolve, reject) => {
+                    const vm = window[globalName];
+                    if (!vm || typeof vm.a !== "function") { reject(); return; }
+                    vm.a(program, (capture, dispose) => {
+                        shutdown = dispose;
+                        resolve(capture);
+                    }, true, undefined, () => {}, [[], []]);
+                });
+                const response = await new Promise((resolve, reject) => {
+                    try { snapshot(resolve, [undefined, undefined, signals, undefined]); }
+                    catch (_) { reject(); }
+                });
+                if (typeof response !== "string") throw new Error();
+                Attestation.snapshot(response);
+            } catch (_) { fail("", "SNAPSHOT_FAILED"); }
+        },
+        async authorize(bytes) {
+            try {
+                if (typeof signals[0] !== "function") throw new Error();
+                mintToken = await signals[0](new Uint8Array(bytes));
+                signals = [];
+                if (typeof mintToken !== "function") throw new Error();
+                Attestation.authorized();
+            } catch (_) { fail("", "INTEGRITY_FAILED"); }
+        },
+        async mint(id, identifier) {
+            try {
+                const bytes = await mintToken(new TextEncoder().encode(identifier));
+                if (!(bytes instanceof Uint8Array) || bytes.length === 0 || bytes.length > 8192) throw new Error();
+                Attestation.token(id, JSON.stringify(Array.from(bytes)));
+            } catch (_) { fail(id, "MINT_FAILED"); }
+        },
+        close() { try { if (typeof shutdown === "function") shutdown(); } catch (_) {} mintToken = null; signals = []; }
+    };
+    Attestation.loaded();
+})();
+</script></body></html>

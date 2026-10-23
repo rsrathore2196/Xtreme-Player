@@ -22,6 +22,20 @@ internal object PlaybackDiagnostics {
         val enabledSources: List<PlaybackSourceKind>, val stage: Stage, val reason: Reason, val atMs: Long,
         val sourceId: String = "")
     private val history = linkedMapOf<String, List<Attempt>>()
+    data class YouTubeEvent(val code: String, val client: String, val transport: String,
+        val httpStatus: Int?, val reason: Reason?, val atMs: Long)
+    private val youtubeHistory = linkedMapOf<String, List<YouTubeEvent>>()
+    fun youtubeEvent(videoId: String, code: String, client: String = "", transport: String = "",
+        httpStatus: Int? = null, reason: Reason? = null) {
+        val event = YouTubeEvent(code, client, transport, httpStatus, reason, SystemClock.elapsedRealtime())
+        synchronized(youtubeHistory) {
+            val key = videoId.takeIf { it.matches(Regex("[A-Za-z0-9_-]{11}")) }.orEmpty()
+            youtubeHistory[key] = (youtubeHistory[key].orEmpty() + event).takeLast(32)
+            while (youtubeHistory.size > 64) youtubeHistory.remove(youtubeHistory.keys.first())
+        }
+        Log.d("YouTubePlayback", "stage=$code, client=$client, transport=$transport, http=$httpStatus, result=$reason")
+    }
+    fun recentYouTube(videoId: String): List<YouTubeEvent> = synchronized(youtubeHistory) { youtubeHistory[videoId].orEmpty() }
 
     fun record(trackId: String, policy: PlaybackSourcePolicy, source: PlaybackSourceKind?, stage: Stage, reason: Reason, sourceId: String = "") {
         val attempt = Attempt(policy.ceiling, policy.key, source, policy.playbackSources.map { it.kind }, stage, reason,
@@ -42,6 +56,8 @@ internal object PlaybackDiagnostics {
         val causes = generateSequence(error) { it.cause }.take(8).toList()
         return causes.filterIsInstance<Failure>().firstOrNull()?.reason ?: when {
             causes.any { it is SocketTimeoutException || it is kotlinx.coroutines.TimeoutCancellationException } -> Reason.TIMEOUT
+            causes.filterIsInstance<com.metrolist.innertubex.extraction.StreamResolveException>()
+                .any { it.reason == com.metrolist.innertubex.extraction.StreamResolveException.Reason.NETWORK } -> Reason.NETWORK
             causes.any { it is UnknownHostException || it is IOException } -> Reason.NETWORK
             else -> Reason.NO_FORMAT
         }

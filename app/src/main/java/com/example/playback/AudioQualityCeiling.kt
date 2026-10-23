@@ -75,7 +75,7 @@ data class PlaybackSourcePolicy(val ceiling: AudioQualityCeiling, val enhancer: 
     fun allows(kind: PlaybackSourceKind): Boolean = playbackSources.any { it.kind == kind }
     fun sourceId(kind: PlaybackSourceKind): String? = configuredSources.firstOrNull { it.kind == kind }?.id
     val allowsArchive: Boolean get() = maximum && online && allows(PlaybackSourceKind.INTERNET_ARCHIVE)
-    val key: String get() = "sources-v7:${ceiling.name}:$enhancer:$returnToYouTube:$online:$requestRevision:$requestTrackId:$ready:" +
+    val key: String get() = "sources-v8:${ceiling.name}:$enhancer:$returnToYouTube:$online:$requestRevision:$requestTrackId:$ready:" +
         playbackSources.joinToString(",") { "${it.id}:${it.kind.name}:${it.baseUrl.hashCode()}" }
     /** Only an activated decoder format can make the switch automatically reflect a preferred source. */
     fun automaticallyEnhanced(state: SignalPathState): Boolean {

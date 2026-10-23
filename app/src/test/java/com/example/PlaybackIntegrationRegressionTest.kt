@@ -64,7 +64,7 @@ class PlaybackIntegrationRegressionTest {
         val resolver = StreamResolver(findLossless = { _, _, _ -> LosslessSearchPage(isSuccessful = false,
             failure = LosslessDiagnostics.Reason.METADATA_INCOMPLETE, exhaustive = false) },
             searchStandard = { _, _ -> error("Disabled JioSaavn") },
-            resolveYouTube = { _, _, _, _ -> error("Disabled YouTube") })
+            resolveYouTube = { _, _, _, _ -> null })
         try {
             resolver.resolve(selected, onlyArchive.ceiling.audioQuality, sourcePolicy = onlyArchive)
             fail("Incomplete metadata cannot be reported as playable")

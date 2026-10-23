@@ -3,6 +3,7 @@ package com.example.data.local
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.compose.runtime.Immutable
+import androidx.core.content.edit
 import com.example.performance.AppDispatchers
 import com.example.playback.*
 import kotlinx.coroutines.*
@@ -88,7 +89,13 @@ object PlaybackSourcesPreferences {
                             }.let(PlaybackSource::ordered)
                         }.getOrElse { withContext(AppDispatchers.Io) { PlaybackSource.ordered(legacy(context, preferences)) } }
                     }
-                if (preferences.getString(KEY_CONFIG, null) == raw) loaded = Snapshot(raw, parsed)
+                // Persist canonical normalization once, on IO, under the existing
+                // read transaction. Calling persist() here would reacquire this lock.
+                val canonical = if (cached != null) raw else if (parsed.isEmpty()) null else encode(parsed)
+                if (preferences.getString(KEY_CONFIG, null) == raw) {
+                    if (canonical != null && canonical != raw) preferences.edit { putString(KEY_CONFIG, canonical) }
+                    loaded = Snapshot(canonical ?: raw, parsed)
+                }
             }
             checkNotNull(loaded).also(memory::set).sources
         }
@@ -97,14 +104,17 @@ object PlaybackSourcesPreferences {
     private suspend fun persist(context: Context, sources: List<PlaybackSource>) {
         val snapshot = PlaybackSource.ordered(sources.filter { it.kind == PlaybackSourceKind.ADDON }.take(16) +
             sources.filter { it.kind != PlaybackSourceKind.ADDON })
-        val raw = withContext(AppDispatchers.CpuBounded) { JSONArray().apply { snapshot.forEach { source ->
-            put(JSONObject().put("id", source.id).put("kind", source.kind.name).put("name", source.name)
-                .put("enabled", source.enabled).put("url", source.baseUrl))
-        } }.toString() }
+        val raw = encode(snapshot)
         reads.withLock {
             memory.set(Snapshot(raw, snapshot))
             prefs(context).edit().putString(KEY_CONFIG, raw).apply()
         }
+    }
+    private suspend fun encode(sources: List<PlaybackSource>): String = withContext(AppDispatchers.CpuBounded) {
+        JSONArray().apply { sources.forEach { source ->
+            put(JSONObject().put("id", source.id).put("kind", source.kind.name).put("name", source.name)
+                .put("enabled", source.enabled).put("url", source.baseUrl))
+        } }.toString()
     }
     fun save(context: Context, sources: List<PlaybackSource>) {
         val app = context.applicationContext
@@ -119,7 +129,7 @@ object PlaybackSourcesPreferences {
         } }
     }
     fun setSourceEnabled(context: Context, sourceId: String, enabled: Boolean) = mutate(context) { sources ->
-        sources.map { if (it.id == sourceId) it.copy(enabled = enabled) else it }
+        sources.map { if (it.id == sourceId && it.kind != PlaybackSourceKind.YOUTUBE) it.copy(enabled = enabled) else it }
     }
     fun swapSources(context: Context, fromIndex: Int, toIndex: Int) = mutate(context) { sources ->
         sources.toMutableList().apply {
@@ -179,7 +189,7 @@ object PlaybackSourcesPreferences {
                 PlaybackSourceKind.INTERNET_ARCHIVE -> "Verified, authorized lossless recordings"
                 PlaybackSourceKind.ADDON -> "Custom streaming server"
             }, source.kind in setOf(PlaybackSourceKind.ADDON, PlaybackSourceKind.INTERNET_ARCHIVE), type,
-                source.enabled, allowed,
+                source.enabled, allowed, isAlwaysOn = source.kind == PlaybackSourceKind.YOUTUBE,
                 qualityRequirementText = if (allowed) null else
                     if (source.kind == PlaybackSourceKind.JIOSAAVN) "Requires High or Maximum/Lossless"
                     else "Requires Maximum/Lossless", url = source.baseUrl)

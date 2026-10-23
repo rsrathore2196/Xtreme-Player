@@ -17,13 +17,11 @@ import com.metrolist.innertubex.sabr.SabrAudioStream
 import com.metrolist.innertubex.sabr.SabrBootstrap
 import com.metrolist.innertubex.sabr.SabrChunk
 import com.metrolist.innertubex.sabr.requireAllowedSabrUrl
-import com.metrolist.innertubex.extraction.strategy.AuthenticationPolicy
-import com.metrolist.innertubex.extraction.strategy.ClientLifecycle
-import com.metrolist.innertubex.extraction.strategy.ClientSelectionMode
 import com.metrolist.innertubex.extraction.strategy.PlaybackClientCatalog
 import com.metrolist.innertubex.extraction.strategy.PlaybackTransport
 import kotlinx.coroutines.flow.Flow
 import com.metrolist.innertubex.InnerTube
+import com.metrolist.innertubex.InnerTubeLogger
 import com.metrolist.innertubex.bodyAsTextLimited
 import com.metrolist.innertubex.models.YouTubeClient
 import com.metrolist.innertubex.cipher.PlayerConfigRepository
@@ -31,6 +29,8 @@ import com.metrolist.innertubex.cipher.RemotePlayerConfigStore
 import com.metrolist.innertubex.cipher.YouTubeCipherService
 import com.metrolist.innertubex.extraction.ContentHints
 import com.metrolist.innertubex.extraction.InnerTubeExtractor
+import com.metrolist.innertubex.extraction.ExtractedStream
+import com.metrolist.innertubex.extraction.StreamExtractor
 import com.metrolist.innertubex.extraction.YtConfigParserImpl
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
@@ -108,8 +108,13 @@ object YouTubeAudioStreamService {
         }
         private val sabrHttp = client(http.newBuilder().callTimeout(0, TimeUnit.MILLISECONDS).build(), streaming = true)
         private val cipherHttp = client(http)
-        private val config = RemotePlayerConfigStore(cipherHttp, PlayerConfigRepository.disabled())
-        private val cipher = YouTubeCipherService(cipherHttp, config)
+        // Constructing the provider does not construct a WebView. Metadata search
+        // and recommendation discovery never initialize attestation.
+        private val tokens = YouTubePoTokenProvider(openBrowser = {
+            YouTubeTokenWebView.open(com.example.XtremeMusicApp.getInstance(), mediaHttp)
+        })
+        private val config = RemotePlayerConfigStore(cipherHttp, PlayerConfigRepository.disabled(), nativeLogger)
+        private val cipher = YouTubeCipherService(cipherHttp, config, nativeLogger)
         private data class Engine(val http: HttpClient, val innerTube: InnerTube, val extractor: InnerTubeExtractor)
         private val engines = mutableMapOf<String, Engine>()
         private fun engine(cap: Int, opusOnly: Boolean = false): Engine = synchronized(engines) {
@@ -118,12 +123,12 @@ object YouTubeAudioStreamService {
             engines.getOrPut("$cap:$opusOnly") {
                 val network = http.newBuilder().addInterceptor(YouTubeAudioFormatPolicy(cap, opusOnly)).build()
                 val apiHttp = client(network)
-                val innerTube = InnerTube(apiHttp)
+                val innerTube = InnerTube(apiHttp, logger = nativeLogger)
                 Engine(apiHttp, innerTube, InnerTubeExtractor(
-                    configParser = YtConfigParserImpl(apiHttp, innerTube, config, cipherService = cipher),
+                    configParser = YtConfigParserImpl(apiHttp, innerTube, config, logger = nativeLogger, cipherService = cipher),
                     // Keep the native strategy: the library enables visitor-backed and
                     // automatic fallback paths by its actual strategy type.
-                    cipherService = cipher, innerTube = innerTube))
+                    cipherService = cipher, innerTube = innerTube, tokenProvider = tokens, logger = nativeLogger))
             }
         }
         fun extractor(cap: Int, opusOnly: Boolean = false): InnerTubeExtractor = engine(cap, opusOnly).extractor
@@ -159,10 +164,32 @@ object YouTubeAudioStreamService {
             } finally { session.close() }
         }
         suspend fun close() {
+            tokens.close()
             synchronized(engines) { engines.values.toList().also { engines.clear() } }.forEach {
                 it.innerTube.close(); it.http.close()
             }
             try { cipher.dispose() } finally { cipherHttp.close(); sabrHttp.close() }
+        }
+    }
+    /** Native messages/bodies are not safe to log. Only known event names and typed fields leave this adapter. */
+    internal val nativeLogger = InnerTubeLogger { event ->
+        val code = when (event.message) {
+            "player request failed" -> "PLAYER_REQUEST_FAILED"
+            "player response decoded" -> "PLAYER_RESPONSE"
+            "player response decode failed", "invalid player response" -> "PLAYER_RESPONSE_INVALID"
+            "player response rejected" -> "PLAYER_IDENTITY_REJECTED"
+            "token fetch completed" -> if (event.details["tokenPresent"] == "true") "TOKEN_READY" else "TOKEN_UNAVAILABLE"
+            "token binding rejected" -> "TOKEN_BINDING_REJECTED"
+            "no playable clients" -> "NO_PLAYABLE_CLIENTS"
+            "watch page config ready", "embedded config ready" -> "PLAYER_CONFIG_READY"
+            else -> null
+        }
+        if (code != null) {
+            val client = event.details["client"].orEmpty().takeIf { value ->
+                PlaybackClientCatalog.manifests.any { it.id == value || it.client.clientName == value }
+            }.orEmpty()
+            PlaybackDiagnostics.youtubeEvent(event.mediaId.orEmpty(), code, client,
+                httpStatus = event.details["httpStatus"]?.toIntOrNull()?.takeIf { it in 100..599 })
         }
     }
     private fun runtime(): Runtime = runtime ?: synchronized(runtimeLock) { runtime ?: Runtime().also { runtime = it } }
@@ -359,175 +386,128 @@ object YouTubeAudioStreamService {
                 it.clientId !in (rejectedClients(videoId) + setOfNotNull(excludedClient)) &&
                 it.expiresAt > System.currentTimeMillis() + 15_000L }?.let { return@withLock it }
             slots.withPermit {
-                withTimeoutOrNull(RESOLUTION_TIMEOUT_MS) lookup@{
-                    // Prefer a directly playable audio-only format. An HLS-only client can
-                    // expose a muxed master which this audio player must reject; that is a
-                    // transport miss, not proof the selected recording is unavailable.
-                    val transports = if (hlsOnly == true) listOf(true) else listOf(false, true)
-                    var failure: Exception? = null
-                    for (transport in transports) {
-                        // Leave room for native SABR inside the caller's single deadline.
-                        val budget = if (hlsOnly == true) 30_000L else if (transport) 5_000L else 14_000L
-                        val result = withTimeoutOrNull(budget) transport@{
-                            val excluded = rejectedClients(videoId).toMutableSet().apply {
-                                excludedClient?.let(::add)
-                                if (transport) addAll(PlaybackClientCatalog.manifests.filter {
-                                    PlaybackTransport.HLS !in it.transports
-                                }.map { it.id })
-                            }
-                            val extractor = runtime().extractor(cap, requireOpus)
-                            val hints = ContentHints(wantVideo = false).withStreamCapabilities(
-                                allowHls = transport, allowSabr = false, allowBoundedRange = true)
-                            repeat(3) { attempt ->
-                                currentCoroutineContext().ensureActive()
-                                val extracted = try {
-                                    extractor.extract(videoId, hints, excludedClients = excluded, audioQuality = YouTubeAudioFormatPolicy.quality(cap, attempt))
-                                } catch (e: CancellationException) { throw e }
-                                catch (e: Exception) {
-                                    failure = e
-                                    android.util.Log.w("YouTubeAudio", "Native ${if (transport) "HLS" else "direct"} extraction: ${e.javaClass.simpleName}")
-                                    return@transport null
-                                }
-                                    ?: return@transport null
-                                if (extracted.videoId != videoId || !isMediaUrl(extracted.audioUrl) || extracted.sabrBootstrap != null) {
-                                    failure = PlaybackDiagnostics.Failure(PlaybackDiagnostics.Reason.UNSUPPORTED_TRANSPORT, PlaybackDiagnostics.Stage.VALIDATION)
-                                    excluded.add(extracted.profileId)
-                                    return@repeat
-                                }
-                                val hls = isHls(extracted.audioUrl, extracted.mimeType)
-                                if (!hls && (extracted.mimeType?.startsWith("audio/") != true ||
-                                        extracted.videoUrl != null || extracted.videoWidth != null || extracted.videoHeight != null)) {
-                                    excluded.add(extracted.profileId)
-                                    return@repeat
-                                }
-                                val expiry = minOf(extracted.expiresAt?.toEpochMilliseconds() ?: Long.MAX_VALUE,
-                                    extracted.audioUrl.toHttpUrlOrNull()?.queryParameter("expire")?.toLongOrNull()
-                                        ?.let { it * 1000L } ?: Long.MAX_VALUE,
-                                    System.currentTimeMillis() + 300_000L)
-                                val bitrate = extracted.bitrate?.coerceAtLeast(0) ?: 0
-                                // Retry native MP4/LOW selection on the same client before excluding it.
-                                val selectedCodec = displayCodec(extracted.mimeType, extracted.codecs)
-                                if (!hls && selectedCodec !in setOf("AAC", "Opus", "Vorbis")) {
-                                    excluded.add(extracted.profileId); return@repeat
-                                }
-                                val headers = extracted.headers.filter { (name, value) ->
-                                    name.lowercase() in mediaHeaders && '\r' !in value && '\n' !in value }
-                                // A native HLS-capable retry may recover a direct audio stream.
-                                // Accept it instead of discarding the working representation.
-                                val compatibleTransport = if (hlsOnly == true) hls else !hls || transport
-                                val verified = if (compatibleTransport && expiry > System.currentTimeMillis() + 15_000L)
-                                    probeAudio(extracted.audioUrl, headers, hls, cap, selectedCodec) else null
-                                if (verified != null) {
-                                    val codec = verified.codec ?: displayCodec(extracted.mimeType, extracted.codecs)
-                                    if (requireOpus && (codec != "Opus" || (verified.bitrate ?: bitrate) !in 1..cap)) {
-                                        excluded.add(extracted.profileId); return@repeat
-                                    }
-                                    val stream = AudioStream(verified.url, (verified.bitrate ?: bitrate) / 1000, hls,
-                                        "youtube:" + videoId + ":" + extracted.itag + ":" + extracted.contentLengthBytes,
-                                        expiry - 5_000L, headers, codec, extracted.itag, extracted.contentLengthBytes, videoId,
-                                        !hls && (extracted.requireBoundedRange || extracted.useRangeChunks),
-                                        extracted.rangeChunkSizeBytes.coerceIn(64 * 1024L, 1024 * 1024L), extracted.profileId,
-                                        selectionCapBps = cap, opusOnly = requireOpus)
-                                    if (YouTubeAudioFormatPolicy.acceptsBitrate(verified.bitrate ?: extracted.bitrate, cap)) return@transport stream
-                                    return@repeat
-                                }
-                                // Let InnerTubeX pick a different supported client for this transport.
-                                excluded.add(extracted.profileId)
-                            }
-                            null
-                        }
-                        if (result != null) {
-                            cache.put(key, result)
-                            cache.put(videoId + ":" + cap + ":" + result.isHls + if (requireOpus) ":opus" else "", result)
-                            return@lookup result
-                        }
-                    }
-                    if (hlsOnly != true) {
-                        try {
-                            val sabr = lookupSabr(videoId, quality, rejectedClients(videoId) + setOfNotNull(excludedClient), cap, requireOpus)
-                            cache.put(key, sabr)
-                            cache.put(videoId + ":" + cap + ":false" + if (requireOpus) ":opus" else "", sabr)
-                            return@lookup sabr
-                        } catch (cancelled: CancellationException) { throw cancelled }
-                        catch (error: Exception) {
-                            // An unavailable transport is not evidence that an earlier
-                            // network failure was a permanent absence of this recording.
-                            if (failure?.let(PlaybackDiagnostics::reason) !in setOf(PlaybackDiagnostics.Reason.NETWORK,
-                                    PlaybackDiagnostics.Reason.TIMEOUT)) failure = error
-                        }
-                    }
-                    throw PlaybackDiagnostics.Failure(failure?.let(PlaybackDiagnostics::reason) ?: PlaybackDiagnostics.Reason.NO_FORMAT,
-                        PlaybackDiagnostics.Stage.EXTRACTION)
+                val stream = withTimeoutOrNull(RESOLUTION_TIMEOUT_MS) {
+                    extractPlayable(videoId, quality, cap, hlsOnly, requireOpus,
+                        rejectedClients(videoId) + setOfNotNull(excludedClient), runtime().extractor(cap, requireOpus))
                 } ?: throw PlaybackDiagnostics.Failure(PlaybackDiagnostics.Reason.TIMEOUT, PlaybackDiagnostics.Stage.EXTRACTION)
+                cache.put(key, stream)
+                cache.put(videoId + ":" + cap + ":" + stream.isHls + if (requireOpus) ":opus" else "", stream)
+                stream
             }
         }
     }
 
-
-    /** A bounded audio-only fallback, using only the library's anonymous automatic profiles. */
-    suspend fun resolveSabr(videoId: String, quality: AudioQuality, excludedClients: Set<String> = emptySet(),
-        maxBitrateBps: Int? = null, requireOpus: Boolean = false): AudioStream =
-        withContext(Dispatchers.IO) {
-            require(isVideoId(videoId)) { "Invalid YouTube video identity" }
-            val cap = selectionCap(quality, maxBitrateBps)
-            val key = "$videoId:$cap:sabr" + if (requireOpus) ":opus" else ""
-            locks[(("$videoId:$cap").hashCode() and Int.MAX_VALUE) % locks.size].withLock {
-                cache.get(key)?.takeIf { YouTubeAudioFormatPolicy.acceptsBitrate(it.bitrateKbps.takeIf { rate -> rate > 0 }?.times(1000), cap) &&
-                    it.clientId !in (excludedClients + rejectedClients(videoId)) &&
-                    it.expiresAt > System.currentTimeMillis() + 45_000L }?.let { return@withLock it }
-                slots.withPermit { lookupSabr(videoId, quality, excludedClients + rejectedClients(videoId), cap, requireOpus) }
+    /** Use native client/transport fallback under ONE caller-owned deadline. */
+    internal suspend fun extractPlayable(videoId: String, quality: AudioQuality, cap: Int, hlsOnly: Boolean?,
+        requireOpus: Boolean, excludedClients: Set<String>, extractor: StreamExtractor,
+        sabrOnly: Boolean = false,
+        probe: suspend (String, Map<String, String>, Boolean, Int, String) -> AudioProbe? = ::probeAudio): AudioStream {
+        val excluded = excludedClients.toMutableSet()
+        if (hlsOnly == true || sabrOnly) excluded.addAll(PlaybackClientCatalog.manifests.filter {
+            (if (sabrOnly) PlaybackTransport.SABR else PlaybackTransport.HLS) !in it.transports
+        }.map { it.id })
+        val hints = ContentHints(wantVideo = false, sabrFirst = sabrOnly).withStreamCapabilities(
+            allowHls = !sabrOnly, allowSabr = hlsOnly != true, allowBoundedRange = true)
+        var failure: Exception? = null
+        repeat(3) { attempt ->
+            currentCoroutineContext().ensureActive()
+            val extracted = try {
+                extractor.extract(videoId, hints, excludedClients = excluded,
+                    audioQuality = YouTubeAudioFormatPolicy.quality(cap, attempt))
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) { failure = error; null }
+            if (extracted == null) {
+                throw PlaybackDiagnostics.Failure(failure?.let(PlaybackDiagnostics::reason) ?: PlaybackDiagnostics.Reason.NO_FORMAT,
+                    PlaybackDiagnostics.Stage.EXTRACTION, failure)
+            }
+            val transport = if (extracted.sabrBootstrap != null) "SABR" else
+                if (isHls(extracted.audioUrl, extracted.mimeType)) "HLS" else "DIRECT"
+            try {
+                val stream = prepareExtracted(videoId, quality, cap, hlsOnly, requireOpus, sabrOnly, extracted, probe)
+                PlaybackDiagnostics.youtubeEvent(videoId, "STREAM_READY", extracted.profileId, transport,
+                    reason = PlaybackDiagnostics.Reason.SUCCESS)
+                return stream
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) {
+                failure = error
+                PlaybackDiagnostics.youtubeEvent(videoId, "STREAM_REJECTED", extracted.profileId, transport,
+                    reason = PlaybackDiagnostics.reason(error))
+                excluded.add(extracted.profileId)
             }
         }
+        throw PlaybackDiagnostics.Failure(failure?.let(PlaybackDiagnostics::reason) ?: PlaybackDiagnostics.Reason.NO_FORMAT,
+            PlaybackDiagnostics.Stage.VALIDATION, failure)
+    }
 
-    private suspend fun lookupSabr(videoId: String, quality: AudioQuality, excludedClients: Set<String>, cap: Int,
-        requireOpus: Boolean = false): AudioStream {
-        return withTimeoutOrNull(16_000L) {
-            val excluded = PlaybackClientCatalog.manifests.filter {
-                PlaybackTransport.SABR !in it.transports || it.authentication == AuthenticationPolicy.REQUIRED ||
-                    it.selectionMode != ClientSelectionMode.AUTOMATIC ||
-                    it.lifecycle in setOf(ClientLifecycle.BROKEN, ClientLifecycle.DEPRECATED)
-            }.mapTo(excludedClients.toMutableSet()) { it.id }
-            val hints = ContentHints(wantVideo = false, sabrFirst = true).withStreamCapabilities(
-                allowHls = false, allowSabr = true, allowBoundedRange = true)
-            val extractor = runtime().extractor(cap, requireOpus)
-            repeat(3) { attempt ->
-                currentCoroutineContext().ensureActive()
-                val extracted = extractor.extract(videoId, hints, excludedClients = excluded,
-                    audioQuality = YouTubeAudioFormatPolicy.quality(cap, attempt))
-                    ?: throw PlaybackDiagnostics.Failure(PlaybackDiagnostics.Reason.NO_FORMAT, PlaybackDiagnostics.Stage.EXTRACTION)
-                excluded.add(extracted.profileId)
-                val bootstrap = extracted.sabrBootstrap ?: return@repeat
-                if (extracted.videoId != videoId || bootstrap.videoId != videoId ||
-                    extracted.videoUrl != null || bootstrap.selectedVideoFormat != null ||
-                    bootstrap.audioFormat.itag != extracted.itag ||
-                    bootstrap.durationMs <= 0 || bootstrap.contentLengthBytes?.let { it <= 0 } == true ||
-                    !bootstrap.mimeType.startsWith("audio/")) return@repeat
-                requireAllowedSabrUrl(bootstrap.serverAbrStreamingUrl)
-                val codec = displayCodec(extracted.mimeType, extracted.codecs)
-                if (requireOpus && (codec != "Opus" || (extracted.bitrate ?: 0) !in 1..cap)) return@repeat
-                if (codec !in setOf("AAC", "Opus", "Vorbis")) return@repeat
-                val expiry = minOf(extracted.expiresAt?.toEpochMilliseconds() ?: Long.MAX_VALUE,
-                    bootstrap.serverAbrStreamingUrl.toHttpUrlOrNull()?.queryParameter("expire")?.toLongOrNull()
-                        ?.let { it * 1000L } ?: Long.MAX_VALUE, System.currentTimeMillis() + 300_000L) - 30_000L
-                if (expiry <= System.currentTimeMillis() + 15_000L) return@repeat
-                val stream = AudioStream(
-                    SabrSessionRegistry.uriFor(bootstrap, cap / 1000).toString(), (extracted.bitrate ?: 0).coerceAtLeast(0) / 1000, false,
-                    SabrSessionRegistry.cacheKeyFor(bootstrap), expiry, emptyMap(), codec, extracted.itag,
-                    bootstrap.contentLengthBytes, videoId, false, 0, extracted.profileId, bootstrap, cap, requireOpus)
-                if (YouTubeAudioFormatPolicy.acceptsBitrate(extracted.bitrate, cap)) {
-                    SabrSessionRegistry.register(stream, quality)
-                    cache.put("$videoId:$cap:sabr" + if (requireOpus) ":opus" else "", stream)
-                    return@withTimeoutOrNull stream
-                }
+    private suspend fun prepareExtracted(videoId: String, quality: AudioQuality, cap: Int, hlsOnly: Boolean?,
+        requireOpus: Boolean, sabrOnly: Boolean, extracted: ExtractedStream,
+        probe: suspend (String, Map<String, String>, Boolean, Int, String) -> AudioProbe?): AudioStream {
+        fun reject(reason: PlaybackDiagnostics.Reason): Nothing = throw PlaybackDiagnostics.Failure(reason, PlaybackDiagnostics.Stage.VALIDATION)
+        if (extracted.videoId != videoId || extracted.videoUrl != null || extracted.videoWidth != null || extracted.videoHeight != null)
+            reject(PlaybackDiagnostics.Reason.UNSUPPORTED_TRANSPORT)
+        val codec = displayCodec(extracted.mimeType, extracted.codecs)
+        val bootstrap = extracted.sabrBootstrap
+        val hls = bootstrap == null && isHls(extracted.audioUrl, extracted.mimeType)
+        if (hlsOnly == true && !hls || sabrOnly && bootstrap == null) reject(PlaybackDiagnostics.Reason.UNSUPPORTED_TRANSPORT)
+        if (!hls && (extracted.mimeType?.startsWith("audio/") != true || codec !in setOf("AAC", "Opus", "Vorbis")))
+            reject(PlaybackDiagnostics.Reason.NO_FORMAT)
+        val url = bootstrap?.serverAbrStreamingUrl ?: extracted.audioUrl
+        val expiry = minOf(extracted.expiresAt?.toEpochMilliseconds() ?: Long.MAX_VALUE,
+            url.toHttpUrlOrNull()?.queryParameter("expire")?.toLongOrNull()
+                ?.takeIf { it in 1..Long.MAX_VALUE / 1000 }?.times(1000) ?: Long.MAX_VALUE,
+            System.currentTimeMillis() + 300_000L) - if (bootstrap != null) 30_000L else 5_000L
+        if (expiry <= System.currentTimeMillis() + 15_000L) reject(PlaybackDiagnostics.Reason.INVALID_URL)
+        if (bootstrap != null) {
+            if (bootstrap.videoId != videoId || bootstrap.selectedVideoFormat != null || bootstrap.audioFormat.itag != extracted.itag ||
+                bootstrap.durationMs <= 0 || bootstrap.contentLengthBytes?.let { it <= 0 } == true || !bootstrap.mimeType.startsWith("audio/"))
+                reject(PlaybackDiagnostics.Reason.UNSUPPORTED_TRANSPORT)
+            requireAllowedSabrUrl(url)
+            if (!YouTubeAudioFormatPolicy.acceptsBitrate(extracted.bitrate, cap) ||
+                requireOpus && (codec != "Opus" || (extracted.bitrate ?: 0) !in 1..cap)) reject(PlaybackDiagnostics.Reason.NO_FORMAT)
+            return AudioStream(SabrSessionRegistry.uriFor(bootstrap, cap / 1000).toString(),
+                (extracted.bitrate ?: 0).coerceAtLeast(0) / 1000, false, SabrSessionRegistry.cacheKeyFor(bootstrap), expiry,
+                emptyMap(), codec, extracted.itag, bootstrap.contentLengthBytes, videoId, false, 0,
+                extracted.profileId, bootstrap, cap, requireOpus).also { SabrSessionRegistry.register(it, quality) }
+        }
+        if (!isMediaUrl(url)) reject(PlaybackDiagnostics.Reason.INVALID_URL)
+        val headers = extracted.headers.filter { (name, value) -> name.lowercase() in mediaHeaders && '\r' !in value && '\n' !in value }
+        val verified = probe(url, headers, hls, cap, codec) ?: reject(PlaybackDiagnostics.Reason.INVALID_URL)
+        val bitrate = verified.bitrate ?: extracted.bitrate
+        val actualCodec = verified.codec ?: codec
+        if (!YouTubeAudioFormatPolicy.acceptsBitrate(bitrate, cap) ||
+            requireOpus && (actualCodec != "Opus" || (bitrate ?: 0) !in 1..cap)) reject(PlaybackDiagnostics.Reason.NO_FORMAT)
+        return AudioStream(verified.url, (bitrate ?: 0).coerceAtLeast(0) / 1000, hls,
+            "youtube:$videoId:${extracted.itag}:${extracted.contentLengthBytes}", expiry, headers, actualCodec,
+            extracted.itag, extracted.contentLengthBytes, videoId, !hls && (extracted.requireBoundedRange || extracted.useRangeChunks),
+            extracted.rangeChunkSizeBytes.coerceIn(64 * 1024L, 1024 * 1024L), extracted.profileId,
+            selectionCapBps = cap, opusOnly = requireOpus)
+    }
+
+    /** Renewal stays on the SABR transport; a representation change uses existing time-based recovery. */
+    suspend fun resolveSabr(videoId: String, quality: AudioQuality, excludedClients: Set<String> = emptySet(),
+        maxBitrateBps: Int? = null, requireOpus: Boolean = false): AudioStream = withContext(Dispatchers.IO) {
+        require(isVideoId(videoId)) { "Invalid YouTube video identity" }
+        val cap = selectionCap(quality, maxBitrateBps)
+        val key = "$videoId:$cap:sabr" + if (requireOpus) ":opus" else ""
+        locks[(("$videoId:$cap").hashCode() and Int.MAX_VALUE) % locks.size].withLock {
+            cache.get(key)?.takeIf { YouTubeAudioFormatPolicy.acceptsBitrate(it.bitrateKbps.takeIf { rate -> rate > 0 }?.times(1000), cap) &&
+                it.clientId !in (excludedClients + rejectedClients(videoId)) &&
+                it.expiresAt > System.currentTimeMillis() + 45_000L }?.let { return@withLock it }
+            slots.withPermit {
+                val stream = withTimeoutOrNull(RESOLUTION_TIMEOUT_MS) {
+                    extractPlayable(videoId, quality, cap, false, requireOpus, excludedClients + rejectedClients(videoId),
+                        runtime().extractor(cap, requireOpus), sabrOnly = true)
+                } ?: throw PlaybackDiagnostics.Failure(PlaybackDiagnostics.Reason.TIMEOUT, PlaybackDiagnostics.Stage.EXTRACTION)
+                cache.put(key, stream)
+                stream
             }
-            throw PlaybackDiagnostics.Failure(PlaybackDiagnostics.Reason.NO_FORMAT, PlaybackDiagnostics.Stage.EXTRACTION)
-        } ?: throw PlaybackDiagnostics.Failure(PlaybackDiagnostics.Reason.TIMEOUT, PlaybackDiagnostics.Stage.EXTRACTION)
+        }
     }
 
     internal fun sabrChunks(stream: AudioStream, startMs: Long): Flow<SabrChunk> =
         runtime().sabrChunks(requireNotNull(stream.sabrBootstrap), startMs)
 
-    private data class AudioProbe(val url: String, val bitrate: Int? = null, val codec: String? = null)
+    internal data class AudioProbe(val url: String, val bitrate: Int? = null, val codec: String? = null)
     private data class MediaProbe(val url: String, val bytes: ByteArray, val type: String, val redirect: String? = null,
         val transient: Boolean = false)
 

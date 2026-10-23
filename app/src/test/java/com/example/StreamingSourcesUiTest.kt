@@ -44,8 +44,8 @@ class StreamingSourcesUiTest {
         val monitor = NetworkQualityMonitor.getInstance(app)
         compose.setContent { MaterialTheme { SourcesScreen(onNavigateBack = {}) } }
         compose.waitUntil(10000) { shadowOf(Looper.getMainLooper()).idle(); monitor.sourcePolicy.value.ceiling == AudioQualityCeiling.NORMAL }
-        compose.onNodeWithTag("switch_source_youtube").assertIsOn().assertIsEnabled()
-        compose.onNodeWithTag("badge_always_on_youtube").assertDoesNotExist()
+        compose.onNodeWithTag("switch_source_youtube").assertDoesNotExist()
+        compose.onNodeWithTag("badge_always_on_youtube").assertExists()
         compose.onNodeWithTag("source_up_youtube").assertDoesNotExist()
         compose.onNodeWithTag("source_down_youtube").assertDoesNotExist()
         compose.onNodeWithTag("switch_source_jiosaavn").assertIsOff().assertIsNotEnabled()
@@ -105,7 +105,7 @@ class StreamingSourcesUiTest {
         compose.onNodeWithTag("switch_source_jiosaavn").performScrollTo().performClick()
         compose.waitUntil(5000) { shadowOf(Looper.getMainLooper()).idle();
             OtherSettingsPreferences.playbackIntegrations(app).sources.firstOrNull { it.id == "jiosaavn" }?.enabled == false }
-        compose.onNodeWithTag("switch_source_youtube").assertIsOn().assertIsEnabled()
+        compose.onNodeWithTag("switch_source_youtube").assertDoesNotExist()
         assertEquals(5, OtherSettingsPreferences.playbackIntegrations(app).sources.size)
     }
     @Test fun alreadyPreferredVerifiedSourceShowsOnAndOffRequestsYoutubeWithoutEnablingDsp() = runBlocking {
