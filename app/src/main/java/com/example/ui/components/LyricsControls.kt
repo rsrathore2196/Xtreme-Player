@@ -31,6 +31,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FormatSize
+import androidx.compose.material.icons.filled.Translate
+import androidx.compose.material.icons.filled.Language
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -53,6 +56,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -91,6 +98,30 @@ fun LyricsTextSizeButton(
                 tint = colors.textPrimary,
                 modifier = Modifier.size(20.dp)
             )
+        }
+    }
+}
+
+@Composable
+internal fun LyricsTextTransformButton(
+    romanize: Boolean,
+    active: Boolean,
+    loading: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val colors = LocalAppColors.current
+    val action = if (romanize) "Romanize lyrics" else "Translate lyrics"
+    Box(modifier.size(48.dp), contentAlignment = Alignment.Center) {
+        Box(Modifier.size(36.dp).playerLiquidGlassButton(colors, shape = CircleShape, elevation = 3.dp))
+        IconButton(onClick = onClick, enabled = enabled,
+            modifier = Modifier.fillMaxSize().testTag(if (romanize) "lyrics_romanize_button" else "lyrics_translate_button")
+                .semantics { contentDescription = action; stateDescription = if (loading) "Loading" else if (active) "On" else "Off" }) {
+            if (loading) CircularProgressIndicator(Modifier.size(18.dp), color = colors.primaryAccent, strokeWidth = 2.dp)
+            else Icon(if (romanize) Icons.Default.Language else Icons.Default.Translate,
+                contentDescription = null, modifier = Modifier.size(20.dp),
+                tint = if (active) colors.primaryAccent else colors.textPrimary.copy(alpha = if (enabled) 1f else 0.4f))
         }
     }
 }
@@ -136,7 +167,8 @@ fun LyricsProviderPill(
                     fontSize = 13.sp,
                     letterSpacing = 0.5.sp
                 ),
-                maxLines = 1
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }

@@ -121,6 +121,7 @@ class StreamingSourcesUiTest {
         val eqBefore = AudioEffectsManager.effectsState.value
         AudioSignalPath.update { SignalPathState(trackId = "yt_abcdefghijk",
             source = "JioSaavn", sourceId = PlaybackSource.jio.id,
+            streamUri = "https://aac.saavncdn.com/song_320.mp4",
             quality = StreamQualityBadge("AAC", 320, 44100, verified = true)) }
         compose.setContent { MaterialTheme {
             com.example.ui.components.SourceUpgradeMenuItem("yt_abcdefghijk", onDismiss = {})
@@ -137,6 +138,34 @@ class StreamingSourcesUiTest {
         assertFalse(monitor.sourcePolicy.value.enhancer)
         assertEquals(PlaybackSource.youtube.id, monitor.sourcePolicy.value.resolutionSources.first().id)
         assertEquals(eqBefore, AudioEffectsManager.effectsState.value)
+    }
+
+    @Test fun aacFallbackStillOffersUpgradeAndRevertingAnArchiveUpgradeTargetsYoutube() = runBlocking {
+        OtherSettingsPreferences.savePlaybackSources(app, PlaybackSource.builtIns)
+        withTimeout(3000) { while (OtherSettingsPreferences.loadPlaybackSources(app) != PlaybackSource.builtIns) delay(10) }
+        withContext(Dispatchers.IO) {
+            AudioQualityPreferences.setCellularQualityCeiling(app, AudioQualityCeiling.MAX)
+            AudioQualityPreferences.setWifiQualityCeiling(app, AudioQualityCeiling.MAX)
+            AudioQualityPreferences.setAudioEnhancerEnabled(app, false)
+        }
+        val monitor = NetworkQualityMonitor.getInstance(app)
+        val aac = "https://aac.saavncdn.com/song_320.mp4"
+        AudioSignalPath.update { SignalPathState(trackId = "playing", sourceId = PlaybackSource.jio.id,
+            source = "JioSaavn", streamUri = aac, quality = StreamQualityBadge("AAC", 320, 44100, verified = true)) }
+        compose.setContent { MaterialTheme {
+            com.example.ui.components.SourceUpgradeMenuItem("playing", onDismiss = {})
+        } }
+        compose.waitUntil(10000) { shadowOf(Looper.getMainLooper()).idle(); monitor.sourcePolicy.value.ceiling == AudioQualityCeiling.MAX }
+        compose.onNodeWithText("Upgrade Audio").assertIsEnabled()
+        AudioSignalPath.update { it.copy(sourceId = PlaybackSource.archive.id, source = "Internet Archive",
+            streamUri = "https://archive.org/download/album/song.flac", enhancerOriginalSourceId = PlaybackSource.jio.id,
+            enhancerOriginalUri = aac, quality = StreamQualityBadge("FLAC", 900, 44100, 16, lossless = true, verified = true)) }
+        compose.onNodeWithText("Revert to Original").performClick()
+        compose.waitUntil(5000) { shadowOf(Looper.getMainLooper()).idle(); monitor.sourcePolicy.value.returnToYouTube }
+        assertEquals(listOf(PlaybackSource.youtube), monitor.sourcePolicy.value.resolutionSourcesFor("playing"))
+        assertEquals("playing", monitor.sourcePolicy.value.requestTrackId)
+        compose.onNodeWithText("Revert to Original").assertExists()
+        Unit
     }
 
     @Test fun menuStatusWaitsForActualSourceChangeAndFailedUpgradeCanBeRetriedWithoutDspChanges() = runBlocking {
@@ -169,6 +198,7 @@ class StreamingSourcesUiTest {
         compose.onNodeWithText("Upgrade Audio").assertExists()
         AudioSignalPath.update { it.copy(sourceId = PlaybackSource.jio.id, source = "JioSaavn",
             enhancerOriginalSourceId = PlaybackSource.youtube.id, enhancerOriginalUri = it.streamUri,
+            enhancerPolicyKey = monitor.sourcePolicy.value.upgradePolicyKey,
             streamUri = "https://aac.saavncdn.com/song_320.mp4",
             quality = StreamQualityBadge("AAC", 320, 44100, verified = true)) }
         compose.onNodeWithText("Revert to Original").performClick()
@@ -184,7 +214,7 @@ class StreamingSourcesUiTest {
             quality = StreamQualityBadge("OPUS", 160, 48000, verified = true)) }
         compose.onNodeWithText("Upgrade Audio").assertExists()
         assertEquals(3, dismissed)
-        assertFalse(monitor.sourcePolicy.value.returnToYouTube)
+        assertTrue(monitor.sourcePolicy.value.returnToYouTube)
         assertEquals(eqBefore, AudioEffectsManager.effectsState.value)
         compose.onAllNodes(isToggleable()).assertCountEquals(0)
         Unit

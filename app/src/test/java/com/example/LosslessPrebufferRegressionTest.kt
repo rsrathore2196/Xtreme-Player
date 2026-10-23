@@ -143,7 +143,7 @@ class LosslessPrebufferRegressionTest {
     }
     @Test fun disabledSourceRejectsEvenAnAlreadyRegisteredAndCachedTransport() = runBlocking {
         val candidate = item("song.flac")
-        assertNotNull(LosslessStreamPrebuffer.prepare(app, candidate, 24_000, { 6_000 }, { true }))
+        assertNotNull("${LosslessDiagnostics.last(candidate.mediaId)}", LosslessStreamPrebuffer.prepare(app, candidate, 24_000, { 6_000 }, { true }))
         assertTrue(withContext(Dispatchers.IO) { MusicCache.fullyCached(app, candidate.localConfiguration!!.uri.toString()) })
         val sources = listOf(source.copy(enabled = false)) + PlaybackSource.builtIns
         PlaybackSourcesPreferences.save(app, sources)

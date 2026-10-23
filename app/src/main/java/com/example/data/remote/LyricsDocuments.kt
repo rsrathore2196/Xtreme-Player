@@ -307,15 +307,20 @@ internal object LyricsDocuments {
         return build(identity, provider, lines, anyTimed)
     }
 
-    private val lineStamp = Regex("\\[(\\d{1,3}:\\d{2}(?:[.:]\\d{1,3})?)]")
-    private val wordStamp = Regex("<(\\d{1,3}:\\d{2}(?:[.:]\\d{1,3})?)>")
-    private fun clock(value: String): Long = BetterLyricsParser.parseTtmlTimestamp(value.replace(Regex("^(\\d+:\\d{2}):(\\d+)$"), "$1.$2"))
+    private val lineStamp = Regex("\\[(\\d{1,3}:\\d{1,2}(?:[.,:]\\d{1,3})?)]")
+    private val wordStamp = Regex("<(\\d{1,3}:\\d{1,2}(?:[.,:]\\d{1,3})?)>")
+    private fun clock(value: String): Long {
+        val parts = value.replace(',', '.').replace(Regex("^(\\d+:\\d{1,2}):(\\d+)$"), "$1.$2").split(':')
+        val seconds = parts[1].split('.')
+        return parts[0].toLong() * 60_000 + seconds[0].toLong() * 1000 +
+            seconds.getOrNull(1).orEmpty().padEnd(3, '0').take(3).toLong()
+    }
 
     fun timedText(identity: SongIdentity, text: String, provider: String): TrackLyrics? {
         val offset = Regex("(?i)\\[offset:([+-]?\\d+)]").find(text)?.groupValues?.get(1)?.toLongOrNull() ?: 0
         val lines = mutableListOf<LyricLine>()
         text.lines().forEach { source ->
-            val row = source.trim()
+            val row = source.trim().removePrefix("\uFEFF")
             val karaoke = Regex("^\\[(\\d+),(\\d+)](.*)$").matchEntire(row)
             if (karaoke != null) {
                 val start = karaoke.groupValues[1].toLong(); val duration = karaoke.groupValues[2].toLong(); val body = karaoke.groupValues[3]
@@ -328,7 +333,7 @@ internal object LyricsDocuments {
                 val words = words(runs, runs.any { it.text.any(Char::isWhitespace) })
                 if (words.isNotEmpty()) lines.add(LyricLine((start + offset).coerceAtLeast(0), runs.joinToString("") { it.text }.trim(), duration, words, isReliableDuration = true))
             } else {
-                val stamps = lineStamp.findAll(row).takeWhile { it.range.first == 0 || row.substring(0, it.range.first).replace(lineStamp, "").isEmpty() }.toList()
+                val stamps = lineStamp.findAll(row).takeWhile { it.range.first == 0 || row.substring(0, it.range.first).replace(lineStamp, "").isBlank() }.toList()
                 if (stamps.isEmpty()) return@forEach
                 val content = row.substring(stamps.last().range.last + 1)
                 val wordTimes = wordStamp.findAll(content).toList()
@@ -350,6 +355,8 @@ internal object LyricsDocuments {
                 }
             }
         }
-        return build(identity, provider, lines)
+        // LRC repeated timestamps describe separate occurrences, not source order.
+        // Normalize this format before the shared validator checks monotonic clocks.
+        return build(identity, provider, lines.sortedBy { it.timestampMs })
     }
 }

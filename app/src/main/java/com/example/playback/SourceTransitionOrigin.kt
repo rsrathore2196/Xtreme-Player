@@ -8,17 +8,19 @@ import com.example.data.remote.StreamingAddons
 import com.example.data.remote.YouTubeAudioStreamService
 
 /** A transport bookmark, never a second queue or a replacement catalog identity. */
-internal data class SourceTransitionOrigin(val track: MusicTrack, val sourceId: String) {
+internal data class SourceTransitionOrigin(val track: MusicTrack, val sourceId: String, val policyKey: String = "") {
     companion object {
         val keys = listOf("enhancer_origin_track", "enhancer_origin_uri", "enhancer_origin_provider",
-            "enhancer_origin_id", "enhancer_origin_bitrate", "enhancer_origin_badge", "enhancer_origin_lossless")
+            "enhancer_origin_id", "enhancer_origin_bitrate", "enhancer_origin_badge", "enhancer_origin_lossless", "enhancer_origin_policy")
         fun capture(track: MusicTrack, policy: PlaybackSourcePolicy): SourceTransitionOrigin? {
             val source = sourceId(track.id, Uri.parse(track.audioUrl), policy) ?: return null
-            return SourceTransitionOrigin(track, source)
+            return SourceTransitionOrigin(track, source, policy.upgradePolicyKey)
         }
         fun sourceId(trackId: String, uri: Uri, policy: PlaybackSourcePolicy): String? {
             val host = uri.host.orEmpty()
+            val registered = StreamingAddons.registeredSourceId(uri.toString())
             return when {
+                registered != null -> policy.playbackSources.firstOrNull { it.kind == PlaybackSourceKind.ADDON && it.id == registered }?.id
                 YouTubeAudioStreamService.isYouTubeAudio(trackId, uri.toString()) -> policy.sourceId(PlaybackSourceKind.YOUTUBE)
                 host == "saavncdn.com" || host.endsWith(".saavncdn.com") -> policy.sourceId(PlaybackSourceKind.JIOSAAVN)
                 host == "archive.org" || host.endsWith(".archive.org") -> policy.sourceId(PlaybackSourceKind.INTERNET_ARCHIVE)
@@ -33,7 +35,7 @@ internal data class SourceTransitionOrigin(val track: MusicTrack, val sourceId: 
             val source = extras.getString(keys[3]).orEmpty().takeIf { it.isNotBlank() } ?: return null
             return SourceTransitionOrigin(track.copy(audioUrl = uri, source = extras.getString(keys[2]).orEmpty(),
                 bitrateKbps = extras.getInt(keys[4]), qualityBadge = extras.getString(keys[5]).orEmpty(),
-                isLossless = extras.getBoolean(keys[6])), source)
+                isLossless = extras.getBoolean(keys[6])), source, extras.getString(keys[7]).orEmpty())
         }
         fun write(extras: Bundle, origin: SourceTransitionOrigin?) {
             keys.forEach(extras::remove)
@@ -42,6 +44,7 @@ internal data class SourceTransitionOrigin(val track: MusicTrack, val sourceId: 
             extras.putString(keys[2], origin.track.source); extras.putString(keys[3], origin.sourceId)
             extras.putInt(keys[4], origin.track.bitrateKbps); extras.putString(keys[5], origin.track.qualityBadge)
             extras.putBoolean(keys[6], origin.track.isLossless)
+            extras.putString(keys[7], origin.policyKey)
         }
     }
 }

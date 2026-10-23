@@ -44,6 +44,10 @@ object LyricsProvider {
         .readTimeout(5, TimeUnit.SECONDS)
         .build()
 
+    /** Share the lyrics connection pool; text transformations are requested only by the user. */
+    internal fun textTransformationClient(): OkHttpClient = httpClient.newBuilder()
+        .callTimeout(12, TimeUnit.SECONDS).build()
+
     private val LRC_REGEX = Pattern.compile("\\[(\\d{1,2}):(\\d{1,2}(?:\\.\\d{1,3})?)\\](.*)")
 
     // In-memory cache for parsed lyrics (0ms instant access)

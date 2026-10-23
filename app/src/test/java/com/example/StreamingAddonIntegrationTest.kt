@@ -32,6 +32,7 @@ class StreamingAddonIntegrationTest {
     private lateinit var base: String
     private val requests = CopyOnWriteArrayList<String>()
     private var stream: () -> String = { "" }
+    private var manifest = """{"id":"personal","name":"My Music","resources":["search","stream"]}"""
     private val song = MusicTrack("online_song", "Song", "Artist", "Album", 180_000, "cover", "https://aac.saavncdn.com/song_320.mp4")
     private val maximum get() = PlaybackSourcePolicy(AudioQualityCeiling.MAX,
         sources = OtherSettingsPreferences.playbackIntegrations(context).sourceList(AudioQualityCeiling.MAX))
@@ -48,7 +49,7 @@ class StreamingAddonIntegrationTest {
             createContext("/a/token/") { exchange ->
                 requests.add(exchange.requestURI.toString())
                 val response = when {
-                    exchange.requestURI.path.endsWith("manifest.json") -> """{"id":"personal","name":"My Music","resources":["search","stream"]}"""
+                    exchange.requestURI.path.endsWith("manifest.json") -> manifest
                     exchange.requestURI.path.endsWith("search") -> """{"tracks":[
                         {"id":"wrong","title":"Song (Live)","artist":"Artist","album":"Album","duration":180},
                         {"id":"right","title":"Song","artist":"Artist","album":"Album","duration":180},
@@ -136,9 +137,11 @@ class StreamingAddonIntegrationTest {
         assertEquals(1, requests.count { it.contains("/search?") })
         assertEquals(1, requests.count { it.contains("/stream/right?") })
         assertFalse(requests.any { it.contains("stream/wrong") })
-        assertTrue(requests.all { "quality=hi_res" in it && "atmos=none" in it })
+        assertTrue(requests.filterNot { it.endsWith("manifest.json") }.all {
+            ("quality=hi_res" in it || "quality=LOSSLESS" in it) && "atmos=none" in it })
+        assertEquals(1, requests.count { it.endsWith("manifest.json") })
         assertNotNull(StreamingAddons.resolve(context, song, maximum))
-        assertEquals(2, requests.size)
+        assertEquals(3, requests.size)
     }
 
     @Test fun customSearchResultKeepsItsProviderAndResolvesItsOwnIdWithoutAnotherSearch() = runBlocking {
@@ -191,7 +194,95 @@ class StreamingAddonIntegrationTest {
         assertEquals("$base/cd.flac", played.audioUrl)
         assertTrue(played.isLossless)
         assertEquals(2, requests.count { it.contains("stream/right") })
-        assertTrue(requests.last().contains("quality=lossless"))
+        assertTrue(requests.last().contains("quality=LOSSLESS"))
+    }
+
+    @Test fun declaredLosslessTierAndFormatOnlyFlacWinBeforeTheAacFallback() = runBlocking {
+        manifest = """{"id":"personal","name":"My Music","settings":[
+            {"key":"quality","default":"HIGH","options":[{"value":"HIGH"},{"value":"LOSSLESS"}]},
+            {"key":"backend","default":"main"}]}"""
+        stream = { if (requests.last().contains("quality=LOSSLESS"))
+            """{"url":"$base/verified.flac","format":"flac","bitrate":900000}""" else
+            """{"url":"$base/fallback.m4a","codec":"aac","bitrate":320000}""" }
+        enable()
+        val played = StreamingAddons.resolve(context, song, maximum)!!
+        assertTrue(played.isLossless); assertEquals("$base/verified.flac", played.audioUrl)
+        assertEquals("Streaming Addon: My Music", played.source)
+        assertTrue(requests.filter { it.contains("/search?") || it.contains("/stream/") }.all {
+            "quality=LOSSLESS" in it && "backend=main" in it && Regex("quality=").findAll(it).count() == 1 })
+        assertEquals(1, requests.count { it.endsWith("manifest.json") })
+        val count = requests.size
+        // A command revision is not a change of recording, server, or quality.
+        val again = StreamingAddons.resolve(context, song, maximum.copy(enhancer = true, requestRevision = 7))!!
+        assertEquals(played.audioUrl, again.audioUrl); assertEquals(count, requests.size)
+    }
+
+    @Test fun aLossyHiResAnswerDoesNotHideTheSameServersRealLosslessTier() = runBlocking {
+        enable()
+        stream = { if (requests.last().contains("quality=hi_res"))
+            """{"url":"$base/lossy.m4a","codec":"aac","bitrate":320000}""" else
+            """{"url":"$base/lossless.flac","fileCodec":"flac","bitrate":900000}""" }
+        val result = StreamingAddons.resolve(context, song, maximum)!!
+        assertTrue(result.isLossless); assertEquals("$base/lossless.flac", result.audioUrl)
+        assertEquals(2, requests.count { it.contains("stream/right") })
+    }
+
+    @Test fun malformedUnsupportedTierDoesNotSkipAWorkingLosslessResponse() = runBlocking {
+        enable()
+        stream = { if (requests.last().contains("quality=hi_res")) "<html>Unsupported tier</html>" else
+            """{"url":"$base/lossless.flac","format":"flac","bitrate":900000}""" }
+        val result = StreamingAddons.resolve(context, song, maximum)!!
+        assertTrue(result.isLossless); assertEquals("$base/lossless.flac", result.audioUrl)
+        assertEquals(2, requests.count { it.contains("stream/right") })
+    }
+
+    @Test fun manualUpgradeRechecksCachedLossyFallbackWhileKeepingSuccessfulLosslessCache() = runBlocking {
+        enable()
+        stream = { """{"url":"$base/temporary.m4a","codec":"aac","bitrate":320000}""" }
+        val first = StreamingAddons.resolve(context, song, maximum)!!
+        assertFalse(first.isLossless)
+        val previous = requests.size
+        stream = { """{"url":"$base/now-available.flac","format":"flac","bitrate":900000}""" }
+        val explicit = maximum.copy(enhancer = true, requestTrackId = song.id, requestRevision = 1)
+        val upgraded = StreamingAddons.resolve(context, song, explicit)!!
+        assertTrue(upgraded.isLossless); assertTrue(requests.size > previous)
+        val completed = requests.size
+        assertEquals(upgraded.audioUrl, StreamingAddons.resolve(context, song, explicit.copy(requestRevision = 2))!!.audioUrl)
+        assertEquals(completed, requests.size)
+    }
+
+    @Test fun stereoRequestsRespectTheServersDeclaredOffValue() = runBlocking {
+        enable()
+        manifest = """{"id":"personal","name":"My Music","settings":[
+            {"key":"atmos","default":"1","options":[{"value":"1"},{"value":"0"}]}]}"""
+        stream = { if (requests.last().contains("atmos=0"))
+            """{"url":"$base/stereo.flac","format":"flac","bitrate":900000}""" else "{}" }
+        assertTrue(StreamingAddons.resolve(context, song, maximum)!!.isLossless)
+        assertTrue(requests.filter { !it.endsWith("manifest.json") }.all { "atmos=0" in it })
+    }
+
+    @Test fun registeredAddonIdentityWinsOverTheOriginalJioCatalogIdAndReportsAdaptiveTransport() = runBlocking {
+        enable()
+        val candidate = song.copy(source = "Streaming Addon: My Music")
+        val result = StreamingAddons.parseStream("""{"url":"$base/audio/play","fileCodec":"flac",
+            "format":"FLAC","manifest":"dash","mimeType":"application/dash+xml"}""", base, song, candidate, maximum)!!
+        assertTrue(result.isLossless); assertEquals(song.id, result.id)
+        assertEquals(MimeTypes.APPLICATION_MPD, StreamingAddons.mime(result.audioUrl))
+        assertEquals(result.source, StreamingAddons.providerName(result.audioUrl))
+        assertEquals(com.example.playback.PlaybackSource.addonId(base), com.example.playback.SourceTransitionOrigin.sourceId(
+            result.id, android.net.Uri.parse(result.audioUrl), maximum))
+        val owner = org.robolectric.Robolectric.buildService(com.example.service.MusicService::class.java).get()
+        val item = androidx.media3.common.MediaItem.Builder().setMediaId(song.id).setUri(result.audioUrl).build()
+        com.example.service.MusicService::class.java.getDeclaredMethod("publishSignalSource", androidx.media3.common.MediaItem::class.java,
+            android.net.Uri::class.java, androidx.media3.common.Format::class.java, Int::class.javaPrimitiveType)
+            .apply { isAccessible = true }.invoke(owner, item, item.localConfiguration!!.uri,
+                androidx.media3.common.Format.Builder().setSampleMimeType(MimeTypes.AUDIO_FLAC).setSampleRate(44100).build(), 900)
+        assertEquals("Streaming Addon: My Music", com.example.playback.AudioSignalPath.state.value.source)
+        com.example.playback.AudioSignalPath.reset()
+        assertNull(StreamingAddons.parseStream("""{"url":"$base/expired.flac","format":"flac","expiresAt":1}""",
+            base, song, candidate, maximum))
+        assertNull(StreamingAddons.parseStream("""{"url":"$base/drm.flac","format":"flac","encrypted":"widevine"}""",
+            base, song, candidate, maximum))
     }
 
     @Test fun dashManifestCodecUnknownsHeaderScopeAndExpiredUrlsAreHandledAccurately() {

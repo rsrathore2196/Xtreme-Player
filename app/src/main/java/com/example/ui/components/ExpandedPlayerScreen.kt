@@ -26,11 +26,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import android.net.Uri
 import android.widget.Toast
-import androidx.core.content.ContextCompat
-import android.content.pm.PackageManager
 import android.os.Build
-import android.Manifest
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.compose.animation.togetherWith
@@ -306,6 +304,15 @@ fun ExpandedPlayerScreen(
     var isSleepTimerOpen by remember { mutableStateOf(false) }
     var isFlipped by remember(track.id) { mutableStateOf(false) }
     var showLyrics by remember(track.id) { mutableStateOf(false) }
+    val lyricsTextController = rememberLyricsTextController(lyrics, showLyrics && isScreenVisible)
+    val lyricsTextState by lyricsTextController.state.collectAsStateWithLifecycle()
+    LaunchedEffect(lyricsTextController, lyricsTextState.message) {
+        lyricsTextState.message?.let {
+            Toast.makeText(context, it, Toast.LENGTH_SHORT).show()
+            lyricsTextController.clearMessage()
+        }
+    }
+
     val integrationsFlow = remember(context) { com.example.data.local.OtherSettingsPreferences.observePlaybackIntegrations(context) }
     val integrations by integrationsFlow.collectAsStateWithLifecycle(
         initialValue = com.example.data.local.OtherSettingsPreferences.playbackIntegrations(context))
@@ -344,21 +351,29 @@ fun ExpandedPlayerScreen(
     val displayedLyricsProvider = lyrics?.provider?.takeIf { it.isNotBlank() } ?: lyricsSettings.provider
 
     val coroutineScope = rememberCoroutineScope()
+    var lyricsImportTarget by rememberSaveable(stateSaver = LyricsImportTargetSaver) { mutableStateOf<MusicTrack?>(null) }
+    val latestTrack by rememberUpdatedState(track)
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
+        val importTrack = lyricsImportTarget
+        lyricsImportTarget = null
         if (uri != null) {
             showLyricsProviderPopup = false
+            if (importTrack == null) {
+                Toast.makeText(context, "Please select the lyrics file again", Toast.LENGTH_SHORT).show()
+                return@rememberLauncherForActivityResult
+            }
             coroutineScope.launch(AppDispatchers.Io) {
                 try {
                     val content = context.contentResolver.openInputStream(uri)?.use { stream ->
-                        stream.bufferedReader(Charsets.UTF_8).readText()
+                        com.example.data.local.CustomLyricsManager.readImport(stream)
                     }
                     if (!content.isNullOrBlank()) {
-                        val saved = com.example.data.local.CustomLyricsManager.saveCustomLyrics(context, track, content)
+                        val saved = com.example.data.local.CustomLyricsManager.saveCustomLyrics(context, importTrack, content)
                         withContext(kotlinx.coroutines.Dispatchers.Main) {
                             if (saved) {
-                                onRetryLyrics()
+                                if (latestTrack.id == importTrack.id) onRetryLyrics()
                                 Toast.makeText(context, "Custom lyrics imported successfully", Toast.LENGTH_SHORT).show()
                             } else {
                                 Toast.makeText(context, "Failed to save custom lyrics", Toast.LENGTH_SHORT).show()
@@ -369,7 +384,8 @@ fun ExpandedPlayerScreen(
                             Toast.makeText(context, "Selected .lrc file is empty", Toast.LENGTH_SHORT).show()
                         }
                     }
-                } catch (e: Exception) {
+                } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                catch (e: Exception) {
                     withContext(kotlinx.coroutines.Dispatchers.Main) {
                         Toast.makeText(context, "Error importing file: ${e.localizedMessage ?: "Unknown error"}", Toast.LENGTH_SHORT).show()
                     }
@@ -378,36 +394,10 @@ fun ExpandedPlayerScreen(
         }
     }
 
-    val permissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { isGranted: Boolean ->
-        if (isGranted) {
-            try {
-                filePickerLauncher.launch(arrayOf("text/*", "application/octet-stream", "*/*"))
-            } catch (_: Exception) {
-                filePickerLauncher.launch(arrayOf("*/*"))
-            }
-        } else {
-            Toast.makeText(context, "Storage permission is required to import lyrics", Toast.LENGTH_SHORT).show()
-        }
-    }
-
+    // SAF grants access to the chosen document; no broad storage permission is needed.
     val launchImportFlow = {
-        val needsPermission = Build.VERSION.SDK_INT <= 32 &&
-            ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.READ_EXTERNAL_STORAGE
-            ) != PackageManager.PERMISSION_GRANTED
-
-        if (needsPermission) {
-            permissionLauncher.launch(Manifest.permission.READ_EXTERNAL_STORAGE)
-        } else {
-            try {
-                filePickerLauncher.launch(arrayOf("text/*", "application/octet-stream", "*/*"))
-            } catch (_: Exception) {
-                filePickerLauncher.launch(arrayOf("*/*"))
-            }
-        }
+        lyricsImportTarget = track
+        filePickerLauncher.launch(arrayOf("text/*", "application/octet-stream", "*/*"))
     }
 
     val fallbackDevices by AudioDeviceManager.availableDevices.collectAsStateWithLifecycle()
@@ -669,7 +659,7 @@ fun ExpandedPlayerScreen(
                                         }
                                     }
                                 PlayerSyncedLyrics(
-                                    lyrics = lyrics,
+                                    lyrics = lyricsTextState.lyrics,
                                     currentPositionMs = uiState.currentPositionMs,
                                     playbackPositionFlow = playbackPositionFlow,
                                     isPlaying = uiState.isPlaying,
@@ -679,6 +669,8 @@ fun ExpandedPlayerScreen(
                                     accentColor = animatedAccentColor,
                                     isDark = isDark,
                                     onRetry = onRetryLyrics,
+                                    showRomanization = lyricsTextState.active == com.example.data.remote.LyricsTextTransformer.Mode.ROMANIZE,
+                                    showTranslation = lyricsTextState.active == com.example.data.remote.LyricsTextTransformer.Mode.TRANSLATE,
                                     viewportAnimating = lyricsViewportAnimating,
                                     modifier = Modifier.weight(1f).fillMaxWidth()
                                 )
@@ -963,10 +955,23 @@ fun ExpandedPlayerScreen(
                                     LyricsTextSizeButton(
                                         onClick = { showLyricsTextSizePopup = true }
                                     )
+                                    LyricsTextTransformButton(
+                                        romanize = true, active = lyricsTextState.active == com.example.data.remote.LyricsTextTransformer.Mode.ROMANIZE,
+                                        loading = lyricsTextState.loading == com.example.data.remote.LyricsTextTransformer.Mode.ROMANIZE,
+                                        enabled = !lyrics?.lines.isNullOrEmpty(),
+                                        onClick = { lyricsTextController.toggle(com.example.data.remote.LyricsTextTransformer.Mode.ROMANIZE) }
+                                    )
                                     LyricsProviderPill(
                                         providerName = displayedLyricsProvider,
+                                        modifier = Modifier.weight(1f, fill = false),
                                         onClick = { showLyricsProviderPopup = true },
                                         isEffectivelyDark = isEffectivelyDark
+                                    )
+                                    LyricsTextTransformButton(
+                                        romanize = false, active = lyricsTextState.active == com.example.data.remote.LyricsTextTransformer.Mode.TRANSLATE,
+                                        loading = lyricsTextState.loading == com.example.data.remote.LyricsTextTransformer.Mode.TRANSLATE,
+                                        enabled = !lyrics?.lines.isNullOrEmpty(),
+                                        onClick = { lyricsTextController.toggle(com.example.data.remote.LyricsTextTransformer.Mode.TRANSLATE) }
                                     )
                                     LyricsExpansionButton(
                                         expanded = lyricsExpanded,
@@ -1289,10 +1294,23 @@ fun ExpandedPlayerScreen(
                             LyricsTextSizeButton(
                                 onClick = { showLyricsTextSizePopup = true }
                             )
+                            LyricsTextTransformButton(
+                                romanize = true, active = lyricsTextState.active == com.example.data.remote.LyricsTextTransformer.Mode.ROMANIZE,
+                                loading = lyricsTextState.loading == com.example.data.remote.LyricsTextTransformer.Mode.ROMANIZE,
+                                enabled = !lyrics?.lines.isNullOrEmpty(),
+                                onClick = { lyricsTextController.toggle(com.example.data.remote.LyricsTextTransformer.Mode.ROMANIZE) }
+                            )
                             LyricsProviderPill(
                                 providerName = displayedLyricsProvider,
+                                modifier = Modifier.weight(1f, fill = false),
                                 onClick = { showLyricsProviderPopup = true },
                                 isEffectivelyDark = isEffectivelyDark
+                            )
+                            LyricsTextTransformButton(
+                                romanize = false, active = lyricsTextState.active == com.example.data.remote.LyricsTextTransformer.Mode.TRANSLATE,
+                                loading = lyricsTextState.loading == com.example.data.remote.LyricsTextTransformer.Mode.TRANSLATE,
+                                enabled = !lyrics?.lines.isNullOrEmpty(),
+                                onClick = { lyricsTextController.toggle(com.example.data.remote.LyricsTextTransformer.Mode.TRANSLATE) }
                             )
                             LyricsExpansionButton(
                                 expanded = true,
@@ -1502,7 +1520,7 @@ fun ExpandedPlayerScreen(
                             }
                             Spacer(Modifier.height(8.dp))
                             PlayerSyncedLyrics(
-                                lyrics = lyrics,
+                                lyrics = lyricsTextState.lyrics,
                                 currentPositionMs = uiState.currentPositionMs,
                                 playbackPositionFlow = playbackPositionFlow,
                                 isPlaying = uiState.isPlaying,
@@ -1512,6 +1530,8 @@ fun ExpandedPlayerScreen(
                                 accentColor = animatedAccentColor,
                                 isDark = isDark,
                                 onRetry = onRetryLyrics,
+                                showRomanization = lyricsTextState.active == com.example.data.remote.LyricsTextTransformer.Mode.ROMANIZE,
+                                showTranslation = lyricsTextState.active == com.example.data.remote.LyricsTextTransformer.Mode.TRANSLATE,
                                 viewportAnimating = lyricsViewportAnimating,
                                 modifier = Modifier.weight(1f).fillMaxWidth()
                             )
@@ -1768,10 +1788,23 @@ fun ExpandedPlayerScreen(
                     LyricsTextSizeButton(
                         onClick = { showLyricsTextSizePopup = true }
                     )
+                    LyricsTextTransformButton(
+                        romanize = true, active = lyricsTextState.active == com.example.data.remote.LyricsTextTransformer.Mode.ROMANIZE,
+                        loading = lyricsTextState.loading == com.example.data.remote.LyricsTextTransformer.Mode.ROMANIZE,
+                        enabled = !lyrics?.lines.isNullOrEmpty(),
+                        onClick = { lyricsTextController.toggle(com.example.data.remote.LyricsTextTransformer.Mode.ROMANIZE) }
+                    )
                     LyricsProviderPill(
                         providerName = displayedLyricsProvider,
+                        modifier = Modifier.weight(1f, fill = false),
                         onClick = { showLyricsProviderPopup = true },
                         isEffectivelyDark = isEffectivelyDark
+                    )
+                    LyricsTextTransformButton(
+                        romanize = false, active = lyricsTextState.active == com.example.data.remote.LyricsTextTransformer.Mode.TRANSLATE,
+                        loading = lyricsTextState.loading == com.example.data.remote.LyricsTextTransformer.Mode.TRANSLATE,
+                        enabled = !lyrics?.lines.isNullOrEmpty(),
+                        onClick = { lyricsTextController.toggle(com.example.data.remote.LyricsTextTransformer.Mode.TRANSLATE) }
                     )
                     LyricsExpansionButton(
                         expanded = lyricsExpanded,
@@ -2122,13 +2155,15 @@ fun ExpandedPlayerScreen(
         )
     }
     if (showLyricsProviderPopup) {
-        val hasCustomLyrics = remember(track.id, lyrics) {
-            com.example.data.local.CustomLyricsManager.hasCustomLyrics(context, track)
+        val customAvailability by produceState(false to false, track.id, lyrics?.provider) {
+            value = withContext(AppDispatchers.Io) {
+                com.example.data.local.CustomLyricsManager.hasCustomLyrics(context, track) to
+                    com.example.data.local.CustomLyricsManager.isCustomLyricsActive(context, track)
+            }
         }
-        val isCustomSelected = remember(track.id, lyrics?.provider, hasCustomLyrics) {
-            hasCustomLyrics && (lyrics?.provider == com.example.data.local.CustomLyricsManager.PROVIDER_NAME ||
-                com.example.data.local.CustomLyricsManager.isCustomLyricsActive(context, track))
-        }
+        val hasCustomLyrics = customAvailability.first
+        val isCustomSelected = hasCustomLyrics && (customAvailability.second ||
+            lyrics?.provider == com.example.data.local.CustomLyricsManager.PROVIDER_NAME)
 
         LyricsProviderSelectionPopup(
             currentProvider = lyricsSettings.provider,
@@ -2315,6 +2350,8 @@ private fun PlayerSyncedLyrics(
     accentColor: State<Color>,
     isDark: Boolean,
     onRetry: () -> Unit,
+    showRomanization: Boolean,
+    showTranslation: Boolean,
     viewportAnimating: Boolean,
     modifier: Modifier
 ) {
@@ -2330,6 +2367,8 @@ private fun PlayerSyncedLyrics(
         accentColor = accentColor.value,
         isDark = isDark,
         onRetry = onRetry,
+        showRomanization = showRomanization,
+        showTranslation = showTranslation,
         modifier = modifier,
         viewportAnimating = viewportAnimating
     )
@@ -2816,9 +2855,7 @@ internal fun SourceUpgradeMenuItem(trackId: String, onDismiss: () -> Unit,
     val policy by monitor.sourcePolicy.collectAsStateWithLifecycle()
     val path by com.example.playback.AudioSignalPath.state.collectAsStateWithLifecycle()
     val current = path.trackId == trackId && path.quality.verified && path.sourceId.isNotBlank()
-    val automatic = current && policy.automaticallyEnhanced(path)
     val upgraded = current && policy.hasVerifiedUpgrade(path)
-    val returnToYouTube = automatic && (path.enhancerOriginalSourceId.isBlank() || path.enhancerOriginalSourceId == path.sourceId)
     DropdownMenuItem(
         text = { Text(if (upgraded) "Revert to Original" else "Upgrade Audio",
             style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, color = colors.textPrimary) },
@@ -2831,7 +2868,9 @@ internal fun SourceUpgradeMenuItem(trackId: String, onDismiss: () -> Unit,
         enabled = current && !path.sourceTransitionInProgress,
         onClick = {
             AppHaptics.performTap(context)
-            monitor.setAudioEnhancer(!upgraded, returnToYouTube = upgraded && returnToYouTube, trackId = trackId)
+            // Revert explicitly selects the original YouTube recording, including
+            // upgrades whose first remembered transport was an AAC fallback.
+            monitor.setAudioEnhancer(!upgraded, returnToYouTube = upgraded, trackId = trackId)
             onDismiss()
         }, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp).testTag("player_audio_upgrade")
     )

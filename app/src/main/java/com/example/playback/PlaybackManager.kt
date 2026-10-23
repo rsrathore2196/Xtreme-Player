@@ -528,11 +528,15 @@ class PlaybackManager(
                         it == com.example.data.repository.RecordingIdentity.isrc(resolved.isrc)
                     } == true
                 }
-                val warmed = if (resolved.isLossless) LosslessStreamPrebuffer.prepare(context, media, original.durationMs,
+                val adaptive = resolved.isLossless && LosslessStreamPrebuffer.isAdaptiveSource(media)
+                val warmed = if (resolved.isLossless && !adaptive) LosslessStreamPrebuffer.prepare(context, media, original.durationMs,
                     currentPosition = { losslessRecoveryPosition(_playbackPosition.value, player.currentPosition, true) },
                     stillCurrent = ::owns, durationToleranceMs = if (sameCode) 8_000L else 5_000L,
                     allowUnknownDuration = sameCode, automatic = automatic) else null
-                val prepared = if (resolved.isLossless) warmed?.covers(
+                val prepared = if (adaptive) LosslessStreamPrebuffer.prepareAdaptiveSource(context, media, original.durationMs,
+                    stillCurrent = ::owns, durationToleranceMs = if (sameCode) 8_000L else 5_000L, automatic = automatic,
+                    currentPosition = { losslessRecoveryPosition(_playbackPosition.value, player.currentPosition, true) })
+                    else if (resolved.isLossless) warmed?.covers(
                     losslessRecoveryPosition(_playbackPosition.value, player.currentPosition, true)) == true
                     else LosslessStreamPrebuffer.warmSource(context, media)
                 if (!owns()) return@launch
@@ -549,7 +553,7 @@ class PlaybackManager(
                 val resume = player.playWhenReady
                 val replacement = original.copy(audioUrl = media.localConfiguration!!.uri.toString(), source = resolved.source,
                     qualityBadge = resolved.qualityBadge, bitrateKbps = resolved.bitrateKbps, isLossless = resolved.isLossless)
-                val targetOrigin = origin.takeUnless { restoring || isYoutubeSource(replacement) }
+                val targetOrigin = origin.takeUnless { restoring || isYoutubeSource(replacement) }?.copy(policyKey = policy.upgradePolicyKey)
                 losslessFallback = LosslessFallback(generation, original, replacement, position, epoch,
                     expectedLossless = resolved.isLossless, expectedOpus = isYoutubeSource(replacement) && resolved.qualityBadge.contains("Opus", true),
                     policyKey = policy.key, originalUsable = failedUrl == null,
@@ -561,7 +565,7 @@ class PlaybackManager(
                     putBoolean("source_transition_pending", true)
                     putBoolean("lossless_upgrade_pending", resolved.isLossless)
                     putString("audio_policy_tier", policy.ceiling.audioQuality.name)
-                    SourceTransitionOrigin.write(this, origin)
+                    SourceTransitionOrigin.write(this, targetOrigin)
                 }
                 player.replaceMediaItem(index, media.buildUpon().setMediaMetadata(
                     media.mediaMetadata.buildUpon().setExtras(extras).build()).build())
@@ -1338,6 +1342,8 @@ class PlaybackManager(
                 return
             }
             fallback.audioConfirmed = if (fallback.expectedLossless) extras.getBoolean("isLossless")
+                else if (com.example.data.remote.StreamingAddons.hasRegisteredTransport(address))
+                    extras.getString("audio_codec").orEmpty().isNotBlank()
                 else !extras.getBoolean("isLossless") && (!fallback.expectedOpus ||
                     extras.getString("audio_codec").orEmpty().contains("opus", true))
             fallback.confirmedAudio = Bundle(extras)
@@ -1500,10 +1506,11 @@ class PlaybackManager(
             player.currentMediaItem?.playbackUri()?.toString() != fallback.upgradedUrl || player.playerError != null) return
         val current = _uiState.value.currentTrack?.takeIf { it.id == fallback.original.id } ?: return
         val extras = fallback.confirmedAudio ?: player.mediaMetadata.extras ?: return
-        if (extras.getBoolean("isLossless") != fallback.expectedLossless || !extras.getBoolean("audio_actual")) return
+        if (extras.getBoolean("isLossless") != fallback.expectedLossless &&
+            !com.example.data.remote.StreamingAddons.hasRegisteredTransport(fallback.upgradedUrl) || !extras.getBoolean("audio_actual")) return
         val updated = current.copy(audioUrl = fallback.upgradedUrl, bitrateKbps = extras.getInt("bitrate"),
             qualityBadge = extras.getString("qualityBadge") ?: fallback.upgraded.qualityBadge,
-            isLossless = fallback.expectedLossless, source = fallback.upgraded.source)
+            isLossless = extras.getBoolean("isLossless"), source = fallback.upgraded.source)
         fallback.activated = true
         enhancerOrigin = fallback.targetOrigin
         if (fallback.targetOrigin == null && player.currentMediaItem?.mediaMetadata?.extras?.containsKey("enhancer_origin_track") == true) {

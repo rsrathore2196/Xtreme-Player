@@ -82,8 +82,10 @@ class MusicService : MediaLibraryService() {
     private fun applyAudioCeiling(selector: DefaultTrackSelector, player: Player) {
         val item = player.currentMediaItem
         val youtube = item?.let { YouTubeAudioStreamService.isYouTubeAudio(it.mediaId, it.localConfiguration?.uri.toString()) } == true
+        val lossless = item?.mediaMetadata?.extras?.getBoolean("isLossless") == true
         selector.parameters = selector.buildUponParameters()
             .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, youtube)
+            .setPreferredAudioMimeTypes(*(if (lossless) arrayOf(MimeTypes.AUDIO_FLAC, MimeTypes.AUDIO_ALAC, MimeTypes.AUDIO_RAW) else emptyArray()))
             .setMaxAudioBitrate(minOf(networkQuality.currentMaxBitrateBps, if (youtube) 320_000 else Int.MAX_VALUE))
             .setExceedAudioConstraintsIfNecessary(true).build()
     }
@@ -205,6 +207,10 @@ class MusicService : MediaLibraryService() {
     private fun resolvedFormatMatches(track: MusicTrack, format: Format): Boolean {
         if (track.isLossless) return com.example.playback.LosslessStreamPrebuffer.audioInfo(format) != null
         val codec = YouTubeAudioStreamService.displayCodec(format.sampleMimeType, format.codecs)
+        if (com.example.data.remote.StreamingAddons.hasRegisteredTransport(track.audioUrl))
+            return if (com.example.playback.StreamQualityBadge.from(format).lossless)
+                com.example.playback.LosslessStreamPrebuffer.audioInfo(format) != null
+            else format.sampleMimeType?.startsWith("audio/") == true && codec.isNotBlank()
         if (!YouTubeAudioStreamService.isYouTubeAudio(track.id, track.audioUrl)) return codec == "AAC"
         return if (track.qualityBadge.contains("Opus", true)) codec == "Opus"
             else codec in setOf("AAC", "Opus", "Vorbis")
@@ -491,6 +497,8 @@ class MusicService : MediaLibraryService() {
                     com.example.playback.AudioSignalPath.sourceBookmark(track.id, uri.toString(), savedOrigin.takeUnless { restoring })
                     return@launch
                 }
+                val targetOrigin = origin.takeUnless { restoring ||
+                    YouTubeAudioStreamService.isYouTubeAudio(resolved.id, resolved.audioUrl) }?.copy(policyKey = policy.upgradePolicyKey)
                 val replacementExtras = Bundle(extras ?: Bundle()).apply {
                     putLong("jio_start_deadline", 0L); remove("jio_youtube_fallback")
                     putBoolean("audio_actual", false); putBoolean("isLossless", resolved.isLossless)
@@ -498,25 +506,29 @@ class MusicService : MediaLibraryService() {
                     putBoolean("lossless_upgrade_pending", resolved.isLossless)
                     putString("media_source", resolved.source); putInt("bitrate", resolved.bitrateKbps)
                     putString("qualityBadge", resolved.qualityBadge); putString("source_policy_key", policy.key)
-                    com.example.playback.SourceTransitionOrigin.write(this, origin)
+                    com.example.playback.SourceTransitionOrigin.write(this, targetOrigin)
                     putStringArrayList("primaryArtists", ArrayList(resolved.primaryArtists))
                 }
-                val replacement = item.buildUpon().setUri(resolved.audioUrl).setMimeType(null)
+                val replacement = item.buildUpon().setUri(resolved.audioUrl)
+                    .setMimeType(com.example.data.remote.StreamingAddons.mime(resolved.audioUrl))
                     .setRequestMetadata(item.requestMetadata.buildUpon().setMediaUri(Uri.parse(resolved.audioUrl)).build())
                     .setMediaMetadata(metadata.buildUpon().setExtras(replacementExtras).build()).build()
-                val targetOrigin = origin.takeUnless { restoring ||
-                    YouTubeAudioStreamService.isYouTubeAudio(resolved.id, resolved.audioUrl) }
                 if (resolved.isLossless) {
                     val sameCode = withContext(AppDispatchers.CpuBounded) {
                         com.example.data.repository.RecordingIdentity.isrc(track.isrc)?.let {
                             it == com.example.data.repository.RecordingIdentity.isrc(resolved.isrc)
                         } == true
                     }
-                    val prepared = com.example.playback.LosslessStreamPrebuffer.prepare(this@MusicService, replacement,
+                    val adaptive = com.example.playback.LosslessStreamPrebuffer.isAdaptiveSource(replacement)
+                    val prepared = if (!adaptive) com.example.playback.LosslessStreamPrebuffer.prepare(this@MusicService, replacement,
                         track.durationMs, currentPosition = { player.currentPosition }, stillCurrent = { owns() },
-                        durationToleranceMs = if (sameCode) 8_000L else 5_000L, allowUnknownDuration = sameCode, automatic = automatic)
+                        durationToleranceMs = if (sameCode) 8_000L else 5_000L, allowUnknownDuration = sameCode, automatic = automatic) else null
+                    val ready = if (adaptive) com.example.playback.LosslessStreamPrebuffer.prepareAdaptiveSource(
+                        this@MusicService, replacement, track.durationMs, stillCurrent = { owns() },
+                        durationToleranceMs = if (sameCode) 8_000L else 5_000L, automatic = automatic,
+                        currentPosition = { player.currentPosition }) else prepared?.covers(player.currentPosition) == true
                     if (!owns()) return@launch
-                    if (prepared == null || !prepared.covers(player.currentPosition)) {
+                    if (!ready) {
                         com.example.playback.LosslessDiagnostics.prebufferRejected(track.id, prepared != null)
                         app.repository.rejectLosslessUpgrade(track, resolved.audioUrl)
                         return@launch
@@ -781,6 +793,7 @@ class MusicService : MediaLibraryService() {
                 val quality = audioInputQuality(item, format)
                 val host = uri.host.orEmpty().lowercase(java.util.Locale.ROOT)
                 val archive = host == "archive.org" || host.endsWith(".archive.org")
+                val addonSource = com.example.data.remote.StreamingAddons.providerName(uri.toString())
                 if (archive && item.mediaMetadata.extras?.getBoolean("isLossless") == true) {
                     val before = item.mediaMetadata.extras
                     val audio = com.example.playback.LosslessStreamPrebuffer.audioInfo(format, quality.bitrateKbps)
@@ -814,10 +827,11 @@ class MusicService : MediaLibraryService() {
                     return
                 }
                 val mediaSource = when {
+                    addonSource != null -> addonSource
                     archive -> "INTERNET_ARCHIVE"
                     YouTubeAudioStreamService.isYouTubeAudio(item.mediaId, uri.toString()) -> "YOUTUBE"
                     uri.scheme in setOf("file", "content") -> "LOCAL"
-                    host == "saavncdn.com" || host.endsWith(".saavncdn.com") || item.mediaId.startsWith("online_") -> "JIOSAAVN"
+                    host == "saavncdn.com" || host.endsWith(".saavncdn.com") -> "JIOSAAVN"
                     else -> item.mediaMetadata.extras?.getString("media_source").orEmpty().ifBlank { "STREAM" }
                 }
                 verifiedSignalUri = uri; verifiedSignalId = item.mediaId
@@ -1086,6 +1100,8 @@ class MusicService : MediaLibraryService() {
     private fun publishSignalSource(item: MediaItem, uri: Uri, format: Format? = null, bitrate: Int = 0) {
         val host = uri.host.orEmpty()
         val provider = when {
+            com.example.data.remote.StreamingAddons.providerName(uri.toString()) != null ->
+                com.example.data.remote.StreamingAddons.providerName(uri.toString()).orEmpty()
             YouTubeAudioStreamService.isYouTubeAudio(item.mediaId, uri.toString()) -> "YouTube Music"
             host == "archive.org" || host.endsWith(".archive.org") -> "Internet Archive"
             host == "saavncdn.com" || host.endsWith(".saavncdn.com") -> "JioSaavn"
@@ -1093,11 +1109,13 @@ class MusicService : MediaLibraryService() {
             else -> item.mediaMetadata.extras?.getString("media_source").orEmpty().ifBlank { "Audio stream" }
         }
         val sourceId = com.example.playback.SourceTransitionOrigin.sourceId(item.mediaId, uri, networkQuality.sourcePolicy.value).orEmpty()
-        val originalSourceId = item.mediaMetadata.extras?.getString("enhancer_origin_id").orEmpty()
-        val originalUri = item.mediaMetadata.extras?.getString("enhancer_origin_uri").orEmpty()
-        if (format == null) com.example.playback.AudioSignalPath.source(item.mediaId, provider, sourceId, originalSourceId, uri.toString(), originalUri)
+        val bookmark = item.mediaMetadata.extras?.takeIf { it.getString("enhancer_origin_track") == item.mediaId }
+        val originalSourceId = bookmark?.getString("enhancer_origin_id").orEmpty()
+        val originalUri = bookmark?.getString("enhancer_origin_uri").orEmpty()
+        val originalPolicyKey = bookmark?.getString("enhancer_origin_policy").orEmpty()
+        if (format == null) com.example.playback.AudioSignalPath.source(item.mediaId, provider, sourceId, originalSourceId, uri.toString(), originalUri, originalPolicyKey)
         else com.example.playback.AudioSignalPath.verifiedSource(item.mediaId, provider, format, bitrate, sourceId, originalSourceId, uri.toString(),
-            verifiedDecoderName.takeIf { verifiedDecoderId == item.mediaId && verifiedDecoderUri == uri }, originalUri)
+            verifiedDecoderName.takeIf { verifiedDecoderId == item.mediaId && verifiedDecoderUri == uri }, originalUri, originalPolicyKey)
     }
 
     private fun publishVerifiedSignal() {

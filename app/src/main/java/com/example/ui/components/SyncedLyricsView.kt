@@ -154,7 +154,9 @@ fun SyncedLyricsView(
     onRetry: () -> Unit = {},
     currentPositionProvider: () -> Long = { playbackPositionFlow?.value ?: currentPositionMs },
     modifier: Modifier = Modifier,
-    viewportAnimating: Boolean = false
+    viewportAnimating: Boolean = false,
+    showRomanization: Boolean = true,
+    showTranslation: Boolean = true
 ) {
     val appColors = LocalAppColors.current
     val context = LocalContext.current
@@ -221,8 +223,9 @@ fun SyncedLyricsView(
         fontWeight = FontWeight.ExtraBold, fontFamily = FontFamily.SansSerif, textAlign = TextAlign.Start)
     val romanizationStyle = LocalTextStyle.current.copy(fontSize = (14 * lyricsTextScale).sp, lineHeight = (18 * lyricsTextScale).sp,
         fontWeight = FontWeight.Medium, textAlign = TextAlign.Start)
-    val rowHeights = remember(lyrics?.trackId, lines, viewportSize.width, density, lyricStyle, romanizationStyle) { mutableMapOf<Int, Int>() }
-    var hasInitialScrolled by remember(lyrics?.trackId, lines) { mutableStateOf(false) }
+    val rowHeights = remember(lyrics?.trackId, lines, viewportSize.width, density, lyricStyle, romanizationStyle,
+        showRomanization, showTranslation) { mutableMapOf<Int, Int>() }
+    var hasInitialScrolled by remember(lyrics?.trackId) { mutableStateOf(false) }
     LaunchedEffect(lyrics?.trackId, lines, activeLineIndex, isSynced, followPlayback, isDragged, viewportSize, rowHeights, viewportAnimating) {
         // Expansion changes viewport bounds every frame. Follow once after it
         // settles instead of canceling/restarting a 350ms scroll on every resize.
@@ -246,10 +249,13 @@ fun SyncedLyricsView(
                 val line = lines[targetIndex]
                 val constraints = Constraints(maxWidth = layout.viewportSize.width.coerceAtLeast(1))
                 val mainHeight = textMeasurer.measure(line.text, style = lyricStyle, constraints = constraints).size.height
-                val romanizationHeight = line.romanization?.takeIf { it.isNotBlank() }?.let {
+                val romanizationHeight = line.romanization?.takeIf { showRomanization && it.isNotBlank() }?.let {
                     textMeasurer.measure(it, style = romanizationStyle, constraints = constraints).size.height + with(density) { 4.dp.roundToPx() }
                 } ?: 0
-                mainHeight + romanizationHeight + with(density) { 6.dp.roundToPx() * 2 }
+                val translationHeight = line.translation?.takeIf { showTranslation && it.isNotBlank() }?.let {
+                    textMeasurer.measure(it, style = romanizationStyle, constraints = constraints).size.height + with(density) { 4.dp.roundToPx() }
+                } ?: 0
+                mainHeight + romanizationHeight + translationHeight + with(density) { 6.dp.roundToPx() * 2 }
             }
             val scrollOffset = (targetHeight / 2f - viewportCenter).roundToInt()
             if (hasInitialScrolled) listState.animateScrollToItem(targetIndex, scrollOffset)
@@ -420,7 +426,7 @@ fun SyncedLyricsView(
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         // 1. Romanization subtitle (if available)
-                        if (!item.romanization.isNullOrBlank()) {
+                        if (showRomanization && !item.romanization.isNullOrBlank()) {
                             Text(
                                 text = item.romanization,
                                 fontSize = romanizationStyle.fontSize,
@@ -452,6 +458,11 @@ fun SyncedLyricsView(
                                 currentPlayheadMs
                             }
                         )
+                        if (showTranslation && !item.translation.isNullOrBlank()) {
+                            Text(text = item.translation, style = romanizationStyle,
+                                color = if (isActive) activeTextColor.copy(alpha = 0.85f) else inactiveTextColor.copy(alpha = 0.55f),
+                                modifier = Modifier.fillMaxWidth().testTag("lyrics_translation_$index"))
+                        }
                     }
                 }
             }

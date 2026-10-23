@@ -145,11 +145,14 @@ class EnhancerSourceTransitionTest {
         } finally { AudioSignalPath.reset() }
     }
 
-    @Test fun verifiedFallbackAboveYoutubeCanRevertEvenWhenAnEarlierSourceHadNoMatch() {
+    @Test fun aFallbackNeedsAnActualReplacementBookmarkBeforeItCanClaimAnUpgrade() {
         val policy = PlaybackSourcePolicy(AudioQualityCeiling.MAX)
         val actualJio = SignalPathState(trackId = video.id, sourceId = PlaybackSource.jio.id,
             streamUri = jio.audioUrl, quality = StreamQualityBadge("AAC", 320, 44100, verified = true))
-        assertTrue(policy.hasVerifiedUpgrade(actualJio))
+        assertFalse("AAC fallback is not the highest eligible source", policy.hasVerifiedUpgrade(actualJio))
+        assertTrue("A completed replacement is still reversible when an earlier source had no match",
+            policy.hasVerifiedUpgrade(actualJio.copy(enhancerOriginalSourceId = PlaybackSource.youtube.id,
+                enhancerOriginalUri = video.audioUrl, enhancerPolicyKey = policy.upgradePolicyKey)))
         val returned = actualJio.copy(sourceId = PlaybackSource.youtube.id, streamUri = video.audioUrl,
             enhancerOriginalSourceId = PlaybackSource.jio.id, enhancerOriginalUri = jio.audioUrl,
             quality = StreamQualityBadge("OPUS", 146, 48000, verified = true))
@@ -214,7 +217,7 @@ class EnhancerSourceTransitionTest {
         val ordered = listOf(PlaybackSource.jio, PlaybackSource.youtube, PlaybackSource.archive)
         val policy = PlaybackSourcePolicy(AudioQualityCeiling.HIGH, sources = ordered)
         val playing = SignalPathState(trackId = video.id, source = "JioSaavn", sourceId = PlaybackSource.jio.id,
-            quality = StreamQualityBadge("AAC", 320, 44100, verified = true))
+            streamUri = jio.audioUrl, quality = StreamQualityBadge("AAC", 320, 44100, verified = true))
         assertTrue(policy.automaticallyEnhanced(playing))
         assertFalse(policy.automaticallyEnhanced(playing.copy(quality = playing.quality.copy(verified = false))))
         assertFalse(policy.automaticallyEnhanced(playing.copy(sourceId = PlaybackSource.youtube.id)))
@@ -253,7 +256,7 @@ class EnhancerSourceTransitionTest {
     @Test fun automaticArchiveOffReturnsToYoutubeAndCannotMistakeAnAacDecoderForLossless() = runBlocking {
         val policy = PlaybackSourcePolicy(AudioQualityCeiling.MAX, sources = listOf(PlaybackSource.archive, PlaybackSource.jio, PlaybackSource.youtube))
         val signal = SignalPathState(trackId = archive.id, sourceId = PlaybackSource.archive.id,
-            quality = StreamQualityBadge("FLAC", 900, 44100, 16, lossless = true, verified = true))
+            streamUri = archive.audioUrl, quality = StreamQualityBadge("FLAC", 900, 44100, 16, lossless = true, verified = true))
         assertTrue(policy.automaticallyEnhanced(signal))
         assertFalse(policy.automaticallyEnhanced(signal.copy(quality = StreamQualityBadge("AAC", 320, verified = true))))
         val resolver = StreamResolver(searchLossless = { error("An explicit return to YouTube must not search Archive") },
@@ -265,6 +268,38 @@ class EnhancerSourceTransitionTest {
         assertEquals(archive.id, result.id)
         assertEquals(video.audioUrl, result.audioUrl)
         assertEquals("YouTube Music", result.source); assertFalse(result.isLossless)
+    }
+
+    @Test fun sourceLabelsAndSavedRequestsCannotTurnAnUnchangedOrUnknownStreamIntoAnUpgrade() {
+        val policy = PlaybackSourcePolicy(AudioQualityCeiling.HIGH, enhancer = true)
+        val signal = SignalPathState(trackId = video.id, sourceId = PlaybackSource.jio.id,
+            streamUri = jio.audioUrl, quality = StreamQualityBadge("AAC", 320, 44100, verified = true))
+        assertTrue(policy.hasVerifiedUpgrade(signal))
+        assertFalse(policy.hasVerifiedUpgrade(signal.copy(streamUri = video.audioUrl)))
+        assertFalse(policy.hasVerifiedUpgrade(signal.copy(streamUri = "")))
+        assertFalse(policy.hasVerifiedUpgrade(signal.copy(quality = signal.quality.copy(verified = false))))
+        val higher = PlaybackSource("custom_top", PlaybackSourceKind.ADDON, "Server", baseUrl = "https://server.example")
+        val maximum = policy.copy(ceiling = AudioQualityCeiling.MAX, sources = listOf(higher) + PlaybackSource.builtIns)
+        assertFalse(maximum.hasVerifiedUpgrade(signal))
+        assertFalse(maximum.hasVerifiedUpgrade(signal.copy(enhancerOriginalSourceId = signal.sourceId,
+            enhancerOriginalUri = signal.streamUri)))
+        val upgraded = signal.copy(enhancerOriginalSourceId = PlaybackSource.youtube.id,
+            enhancerOriginalUri = video.audioUrl, enhancerPolicyKey = policy.upgradePolicyKey)
+        assertTrue(policy.hasVerifiedUpgrade(upgraded))
+        assertFalse("Enabling a new higher-priority source reopens the upgrade question", maximum.hasVerifiedUpgrade(upgraded))
+    }
+
+    @Test fun explicitReturnCannotResolveBackToTheSubstituteWhenYoutubeFails() = runBlocking {
+        var substituteCalls = 0
+        val resolver = StreamResolver(searchStandard = { _, _ -> substituteCalls++; listOf(jio) },
+            searchLossless = { substituteCalls++; listOf(archive) }, resolveYouTube = { _, _, _, _ -> null })
+        val policy = PlaybackSourcePolicy(AudioQualityCeiling.MAX, returnToYouTube = true, requestTrackId = video.id)
+        assertEquals(listOf(PlaybackSource.youtube), policy.resolutionSourcesFor(video.id))
+        try {
+            resolver.resolve(jio.copy(id = video.id), policy.ceiling.audioQuality, sourcePolicy = policy)
+            fail("A revert cannot silently reselect AAC/FLAC")
+        } catch (_: com.example.data.repository.TrackUnavailableException) { }
+        assertEquals(0, substituteCalls)
     }
 
 }

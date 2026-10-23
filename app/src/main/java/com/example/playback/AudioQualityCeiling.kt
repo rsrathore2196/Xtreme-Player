@@ -1,6 +1,7 @@
 package com.example.playback
 
 import androidx.compose.runtime.Immutable
+import androidx.core.net.toUri
 
 @Immutable
 enum class AudioQualityCeiling(val maxBitrateBps: Int, val label: String, val description: String) {
@@ -70,29 +71,41 @@ data class PlaybackSourcePolicy(val ceiling: AudioQualityCeiling, val enhancer: 
         returnsToYouTube(track.id) || !acceptsRemoteTrack(track) && originalSourceId != null &&
             playbackSources.none { it.id == originalSourceId }
     fun resolutionSourcesFor(trackId: String): List<PlaybackSource> = if (returnsToYouTube(trackId))
-        playbackSources.filter { it.kind == PlaybackSourceKind.YOUTUBE } + playbackSources.filter { it.kind != PlaybackSourceKind.YOUTUBE }
+        playbackSources.filter { it.kind == PlaybackSourceKind.YOUTUBE }
         else playbackSources
     fun allows(kind: PlaybackSourceKind): Boolean = playbackSources.any { it.kind == kind }
     fun sourceId(kind: PlaybackSourceKind): String? = configuredSources.firstOrNull { it.kind == kind }?.id
     val allowsArchive: Boolean get() = maximum && online && allows(PlaybackSourceKind.INTERNET_ARCHIVE)
     val key: String get() = "sources-v8:${ceiling.name}:$enhancer:$returnToYouTube:$online:$requestRevision:$requestTrackId:$ready:" +
         playbackSources.joinToString(",") { "${it.id}:${it.kind.name}:${it.baseUrl.hashCode()}" }
-    /** Only an activated decoder format can make the switch automatically reflect a preferred source. */
-    fun automaticallyEnhanced(state: SignalPathState): Boolean {
-        if (!state.quality.verified || state.quality.codec.isBlank() || state.trackId.isBlank() ||
-            !acceptsStreamBitrate(state.quality.bitrateKbps, android.net.Uri.parse(state.streamUri))) return false
-        // A verified fallback above YouTube is also a real substituted source, even
-        // when an earlier enabled server did not have this particular recording.
-        val preferred = playbackSources.firstOrNull { it.id == state.sourceId } ?: return false
-        return preferred.kind != PlaybackSourceKind.YOUTUBE &&
-            (preferred.kind != PlaybackSourceKind.INTERNET_ARCHIVE || state.quality.lossless)
+    /** Manual upgrades use the source list's upgrade order, not normal YouTube-first routing. */
+    internal val upgradeSources: List<PlaybackSource> get() = configuredSources.filter {
+        it.enabled && it.available(ceiling) && (it.kind != PlaybackSourceKind.ADDON || it.baseUrl.isNotBlank())
     }
-    fun hasVerifiedUpgrade(state: SignalPathState): Boolean = state.quality.verified && state.quality.codec.isNotBlank() &&
-        state.trackId.isNotBlank() && state.sourceId.isNotBlank() &&
-        state.sourceId != sourceId(PlaybackSourceKind.YOUTUBE) &&
-        ((state.enhancerOriginalSourceId.isNotBlank() && state.enhancerOriginalUri.isNotBlank() &&
-            state.streamUri.isNotBlank() && state.enhancerOriginalSourceId != state.sourceId &&
-            state.enhancerOriginalUri != state.streamUri) || automaticallyEnhanced(state))
+    internal val upgradePolicyKey: String get() = "${ceiling.name}:" + upgradeSources.joinToString(",") {
+        "${it.id}:${it.baseUrl.hashCode()}"
+    }
+    private fun verifiedReplacement(state: SignalPathState): PlaybackSource? {
+        if (!state.quality.verified || state.quality.codec.isBlank() || state.trackId.isBlank() || state.streamUri.isBlank()) return null
+        val uri = state.streamUri.toUri()
+        if (!acceptsStreamBitrate(state.quality.bitrateKbps, uri)) return null
+        val source = upgradeSources.firstOrNull { it.id == state.sourceId } ?: return null
+        if (source.kind == PlaybackSourceKind.YOUTUBE ||
+            source.kind == PlaybackSourceKind.INTERNET_ARCHIVE && !state.quality.lossless ||
+            SourceTransitionOrigin.sourceId(state.trackId, uri, this) != source.id) return null
+        return source
+    }
+    /** A lossy fallback alone does not prove that a higher-priority source was activated. */
+    fun automaticallyEnhanced(state: SignalPathState): Boolean = verifiedReplacement(state)?.id?.let {
+        it == upgradeSources.firstOrNull()?.id
+    } == true
+    fun hasVerifiedUpgrade(state: SignalPathState): Boolean {
+        if (verifiedReplacement(state) == null) return false
+        val replaced = state.enhancerOriginalSourceId.isNotBlank() && state.enhancerOriginalUri.isNotBlank() &&
+            state.enhancerOriginalSourceId != state.sourceId && state.enhancerOriginalUri != state.streamUri &&
+            state.enhancerPolicyKey == upgradePolicyKey
+        return replaced || automaticallyEnhanced(state)
+    }
     fun isPreferred(track: com.example.data.model.MusicTrack): Boolean {
         val first = resolutionSourcesFor(track.id).firstOrNull() ?: return false
         val host = android.net.Uri.parse(track.audioUrl).host.orEmpty()

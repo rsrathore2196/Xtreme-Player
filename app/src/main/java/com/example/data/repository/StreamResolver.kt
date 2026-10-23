@@ -345,7 +345,7 @@ internal class StreamResolver(
                 if (track.source.startsWith("Streaming Addon:")) policy.playbackSources
                     .filter { it.kind == PlaybackSourceKind.ADDON &&
                         com.example.data.remote.StreamingAddons.fromSource(track.audioUrl, it.id) }.firstNotNullOfOrNull { source ->
-                        attempt(10_000L) { resolveAddon(source, track, policy, rejectedUrls + listOfNotNull(failedUrl)) }
+                        attempt(16_000L) { resolveAddon(source, track, policy, rejectedUrls + listOfNotNull(failedUrl)) }
                     }
                 else if (archiveTransport(track.audioUrl)) null
                 else if (youtubeSelection && policy.allows(PlaybackSourceKind.YOUTUBE)) youtubeExact(track)
@@ -356,8 +356,7 @@ internal class StreamResolver(
                     android.net.Uri.parse(track.audioUrl), policy)
                 val providers = if (preferredSourceId != null) policy.playbackSources.filter { it.id == preferredSourceId }
                     else if (manualUpgrade && currentProvider != null)
-                        policy.configuredSources.filter { it.enabled && it.available(policy.ceiling) }
-                            .takeWhile { it.id != currentProvider }
+                        policy.upgradeSources.takeWhile { it.id != currentProvider }
                     else policy.resolutionSourcesFor(track.id)
                 suspend fun walk(ordered: List<PlaybackSource>): MusicTrack? {
                   for (provider in ordered) {
@@ -372,7 +371,7 @@ internal class StreamResolver(
                                 isLossless = true, source = "INTERNET_ARCHIVE")) }
                             direct?.takeIf { it.audioUrl == archiveUrl && usable(it) && supportsLossless(it) }
                         } else archive()
-                        PlaybackSourceKind.ADDON -> attempt(10_000L) {
+                        PlaybackSourceKind.ADDON -> attempt(16_000L) {
                             resolveAddon(provider, track, policy, rejectedUrls + listOfNotNull(failedUrl))
                         }
                     } } catch (cancelled: CancellationException) { throw cancelled }

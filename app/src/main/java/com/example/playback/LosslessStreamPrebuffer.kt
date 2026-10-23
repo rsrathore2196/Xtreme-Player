@@ -28,6 +28,10 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import java.io.IOException
 import java.net.SocketTimeoutException
 import kotlin.math.abs
@@ -91,6 +95,143 @@ internal object LosslessStreamPrebuffer {
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (_: Exception) { false }
         finally { source.close() }
+    }
+
+    internal fun isAdaptiveSource(item: MediaItem): Boolean =
+        item.localConfiguration?.mimeType in setOf(MimeTypes.APPLICATION_MPD, MimeTypes.APPLICATION_M3U8)
+
+    /** Let Media3 prepare adaptive manifests/init segments; progressive extractors cannot sniff an MPD.
+     * No second player, audio sink or audio focus. Decoder input is still verified at activation.
+     */
+    suspend fun prepareAdaptiveSource(context: Context, item: MediaItem, expectedDurationMs: Long,
+        stillCurrent: () -> Boolean, durationToleranceMs: Long = 5_000L, automatic: Boolean = false,
+        currentPosition: () -> Long = { 0L }): Boolean {
+        if (automatic) return com.example.performance.BackgroundWorkCoordinator.startup(
+            com.example.performance.BackgroundWorkCoordinator.StartupPriority.DEFERRED, requireForeground = false,
+            label = "Adaptive lossless preparation") {
+            prepareAdaptiveSource(context, item, expectedDurationMs, stillCurrent, durationToleranceMs, currentPosition = currentPosition)
+        }
+        return withContext(com.example.performance.AppDispatchers.Io) {
+            worker.withLock {
+                val uri = item.localConfiguration?.uri ?: return@withLock false
+                fun allowed(): Boolean {
+                    val policy = NetworkQualityMonitor.getInstance(context).sourcePolicySnapshot()
+                    return policy.online && com.example.data.remote.StreamingAddons.isVerified(uri.toString(), policy)
+                }
+                if (!allowed()) return@withLock false
+                data class Metadata(val formats: List<Format>, val durationMs: Long, val manifest: Any?)
+                val upstream = MusicCache.createCacheDataSourceFactory(context, 5_000, 5_000)
+                val bytes = java.util.concurrent.atomic.AtomicLong()
+                val factory = androidx.media3.datasource.DataSource.Factory {
+                    val delegate = upstream.createDataSource()
+                    object : androidx.media3.datasource.DataSource by delegate {
+                        override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                            if (bytes.get() >= 4 * 1024 * 1024L) throw IOException("Adaptive preparation byte budget reached")
+                            return delegate.read(buffer, offset, minOf(length.toLong(), 4 * 1024 * 1024L - bytes.get()).toInt())
+                                .also { if (it > 0) bytes.addAndGet(it.toLong()) }
+                        }
+                    }
+                }
+                try {
+                    val metadata = withContext(Dispatchers.Main.immediate) {
+                        if (!stillCurrent()) return@withContext null
+                        val helper = androidx.media3.exoplayer.offline.DownloadHelper.forMediaItem(item,
+                            androidx.media3.common.TrackSelectionParameters.DEFAULT_WITHOUT_CONTEXT, null, factory)
+                        try {
+                            withTimeoutOrNull(12_000L) { suspendCancellableCoroutine<Metadata> { continuation ->
+                                helper.prepare(object : androidx.media3.exoplayer.offline.DownloadHelper.Callback {
+                                    override fun onPrepared(value: androidx.media3.exoplayer.offline.DownloadHelper) {
+                                        if (!continuation.isActive) return
+                                        if (value.periodCount > 8 || (0 until value.periodCount).any {
+                                            value.getTrackGroups(it).length > 8 || (0 until value.getTrackGroups(it).length).any { group ->
+                                                value.getTrackGroups(it)[group].length > 16 }
+                                        }) {
+                                            continuation.resumeWithException(IOException("Adaptive track budget reached")); return
+                                        }
+                                        val formats = (0 until value.periodCount).flatMap { period ->
+                                            val groups = value.getTrackGroups(period)
+                                            (0 until groups.length).flatMap { group ->
+                                                (0 until groups[group].length).map { groups[group].getFormat(it) }
+                                            }
+                                        }
+                                        val duration = when (val manifest = value.manifest) {
+                                            is androidx.media3.exoplayer.dash.manifest.DashManifest -> manifest.durationMs
+                                            is androidx.media3.exoplayer.hls.HlsManifest -> manifest.mediaPlaylist.durationUs / 1000
+                                            else -> C.TIME_UNSET
+                                        }
+                                        continuation.resume(Metadata(formats, duration, value.manifest))
+                                    }
+                                    override fun onPrepareError(value: androidx.media3.exoplayer.offline.DownloadHelper, error: IOException) {
+                                        if (continuation.isActive) continuation.resumeWithException(error)
+                                    }
+                                })
+                            } }
+                        } finally { helper.release() }
+                    } ?: run {
+                        LosslessDiagnostics.record(item.mediaId, LosslessDiagnostics.Reason.LOOKUP_TIMEOUT, "adaptive-prebuffer")
+                        return@withLock false
+                    }
+                    val supported = withContext(com.example.performance.AppDispatchers.CpuBounded) {
+                        val audio = metadata.formats.filter { it.sampleMimeType?.startsWith("audio/") == true }
+                        audio.isNotEmpty() && metadata.formats.none { it.sampleMimeType?.startsWith("video/") == true } &&
+                            audio.any { format -> format.drmInitData == null && audioInfo(format) != null &&
+                                (format.sampleMimeType == MimeTypes.AUDIO_RAW ||
+                                    MediaCodecUtil.getDecoderInfos(format.sampleMimeType!!, false, false).any { it.isFormatSupported(format) }) }
+                    }
+                    if (!supported || metadata.durationMs <= 0L || expectedDurationMs > 0L &&
+                        abs(metadata.durationMs - expectedDurationMs) > durationToleranceMs) return@withLock false
+                    val position = withContext(Dispatchers.Main.immediate) {
+                        if (stillCurrent()) currentPosition().coerceAtLeast(0L) else null
+                    } ?: return@withLock false
+                    val ranges = withContext(com.example.performance.AppDispatchers.CpuBounded) {
+                        val dash = metadata.manifest as? androidx.media3.exoplayer.dash.manifest.DashManifest
+                        if (dash == null || dash.dynamic || dash.periodCount == 0) emptyList() else {
+                            val periodIndex = (0 until dash.periodCount).lastOrNull { dash.getPeriod(it).startMs <= position } ?: 0
+                            val period = dash.getPeriod(periodIndex)
+                            val representation = period.adaptationSets.filter { it.type == C.TRACK_TYPE_AUDIO }
+                                .flatMap { it.representations }.filter { audioInfo(it.format) != null && it.format.drmInitData == null }
+                                .maxByOrNull { it.format.bitrate }
+                            val base = representation?.baseUrls?.firstOrNull()?.url
+                            if (representation == null || base == null) emptyList() else buildList {
+                                fun addRange(range: androidx.media3.exoplayer.dash.manifest.RangedUri?) {
+                                    if (range != null) add(DataSpec.Builder().setUri(range.resolveUri(base)).setPosition(range.start)
+                                        .setLength(range.length).build())
+                                }
+                                addRange(representation.initializationUri)
+                                addRange(representation.indexUri)
+                                representation.index?.let { index ->
+                                    val duration = dash.getPeriodDurationUs(periodIndex)
+                                    addRange(index.getSegmentUrl(index.getSegmentNum((position - period.startMs).coerceAtLeast(0L) * 1000, duration)))
+                                }
+                            }
+                        }
+                    }
+                    for (range in ranges.distinctBy { Triple(it.uri, it.position, it.length) }.take(3)) {
+                        if (!allowed() || !withContext(Dispatchers.Main.immediate) { stillCurrent() }) return@withLock false
+                        currentCoroutineContext().ensureActive()
+                        val source = factory.createDataSource()
+                        try {
+                            source.open(range)
+                            val buffer = ByteArray(32 * 1024)
+                            var read = 0
+                            while (read < 1024 * 1024) {
+                                currentCoroutineContext().ensureActive()
+                                val count = source.read(buffer, 0, minOf(buffer.size, 1024 * 1024 - read))
+                                if (count < 0) break
+                                read += count
+                            }
+                            if (read == 0) return@withLock false
+                        } finally { source.close() }
+                    }
+                    allowed() && withContext(Dispatchers.Main.immediate) { stillCurrent() }
+                } catch (cancelled: CancellationException) { throw cancelled }
+                catch (error: Exception) {
+                    val kind = generateSequence<Throwable>(error) { it.cause }.take(4).joinToString(":") { it.javaClass.simpleName }
+                    LosslessDiagnostics.record(item.mediaId, LosslessDiagnostics.Reason.PREBUFFER_FAILED, "adaptive-prebuffer:$kind")
+                    false
+                }
+            }
+        }
     }
 
     suspend fun prepare(context: Context, item: MediaItem, expectedDurationMs: Long,
