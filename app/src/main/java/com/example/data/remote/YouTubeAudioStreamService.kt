@@ -52,6 +52,7 @@ import kotlin.coroutines.resume
 
 /** Media3-facing adapter. InnerTubeX is the only player/cipher/audio extraction implementation. */
 @OptIn(ExperimentalSabrApi::class)
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 object YouTubeAudioStreamService {
     internal const val RESOLUTION_TIMEOUT_MS = 40_000L
     internal val playerJson = Json {

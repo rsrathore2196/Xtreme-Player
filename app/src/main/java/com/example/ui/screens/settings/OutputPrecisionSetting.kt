@@ -66,6 +66,7 @@ internal fun OutputPrecisionSetting(selected: OutputPrecision, skipSilence: Bool
     }
 }
 
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 private fun SignalPathState.precisionSummary(): String {
     if (outputEncoding == androidx.media3.common.C.ENCODING_INVALID) return "AudioTrack · Output available during playback"
     val rate = outputRateHz.takeIf { it > 0 }?.let { String.format(Locale.ROOT, "%.1f kHz", it / 1000.0) }

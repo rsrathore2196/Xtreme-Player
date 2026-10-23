@@ -11,6 +11,7 @@
 package com.example.ui.components.backdrop.internal
 
 import android.graphics.BlurMaskFilter
+import androidx.annotation.RequiresApi
 import androidx.compose.ui.graphics.Paint
 import com.example.ui.components.backdrop.RuntimeShader
 import com.example.ui.components.backdrop.asAndroidRuntimeShader
@@ -21,6 +22,7 @@ internal fun Paint.blur(radius: Float) {
         else null
 }
 
+@RequiresApi(33)
 internal fun Paint.setRuntimeShader(runtimeShader: RuntimeShader?) {
     this.asFrameworkPaint().shader = runtimeShader?.asAndroidRuntimeShader()
 }

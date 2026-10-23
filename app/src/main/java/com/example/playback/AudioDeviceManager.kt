@@ -38,6 +38,7 @@ data class SoundOutputDevice(
     val isCar: Boolean = false
 )
 
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 object AudioDeviceManager {
     private const val TAG = "AudioDeviceManager"
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)

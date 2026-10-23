@@ -10,6 +10,7 @@ import java.net.UnknownHostException
 internal object PlaybackDiagnostics {
     enum class Reason(val description: String) {
         SUCCESS("ready"), NETWORK("network/API failure"), NO_MATCH("no matching recording"),
+        INCOMPLETE_METADATA("incomplete recording metadata"),
         NO_FORMAT("no playable audio format"), UNSUPPORTED_TRANSPORT("unsupported stream transport"),
         INVALID_URL("invalid or expired stream URL"), POLICY("source disabled or quality restricted"),
         DECODER("decoder failure"), TIMEOUT("playback lookup timed out")

@@ -731,6 +731,35 @@ class PlayerViewModel(
     }
 
     private var activePlaybackLaunchJob: Job? = null
+    private var lastMediaSearchRequestId: String? = null
+
+    /** Explicit voice requests share cancellation and source policy with ordinary playback. */
+    internal fun playMediaSearch(query: String, requestId: String) {
+        if (lastMediaSearchRequestId == requestId) return
+        lastMediaSearchRequestId = requestId
+        activePlaybackLaunchJob?.cancel()
+        activePlaybackLaunchJob = viewModelScope.launch(Dispatchers.Main.immediate) {
+            if (query.isBlank()) {
+                playbackManager.resumeFromMediaSearch()
+                return@launch
+            }
+            val revision = playbackManager.currentSelectionRevision
+            val originalId = playbackManager.uiState.value.currentTrack?.id
+            fun current() = revision == playbackManager.currentSelectionRevision &&
+                originalId == playbackManager.uiState.value.currentTrack?.id
+            try {
+                val tracks = withContext(AppDispatchers.Io) { repository.search(query, application).songs }
+                ensureActive()
+                if (!current()) return@launch
+                val first = tracks.firstOrNull()
+                if (first == null) playbackManager.reportPlaybackLookupFailure("No matching recording was found for this search.")
+                else playbackManager.playFromSearch(first, tracks)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+            catch (_: Exception) {
+                if (current()) playbackManager.reportPlaybackLookupFailure("Music search is temporarily unavailable. Please try again.")
+            }
+        }
+    }
 
     fun playTrack(track: MusicTrack, queue: List<MusicTrack> = _catalogTracks.value, isExplicitPlaylist: Boolean = false) {
         activePlaybackLaunchJob?.cancel()
@@ -800,6 +829,7 @@ class PlayerViewModel(
     }
 
     fun togglePlayPause() {
+        activePlaybackLaunchJob?.cancel()
         if (playbackManager.uiState.value.currentTrack == null && _catalogTracks.value.isNotEmpty()) {
             playTrack(_catalogTracks.value.first(), _catalogTracks.value)
         } else {
@@ -812,10 +842,12 @@ class PlayerViewModel(
     }
 
     fun skipNext() {
+        activePlaybackLaunchJob?.cancel()
         playbackManager.skipNext()
     }
 
     fun skipPrevious() {
+        activePlaybackLaunchJob?.cancel()
         playbackManager.skipPrevious()
     }
 

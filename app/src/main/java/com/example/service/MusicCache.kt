@@ -16,6 +16,7 @@ import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
 import java.io.File
 
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 object MusicCache {
     const val DEFAULT_CACHE_SIZE = 50L * 1024L * 1024L // 50 MB lean LRU cache for 320kbps streams
     private const val CACHE_SIZE = DEFAULT_CACHE_SIZE

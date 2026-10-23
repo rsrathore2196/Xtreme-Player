@@ -5,6 +5,7 @@ import com.example.performance.AppDispatchers
 import android.net.Uri
 import com.example.data.model.MusicTrack
 import com.example.data.remote.OnlineMusicApiService
+import com.example.data.remote.InternetArchiveApiService
 import com.example.data.remote.YouTubeAudioStreamService
 import com.example.data.remote.YouTubeMusicApiService
 import com.example.playback.AudioQuality
@@ -27,6 +28,7 @@ class TrackUnavailableException(title: String, details: String? = null, val temp
     IOException(details ?: "No matching playable stream is available for '$title'.")
 
 /** Quality-tier routing; every remote substitution must verify the same recording. */
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 internal class StreamResolver(
     private val searchStandard: suspend (String, Boolean) -> List<MusicTrack> = { query, refresh ->
         OnlineMusicApiService.searchSongs(query, limit = 20, forceRefresh = refresh)
@@ -58,7 +60,9 @@ internal class StreamResolver(
         com.example.data.remote.InternetArchiveApiService.verifyDirectRecording(track) { true }
     },
     private val resolveAddon: suspend (PlaybackSource, MusicTrack, PlaybackSourcePolicy, Set<String>) -> MusicTrack? = { _, _, _, _ -> null },
-    private val ioDispatcher: CoroutineDispatcher = AppDispatchers.Io
+    private val ioDispatcher: CoroutineDispatcher = AppDispatchers.Io,
+    private val findLossless: suspend (MusicTrack, Set<String>, () -> Boolean) -> InternetArchiveApiService.LosslessSearchPage =
+        { request, excluded, allowed -> InternetArchiveApiService.findLosslessRecording(request, excluded, allowed) }
 ) {
     private data class CachedStream(val track: MusicTrack, val expiresAt: Long)
     private data class StreamKey(val id: String, val quality: AudioQuality, val recommendation: Boolean, val cap: Int,
@@ -100,7 +104,8 @@ internal class StreamResolver(
         val attemptFailures = mutableListOf<PlaybackDiagnostics.Reason>()
         fun unavailable() = TrackUnavailableException(track.title, PlaybackDiagnostics.unavailable(track.id, track.title, policy),
             temporary = attemptFailures.isEmpty() || attemptFailures.any { it in setOf(PlaybackDiagnostics.Reason.NETWORK,
-                PlaybackDiagnostics.Reason.TIMEOUT, PlaybackDiagnostics.Reason.INVALID_URL, PlaybackDiagnostics.Reason.POLICY) })
+                PlaybackDiagnostics.Reason.TIMEOUT, PlaybackDiagnostics.Reason.INVALID_URL, PlaybackDiagnostics.Reason.POLICY,
+                PlaybackDiagnostics.Reason.INCOMPLETE_METADATA) })
         val recordingKey = withContext(AppDispatchers.CpuBounded) { RecordingIdentity.key(track) }
         if (manualUpgrade) synchronized(archiveMisses) { archiveMisses.remove(recordingKey) }
         val archiveUrl = com.example.data.remote.InternetArchiveApiService.originalFileUrl(track)
@@ -283,14 +288,28 @@ internal class StreamResolver(
             }
             if (synchronized(archiveMisses) { (archiveMisses[identity] ?: 0L) > android.os.SystemClock.elapsedRealtime() }) return null
             var completed = false
+            var page: InternetArchiveApiService.LosslessSearchPage? = null
+            failureStage = PlaybackDiagnostics.Stage.DISCOVERY
             // Initial playback keeps its short deadline. An explicit enhancement
             // can finish the same bounded lookup while the existing stream plays.
             val found = attempt(if (manualUpgrade) MANUAL_LOSSLESS_LOOKUP_TIMEOUT_MS else LOSSLESS_LOOKUP_TIMEOUT_MS) {
                 val candidates = if (searchLossless != null) searchLossless.invoke("$title ${primary.ifBlank { artist }}".trim())
-                    else com.example.data.remote.InternetArchiveApiService.findLosslessRecording(track,
-                        excludedUrls = rejectedUrls + listOfNotNull(failedUrl), allowed = { policy.allowsArchive }).tracks
+                    else findLossless(track, rejectedUrls + listOfNotNull(failedUrl)) { policy.allowsArchive }
+                        .also { page = it }.tracks
                 withContext(AppDispatchers.CpuBounded) { candidates.firstOrNull { usable(it) && matchesInitialLossless(track, it) && supportsLossless(it) && !isLosslessUrlRejected(it.audioUrl) } }
-                    .also { completed = true }
+                    .also { completed = page?.let { it.isSuccessful && it.exhaustive } ?: true }
+            }
+            if (found == null) page?.failure?.let { reason ->
+                com.example.playback.LosslessDiagnostics.record(track.id, reason, "initial-discovery")
+                failureReason = when (reason) {
+                    com.example.playback.LosslessDiagnostics.Reason.NETWORK_TIMEOUT,
+                    com.example.playback.LosslessDiagnostics.Reason.LOOKUP_TIMEOUT -> PlaybackDiagnostics.Reason.TIMEOUT
+                    com.example.playback.LosslessDiagnostics.Reason.METADATA_INCOMPLETE -> PlaybackDiagnostics.Reason.INCOMPLETE_METADATA
+                    com.example.playback.LosslessDiagnostics.Reason.NETWORK_POLICY_BLOCKED,
+                    com.example.playback.LosslessDiagnostics.Reason.UNAUTHORIZED -> PlaybackDiagnostics.Reason.POLICY
+                    com.example.playback.LosslessDiagnostics.Reason.DECODER_UNSUPPORTED -> PlaybackDiagnostics.Reason.DECODER
+                    else -> PlaybackDiagnostics.Reason.NO_MATCH
+                }
             }
             // A timeout/partial response is not proof of absence. Only verified
             // results are retained for later selections or explicit enhancements.

@@ -112,6 +112,14 @@ internal fun losslessRecoveryPosition(resumePositionMs: Long, reportedPositionMs
     return if (activated || kotlin.math.abs(reported - expected) <= 2_000L) reported else expected
 }
 
+/** A blank voice request means resume, even if a previously published UI state is stale. */
+internal fun resumeMediaSearchPlayback(player: Player) {
+    if (player.mediaItemCount == 0) return
+    if (player.playbackState == Player.STATE_IDLE || player.playbackState == Player.STATE_ENDED) player.prepare()
+    player.play()
+}
+
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class PlaybackManager(
     private val context: Context,
     var repository: com.example.data.repository.MusicRepository? = null
@@ -209,6 +217,8 @@ class PlaybackManager(
     private var lastPlayRequestTimeMs: Long = 0L
     private var lastRequestedTrackId: String? = null
     private var selectionGeneration = 0L
+    /** Read only on the player/application looper, alongside selection commands. */
+    internal val currentSelectionRevision: Long get() = selectionGeneration
     private var pendingSelectionId: String? = null
     @Volatile private var initialJioDeadlineMs = 0L
     private var selectionContext: List<MusicTrack> = emptyList()
@@ -1351,6 +1361,10 @@ class PlaybackManager(
         _uiState.update { it.copy(isLoading = false, isPlaying = false, errorMessage = message) }
     }
 
+    internal fun reportPlaybackLookupFailure(message: String) {
+        _uiState.update { it.copy(errorMessage = message) }
+    }
+
     private fun publishListeningState(player: MediaController, newPlay: Boolean = false) {
         if (newPlay) {
             currentTrackStartTimeMs = System.currentTimeMillis()
@@ -2048,6 +2062,15 @@ class PlaybackManager(
     fun toggleAutoplay(pool: List<MusicTrack> = emptyList()) {
         if (pool.isNotEmpty()) rememberQueueCandidates(pool)
         setAutoplayEnabled(!_uiState.value.isAutoplayEnabled)
+    }
+
+    internal fun resumeFromMediaSearch() {
+        ensureMediaControllerConnected { player ->
+            if (pendingSelectionId == null) {
+                try { resumeMediaSearchPlayback(player) }
+                catch (_: Exception) { reportPlaybackLookupFailure("Unable to resume playback. Please try again.") }
+            }
+        }
     }
 
     fun playPause() {

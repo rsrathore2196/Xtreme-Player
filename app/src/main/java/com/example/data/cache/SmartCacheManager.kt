@@ -61,6 +61,7 @@ data class CacheStats(
 }
 
 @OptIn(coil.annotation.ExperimentalCoilApi::class, kotlinx.coroutines.FlowPreview::class)
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 object SmartCacheManager {
     private const val TAG = "SmartCacheManager"
     private const val PREFS_NAME = "xtreme_smart_cache_preferences"

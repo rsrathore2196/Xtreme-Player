@@ -10,6 +10,7 @@
  */
 package com.example.ui.components.backdrop
 
+import androidx.annotation.RequiresApi
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.RenderEffect
 import androidx.compose.ui.graphics.Shape
@@ -41,6 +42,7 @@ internal abstract class BackdropEffectScopeImpl : BackdropEffectScope, RuntimeSh
 
     private val runtimeShaderCache = RuntimeShaderCacheImpl()
 
+    @RequiresApi(33)
     override fun obtainRuntimeShader(key: String, string: String): RuntimeShader {
         return runtimeShaderCache.obtainRuntimeShader(key, string)
     }

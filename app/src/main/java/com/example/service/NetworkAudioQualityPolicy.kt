@@ -8,6 +8,7 @@ import com.example.data.remote.YouTubeAudioStreamService
 import com.example.playback.AudioQualityCeiling
 
 /** Pure, cheap queue-item transformation. Call only for new or upcoming items, never active audio. */
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 internal object NetworkAudioQualityPolicy {
     fun preparedFor(item: MediaItem, policy: com.example.playback.PlaybackSourcePolicy,
         now: Long = System.currentTimeMillis()): Boolean {

@@ -103,6 +103,7 @@ private fun encoding(value: Int): String = SignalPathState.pcmEncodingLabel(valu
 
 /** Source, decoder and client output are separate measurements. Unknown hardware data stays unknown. */
 @Composable
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 fun SignalPathPopupCard(state: SignalPathState, modifier: Modifier = Modifier, onClose: () -> Unit = {}) {
     val colors = LocalAppColors.current
     val effects by AudioEffectsManager.effectsState.collectAsStateWithLifecycle()

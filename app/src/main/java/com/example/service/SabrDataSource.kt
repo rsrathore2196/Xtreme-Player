@@ -13,6 +13,7 @@ import kotlinx.coroutines.runBlocking
 import java.io.IOException
 
 /** Synchronous Media3 loader contract over InnerTubeX's asynchronous, disk-buffered audio flow. */
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 internal class SabrDataSource(private val context: Context) : BaseDataSource(true) {
     @Volatile private var reader: SabrSessionRegistry.Reader? = null
     private var uri: Uri? = null

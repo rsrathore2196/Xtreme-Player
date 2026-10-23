@@ -33,6 +33,7 @@ import java.net.SocketTimeoutException
 import kotlin.math.abs
 
 /** Validate and warm the shared Media3 cache, without another player, decoder or audio focus. */
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 internal object LosslessStreamPrebuffer {
     private val worker = Mutex()
     private fun currentCheck(automatic: Boolean) {

@@ -23,6 +23,10 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import androidx.core.content.ContextCompat
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
@@ -33,6 +37,9 @@ import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.viewmodel.PlayerViewModel
 
 class MainActivity : ComponentActivity() {
+    private var mediaSearchIntentJob: Job? = null
+    private var mediaSearchRequestId: String? = null
+    private var mediaSearchDispatched = false
     private var initialContentReady = false
     private var firstDrawListener: android.view.ViewTreeObserver.OnDrawListener? = null
     private var lastInteractionMs = 0L
@@ -183,6 +190,38 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+        mediaSearchRequestId = savedInstanceState?.getString("media_search_request_id")
+        mediaSearchDispatched = savedInstanceState?.getBoolean("media_search_dispatched", false) == true
+        handleMediaSearchIntent(intent, mediaSearchRequestId, mediaSearchDispatched)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleMediaSearchIntent(intent)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        mediaSearchRequestId?.let { outState.putString("media_search_request_id", it) }
+        outState.putBoolean("media_search_dispatched", mediaSearchDispatched)
+        super.onSaveInstanceState(outState)
+    }
+
+    private fun handleMediaSearchIntent(incoming: Intent?, restoredRequestId: String? = null,
+        alreadyDispatched: Boolean = false) {
+        val query = incoming?.mediaPlaybackSearchQuery(alreadyDispatched) ?: return
+        val requestId = restoredRequestId ?: java.util.UUID.randomUUID().toString()
+        mediaSearchRequestId = requestId
+        mediaSearchDispatched = false
+        mediaSearchIntentJob?.cancel()
+        mediaSearchIntentJob = lifecycleScope.launch {
+            val app = application as XtremeMusicApp
+            app.startupReady.first { it }
+            playerViewModel.settingsReady.first { it }
+            playerViewModel.isOnboardingCompleted.first { it }
+            playerViewModel.playMediaSearch(query, requestId)
+            mediaSearchDispatched = true
+        }
     }
     override fun onResume() {
         super.onResume()
@@ -284,4 +323,15 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+}
+
+/** A blank voice request means resume; other launch intents are not playback commands. */
+internal fun Intent.mediaPlaybackSearchQuery(alreadyDispatched: Boolean = false): String? {
+    if (alreadyDispatched || action != android.provider.MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH) return null
+    val query = getStringExtra(android.app.SearchManager.QUERY).orEmpty().trim()
+    return query.ifBlank {
+        listOfNotNull(getStringExtra(android.provider.MediaStore.EXTRA_MEDIA_TITLE),
+            getStringExtra(android.provider.MediaStore.EXTRA_MEDIA_ARTIST))
+            .map(String::trim).filter(String::isNotEmpty).joinToString(" ")
+    }.take(512)
 }

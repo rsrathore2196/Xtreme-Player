@@ -22,6 +22,7 @@ import androidx.media3.session.LibraryResult
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
 import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionError
 import androidx.media3.session.SessionResult
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.Renderer
@@ -45,6 +46,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.distinctUntilChanged
 
+@androidx.annotation.OptIn(UnstableApi::class)
 class MusicService : MediaLibraryService() {
 
     private var mediaLibrarySession: MediaLibrarySession? = null
@@ -1399,7 +1401,7 @@ class MusicService : MediaLibraryService() {
                 withContext(AppDispatchers.CpuBounded) {
                     val track = record?.toMusicTrack()
                     if (track != null && realTrack(track)) LibraryResult.ofItem(track.toMediaItem(), null)
-                    else LibraryResult.ofError(SessionResult.RESULT_ERROR_BAD_VALUE)
+                    else LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
                 }
             }
         }
@@ -1421,7 +1423,7 @@ class MusicService : MediaLibraryService() {
                     SessionResult(SessionResult.RESULT_SUCCESS)
                 }
             }
-            return Futures.immediateFuture(SessionResult(SessionResult.RESULT_ERROR_NOT_SUPPORTED))
+            return Futures.immediateFuture(SessionResult(SessionError.ERROR_NOT_SUPPORTED))
         }
 
         override fun onAddMediaItems(
@@ -1438,37 +1440,50 @@ class MusicService : MediaLibraryService() {
                 queueGeneration++
                 return Futures.immediateFuture(mediaItems)
             }
-            return future { withContext(AppDispatchers.CpuBounded) {
-                val items = mutableListOf<MediaItem>()
-                for (item in mediaItems) {
-                    if (item.mediaId.startsWith("category_")) {
-                        val tracks = getTracksForCategory(item.mediaId)
-                        items.addAll(withContext(AppDispatchers.CpuBounded) {
-                            tracks.take(100).map { it.toMediaItem() }
-                        })
-                    } else items.add(item)
-                }
-                val expandingCategory = mediaItems.any { it.mediaId.startsWith("category_") }
-                coroutineScope {
-                    val slots = kotlinx.coroutines.sync.Semaphore(3)
-                    items.map { item -> async(AppDispatchers.Io) {
-                        slots.acquire()
-                        try {
-                            if (PlaybackSessionStore.isReal(item) && controller.packageName == packageName) return@async item
-                            val known = app.database.musicDao().getTrackById(item.mediaId)?.toMusicTrack()
-                            if (known != null && realTrack(known)) {
-                                app.repository.resolvePlayableTrack(known.copy(recommendationOnly =
-                                    item.mediaMetadata.extras?.getBoolean("recommendation_only", false) == true)).toMediaItem()
-                            } else if (PlaybackSessionStore.isReal(item)) item
-                            else throw IllegalArgumentException("No real track found for this media ID")
-                        } catch (e: CancellationException) { throw e }
-                        catch (e: Exception) { if (expandingCategory) null else throw e }
-                        finally { slots.release() }
-                    } }.awaitAll().filterNotNull().toMutableList().also {
-                        if (it.isEmpty() && items.isNotEmpty()) throw IllegalArgumentException("No playable tracks are available in this category")
+            val searchGeneration = if (mediaItems.any { it.requestMetadata.searchQuery != null }) ++queueGeneration else null
+            return future {
+                val prepared = withContext(AppDispatchers.CpuBounded) {
+                    val items = mutableListOf<MediaItem>()
+                    for (item in mediaItems) {
+                        val query = item.requestMetadata.searchQuery
+                        if (query != null) {
+                            val selected = searchTracks(query.trim().take(512)).firstOrNull()
+                                ?: throw IllegalArgumentException("No matching recording was found for this search")
+                            items.add(selected.toMediaItem())
+                        } else if (item.mediaId.startsWith("category_")) {
+                            val tracks = getTracksForCategory(item.mediaId)
+                            items.addAll(withContext(AppDispatchers.CpuBounded) {
+                                tracks.take(100).map { it.toMediaItem() }
+                            })
+                        } else items.add(item)
+                    }
+                    val expandingCategory = mediaItems.any { it.mediaId.startsWith("category_") }
+                    coroutineScope {
+                        val slots = kotlinx.coroutines.sync.Semaphore(3)
+                        items.map { item -> async(AppDispatchers.Io) {
+                            slots.acquire()
+                            try {
+                                if (PlaybackSessionStore.isReal(item) && controller.packageName == packageName) return@async item
+                                val known = app.database.musicDao().getTrackById(item.mediaId)?.toMusicTrack()
+                                if (known != null && realTrack(known)) {
+                                    app.repository.resolvePlayableTrack(known.copy(recommendationOnly =
+                                        item.mediaMetadata.extras?.getBoolean("recommendation_only", false) == true)).toMediaItem()
+                                } else if (PlaybackSessionStore.isReal(item)) item
+                                else throw IllegalArgumentException("No real track found for this media ID")
+                            } catch (e: CancellationException) { throw e }
+                            catch (e: Exception) { if (expandingCategory) null else throw e }
+                            finally { slots.release() }
+                        } }.awaitAll().filterNotNull().toMutableList().also {
+                            if (it.isEmpty() && items.isNotEmpty()) throw IllegalArgumentException("No playable tracks are available in this category")
+                        }
                     }
                 }
-            } }
+                // Resume on the application looper and complete the future in this
+                // same turn so a stale search cannot win between dispatcher hops.
+                if (searchGeneration != null && searchGeneration != queueGeneration)
+                    throw CancellationException("Superseded media search")
+                prepared
+            }
         }
 
     }

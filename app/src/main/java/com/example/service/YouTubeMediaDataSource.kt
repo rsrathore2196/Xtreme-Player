@@ -16,6 +16,7 @@ import java.io.EOFException
 import java.io.IOException
 
 /** Honors InnerTubeX's bounded-range contract beneath Media3's existing cache. */
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 internal class YouTubeMediaDataSource(private val context: Context, private val upstream: DataSource.Factory,
     private val audioHttp: DataSource.Factory = upstream) : DataSource {
     private companion object { val CONTENT_RANGE = Regex("bytes ([0-9]+)-([0-9]+)/([0-9]+)") }

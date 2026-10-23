@@ -10,9 +10,11 @@
  */
 package com.example.ui.components.backdrop
 
+import androidx.annotation.RequiresApi
 
 sealed interface RuntimeShaderCache {
 
+    @RequiresApi(33)
     fun obtainRuntimeShader(key: String, string: String): RuntimeShader
 }
 
@@ -20,6 +22,7 @@ internal class RuntimeShaderCacheImpl : RuntimeShaderCache {
 
     private val runtimeShaders = mutableMapOf<String, RuntimeShader>()
 
+    @RequiresApi(33)
     override fun obtainRuntimeShader(key: String, string: String): RuntimeShader {
         return runtimeShaders.getOrPut(key) { RuntimeShader(string) }
     }

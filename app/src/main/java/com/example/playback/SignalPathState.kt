@@ -20,6 +20,7 @@ enum class AudioQualityPreference(val legacy: AudioQuality) {
 }
 
 @Immutable
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 data class StreamQualityBadge(
     val codec: String = "", val bitrateKbps: Int = 0, val sampleRateHz: Int = 0,
     val bitDepth: Int = 0, val lossless: Boolean = false, val verified: Boolean = false
@@ -73,6 +74,7 @@ data class StreamQualityBadge(
 }
 
 @Immutable
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 data class SignalPathState(
     val trackId: String = "", val source: String = "Unknown", val quality: StreamQualityBadge = StreamQualityBadge(),
     val inputRateHz: Int = 0, val outputRateHz: Int = 0, val appResampling: Boolean = false, val bitPerfect: Boolean = false,

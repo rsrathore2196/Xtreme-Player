@@ -36,6 +36,7 @@ internal class SabrStreamChangedException(val replacement: YouTubeAudioStreamSer
 
 /** Memory-only credentials; bounded, disposable on-disk media windows. No protocol implementation. */
 @OptIn(ExperimentalSabrApi::class)
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 internal object SabrSessionRegistry {
     /** Invoked only on the player's application looper; no UI lifetime is required for fallback. */
     @Volatile var controllerHandlesRecovery: (() -> Boolean)? = null
