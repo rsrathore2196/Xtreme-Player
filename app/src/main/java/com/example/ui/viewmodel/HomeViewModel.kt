@@ -409,8 +409,10 @@ class HomeViewModel(
         initialCards?.chart?.limitShelf() ?: SectionState(title = getAuthoritativeTrendingTitle(resolveCountryDisplayName(_userProfile.value)),
             subtitle = "Regional chart discoveries", isLoading = true),
         initialCards?.personalized?.limitShelf() ?: SectionState(title = "Recommended for You", subtitle = "Curated picks tailored to your sonic taste"),
-        initialCards?.similarArtists?.limitShelf() ?: SectionState(title = "More from Similar Artists"),
-        initialCards?.inspiredTrack?.limitShelf() ?: SectionState(title = "Inspired by this Track")
+        initialCards?.similarArtists?.limitShelf()?.withSeedHeading(Shelf.SIMILAR, initialCards.seedArtist)
+            ?: SectionState(title = "More from Similar Artists"),
+        initialCards?.inspiredTrack?.limitShelf()?.withSeedHeading(Shelf.INSPIRED, initialCards.seedTitle)
+            ?: SectionState(title = "Because You Listened")
     ))
     private val _listeningHistoryCard = MutableStateFlow(initialCards?.history
         ?: SectionState(title = "Jump Back In", subtitle = "Based on your recent listening history & frequency"))
@@ -826,9 +828,10 @@ class HomeViewModel(
             if (candidates.value.generation != pool.generation || candidates.value.revision != pool.revision ||
                 profileKey(inputs.profile) != profileKey() ||
                 favoriteTracks.value != inputs.favorites || tasteProfile.value != inputs.taste) return@publish
-            fun ready(old: SectionState, tracks: List<MusicTrack>, subtitle: String = old.subtitle): SectionState =
+            fun ready(old: SectionState, tracks: List<MusicTrack>, subtitle: String = old.subtitle,
+                title: String = old.title): SectionState =
                 if (tracks.isEmpty() && old.tracks.isNotEmpty()) old
-                else old.copy(tracks = tracks, subtitle = subtitle, isLoading = false,
+                else old.copy(tracks = tracks, title = title, subtitle = subtitle, isLoading = false,
                     isLoaded = tracks.isNotEmpty(), isError = false, errorMessage = "").let { if (it == old) old else it }
             preparedCards.update { old -> old.copy(
                 quick = if (Shelf.QUICK in pool.ready) ready(old.quick, quick, "Discoveries for your languages and listening taste") else old.quick,
@@ -836,10 +839,14 @@ class HomeViewModel(
                 chart = if (Shelf.CHART in pool.ready) ready(old.chart, chart, "Popular in $country • your selected languages")
                     .let { if (it.title == chartTitle) it else it.copy(title = chartTitle) } else old.chart,
                 personalized = if (rankingReady && Shelf.PERSONALIZED in pool.ready) ready(old.personalized, personalized, "Inspired by your listening") else old.personalized,
-                similarArtists = if (relevantSeed && Shelf.SIMILAR in pool.ready)
-                    ready(old.similarArtists, similar, "Related to ${pool.seedArtist}") else old.similarArtists,
-                inspiredTrack = if (relevantSeed && Shelf.INSPIRED in pool.ready)
-                    ready(old.inspiredTrack, inspired, "Inspired by ${pool.seedTitle}") else old.inspiredTrack
+                similarArtists = if (relevantSeed && Shelf.SIMILAR in pool.ready) {
+                    val heading = old.similarArtists.withSeedHeading(Shelf.SIMILAR, pool.seedArtist)
+                    ready(old.similarArtists, similar, heading.subtitle, heading.title)
+                } else old.similarArtists,
+                inspiredTrack = if (relevantSeed && Shelf.INSPIRED in pool.ready) {
+                    val heading = old.inspiredTrack.withSeedHeading(Shelf.INSPIRED, pool.seedTitle)
+                    ready(old.inspiredTrack, inspired, heading.subtitle, heading.title)
+                } else old.inspiredTrack
             ).let { if (it == old) old else it }
                 .also { if (activeRefreshIsExplicit) urgentPresentationCards = it } }
             _homeShelves.value = listOf(HomeShelf("personalized", "Recommended for You", "Based on your listening", personalized))
@@ -1004,7 +1011,8 @@ class HomeViewModel(
     private var cachePreviewPool: Candidates? = initialCards?.let { candidates.value }
     private fun cachedSections(cached: SavedHomeCards) = RecommendationCards(cached.quick.limitShelf(),
         cached.era.limitShelf(), cached.chart.limitShelf(), cached.personalized.limitShelf(),
-        cached.similarArtists.limitShelf(), cached.inspiredTrack.limitShelf())
+        cached.similarArtists.limitShelf().withSeedHeading(Shelf.SIMILAR, cached.seedArtist),
+        cached.inspiredTrack.limitShelf().withSeedHeading(Shelf.INSPIRED, cached.seedTitle))
 
     private suspend fun restoreCachedCards(cached: SavedHomeCards, additional: Boolean) {
         if (cached.profileKey != profileKey()) return

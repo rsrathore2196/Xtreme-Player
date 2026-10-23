@@ -64,7 +64,8 @@ fun MusicTrack.toMediaItem(): MediaItem {
  * Multi-Source iTunes Artwork Resolver with 3-Layer Caching:
  * 1. In-Memory LruCache (up to 2048 entries)
  * 2. Room Database Cache (persisted across app restarts)
- * 3. Network Fetch (iTunes Search API with Title/Artist Verification & Fallback-First strategy)
+ * 3. Network Fetch (iTunes Search API with recording-identity verification)
+ * A miss remains a miss; the image interceptor owns the YouTube artwork fallback.
  */
 class iTunesArtworkRepository(
     private val apiService: iTunesApiService,
@@ -111,17 +112,17 @@ class iTunesArtworkRepository(
         }
     }
 
-    suspend fun resolveArtwork(item: MediaItem, targetDimension: Int): String = withContext(com.example.performance.BackgroundWorkCoordinator.optionalCpuDispatcher) {
+    suspend fun resolveArtwork(item: MediaItem, targetDimension: Int): String? = withContext(com.example.performance.BackgroundWorkCoordinator.optionalCpuDispatcher) {
         val metadata = lookupMetadata(item)
         val cleanedTitle = metadata.title
         val cleanedArtist = metadata.artist
         val cacheKey = metadata.key
 
         if (cleanedTitle.isBlank()) {
-            return@withContext item.sourceArtworkUrl
+            return@withContext null
         }
 
-        cached(cacheKey)?.let { return@withContext it.url?.let { url -> formatUrl(url, targetDimension) } ?: item.sourceArtworkUrl }
+        cached(cacheKey)?.let { return@withContext it.url?.let { url -> formatUrl(url, targetDimension) } }
 
         // A lookup belongs to all its callers. Only the last departing caller cancels its HTTP work.
         val flight = synchronized(inFlight) {
@@ -133,7 +134,7 @@ class iTunesArtworkRepository(
         }
         try {
             flight.result.start()
-            flight.result.await().url?.let { formatUrl(it, targetDimension) } ?: item.sourceArtworkUrl
+            flight.result.await().url?.let { formatUrl(it, targetDimension) }
         } finally {
             synchronized(inFlight) {
                 if (--flight.readers == 0) {
@@ -207,7 +208,7 @@ class iTunesArtworkRepository(
 
     fun getMemoryCachedUrl(item: MediaItem, targetDimension: Int): String? {
         val hit = cached(lookupMetadata(item).key) ?: return null
-        return hit.url?.let { formatUrl(it, targetDimension) } ?: item.sourceArtworkUrl
+        return hit.url?.let { formatUrl(it, targetDimension) }
     }
 
     /** Worker-thread lookup of verified hits only; a negative lookup is not a resolved cover. */
@@ -263,6 +264,11 @@ class iTunesArtworkRepository(
     }
 
     companion object {
+        fun isITunesArtworkUrl(url: String): Boolean = try {
+            val uri = java.net.URI(url)
+            uri.scheme in setOf("https", "http") && uri.host?.endsWith(".mzstatic.com", ignoreCase = true) == true
+        } catch (_: Exception) { false }
+
         private val unknownArtistNames = setOf("", "unknown", "unknown artist", "various", "various artists", "internet archive")
         /** Pure formatting must never require construction of Room or the HTTP client on Main. */
         private val appleArtworkSize = Regex("(?<=/)\\d+x\\d+(bb)?(?=\\.(?:jpg|png|webp))", RegexOption.IGNORE_CASE)

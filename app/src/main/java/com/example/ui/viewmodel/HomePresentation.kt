@@ -26,6 +26,21 @@ internal fun SectionState.limitShelf(): SectionState {
     return if (unique.size == tracks.size) this else copy(tracks = unique)
 }
 
+/** Also upgrades retained/older cache headings without changing their tracks or keys. */
+internal fun SectionState.withSeedHeading(shelf: Shelf, seed: String): SectionState {
+    val (heading, legacySubtitle) = when (shelf) {
+        Shelf.SIMILAR -> "More From" to "Related to "
+        Shelf.INSPIRED -> "Because You Listened" to "Inspired by "
+        else -> return this
+    }
+    val name = seed.trim().ifBlank {
+        subtitle.takeIf { it.startsWith(legacySubtitle) }?.removePrefix(legacySubtitle)?.trim().orEmpty()
+    }
+    if (name.isBlank()) return this
+    val title = "$heading '$name'"
+    return if (this.title == title && subtitle.isBlank()) this else copy(title = title, subtitle = "")
+}
+
 /** Prioritize bootstrap only while it is eligible; failed attempts cannot starve other cards. */
 internal fun Set<Shelf>.initialCardDemand(bootstrap: Set<Shelf>, automaticStartup: Boolean): Set<Shelf> =
     if (automaticStartup) intersect(bootstrap).takeIf { it.isNotEmpty() } ?: this else this

@@ -8,6 +8,7 @@ import com.example.ui.viewmodel.enrichFromCache
 import com.example.ui.viewmodel.finishPreparation
 import com.example.ui.viewmodel.withSection
 import com.example.ui.viewmodel.initialCardDemand
+import com.example.ui.viewmodel.withSeedHeading
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
 import org.junit.Test
@@ -17,6 +18,30 @@ class HomePresentationRegressionTest {
         tracks = listOf(MusicTrack(id, id, "Artist", "Album", 180_000, cover, "https://audio")), isLoaded = true)
     private fun cards(quick: SectionState = section("quick"), era: SectionState = SectionState()) =
         RecommendationCards(quick, era, SectionState(), SectionState())
+
+    @Test fun relatedHeadingsIncludeTheirActualSeedAndRemoveTheDuplicateSubtitle() {
+        val similar = section("More From Similar Artists").copy(subtitle = "Related to old artist")
+        val inspired = section("Inspired by this Track").copy(subtitle = "Inspired by old track")
+        val artist = similar.withSeedHeading(Shelf.SIMILAR, "Karan Aujla")
+        val track = inspired.withSeedHeading(Shelf.INSPIRED, "On Top")
+        assertEquals("More From 'Karan Aujla'", artist.title)
+        assertEquals("Because You Listened 'On Top'", track.title)
+        assertEquals("", artist.subtitle)
+        assertEquals("", track.subtitle)
+        assertSame(similar.tracks, artist.tracks)
+        assertSame(inspired.tracks, track.tracks)
+        assertSame(artist, artist.withSeedHeading(Shelf.SIMILAR, "Karan Aujla"))
+    }
+
+    @Test fun oldCachedSubtitlesSupplyMissingSeedMetadataWithoutGuessing() {
+        assertEquals("More From 'Artist'", section("old").copy(subtitle = "Related to Artist")
+            .withSeedHeading(Shelf.SIMILAR, "").title)
+        assertEquals("Because You Listened 'Song'", section("old").copy(subtitle = "Inspired by Song")
+            .withSeedHeading(Shelf.INSPIRED, "").title)
+        val unknown = section("More from Similar Artists")
+        assertSame(unknown, unknown.withSeedHeading(Shelf.SIMILAR, ""))
+        assertSame(unknown, unknown.withSeedHeading(Shelf.QUICK, "Artist"))
+    }
 
     @Test fun lateFullCacheFillsAnUntouchedShelfWithoutReplacingNewerLiveTracks() {
         val preview = cards()

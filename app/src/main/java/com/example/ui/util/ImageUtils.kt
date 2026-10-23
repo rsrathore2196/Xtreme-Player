@@ -256,7 +256,10 @@ internal fun buildOptimizedImageRequest(
     return ImageRequest.Builder(context)
         .data(initialUrl)
         .setParameter(ARTWORK_METADATA_PARAMETER, metadata, null)
-        .placeholderMemoryCacheKey(initialUrl.takeIf { it.isNotBlank() })
+        // A cached provider thumbnail is not the final album cover. The
+        // interceptor presents a verified iTunes image or a crisp YouTube fallback.
+        .placeholderMemoryCacheKey(initialUrl.takeIf { it.isNotBlank() &&
+            (metadata.item == null || iTunesArtworkRepository.isITunesArtworkUrl(it)) })
         .interceptorDispatcher(Dispatchers.IO)
         // One process-wide CPU budget, including explicitly opened player covers.
         .decoderDispatcher(AppDispatchers.CpuBounded)
