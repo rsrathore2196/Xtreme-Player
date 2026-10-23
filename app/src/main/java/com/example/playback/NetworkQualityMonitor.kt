@@ -83,23 +83,25 @@ class NetworkQualityMonitor private constructor(context: Context) {
     }.distinctUntilChanged().stateIn(scope, SharingStarted.WhileSubscribed(5_000), latest)
 
     private val enhancerSelection = AudioQualityPreferences.observeEnhancerSelection(app).distinctUntilChanged()
-        .stateIn(scope, SharingStarted.Eagerly, false to false)
-    val audioEnhancer = enhancerSelection.map { it.first }.distinctUntilChanged()
+        .stateIn(scope, SharingStarted.Eagerly, AudioQualityPreferences.EnhancerSelection())
+    val audioEnhancer = enhancerSelection.map { it.enabled }.distinctUntilChanged()
         .stateIn(scope, SharingStarted.Eagerly, false)
     val sourcePolicy = combine(activeQualityCeiling, enhancerSelection,
         com.example.data.local.OtherSettingsPreferences.observePlaybackIntegrations(app)) { quality, enhancer, integrations ->
-        PlaybackSourcePolicy(quality.effectiveCeiling, enhancer.first,
-            quality.connectionType != NetworkConnectionType.OFFLINE, integrations.sourceList(quality.effectiveCeiling), returnToYouTube = enhancer.second)
+        PlaybackSourcePolicy(quality.effectiveCeiling, enhancer.enabled,
+            quality.connectionType != NetworkConnectionType.OFFLINE, integrations.sourceList(quality.effectiveCeiling),
+            returnToYouTube = enhancer.returnToYouTube, requestRevision = enhancer.revision, requestTrackId = enhancer.trackId)
     }.distinctUntilChanged().stateIn(scope, SharingStarted.Eagerly,
         PlaybackSourcePolicy(latest.effectiveCeiling, online = false))
     fun sourcePolicySnapshot(): PlaybackSourcePolicy = snapshot().let {
-        PlaybackSourcePolicy(it.effectiveCeiling, AudioQualityPreferences.isAudioEnhancerEnabled(app),
+        val selection = AudioQualityPreferences.enhancerSelection(app)
+        PlaybackSourcePolicy(it.effectiveCeiling, selection.enabled,
             it.connectionType != NetworkConnectionType.OFFLINE,
             com.example.data.local.OtherSettingsPreferences.playbackIntegrations(app).sourceList(it.effectiveCeiling),
-            returnToYouTube = AudioQualityPreferences.returnToYouTube(app))
+            returnToYouTube = selection.returnToYouTube, requestRevision = selection.revision, requestTrackId = selection.trackId)
     }
-    fun setAudioEnhancer(enabled: Boolean, returnToYouTube: Boolean = false) { scope.launch(preferenceWrites) {
-        AudioQualityPreferences.setAudioEnhancerEnabled(app, enabled, returnToYouTube)
+    fun setAudioEnhancer(enabled: Boolean, returnToYouTube: Boolean = false, trackId: String = "") { scope.launch(preferenceWrites) {
+        AudioQualityPreferences.setAudioEnhancerEnabled(app, enabled, returnToYouTube, trackId)
     } }
 
     /** Called on resolver/loader IO threads; also works before a UI/service subscribes. */

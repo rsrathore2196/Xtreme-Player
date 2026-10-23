@@ -24,15 +24,16 @@ class YouTubePrimaryRoutingTest {
         request.copy(audioUrl = "xtreme-youtube://audio/abcdefghijk/stream.audio?cap=$cap",
             bitrateKbps = rate, qualityBadge = if (rate > 0) "$codec • $rate kbps" else codec, source = "YouTube Music")
 
-    @Test fun everyTierDefaultsToYoutubeBeforeOtherSourcesWithEnhancerOffAndKeepsPlaylistMetadata() = runBlocking {
+    @Test fun optionalSourcesOffUsesYoutubeAtEveryTierAndKeepsPlaylistMetadata() = runBlocking {
         for (ceiling in AudioQualityCeiling.entries) for (enhancer in listOf(false)) {
             val calls = mutableListOf<String>()
             val resolver = StreamResolver(searchStandard = { _, _ -> calls += "jio"; listOf(original) },
                 searchLossless = { error("Lossy profiles must skip Archive") }, fetchById = { _, _ -> error("YouTube is available") },
                 searchYouTube = { calls += "youtube-search"; listOf(video) },
-                resolveYouTube = { track, _, _, cap -> calls += "youtube-audio"; resolved(track, cap) },
-                resolveOpus = { track, _, _, cap -> calls += "youtube-opus"; resolved(track, cap) })
-            val result = resolver.resolve(original, ceiling.audioQuality, sourcePolicy = PlaybackSourcePolicy(ceiling, enhancer))
+                resolveYouTube = { track, _, _, cap -> calls += "youtube-audio"; resolved(track, cap) })
+            val onlyYoutube = PlaybackSource.builtIns.map { it.copy(enabled = it.kind == PlaybackSourceKind.YOUTUBE) }
+            val result = resolver.resolve(original, ceiling.audioQuality,
+                sourcePolicy = PlaybackSourcePolicy(ceiling, enhancer, sources = onlyYoutube))
             assertFalse(calls.contains("jio"))
             assertEquals("youtube-search", calls.first())
             assertEquals("YouTube Music", result.source); assertFalse(result.isLossless)
@@ -46,7 +47,7 @@ class YouTubePrimaryRoutingTest {
     @Test fun selectedYoutubeIdNeverTriggersAnotherMetadataSearch() = runBlocking {
         val resolver = StreamResolver(searchYouTube = { error("The selected video ID is already known") },
             searchStandard = { _, _ -> error("A working YouTube stream has priority") },
-            resolveYouTube = { track, _, _, cap -> resolved(track, cap, "AAC") }, resolveOpus = { _, _, _, _ -> null })
+            resolveYouTube = { track, _, _, cap -> resolved(track, cap, "AAC") })
         val result = resolver.resolve(video, AudioQuality.HIGH_160)
         assertEquals(video.id, result.id)
         assertEquals("YouTube Music", result.source)
@@ -59,8 +60,7 @@ class YouTubePrimaryRoutingTest {
                 searchStandard = { _, _ -> calls += "jio"; if (jioAvailable) listOf(original) else emptyList() },
                 fetchById = { _, _ -> calls += "jio-details"; if (jioAvailable) original else null },
                 searchYouTube = { calls += "youtube-search"; listOf(video) },
-                resolveYouTube = { track, _, _, cap -> calls += "youtube-audio"; resolved(track, cap) },
-                resolveOpus = { _, _, _, _ -> error("Enhancer cannot override Maximum") })
+                resolveYouTube = { track, _, _, cap -> calls += "youtube-audio"; resolved(track, cap) })
             val result = resolver.resolve(video, AudioQuality.HI_RES_LOSSLESS,
                 sourcePolicy = PlaybackSourcePolicy(AudioQualityCeiling.MAX, enhancer, sources = listOf(PlaybackSource.archive, PlaybackSource.jio, PlaybackSource.youtube)))
             assertEquals("archive", calls.first())
@@ -72,15 +72,25 @@ class YouTubePrimaryRoutingTest {
         }
     }
 
-    @Test fun youtubeFailureUsesJioWithoutChangingOriginalCatalogOrArtwork() = runBlocking {
+    @Test fun enabledJioUsesItsFixedRankWithoutChangingOriginalCatalogOrArtwork() = runBlocking {
         val calls = mutableListOf<String>()
         val resolver = StreamResolver(searchYouTube = { error("Known video ID") },
-            resolveYouTube = { _, _, _, _ -> calls += "youtube"; null }, resolveOpus = { _, _, _, _ -> null },
+            resolveYouTube = { _, _, _, _ -> calls += "youtube"; null },
             searchStandard = { _, _ -> calls += "jio"; listOf(original) })
         val result = resolver.resolve(video, AudioQuality.ULTRA_HD_320)
-        assertEquals(listOf("youtube", "jio"), calls)
+        assertEquals(listOf("jio"), calls)
         assertEquals(video.id, result.id); assertEquals(video.coverUrl, result.coverUrl)
         assertEquals("JIOSAAVN", result.source); assertEquals(320, result.bitrateKbps)
+    }
+
+    @Test fun unavailableJioFallsBackToTheSameYoutubeCatalogRecording() = runBlocking {
+        val calls = mutableListOf<String>()
+        val resolver = StreamResolver(searchStandard = { _, _ -> calls += "jio"; emptyList() },
+            resolveYouTube = { track, _, _, cap -> calls += "youtube"; resolved(track, cap) })
+        val result = resolver.resolve(video, AudioQuality.ULTRA_HD_320)
+        assertEquals("jio", calls.first()); assertEquals("youtube", calls.last())
+        assertEquals("YouTube Music", result.source)
+        assertEquals(video.id, result.id); assertEquals(video.coverUrl, result.coverUrl)
     }
 
     @Test fun providerMappingsAreReusedAcrossQualityChangesWithoutReusingSignedUrls() = runBlocking {
@@ -88,7 +98,7 @@ class YouTubePrimaryRoutingTest {
         val caps = mutableListOf<Int>()
         val resolver = StreamResolver(searchYouTube = { searches++; listOf(video) },
             searchStandard = { _, _ -> error("YouTube is available") },
-            resolveYouTube = { track, _, _, cap -> caps += cap; resolved(track, cap) }, resolveOpus = { _, _, _, _ -> null })
+            resolveYouTube = { track, _, _, cap -> caps += cap; resolved(track, cap) })
         val standard = resolver.resolve(original, AudioQuality.HIGH_160)
         val saver = resolver.resolve(original, AudioQuality.MEDIUM_96)
         assertEquals(1, searches)
@@ -99,15 +109,13 @@ class YouTubePrimaryRoutingTest {
 
     @Test fun wrongYoutubeRecordingIsNotExtractedAndFallsBackToTheExactJioTrack() = runBlocking {
         val resolver = StreamResolver(searchYouTube = { listOf(video.copy(title = "Exact Song (Live)"), video.copy(durationMs = 260_000)) },
-            resolveYouTube = { _, _, _, _ -> error("Never extract a mismatched recording") },
-            resolveOpus = { _, _, _, _ -> error("Never extract a mismatched recording") })
+            resolveYouTube = { _, _, _, _ -> error("Never extract a mismatched recording") })
         val result = resolver.resolve(original, AudioQuality.ULTRA_HD_320)
         assertEquals(original.audioUrl, result.audioUrl); assertEquals("JIOSAAVN", result.source)
     }
 
     @Test fun unknownYoutubeBitrateIsKeptUnknownRatherThanEstimated() = runBlocking {
-        val resolver = StreamResolver(resolveYouTube = { track, _, _, cap -> resolved(track, cap, rate = 0) },
-            resolveOpus = { _, _, _, _ -> null })
+        val resolver = StreamResolver(resolveYouTube = { track, _, _, cap -> resolved(track, cap, rate = 0) })
         val result = resolver.resolve(video, AudioQuality.MEDIUM_96,
             sourcePolicy = PlaybackSourcePolicy(AudioQualityCeiling.DATA_SAVER))
         assertEquals(0, result.bitrateKbps); assertEquals("Opus", result.qualityBadge)

@@ -35,7 +35,7 @@ class EqualizerSourceIsolationTest {
             "https://aac.saavncdn.com/song_320.mp4", bitrateKbps = 320, source = "JIOSAAVN")
         val resolver = StreamResolver(searchLossless = { fail("High skips Archive"); emptyList() },
             resolveYouTube = { _, _, _, _ -> fail("A working Jio source must not be replaced"); null },
-        searchYouTube = { emptyList() }, resolveOpus = { _, _, _, _ -> null })
+        searchYouTube = { emptyList() })
         val initial = resolver.resolve(song, AudioQuality.ULTRA_HD_320)
         AudioEffectsManager.setEnabled(true)
         AudioEffectsManager.setBandLevel(0, 500)

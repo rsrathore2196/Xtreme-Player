@@ -31,8 +31,7 @@ class EnhancerSourceTransitionTest {
     @Before fun clear() { StreamResolver.clearVerifiedLosslessCache() }
     @After fun finish() { StreamResolver.clearVerifiedLosslessCache() }
     private fun resolver() = StreamResolver(searchStandard = { _, _ -> listOf(jio) }, searchLossless = { listOf(archive) },
-        supportsLossless = { true }, resolveYouTube = { track, _, _, _ -> video.copy(id = track.id) },
-        resolveOpus = { _, _, _, _ -> null })
+        supportsLossless = { true }, resolveYouTube = { track, _, _, _ -> video.copy(id = track.id) })
 
     @Test fun highEnhancerUsesAnEligibleHigherSourceAndOffTargetsTheOriginalYoutubeRecording() = runBlocking {
         val policy = PlaybackSourcePolicy(AudioQualityCeiling.HIGH, enhancer = true)
@@ -81,13 +80,96 @@ class EnhancerSourceTransitionTest {
     @Test fun enhancerWorksWithinLowerQualityLimitsWithoutContactingForbiddenProviders() = runBlocking {
         for (ceiling in listOf(AudioQualityCeiling.DATA_SAVER, AudioQualityCeiling.NORMAL)) {
             val resolver = StreamResolver(searchStandard = { _, _ -> error("Quality blocks Jio") },
-                searchLossless = { error("Quality blocks Archive") }, resolveOpus = { _, _, _, _ -> null },
+                searchLossless = { error("Quality blocks Archive") },
                 resolveYouTube = { track, _, _, cap -> track.copy(
                     audioUrl = "xtreme-youtube://audio/abcdefghijk/stream.audio?cap=$cap", bitrateKbps = 80, qualityBadge = "Opus • 80 kbps") })
-            val result = resolver.resolve(video, ceiling.audioQuality, sourcePolicy = PlaybackSourcePolicy(ceiling, true), manualUpgrade = true)
+            val playing = video.copy(bitrateKbps = 80, qualityBadge = "Opus • 80 kbps")
+            val result = resolver.resolve(playing, ceiling.audioQuality, sourcePolicy = PlaybackSourcePolicy(ceiling, true), manualUpgrade = true)
             assertEquals("YouTube Music", result.source); assertFalse(result.isLossless)
             assertTrue(result.bitrateKbps * 1000 <= ceiling.maxBitrateBps)
         }
+    }
+
+    @Test fun unsuccessfulUpgradeKeepsTheExactAudibleSourceAndNeverResolvesYoutubeAgain() = runBlocking {
+        var youtubeLookups = 0
+        val resolver = StreamResolver(searchStandard = { _, _ -> emptyList() },
+            resolveYouTube = { _, _, _, _ -> youtubeLookups++; error("The original keeps playing without a second extraction") })
+        val policy = PlaybackSourcePolicy(AudioQualityCeiling.HIGH, enhancer = true)
+        val unchanged = resolver.resolve(video, policy.ceiling.audioQuality, sourcePolicy = policy, manualUpgrade = true)
+        assertEquals(video.audioUrl, unchanged.audioUrl)
+        assertEquals(video.source, unchanged.source)
+        assertEquals(video.id, unchanged.id)
+        assertEquals(0, youtubeLookups)
+    }
+
+    @Test fun manualUpgradeAtTheHighestEligibleSourceCannotDowngradeToYoutube() = runBlocking {
+        var lowerProviderCalls = 0
+        val resolver = StreamResolver(searchStandard = { _, _ -> error("The current source does not need resolving again") },
+            resolveYouTube = { _, _, _, _ -> lowerProviderCalls++; null })
+        val policy = PlaybackSourcePolicy(AudioQualityCeiling.HIGH, enhancer = true)
+        val unchanged = resolver.resolve(jio, policy.ceiling.audioQuality, sourcePolicy = policy, manualUpgrade = true)
+        assertEquals(jio.audioUrl, unchanged.audioUrl)
+        assertEquals(jio.bitrateKbps, unchanged.bitrateKbps)
+        assertEquals(0, lowerProviderCalls)
+    }
+
+    @Test fun returningOneSongToYoutubeDoesNotPinTheNextSongOrChangeSourcePreferences() {
+        val policy = PlaybackSourcePolicy(AudioQualityCeiling.HIGH, returnToYouTube = true,
+            requestTrackId = video.id, requestRevision = 1L)
+        assertEquals(PlaybackSourceKind.YOUTUBE, policy.resolutionSourcesFor(video.id).first().kind)
+        assertEquals(PlaybackSourceKind.JIOSAAVN, policy.resolutionSourcesFor("yt_nexttrackid").first().kind)
+        assertEquals(PlaybackSourceKind.JIOSAAVN, policy.playbackSources.first().kind)
+    }
+
+    @Test fun reducedNetworkQualityUsesYoutubeWhenBothCurrentAndOriginalSourcesAreBlocked() {
+        val standard = PlaybackSourcePolicy(AudioQualityCeiling.NORMAL)
+        assertTrue(standard.shouldReturnToYouTube(archive, PlaybackSource.jio.id))
+        assertTrue(standard.shouldReturnToYouTube(archive, PlaybackSource.archive.id))
+        val maximum = PlaybackSourcePolicy(AudioQualityCeiling.MAX,
+            sources = listOf(PlaybackSource.jio.copy(enabled = false), PlaybackSource.archive, PlaybackSource.youtube))
+        assertFalse("A permitted current stream remains safe if its original source was disabled",
+            maximum.shouldReturnToYouTube(archive, PlaybackSource.jio.id))
+    }
+
+    @Test fun cancelledServiceLookupCannotClearANewerControllerRequest() {
+        try {
+            AudioSignalPath.source(video.id, "YouTube Music", PlaybackSource.youtube.id, uri = video.audioUrl)
+            AudioSignalPath.sourceRequest(video.id, true, "service:1")
+            AudioSignalPath.sourceRequest(video.id, true, "controller:1")
+            AudioSignalPath.sourceRequest(video.id, false, "service:1")
+            assertTrue(AudioSignalPath.state.value.sourceTransitionInProgress)
+            AudioSignalPath.sourceRequest("another-track", false, "controller:1")
+            assertTrue(AudioSignalPath.state.value.sourceTransitionInProgress)
+            AudioSignalPath.sourceRequest(video.id, false, "controller:1")
+            assertFalse(AudioSignalPath.state.value.sourceTransitionInProgress)
+        } finally { AudioSignalPath.reset() }
+    }
+
+    @Test fun verifiedFallbackAboveYoutubeCanRevertEvenWhenAnEarlierSourceHadNoMatch() {
+        val policy = PlaybackSourcePolicy(AudioQualityCeiling.MAX)
+        val actualJio = SignalPathState(trackId = video.id, sourceId = PlaybackSource.jio.id,
+            streamUri = jio.audioUrl, quality = StreamQualityBadge("AAC", 320, 44100, verified = true))
+        assertTrue(policy.hasVerifiedUpgrade(actualJio))
+        val returned = actualJio.copy(sourceId = PlaybackSource.youtube.id, streamUri = video.audioUrl,
+            enhancerOriginalSourceId = PlaybackSource.jio.id, enhancerOriginalUri = jio.audioUrl,
+            quality = StreamQualityBadge("OPUS", 146, 48000, verified = true))
+        assertFalse("A quality-enforced return to YouTube is not an upgrade", policy.hasVerifiedUpgrade(returned))
+    }
+
+    @Test fun nominal320AacVbrOverheadDoesNotTriggerUpgradeRollbackOrWeakenLowerQualityLimits() {
+        val policy = PlaybackSourcePolicy(AudioQualityCeiling.HIGH)
+        val actual = jio.copy(bitrateKbps = 329, qualityBadge = "AAC • 329 kbps")
+        assertTrue(policy.acceptsRemoteTrack(actual))
+        assertTrue(policy.acceptsStreamBitrate(329, android.net.Uri.parse(jio.audioUrl)))
+        assertTrue(policy.hasVerifiedUpgrade(SignalPathState(trackId = video.id, sourceId = PlaybackSource.jio.id,
+            streamUri = jio.audioUrl, quality = StreamQualityBadge("AAC", 329, 44100, verified = true))))
+        assertFalse(policy.acceptsRemoteTrack(actual.copy(bitrateKbps = 400)))
+        assertFalse(policy.acceptsRemoteTrack(actual.copy(audioUrl = "https://other.example/song_320.mp4")))
+        assertFalse(policy.acceptsStreamBitrate(329, android.net.Uri.parse(video.audioUrl)))
+        assertFalse(policy.copy(ceiling = AudioQualityCeiling.NORMAL).acceptsRemoteTrack(actual))
+        assertFalse(policy.copy(ceiling = AudioQualityCeiling.DATA_SAVER).acceptsStreamBitrate(97, android.net.Uri.parse(video.audioUrl)))
+        assertFalse(policy.copy(ceiling = AudioQualityCeiling.DATA_SAVER).acceptsRemoteTrack(actual))
+        assertEquals(329, actual.bitrateKbps)
     }
 
     @Test fun originalTransportBookmarkCannotChangeArtworkOrBeAppliedToAnotherTrack() {
@@ -137,7 +219,8 @@ class EnhancerSourceTransitionTest {
         assertFalse(policy.automaticallyEnhanced(playing.copy(quality = playing.quality.copy(verified = false))))
         assertFalse(policy.automaticallyEnhanced(playing.copy(sourceId = PlaybackSource.youtube.id)))
         assertFalse(policy.copy(ceiling = AudioQualityCeiling.NORMAL).automaticallyEnhanced(playing))
-        assertFalse(policy.copy(returnToYouTube = true).automaticallyEnhanced(playing))
+        assertTrue("Requesting a return must not pretend the source already changed",
+            policy.copy(returnToYouTube = true).automaticallyEnhanced(playing))
         assertEquals(PlaybackSource.jio.id, SourceTransitionOrigin.sourceId(video.id,
             android.net.Uri.parse(jio.audioUrl), policy))
     }

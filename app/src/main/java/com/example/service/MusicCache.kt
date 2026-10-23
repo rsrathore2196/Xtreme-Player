@@ -34,7 +34,8 @@ object MusicCache {
             it.isSabr == sabr && !it.isHls && (!opusOnly || it.codec == "Opus") &&
                 fullyCached(context, it.cacheKey, it.contentLength)
         }
-        return cached.filter { it.bitrateKbps.toLong() * 1000 <= cap }.maxByOrNull { it.bitrateKbps }
+        return cached.filter { com.example.data.remote.YouTubeAudioFormatPolicy.acceptsBitrate(it.bitrateKbps * 1000, cap) }
+            .maxByOrNull { it.bitrateKbps }
     }
 
     @Volatile
@@ -114,7 +115,8 @@ object MusicCache {
                         throw IOException("Audio resolution must run on the Media3 loader thread")
                     if (pinnedCeiling == null) {
                         val policy = com.example.playback.NetworkQualityMonitor.getInstance(app).snapshot()
-                        pinnedCeiling = policy.effectiveCeiling.maxBitrateBps
+                        val referenceCap = YouTubeAudioStreamService.bitrateCapFromUri(spec.uri)
+                        pinnedCeiling = minOf(policy.effectiveCeiling.maxBitrateBps, referenceCap ?: Int.MAX_VALUE)
                         offline = policy.connectionType == com.example.playback.NetworkConnectionType.OFFLINE
                     }
                 }

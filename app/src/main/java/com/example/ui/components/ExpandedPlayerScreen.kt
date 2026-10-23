@@ -2814,7 +2814,7 @@ internal fun SourceUpgradeMenuItem(trackId: String, onDismiss: () -> Unit,
     val path by com.example.playback.AudioSignalPath.state.collectAsStateWithLifecycle()
     val current = path.trackId == trackId && path.quality.verified && path.sourceId.isNotBlank()
     val automatic = current && policy.automaticallyEnhanced(path)
-    val upgraded = policy.enhancer || automatic
+    val upgraded = current && policy.hasVerifiedUpgrade(path)
     val returnToYouTube = automatic && (path.enhancerOriginalSourceId.isBlank() || path.enhancerOriginalSourceId == path.sourceId)
     DropdownMenuItem(
         text = { Text(if (upgraded) "Revert to Original" else "Upgrade Audio",
@@ -2825,10 +2825,10 @@ internal fun SourceUpgradeMenuItem(trackId: String, onDismiss: () -> Unit,
                     tint = colors.primaryAccent, modifier = Modifier.size(18.dp))
             }
         },
-        enabled = current,
+        enabled = current && !path.sourceTransitionInProgress,
         onClick = {
             AppHaptics.performTap(context)
-            monitor.setAudioEnhancer(!upgraded, returnToYouTube = upgraded && returnToYouTube)
+            monitor.setAudioEnhancer(!upgraded, returnToYouTube = upgraded && returnToYouTube, trackId = trackId)
             onDismiss()
         }, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp).testTag("player_audio_upgrade")
     )

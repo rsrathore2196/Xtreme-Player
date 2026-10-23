@@ -4,8 +4,6 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.material.icons.filled.ArrowUpward
-import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -28,10 +26,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -73,7 +74,23 @@ fun SourcesScreen(
     val canAddAddon = sources.count { it.iconType == PlaybackSourcesPreferences.ID_ADDON } < 16
     var showAddAddonDialog by remember { mutableStateOf(false) }
     var editingAddon by remember { mutableStateOf<PlaybackSourcesPreferences.SourceItem?>(null) }
-    var draggingIndex by remember { mutableStateOf<Int?>(null) }
+    val addonIds = sources.filter { it.isReorderable }.map { it.id }
+    var liveAddonOrder by remember(addonIds) { mutableStateOf(addonIds) }
+    var draggedId by remember { mutableStateOf<String?>(null) }
+    var totalDrag by remember { mutableFloatStateOf(0f) }
+    var startTop by remember { mutableFloatStateOf(0f) }
+    val rowHeights = remember { mutableMapOf<String, Float>() }
+    var lockedHeights by remember { mutableStateOf<Map<String, Float>>(emptyMap()) }
+    val displayedSources = liveAddonOrder.mapNotNull { id -> sources.firstOrNull { it.id == id } } +
+        sources.filterNot { it.isReorderable }
+
+    fun finishDrag(commit: Boolean) {
+        if (draggedId == null) return
+        draggedId = null
+        totalDrag = 0f
+        if (commit) PlaybackSourcesPreferences.reorderAddons(context, liveAddonOrder)
+        else liveAddonOrder = addonIds
+    }
 
     Scaffold(
         topBar = {
@@ -191,14 +208,20 @@ fun SourcesScreen(
                         tintAccent = false
                     )
             ) {
-                sources.forEachIndexed { index, item ->
+                displayedSources.forEachIndexed { index, item ->
                     key(item.id) {
-                    val isDragging = draggingIndex == index
+                    val isDragging = draggedId == item.id
                     val dragScale by animateFloatAsState(targetValue = if (isDragging) 1.02f else 1f, label = "dragScale")
 
-                    Box(
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .zIndex(if (isDragging) 1f else 0f)
+                            .onSizeChanged { rowHeights[item.id] = it.height.toFloat() }
+                            .graphicsLayer {
+                                translationY = if (isDragging) startTop + totalDrag -
+                                    addonTop(liveAddonOrder, item.id, lockedHeights) else 0f
+                            }
                             .scale(dragScale)
                             .background(if (isDragging) colors.primaryAccent.copy(alpha = 0.12f) else Color.Transparent)
                     ) {
@@ -206,33 +229,52 @@ fun SourcesScreen(
                             index = index + 1,
                             item = item,
                             onConfigure = { editingAddon = item; showAddAddonDialog = true },
-                            onMoveUp = { PlaybackSourcesPreferences.swapSources(context, index, index - 1) },
-                            onMoveDown = { PlaybackSourcesPreferences.swapSources(context, index, index + 1) },
-                            canMoveUp = index > 0, canMoveDown = index < sources.lastIndex,
+                            canReorder = item.isReorderable && liveAddonOrder.size > 1,
                             onToggle = { enabled ->
                                 PlaybackSourcesPreferences.setSourceEnabled(context, item.id, enabled)
                             },
                             onDragDelta = { deltaY ->
-                                val threshold = 72f
-                                if (deltaY > threshold && index < sources.size - 1) {
-                                    PlaybackSourcesPreferences.swapSources(context, index, index + 1)
-                                    draggingIndex = index + 1
-                                } else if (deltaY < -threshold && index > 0) {
-                                    PlaybackSourcesPreferences.swapSources(context, index, index - 1)
-                                    draggingIndex = index - 1
+                                if (draggedId == item.id) {
+                                    val height = lockedHeights[item.id] ?: 0f
+                                    val lastTop = lockedHeights.values.sum() - height
+                                    totalDrag = (totalDrag + deltaY).coerceIn(-startTop, (lastTop - startTop).coerceAtLeast(0f))
+                                    val top = startTop + totalDrag
+                                    val order = liveAddonOrder.toMutableList()
+                                    var at = order.indexOf(item.id)
+                                    while (at >= 0) {
+                                        val currentTop = addonTop(order, item.id, lockedHeights)
+                                        val before = order.getOrNull(at - 1)?.let { lockedHeights[it] } ?: 0f
+                                        val after = order.getOrNull(at + 1)?.let { lockedHeights[it] } ?: 0f
+                                        when {
+                                            at < order.lastIndex && top + height > currentTop + height + after / 2f -> {
+                                                order.add(at + 1, order.removeAt(at)); at++
+                                            }
+                                            at > 0 && top < currentTop - before / 2f -> {
+                                                order.add(at - 1, order.removeAt(at)); at--
+                                            }
+                                            else -> break
+                                        }
+                                    }
+                                    if (order != liveAddonOrder) liveAddonOrder = order.toList()
                                 }
                             },
-                            onDragStart = { draggingIndex = index },
-                            onDragEnd = { draggingIndex = null },
+                            onDragStart = {
+                                lockedHeights = liveAddonOrder.associateWith { rowHeights[it] ?: 1f }
+                                startTop = addonTop(liveAddonOrder, item.id, lockedHeights)
+                                totalDrag = 0f
+                                draggedId = item.id
+                            },
+                            onDragEnd = { finishDrag(commit = true) },
+                            onDragCancel = { finishDrag(commit = false) },
                             appColors = colors
                         )
-                    }
 
-                    if (index < sources.size - 1) {
+                    if (index < displayedSources.size - 1) {
                         HorizontalDivider(
                             modifier = Modifier.padding(horizontal = 16.dp),
                             color = colors.dividerColor.copy(alpha = 0.35f)
                         )
+                    }
                     }
                     }
                 }
@@ -314,26 +356,36 @@ fun SourcesScreen(
     }
 }
 
+private fun addonTop(order: List<String>, id: String, heights: Map<String, Float>): Float {
+    var top = 0f
+    for (key in order) {
+        if (key == id) break
+        top += heights[key] ?: 0f
+    }
+    return top
+}
+
 @Composable
 private fun SourceItemRow(
     index: Int,
     item: PlaybackSourcesPreferences.SourceItem,
     onToggle: (Boolean) -> Unit,
     onConfigure: () -> Unit,
-    onMoveUp: () -> Unit,
-    onMoveDown: () -> Unit,
-    canMoveUp: Boolean,
-    canMoveDown: Boolean,
+    canReorder: Boolean,
     onDragDelta: (Float) -> Unit,
     onDragStart: () -> Unit,
     onDragEnd: () -> Unit,
+    onDragCancel: () -> Unit,
     appColors: com.example.ui.theme.AppThemeColors
 ) {
     val isEnabled = item.isEnabled
     val isAllowed = item.isQualityAllowed
     val contentAlpha = if (isAllowed) 1f else 0.42f
 
-    var accumulatedDrag by remember { mutableFloatStateOf(0f) }
+    val currentOnDragDelta by rememberUpdatedState(onDragDelta)
+    val currentOnDragStart by rememberUpdatedState(onDragStart)
+    val currentOnDragEnd by rememberUpdatedState(onDragEnd)
+    val currentOnDragCancel by rememberUpdatedState(onDragCancel)
 
     Row(
         modifier = Modifier
@@ -444,49 +496,22 @@ private fun SourceItemRow(
             )
         }
 
-        Spacer(modifier = Modifier.width(6.dp))
-
-        // Drag handle
-        Column(
-            modifier = Modifier
-                .width(30.dp)
-                .pointerInput(item.id) {
-                    detectDragGestures(
-                        onDragStart = {
-                            accumulatedDrag = 0f
-                            onDragStart()
-                        },
-                        onDrag = { change, dragAmount ->
-                            change.consume()
-                            accumulatedDrag += dragAmount.y
-                            onDragDelta(accumulatedDrag)
-                        },
-                        onDragEnd = {
-                            accumulatedDrag = 0f
-                            onDragEnd()
-                        },
-                        onDragCancel = {
-                            accumulatedDrag = 0f
-                            onDragEnd()
-                        }
-                    )
-                },
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            IconButton(onClick = onMoveUp, enabled = canMoveUp,
-                modifier = Modifier.size(26.dp).testTag("source_up_${item.id}")) {
-                Icon(Icons.Default.ArrowUpward, "Move ${item.name} up", modifier = Modifier.size(17.dp))
-            }
+        if (canReorder) {
+            Spacer(modifier = Modifier.width(6.dp))
             Icon(
                 imageVector = Icons.Default.DragHandle,
                 contentDescription = "Reorder ${item.name}",
                 tint = appColors.textMuted.copy(alpha = 0.65f),
-                modifier = Modifier.size(18.dp)
+                modifier = Modifier.size(36.dp).testTag("source_drag_${item.id}")
+                    .pointerInput(item.id) {
+                        detectDragGestures(
+                            onDragStart = { currentOnDragStart() },
+                            onDrag = { change, amount -> change.consume(); currentOnDragDelta(amount.y) },
+                            onDragEnd = { currentOnDragEnd() },
+                            onDragCancel = { currentOnDragCancel() }
+                        )
+                    }.padding(9.dp)
             )
-            IconButton(onClick = onMoveDown, enabled = canMoveDown,
-                modifier = Modifier.size(26.dp).testTag("source_down_${item.id}")) {
-                Icon(Icons.Default.ArrowDownward, "Move ${item.name} down", modifier = Modifier.size(17.dp))
-            }
         }
     }
 }

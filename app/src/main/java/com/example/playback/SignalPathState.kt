@@ -85,6 +85,8 @@ data class SignalPathState(
     val outputEncoding: Int = C.ENCODING_INVALID, val outputChannels: Int = 0,
     val outputRouteVerified: Boolean = false, val playbackSpeed: Float = 1f, val pitch: Float = 1f,
     val playbackStatus: String = "Idle", val sourceId: String = "", val enhancerOriginalSourceId: String = "",
+    val enhancerOriginalUri: String = "", val sourceTransitionInProgress: Boolean = false,
+    internal val sourceTransitionOwner: String = "",
     val streamUri: String = "", val sourceChannels: Int = 0,
     val decoderName: String = "", val decoderEncoding: Int = C.ENCODING_INVALID,
     val dspEncoding: Int = C.ENCODING_INVALID, val dspRateHz: Int = 0,
@@ -134,10 +136,13 @@ object AudioSignalPath {
     val state = mutable.asStateFlow()
     internal fun update(block: (SignalPathState) -> SignalPathState) { mutable.update(block) }
     internal fun reset() { mutable.value = SignalPathState() }
-    internal fun source(id: String, provider: String, sourceId: String = "", originalSourceId: String = "", uri: String = "") = update { old ->
+    internal fun source(id: String, provider: String, sourceId: String = "", originalSourceId: String = "", uri: String = "", originalUri: String = "") = update { old ->
         if (old.trackId == id && old.source == provider && old.sourceId == sourceId && old.streamUri == uri) {
-            if (old.enhancerOriginalSourceId == originalSourceId) old else old.copy(enhancerOriginalSourceId = originalSourceId)
+            if (old.enhancerOriginalSourceId == originalSourceId && old.enhancerOriginalUri == originalUri) old
+            else old.copy(enhancerOriginalSourceId = originalSourceId, enhancerOriginalUri = originalUri)
         } else old.copy(trackId = id, source = provider, sourceId = sourceId, enhancerOriginalSourceId = originalSourceId,
+            enhancerOriginalUri = originalUri, sourceTransitionInProgress = old.trackId == id && old.sourceTransitionInProgress,
+            sourceTransitionOwner = old.sourceTransitionOwner.takeIf { old.trackId == id }.orEmpty(),
             streamUri = uri, quality = StreamQualityBadge(), glitches = 0,
             sourceChannels = 0, decoderName = "")
     }
@@ -147,10 +152,20 @@ object AudioSignalPath {
     internal fun decoder(id: String, uri: String, name: String) = update { old ->
         if (old.trackId == id && old.streamUri == uri) old.copy(decoderName = name) else old
     }
-    internal fun verifiedSource(id: String, provider: String, value: Format, bitrate: Int, sourceId: String = "", originalSourceId: String = "", uri: String = "", decoderNameOverride: String? = null) = update { old ->
+    internal fun verifiedSource(id: String, provider: String, value: Format, bitrate: Int, sourceId: String = "", originalSourceId: String = "", uri: String = "", decoderNameOverride: String? = null, originalUri: String = "") = update { old ->
         old.copy(trackId = id, source = provider, sourceId = sourceId, enhancerOriginalSourceId = originalSourceId, quality = StreamQualityBadge.from(value, bitrate), streamUri = uri,
+            enhancerOriginalUri = originalUri, sourceTransitionInProgress = old.trackId == id && old.sourceTransitionInProgress,
+            sourceTransitionOwner = old.sourceTransitionOwner.takeIf { old.trackId == id }.orEmpty(),
             sourceChannels = value.channelCount.coerceAtLeast(0),
             decoderName = decoderNameOverride ?: old.decoderName.takeIf { old.trackId == id && old.streamUri == uri }.orEmpty(),
             glitches = if (old.trackId == id) old.glitches else 0)
+    }
+    internal fun sourceRequest(id: String, pending: Boolean, owner: String = "") = update { old ->
+        if (old.trackId == id && (pending || owner.isBlank() || old.sourceTransitionOwner == owner))
+            old.copy(sourceTransitionInProgress = pending, sourceTransitionOwner = owner.takeIf { pending }.orEmpty()) else old
+    }
+    internal fun sourceBookmark(id: String, uri: String, origin: SourceTransitionOrigin?) = update { old ->
+        if (old.trackId == id && old.streamUri == uri) old.copy(
+            enhancerOriginalSourceId = origin?.sourceId.orEmpty(), enhancerOriginalUri = origin?.track?.audioUrl.orEmpty()) else old
     }
 }

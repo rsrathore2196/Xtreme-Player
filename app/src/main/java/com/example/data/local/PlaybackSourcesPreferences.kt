@@ -22,7 +22,7 @@ object PlaybackSourcesPreferences {
     const val ID_JIOSAAVN = "jiosaavn"
     const val ID_INTERNET_ARCHIVE = "internet_archive"
     const val ID_YOUTUBE = "youtube"
-    val DEFAULT_ORDER = listOf(ID_YOUTUBE, ID_JIOSAAVN, ID_INTERNET_ARCHIVE)
+    val DEFAULT_ORDER = listOf(ID_INTERNET_ARCHIVE, ID_JIOSAAVN, ID_YOUTUBE)
     private val scope = CoroutineScope(SupervisorJob() + AppDispatchers.HomeBookkeeping)
     private val reads = Mutex()
     private val writes = Mutex()
@@ -49,7 +49,7 @@ object PlaybackSourcesPreferences {
         val ids = order?.split(',')?.map(String::trim).orEmpty()
         val builtin = PlaybackSource.builtIns.map { it.copy(enabled = preferences.getBoolean("source_enabled_${it.id}", true)) }
         val available = builtin + listOfNotNull(custom)
-        return (ids.mapNotNull { id -> if (id == ID_ADDON) custom else available.find { it.id == id } } + available).distinctBy { it.id }
+        return PlaybackSource.ordered(ids.mapNotNull { id -> if (id == ID_ADDON) custom else available.find { it.id == id } } + available)
     }
 
     suspend fun load(context: Context): List<PlaybackSource> = withContext(AppDispatchers.Io) {
@@ -72,7 +72,7 @@ object PlaybackSourcesPreferences {
                             PlaybackSource(PlaybackSource.addonId(url), kind, row.optString("name").take(100).ifBlank { "Custom server" },
                                 row.optBoolean("enabled", false), url)
                         }
-                    }.distinctBy { it.id }.let { rows -> rows + PlaybackSource.builtIns.filter { builtin -> rows.none { it.id == builtin.id } } }
+                    }.let(PlaybackSource::ordered)
                 }.getOrElse { legacy(context, preferences) }
             }
             if (preferences.getString(KEY_CONFIG, null) == raw) memory.set(Snapshot(raw, parsed))
@@ -81,7 +81,8 @@ object PlaybackSourcesPreferences {
     }
 
     private suspend fun persist(context: Context, sources: List<PlaybackSource>) {
-        val snapshot = sources.distinctBy { it.id }.take(19)
+        val snapshot = PlaybackSource.ordered(sources.filter { it.kind == PlaybackSourceKind.ADDON }.take(16) +
+            sources.filter { it.kind != PlaybackSourceKind.ADDON })
         val raw = withContext(AppDispatchers.CpuBounded) { JSONArray().apply { snapshot.forEach { source ->
             put(JSONObject().put("kind", source.kind.name).put("name", source.name)
                 .put("enabled", source.enabled).put("url", source.baseUrl))
@@ -102,10 +103,20 @@ object PlaybackSourcesPreferences {
         } }
     }
     fun setSourceEnabled(context: Context, sourceId: String, enabled: Boolean) = mutate(context) { sources ->
-        sources.map { if (it.id == sourceId) it.copy(enabled = enabled) else it }
+        sources.map { if (it.id == sourceId && it.kind != PlaybackSourceKind.YOUTUBE) it.copy(enabled = enabled) else it }
     }
     fun swapSources(context: Context, fromIndex: Int, toIndex: Int) = mutate(context) { sources ->
-        sources.toMutableList().apply { if (fromIndex in indices && toIndex in indices) add(toIndex, removeAt(fromIndex)) }
+        sources.toMutableList().apply {
+            if (fromIndex in indices && toIndex in indices &&
+                this[fromIndex].kind == PlaybackSourceKind.ADDON && this[toIndex].kind == PlaybackSourceKind.ADDON)
+                add(toIndex, removeAt(fromIndex))
+        }
+    }
+    fun reorderAddons(context: Context, orderedIds: List<String>) = mutate(context) { sources ->
+        val addons = sources.filter { it.kind == PlaybackSourceKind.ADDON }
+        val byId = addons.associateBy { it.id }
+        val moved = orderedIds.distinct().mapNotNull(byId::get)
+        moved + addons.filterNot { it.id in orderedIds } + sources.filterNot { it.kind == PlaybackSourceKind.ADDON }
     }
     fun saveAddon(context: Context, url: String, name: String, previousId: String? = null) = mutate(context) { sources ->
         val normalized = com.example.data.remote.StreamingAddons.normalize(url)
@@ -129,6 +140,7 @@ object PlaybackSourcesPreferences {
         val isQualityAllowed: Boolean, val isAlwaysOn: Boolean = false,
         val qualityRequirementText: String? = null, val url: String = "") {
         val isEffectiveActive: Boolean get() = isEnabled && isQualityAllowed
+        val isReorderable: Boolean get() = iconType == ID_ADDON
     }
     fun isQualityAllowed(id: String, ceiling: AudioQualityCeiling): Boolean = when (id) {
         ID_YOUTUBE -> true
@@ -151,7 +163,8 @@ object PlaybackSourcesPreferences {
                 PlaybackSourceKind.INTERNET_ARCHIVE -> "Verified, authorized lossless recordings"
                 PlaybackSourceKind.ADDON -> "Custom streaming server"
             }, source.kind in setOf(PlaybackSourceKind.ADDON, PlaybackSourceKind.INTERNET_ARCHIVE), type,
-                source.enabled, allowed, qualityRequirementText = if (allowed) null else
+                source.enabled, allowed, isAlwaysOn = source.kind == PlaybackSourceKind.YOUTUBE,
+                qualityRequirementText = if (allowed) null else
                     if (source.kind == PlaybackSourceKind.JIOSAAVN) "Requires High or Maximum/Lossless"
                     else "Requires Maximum/Lossless", url = source.baseUrl)
         }

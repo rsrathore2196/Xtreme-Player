@@ -71,19 +71,34 @@ object AudioQualityPreferences {
 
     fun isAudioEnhancerEnabled(context: Context): Boolean = getPrefs(context).getBoolean(KEY_AUDIO_ENHANCER, false)
     fun returnToYouTube(context: Context): Boolean = getPrefs(context).getBoolean(KEY_RETURN_TO_YOUTUBE, false)
-    fun setAudioEnhancerEnabled(context: Context, enabled: Boolean, returnToYouTube: Boolean = false) {
+    private const val KEY_SOURCE_REQUEST_REVISION = "source_request_revision"
+    private const val KEY_SOURCE_REQUEST_TRACK = "source_request_track"
+    data class EnhancerSelection(val enabled: Boolean = false, val returnToYouTube: Boolean = false,
+        val revision: Long = 0L, val trackId: String = "")
+    fun enhancerSelection(context: Context): EnhancerSelection = getPrefs(context).let { prefs ->
+        EnhancerSelection(prefs.getBoolean(KEY_AUDIO_ENHANCER, false), prefs.getBoolean(KEY_RETURN_TO_YOUTUBE, false),
+            prefs.getLong(KEY_SOURCE_REQUEST_REVISION, 0L), prefs.getString(KEY_SOURCE_REQUEST_TRACK, "").orEmpty())
+    }
+    fun setAudioEnhancerEnabled(context: Context, enabled: Boolean, returnToYouTube: Boolean = false, trackId: String = "") {
         getPrefs(context).edit().putBoolean(KEY_AUDIO_ENHANCER, enabled)
-            .putBoolean(KEY_RETURN_TO_YOUTUBE, !enabled && returnToYouTube).apply()
+            .putBoolean(KEY_RETURN_TO_YOUTUBE, !enabled && returnToYouTube)
+            .putString(KEY_SOURCE_REQUEST_TRACK, trackId)
+            .apply {
+                // An explicit retry must emit even when the previous lookup left the preference on.
+                if (trackId.isNotBlank()) putLong(KEY_SOURCE_REQUEST_REVISION,
+                    getPrefs(context).getLong(KEY_SOURCE_REQUEST_REVISION, 0L) + 1L)
+            }.apply()
     }
     /** Read both values together so an automatic On → Off request is one policy change. */
     fun observeEnhancerSelection(context: Context) = callbackFlow {
         val prefs = getPrefs(context.applicationContext)
         val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-            if (key == null || key == KEY_AUDIO_ENHANCER || key == KEY_RETURN_TO_YOUTUBE) trySend(Unit)
+            if (key == null || key == KEY_AUDIO_ENHANCER || key == KEY_RETURN_TO_YOUTUBE ||
+                key == KEY_SOURCE_REQUEST_REVISION || key == KEY_SOURCE_REQUEST_TRACK) trySend(Unit)
         }
         prefs.registerOnSharedPreferenceChangeListener(listener); trySend(Unit)
         awaitClose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
-    }.conflate().map { isAudioEnhancerEnabled(context) to returnToYouTube(context) }.flowOn(Dispatchers.IO)
+    }.conflate().map { enhancerSelection(context) }.flowOn(Dispatchers.IO)
     fun observeAudioEnhancer(context: Context) = callbackFlow {
         val prefs = getPrefs(context.applicationContext)
         val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->

@@ -40,11 +40,12 @@ data class PlaybackIntegrationSettings(
     val addonName: String = "",
     val sources: List<PlaybackSource> = emptyList()
 ) {
-    fun sourceList(ceiling: com.example.playback.AudioQualityCeiling): List<PlaybackSource> = sources.ifEmpty {
+    @Suppress("UNUSED_PARAMETER") // Saved opt-ins survive quality changes; availability is filtered by PlaybackSourcePolicy.
+    fun sourceList(ceiling: com.example.playback.AudioQualityCeiling): List<PlaybackSource> = PlaybackSource.ordered(sources.ifEmpty {
         val legacy = if (addonUrl.isNotBlank()) listOf(PlaybackSource(PlaybackSource.addonId(addonUrl),
             PlaybackSourceKind.ADDON, addonName.ifBlank { "Custom server" }, addonEnabled, addonUrl)) else emptyList()
-        legacy + PlaybackSource.defaults(ceiling)
-    }
+        legacy + PlaybackSource.newInstallDefaults
+    })
 }
 
 @Immutable

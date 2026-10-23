@@ -32,7 +32,7 @@ class QualityTierResolutionTest {
         val calls = mutableListOf<String>()
         val resolver = StreamResolver(searchLossless = { query -> calls += "archive"; assertEquals("Song artist", query); listOf(archive) },
             searchStandard = { _, _ -> calls += "jio"; listOf(jio) }, resolveYouTube = { _, _, _, _ -> calls += "youtube"; null }, supportsLossless = { true },
-        searchYouTube = { emptyList() }, resolveOpus = { _, _, _, _ -> null })
+        searchYouTube = { emptyList() })
         val result = resolver.resolve(song, AudioQuality.HI_RES_LOSSLESS, sourcePolicy = archiveFirst)
         assertEquals(listOf("archive"), calls); assertEquals(song.id, result.id)
         assertEquals(song.coverUrl, result.coverUrl); assertEquals(archive.audioUrl, result.audioUrl); assertTrue(result.isLossless)
@@ -41,7 +41,7 @@ class QualityTierResolutionTest {
         for ((quality, kbps) in listOf(AudioQuality.ULTRA_HD_320 to 320)) {
             val resolver = StreamResolver(searchLossless = { fail("Lossy tiers must never call Archive"); emptyList() },
                 searchStandard = { _, _ -> listOf(jio) }, resolveYouTube = { _, _, _, _ -> null },
-        searchYouTube = { emptyList() }, resolveOpus = { _, _, _, _ -> null })
+        searchYouTube = { emptyList() })
             val result = resolver.resolve(song, quality)
             assertTrue(result.audioUrl.endsWith("_${kbps}.mp4")); assertEquals(kbps, result.bitrateKbps); assertFalse(result.isLossless)
         }
@@ -50,7 +50,7 @@ class QualityTierResolutionTest {
         var cancelled = false
         val resolver = StreamResolver(searchLossless = { try { awaitCancellation() } finally { cancelled = true } },
             searchStandard = { _, _ -> listOf(jio) }, resolveYouTube = { _, _, _, _ -> null },
-        searchYouTube = { emptyList() }, resolveOpus = { _, _, _, _ -> null })
+        searchYouTube = { emptyList() })
         val result = withTimeout(4000) { resolver.resolve(song, AudioQuality.HI_RES_LOSSLESS, sourcePolicy = archiveFirst) }
         assertTrue(cancelled); assertEquals(jio.audioUrl, result.audioUrl)
         assertFalse("A timeout must allow a later explicit lossless lookup", resolver.hasRecentLosslessAttempt(song))
@@ -61,7 +61,7 @@ class QualityTierResolutionTest {
             if (++lookups == 1) throw java.io.IOException("Temporary network failure")
             listOf(archive)
         }, searchStandard = { _, _ -> listOf(jio) }, resolveYouTube = { _, _, _, _ -> null }, supportsLossless = { true },
-        searchYouTube = { emptyList() }, resolveOpus = { _, _, _, _ -> null })
+        searchYouTube = { emptyList() })
         val first = resolver.resolve(song, AudioQuality.HI_RES_LOSSLESS, sourcePolicy = archiveFirst)
         assertEquals(jio.audioUrl, first.audioUrl)
         assertFalse(resolver.hasRecentLosslessAttempt(song))
@@ -73,7 +73,7 @@ class QualityTierResolutionTest {
     @Test fun emptyInitialPageDoesNotPermanentlyBlockAnotherExplicitLookup() = runBlocking {
         val resolver = StreamResolver(searchLossless = { emptyList() }, searchStandard = { _, _ -> listOf(jio) },
             resolveYouTube = { _, _, _, _ -> null },
-        searchYouTube = { emptyList() }, resolveOpus = { _, _, _, _ -> null })
+        searchYouTube = { emptyList() })
         assertEquals(jio.audioUrl, resolver.resolve(song, AudioQuality.HI_RES_LOSSLESS, sourcePolicy = archiveFirst).audioUrl)
         assertFalse(resolver.hasRecentLosslessAttempt(song))
     }
@@ -81,8 +81,7 @@ class QualityTierResolutionTest {
         val resolver = StreamResolver(searchLossless = { emptyList() }, searchStandard = { _, _ -> emptyList() },
             resolveYouTube = { track, _, _, _ -> assertEquals(song.id, track.id)
                 track.copy(audioUrl = "xtreme-youtube://audio/abcdefghijk?itag=251", bitrateKbps = 160, qualityBadge = "Opus • 160 kbps") },
-            searchYouTube = { fail("The original selected video is playable"); emptyList() },
-        resolveOpus = { _, _, _, _ -> null })
+            searchYouTube = { fail("The original selected video is playable"); emptyList() })
         val result = resolver.resolve(song, AudioQuality.ULTRA_HD_320)
         assertEquals(song.id, result.id); assertEquals("YouTube Music", result.source); assertFalse(result.isLossless)
     }
@@ -102,7 +101,7 @@ class QualityTierResolutionTest {
             resolveYouTube = { request, _, _, cap ->
                 assertEquals(160000, cap)
                 request.copy(audioUrl = "xtreme-youtube://audio/abcdefghijk/stream.audio?cap=$cap", bitrateKbps = 128)
-            }, searchYouTube = { emptyList() }, resolveOpus = { _, _, _, _ -> null })
+            }, searchYouTube = { emptyList() })
         val result = resolver.resolve(song, AudioQuality.HI_RES_LOSSLESS, maxBitrateBps = 160000)
         assertEquals(128, result.bitrateKbps); assertFalse(result.isLossless)
         assertEquals("YouTube Music", result.source)
@@ -111,7 +110,7 @@ class QualityTierResolutionTest {
         var candidate = jio
         val resolver = StreamResolver(searchLossless = { emptyList() }, searchStandard = { _, _ -> listOf(candidate) },
             resolveYouTube = { _, _, _, _ -> null },
-        searchYouTube = { emptyList() }, resolveOpus = { _, _, _, _ -> null })
+        searchYouTube = { emptyList() })
         assertEquals(jio.audioUrl, resolver.resolve(song, AudioQuality.ULTRA_HD_320).audioUrl)
         candidate = jio.copy(title = "Another Song", audioUrl = "https://aac.saavncdn.com/another_320.mp4")
         assertEquals(candidate.audioUrl, resolver.resolve(song.copy(title = "Another Song"), AudioQuality.ULTRA_HD_320).audioUrl)
@@ -119,14 +118,14 @@ class QualityTierResolutionTest {
     @Test fun unsupportedLosslessCodecFallsBackBeforePlaybackPreparation() = runBlocking {
         val resolver = StreamResolver(searchLossless = { listOf(archive) }, supportsLossless = { false },
             searchStandard = { _, _ -> listOf(jio) }, resolveYouTube = { _, _, _, _ -> null },
-        searchYouTube = { emptyList() }, resolveOpus = { _, _, _, _ -> null })
+        searchYouTube = { emptyList() })
         assertEquals(jio.audioUrl, resolver.resolve(song, AudioQuality.HI_RES_LOSSLESS, sourcePolicy = archiveFirst).audioUrl)
     }
     @Test fun localFilesRemainAvailableOfflineWithoutProviderCalls() = runBlocking {
         val local = song.copy(audioUrl = "file:///storage/music/song.flac", isLossless = true)
         val resolver = StreamResolver(searchLossless = { fail("Local files must work offline"); emptyList() },
             searchStandard = { _, _ -> fail("Local files must work offline"); emptyList() },
-        searchYouTube = { emptyList() }, resolveOpus = { _, _, _, _ -> null }, resolveYouTube = { _, _, _, _ -> null })
+        searchYouTube = { emptyList() }, resolveYouTube = { _, _, _, _ -> null })
         assertEquals(local, resolver.resolve(local, AudioQuality.HI_RES_LOSSLESS))
     }
 }

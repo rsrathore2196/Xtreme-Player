@@ -35,22 +35,20 @@ internal object NetworkAudioQualityPolicy {
             target = Uri.parse(OnlineMusicApiService.formatUrlForQuality(uri.toString(), bitrate.toString()))
         } else if (uri.scheme == "xtreme-youtube" || uri.scheme == "xtreme-sabr") {
             val cap = minOf(ceilingBps, minOf(requestedKbps, 320) * 1000)
-            val oldCap = uri.getQueryParameter("cap")?.toIntOrNull()?.let {
-                if (uri.scheme == "xtreme-sabr") it.toLong() * 1000 else it.toLong()
-            }
-            if (oldCap == cap.toLong()) return item
-            if (uri.scheme == "xtreme-sabr") {
+            val oldCap = YouTubeAudioStreamService.bitrateCapFromUri(uri)
+            if (oldCap == cap) return item
+            if (uri.scheme == "xtreme-sabr" || uri.lastPathSegment?.endsWith(".m3u8") == true) {
+                // A different ceiling may need a direct low-bitrate format even
+                // when the old item used HLS. Let native extraction choose again.
                 val video = YouTubeAudioStreamService.videoIdFromUri(uri) ?: return item
                 target = Uri.Builder().scheme("xtreme-youtube").authority("audio").appendPath(video)
-                    .appendPath("stream.audio").appendQueryParameter("cap", cap.toString()).apply {
-                        uri.getQueryParameter("codec")?.let { appendQueryParameter("codec", it) }
-                    }.build()
+                    .appendPath("stream.audio").appendQueryParameter("cap", cap.toString()).build()
                 resetMime = true
             } else {
                 // A new bitrate may select a different itag/container. No old byte
                 // offsets or representation checks may carry into this upcoming item.
                 target = uri.buildUpon().clearQuery().apply {
-                    uri.queryParameterNames.filterNot { it in setOf("cap", "itag", "length", "session") }.forEach { key ->
+                    uri.queryParameterNames.filterNot { it in setOf("cap", "itag", "length", "session", "codec") }.forEach { key ->
                         uri.getQueryParameters(key).forEach { appendQueryParameter(key, it) }
                     }
                     appendQueryParameter("cap", cap.toString())

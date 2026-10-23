@@ -168,9 +168,10 @@ class MusicService : MediaLibraryService() {
         repeat(3) {
             val policy = networkQuality.sourcePolicySnapshot()
             val origin = com.example.playback.SourceTransitionOrigin.read(item, selected)
-            val restoring = !policy.enhancer && (origin != null || policy.returnToYouTube)
-            val resolved = app.repository.resolvePlayableTrack(if (restoring && !policy.returnToYouTube) origin!!.track else selected,
-                preferredSourceId = if (policy.returnToYouTube && !policy.enhancer) com.example.playback.PlaybackSource.youtube.id else origin?.sourceId.takeIf { restoring })
+            val returnToYouTube = policy.shouldReturnToYouTube(selected, origin?.sourceId)
+            val restoring = !policy.enhancer && (origin != null || returnToYouTube)
+            val resolved = app.repository.resolvePlayableTrack(if (restoring && !returnToYouTube) origin!!.track else selected,
+                preferredSourceId = if (returnToYouTube) com.example.playback.PlaybackSource.youtube.id else origin?.sourceId.takeIf { restoring })
             currentCoroutineContext().ensureActive()
             if (policy.key != networkQuality.sourcePolicySnapshot().key) return@repeat
             val address = Uri.parse(YouTubeAudioStreamService.playbackUri(resolved.id, resolved.audioUrl))
@@ -359,7 +360,7 @@ class MusicService : MediaLibraryService() {
         val item = player.currentMediaItem ?: return
         val uri = item.localConfiguration?.uri ?: return
         val owner = "${item.mediaId}:$uri:${policy.key}:$failedUrl"
-        if (headlessPolicyOwner == owner && sourceRecoveryJob?.isActive == true) return
+        if (headlessPolicyOwner == owner) return
         sourceRecoveryJob?.cancel()
         val revision = ++policyRevision
         headlessTransition = null
@@ -371,45 +372,72 @@ class MusicService : MediaLibraryService() {
             metadata.albumTitle?.toString().orEmpty(), player.duration.takeIf { it > 0 } ?: extras?.getLong("duration", 0L) ?: 0L,
             metadata.artworkUri?.toString().orEmpty(), uri.toString(), bitrateKbps = extras?.getInt("bitrate") ?: 0,
             qualityBadge = extras?.getString("qualityBadge").orEmpty(), source = extras?.getString("media_source").orEmpty(),
+            isLossless = extras?.getBoolean("isLossless") == true,
             primaryArtists = extras?.getStringArrayList("primaryArtists")?.toList().orEmpty(),
             isrc = extras?.getString("isrc").orEmpty())
         val checkedPolicy = extras?.getString("source_policy_key") == policy.key
         if (failedUrl == null && checkedPolicy && policy.acceptsRemoteTrack(track)) return
         val savedOrigin = com.example.playback.SourceTransitionOrigin.read(item, track)
-        val origin = savedOrigin ?: if (policy.enhancer) com.example.playback.SourceTransitionOrigin.capture(track, policy) else null
-        val restoring = !policy.enhancer && (origin != null || policy.returnToYouTube)
-        if (policy.enhancer && savedOrigin == null && origin != null) {
-            val remembered = Bundle(extras ?: Bundle()).apply { com.example.playback.SourceTransitionOrigin.write(this, origin) }
-            player.replaceMediaItem(player.currentMediaItemIndex, item.buildUpon().setMediaMetadata(
-                metadata.buildUpon().setExtras(remembered).build()).build())
-        }
-        if (restoring && !policy.returnToYouTube && origin?.track?.audioUrl == uri.toString() && policy.acceptsRemoteTrack(track)) {
+        val manualUpgrade = policy.enhancer && failedUrl == null &&
+            (policy.requestTrackId.isBlank() || policy.requestTrackId == track.id)
+        val origin = savedOrigin ?: if (manualUpgrade) com.example.playback.SourceTransitionOrigin.capture(track, policy) else null
+        val returnToYouTube = policy.shouldReturnToYouTube(track, origin?.sourceId)
+        val restoring = !policy.enhancer && (origin != null || returnToYouTube)
+        if (restoring && !returnToYouTube && origin?.track?.audioUrl == uri.toString() && policy.acceptsRemoteTrack(track)) {
             val unchanged = Bundle(extras ?: Bundle()).apply {
                 putString("source_policy_key", policy.key)
                 com.example.playback.SourceTransitionOrigin.write(this, null)
             }
             player.replaceMediaItem(player.currentMediaItemIndex, item.buildUpon().setMediaMetadata(
                 metadata.buildUpon().setExtras(unchanged).build()).build())
+            com.example.playback.AudioSignalPath.sourceBookmark(track.id, uri.toString(), null)
             return
         }
         fun owns(expected: Uri = uri) = revision == policyRevision && networkQuality.sourcePolicy.value.key == policy.key &&
             player.currentMediaItem?.mediaId == item.mediaId && player.currentMediaItem?.localConfiguration?.uri == expected &&
             SabrSessionRegistry.controllerHandlesRecovery?.invoke() != true
         sourceRecoveryJob = serviceScope.launch {
+            com.example.playback.AudioSignalPath.sourceRequest(track.id, true, "service:$revision")
             var activatedUri: Uri? = null
+            fun restorePreviousSource() {
+                val target = activatedUri ?: return
+                if (!owns(target)) return
+                if (failedUrl != null || !policy.acceptsRemoteTrack(track)) {
+                    player.pause(); player.stop()
+                    return
+                }
+                val position = com.example.playback.losslessRecoveryPosition(
+                    headlessTransition?.second ?: player.currentPosition, player.currentPosition, false)
+                val resume = player.playWhenReady
+                val restored = item.buildUpon().setMediaMetadata(metadata.buildUpon().setExtras(
+                    Bundle(extras ?: Bundle()).apply {
+                        putLong("jio_start_deadline", 0L); remove("jio_youtube_fallback")
+                    }).build()).build()
+                val index = player.currentMediaItemIndex
+                try {
+                    player.replaceMediaItem(index, restored); player.seekTo(index, position)
+                    player.prepare(); player.playWhenReady = resume
+                } catch (error: RuntimeException) {
+                    android.util.Log.w("MusicService", "Previous source recovery failed", error)
+                    player.pause(); player.stop()
+                }
+            }
             try {
                 delay(180L)
-                val resolved = withContext(AppDispatchers.Io) { app.repository.resolvePlayableTrack(if (restoring && !policy.returnToYouTube) origin!!.track else track,
+                val resolved = withContext(AppDispatchers.Io) { app.repository.resolvePlayableTrack(if (restoring && !returnToYouTube) origin!!.track else track,
                     forceRefresh = failedUrl != null, failedUrl = failedUrl,
-                    preferredSourceId = if (policy.returnToYouTube && !policy.enhancer) com.example.playback.PlaybackSource.youtube.id else origin?.sourceId.takeIf { restoring }, manualUpgrade = policy.enhancer) }
+                    preferredSourceId = if (returnToYouTube) com.example.playback.PlaybackSource.youtube.id else origin?.sourceId.takeIf { restoring }, manualUpgrade = manualUpgrade) }
                 if (!owns()) return@launch
                 if (resolved.audioUrl == track.audioUrl) {
+                    if (manualUpgrade) com.example.playback.LosslessDiagnostics.record(track.id,
+                        com.example.playback.LosslessDiagnostics.Reason.NO_RESULTS, "manual-source-upgrade")
                     val unchanged = Bundle(extras ?: Bundle()).apply {
                         putString("source_policy_key", policy.key)
-                        com.example.playback.SourceTransitionOrigin.write(this, origin.takeIf { policy.enhancer })
+                        com.example.playback.SourceTransitionOrigin.write(this, savedOrigin.takeUnless { restoring })
                     }
                     player.replaceMediaItem(player.currentMediaItemIndex, item.buildUpon().setMediaMetadata(
                         metadata.buildUpon().setExtras(unchanged).build()).build())
+                    com.example.playback.AudioSignalPath.sourceBookmark(track.id, uri.toString(), savedOrigin.takeUnless { restoring })
                     return@launch
                 }
                 val replacementExtras = Bundle(extras ?: Bundle()).apply {
@@ -419,11 +447,13 @@ class MusicService : MediaLibraryService() {
                     putBoolean("lossless_upgrade_pending", resolved.isLossless)
                     putString("media_source", resolved.source); putInt("bitrate", resolved.bitrateKbps)
                     putString("qualityBadge", resolved.qualityBadge); putString("source_policy_key", policy.key)
-                    com.example.playback.SourceTransitionOrigin.write(this, origin.takeIf { policy.enhancer })
+                    com.example.playback.SourceTransitionOrigin.write(this, origin)
                     putStringArrayList("primaryArtists", ArrayList(resolved.primaryArtists))
                 }
                 val replacement = item.buildUpon().setUri(resolved.audioUrl).setMimeType(null)
                     .setMediaMetadata(metadata.buildUpon().setExtras(replacementExtras).build()).build()
+                val targetOrigin = origin.takeUnless { restoring ||
+                    YouTubeAudioStreamService.isYouTubeAudio(resolved.id, resolved.audioUrl) }
                 if (resolved.isLossless) {
                     val sameCode = withContext(AppDispatchers.CpuBounded) {
                         com.example.data.repository.RecordingIdentity.isrc(track.isrc)?.let {
@@ -456,7 +486,7 @@ class MusicService : MediaLibraryService() {
                         if (player.playbackState == Player.STATE_READY && verifiedSignalUri == targetUri && format != null) {
                             val expected = resolvedFormatMatches(resolved, format)
                             val rate = verifiedSignalBitrate
-                            if (expected && (policy.maximum || rate.toLong() * 1000 <= policy.ceiling.maxBitrateBps))
+                            if (expected && policy.acceptsStreamBitrate(rate, targetUri))
                                 return@withTimeoutOrNull true
                         }
                         if (player.playerError != null) break
@@ -470,28 +500,32 @@ class MusicService : MediaLibraryService() {
                     com.example.playback.LosslessDiagnostics.record(track.id,
                         com.example.playback.LosslessDiagnostics.Reason.ACTIVATION_FAILED, "headless-policy")
                     if (resolved.isLossless) app.repository.rejectLosslessUpgrade(track, resolved.audioUrl)
-                    if (failedUrl == null && policy.acceptsRemoteTrack(track)) {
-                        val positionNow = com.example.playback.losslessRecoveryPosition(
-                            headlessTransition?.second ?: position, player.currentPosition, false)
-                        val resumeNow = player.playWhenReady
-                        val restored = item.buildUpon().setMediaMetadata(metadata.buildUpon().setExtras(
-                            Bundle(extras ?: Bundle()).apply {
-                                putLong("jio_start_deadline", 0L); remove("jio_youtube_fallback")
-                            }).build()).build()
-                        player.replaceMediaItem(index, restored); player.seekTo(index, positionNow)
-                        player.prepare(); player.playWhenReady = resumeNow
-                    } else { player.pause(); player.stop() }
+                    restorePreviousSource()
                 }
+                if (ready && owns(targetUri) && targetOrigin == null && origin != null) {
+                    val active = player.currentMediaItem ?: return@launch
+                    val cleared = Bundle(active.mediaMetadata.extras ?: Bundle()).apply {
+                        com.example.playback.SourceTransitionOrigin.write(this, null)
+                    }
+                    player.replaceMediaItem(player.currentMediaItemIndex, active.buildUpon().setMediaMetadata(
+                        active.mediaMetadata.buildUpon().setExtras(cleared).build()).build())
+                    com.example.playback.AudioSignalPath.sourceBookmark(track.id, targetUri.toString(), null)
+                }
+                if (ready) com.example.playback.LosslessDiagnostics.clear(track.id)
                 checkpoint()
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) {
-                if (owns(activatedUri ?: uri) && (failedUrl != null || !policy.acceptsRemoteTrack(track))) {
-                    player.pause(); player.stop()
+                if (owns(activatedUri ?: uri)) {
                     com.example.playback.LosslessDiagnostics.record(track.id,
                         com.example.playback.LosslessDiagnostics.Reason.POLICY_SOURCE_UNAVAILABLE, "headless-policy")
+                    if (activatedUri != null) restorePreviousSource()
+                    else if (failedUrl != null || !policy.acceptsRemoteTrack(track)) { player.pause(); player.stop() }
                 }
             } finally {
-                if (revision == policyRevision) headlessTransition = null
+                if (revision == policyRevision) {
+                    headlessTransition = null
+                }
+                com.example.playback.AudioSignalPath.sourceRequest(track.id, false, "service:$revision")
             }
         }
     }
@@ -733,7 +767,7 @@ class MusicService : MediaLibraryService() {
                 publishVerifiedSignal()
                 updateActualAudioProperties(player, item, actualAudioProperties(item, format, quality, mediaSource))
                 val policy = networkQuality.sourcePolicy.value
-                val invalidRate = quality.bitrateKbps.toLong() * 1000 > policy.ceiling.maxBitrateBps
+                val invalidRate = !policy.acceptsStreamBitrate(quality.bitrateKbps, uri)
                 if (!policy.maximum && invalidRate &&
                     SabrSessionRegistry.controllerHandlesRecovery?.invoke() != true && sourceRecoveryJob?.isActive != true)
                     reconcileHeadlessPolicy(policy, failedUrl = uri.toString())
@@ -974,9 +1008,10 @@ class MusicService : MediaLibraryService() {
         }
         val sourceId = com.example.playback.SourceTransitionOrigin.sourceId(item.mediaId, uri, networkQuality.sourcePolicy.value).orEmpty()
         val originalSourceId = item.mediaMetadata.extras?.getString("enhancer_origin_id").orEmpty()
-        if (format == null) com.example.playback.AudioSignalPath.source(item.mediaId, provider, sourceId, originalSourceId, uri.toString())
+        val originalUri = item.mediaMetadata.extras?.getString("enhancer_origin_uri").orEmpty()
+        if (format == null) com.example.playback.AudioSignalPath.source(item.mediaId, provider, sourceId, originalSourceId, uri.toString(), originalUri)
         else com.example.playback.AudioSignalPath.verifiedSource(item.mediaId, provider, format, bitrate, sourceId, originalSourceId, uri.toString(),
-            verifiedDecoderName.takeIf { verifiedDecoderId == item.mediaId && verifiedDecoderUri == uri })
+            verifiedDecoderName.takeIf { verifiedDecoderId == item.mediaId && verifiedDecoderUri == uri }, originalUri)
     }
 
     private fun publishVerifiedSignal() {

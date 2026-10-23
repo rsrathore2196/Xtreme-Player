@@ -78,6 +78,13 @@ class NetworkAudioQualityPreferencesTest {
             awaitProfile(NetworkConnectionType.UNMETERED_WIFI_OR_ETHERNET, AudioQualityCeiling.MAX)
             assertEquals(AudioQuality.HI_RES_LOSSLESS, AudioQualityPreferences.getSelectedQuality(app))
 
+            monitor.setWifiCeiling(AudioQualityCeiling.DATA_SAVER)
+            awaitProfile(NetworkConnectionType.UNMETERED_WIFI_OR_ETHERNET, AudioQualityCeiling.DATA_SAVER)
+            assertEquals(AudioQuality.MEDIUM_96, AudioQualityPreferences.getSelectedQuality(app))
+            assertEquals(96_000, monitor.sourcePolicySnapshot().ceiling.maxBitrateBps)
+            monitor.setWifiCeiling(AudioQualityCeiling.MAX)
+            awaitProfile(NetworkConnectionType.UNMETERED_WIFI_OR_ETHERNET, AudioQualityCeiling.MAX)
+
             connect(wifi = true, metered = true)
             awaitProfile(NetworkConnectionType.METERED_WIFI, AudioQualityCeiling.HIGH)
             assertFalse(monitor.allowsLosslessUpgrade)

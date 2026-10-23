@@ -13,6 +13,7 @@ import com.example.playback.PlaybackSourceKind
 import com.example.playback.PlaybackSourcePolicy
 import com.example.playback.AudioQualityCeiling
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.ensureActive
@@ -55,13 +56,11 @@ internal class StreamResolver(
             }.getOrDefault(false)
         }
     },
-    private val resolveOpus: suspend (MusicTrack, AudioQuality, Boolean, Int) -> MusicTrack? = { track, quality, refresh, cap ->
-        YouTubeMusicApiService.resolveAudio(track, quality, refresh, requireOpus = true, maxBitrateBps = cap)
-    },
     private val verifyArchive: suspend (MusicTrack) -> MusicTrack? = { track ->
         com.example.data.remote.InternetArchiveApiService.verifyDirectRecording(track) { true }
     },
-    private val resolveAddon: suspend (PlaybackSource, MusicTrack, PlaybackSourcePolicy, Set<String>) -> MusicTrack? = { _, _, _, _ -> null }
+    private val resolveAddon: suspend (PlaybackSource, MusicTrack, PlaybackSourcePolicy, Set<String>) -> MusicTrack? = { _, _, _, _ -> null },
+    private val ioDispatcher: CoroutineDispatcher = AppDispatchers.Io
 ) {
     private data class CachedStream(val track: MusicTrack, val expiresAt: Long)
     private data class StreamKey(val id: String, val quality: AudioQuality, val recommendation: Boolean, val cap: Int,
@@ -94,7 +93,7 @@ internal class StreamResolver(
         currentSourceOnly: Boolean = false, rejectedUrls: Set<String> = emptySet(),
         sourcePolicy: com.example.playback.PlaybackSourcePolicy? = null,
         preferredSourceId: String? = null, manualUpgrade: Boolean = false
-    ): MusicTrack = withContext(Dispatchers.IO) {
+    ): MusicTrack = withContext(ioDispatcher) {
         val ceilingBps = minOf(maxBitrateBps, if (quality == AudioQuality.HI_RES_LOSSLESS) Int.MAX_VALUE else quality.kbps * 1000)
         val policy = sourcePolicy ?: PlaybackSourcePolicy(AudioQualityCeiling.entries.lastOrNull { it.maxBitrateBps <= ceilingBps } ?: AudioQualityCeiling.DATA_SAVER)
         val recordingKey = withContext(AppDispatchers.CpuBounded) { RecordingIdentity.key(track) }
@@ -125,7 +124,7 @@ internal class StreamResolver(
             if (candidate.isLossless) return false
             if (YouTubeAudioStreamService.isYouTubeAudio(candidate.id, candidate.audioUrl))
                 return !candidate.isLossless && (candidate.bitrateKbps <= 0 ||
-                    candidate.bitrateKbps.toLong() * 1000 <= ceilingBps)
+                    candidate.bitrateKbps.toLong() * 1000 <= ceilingBps) && policy.acceptsRemoteTrack(candidate)
             val host = uriHost(candidate.audioUrl).orEmpty()
             return policy.allows(PlaybackSourceKind.JIOSAAVN) &&
                 (host == "saavncdn.com" || host.endsWith(".saavncdn.com"))
@@ -151,7 +150,9 @@ internal class StreamResolver(
         }
         val rejected = failedUrl ?: track.audioUrl.takeIf { forceRefresh }
         if (forceRefresh && failedUrl != null && youtubeSelection) selectedVideoId(track)?.let {
-            YouTubeAudioStreamService.reject(it, rejected)
+            // A quality change/timeout is not a CDN client refusal. The loader
+            // records actual 401/403/410 refusals; only renew this representation.
+            YouTubeAudioStreamService.invalidate(it)
         }
         suspend fun <T> attempt(timeoutMs: Long, block: suspend () -> T): T? = try {
             withTimeoutOrNull(timeoutMs) { block() }
@@ -175,11 +176,10 @@ internal class StreamResolver(
         suspend fun youtubeExact(request: MusicTrack): MusicTrack? {
             val id = selectedVideoId(request) ?: return null
             if (!triedVideos.add(id)) return null
-            val resolved = attempt(20_000L) {
-                val opus = if (sourcePolicy?.preferOpus == true || quality == AudioQuality.ULTRA_HD_320)
-                    attempt(10_000L) { resolveOpus(request, quality, forceRefresh, ceilingBps) }
-                        ?.takeIf { it.qualityBadge.contains("Opus", true) && providerAllowed(it) } else null
-                opus ?: resolveYouTube(request, quality, forceRefresh, ceilingBps)
+            // Native AUTO already prefers WebM/Opus. A separate forced-Opus
+            // extraction used to consume the fallback's entire time budget.
+            val resolved = attempt(YouTubeAudioStreamService.RESOLUTION_TIMEOUT_MS + 5_000L) {
+                resolveYouTube(request, quality, forceRefresh, ceilingBps)
             } ?: return null
             if (resolved.id != request.id || !isValidStreamUrl(resolved.audioUrl) ||
                 safeVideoIdFromUri(resolved.audioUrl) != id) return null
@@ -223,7 +223,7 @@ internal class StreamResolver(
             }
             null
         }
-        suspend fun youtubeFallback(): MusicTrack? = attempt(24_000L) {
+        suspend fun youtubeFallback(): MusicTrack? = attempt(YouTubeAudioStreamService.RESOLUTION_TIMEOUT_MS + 15_000L) {
             matchedProvider("youtube")?.let { youtubeExact(it)?.let { resolved -> return@attempt resolved } }
             var extractions = 0
             for (query in queries.take(2)) {
@@ -277,7 +277,7 @@ internal class StreamResolver(
             }
             return found
         }
-        val resolved = withTimeoutOrNull(65_000L) {
+        val resolved = withTimeoutOrNull(95_000L) {
             suspend fun boundedJio(): MusicTrack? {
                 if (preferYouTube && sourcePolicy == null) return null
                 if (!forceRefresh) {
@@ -299,8 +299,12 @@ internal class StreamResolver(
                 else if (archiveTransport(track.audioUrl)) null
                 else if (youtubeSelection) youtubeExact(track) else attempt(6_000L) { jioExact() ?: standardFallback() }
             } else {
-                val providers = preferredSourceId?.let { id -> policy.playbackSources.firstOrNull { it.id == id } }
-                    ?.let(::listOf) ?: if (preferredSourceId != null) policy.playbackSources else policy.resolutionSources
+                val currentProvider = com.example.playback.SourceTransitionOrigin.sourceId(track.id,
+                    android.net.Uri.parse(track.audioUrl), policy)
+                val providers = if (preferredSourceId != null) policy.playbackSources.filter { it.id == preferredSourceId }
+                    else if (manualUpgrade && currentProvider != null)
+                        policy.playbackSources.takeWhile { it.id != currentProvider }
+                    else policy.resolutionSourcesFor(track.id)
                 suspend fun walk(ordered: List<PlaybackSource>): MusicTrack? {
                   for (provider in ordered) {
                     coroutineContext.ensureActive()
@@ -327,7 +331,8 @@ internal class StreamResolver(
                 val answer = withTimeoutOrNull(35_000L) { walk(beforeYoutube) }
                 answer ?: if (youtubeLast) walk(providers.takeLast(1)) else null
             }
-        } ?: throw TrackUnavailableException(track.title)
+        } ?: track.takeIf { manualUpgrade && preferredSourceId == null && providerAllowed(it) &&
+            policy.acceptsRemoteTrack(it) } ?: throw TrackUnavailableException(track.title)
         coroutineContext.ensureActive()
         val result = withStream(track, capped(resolved))
         synchronized(cache) {

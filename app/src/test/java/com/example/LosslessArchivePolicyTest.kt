@@ -102,6 +102,21 @@ class LosslessArchivePolicyTest {
             delay(10)
         }
     }
+
+    @Test fun youtubeOnlyFailureCannotCascadeThroughTheRestOfTheQueue() = runBlocking {
+        val sources = com.example.data.local.PlaybackSourcesPreferences
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        sources.save(app, PlaybackSource.newInstallDefaults)
+        awaitCondition {
+            (field("networkQualityMonitor").get(manager) as? NetworkQualityMonitor)?.sourcePolicy?.value?.playbackSources
+                ?.map { it.id } == listOf(PlaybackSource.youtube.id)
+        }
+        val next = track.copy(id = "yt_lmnopqrstuv", title = "Next Song", audioUrl = "")
+        manager.continueAfterUnavailableSelection(track, listOf(track, next), false, "Temporary extraction failure")
+        assertEquals(track.id, manager.uiState.value.currentTrack?.id)
+        assertEquals("Temporary extraction failure", manager.uiState.value.errorMessage)
+        assertNull(field("playResolutionJob").get(manager))
+    }
     private fun policy(value: ActiveQualityState) {
         PlaybackManager::class.java.getDeclaredMethod("updateLosslessPolicy", ActiveQualityState::class.java)
             .apply { isAccessible = true }.invoke(manager, value)
@@ -154,8 +169,8 @@ class LosslessArchivePolicyTest {
         val state = field("_uiState").get(manager) as MutableStateFlow<PlayerUiState>
         state.value = state.value.copy(currentTrack = upgraded, queue = listOf(upgraded), qualityBadge = "Lossless")
         val constructor = PlaybackManager::class.java.declaredClasses.first { it.simpleName == "LosslessFallback" }
-            .declaredConstructors.first { it.parameterCount == 12 }.apply { isAccessible = true }
-        val fallback = constructor.newInstance(0L, track, upgraded, 45_000L, 0L, true, true, Bundle(), true, false, null, true)
+            .declaredConstructors.first { it.parameterCount == 14 }.apply { isAccessible = true }
+        val fallback = constructor.newInstance(0L, track, upgraded, 45_000L, 0L, true, true, Bundle(), true, false, null, true, null, null)
         set("losslessFallback", fallback)
         val before = manager.uiState.value
         AudioEffectsManager.setEnabled(false)
@@ -195,11 +210,11 @@ class LosslessArchivePolicyTest {
 
     @Test fun repeatedLossyPolicyNotificationsDoNotInvalidateAnEnhancerTransition() {
         val constructor = PlaybackManager::class.java.declaredClasses.first { it.simpleName == "LosslessFallback" }
-            .declaredConstructors.first { it.parameterCount == 12 }.apply { isAccessible = true }
+            .declaredConstructors.first { it.parameterCount == 14 }.apply { isAccessible = true }
         val opus = track.copy(audioUrl = "xtreme-youtube://audio/abcdefghijk/stream.audio?cap=320000&codec=opus",
             source = "YouTube Music", bitrateKbps = 146, qualityBadge = "Opus • 146 kbps")
         val fallback = constructor.newInstance(0L, track, opus, 45_000L, initialRequestEpoch,
-            false, false, null, false, true, "HIGH:true:true", true)
+            false, false, null, false, true, "HIGH:true:true", true, null, null)
         set("losslessFallback", fallback)
         repeat(3) { policy(ActiveQualityState(AudioQualityCeiling.HIGH, NetworkConnectionType.CELLULAR)) }
         assertEquals(initialRequestEpoch, field("losslessRequestEpoch").getLong(manager))

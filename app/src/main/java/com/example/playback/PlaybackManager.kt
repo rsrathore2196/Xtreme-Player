@@ -136,6 +136,7 @@ class PlaybackManager(
     private var youtubeQualityJob: Job? = null
     private var appliedSourcePolicyKey: String? = null
     private var appliedEnhancer = false
+    private var appliedSourceRequestRevision = 0L
     @Volatile private var enhancerOrigin: SourceTransitionOrigin? = null
     private var pendingPolicyRestart: (() -> Unit)? = null
     private var losslessRequestEpoch = 0L
@@ -145,7 +146,8 @@ class PlaybackManager(
         var activated: Boolean = false,
         var audioConfirmed: Boolean = false, var confirmedAudio: Bundle? = null,
         val expectedLossless: Boolean = true, val expectedOpus: Boolean = false, val policyKey: String? = null,
-        val originalUsable: Boolean = true) {
+        val originalUsable: Boolean = true, val previousOrigin: SourceTransitionOrigin? = null,
+        val targetOrigin: SourceTransitionOrigin? = null) {
         val upgradedUrl: String get() = upgraded.audioUrl
     }
     private var losslessFallback: LosslessFallback? = null
@@ -366,7 +368,7 @@ class PlaybackManager(
     /** Same selection/epoch/fallback owner as Archive upgrades; never a second player. */
     private fun reconcileSourcePolicy(policy: PlaybackSourcePolicy, force: Boolean = false, failedUrl: String? = null) {
         if (!force && appliedSourcePolicyKey == policy.key) return
-        val enhancerTurnedOn = policy.enhancer && !appliedEnhancer
+        val enhancerChangedToOn = policy.enhancer && !appliedEnhancer
         appliedEnhancer = policy.enhancer
         appliedSourcePolicyKey = policy.key
         youtubeQualityJob?.cancel()
@@ -380,6 +382,9 @@ class PlaybackManager(
         }
         val player = controller ?: return
         val displayed = _uiState.value.currentTrack ?: return
+        val explicitRequest = policy.requestTrackId == displayed.id && policy.requestRevision != appliedSourceRequestRevision
+        if (explicitRequest) appliedSourceRequestRevision = policy.requestRevision
+        val enhancerTurnedOn = policy.enhancer && (enhancerChangedToOn || explicitRequest)
         // A rapid second toggle can arrive while the previous source is audible
         // but still awaiting its Format acknowledgement. Resolve from the actual
         // installed transport without rolling it back (or pausing it) first.
@@ -396,14 +401,8 @@ class PlaybackManager(
         val remembered = enhancerOrigin?.takeIf { it.track.id == original.id }
             ?: SourceTransitionOrigin.read(player.currentMediaItem, original)
         val origin = remembered ?: if (enhancerTurnedOn) SourceTransitionOrigin.capture(original, policy) else null
-        if (origin != null) enhancerOrigin = origin
-        val restoring = !policy.enhancer && (origin != null || policy.returnToYouTube)
-        if (enhancerTurnedOn && remembered == null && origin != null) {
-            val item = player.currentMediaItem ?: return
-            val saved = Bundle(item.mediaMetadata.extras ?: Bundle()).apply { SourceTransitionOrigin.write(this, origin) }
-            player.replaceMediaItem(player.currentMediaItemIndex, item.buildUpon().setMediaMetadata(
-                item.mediaMetadata.buildUpon().setExtras(saved).build()).build())
-        }
+        val returnToYouTube = policy.shouldReturnToYouTube(original, origin?.sourceId)
+        val restoring = !policy.enhancer && (origin != null || returnToYouTube)
         if (!restoring && policy.maximum && failedUrl == null && original.isLossless && policyAllows(original, policy) && policy.isPreferred(original)) return
         stopPendingLosslessUpgrade()
         if (losslessFallback?.let { it.activated || !it.expectedLossless } == true) losslessFallback = null
@@ -411,7 +410,7 @@ class PlaybackManager(
         val epoch = ++losslessRequestEpoch
         val originalUri = player.currentMediaItem?.playbackUri()?.toString()
         val repo = repository ?: return
-        if (restoring && !policy.returnToYouTube && origin?.track?.audioUrl == originalUri && policyAllows(original, policy)) {
+        if (restoring && !returnToYouTube && origin?.track?.audioUrl == originalUri && policyAllows(original, policy)) {
             enhancerOrigin = null
             val item = player.currentMediaItem ?: return
             val cleared = Bundle(item.mediaMetadata.extras ?: Bundle()).apply {
@@ -419,21 +418,23 @@ class PlaybackManager(
             }
             player.replaceMediaItem(player.currentMediaItemIndex, item.buildUpon().setMediaMetadata(
                 item.mediaMetadata.buildUpon().setExtras(cleared).build()).build())
+            AudioSignalPath.sourceBookmark(original.id, originalUri.orEmpty(), null)
             return
         }
         fun owns() = epoch == losslessRequestEpoch && ownsSelection(original.id, generation) &&
             NetworkQualityMonitor.getInstance(context).sourcePolicy.value.key == policy.key &&
             player.currentMediaItem?.mediaId == original.id
         youtubeQualityJob = scope.launch {
+            AudioSignalPath.sourceRequest(original.id, true, "controller:$epoch")
             try {
                 delay(180L) // Coalesce rapid settings changes, never player/touch commands.
                 if (!owns()) return@launch
                 val isYoutube = com.example.data.remote.YouTubeAudioStreamService.isYouTubeAudio(original.id, original.audioUrl)
                 if (!restoring && !enhancerTurnedOn && failedUrl == null && policyAllows(original, policy) && policy.isPreferred(original) &&
                     isYoutube && !policy.maximum) return@launch
-                val resolved = withContext(AppDispatchers.Io) { repo.resolvePlayableTrack(if (restoring && !policy.returnToYouTube) origin!!.track else original,
+                val resolved = withContext(AppDispatchers.Io) { repo.resolvePlayableTrack(if (restoring && !returnToYouTube) origin!!.track else original,
                     forceRefresh = failedUrl != null, failedUrl = failedUrl,
-                    preferredSourceId = if (policy.returnToYouTube && !policy.enhancer) PlaybackSource.youtube.id else origin?.sourceId.takeIf { restoring }, manualUpgrade = enhancerTurnedOn) }
+                    preferredSourceId = if (returnToYouTube) PlaybackSource.youtube.id else origin?.sourceId.takeIf { restoring }, manualUpgrade = enhancerTurnedOn) }
                 if (!owns() || player.currentMediaItem?.playbackUri()?.toString() != originalUri) return@launch
                 if (resolved.audioUrl == originalUri) {
                     if (restoring) {
@@ -444,6 +445,9 @@ class PlaybackManager(
                         }
                         player.replaceMediaItem(player.currentMediaItemIndex, item.buildUpon().setMediaMetadata(
                             item.mediaMetadata.buildUpon().setExtras(saved).build()).build())
+                        AudioSignalPath.sourceBookmark(original.id, originalUri.orEmpty(), null)
+                    } else if (enhancerTurnedOn) {
+                        LosslessDiagnostics.record(original.id, LosslessDiagnostics.Reason.NO_RESULTS, "manual-source-upgrade")
                     }
                     return@launch
                 }
@@ -463,16 +467,19 @@ class PlaybackManager(
                 val resume = player.playWhenReady
                 val replacement = original.copy(audioUrl = media.localConfiguration!!.uri.toString(), source = resolved.source,
                     qualityBadge = resolved.qualityBadge, bitrateKbps = resolved.bitrateKbps, isLossless = resolved.isLossless)
+                val targetOrigin = origin.takeUnless { restoring || isYoutubeSource(replacement) }
                 losslessFallback = LosslessFallback(generation, original, replacement, position, epoch,
                     expectedLossless = resolved.isLossless, expectedOpus = isYoutubeSource(replacement) && resolved.qualityBadge.contains("Opus", true),
-                    policyKey = policy.key, originalUsable = failedUrl == null)
+                    policyKey = policy.key, originalUsable = failedUrl == null,
+                    previousOrigin = remembered, targetOrigin = targetOrigin)
+                enhancerOrigin = origin
                 losslessTransitionId = original.id
                 val extras = Bundle(media.mediaMetadata.extras ?: Bundle()).apply {
                     putBoolean("audio_actual", false)
                     putBoolean("source_transition_pending", true)
                     putBoolean("lossless_upgrade_pending", resolved.isLossless)
                     putString("audio_policy_tier", policy.ceiling.audioQuality.name)
-                    SourceTransitionOrigin.write(this, origin.takeIf { policy.enhancer })
+                    SourceTransitionOrigin.write(this, origin)
                 }
                 player.replaceMediaItem(index, media.buildUpon().setMediaMetadata(
                     media.mediaMetadata.buildUpon().setExtras(extras).build()).build())
@@ -504,6 +511,8 @@ class PlaybackManager(
                     player.pause(); player.stop()
                     showPlaybackFailure("This recording is unavailable at the selected streaming quality.")
                 }
+            } finally {
+                AudioSignalPath.sourceRequest(original.id, false, "controller:$epoch")
             }
         }
     }
@@ -1169,8 +1178,16 @@ class PlaybackManager(
         return true
     }
 
-    private suspend fun continueAfterUnavailableSelection(track: MusicTrack, queue: List<MusicTrack>, explicit: Boolean, message: String?) {
+    internal suspend fun continueAfterUnavailableSelection(track: MusicTrack, queue: List<MusicTrack>, explicit: Boolean, message: String?) {
         val generation = selectionGeneration
+        if (!ownsSelection(track.id, generation)) return
+        val sources = networkQualityMonitor?.sourcePolicy?.value?.playbackSources.orEmpty()
+        if (sources.size == 1 && sources.single().kind == PlaybackSourceKind.YOUTUBE) {
+            // A provider-wide extraction failure must not churn through every
+            // Home/playlist candidate without ever playing the selected song.
+            showPlaybackFailure(message ?: "YouTube Music is temporarily unavailable. Please try again.")
+            return
+        }
         val next = withContext(AppDispatchers.CpuBounded) {
             val index = queue.indexOfFirst { it.id == track.id }
             if (index >= 0) queue.asSequence().drop(index + 1).firstOrNull { it.id != track.id } else null
@@ -1191,7 +1208,7 @@ class PlaybackManager(
         if (player.currentMediaItem?.playbackUri()?.toString() != address) return
         val fallback = losslessFallback
         val policy = NetworkQualityMonitor.getInstance(context).sourcePolicy.value
-        val exceedsCap = !policy.maximum && extras.getInt("bitrate", 0).toLong() * 1000 > policy.ceiling.maxBitrateBps
+        val exceedsCap = !policy.acceptsStreamBitrate(extras.getInt("bitrate", 0), Uri.parse(address))
         val actualTrack = current.copy(audioUrl = address, qualityBadge = extras.getString("qualityBadge").orEmpty(),
             bitrateKbps = extras.getInt("bitrate", current.bitrateKbps))
         val wrongProvider = !policy.maximum && extras.getString("audio_codec").orEmpty().isNotBlank() && !policyAllows(actualTrack, policy)
@@ -1336,6 +1353,7 @@ class PlaybackManager(
     }
 
     private fun cancelLosslessUpgrade() {
+        _uiState.value.currentTrack?.id?.let { AudioSignalPath.sourceRequest(it, false) }
         ++losslessRequestEpoch
         losslessFallback = null
         losslessTransitionId = null
@@ -1379,9 +1397,17 @@ class PlaybackManager(
             qualityBadge = extras.getString("qualityBadge") ?: fallback.upgraded.qualityBadge,
             isLossless = fallback.expectedLossless, source = fallback.upgraded.source)
         fallback.activated = true
+        enhancerOrigin = fallback.targetOrigin
+        if (fallback.targetOrigin == null && player.currentMediaItem?.mediaMetadata?.extras?.containsKey("enhancer_origin_track") == true) {
+            val item = player.currentMediaItem ?: return
+            val cleared = Bundle(item.mediaMetadata.extras ?: Bundle()).apply { SourceTransitionOrigin.write(this, null) }
+            player.replaceMediaItem(player.currentMediaItemIndex, item.buildUpon().setMediaMetadata(
+                item.mediaMetadata.buildUpon().setExtras(cleared).build()).build())
+        }
+        AudioSignalPath.sourceBookmark(updated.id, updated.audioUrl, fallback.targetOrigin)
         replaceQueueTrack(player.currentMediaItemIndex, updated)
         _uiState.update { it.copy(currentTrack = updated, qualityBadge = updated.qualityBadge, queue = queueSnapshot()) }
-        if (fallback.expectedLossless || fallback.expectedOpus) LosslessDiagnostics.clear(updated.id)
+        LosslessDiagnostics.clear(updated.id)
         Log.i(TAG, "Activated the verified ${updated.qualityBadge} source at the current position")
     }
 
@@ -1406,10 +1432,16 @@ class PlaybackManager(
         }
         return try {
             losslessTransitionId = original.id
+            enhancerOrigin = fallback.previousOrigin
             replaceQueueTrack(index, original)
             _uiState.update { it.copy(currentTrack = original, qualityBadge = original.qualityBadge,
                 errorMessage = null, queue = queueSnapshot()) }
-            player.replaceMediaItem(index, original.toMediaItem().forSourceTransition())
+            val restored = original.toMediaItem().forSourceTransition()
+            val restoredExtras = Bundle(restored.mediaMetadata.extras ?: Bundle()).apply {
+                SourceTransitionOrigin.write(this, fallback.previousOrigin)
+            }
+            player.replaceMediaItem(index, restored.buildUpon().setMediaMetadata(
+                restored.mediaMetadata.buildUpon().setExtras(restoredExtras).build()).build())
             player.seekTo(index, position)
             player.prepare()
             player.playWhenReady = resume
