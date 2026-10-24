@@ -117,7 +117,7 @@ private fun GenreResultsPage(
     val tracks = state.result.songs
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     LazyColumn(state = list, modifier = modifier.fillMaxSize().background(colors.scaffoldBackground)
-        .landscapeContentBounds(landscape).statusBarsPadding().bouncyOverscroll().testTag("genre_results_page"),
+        .landscapeContentBounds(landscape, maxWidthDp = null).statusBarsPadding().bouncyOverscroll().testTag("genre_results_page"),
         contentPadding = PaddingValues(bottom = if (landscape) 192.dp else 150.dp)) {
         item("genre_header", contentType = "header") {
             Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
@@ -327,7 +327,7 @@ fun SearchScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .widthIn(max = 640.dp)
-                .landscapeContentBounds(landscape)
+                .landscapeContentBounds(landscape, maxWidthDp = null)
                 .bouncyOverscroll()
                 .statusBarsPadding()
                 .testTag("search_screen"),

@@ -14,9 +14,11 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Density
 import com.example.data.local.PlaylistEntity
+import com.example.data.local.AppThemeMode
 import com.example.data.local.PlaylistWithTracks
 import com.example.data.local.TrackEntity
 import com.example.data.model.MusicTrack
+import com.example.playback.AudioEffectsState
 import com.example.ui.components.LocalDynamicGlassEnabled
 import com.example.ui.components.LocalVisualEffectsActive
 import com.example.ui.screens.*
@@ -97,6 +99,30 @@ class LandscapeScreensUiTest {
         capture("home-landscape")
     }
 
+    @Test @Config(qualifiers = "w1280dp-h800dp-land")
+    fun tabletHomeUsesTheWholeLandscapeWindow() = checkFullWidthHome()
+
+    @Test @Config(qualifiers = "w1920dp-h1080dp-land")
+    fun desktopHomeUsesTheWholeLandscapeWindow() {
+        checkFullWidthHome()
+        capture("home-desktop-full-width")
+    }
+
+    private fun checkFullWidthHome() {
+        showHome()
+        val screen = rect("home_screen")
+        val hero = rect("infinite_radio_hero_card")
+        val recents = rect("landscape_recent_grid")
+        assertEquals(0f, screen.left, 1f)
+        assertEquals(px(widthDp.toFloat()), screen.width, 1f)
+        assertEquals(px(20f), hero.left, 1f)
+        assertEquals(px((widthDp - 56f) / 3f), hero.width, 1f)
+        assertEquals(px(240f), hero.height, 1f)
+        assertTrue(hero.right < recents.left)
+        assertEquals(px(widthDp - 20f), recents.right, 1f)
+        compose.onNodeWithTag("habit_pill_recent-9").assertIsDisplayed()
+    }
+
     @Test @Config(qualifiers = "w600dp-h360dp-land")
     fun narrowLandscapeUsesSixReadableRecentsBesideHero() {
         showHome()
@@ -150,23 +176,53 @@ class LandscapeScreensUiTest {
     }
 
     @Test @Config(qualifiers = "w1280dp-h800dp-land")
-    fun tabletLandscapeCentersAndBoundsThePlaylistGrid() = checkLandscapeLibrary()
+    fun tabletLandscapeUsesFullWidthWithCompactPlaylistTiles() = checkLandscapeLibrary(expectedColumns = 5)
 
-    private fun checkLandscapeLibrary() {
+    @Test @Config(qualifiers = "w1920dp-h1080dp-land")
+    fun desktopLandscapeUsesFullWidthWithCompactPlaylistTiles() {
+        checkLandscapeLibrary(expectedColumns = 7)
+        capture("library-desktop-full-width")
+    }
+
+    @Test @Config(qualifiers = "w480dp-h320dp-land")
+    fun narrowLandscapeReducesPlaylistColumnsWithoutClipping() = checkLandscapeLibrary(expectedColumns = 3)
+
+    private fun checkLandscapeLibrary(expectedColumns: Int = 4) {
         showLibrary()
-        val contentWidth = widthDp.coerceAtMost(1120).toFloat()
-        val oldCover = (contentWidth - 54f) / 2f
+        assertEquals(px(widthDp.toFloat()), rect("library_screen").width, 1f)
         val tile = rect("playlist_card_1")
-        val ratio = tile.width / px(oldCover)
-        assertTrue("Cover area must be close to one-quarter, not one-sixteenth", ratio * ratio in .20f.. .26f)
-        for (i in 2..4) {
+        assertEquals(px((widthDp - 40f - 14f * (expectedColumns - 1)) / expectedColumns), tile.width, 1f)
+        assertTrue("Wide windows must not stretch covers into oversized tiles", tile.width <= px(260f))
+        if (expectedColumns == 4) {
+            val ratio = tile.width / px((widthDp - 54f) / 2f)
+            assertTrue("Cover area must be close to one-quarter, not one-sixteenth", ratio * ratio in .20f.. .26f)
+        }
+        for (i in 2..expectedColumns) {
             val next = rect("playlist_card_$i")
             assertEquals(tile.top, next.top, 1f)
             assertTrue(rect("playlist_card_${i - 1}").right < next.left)
         }
-        assertEquals(px(widthDp / 2f), (tile.left + rect("playlist_card_4").right) / 2f, 1f)
-        compose.onNodeWithTag("playlist_card_4").performClick()
-        assertEquals(4L, opened)
+        assertEquals(px(20f), tile.left, 1f)
+        assertEquals(px(widthDp - 20f), rect("playlist_card_$expectedColumns").right, 1f)
+        compose.onNodeWithTag("playlist_card_$expectedColumns").performClick()
+        assertEquals(expectedColumns.toLong(), opened)
+    }
+
+    @Test @Config(qualifiers = "w1920dp-h1080dp-land")
+    fun libraryFollowsActualParentWidthWhenLandscapeWindowResizes() {
+        var windowWidth by mutableStateOf(1400.dp)
+        content { Box(Modifier.width(windowWidth).fillMaxHeight()) {
+            LibraryScreen(emptyList(), playlists, onTrackClick = { _, _ -> }, onToggleFavorite = {},
+                onOpenPlaylist = { opened = it }, onCreatePlaylistClick = {})
+        } }
+        for ((width, columns) in listOf(1400 to 6, 900 to 4, 600 to 4)) {
+            compose.runOnIdle { windowWidth = width.dp }
+            compose.onNodeWithTag("library_screen").performScrollToNode(hasTestTag("playlist_card_1"))
+            assertEquals(px(width.toFloat()), rect("library_screen").width, 1f)
+            assertEquals(px(20f), rect("playlist_card_1").left, 1f)
+            assertEquals(px(width - 20f), rect("playlist_card_$columns").right, 1f)
+            assertEquals(rect("playlist_card_1").top, rect("playlist_card_$columns").top, 1f)
+        }
     }
 
     @Test @Config(qualifiers = "w800dp-h1280dp-port")
@@ -177,14 +233,64 @@ class LandscapeScreensUiTest {
     }
 
     @Test @Config(qualifiers = "w1280dp-h800dp-land")
-    fun landscapeSearchIsCenteredWithoutChangingSearchBehavior() {
+    fun tabletLandscapeSearchUsesFullWidthWithoutChangingSearchBehavior() = checkFullWidthSearch()
+
+    @Test @Config(qualifiers = "w1920dp-h1080dp-land")
+    fun desktopLandscapeSearchUsesFullWidthWithoutChangingSearchBehavior() {
+        checkFullWidthSearch()
+        capture("search-desktop-full-width")
+    }
+
+    private fun checkFullWidthSearch() {
         content { SearchScreen(SearchUiState(), onQueryChange = {}, onSelectGenre = {},
             onTrackClick = { _, _ -> }, onToggleFavorite = {}) }
         val screen = rect("search_screen")
-        assertEquals(px(1120f), screen.width, 1f)
-        assertEquals(px(640f), screen.center.x, 1f)
+        assertEquals(px(widthDp.toFloat()), screen.width, 1f)
+        assertEquals(0f, screen.left, 1f)
         compose.onNodeWithTag("search_screen").performScrollToNode(hasTestTag("genre_chip_pop"))
         compose.onNodeWithTag("genre_chip_pop").assertIsDisplayed().assertHasClickAction()
+    }
+
+    @Test @Config(qualifiers = "w1920dp-h1080dp-land")
+    fun landscapeGenreResultsAlsoUseFullWidth() {
+        content { SearchScreen(SearchUiState(selectedGenre = "Pop"), onQueryChange = {}, onSelectGenre = {},
+            onTrackClick = { _, _ -> }, onToggleFavorite = {}) }
+        assertEquals(px(widthDp.toFloat()), rect("genre_results_page").width, 1f)
+        assertEquals(0f, rect("genre_results_page").left, 1f)
+    }
+
+    @Test fun portraitSearchKeepsItsOriginalWidth() = checkFullWidthSearch()
+
+    @Test @Config(qualifiers = "w800dp-h1280dp-port")
+    fun largePortraitHomeKeepsTheOriginalHeroAndRecentsArrangement() {
+        showHome()
+        assertEquals(px(760f), rect("infinite_radio_hero_card").width, 1f)
+        compose.onNodeWithTag("landscape_recent_grid").assertDoesNotExist()
+        compose.onNodeWithTag("home_screen").performScrollToNode(hasTestTag("habit_pill_recent-6"))
+        compose.onNodeWithTag("habit_pill_recent-7").assertDoesNotExist()
+    }
+
+    @Test @Config(qualifiers = "w1280dp-h800dp-land")
+    fun tabletLandscapeSettingsUseTheWholeWindow() = checkFullWidthSettings()
+
+    @Test @Config(qualifiers = "w1920dp-h1080dp-land")
+    fun desktopLandscapeSettingsUseTheWholeWindow() {
+        checkFullWidthSettings()
+        capture("settings-desktop-full-width")
+    }
+
+    @Test fun portraitSettingsKeepTheirOriginalWidthAndCategories() = checkFullWidthSettings()
+
+    private fun checkFullWidthSettings() {
+        content { SettingsScreen(effectsState = AudioEffectsState(), isDarkMode = true,
+            themeMode = AppThemeMode.DARK, userProfile = null, onSelectThemeMode = {},
+            onToggleDarkMode = {}, onCrystalClarityToggle = {}, onToggleEqualizer = {},
+            onOpenEqualizer = {}, onSelectPreset = {}) }
+        assertEquals(px(widthDp.toFloat()), rect("settings_screen").width, 1f)
+        assertEquals(0f, rect("settings_screen").left, 1f)
+        val category = compose.onNodeWithTag("settings_cat_music").performScrollTo().assertIsDisplayed()
+        category.assertHasClickAction()
+        assertEquals(px(widthDp - 16f), rect("settings_cat_music").right, 1f)
     }
 
     @Test @Config(qualifiers = "w740dp-h360dp-land")

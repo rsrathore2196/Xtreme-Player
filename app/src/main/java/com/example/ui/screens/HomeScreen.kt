@@ -362,7 +362,7 @@ fun HomeScreenContent(
             modifier = Modifier
                 .fillMaxWidth()
                 .widthIn(max = 640.dp)
-                .landscapeContentBounds(landscape)
+                .landscapeContentBounds(landscape, maxWidthDp = null)
                 .graphicsLayer {
                     translationY = boundaryOffset()
                 }

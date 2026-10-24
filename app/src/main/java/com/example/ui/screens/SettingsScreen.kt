@@ -165,7 +165,7 @@ fun SettingsScreen(
         modifier = modifier
             .fillMaxSize()
             .background(screenBg)
-            .landscapeContentBounds(LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE, maxWidthDp = 900)
+            .landscapeContentBounds(LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE, maxWidthDp = null)
             .statusBarsPadding()
             .testTag("settings_screen")
     ) {

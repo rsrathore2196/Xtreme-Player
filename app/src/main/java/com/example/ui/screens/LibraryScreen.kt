@@ -13,6 +13,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -125,25 +126,24 @@ fun LibraryScreen(
     val currentPlayingId = currentPlayingTrackId ?: playerUiState?.currentTrack?.id
     val configuration = LocalConfiguration.current
     val landscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-    val columns = if (landscape) landscapePlaylistColumns(configuration.screenWidthDp.toFloat()) else 2
-    val tileWidth = if (landscape) landscapePlaylistTileWidth(configuration.screenWidthDp.toFloat()) else 0f
-    val playlistRows = remember(playlists, columns) { playlists.chunked(columns) }
-    val coverSize = if (landscape) with(LocalDensity.current) {
-        tileWidth.dp.roundToPx().coerceIn(120, 1000)
-    } else ImageConfig.PLAYLIST_HEADER_SIZE
-
-    Box(
+    BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
             .background(appColors.scaffoldBackground),
         contentAlignment = Alignment.TopCenter
     ) {
+        val columns = if (landscape) landscapePlaylistColumns(maxWidth.value) else 2
+        val tileWidth = if (landscape) landscapePlaylistTileWidth(maxWidth.value) else 0f
+        val playlistRows = remember(playlists, columns) { playlists.chunked(columns) }
+        val coverSize = if (landscape) with(LocalDensity.current) {
+            tileWidth.dp.roundToPx().coerceIn(120, 1000)
+        } else ImageConfig.PLAYLIST_HEADER_SIZE
         LazyColumn(
             state = listState,
             modifier = Modifier
                 .fillMaxWidth()
                 .widthIn(max = 640.dp)
-                .landscapeContentBounds(landscape)
+                .landscapeContentBounds(landscape, maxWidthDp = null)
                 .bouncyOverscroll()
                 .statusBarsPadding()
                 .testTag("library_screen"),
