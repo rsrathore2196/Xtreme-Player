@@ -258,6 +258,8 @@ internal class LyricsTextTransformer(
                 "zh" -> if (locale.script == "Hant" || locale.country in setOf("TW", "HK", "MO")) "zh-TW" else "zh-CN"
                 "he" -> "iw"
                 "jv" -> "jw"
+                "mni" -> "mni-Mtei"
+                "fil" -> "tl"
                 else -> locale.language.ifBlank { "en" }
             }
         }

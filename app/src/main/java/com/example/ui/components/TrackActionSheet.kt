@@ -234,9 +234,7 @@ fun TrackActionSheet(
                             putExtra(Intent.EXTRA_SUBJECT, track.title)
                             putExtra(
                                 Intent.EXTRA_TEXT,
-                                "Listening to \"${track.title}\" by ${track.artist} on Xtreme Player!\n\n" +
-                                    "Personalized music discovery, custom themes & powerful audio controls.\n\n" +
-                                    "Download Xtreme Player:\nhttps://github.com/rsrathore2196/Xtreme-Player/releases/latest"
+                                com.example.ui.util.buildTrackShareText(track)
                             )
                         }
                         context.startActivity(Intent.createChooser(shareIntent, "Share \"${track.title}\""))

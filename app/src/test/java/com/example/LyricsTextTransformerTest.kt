@@ -180,5 +180,24 @@ class LyricsTextTransformerTest {
         assertEquals("pa", LyricsTextTransformer.targetLanguage("pa-IN"))
         assertEquals("zh-TW", LyricsTextTransformer.targetLanguage("zh-Hant-HK"))
         assertEquals("zh-CN", LyricsTextTransformer.targetLanguage("zh-Hans-CN"))
+        assertEquals("mni-Mtei", LyricsTextTransformer.targetLanguage("mni-Mtei"))
+        assertEquals("tl", LyricsTextTransformer.targetLanguage("fil"))
+    }
+
+    @Test fun changingTheChosenLanguageUsesTheNewTargetAndSeparateCachedSubtitles() = runBlocking {
+        val targets = mutableListOf<String>()
+        val service = LyricsTextTransformer({ temporary.root }, client { _, body ->
+            val target = body.value("tl"); targets.add(target)
+            val text = if (target == "fr") body.value("q").replace("दिल मेरा", "Mon cœur").replace("तेरे लिए", "Pour toi")
+                else translated(body.value("q"))
+            200 to reply(text)
+        })
+        val english = service.transform(lyrics, LyricsTextTransformer.Mode.TRANSLATE, "en") as LyricsTextTransformer.Result.Ready
+        val french = service.transform(lyrics, LyricsTextTransformer.Mode.TRANSLATE, "fr") as LyricsTextTransformer.Result.Ready
+        assertEquals("My heart", english.lyrics.lines.first().translation)
+        assertEquals("Mon cœur", french.lyrics.lines.first().translation)
+        assertEquals(lyrics.lines.map { it.timestampMs }, french.lyrics.lines.map { it.timestampMs })
+        assertEquals(english, service.transform(lyrics, LyricsTextTransformer.Mode.TRANSLATE, "en"))
+        assertEquals(listOf("en", "fr"), targets)
     }
 }

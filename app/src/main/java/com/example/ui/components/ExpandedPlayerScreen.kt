@@ -2684,9 +2684,7 @@ private fun PlayerOptionsMenu(
                     val sendIntent = android.content.Intent().apply {
                         action = android.content.Intent.ACTION_SEND
                         putExtra(android.content.Intent.EXTRA_TEXT,
-                            "Listening to \"${track.title}\" by ${track.artist} on Xtreme Player!\n\n" +
-                                "Personalized music discovery, custom themes & powerful audio controls.\n\n" +
-                                "Download Xtreme Player:\nhttps://github.com/rsrathore2196/Xtreme-Player/releases/latest")
+                            com.example.ui.util.buildTrackShareText(track))
                         type = "text/plain"
                     }
                     context.startActivity(android.content.Intent.createChooser(sendIntent, "Share Track"))

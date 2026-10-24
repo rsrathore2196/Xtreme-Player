@@ -29,7 +29,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 data class LyricsSettings(
     val provider: String = "Auto",
     val textSizeSp: Int = 32,
-    val ready: Boolean = false
+    val ready: Boolean = false,
+    val translationLanguageTag: String = LyricsTranslationLanguages.SYSTEM
 )
 
 @Immutable
@@ -68,6 +69,7 @@ object OtherSettingsPreferences {
     private const val KEY_UI_SIZE_INDEX = "ui_size_index"
     private const val KEY_LYRICS_PROVIDER = "lyrics_provider"
     private const val KEY_LYRICS_TEXT_SIZE = "lyrics_text_size_sp"
+    private const val KEY_LYRICS_TRANSLATION_LANGUAGE = "lyrics_translation_language"
 
     val LYRICS_PROVIDERS: List<String> = listOf(
         "Auto",
@@ -175,7 +177,7 @@ object OtherSettingsPreferences {
                 val app = context.applicationContext
                 val prefs = getPrefs(app)
                 val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-                    if (key == KEY_LYRICS_PROVIDER || key == KEY_LYRICS_TEXT_SIZE) {
+                    if (key == KEY_LYRICS_PROVIDER || key == KEY_LYRICS_TEXT_SIZE || key == KEY_LYRICS_TRANSLATION_LANGUAGE) {
                         publishLyricsState(prefs)
                     }
                 }
@@ -191,7 +193,8 @@ object OtherSettingsPreferences {
         val raw = prefs.getString(KEY_LYRICS_PROVIDER, "Auto") ?: "Auto"
         val provider = LYRICS_PROVIDERS.firstOrNull { it.equals(raw, ignoreCase = true) } ?: "Auto"
         val textSize = prefs.getInt(KEY_LYRICS_TEXT_SIZE, 32).coerceIn(18, 44)
-        lyricsState.value = LyricsSettings(provider = provider, textSizeSp = textSize, ready = true)
+        lyricsState.value = LyricsSettings(provider = provider, textSizeSp = textSize, ready = true,
+            translationLanguageTag = LyricsTranslationLanguages.normalize(prefs.getString(KEY_LYRICS_TRANSLATION_LANGUAGE, "").orEmpty()))
     }
 
     fun getLyricsProvider(context: Context): String {
@@ -213,6 +216,21 @@ object OtherSettingsPreferences {
         observeLyricsSettings(app)
         lyricsScope.launch {
             getPrefs(app).edit().putInt(KEY_LYRICS_TEXT_SIZE, sizeSp.coerceIn(18, 44)).apply()
+        }
+    }
+
+    fun getLyricsTranslationLanguage(context: Context): String = LyricsTranslationLanguages.normalize(
+        getPrefs(context).getString(KEY_LYRICS_TRANSLATION_LANGUAGE, "").orEmpty())
+
+    fun setLyricsTranslationLanguage(context: Context, languageTag: String) {
+        val tag = LyricsTranslationLanguages.normalize(languageTag)
+        if (languageTag.isNotBlank() && tag.isEmpty() && !languageTag.equals("system", true)) return
+        val app = context.applicationContext
+        observeLyricsSettings(app)
+        lyricsScope.launch {
+            val prefs = getPrefs(app)
+            prefs.edit().putString(KEY_LYRICS_TRANSLATION_LANGUAGE, tag).apply()
+            publishLyricsState(prefs)
         }
     }
 

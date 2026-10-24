@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.FormatSize
 import androidx.compose.material.icons.filled.Headphones
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Remove
@@ -154,6 +155,7 @@ fun OtherSettingsPage(
     val lyricsPreferences = remember(context) { OtherSettingsPreferences.observeLyricsSettings(context) }
     val lyricsSettings by lyricsPreferences.collectAsStateWithLifecycle()
     var showLyricsProviders by remember { mutableStateOf(false) }
+    var showLyricsLanguage by remember { mutableStateOf(false) }
     var isHapticsEnabled by remember {
         mutableStateOf(OtherSettingsPreferences.isHapticsEnabled(context))
     }
@@ -436,6 +438,20 @@ fun OtherSettingsPage(
                     Text("›", fontSize = 24.sp, color = appColors.textMuted)
                 }
                 HorizontalDivider(Modifier.padding(vertical = 12.dp), color = dividerColor)
+                Row(Modifier.fillMaxWidth().testTag("lyrics_translate_language_setting")
+                    .clickable(enabled = lyricsSettings.ready) { showLyricsLanguage = true }.padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Language, contentDescription = null, tint = accentColor, modifier = Modifier.size(24.dp))
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("Lyrics Translate Language", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = appColors.textPrimary)
+                        Text(com.example.data.local.LyricsTranslationLanguages.name(lyricsSettings.translationLanguageTag,
+                            androidx.compose.ui.platform.LocalConfiguration.current.locales[0]),
+                            fontSize = 12.sp, color = appColors.textSecondary)
+                    }
+                    Text("›", fontSize = 24.sp, color = appColors.textMuted)
+                }
+                HorizontalDivider(Modifier.padding(vertical = 12.dp), color = dividerColor)
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("Lyrics Text Size", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = appColors.textPrimary)
@@ -567,6 +583,13 @@ fun OtherSettingsPage(
             onDismissRequest = { showLyricsProviders = false },
             appColors = appColors
         )
+    }
+
+    if (showLyricsLanguage) {
+        com.example.ui.components.LyricsTranslationLanguagePopup(
+            currentLanguageTag = lyricsSettings.translationLanguageTag,
+            onSelectLanguage = { OtherSettingsPreferences.setLyricsTranslationLanguage(context, it) },
+            onDismissRequest = { showLyricsLanguage = false }, appColors = appColors)
     }
 
     if (showClearCacheDialog) {

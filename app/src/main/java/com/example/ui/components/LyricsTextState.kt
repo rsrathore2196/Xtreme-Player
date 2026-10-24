@@ -7,6 +7,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.model.TrackLyrics
 import com.example.data.model.MusicTrack
 import com.example.data.remote.LyricsTextTransformer
@@ -58,7 +59,7 @@ internal class LyricsTextController(
                     State(result.lyrics, active = mode)
                 }
                 LyricsTextTransformer.Result.AlreadyRomanized -> State(original, message = "These lyrics already use Latin script")
-                LyricsTextTransformer.Result.SameLanguage -> State(original, message = "These lyrics are already in your app language")
+                LyricsTextTransformer.Result.SameLanguage -> State(original, message = "These lyrics are already in the selected translation language")
                 LyricsTextTransformer.Result.Unavailable -> State(original, message = "Lyrics conversion is unavailable. Please try again later")
             }
         }
@@ -75,7 +76,10 @@ internal class LyricsTextController(
 internal fun rememberLyricsTextController(lyrics: TrackLyrics?, visible: Boolean): LyricsTextController {
     val context = LocalContext.current
     val config = LocalConfiguration.current
-    val language = config.locales[0].toLanguageTag()
+    val preferences = remember(context) { com.example.data.local.OtherSettingsPreferences.observeLyricsSettings(context) }
+    val settings by preferences.collectAsStateWithLifecycle()
+    val language = com.example.data.local.LyricsTranslationLanguages.effectiveTag(
+        settings.translationLanguageTag, config.locales[0].toLanguageTag())
     val scope = rememberCoroutineScope()
     val transformer = remember(context) { LyricsTextTransformer.get(context) }
     val controller = remember(lyrics, language) {
