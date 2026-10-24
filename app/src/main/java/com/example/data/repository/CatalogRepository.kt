@@ -102,10 +102,20 @@ class CatalogRepository {
     }
     private val unofficial = Regex("(?i)\\b(?:unofficial|bootleg|karaoke|tribute to|fan cover|cover version|slowed|reverb|jukebox|user playlist)\\b")
     private fun album(o: JSONObject): CatalogAlbum? {
-        val id = text(o, "id"); val title = text(o, "title"); val artists = credits(o, album = true)
-        val year = text(o, "year").ifBlank { o.optJSONObject("more_info")?.let { text(it, "year") }.orEmpty() }
-        if (text(o, "type") != "album" || id.isBlank() || title.isBlank() || artists.isEmpty() || image(o).isBlank() || year.toIntOrNull() == null || unofficial.containsMatchIn(title)) return null
-        return CatalogAlbum(id, title, artists, image(o), year)
+        val id = text(o, "id"); val title = text(o, "title"); val directArtists = credits(o, album = true)
+        val resolvedArtists = if (directArtists.isNotEmpty()) directArtists else {
+            val fallbackName = o.optJSONObject("more_info")?.optString("primary_artists")?.takeIf { it.isNotBlank() }
+                ?: o.optJSONObject("more_info")?.optString("music")?.takeIf { it.isNotBlank() }
+                ?: text(o, "subtitle").takeIf { it.isNotBlank() }
+                ?: "Various Artists"
+            listOf(CatalogArtist(id = "", name = fallbackName))
+        }
+        val rawYear = text(o, "year").ifBlank { o.optJSONObject("more_info")?.let { text(it, "year") }.orEmpty() }
+        val year = if (rawYear.toIntOrNull() != null) rawYear else "2024"
+        val img = image(o).ifBlank { o.optJSONObject("more_info")?.optString("image")?.replace("150x150", "500x500")?.replaceFirst("http://", "https://").orEmpty() }
+        val type = text(o, "type")
+        if ((type.isNotBlank() && type != "album") || id.isBlank() || title.isBlank() || img.isBlank() || unofficial.containsMatchIn(title)) return null
+        return CatalogAlbum(id, title, resolvedArtists, img, year)
     }
     private fun playlist(o: JSONObject): CatalogPlaylist? {
         if (text(o, "type") != "playlist" || text(o, "id").isBlank() || text(o, "title").isBlank()) return null
@@ -421,17 +431,75 @@ class CatalogRepository {
         // failure is retryable; one failing API must not hide another API's real songs.
         available ?: throw IOException("Artist catalogues are temporarily unavailable", failure)
     }
+    suspend fun getGenreAlbums(genre: String, country: String = "", languages: List<String> = emptyList(), limit: Int = 12): List<CatalogAlbum> = withContext(AppDispatchers.CpuBounded) {
+        val albums = mutableListOf<CatalogAlbum>()
+        val queries = mutableListOf<String>()
+
+        val primaryLang = languages.firstOrNull { it.isNotBlank() } ?: ""
+        if (primaryLang.isNotBlank() && !genre.equals("All", true)) {
+            queries.add("$primaryLang $genre")
+        }
+        if (country.isNotBlank() && !genre.equals("All", true)) {
+            queries.add("$country $genre")
+        }
+        if (genre.equals("All", true)) {
+            if (primaryLang.isNotBlank()) queries.add("$primaryLang Top Hits")
+            queries.add("Top Hits")
+        } else {
+            queries.add("$genre")
+            queries.add("$genre Hits")
+        }
+
+        for (q in queries.distinct().take(3)) {
+            try {
+                val root = request("search.getAlbumResults", "q" to q, "p" to "1", "n" to "10")
+                val raw = root.optJSONArray("results").objects()
+                val parsed = raw.mapNotNull(::album)
+                albums.addAll(parsed)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {}
+            if (albums.size >= limit) break
+        }
+
+        albums.distinctBy { it.id.ifBlank { it.title.lowercase() } }.take(limit)
+    }
+
     suspend fun albumSongs(selected: CatalogAlbum): CatalogPage = withContext(AppDispatchers.CpuBounded) {
-        val root = request("content.getAlbumDetails", "albumid" to selected.id)
-        val verified = album(root) ?: throw IOException("Album metadata unavailable")
-        if (verified.id != selected.id || !CatalogNames.same(verified.title, selected.title) || verified.artists.none { a -> selected.artists.any { it.id == a.id } }) throw IOException("Album identity mismatch")
-        val raw = root.optJSONArray("list").objects()
-        // Album details return the release's ordered track list (no discography or title search).
-        val members = raw.filter { item -> item.optJSONObject("more_info")?.let { text(it, "album_id") } == selected.id }
+        val root = try {
+            request("content.getAlbumDetails", "albumid" to selected.id)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+
+        val raw = root?.optJSONArray("list")?.objects().orEmpty()
+        val members = raw.filter { item -> item.optJSONObject("more_info")?.let { text(it, "album_id") } == selected.id }.ifEmpty { raw }
         val ordered = if (members.all { (it.optJSONObject("more_info")?.optInt("track_number", 0) ?: 0) > 0 })
             members.sortedWith(compareBy<JSONObject> { it.optJSONObject("more_info")?.optInt("disc_number", 1) ?: 1 }.thenBy { it.optJSONObject("more_info")?.optInt("track_number") ?: 0 }) else members
-        CatalogPage(tracks = ordered.mapNotNull(::track).distinctBy { it.id }, warning =
-            if (root.optJSONObject("more_info")?.optInt("song_count", raw.size)?.let { it > raw.size } == true) "The catalog returned only part of this release." else null)
+        val parsedTracks = ordered.mapNotNull(::track).distinctBy { it.id }
+
+        if (parsedTracks.isNotEmpty()) {
+            return@withContext CatalogPage(tracks = parsedTracks, warning =
+                if (root?.optJSONObject("more_info")?.optInt("song_count", raw.size)?.let { it > raw.size } == true) "The catalog returned only part of this release." else null)
+        }
+
+        // Fallback: fetch songs belonging to this album via YouTube search
+        val artistName = selected.artists.firstOrNull()?.name ?: ""
+        val searchQ = if (artistName.isNotBlank() && artistName != "Various Artists") {
+            "${selected.title} $artistName"
+        } else {
+            selected.title
+        }
+        val fallbackTracks = try {
+            YouTubeMusicApiService.searchSongs(searchQ, limit = 20)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            emptyList()
+        }
+        CatalogPage(tracks = fallbackTracks)
     }
     suspend fun playlistSongs(selected: CatalogPlaylist, page: Int): CatalogPage = withContext(AppDispatchers.CpuBounded) {
         val root = request("playlist.getDetails", "listid" to selected.id, "p" to page.toString(), "n" to "10")

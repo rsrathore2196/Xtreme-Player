@@ -920,20 +920,39 @@ class PlayerViewModel(
             val results = if (allGenres) {
                 repository.search(query, application)
             } else {
-                val tracks = repository.getTracksByGenre(genre).shuffled()
+                val profile = com.example.data.local.UserProfilePreferences.getUserProfile(application)
+                val tracks = repository.getTracksByGenre(genre, profile).shuffled()
+                val albums = repository.getGenreAlbums(genre, profile)
                 SearchResultCategory(
                     topResult = tracks.firstOrNull(),
                     exactMatches = tracks,
                     similarTypeSongs = emptyList(),
                     matchedGenreOrType = genre,
                     songs = tracks,
-                    albums = tracks.map { it.album }.filter { it.isNotBlank() && it != "Single" && it != "Online Stream" }.distinct(),
-                    artists = tracks.map { it.artist }.filter { it.isNotBlank() && it != "Unknown Artist" }.distinct()
+                    albums = albums.map { it.title }.ifEmpty { tracks.map { it.album }.filter { it.isNotBlank() && it != "Single" && it != "Online Stream" && it != "Unknown" }.distinct() },
+                    artists = emptyList(),
+                    catalogAlbums = albums
                 )
             }
             ensureActive()
             _searchState.update { if (generation != it.requestId || it.query != query || it.selectedGenre != genre) it else
                 it.copy(selectedGenre = if (allGenres) "All" else genre, result = results, isSearching = false) }
+        }
+    }
+
+    fun openAlbumByName(albumName: String) {
+        viewModelScope.launch(AppDispatchers.Io) {
+            val found = repository.catalogBrowser.search(albumName, "Albums", 1).albums.firstOrNull()
+                ?: com.example.data.repository.CatalogAlbum(
+                    id = "album_${albumName.hashCode()}",
+                    title = albumName,
+                    artists = emptyList(),
+                    image = "",
+                    year = ""
+                )
+            withContext(AppDispatchers.Main) {
+                catalogBrowser.open(com.example.data.repository.CatalogDestination.Album(found))
+            }
         }
     }
 

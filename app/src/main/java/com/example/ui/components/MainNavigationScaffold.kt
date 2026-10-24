@@ -350,6 +350,7 @@ fun MainNavigationScaffold(
                                     onLoadMore = viewModel.catalogBrowser::loadMoreSearch,
                                     onRetrySearch = { if (catalogSearch.page.nextPage != null && catalogSearch.error != null) viewModel.catalogBrowser.loadMoreSearch() else viewModel.catalogBrowser.retrySearch() },
                                     onOpenCatalog = viewModel.catalogBrowser::open,
+                                    onOpenAlbumByName = viewModel::openAlbumByName,
                                     onRememberSearch = viewModel::rememberSearch,
                                     onRemoveRecentSearch = viewModel::removeRecentSearch,
                                     onClearRecentSearches = viewModel::clearRecentSearches,

@@ -120,6 +120,7 @@ fun SearchScreen(
     onLoadMore: () -> Unit = {},
     onRetrySearch: () -> Unit = {},
     onOpenCatalog: (com.example.data.repository.CatalogDestination) -> Unit = {},
+    onOpenAlbumByName: (String) -> Unit = {},
     onRememberSearch: (String) -> Unit = {},
     onRemoveRecentSearch: (String) -> Unit = {},
     onClearRecentSearches: () -> Unit = {}
@@ -562,7 +563,7 @@ fun SearchScreen(
                         .padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 14.dp)
                 ) {
                     Text(
-                        text = "Explore genres & moods",
+                        text = "Explore Genres",
                         style = MaterialTheme.typography.titleMedium.copy(
                             fontWeight = FontWeight.Bold,
                             color = appColors.textPrimary,
@@ -1040,13 +1041,25 @@ fun SearchScreen(
                 }
             }
 
-            // ARTISTS & ALBUMS CATEGORIES
-            val hasArtistsToShow = showArtists && results.artists.isNotEmpty()
-            val hasAlbumsToShow = showAlbums && results.albums.isNotEmpty()
+            // ARTISTS & ALBUMS CATEGORIES (Genre view shows strictly Albums only)
+            val hasArtistsToShow = showArtists && results.artists.isNotEmpty() && !isGenreActive
+            val hasAlbumsToShow = showAlbums && (results.catalogAlbums.isNotEmpty() || results.albums.isNotEmpty())
             if (hasArtistsToShow || hasAlbumsToShow) {
                 item {
-                    Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp)) {
-                        val headerLabel = if (hasArtistsToShow && hasAlbumsToShow) "Artists & Albums" else if (hasArtistsToShow) "Artists" else "Albums"
+                    Column(
+                        modifier = Modifier
+                            .padding(horizontal = 20.dp, vertical = 16.dp)
+                            .testTag("genre_albums_section")
+                    ) {
+                        val headerLabel = if (isGenreActive) {
+                            "Albums"
+                        } else if (hasArtistsToShow && hasAlbumsToShow) {
+                            "Artists & Albums"
+                        } else if (hasArtistsToShow) {
+                            "Artists"
+                        } else {
+                            "Albums"
+                        }
                         Text(
                             text = headerLabel,
                             style = MaterialTheme.typography.titleMedium.copy(
@@ -1095,37 +1108,100 @@ fun SearchScreen(
                         }
 
                         if (hasAlbumsToShow) {
-                            results.albums.forEach { album ->
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(10.dp))
-                                        .clickable {
-                                            keyboardController?.hide()
-                                            focusManager.clearFocus()
-                                            onQueryChange(album)
-                                        }
-                                        .padding(vertical = 8.dp, horizontal = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Box(
+                            if (results.catalogAlbums.isNotEmpty()) {
+                                results.catalogAlbums.forEach { album ->
+                                    Row(
                                         modifier = Modifier
-                                            .size(40.dp)
-                                            .clip(RoundedCornerShape(8.dp))
-                                            .background(Color(0xFF163255)),
-                                        contentAlignment = Alignment.Center
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .clickable {
+                                                keyboardController?.hide()
+                                                focusManager.clearFocus()
+                                                onOpenCatalog(com.example.data.repository.CatalogDestination.Album(album))
+                                            }
+                                            .testTag("album_item_${album.id.ifBlank { album.title.lowercase() }}")
+                                            .padding(vertical = 8.dp, horizontal = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Album,
-                                            contentDescription = null,
-                                            tint = XtremeLightBlue,
-                                            modifier = Modifier.size(22.dp)
-                                        )
+                                        if (album.image.isNotBlank()) {
+                                            AsyncImage(
+                                                model = album.image,
+                                                contentDescription = album.title,
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier
+                                                    .size(48.dp)
+                                                    .clip(RoundedCornerShape(8.dp))
+                                            )
+                                        } else {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(48.dp)
+                                                    .clip(RoundedCornerShape(8.dp))
+                                                    .background(Color(0xFF163255)),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Album,
+                                                    contentDescription = null,
+                                                    tint = XtremeLightBlue,
+                                                    modifier = Modifier.size(24.dp)
+                                                )
+                                            }
+                                        }
+                                        Spacer(modifier = Modifier.width(12.dp))
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = album.title,
+                                                color = TextPrimary,
+                                                fontWeight = FontWeight.SemiBold,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            val artistStr = album.artists.joinToString { it.name }.takeIf { it.isNotBlank() }
+                                            val desc = listOfNotNull(artistStr, album.year.takeIf { it.isNotBlank() }).joinToString(" • ")
+                                            Text(
+                                                text = if (desc.isNotBlank()) desc else "Album • Tap to view songs",
+                                                color = TextMuted,
+                                                fontSize = 12.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
                                     }
-                                    Spacer(modifier = Modifier.width(12.dp))
-                                    Column {
-                                        Text(text = album, color = TextPrimary, fontWeight = FontWeight.SemiBold)
-                                        Text(text = "Album • Tap to view songs", color = TextMuted, fontSize = 12.sp)
+                                }
+                            } else {
+                                results.albums.forEach { albumName ->
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .clickable {
+                                                keyboardController?.hide()
+                                                focusManager.clearFocus()
+                                                onOpenAlbumByName(albumName)
+                                            }
+                                            .padding(vertical = 8.dp, horizontal = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(48.dp)
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(Color(0xFF163255)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Album,
+                                                contentDescription = null,
+                                                tint = XtremeLightBlue,
+                                                modifier = Modifier.size(24.dp)
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.width(12.dp))
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(text = albumName, color = TextPrimary, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                            Text(text = "Album • Tap to view songs", color = TextMuted, fontSize = 12.sp)
+                                        }
                                     }
                                 }
                             }
