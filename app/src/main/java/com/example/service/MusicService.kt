@@ -48,6 +48,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 
 @androidx.annotation.OptIn(UnstableApi::class)
 class MusicService : MediaLibraryService() {
+    private var spatialRequested = false
 
     private var mediaLibrarySession: MediaLibrarySession? = null
     private var exoPlayer: ExoPlayer? = null
@@ -431,6 +432,7 @@ class MusicService : MediaLibraryService() {
         val extras = metadata.extras
         val track = currentPolicyTrack(player, item)
         val checkedPolicy = extras?.getString("source_policy_key") == policy.key
+        val onlyAtmosChanged = policy.onlyAtmosChanged(extras?.getString("source_policy_key"))
         if (preparedSource == null && failedUrl == null && checkedPolicy && policy.acceptsRemoteTrack(track)) {
             scheduleHeadlessLossless(policy)
             return
@@ -440,7 +442,10 @@ class MusicService : MediaLibraryService() {
             (policy.requestTrackId.isBlank() || policy.requestTrackId == track.id)
         val origin = savedOrigin ?: if (manualUpgrade) com.example.playback.SourceTransitionOrigin.capture(track, policy) else null
         val returnToYouTube = policy.shouldReturnToYouTube(track, origin?.sourceId)
-        val restoring = !policy.enhancer && (origin != null || returnToYouTube)
+        val restoring = !policy.enhancer && (returnToYouTube || !onlyAtmosChanged && origin != null)
+        val sameSource = if (onlyAtmosChanged && !returnToYouTube)
+            com.example.playback.SourceTransitionOrigin.sourceId(track.id, uri, policy)
+                ?.takeIf { id -> policy.playbackSources.any { it.id == id } } else null
         if (restoring && !returnToYouTube && origin?.track?.audioUrl == uri.toString() && policy.acceptsRemoteTrack(track)) {
             val unchanged = Bundle(extras ?: Bundle()).apply {
                 putString("source_policy_key", policy.key)
@@ -484,7 +489,7 @@ class MusicService : MediaLibraryService() {
                 if (!automatic) delay(180L)
                 val resolved = preparedSource ?: withContext(AppDispatchers.Io) { app.repository.resolvePlayableTrack(if (restoring && !returnToYouTube) origin!!.track else track,
                     forceRefresh = failedUrl != null, failedUrl = failedUrl,
-                    preferredSourceId = if (returnToYouTube) policy.sourceId(com.example.playback.PlaybackSourceKind.YOUTUBE) else origin?.sourceId.takeIf { restoring }, manualUpgrade = manualUpgrade) }
+                    preferredSourceId = sameSource ?: if (returnToYouTube) policy.sourceId(com.example.playback.PlaybackSourceKind.YOUTUBE) else origin?.sourceId.takeIf { restoring }, manualUpgrade = manualUpgrade) }
                 if (!owns()) return@launch
                 if (resolved.audioUrl == track.audioUrl || failedUrl == null &&
                     YouTubeAudioStreamService.sameRepresentation(track.audioUrl, resolved.audioUrl)) {
@@ -749,11 +754,13 @@ class MusicService : MediaLibraryService() {
             })
         serviceScope.launch {
             com.example.data.local.OtherSettingsPreferences.observePlayerExperience(this@MusicService).collect {
+                spatialRequested = it.spatialAudio
+                val spatial = it.spatialAudio && !com.example.playback.DolbyAtmosSupport.isAtmosMime(player.audioFormat?.sampleMimeType)
                 if (outputPrecision.get() != it.outputPrecision ||
-                    com.example.playback.PsychoacousticAudioProcessor.spatialEnabled != it.spatialAudio ||
+                    com.example.playback.PsychoacousticAudioProcessor.spatialEnabled != spatial ||
                     player.skipSilenceEnabled != it.skipSilence) crossfade?.cancelTransition()
                 outputPrecision.set(it.outputPrecision)
-                com.example.playback.PsychoacousticAudioProcessor.spatialEnabled = it.spatialAudio
+                com.example.playback.PsychoacousticAudioProcessor.spatialEnabled = spatial
                 player.skipSilenceEnabled = it.skipSilence
                 crossfade?.setEnabled(it.crossfade)
             }
@@ -791,6 +798,8 @@ class MusicService : MediaLibraryService() {
                 decoderReuseEvaluation: DecoderReuseEvaluation?
             ) {
                 val item = currentAudioEventItem(player, eventTime) ?: return
+                com.example.playback.PsychoacousticAudioProcessor.spatialEnabled = spatialRequested &&
+                    !com.example.playback.DolbyAtmosSupport.isAtmosMime(format.sampleMimeType)
                 val uri = item.localConfiguration?.uri ?: return
                 val quality = audioInputQuality(item, format)
                 val host = uri.host.orEmpty().lowercase(java.util.Locale.ROOT)

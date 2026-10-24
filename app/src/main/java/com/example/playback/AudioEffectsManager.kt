@@ -192,29 +192,30 @@ object AudioEffectsManager {
 
     private fun presetState(state: AudioEffectsState, presetName: String): AudioEffectsState {
 
-        // Professional Acoustic EQ Curves (mB = 1/100 dB):
-        // Anchors: [60Hz Sub-bass, 230Hz Mid-bass, 910Hz Midrange, 3.6kHz Presence, 14kHz Brilliance]
+        // Conservative tonal starting points for this five-band filter layout, not
+        // headphone-specific correction. Keep bass/width stages separate to avoid stacking boosts.
+        // Anchors: 60 Hz, 230 Hz, 910 Hz, 3.6 kHz and 14 kHz. Levels are millibels.
         val bandDbs: List<Short> = when (presetName.lowercase().trim()) {
-            "crystal clarity" -> listOf(200, -100, 150, 450, 650)
-            "studio master" -> listOf(150, 0, 100, 200, 300)
-            "bass booster", "bass boost" -> listOf(850, 550, 100, 100, 200)
-            "deep sub" -> listOf(950, 400, -50, 100, 150)
-            "bass reducer" -> listOf(-600, -350, 100, 200, 200)
-            "electronic / edm", "electronic", "edm" -> listOf(750, 400, -100, 450, 750)
-            "rock & metal", "rock", "metal" -> listOf(600, 300, -150, 400, 650)
-            "hip-hop & r&b", "hip-hop", "r&b" -> listOf(850, 500, 50, 250, 450)
-            "dance & club", "dance", "club" -> listOf(750, 450, 0, 500, 650)
-            "pop commercial", "pop" -> listOf(400, 200, 250, 400, 500)
-            "vocal & podcast", "vocal", "podcast" -> listOf(-350, -50, 600, 500, 150)
-            "acoustic live", "acoustic" -> listOf(300, 250, 200, 350, 500)
-            "classical concert", "classical" -> listOf(350, 200, 150, 300, 450)
-            "jazz lounge", "jazz" -> listOf(400, 300, 150, 250, 400)
-            "treble booster", "treble boost" -> listOf(-100, 0, 200, 600, 900)
-            "treble reducer" -> listOf(200, 100, 0, -350, -600)
-            "dynamic cinema", "cinema" -> listOf(700, 200, 300, 450, 600)
-            "car audio (cabin dynamics)", "car audio", "car" -> listOf(800, -100, 300, 500, 700)
-            "gaming & spatial", "gaming" -> listOf(450, 100, 400, 650, 500)
-            else -> listOf(0, 0, 0, 0, 0) // Flat reference neutral
+            "crystal clarity" -> listOf(0, -100, 50, 150, 200)
+            "studio master" -> listOf(50, -50, 0, 50, 100)
+            "bass booster", "bass boost" -> listOf(400, 200, 0, -50, 0)
+            "deep sub" -> listOf(500, 100, -50, 0, 0)
+            "bass reducer" -> listOf(-450, -250, 0, 0, 0)
+            "electronic / edm", "electronic", "edm" -> listOf(350, 150, -100, 150, 200)
+            "rock & metal", "rock", "metal" -> listOf(250, 100, -100, 200, 150)
+            "hip-hop & r&b", "hip-hop", "r&b" -> listOf(400, 200, -50, 100, 100)
+            "dance & club", "dance", "club" -> listOf(350, 150, -50, 150, 200)
+            "pop commercial", "pop" -> listOf(150, 0, 50, 150, 150)
+            "vocal & podcast", "vocal enhance", "vocal", "podcast" -> listOf(-250, -100, 150, 250, -50)
+            "acoustic live", "acoustic" -> listOf(100, -50, 50, 150, 100)
+            "classical concert", "classical" -> listOf(100, 0, -50, 50, 150)
+            "jazz lounge", "jazz" -> listOf(150, 50, 0, 100, 100)
+            "treble booster", "treble boost" -> listOf(0, 0, 50, 200, 350)
+            "treble reducer" -> listOf(0, 0, 0, -200, -350)
+            "dynamic cinema", "cinema" -> listOf(250, -50, 100, 150, 100)
+            "car audio (cabin dynamics)", "car audio", "car" -> listOf(-100, -200, 50, 150, 100)
+            "gaming & spatial", "gaming" -> listOf(-100, -100, 100, 250, 100)
+            else -> listOf(0, 0, 0, 0, 0)
         }
 
         val updatedBands = state.bands.mapIndexed { index, band ->
@@ -227,75 +228,15 @@ object AudioEffectsManager {
             band.copy(levelMb = clampedLevel)
         }
 
-        val targetBass = when (presetName.lowercase().trim()) {
-            "crystal clarity" -> 200
-            "studio master" -> 150
-            "bass booster", "bass boost" -> 850
-            "deep sub" -> 950
-            "bass reducer" -> 0
-            "electronic / edm", "electronic", "edm" -> 750
-            "dance & club", "dance", "club" -> 750
-            "hip-hop & r&b", "hip-hop", "r&b" -> 800
-            "rock & metal", "rock", "metal" -> 500
-            "pop commercial", "pop" -> 400
-            "car audio (cabin dynamics)", "car audio", "car" -> 550
-            "acoustic live", "acoustic" -> 200
-            "classical concert", "classical" -> 150
-            "jazz lounge", "jazz" -> 350
-            "treble booster", "treble boost" -> 100
-            "treble reducer" -> 150
-            "dynamic cinema", "cinema" -> 650
-            "gaming & spatial", "gaming" -> 400
-            "vocal & podcast", "vocal", "podcast" -> 0
-            else -> 0 // Flat
-        }
-
+        // The curve already supplies its bass contour. Do not add a second bass
+        // boost or positive make-up gain; the float processor retains its limiter/headroom.
+        val targetBass = 0
         val targetVirt = when (presetName.lowercase().trim()) {
-            "crystal clarity" -> 450
-            "studio master" -> 250
-            "bass booster", "bass boost" -> 200
-            "deep sub" -> 150
-            "bass reducer" -> 100
-            "electronic / edm", "electronic", "edm" -> 600
-            "dance & club", "dance", "club" -> 550
-            "rock & metal", "rock", "metal" -> 350
-            "hip-hop & r&b", "hip-hop", "r&b" -> 300
-            "pop commercial", "pop" -> 350
-            "car audio (cabin dynamics)", "car audio", "car" -> 450
-            "acoustic live", "acoustic" -> 450
-            "classical concert", "classical" -> 500
-            "jazz lounge", "jazz" -> 400
-            "treble booster", "treble boost" -> 350
-            "treble reducer" -> 100
-            "dynamic cinema", "cinema" -> 750
-            "gaming & spatial", "gaming" -> 800
-            "vocal & podcast", "vocal", "podcast" -> 100
-            else -> 0 // Flat
+            "gaming & spatial", "gaming" -> 300
+            "dynamic cinema", "cinema" -> 150
+            else -> 0
         }
-
-        // Automatic headroom / loudness matching to prevent digital clipping
-        val targetGain = when (presetName.lowercase().trim()) {
-            "crystal clarity" -> 120
-            "studio master" -> 80
-            "bass booster", "bass boost" -> 250
-            "deep sub" -> 200
-            "bass reducer" -> 150
-            "electronic / edm", "electronic", "edm" -> 220
-            "dance & club", "dance", "club" -> 250
-            "hip-hop & r&b", "hip-hop", "r&b" -> 240
-            "rock & metal", "rock", "metal" -> 180
-            "pop commercial", "pop" -> 160
-            "car audio (cabin dynamics)", "car audio", "car" -> 350
-            "vocal & podcast", "vocal", "podcast" -> 200
-            "acoustic live", "acoustic" -> 120
-            "classical concert", "classical" -> 100
-            "jazz lounge", "jazz" -> 140
-            "treble booster", "treble boost" -> 120
-            "treble reducer" -> 100
-            "dynamic cinema", "cinema" -> 300
-            "gaming & spatial", "gaming" -> 250
-            else -> 0 // Flat
-        }
+        val targetGain = 0
 
         return state.copy(
             bands = updatedBands,

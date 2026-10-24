@@ -52,9 +52,11 @@ data class ActiveQualityState(
 @Immutable
 data class PlaybackSourcePolicy(val ceiling: AudioQualityCeiling, val enhancer: Boolean = false,
     val online: Boolean = true, val sources: List<PlaybackSource> = PlaybackSource.defaults(ceiling),
-    val returnToYouTube: Boolean = false, val requestRevision: Long = 0L, val requestTrackId: String = "", val ready: Boolean = true) {
+    val returnToYouTube: Boolean = false, val requestRevision: Long = 0L, val requestTrackId: String = "", val ready: Boolean = true,
+    val dolbyAtmos: Boolean = false) {
     val maximum: Boolean get() = ceiling == AudioQualityCeiling.MAX
     val preferOpus: Boolean get() = ceiling == AudioQualityCeiling.HIGH
+    val allowsDolbyAtmos: Boolean get() = dolbyAtmos && DolbyAtmosSupport.qualityEligible(ceiling)
     val configuredSources: List<PlaybackSource> get() = PlaybackSource.ordered(sources)
     val playbackSources: List<PlaybackSource> get() {
         val enabled = configuredSources.filter { it.enabled && it.available(ceiling) &&
@@ -76,8 +78,10 @@ data class PlaybackSourcePolicy(val ceiling: AudioQualityCeiling, val enhancer: 
     fun allows(kind: PlaybackSourceKind): Boolean = playbackSources.any { it.kind == kind }
     fun sourceId(kind: PlaybackSourceKind): String? = configuredSources.firstOrNull { it.kind == kind }?.id
     val allowsArchive: Boolean get() = maximum && online && allows(PlaybackSourceKind.INTERNET_ARCHIVE)
-    val key: String get() = "sources-v8:${ceiling.name}:$enhancer:$returnToYouTube:$online:$requestRevision:$requestTrackId:$ready:" +
+    val key: String get() = "sources-v9:${ceiling.name}:$enhancer:$returnToYouTube:$online:$requestRevision:$requestTrackId:$ready:atmos=$allowsDolbyAtmos:" +
         playbackSources.joinToString(",") { "${it.id}:${it.kind.name}:${it.baseUrl.hashCode()}" }
+    fun onlyAtmosChanged(previousKey: String?): Boolean = previousKey != null && previousKey != key &&
+        previousKey == copy(dolbyAtmos = !allowsDolbyAtmos).key
     /** Manual upgrades use the source list's upgrade order, not normal YouTube-first routing. */
     internal val upgradeSources: List<PlaybackSource> get() = configuredSources.filter {
         it.enabled && it.available(ceiling) && (it.kind != PlaybackSourceKind.ADDON || it.baseUrl.isNotBlank())

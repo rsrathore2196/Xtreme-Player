@@ -29,6 +29,7 @@ data class StreamQualityBadge(
     val badgeLabel: String get() = when {
         verified && lossless && bitDepth >= 24 && sampleRateHz >= 48_000 -> "Hi-Res Lossless"
         verified && lossless && bitDepth >= 16 && sampleRateHz >= 44_100 -> "Lossless"
+        verified && codec == "E-AC-3 JOC" -> "Dolby Atmos"
         else -> label
     }
     val label: String get() {
@@ -47,6 +48,8 @@ data class StreamQualityBadge(
             val mime = format.sampleMimeType
             val codecs = format.codecs
             val codec = when {
+                mime == MimeTypes.AUDIO_E_AC3_JOC -> "E-AC-3 JOC"
+                mime == MimeTypes.AUDIO_E_AC3 -> "E-AC-3"
                 mime == MimeTypes.AUDIO_FLAC -> "FLAC"
                 mime == MimeTypes.AUDIO_ALAC -> "ALAC"
                 mime == MimeTypes.AUDIO_RAW -> "PCM"

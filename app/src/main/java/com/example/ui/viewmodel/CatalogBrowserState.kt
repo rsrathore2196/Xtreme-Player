@@ -118,7 +118,11 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
         enrichSearch(_search.value.requestId, loadArchivePage = false)
     }
 
-    fun setSourcePolicy(policy: com.example.playback.PlaybackSourcePolicy) {
+    fun setSourcePolicy(policy: com.example.playback.PlaybackSourcePolicy) =
+        // Encoded-format selection affects playback, not catalog visibility or search flights.
+        setCatalogPolicy(policy.copy(dolbyAtmos = false))
+
+    private fun setCatalogPolicy(policy: com.example.playback.PlaybackSourcePolicy) {
         audioQuality = policy.ceiling.audioQuality
         val unchanged = sourcePolicy.key == policy.key
         if (unchanged) return

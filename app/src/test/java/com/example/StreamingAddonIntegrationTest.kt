@@ -25,6 +25,37 @@ import java.util.concurrent.CopyOnWriteArrayList
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33], application = Application::class)
 class StreamingAddonIntegrationTest {
+    @Test fun atmosNegotiationAndStereoUseSeparateResolutionCaches() = runBlocking {
+        enable()
+        stream = {
+            if (requests.last().contains("atmos=auto")) """{"url":"$base/immersive.ec3","codec":"eac3-joc","bitrate":768000}"""
+            else """{"url":"$base/original.flac","codec":"flac","bitrate":1411200}"""
+        }
+        val on = maximum.copy(dolbyAtmos = true)
+        val immersive = StreamingAddons.resolve(context, song, on)!!
+        assertTrue(immersive.audioUrl.endsWith("immersive.ec3")); assertFalse(immersive.isLossless)
+        val stereo = StreamingAddons.resolve(context, song, maximum)!!
+        assertTrue(stereo.audioUrl.endsWith("original.flac")); assertTrue(stereo.isLossless)
+        assertFalse(StreamingAddons.isVerified(immersive.audioUrl, maximum))
+        assertTrue(requests.any { it.contains("stream/right") && it.contains("atmos=auto") })
+        assertTrue(requests.any { it.contains("stream/right") && it.contains("atmos=none") })
+        val before = requests.size
+        assertEquals(immersive.audioUrl, StreamingAddons.resolve(context, song, on)!!.audioUrl)
+        assertEquals(before, requests.size)
+    }
+
+    @Test fun unsupportedAtmosResponseRetriesTheSameRecordingInStereo() = runBlocking {
+        enable()
+        stream = {
+            if (requests.last().contains("atmos=auto")) "{}"
+            else """{"url":"$base/safe.flac","codec":"flac","bitrate":1411200}"""
+        }
+        val resolved = StreamingAddons.resolve(context, song, maximum.copy(dolbyAtmos = true))!!
+        assertEquals(song.id, resolved.id)
+        assertTrue(resolved.audioUrl.endsWith("safe.flac"))
+        assertTrue(requests.any { it.contains("stream/right") && it.contains("atmos=auto") })
+        assertTrue(requests.any { it.contains("stream/right") && it.contains("atmos=none") })
+    }
     private val app get() = ApplicationProvider.getApplicationContext<Context>()
     private lateinit var repository: ReactiveSettingsRepository
     private lateinit var context: Context

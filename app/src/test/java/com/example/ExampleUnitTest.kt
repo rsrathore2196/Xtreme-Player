@@ -21,12 +21,15 @@ class ExampleUnitTest {
         AudioEffectsManager.applyPreset("Bass Boost")
         var state = AudioEffectsManager.effectsState.value
         assertEquals("Bass Boost", state.selectedPreset)
-        assertTrue(state.bassBoostStrength > 800)
+        assertTrue(state.bands.first().levelMb > state.bands[2].levelMb)
+        assertEquals(0, state.bassBoostStrength) // The curve supplies bass without a second boost stage.
+        assertEquals(0, state.loudnessGainMb)
 
         AudioEffectsManager.applyPreset("Flat")
         state = AudioEffectsManager.effectsState.value
         assertEquals("Flat", state.selectedPreset)
         assertEquals(0, state.bassBoostStrength)
+        assertTrue(state.bands.all { it.levelMb == 0.toShort() })
     }
 
     @Test

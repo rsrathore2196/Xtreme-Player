@@ -87,6 +87,16 @@ fun MusicPlaybackPage(
         initialValue = com.example.data.local.OtherSettingsPreferences.playerExperienceSettings(settingsContext))
 
     val presets = listOf("Flat", "Bass Boost", "Studio Master", "Vocal Enhance", "Electronic", "Rock", "Acoustic")
+    val network = remember(settingsContext) { com.example.playback.NetworkQualityMonitor.getInstance(settingsContext) }
+    val activeQuality by network.activeQualityCeiling.collectAsStateWithLifecycle()
+    var dolbySupported by remember { mutableStateOf<Boolean?>(null) }
+    androidx.compose.runtime.LaunchedEffect(activeQuality.effectiveCeiling) {
+        if (com.example.playback.DolbyAtmosSupport.qualityEligible(activeQuality.effectiveCeiling)) {
+            dolbySupported = kotlinx.coroutines.withContext(com.example.performance.AppDispatchers.Io) {
+                com.example.playback.DolbyAtmosSupport.supported()
+            }
+        }
+    }
 
     Column(
         modifier = modifier
@@ -95,6 +105,10 @@ fun MusicPlaybackPage(
             .padding(16.dp)
     ) {
         NetworkStreamingQualitySection()
+        Spacer(modifier = Modifier.height(16.dp))
+        DolbyAtmosSettingsCard(playerExperience.dolbyAtmos, dolbySupported, activeQuality.effectiveCeiling) {
+            com.example.data.local.OtherSettingsPreferences.setDolbyAtmos(settingsContext, it)
+        }
         Spacer(modifier = Modifier.height(16.dp))
 
         // 2. Hardware Equalizer & Soundstage Card
@@ -428,5 +442,34 @@ private fun PlaybackProcessingSettingRow(title: String, description: String, che
         }
         Switch(checked = checked, onCheckedChange = onCheckedChange,
             colors = liquidGlassSwitchColors(colors), modifier = Modifier.testTag(tag))
+    }
+}
+
+@Composable
+internal fun DolbyAtmosSettingsCard(
+    requested: Boolean, supported: Boolean?, quality: com.example.playback.AudioQualityCeiling,
+    onToggle: (Boolean) -> Unit
+) {
+    val colors = LocalAppColors.current
+    val qualityAllowed = com.example.playback.DolbyAtmosSupport.qualityEligible(quality)
+    val usable = qualityAllowed && supported == true
+    Box(Modifier.fillMaxWidth().liquidGlassCard(colors, shape = RoundedCornerShape(22.dp),
+        elevation = 6.dp, translucency = 0.82f, tintAccent = true)) {
+        Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.Waves, contentDescription = null,
+                tint = if (usable) colors.primaryAccent else colors.textMuted, modifier = Modifier.size(26.dp))
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                Text("Dolby Atmos", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = colors.textPrimary)
+                Text(when {
+                    !qualityAllowed -> "Available with High or Maximum/Lossless streaming quality"
+                    supported == null -> "Checking device support…"
+                    !supported -> "This device has no compatible Dolby decoder"
+                    else -> "Prefer genuine Atmos mixes from compatible sources"
+                }, fontSize = 11.sp, color = colors.textMuted)
+            }
+            Switch(checked = requested && usable, enabled = usable, onCheckedChange = onToggle,
+                colors = liquidGlassSwitchColors(colors), modifier = Modifier.testTag("switch_dolby_atmos"))
+        }
     }
 }

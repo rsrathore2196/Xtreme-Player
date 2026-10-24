@@ -87,7 +87,8 @@ class NetworkQualityMonitor private constructor(context: Context) {
     val audioEnhancer = enhancerSelection.map { it.enabled }.distinctUntilChanged()
         .stateIn(scope, SharingStarted.Eagerly, false)
     val sourcePolicy = combine(activeQualityCeiling, enhancerSelection,
-        com.example.data.local.OtherSettingsPreferences.observePlaybackIntegrations(app)) { _, _, _ ->
+        com.example.data.local.OtherSettingsPreferences.observePlaybackIntegrations(app),
+        com.example.data.local.OtherSettingsPreferences.observePlayerExperience(app).map { it.dolbyAtmos }.distinctUntilChanged()) { _, _, _, _ ->
         // The upstream StateFlows start with placeholders. Read the current IO-backed
         // snapshot after source loading so a warm session is never downgraded by them.
         sourcePolicySnapshot()
@@ -98,7 +99,9 @@ class NetworkQualityMonitor private constructor(context: Context) {
         PlaybackSourcePolicy(it.effectiveCeiling, selection.enabled,
             it.connectionType != NetworkConnectionType.OFFLINE,
             com.example.data.local.OtherSettingsPreferences.playbackIntegrations(app).sourceList(it.effectiveCeiling),
-            returnToYouTube = selection.returnToYouTube, requestRevision = selection.revision, requestTrackId = selection.trackId)
+            returnToYouTube = selection.returnToYouTube, requestRevision = selection.revision, requestTrackId = selection.trackId,
+            dolbyAtmos = com.example.data.local.OtherSettingsPreferences.playerExperienceSettings(app).dolbyAtmos &&
+                DolbyAtmosSupport.qualityEligible(it.effectiveCeiling) && DolbyAtmosSupport.supported())
     }
     fun setAudioEnhancer(enabled: Boolean, returnToYouTube: Boolean = false, trackId: String = "") { scope.launch(preferenceWrites) {
         AudioQualityPreferences.setAudioEnhancerEnabled(app, enabled, returnToYouTube, trackId)

@@ -56,7 +56,8 @@ data class PlayerExperienceSettings(
     val crossfade: Boolean = false,
     val spatialAudio: Boolean = false,
     val skipSilence: Boolean = false,
-    val outputPrecision: OutputPrecision = OutputPrecision.PCM_16
+    val outputPrecision: OutputPrecision = OutputPrecision.PCM_16,
+    val dolbyAtmos: Boolean = false
 )
 
 object OtherSettingsPreferences {
@@ -131,6 +132,7 @@ object OtherSettingsPreferences {
     private const val KEY_HIGH_CONTRAST = "player_high_contrast_typography"
     private const val KEY_CROSSFADE = "playback_crossfade_enabled"
     private const val KEY_SPATIAL_AUDIO = "playback_spatial_audio"
+    private const val KEY_DOLBY_ATMOS = "playback_dolby_atmos"
     private const val KEY_SKIP_SILENCE = "playback_skip_silence"
     private const val KEY_OUTPUT_PRECISION = "playback_output_precision"
     private const val KEY_KEEP_LYRICS_AWAKE = "keep_lyrics_screen_awake"
@@ -302,7 +304,8 @@ object OtherSettingsPreferences {
             crossfade = prefs.getBoolean(KEY_CROSSFADE, false),
             spatialAudio = prefs.getBoolean(KEY_SPATIAL_AUDIO, false),
             skipSilence = prefs.getBoolean(KEY_SKIP_SILENCE, false),
-            outputPrecision = OutputPrecision.fromStored(prefs.getString(KEY_OUTPUT_PRECISION, null))
+            outputPrecision = OutputPrecision.fromStored(prefs.getString(KEY_OUTPUT_PRECISION, null)),
+            dolbyAtmos = prefs.getBoolean(KEY_DOLBY_ATMOS, false)
         )
     }
 
@@ -312,6 +315,7 @@ object OtherSettingsPreferences {
             KEY_HIGH_CONTRAST,
             KEY_CROSSFADE,
             KEY_SPATIAL_AUDIO,
+            KEY_DOLBY_ATMOS,
             KEY_SKIP_SILENCE,
             KEY_OUTPUT_PRECISION
         )
@@ -336,6 +340,10 @@ object OtherSettingsPreferences {
 
     fun setDynamicAlbumGlow(context: Context, enabled: Boolean) {
         getPrefs(context).edit().putBoolean(KEY_ALBUM_GLOW, enabled).apply()
+    }
+
+    fun setDolbyAtmos(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_DOLBY_ATMOS, enabled).apply()
     }
 
     fun setHighContrastTypography(context: Context, enabled: Boolean) {

@@ -87,6 +87,36 @@ class SearchSourcePolicyTest {
         } finally { scope.cancel() }
     }
 
+    @Test fun atmosTogglePreservesAnInflightCatalogLookup() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val calls = java.util.concurrent.atomic.AtomicInteger()
+        val started = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val browser = CatalogBrowserState(CatalogRepository(), scope, archiveSearch = { _, _, _, _ ->
+            calls.incrementAndGet()
+            started.complete(Unit)
+            release.await()
+            InternetArchiveApiService.LosslessSearchPage(listOf(archive))
+        })
+        try {
+            seed(browser)
+            val policy = PlaybackSourcePolicy(AudioQualityCeiling.MAX)
+            browser.setSourcePolicy(policy)
+            withTimeout(3_000) { started.await() }
+            val worker = CatalogBrowserState::class.java.getDeclaredField("archiveSearchJob").apply { isAccessible = true }
+            val revision = CatalogBrowserState::class.java.getDeclaredField("policyRevision").apply { isAccessible = true }
+            val activeWorker = worker.get(browser)
+            val activeRevision = revision.getLong(browser)
+            browser.setSourcePolicy(policy.copy(dolbyAtmos = true))
+            assertSame(activeWorker, worker.get(browser))
+            assertEquals(activeRevision, revision.getLong(browser))
+            release.complete(Unit)
+            awaitCondition { browser.search.value.page.tracks.any { it.id == archive.id } }
+            assertEquals(1, calls.get())
+            assertEquals(youtube, browser.search.value.page.tracks.single { it.id == youtube.id })
+        } finally { release.complete(Unit); scope.cancel() }
+    }
+
     @Test fun youtubeRowsPublishTogetherWithoutAvailabilityWorkers() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val tracks = (0..15).map { youtube.copy(id = "yt_aaaaaaaaa${it.toString().padStart(2, '0')}", title = "Song $it") }
@@ -132,9 +162,12 @@ class SearchSourcePolicyTest {
             awaitCondition { browser.search.value.page.tracks.any { it.id == archive.id } }
             // The page is already visible, but its previous worker still owns the
             // finalization phase. The next click must wait rather than get lost.
+            val workerField = CatalogBrowserState::class.java.getDeclaredField("archiveSearchJob").apply { isAccessible = true }
+            // Finish the real first-page worker before substituting the controlled
+            // finishing phase; its finally block must not erase the fixture's job.
+            (workerField.get(browser) as? Job)?.join()
             val finishingWorker = Job(scope.coroutineContext[Job])
-            CatalogBrowserState::class.java.getDeclaredField("archiveSearchJob").apply { isAccessible = true }
-                .set(browser, finishingWorker)
+            workerField.set(browser, finishingWorker)
             browser.loadMoreSearch()
             browser.loadMoreSearch()
             assertTrue(browser.search.value.loadingMore)

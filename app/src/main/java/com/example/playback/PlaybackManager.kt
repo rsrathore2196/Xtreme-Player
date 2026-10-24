@@ -160,6 +160,7 @@ class PlaybackManager(
     private var appliedSourcePolicyKey: String? = null
     private var appliedQualityCeiling: AudioQualityCeiling? = null
     private var appliedEnhancer = false
+    private var appliedDolbyAtmos = false
     private var appliedSourceRequestRevision = 0L
     @Volatile private var enhancerOrigin: SourceTransitionOrigin? = null
     private var pendingPolicyRestart: (() -> Unit)? = null
@@ -435,7 +436,10 @@ class PlaybackManager(
         preparedSource: MusicTrack? = null, automatic: Boolean = false) {
         if (!policy.ready) return
         if (!force && appliedSourcePolicyKey == policy.key) return
+        val onlyAtmosChanged = policy.onlyAtmosChanged(appliedSourcePolicyKey)
         val qualityRaised = appliedQualityCeiling?.let { policy.ceiling.maxBitrateBps > it.maxBitrateBps } == true
+        val atmosChanged = appliedDolbyAtmos != policy.allowsDolbyAtmos
+        appliedDolbyAtmos = policy.allowsDolbyAtmos
         appliedQualityCeiling = policy.ceiling
         val enhancerChangedToOn = policy.enhancer && !appliedEnhancer
         appliedEnhancer = policy.enhancer
@@ -473,8 +477,11 @@ class PlaybackManager(
             ?: SourceTransitionOrigin.read(player.currentMediaItem, original)
         val origin = remembered ?: if (enhancerTurnedOn) SourceTransitionOrigin.capture(original, policy) else null
         val returnToYouTube = policy.shouldReturnToYouTube(original, origin?.sourceId)
-        val restoring = !policy.enhancer && (origin != null || returnToYouTube)
-        if (!restoring && policy.maximum && failedUrl == null && original.isLossless && policyAllows(original, policy) && policy.isPreferred(original)) return
+        val restoring = !policy.enhancer && (returnToYouTube || !onlyAtmosChanged && origin != null)
+        val sameSource = if (onlyAtmosChanged && !returnToYouTube)
+            SourceTransitionOrigin.sourceId(original.id, Uri.parse(original.audioUrl), policy)
+                ?.takeIf { id -> policy.playbackSources.any { it.id == id } } else null
+        if (!restoring && !atmosChanged && policy.maximum && failedUrl == null && original.isLossless && policyAllows(original, policy) && policy.isPreferred(original)) return
         stopPendingLosslessUpgrade()
         if (losslessFallback?.let { it.activated || !it.expectedLossless } == true) losslessFallback = null
         val generation = selectionGeneration
@@ -501,11 +508,11 @@ class PlaybackManager(
                 if (!automatic) delay(180L) // Coalesce settings changes, never player/touch commands.
                 if (!owns()) return@launch
                 val isYoutube = com.example.data.remote.YouTubeAudioStreamService.isYouTubeAudio(original.id, original.audioUrl)
-                if (!restoring && !enhancerTurnedOn && !qualityRaised && failedUrl == null && policyAllows(original, policy) && policy.isPreferred(original) &&
+                if (!restoring && !atmosChanged && !enhancerTurnedOn && !qualityRaised && failedUrl == null && policyAllows(original, policy) && policy.isPreferred(original) &&
                     isYoutube && !policy.maximum) return@launch
                 val resolved = preparedSource ?: withContext(AppDispatchers.Io) { repo.resolvePlayableTrack(if (restoring && !returnToYouTube) origin!!.track else original,
                     forceRefresh = failedUrl != null, failedUrl = failedUrl,
-                    preferredSourceId = if (returnToYouTube) policy.sourceId(PlaybackSourceKind.YOUTUBE) else origin?.sourceId.takeIf { restoring }, manualUpgrade = enhancerTurnedOn) }
+                    preferredSourceId = sameSource ?: if (returnToYouTube) policy.sourceId(PlaybackSourceKind.YOUTUBE) else origin?.sourceId.takeIf { restoring }, manualUpgrade = enhancerTurnedOn) }
                 if (!owns() || player.currentMediaItem?.playbackUri()?.toString() != originalUri) return@launch
                 if (resolved.audioUrl == originalUri || failedUrl == null && originalUri != null &&
                     com.example.data.remote.YouTubeAudioStreamService.sameRepresentation(originalUri, resolved.audioUrl)) {

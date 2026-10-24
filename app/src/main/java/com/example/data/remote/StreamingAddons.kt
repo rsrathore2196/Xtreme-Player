@@ -39,7 +39,8 @@ import kotlin.coroutines.resumeWithException
 object StreamingAddons {
     data class Manifest(val name: String, val baseUrl: String)
     private data class Transport(val headers: Map<String, String>, val mime: String?, val bitrate: Int,
-        val expires: Long, val headerScope: String?, val sourceId: String, val baseUrl: String, val provider: String)
+        val expires: Long, val headerScope: String?, val sourceId: String, val baseUrl: String, val provider: String,
+        val atmos: Boolean = false)
     private val transports = ConcurrentHashMap<String, Transport>()
     private data class Cached(val track: MusicTrack?, val expires: Long)
     private val resolutions = ConcurrentHashMap<String, Cached>()
@@ -139,7 +140,8 @@ object StreamingAddons {
             }
         } finally { lock.unlock() }
     }
-    private suspend fun configuredEndpoint(base: String, path: String, query: String? = null, tier: String): HttpUrl {
+    private suspend fun configuredEndpoint(base: String, path: String, query: String? = null, tier: String,
+        dolbyAtmos: Boolean = false): HttpUrl {
         val config = try { withTimeoutOrNull(2_500L) { configuration(base) } } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { null }
         val builder = endpoint(base, path, query).newBuilder()
@@ -154,11 +156,13 @@ object StreamingAddons {
             hints.firstNotNullOfOrNull { hint -> options.firstOrNull { it.lowercase(Locale.ROOT).replace(' ', '_').contains(hint) } }
         } ?: tier
         builder.setQueryParameter("quality", requested)
-        // The selected recording is stereo; never let a server's default change its mix.
-        builder.setQueryParameter("atmos", config?.stereoValue ?: "none")
+        builder.setQueryParameter("atmos", atmosParameter(dolbyAtmos, config?.stereoValue ?: "none"))
         if (query != null) builder.setQueryParameter("q", query)
         return builder.build()
     }
+    /** Auto requests an available immersive mix while retaining the server's stereo fallback. */
+    internal fun atmosParameter(allowed: Boolean, stereoValue: String = "none"): String =
+        if (allowed) "auto" else stereoValue
     private fun quality(ceiling: AudioQualityCeiling) = when (ceiling) {
         AudioQualityCeiling.MAX -> "LOSSLESS"
         AudioQualityCeiling.HIGH -> "high"
@@ -245,7 +249,7 @@ object StreamingAddons {
         val selectedSource = (if (source == null) active.firstOrNull() else source.takeIf { it in active })
             ?: return@withContext null
         val key = withContext(AppDispatchers.CpuBounded) {
-            "${selectedSource.id}:${fingerprint(selectedSource.baseUrl)}:${RecordingIdentity.key(track)}:${policy.ceiling.name}"
+            "${selectedSource.id}:${fingerprint(selectedSource.baseUrl)}:${RecordingIdentity.key(track)}:${policy.ceiling.name}:atmos=${policy.allowsDolbyAtmos}"
         }
         val cached = resolutions[key]?.takeIf { it.expires > System.currentTimeMillis() }
         val explicitRetry = policy.enhancer && policy.requestTrackId == track.id && policy.requestRevision > 0
@@ -295,18 +299,21 @@ object StreamingAddons {
                 var lossyFallback: MusicTrack? = null
                 for (tier in tiers) for (candidate in candidates) {
                     val id = providerId(base, candidate.id) ?: continue
-                    val url = configuredEndpoint(base, "stream", tier = tier).newBuilder().addPathSegment(id).build()
-                    if (!tried.add(url)) continue
-                    val body = try { get(url) } catch (e: CancellationException) { throw e }
-                        catch (_: IOException) { continue }
-                    val resolved = withContext(AppDispatchers.CpuBounded) {
-                        try { parseStream(body, base, track, candidate, policy, source.id) }
-                        catch (_: org.json.JSONException) { null } // An unsupported tier must not reject the entire server.
+                    suspend fun request(atmos: Boolean): MusicTrack? {
+                        val url = configuredEndpoint(base, "stream", tier = tier, dolbyAtmos = atmos).newBuilder().addPathSegment(id).build()
+                        if (!tried.add(url)) return null
+                        val body = try { get(url) } catch (e: CancellationException) { throw e }
+                            catch (_: IOException) { return null }
+                        return withContext(AppDispatchers.CpuBounded) {
+                            try { parseStream(body, base, track, candidate, policy.copy(dolbyAtmos = atmos), source.id) }
+                            catch (_: org.json.JSONException) { null }
+                        }
                     }
-                        ?: continue
+                    val resolved = (request(policy.allowsDolbyAtmos) ?:
+                        if (policy.allowsDolbyAtmos) request(false) else null) ?: continue
                     if (!stillEnabled(context, source, policy)) return@withTimeoutOrNull null
                     if (resolved.audioUrl !in rejected) {
-                        if (resolved.isLossless) { completed = true; return@withTimeoutOrNull resolved }
+                        if (resolved.isLossless || transports[resolved.audioUrl]?.atmos == true) { completed = true; return@withTimeoutOrNull resolved }
                         if (lossyFallback == null || resolved.bitrateKbps > lossyFallback.bitrateKbps) lossyFallback = resolved
                     }
                 }
@@ -335,15 +342,20 @@ object StreamingAddons {
         if (encrypted != null && encrypted != JSONObject.NULL && encrypted.toString().lowercase(Locale.ROOT) !in setOf("false", "0", "none", "")) return null
         val format = value.optString("format").lowercase(Locale.ROOT)
         val codec = value.optString("codec").ifBlank { value.optString("fileCodec") }.ifBlank {
-            format.takeIf { it in setOf("flac", "alac", "pcm", "wav") }.orEmpty()
+            format.takeIf { it in setOf("flac", "alac", "pcm", "wav") || com.example.playback.DolbyAtmosSupport.isAtmosCodec(it) }.orEmpty()
         }.ifBlank {
             when (value.optString("mimeType").lowercase(Locale.ROOT)) {
                 "audio/flac", "audio/x-flac" -> "flac"
                 "audio/alac", "audio/x-alac" -> "alac"
                 "audio/wav", "audio/x-wav" -> "wav"
+                "audio/eac3-joc" -> "eac3-joc"
+                "audio/eac3" -> "eac3"
                 else -> ""
             }
         }.lowercase(Locale.ROOT)
+        val atmos = com.example.playback.DolbyAtmosSupport.isAtmosCodec(codec) || value.optBoolean("isDolbyAtmos", false)
+        if (atmos && !policy.allowsDolbyAtmos) return null
+        if (atmos && codec in setOf("flac", "alac", "pcm", "wav")) return null
         val rawBitrate = value.optInt("bitrate", 0)
         val bitrate = if (rawBitrate > 10000) rawBitrate / 1000 else rawBitrate
         if (!policy.maximum && (bitrate <= 0 || bitrate.toLong() * 1000 > policy.ceiling.maxBitrateBps)) return null
@@ -370,6 +382,7 @@ object StreamingAddons {
             manifest.isNotBlank() || stream.startsWith("data:application/dash+xml") || format in setOf("dash", "mpd") ||
                 transport in setOf("dash", "mpd") || declaredMime == androidx.media3.common.MimeTypes.APPLICATION_MPD -> androidx.media3.common.MimeTypes.APPLICATION_MPD
             format in setOf("hls", "m3u8") || transport in setOf("hls", "m3u8") || declaredMime in setOf("application/vnd.apple.mpegurl", "application/x-mpegurl") -> androidx.media3.common.MimeTypes.APPLICATION_M3U8
+            atmos -> androidx.media3.common.MimeTypes.AUDIO_E_AC3_JOC
             else -> null
         }
         val headers = value.optJSONObject("headers")?.let { obj -> obj.keys().asSequence().take(32).mapNotNull { key ->
@@ -393,19 +406,19 @@ object StreamingAddons {
             .find(inlineXml)?.groupValues?.get(1)?.trim()?.replace("&amp;", "&")?.toHttpUrlOrNull()?.toString()
         val provider = policy.configuredSources.firstOrNull { it.id == sourceId && it.kind == PlaybackSourceKind.ADDON }?.name
             ?.let { "Streaming Addon: $it" } ?: candidate.source
-        transports[stream] = Transport(headers, mime, bitrate, minOf(expires - 5_000L, now + 180_000L), scope, sourceId, base, provider)
+        transports[stream] = Transport(headers, mime, bitrate, minOf(expires - 5_000L, now + 180_000L), scope, sourceId, base, provider, atmos)
         return requested.copy(audioUrl = stream, source = provider, bitrateKbps = bitrate,
-            isLossless = codec in setOf("flac", "alac", "pcm", "wav"), qualityBadge = "Custom stream")
+            isLossless = !atmos && codec in setOf("flac", "alac", "pcm", "wav"), qualityBadge = "Custom stream")
     }
     fun isVerified(url: String, policy: PlaybackSourcePolicy): Boolean = transports[url]?.let {
-        it.expires > System.currentTimeMillis() && policy.maximum &&
+        it.expires > System.currentTimeMillis() && policy.maximum && (!it.atmos || policy.allowsDolbyAtmos) &&
             policy.playbackSources.any { source -> source.kind == PlaybackSourceKind.ADDON && source.id == it.sourceId && source.baseUrl == it.baseUrl }
     } == true
     // An active manifest can outlive its new-selection TTL. Keep origin-scoped
     // loading permission separate from reusable URL freshness.
     fun hasRegisteredTransport(url: String): Boolean = transportFor(url) != null
     fun allowsRegisteredTransport(url: String, policy: PlaybackSourcePolicy): Boolean = transportFor(url)?.let { transport ->
-        policy.maximum && policy.playbackSources.any { it.kind == PlaybackSourceKind.ADDON &&
+        policy.maximum && (!transport.atmos || policy.allowsDolbyAtmos) && policy.playbackSources.any { it.kind == PlaybackSourceKind.ADDON &&
             it.id == transport.sourceId && it.baseUrl == transport.baseUrl }
     } == true
     private fun transportFor(url: String): Transport? {
