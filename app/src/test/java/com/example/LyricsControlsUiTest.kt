@@ -35,7 +35,7 @@ class LyricsControlsUiTest {
     }
     private val lyrics = TrackLyrics("lyrics-controls", "Title", "Artist", true,
         listOf(LyricLine(1000, "दिल मेरा", 3000, translation = "My heart", romanization = "Dil mera"),
-            LyricLine(5000, "तेरे लिए", 3000, translation = "For you", romanization = "Tere liye")), provider = "Import Lyrics")
+            LyricLine(5000, "तेरे लिए", 3000, translation = "For you", romanization = "Tere liye")), provider = "BetterLyrics Portato")
 
     @Test fun portraitControlsFitAndRemainAvailableWhenMaximized() = checkPlayerControls()
     @Test @Config(qualifiers = "w320dp-h740dp-port")
@@ -71,6 +71,8 @@ class LyricsControlsUiTest {
     }
 
     private fun checkOrder() {
+        compose.onNodeWithTag("lyrics_provider_pill").assertTextContains("BetterLyrics")
+        compose.onNodeWithText("BetterLyrics Portato").assertDoesNotExist()
         val tags = listOf("player_lyrics_text_size_button", "lyrics_romanize_button", "lyrics_provider_pill",
             "lyrics_translate_button", "player_lyrics_expand_button")
         val bounds = tags.map { tag -> compose.onNodeWithTag(tag).assertIsDisplayed().assertIsEnabled()
@@ -78,6 +80,14 @@ class LyricsControlsUiTest {
         bounds.zipWithNext().forEach { (left, right) -> assertTrue("Controls must not overlap", left.right <= right.left + 1f) }
         compose.onNodeWithTag("lyrics_romanize_button").assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp)
         compose.onNodeWithTag("lyrics_translate_button").assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp)
+    }
+
+    @Test fun compactProviderNamesKeepOnlyTheFirstWordWithoutChangingTheProviderIdentity() {
+        assertEquals("BetterLyrics", lyricsProviderDisplayName("BetterLyrics Portato"))
+        assertEquals("Import", lyricsProviderDisplayName("  Import\tLyrics  "))
+        assertEquals("LRCLIB", lyricsProviderDisplayName("LRCLIB"))
+        assertEquals("Auto", lyricsProviderDisplayName(" \n "))
+        assertEquals("BetterLyrics Portato", lyrics.provider)
     }
 
     @Test fun translatedAndRomanizedSubtitlesRetainOriginalLinesAndSeekTimestamps() {

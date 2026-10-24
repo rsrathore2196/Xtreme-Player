@@ -8,6 +8,8 @@ import com.example.playback.AudioQuality
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 
+internal const val SEARCH_TYPING_DEBOUNCE_MS = 600L
+
 data class CatalogSearchState(
     val query: String = "", val type: String = "All", val page: CatalogPage = CatalogPage(),
     val loading: Boolean = false, val loadingMore: Boolean = false, val error: String? = null,
@@ -63,10 +65,13 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
     initialQuality: AudioQuality = AudioQuality.ULTRA_HD_320,
     private val archiveSearch: (suspend (String, Int, com.example.playback.PlaybackSourcePolicy, List<MusicTrack>) ->
         com.example.data.remote.InternetArchiveApiService.LosslessSearchPage)? = null,
-    private val addonSearch: (suspend (String, com.example.playback.PlaybackSourcePolicy) -> List<MusicTrack>)? = null) {
+    private val addonSearch: (suspend (String, com.example.playback.PlaybackSourcePolicy) -> List<MusicTrack>)? = null,
+    private val catalogSearch: (suspend (String, String, AudioQuality, suspend (CatalogPage) -> Unit) -> CatalogPage)? = null,
+    preparationDispatcher: CoroutineDispatcher = AppDispatchers.CpuBounded) {
     // CPU preparation shares the process budget; generation checks and atomic state
     // updates protect publication. UI control stays on the caller's application scope.
-    private val dataScope = scope + AppDispatchers.CpuBounded
+    private val dataScope = scope + preparationDispatcher
+    @Volatile private var typingGeneration = 0
     @Volatile private var audioQuality = initialQuality
     private val _search = MutableStateFlow(CatalogSearchState())
     val search = _search.asStateFlow()
@@ -187,7 +192,7 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
 
     private fun enrichSearch(generation: Int, loadArchivePage: Boolean = true) = synchronized(searchPublicationLock) {
         val state = _search.value
-        if (searchGeneration != generation || state.requestId != generation ||
+        if (searchGeneration != generation || state.requestId != generation || typingGeneration == generation ||
             state.query.isBlank() || state.type !in setOf("All", "Tracks")) return@synchronized
         val policy = sourcePolicy
         val revision = policyRevision
@@ -311,6 +316,7 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
         archivePaginationJob?.cancel()
         addonSearchJob?.cancel()
         synchronized(searchPublicationLock) {
+            typingGeneration = if (debounce && query.isNotBlank()) generation else 0
             catalogCandidates = emptyList()
             archiveCandidates = emptyList()
             archiveNext = 1
@@ -325,7 +331,11 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
         val quality = audioQuality
         searchJob = dataScope.launch {
             try {
-                if (debounce) delay(300)
+                if (debounce) delay(SEARCH_TYPING_DEBOUNCE_MS)
+                synchronized(searchPublicationLock) {
+                    if (searchGeneration != generation) return@launch
+                    if (typingGeneration == generation) typingGeneration = 0
+                }
                 enrichSearch(generation, loadArchivePage = false)
                 suspend fun publishResult(result: CatalogPage, complete: Boolean) {
                     ensureActive()
@@ -343,8 +353,9 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
                     else _search.update { if (it.requestId != generation) it else it.withPage(result).copy(loading = !complete) }
                     if (complete || tracksChanged) enrichSearch(generation, loadArchivePage = complete)
                 }
-                val result = repository.search(query.trim(), type, quality = quality,
-                    onPartial = { publishResult(it, complete = false) })
+                val partial: suspend (CatalogPage) -> Unit = { publishResult(it, complete = false) }
+                val result = catalogSearch?.invoke(query.trim(), type, quality, partial)
+                    ?: repository.search(query.trim(), type, quality = quality, onPartial = partial)
                 ensureActive()
                 if (_search.value.requestId != generation) return@launch
                 publishResult(result, complete = true)

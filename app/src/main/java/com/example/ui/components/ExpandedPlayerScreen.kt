@@ -64,6 +64,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
@@ -963,7 +964,7 @@ fun ExpandedPlayerScreen(
                                     )
                                     LyricsProviderPill(
                                         providerName = displayedLyricsProvider,
-                                        modifier = Modifier.weight(1f, fill = false),
+                                        modifier = Modifier.weight(1f),
                                         onClick = { showLyricsProviderPopup = true },
                                         isEffectivelyDark = isEffectivelyDark
                                     )
@@ -1302,7 +1303,7 @@ fun ExpandedPlayerScreen(
                             )
                             LyricsProviderPill(
                                 providerName = displayedLyricsProvider,
-                                modifier = Modifier.weight(1f, fill = false),
+                                modifier = Modifier.weight(1f),
                                 onClick = { showLyricsProviderPopup = true },
                                 isEffectivelyDark = isEffectivelyDark
                             )
@@ -1796,7 +1797,7 @@ fun ExpandedPlayerScreen(
                     )
                     LyricsProviderPill(
                         providerName = displayedLyricsProvider,
-                        modifier = Modifier.weight(1f, fill = false),
+                        modifier = Modifier.weight(1f),
                         onClick = { showLyricsProviderPopup = true },
                         isEffectivelyDark = isEffectivelyDark
                     )
@@ -2270,7 +2271,7 @@ private fun LyricsExpansionButton(
     val colors = LocalAppColors.current
     // A compact 36dp glass disk inside an accessible 48dp touch target.
     Box(modifier.size(48.dp), contentAlignment = Alignment.Center) {
-        Box(Modifier.size(36.dp).liquidGlassButton(colors, elevation = 3.dp))
+        Box(Modifier.size(36.dp).offset(x = 4.dp).liquidGlassButton(colors, elevation = 3.dp))
         IconButton(
             onClick = onClick,
             modifier = Modifier.fillMaxSize().testTag("player_lyrics_expand_button")
@@ -2284,7 +2285,7 @@ private fun LyricsExpansionButton(
                     if (isExpanded) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
                     contentDescription = if (isExpanded) "Minimize lyrics" else "Maximize lyrics",
                     tint = colors.textPrimary,
-                    modifier = Modifier.size(20.dp)
+                    modifier = Modifier.size(20.dp).offset(x = 4.dp)
                 )
             }
         }

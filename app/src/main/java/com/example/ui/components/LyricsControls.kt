@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -84,6 +85,7 @@ fun LyricsTextSizeButton(
         Box(
             Modifier
                 .size(36.dp)
+                .offset(x = (-4).dp)
                 .playerLiquidGlassButton(colors, shape = CircleShape, elevation = 3.dp)
         )
         IconButton(
@@ -96,7 +98,7 @@ fun LyricsTextSizeButton(
                 imageVector = Icons.Default.FormatSize,
                 contentDescription = "Change lyrics text size",
                 tint = colors.textPrimary,
-                modifier = Modifier.size(20.dp)
+                modifier = Modifier.size(20.dp).offset(x = (-4).dp)
             )
         }
     }
@@ -113,14 +115,15 @@ internal fun LyricsTextTransformButton(
 ) {
     val colors = LocalAppColors.current
     val action = if (romanize) "Romanize lyrics" else "Translate lyrics"
+    val offset = if (romanize) (-4).dp else 4.dp
     Box(modifier.size(48.dp), contentAlignment = Alignment.Center) {
-        Box(Modifier.size(36.dp).playerLiquidGlassButton(colors, shape = CircleShape, elevation = 3.dp))
+        Box(Modifier.size(36.dp).offset(x = offset).playerLiquidGlassButton(colors, shape = CircleShape, elevation = 3.dp))
         IconButton(onClick = onClick, enabled = enabled,
             modifier = Modifier.fillMaxSize().testTag(if (romanize) "lyrics_romanize_button" else "lyrics_translate_button")
                 .semantics { contentDescription = action; stateDescription = if (loading) "Loading" else if (active) "On" else "Off" }) {
-            if (loading) CircularProgressIndicator(Modifier.size(18.dp), color = colors.primaryAccent, strokeWidth = 2.dp)
+            if (loading) CircularProgressIndicator(Modifier.size(18.dp).offset(x = offset), color = colors.primaryAccent, strokeWidth = 2.dp)
             else Icon(if (romanize) Icons.Default.Language else Icons.Default.Translate,
-                contentDescription = null, modifier = Modifier.size(20.dp),
+                contentDescription = null, modifier = Modifier.size(20.dp).offset(x = offset),
                 tint = if (active) colors.primaryAccent else colors.textPrimary.copy(alpha = if (enabled) 1f else 0.4f))
         }
     }
@@ -150,6 +153,7 @@ fun LyricsProviderPill(
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center,
             modifier = Modifier.padding(horizontal = 11.dp, vertical = 4.dp)
         ) {
             Box(
@@ -160,7 +164,7 @@ fun LyricsProviderPill(
             )
             Spacer(modifier = Modifier.width(7.dp))
             Text(
-                text = providerName.ifBlank { "Auto" },
+                text = lyricsProviderDisplayName(providerName),
                 style = MaterialTheme.typography.labelSmall.copy(
                     color = chipContentColor,
                     fontWeight = FontWeight.ExtraBold,
@@ -173,6 +177,9 @@ fun LyricsProviderPill(
         }
     }
 }
+
+internal fun lyricsProviderDisplayName(providerName: String): String =
+    providerName.trim().takeWhile { !it.isWhitespace() }.ifBlank { "Auto" }
 
 /**
  * Modern compact round corner popup with a smooth slider to adjust lyrics text size.
