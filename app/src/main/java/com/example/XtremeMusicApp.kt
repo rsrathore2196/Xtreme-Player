@@ -83,7 +83,7 @@ class XtremeMusicApp : Application(), ImageLoaderFactory, androidx.work.Configur
                 com.example.data.cache.ManagedImageDiskCache(diskCache, cacheDir.resolve("artwork_cache_keys.json"))
                     .also { initializedImageDiskCache = it }
             }
-            .bitmapConfig(android.graphics.Bitmap.Config.HARDWARE)
+            .bitmapConfig(if (android.os.Build.VERSION.SDK_INT >= 26) android.graphics.Bitmap.Config.HARDWARE else android.graphics.Bitmap.Config.ARGB_8888)
             .allowHardware(true)
             .allowRgb565(true)
             .memoryCachePolicy(CachePolicy.ENABLED)

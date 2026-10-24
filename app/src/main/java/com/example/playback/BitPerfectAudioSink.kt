@@ -164,9 +164,10 @@ class BitPerfectAudioSink private constructor(
     }
     override fun enableTunnelingV21() { tunneling = true; shared.enableTunnelingV21() }
     override fun disableTunneling() { tunneling = false; shared.disableTunneling() }
-    override fun setOffloadMode(offloadMode: Int) { this.offloadMode = offloadMode; shared.setOffloadMode(offloadMode) }
-    override fun setOffloadDelayPadding(delayInFrames: Int, paddingInFrames: Int) =
-        shared.setOffloadDelayPadding(delayInFrames, paddingInFrames)
+    override fun setOffloadMode(offloadMode: Int) { this.offloadMode = offloadMode; if (Build.VERSION.SDK_INT >= 29) shared.setOffloadMode(offloadMode) }
+    override fun setOffloadDelayPadding(delayInFrames: Int, paddingInFrames: Int) {
+        if (Build.VERSION.SDK_INT >= 29) shared.setOffloadDelayPadding(delayInFrames, paddingInFrames)
+    }
     override fun setAudioAttributes(audioAttributes: AudioAttributes) {
         attributes = audioAttributes; shared.setAudioAttributes(audioAttributes)
     }
@@ -288,7 +289,7 @@ class BitPerfectAudioSink private constructor(
         shared.setPreferredDevice(preferred)
         shared.setAuxEffectInfo(auxEffect)
         shared.setOutputStreamOffsetUs(streamOffsetUs)
-        shared.setOffloadMode(offloadMode)
+        if (Build.VERSION.SDK_INT >= 29) shared.setOffloadMode(offloadMode)
         if (tunneling) shared.enableTunnelingV21() else shared.disableTunneling()
         shared.setVolume(volume)
     }
@@ -571,7 +572,9 @@ class BitPerfectAudioSink private constructor(
             runCatching {
                 val route = audio.routedDevice
                 if (route != null && (routeId != route.id || probedRate != audio.sampleRate || probedChannels != audio.channelCount)) {
-                    routeFloatSupported = OutputPrecisionPolicy.supportsFloat(route, audio.sampleRate, audio.channelCount, audio.audioAttributes)
+                    routeFloatSupported = OutputPrecisionPolicy.supportsFloat(route, audio.sampleRate, audio.channelCount,
+                        if (Build.VERSION.SDK_INT >= 29) audio.audioAttributes else android.media.AudioAttributes.Builder()
+                            .setUsage(android.media.AudioAttributes.USAGE_MEDIA).setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC).build())
                     probedRate = audio.sampleRate; probedChannels = audio.channelCount
                     routeId = route.id
                 }

@@ -108,13 +108,13 @@ data class PlaylistEntity(
 @Immutable
 @Entity(
     tableName = "playlist_track_cross_ref",
-    primaryKeys = ["playlistId", "trackId"],
-    indices = [Index(value = ["trackId"])]
+    indices = [Index(value = ["trackId"]), Index(value = ["playlistId", "orderIndex"])]
 )
 data class PlaylistTrackCrossRef(
     val playlistId: Long,
     val trackId: String,
-    val orderIndex: Int = 0
+    val orderIndex: Int = 0,
+    @PrimaryKey(autoGenerate = true) val entryId: Long = 0L
 )
 
 @Immutable
@@ -129,13 +129,18 @@ data class PlaylistWithTracks(
             entityColumn = "trackId"
         )
     )
-    val tracks: List<TrackEntity>
+    val tracks: List<TrackEntity>,
+    @Relation(parentColumn = "playlistId", entityColumn = "playlistId")
+    val entries: List<PlaylistTrackCrossRef> = emptyList()
 ) {
     // A derived UI snapshot only: Room does not persist it or change the relation schema.
     @get:Ignore
     @delegate:Ignore
     @delegate:Transient
     val musicTracks: List<MusicTrack> by lazy(LazyThreadSafetyMode.PUBLICATION) {
-        tracks.map { it.toMusicTrack() }
+        val byId = tracks.associateBy { it.id }
+        if (entries.isEmpty()) tracks.map { it.toMusicTrack() }
+        else entries.sortedWith(compareBy<PlaylistTrackCrossRef> { it.orderIndex }.thenBy { it.entryId })
+            .mapNotNull { entry -> byId[entry.trackId]?.toMusicTrack()?.copy(playlistEntryId = entry.entryId) }
     }
 }

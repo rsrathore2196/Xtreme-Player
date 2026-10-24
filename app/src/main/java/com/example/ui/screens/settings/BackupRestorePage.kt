@@ -107,8 +107,6 @@ fun BackupRestorePage(
     var autoBackupLocation by remember {
         mutableStateOf(BackupRestoreManager.getAutoBackupLocation(context))
     }
-    var showChangeLocationDialog by remember { mutableStateOf(false) }
-    var locationInput by remember { mutableStateOf(autoBackupLocation) }
 
     // Last backup info & available backups
     var lastBackupInfo by remember { mutableStateOf<BackupRestoreManager.BackupInfo?>(null) }
@@ -120,6 +118,20 @@ fun BackupRestorePage(
     var selectedBackupToRestore by remember { mutableStateOf<BackupRestoreManager.BackupInfo?>(null) }
     var selectedRestoreMode by remember { mutableStateOf(BackupRestoreManager.RestoreMode.MERGE) }
     var backupToConfirmReplace by remember { mutableStateOf<BackupRestoreManager.BackupInfo?>(null) }
+
+    val backupFolderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) coroutineScope.launch {
+            try {
+                withContext(com.example.performance.AppDispatchers.Io) {
+                    context.contentResolver.takePersistableUriPermission(uri,
+                        android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                }
+                autoBackupLocation = uri.toString()
+                BackupRestoreManager.setAutoBackupLocation(context, autoBackupLocation)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+            catch (_: Exception) { statusNotification = "Could not keep access to the selected backup folder. Please choose it again." }
+        }
+    }
 
     // Storage permission state & flow
     var showPermissionRationaleDialog by remember { mutableStateOf(false) }
@@ -476,8 +488,7 @@ fun BackupRestorePage(
 
                         TextButton(
                             onClick = {
-                                locationInput = autoBackupLocation
-                                showChangeLocationDialog = true
+                                backupFolderPicker.launch(autoBackupLocation.takeIf { it.startsWith("content://") }?.let(android.net.Uri::parse))
                             }
                         ) {
                             Text(
@@ -754,67 +765,6 @@ fun BackupRestorePage(
                     }
                 ) {
                     Text("Not Now", color = appColors.textSecondary)
-                }
-            }
-        )
-    }
-
-    // Change Location Dialog
-    if (showChangeLocationDialog) {
-        AlertDialog(
-            onDismissRequest = { showChangeLocationDialog = false },
-            containerColor = appColors.cardBackground,
-            title = {
-                Text(
-                    text = "Backup Storage Location",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 16.sp,
-                    color = appColors.textPrimary
-                )
-            },
-            text = {
-                Column {
-                    Text(
-                        text = "Enter the directory path in phone storage where automated backups should be saved:",
-                        fontSize = 12.5.sp,
-                        color = appColors.textMuted
-                    )
-                    Spacer(modifier = Modifier.height(10.dp))
-                    OutlinedTextField(
-                        value = locationInput,
-                        onValueChange = { locationInput = it },
-                        singleLine = true,
-                        shape = RoundedCornerShape(8.dp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = appColors.textPrimary,
-                            unfocusedTextColor = appColors.textPrimary,
-                            focusedBorderColor = accentColor,
-                            unfocusedBorderColor = cardBorder
-                        ),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        if (locationInput.isNotBlank()) {
-                            autoBackupLocation = locationInput.trim()
-                            BackupRestoreManager.setAutoBackupLocation(context, autoBackupLocation)
-                        }
-                        showChangeLocationDialog = false
-                    },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = btnContainerColor,
-                        contentColor = btnContentColor
-                    )
-                ) {
-                    Text("Save", fontWeight = FontWeight.Bold, color = btnContentColor)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showChangeLocationDialog = false }) {
-                    Text("Cancel", color = appColors.textSecondary)
                 }
             }
         )

@@ -29,14 +29,52 @@ object MusicCache {
         length > 0 && cache.isCached(key, 0L, length)
     }.getOrDefault(false)
 
-    private fun offlineAudio(context: Context, video: String, cap: Int, sabr: Boolean,
+    internal fun offlineAudio(context: Context, video: String, cap: Int, sabr: Boolean,
         opusOnly: Boolean = false): YouTubeAudioStreamService.AudioStream? {
-        val cached = YouTubeAudioStreamService.cachedStreams(video).filter {
+        val cached = (YouTubeAudioStreamService.cachedStreams(video) + persistedRepresentations(context, video)).distinctBy { it.cacheKey }.filter {
             it.isSabr == sabr && !it.isHls && (!opusOnly || it.codec == "Opus") &&
                 fullyCached(context, it.cacheKey, it.contentLength)
         }
         return cached.filter { com.example.data.remote.YouTubeAudioFormatPolicy.acceptsBitrate(it.bitrateKbps * 1000, cap) }
-            .maxByOrNull { it.bitrateKbps }
+            .maxByOrNull { it.bitrateKbps }?.also(YouTubeAudioStreamService::rememberOfflineRepresentation)
+    }
+
+    private const val REPRESENTATION = "xtreme_audio_representation_v1"
+
+    /** Stored in SimpleCache's own journal/index; no signed URL, cookie or account data. */
+    internal fun rememberRepresentation(context: Context, stream: YouTubeAudioStreamService.AudioStream) {
+        if (stream.isHls || !YouTubeAudioStreamService.isVideoId(stream.videoId) || stream.bitrateKbps <= 0) return
+        val cache = getSimpleCache(context)
+        val encoded = org.json.JSONObject().put("video", stream.videoId).put("codec", stream.codec)
+            .put("itag", stream.itag).put("bitrate", stream.bitrateKbps).put("sabr", stream.isSabr)
+            .put("length", stream.contentLength ?: 0L).put("cap", stream.selectionCapBps).toString()
+        if (cache.getContentMetadata(stream.cacheKey).get(REPRESENTATION, "") != encoded)
+            cache.applyContentMetadataMutations(stream.cacheKey,
+                androidx.media3.datasource.cache.ContentMetadataMutations().set(REPRESENTATION, encoded))
+    }
+
+    private fun persistedRepresentations(context: Context, video: String): List<YouTubeAudioStreamService.AudioStream> {
+        val cache = getSimpleCache(context)
+        return cache.keys.asSequence().filter {
+            it.startsWith("youtube:$video:") || it.startsWith("youtube-sabr:$video:")
+        }.take(512).mapNotNull { key ->
+            val encoded = cache.getContentMetadata(key).get(REPRESENTATION, "").orEmpty()
+            if (encoded.isBlank() || encoded.length > 2_048) return@mapNotNull null
+            runCatching {
+                val meta = org.json.JSONObject(encoded)
+                if (meta.getString("video") != video) return@runCatching null
+                val codec = meta.getString("codec")
+                val bitrate = meta.getInt("bitrate")
+                val itag = meta.getInt("itag")
+                if (codec !in setOf("AAC", "Opus") || bitrate !in 1..1_000 || itag <= 0) return@runCatching null
+                YouTubeAudioStreamService.AudioStream(
+                    url = "https://www.youtube.com/videoplayback?video_id=$video", bitrateKbps = bitrate, isHls = false,
+                    cacheKey = key, expiresAt = 0L, headers = emptyMap(), codec = codec, itag = itag,
+                    contentLength = meta.optLong("length").takeIf { it > 0 }, videoId = video,
+                    useRangeChunks = false, rangeChunkSize = 0L, clientId = "", selectionCapBps = meta.getInt("cap"),
+                    cachedSabr = meta.optBoolean("sabr"))
+            }.getOrNull()
+        }.toList()
     }
 
     @Volatile
@@ -79,8 +117,13 @@ object MusicCache {
                 listeners.add(listener); delegate?.addTransferListener(listener)
             }
             override fun open(spec: androidx.media3.datasource.DataSpec): Long {
+                val online = com.example.playback.NetworkQualityMonitor.getInstance(app).sourcePolicySnapshot().online
+                val local = when (spec.uri.scheme) {
+                    null, "file", "content", "asset", "rawresource", "android.resource", "data" -> true
+                    else -> false
+                }
                 val source = CacheDataSource.Factory().setCache(getSimpleCache(app))
-                    .setUpstreamDataSourceFactory(rangedUpstream)
+                    .setUpstreamDataSourceFactory(rangedUpstream.takeIf { online || local })
                     .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR).createDataSource()
                 listeners.forEach(source::addTransferListener)
                 delegate = source
@@ -175,6 +218,7 @@ object MusicCache {
                         throw SabrStreamChangedException(audio)
                     }
                     boundAudio = audio
+                    rememberRepresentation(app, audio)
                     spec.buildUpon().setUri(android.net.Uri.parse(audio.url)).setKey(audio.cacheKey).build()
                 } else if (spec.uri.scheme == "xtreme-youtube") {
                     val videoId = spec.uri.pathSegments.firstOrNull().orEmpty()
@@ -204,6 +248,7 @@ object MusicCache {
                         }
                     }
                     boundAudio = audio
+                    rememberRepresentation(app, audio)
                     spec.buildUpon().setUri(audio.url).setKey(if (hls) spec.key else audio.cacheKey)
                         .setHttpRequestHeaders(spec.httpRequestHeaders + audio.headers).build()
                 } else if (YouTubeAudioStreamService.isMediaUrl(spec.uri.toString())) {

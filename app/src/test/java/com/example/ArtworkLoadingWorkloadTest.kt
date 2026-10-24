@@ -177,6 +177,20 @@ class ArtworkLoadingWorkloadTest {
         .setParameter(ARTWORK_METADATA_PARAMETER, ArtworkRequestMetadata(
             item.copy(source = AudioSource.YOUTUBE_MUSIC, sourceArtworkUrl = cover), cover, 600), null).build()
 
+    @Test fun stalledItunesImageCannotSpendTheYouTubeFallbackNetworkBudget() = runBlocking {
+        val cover = "https://lh3.googleusercontent.com/recording=w60-h60-l90-rj"
+        val high = "https://lh3.googleusercontent.com/recording=w600-h600-l90-rj"
+        val chain = Chain(youtubeRequest(cover), onNetwork = { url ->
+            if (url == apple) {
+                org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(3_000))
+                awaitCancellation()
+            }
+        })
+        val result = withTimeout(4_000) { ArtworkResolutionInterceptor { repository { match() } }.intercept(chain) } as SuccessResult
+        assertEquals(high, result.request.data)
+        assertEquals(listOf(apple to true, high to true), chain.calls.filter { it.second })
+    }
+
     @Test fun itunesTakesPriorityEvenWhenAYouTubeCoverIsAlreadyCached() = runBlocking {
         val cover = "https://lh3.googleusercontent.com/recording=w120-h120-l90-rj"
         val chain = Chain(youtubeRequest(cover), cached = setOf(cover))

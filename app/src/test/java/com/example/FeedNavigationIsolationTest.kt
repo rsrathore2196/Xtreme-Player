@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.lazy.LazyListLayoutInfo
 import androidx.compose.foundation.lazy.LazyListPrefetchScope
@@ -31,6 +32,7 @@ import androidx.compose.ui.unit.dp
 import com.example.ui.components.AnimatedBottomBar
 import com.example.ui.components.AnimatedBottomBarItem
 import com.example.ui.components.MainTabPager
+import com.example.ui.components.RetainedPrimaryTabHost
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.awaitCancellation
@@ -49,6 +51,45 @@ import org.robolectric.annotation.GraphicsMode
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class FeedNavigationIsolationTest {
     @get:Rule val compose = createComposeRule()
+
+    @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
+    @Test fun settingsAndPlaylistCoverageNeverDisposeOrRebuildThePrimaryPages() {
+        val mounts = IntArray(3)
+        val disposals = IntArray(3)
+        var taps = 0
+        var covered by mutableStateOf(false)
+        var destination by mutableIntStateOf(0)
+        compose.mainClock.autoAdvance = false
+        compose.setContent { MaterialTheme {
+            val pager = rememberPagerState(pageCount = { 3 })
+            val transition = androidx.compose.animation.core.updateTransition(destination, label = "test_settings")
+            RetainedPrimaryTabHost(pager, transition, covered = covered, inputBlocked = covered) { page ->
+                DisposableEffect(page) { mounts[page]++; onDispose { disposals[page]++ } }
+                Text("Retained page $page", Modifier.testTag("retained_page_$page").clickable { taps++ })
+            }
+        } }
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeBy(500)
+        repeat(3) { visit ->
+            compose.runOnIdle { covered = true; destination = if (visit % 2 == 0) 3 else 0 }
+            compose.waitForIdle()
+            compose.mainClock.advanceTimeBy(600)
+            compose.onNodeWithTag("retained_primary_tabs", useUnmergedTree = true).assert(
+                SemanticsMatcher.keyIsDefined(androidx.compose.ui.semantics.SemanticsProperties.InvisibleToUser))
+            val before = taps
+            compose.onNodeWithTag("retained_primary_tabs", useUnmergedTree = true)
+                .performTouchInput { click(androidx.compose.ui.geometry.Offset(10f, 10f)) }
+            assertEquals("Covered content must not receive taps", before, taps)
+            compose.runOnIdle { covered = false; destination = 0 }
+            compose.waitForIdle()
+            compose.mainClock.advanceTimeBy(600)
+            compose.onNodeWithTag("retained_page_0").assertIsDisplayed()
+            compose.onNodeWithTag("retained_page_0").performTouchInput { click() }
+            assertEquals("Uncovered content must accept taps again", before + 1, taps)
+        }
+        assertArrayEquals(intArrayOf(1, 1, 1), mounts)
+        assertArrayEquals(intArrayOf(0, 0, 0), disposals)
+    }
 
     @Test fun allPagesStayMountedButOnlyVisiblePagesCollectScreenData() {
         val mounts = IntArray(3)

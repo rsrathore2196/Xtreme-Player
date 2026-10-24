@@ -153,16 +153,28 @@ class HomeViewModel(
         restored.await()
         BackgroundWorkCoordinator.awaitFirstFrame()
         BackgroundWorkCoordinator.startupTask(StartupTask.FAVORITES, StartupStatus.RUNNING)
-        repository.getFavoriteTracks().collect { emit(it) }
+        kotlinx.coroutines.coroutineScope {
+            val failures = launch {
+                repository.libraryFailures.collect { errors ->
+                    if ("favorites" in errors) {
+                        favoritesLoaded.complete(Unit)
+                        BackgroundWorkCoordinator.startupTask(StartupTask.FAVORITES,
+                            if (repository.retainedFavoriteTracks.isNotEmpty()) StartupStatus.FALLBACK_READY else StartupStatus.UNAVAILABLE)
+                    }
+                }
+            }
+            try { repository.getFavoriteTracks().collect { emit(it) } }
+            finally { failures.cancel() }
+        }
     }.catch { error ->
         if (error is CancellationException) throw error
+        favoritesLoaded.complete(Unit)
         BackgroundWorkCoordinator.startupTask(StartupTask.FAVORITES, StartupStatus.UNAVAILABLE)
-        emit(emptyList())
     }.onEach {
         favoritesLoaded.complete(Unit)
         BackgroundWorkCoordinator.startupTask(StartupTask.FAVORITES, StartupStatus.READY)
     }
-        .flowOn(dataDispatcher).stateIn(dataScope, SharingStarted.Eagerly, emptyList())
+        .flowOn(dataDispatcher).stateIn(dataScope, SharingStarted.Eagerly, repository.retainedFavoriteTracks)
     private val historicalReload = MutableStateFlow(0L)
     @Volatile private var historicalLoadFailed = false
     private val historyReadyForRanking = MutableStateFlow(false)

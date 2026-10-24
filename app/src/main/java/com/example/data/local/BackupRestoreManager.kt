@@ -12,6 +12,9 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import android.provider.DocumentsContract
+import android.util.AtomicFile
+import java.io.IOException
 import androidx.room.withTransaction
 import kotlinx.coroutines.CancellationException
 import androidx.core.content.ContextCompat
@@ -32,6 +35,9 @@ object BackupRestoreManager {
     private const val KEY_AUTO_BACKUP_LOCATION = "auto_backup_location"
     private const val KEY_LAST_BACKUP_TIME = "last_backup_time"
     private const val KEY_LAST_BACKUP_FILE = "last_backup_file"
+    private const val KEY_LAST_BACKUP_NAME = "last_backup_name"
+    private const val KEY_LAST_BACKUP_URI = "last_backup_uri"
+    private const val KEY_LAST_BACKUP_SIZE = "last_backup_size"
     private const val KEY_LAST_BACKUP_TRACKS_COUNT = "last_backup_tracks_count"
     private const val KEY_LAST_BACKUP_PLAYLISTS_COUNT = "last_backup_playlists_count"
     private const val KEY_ASKED_STORAGE_PERMISSION = "asked_storage_permission"
@@ -69,16 +75,8 @@ object BackupRestoreManager {
     }
 
     fun getRequiredStoragePermissions(): Array<String> {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            arrayOf(Manifest.permission.READ_MEDIA_AUDIO)
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
-        } else {
-            arrayOf(
-                Manifest.permission.READ_EXTERNAL_STORAGE,
-                Manifest.permission.WRITE_EXTERNAL_STORAGE
-            )
-        }
+        return if (Build.VERSION.SDK_INT >= 29) emptyArray()
+            else arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE)
     }
 
     fun isStoragePermissionGranted(context: Context): Boolean {
@@ -95,6 +93,7 @@ object BackupRestoreManager {
 
     fun setAutoBackupEnabled(context: Context, enabled: Boolean) {
         getPrefs(context).edit().putBoolean(KEY_AUTO_BACKUP_ENABLED, enabled).apply()
+        com.example.performance.MaintenanceScheduler.updateAutoBackup(context)
     }
 
     // Auto backup location (phone storage path)
@@ -114,18 +113,77 @@ object BackupRestoreManager {
         if (lastTime == 0L) return null
 
         val file = File(filePath)
-        val formattedDate = SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault()).format(Date(lastTime))
-        val sizeFormatted = if (file.exists()) OtherSettingsPreferences.formatBytes(file.length()) else "12.4 KB"
+        val uri = getPrefs(context).getString(KEY_LAST_BACKUP_URI, null)
+        if (uri == null && !file.isFile) return null
+        val bytes = if (uri != null) getPrefs(context).getLong(KEY_LAST_BACKUP_SIZE, 0L) else file.length()
+        return BackupInfo(lastTime,
+            SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault()).format(Date(lastTime)),
+            filePath, getPrefs(context).getString(KEY_LAST_BACKUP_NAME, null)
+                ?: if (uri != null) Uri.parse(uri).lastPathSegment?.substringAfterLast('/').orEmpty() else file.name,
+            OtherSettingsPreferences.formatBytes(bytes),
+            getPrefs(context).getInt(KEY_LAST_BACKUP_TRACKS_COUNT, 0),
+            getPrefs(context).getInt(KEY_LAST_BACKUP_PLAYLISTS_COUNT, 0), uri)
+    }
 
-        return BackupInfo(
-            timestamp = lastTime,
-            formattedDate = formattedDate,
-            filePath = filePath,
-            fileName = file.name,
-            sizeFormatted = sizeFormatted,
-            tracksCount = getPrefs(context).getInt(KEY_LAST_BACKUP_TRACKS_COUNT, 0),
-            playlistsCount = getPrefs(context).getInt(KEY_LAST_BACKUP_PLAYLISTS_COUNT, 0)
-        )
+    /** Return only a destination whose stream was successfully written and closed. */
+    internal fun writeBackupDocument(context: Context, uri: Uri, bytes: ByteArray) {
+        val resolver = context.contentResolver
+        try {
+            val output = resolver.openOutputStream(uri, "wt") ?: throw IOException("Backup destination could not be opened")
+            output.use { it.write(bytes); it.flush() }
+            resolver.openAssetFileDescriptor(uri, "r")?.use { descriptor ->
+                if (descriptor.length >= 0L) check(descriptor.length == bytes.size.toLong()) { "Incomplete backup write" }
+            }
+        } catch (error: Exception) {
+            runCatching { if (DocumentsContract.isDocumentUri(context, uri)) DocumentsContract.deleteDocument(resolver, uri)
+                else resolver.delete(uri, null, null) }
+            throw error
+        }
+    }
+
+    private fun writeBackupFile(file: File, bytes: ByteArray): String {
+        val storage = AtomicFile(file)
+        val output = storage.startWrite()
+        try { output.write(bytes); storage.finishWrite(output) }
+        catch (error: Exception) { storage.failWrite(output); throw error }
+        check(file.isFile && file.length() == bytes.size.toLong()) { "Backup file was not saved completely" }
+        return file.absolutePath
+    }
+
+    private fun saveBackupContent(context: Context, name: String, bytes: ByteArray): Pair<String, String?> {
+        val destination = getAutoBackupLocation(context)
+        if (destination.startsWith("content://")) {
+            val tree = Uri.parse(destination)
+            val parent = DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
+            val uri = DocumentsContract.createDocument(context.contentResolver, parent, "application/json", name)
+                ?: throw IOException("The selected backup folder is unavailable")
+            writeBackupDocument(context, uri, bytes)
+            return uri.toString() to uri.toString()
+        }
+        val defaultPath = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "XtremeBackup").absolutePath
+        if (destination != defaultPath) {
+            val directory = File(destination).canonicalFile
+            val allowed = listOf(context.filesDir, context.getExternalFilesDir(null)).filterNotNull()
+                .any { directory.path == it.canonicalPath || directory.path.startsWith(it.canonicalPath + File.separator) }
+            require(allowed || Build.VERSION.SDK_INT < 29) { "Choose the backup folder again to grant Android storage access" }
+            return writeBackupFile(File(directory, name), bytes) to null
+        }
+        if (Build.VERSION.SDK_INT >= 29) {
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+                put(MediaStore.MediaColumns.MIME_TYPE, "application/json")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/XtremeBackup")
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+            val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: throw IOException("Android could not create the backup")
+            writeBackupDocument(context, uri, bytes)
+            try {
+                check(context.contentResolver.update(uri, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null) > 0)
+            } catch (error: Exception) { runCatching { context.contentResolver.delete(uri, null, null) }; throw error }
+            return uri.toString() to uri.toString()
+        }
+        return writeBackupFile(File(defaultPath, name), bytes) to null
     }
 
     private fun getPhoneStorageBackupDirectories(context: Context): List<File> {
@@ -272,7 +330,27 @@ object BackupRestoreManager {
             } catch (e: Exception) {}
         }
 
-        return resultList.sortedByDescending { it.timestamp }
+        val location = getAutoBackupLocation(context)
+        if (location.startsWith("content://")) {
+            try {
+                val tree = Uri.parse(location)
+                val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
+                val columns = arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                    DocumentsContract.Document.COLUMN_SIZE, DocumentsContract.Document.COLUMN_LAST_MODIFIED)
+                context.contentResolver.query(children, columns, null, null, null)?.use { cursor ->
+                    while (cursor.moveToNext()) {
+                        val name = cursor.getString(1).orEmpty()
+                        if (!name.endsWith(".json", true)) continue
+                        val uri = DocumentsContract.buildDocumentUriUsingTree(tree, cursor.getString(0)).toString()
+                        val modified = cursor.getLong(3)
+                        resultList.add(BackupInfo(modified, SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault()).format(Date(modified)),
+                            uri, name, OtherSettingsPreferences.formatBytes(cursor.getLong(2)), 0, 0, uri))
+                    }
+                }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) { android.util.Log.w("BackupRestoreManager", "Backup folder is unavailable", error) }
+        }
+        return resultList.distinctBy { it.contentUri ?: it.filePath }.sortedByDescending { it.timestamp }
     }
 
     /**
@@ -291,13 +369,16 @@ object BackupRestoreManager {
                 Triple(dao.getAllPlaylistsSync(), dao.getAllTracksSync(), dao.getAllPlaylistCrossRefsSync())
             }
             val userProfile = UserProfilePreferences.getUserProfile(context)
+            require(allTracks.size <= MAX_BACKUP_ITEMS && playlists.size <= MAX_BACKUP_ITEMS && crossRefs.size <= MAX_BACKUP_ITEMS) {
+                "Backup is too large to restore safely"
+            }
             val (jsonContent, tracksCount) = withContext(AppDispatchers.CpuBounded) {
             val favoriteTracks = allTracks.filter { it.isLiked }
 
             val rootJson = JSONObject()
             rootJson.put("app", "Xtreme Player")
-            rootJson.put("version", "1.7.0")
-            rootJson.put("schemaVersion", 2)
+            rootJson.put("version", com.example.BuildConfig.VERSION_NAME)
+            rootJson.put("schemaVersion", 3)
             rootJson.put("createdAt", System.currentTimeMillis())
 
             // User Profile
@@ -329,6 +410,7 @@ object BackupRestoreManager {
             // Library Tracks (All tracks, with favorite flags preserved)
             val tracksToSave = if (allTracks.isNotEmpty()) allTracks else favoriteTracks
             val tracksArray = JSONArray()
+            val favoriteArray = JSONArray()
             for (t in tracksToSave) {
                 val tObj = JSONObject()
                 tObj.put("id", t.id)
@@ -353,9 +435,10 @@ object BackupRestoreManager {
                 tObj.put("lastPlayedAt", t.lastPlayedAt)
                 tObj.put("isrc", t.isrc)
                 tracksArray.put(tObj)
+                if (t.isLiked) favoriteArray.put(tObj)
             }
             rootJson.put("libraryTracks", tracksArray)
-            rootJson.put("favoriteTracks", tracksArray) // For backward compatibility
+            rootJson.put("favoriteTracks", favoriteArray)
 
             // Playlist Cross Refs
             val refsArray = JSONArray()
@@ -364,82 +447,29 @@ object BackupRestoreManager {
                 rObj.put("playlistId", ref.playlistId)
                 rObj.put("trackId", ref.trackId)
                 rObj.put("orderIndex", ref.orderIndex)
+                rObj.put("entryId", ref.entryId)
                 refsArray.put(rObj)
             }
             rootJson.put("playlistTrackRefs", refsArray)
 
-            rootJson.toString(2) to tracksToSave.size
+            val encoded = rootJson.toString()
+            require(encoded.length <= MAX_BACKUP_CHARS) { "Backup exceeds the supported restore size" }
+            encoded to tracksToSave.size
             }
             val timestamp = System.currentTimeMillis()
             val timeFormatted = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date(timestamp))
             val backupFileName = "XtremePlayer_Backup_$timeFormatted.json"
 
-            var savedFile: File? = null
-            var contentUriString: String? = null
-
-            // 1. Android Q+ MediaStore public Downloads insertion
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                try {
-                    val contentValues = ContentValues().apply {
-                        put(MediaStore.MediaColumns.DISPLAY_NAME, backupFileName)
-                        put(MediaStore.MediaColumns.MIME_TYPE, "application/json")
-                        put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/XtremeBackup")
-                    }
-                    val resolver = context.contentResolver
-                    val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
-                    if (uri != null) {
-                        resolver.openOutputStream(uri)?.use { os ->
-                            os.write(jsonContent.toByteArray(Charsets.UTF_8))
-                        }
-                        contentUriString = uri.toString()
-                    }
-                } catch (e: Exception) {
-                    android.util.Log.w("BackupRestoreManager", "MediaStore insertion skipped: ${e.message}")
-                }
-            }
-
-            // 2. Direct public Downloads folder creation
-            val primaryDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "XtremeBackup")
-            try {
-                if (!primaryDir.exists()) primaryDir.mkdirs()
-                if (primaryDir.exists()) {
-                    val f = File(primaryDir, backupFileName)
-                    f.writeText(jsonContent)
-                    savedFile = f
-                }
-            } catch (e: Exception) {}
-
-            // 3. Fallback to storage directory
-            if (savedFile == null) {
-                val extDir = File(Environment.getExternalStorageDirectory(), "Download/XtremeBackup")
-                try {
-                    if (!extDir.exists()) extDir.mkdirs()
-                    if (extDir.exists()) {
-                        val f = File(extDir, backupFileName)
-                        f.writeText(jsonContent)
-                        savedFile = f
-                    }
-                } catch (e: Exception) {}
-            }
-
-            // 4. Mirror in app's external backups directory
-            val appInternalBackupDir = File(context.getExternalFilesDir(null), "backups")
-            try {
-                if (!appInternalBackupDir.exists()) appInternalBackupDir.mkdirs()
-                val mirrored = File(appInternalBackupDir, backupFileName)
-                mirrored.writeText(jsonContent)
-                if (savedFile == null) {
-                    savedFile = mirrored
-                }
-            } catch (e: Exception) {}
-
-            val finalFile = savedFile ?: File(appInternalBackupDir, backupFileName)
-            val filePath = finalFile.absolutePath
+            val bytes = jsonContent.toByteArray(Charsets.UTF_8)
+            val (filePath, contentUriString) = saveBackupContent(context, backupFileName, bytes)
 
             // Update preferences
             getPrefs(context).edit()
                 .putLong(KEY_LAST_BACKUP_TIME, timestamp)
                 .putString(KEY_LAST_BACKUP_FILE, filePath)
+                .putString(KEY_LAST_BACKUP_URI, contentUriString)
+                .putString(KEY_LAST_BACKUP_NAME, backupFileName)
+                .putLong(KEY_LAST_BACKUP_SIZE, bytes.size.toLong())
                 .putInt(KEY_LAST_BACKUP_TRACKS_COUNT, tracksCount)
                 .putInt(KEY_LAST_BACKUP_PLAYLISTS_COUNT, playlists.size)
                 .apply()
@@ -449,7 +479,7 @@ object BackupRestoreManager {
                 formattedDate = SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault()).format(Date(timestamp)),
                 filePath = filePath,
                 fileName = backupFileName,
-                sizeFormatted = OtherSettingsPreferences.formatBytes(if (finalFile.exists()) finalFile.length() else jsonContent.length.toLong()),
+                sizeFormatted = OtherSettingsPreferences.formatBytes(bytes.size.toLong()),
                 tracksCount = tracksCount,
                 playlistsCount = playlists.size,
                 contentUri = contentUriString
@@ -569,7 +599,7 @@ object BackupRestoreManager {
         val root = JSONObject(text)
         if (root.has("app")) require(stringField(root, "app").equals("Xtreme Player", true)) { "Not an Xtreme Player backup" }
         val schema = longField(root, "schemaVersion", 1L)
-        require(schema in 1L..2L) { "Unsupported backup schema version: $schema" }
+        require(schema in 1L..3L) { "Unsupported backup schema version: $schema" }
         require(listOf("playlists", "libraryTracks", "tracks", "favoriteTracks", "userProfile").any(root::has)) {
             "No backup data found"
         }
@@ -797,7 +827,7 @@ object BackupRestoreManager {
                         val refs = backup.refs.sortedBy { it.orderIndex }.map { ref ->
                             ref.copy(playlistId = playlistIdMap.getValue(ref.playlistId),
                                 trackId = trackIdMap.getValue(ref.trackId))
-                        }.distinctBy { it.playlistId to it.trackId }
+                        }.map { it.copy(entryId = 0L) }
                         if (mode == RestoreMode.REPLACE && backup.hasPlaylists) {
                             // The existing confirmation promises replacement of playlists, not history or downloads.
                             dao.deleteAllPlaylistCrossRefs()

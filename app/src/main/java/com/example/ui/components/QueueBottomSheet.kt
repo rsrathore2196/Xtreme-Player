@@ -55,6 +55,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.testTag
 import coil.compose.AsyncImage
 import com.example.data.model.MusicTrack
+import com.example.data.model.queueIdentity
 import com.example.ui.theme.LocalAppColors
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
@@ -93,7 +94,7 @@ fun QueueBottomSheet(
     val displayQueue = remember(queue, currentTrack) {
         if (queue.isEmpty() && currentTrack != null) listOf(currentTrack) else queue
     }
-    val currentIdx = remember(displayQueue, currentTrack?.id) { displayQueue.indexOfFirst { it.id == currentTrack?.id } }
+    val currentIdx = remember(displayQueue, currentTrack?.queueIdentity) { displayQueue.indexOfFirst { it.queueIdentity == currentTrack?.queueIdentity } }
     val appColors = LocalAppColors.current
     val isDark = appColors.isDark
 
@@ -292,7 +293,7 @@ fun QueueBottomSheet(
                         key = { index, track -> "${track.id}_$index" },
                         contentType = { _, _ -> "queue_item" }
                     ) { index, track ->
-                    val isCurrentlyPlaying = track.id == currentTrack?.id
+                    val isCurrentlyPlaying = index == currentIdx
                     val isUpNext = !isCurrentlyPlaying && (index == currentIdx + 1 || (currentIdx == -1 && index == 0))
                     val isUpcomingAutoplay = !isCurrentlyPlaying && !isUpNext && index > currentIdx
 

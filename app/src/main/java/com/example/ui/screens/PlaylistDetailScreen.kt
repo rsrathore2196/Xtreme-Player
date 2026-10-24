@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import com.example.ui.components.bouncyOverscroll
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -61,6 +62,7 @@ import com.example.ui.util.ImageConfig
 import com.example.ui.util.rememberPlaylistCoverRequest
 import com.example.data.local.PlaylistWithTracks
 import com.example.data.model.MusicTrack
+import com.example.data.model.queueIdentity
 import com.example.playback.PlayerUiState
 import com.example.ui.theme.LocalAppColors
 import com.example.ui.theme.TextMuted
@@ -87,7 +89,8 @@ fun PlaylistDetailScreen(
     modifier: Modifier = Modifier,
     readOnly: Boolean = false,
     listState: androidx.compose.foundation.lazy.LazyListState = androidx.compose.foundation.lazy.rememberLazyListState(),
-    footer: (@Composable () -> Unit)? = null
+    footer: (@Composable () -> Unit)? = null,
+    onRemoveEntry: ((MusicTrack) -> Unit)? = null
 ) {
     val playlist = playlistWithTracks.playlist
     val tracks = playlistWithTracks.musicTracks
@@ -120,7 +123,7 @@ fun PlaylistDetailScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        onRemoveTrack(pendingTrack.id)
+                        if (onRemoveEntry != null) onRemoveEntry(pendingTrack) else onRemoveTrack(pendingTrack.id)
                         trackPendingRemoval = null
                     },
                     colors = ButtonDefaults.buttonColors(
@@ -476,7 +479,7 @@ fun PlaylistDetailScreen(
                     }
                 }
             } else {
-                items(tracks, key = { "pl_track_${it.id}" }) { track ->
+                itemsIndexed(tracks, key = { index, track -> if (track.playlistEntryId > 0L) "pl_entry_${track.playlistEntryId}" else "pl_track_${track.id}_$index" }) { _, track ->
                     TrackListItem(
                         track = track,
                         isPlaying = track.id == currentPlayingId,

@@ -91,7 +91,6 @@ object PlaylistImportEngine {
 
     /** Metadata parsing stays on the shared CPU lane; HTTP/body reads use the import IO lane. */
     private suspend fun executeImportRequest(request: Request): okhttp3.Response {
-        val owner = currentCoroutineContext()[kotlinx.coroutines.Job]
         return withContext(AppDispatchers.Imports) {
             kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
                 val call = httpClient.newCall(request)
@@ -101,15 +100,22 @@ object PlaylistImportEngine {
                         if (!continuation.isCancelled) continuation.resumeWith(Result.failure(error))
                     }
                     override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
-                        owner?.invokeOnCompletion { response.close() }
+                        if (request.method == "HEAD" || !response.isSuccessful) response.close()
                         continuation.resume(response, onCancellation = { _, value, _ -> value.close() })
                     }
                 })
             }
         }
     }
-    private suspend fun readImportBody(response: okhttp3.Response): String? =
-        withContext(AppDispatchers.Imports) { response.use { it.body?.string() } }
+    internal suspend fun readImportBody(response: okhttp3.Response): String? =
+        response.use { received -> withContext(AppDispatchers.Imports) {
+            val body = received.body ?: return@withContext null
+            val limit = 8L * 1024 * 1024
+            require(body.contentLength() <= limit) { "Playlist response is too large" }
+            val source = body.source()
+            require(!source.request(limit + 1L)) { "Playlist response is too large" }
+            source.readString(body.contentType()?.charset(Charsets.UTF_8) ?: Charsets.UTF_8)
+        } }
 
     /**
      * Determines which platform a URL or text input belongs to.

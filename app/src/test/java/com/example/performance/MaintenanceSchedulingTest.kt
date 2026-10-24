@@ -18,6 +18,33 @@ import java.util.concurrent.TimeUnit
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [32], application = Application::class)
 class MaintenanceSchedulingTest {
+    @Test fun automaticBackupUsesSavedPreferenceOneDailyJobAndStartupSafeConstraints() = kotlinx.coroutines.runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        WorkManagerTestInitHelper.initializeTestWorkManager(context,
+            Configuration.Builder().setExecutor(SynchronousExecutor()).build())
+        val request = MaintenanceScheduler.backupRequest()
+        assertEquals(TimeUnit.HOURS.toMillis(24), request.workSpec.intervalDuration)
+        assertEquals(TimeUnit.MINUTES.toMillis(15), request.workSpec.initialDelay)
+        assertTrue(request.workSpec.constraints.requiresBatteryNotLow())
+        val manager = WorkManager.getInstance(context)
+        com.example.data.local.BackupRestoreManager.setAutoBackupEnabled(context, true)
+        try {
+            val initial = kotlinx.coroutines.withTimeout(5000) {
+                while (manager.getWorkInfosForUniqueWork(MaintenanceScheduler.AUTO_BACKUP).get().isEmpty()) kotlinx.coroutines.delay(10)
+                manager.getWorkInfosForUniqueWork(MaintenanceScheduler.AUTO_BACKUP).get().single()
+            }
+            MaintenanceScheduler.updateAutoBackup(context)
+            kotlinx.coroutines.delay(100)
+            assertEquals(initial.id, manager.getWorkInfosForUniqueWork(MaintenanceScheduler.AUTO_BACKUP).get().single().id)
+            com.example.data.local.BackupRestoreManager.setAutoBackupEnabled(context, false)
+            kotlinx.coroutines.withTimeout(5000) {
+                while (manager.getWorkInfosForUniqueWork(MaintenanceScheduler.AUTO_BACKUP).get().any { !it.state.isFinished }) kotlinx.coroutines.delay(10)
+            }
+        } finally {
+            com.example.data.local.BackupRestoreManager.setAutoBackupEnabled(context, false)
+            manager.cancelAllWork().result.get()
+        }
+    }
     @Test fun aHeadlessWorkerDoesNotDependOnHomeOrFirstFrameMilestones() = kotlinx.coroutines.test.runTest {
         BackgroundWorkCoordinator.foreground(false)
         val pausedNavigation = BackgroundWorkCoordinator.navigationBusy()

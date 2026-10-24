@@ -120,6 +120,30 @@ interface MusicDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertPlaylistTrackRef(crossRef: PlaylistTrackCrossRef)
 
+    @Query("SELECT COALESCE(MAX(orderIndex), -1) + 1 FROM playlist_track_cross_ref WHERE playlistId = :playlistId")
+    suspend fun nextPlaylistOrder(playlistId: Long): Int
+
+    @Query("SELECT EXISTS(SELECT 1 FROM playlists WHERE playlistId = :playlistId)")
+    suspend fun playlistExists(playlistId: Long): Boolean
+
+    @Query("DELETE FROM playlist_track_cross_ref WHERE playlistId = :playlistId AND entryId = :entryId")
+    suspend fun removePlaylistEntry(playlistId: Long, entryId: Long)
+
+    @Transaction
+    suspend fun createPlaylistWithEntries(playlist: PlaylistEntity, tracks: List<TrackEntity>): Long {
+        val id = insertPlaylist(playlist)
+        mergeTracksMetadata(tracks)
+        insertPlaylistTrackRefs(tracks.mapIndexed { index, track -> PlaylistTrackCrossRef(id, track.id, index) })
+        return id
+    }
+
+    @Transaction
+    suspend fun appendPlaylistTrack(playlistId: Long, track: TrackEntity) {
+        check(playlistExists(playlistId)) { "Playlist no longer exists" }
+        mergeTrackMetadata(track)
+        insertPlaylistTrackRef(PlaylistTrackCrossRef(playlistId, track.id, nextPlaylistOrder(playlistId)))
+    }
+
     @Query("DELETE FROM playlist_track_cross_ref WHERE playlistId = :playlistId AND trackId = :trackId")
     suspend fun removeTrackFromPlaylist(playlistId: Long, trackId: String)
 
@@ -136,7 +160,7 @@ interface MusicDao {
     @Query("SELECT * FROM tracks")
     suspend fun getAllTracksSync(): List<TrackEntity>
 
-    @Query("SELECT * FROM playlist_track_cross_ref ORDER BY playlistId, orderIndex, trackId")
+    @Query("SELECT * FROM playlist_track_cross_ref ORDER BY playlistId, orderIndex, entryId")
     suspend fun getAllPlaylistCrossRefsSync(): List<PlaylistTrackCrossRef>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)

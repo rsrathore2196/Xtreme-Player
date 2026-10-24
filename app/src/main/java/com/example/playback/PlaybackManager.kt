@@ -18,6 +18,7 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionToken
 import com.example.data.model.MusicTrack
+import com.example.data.model.queueIdentity
 import com.example.data.local.ListeningEventDao
 import com.example.data.local.ListeningEventEntity
 import com.example.data.local.MusicDatabase
@@ -129,6 +130,7 @@ class PlaybackManager(
     private val scope = CoroutineScope(AppDispatchers.Main + SupervisorJob())
     private var networkQualityMonitor: NetworkQualityMonitor? = null
     private var controllerFuture: ListenableFuture<MediaController>? = null
+    private var connectionGeneration = 0L
     private var controller: MediaController? = null
         set(value) {
             field = value
@@ -415,7 +417,8 @@ class PlaybackManager(
                     networkQualityMonitor?.sourcePolicy?.value?.key != policy.key) return@launch
                 // Release discovery's admission before the prebuffer requests its own slot.
                 losslessDiscoveryJob = null
-                reconcileSourcePolicy(policy, force = true, preparedSource = candidate, automatic = true)
+                if (policy.allowsAutomaticReplacement(recording, candidate))
+                    reconcileSourcePolicy(policy, force = true, preparedSource = candidate, automatic = true)
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) {
                 LosslessDiagnostics.record(track.id, LosslessDiagnostics.Reason.PREBUFFER_FAILED, "background-discovery")
@@ -622,21 +625,31 @@ class PlaybackManager(
 
     private fun initMediaController() {
         if (controller != null || controllerFuture != null) return
-        if (controllerReady.isCompleted) controllerReady = CompletableDeferred()
+        if (!controllerReady.isCompleted) controllerReady.completeExceptionally(
+            java.io.IOException("Player connection was replaced"))
+        controllerReady = CompletableDeferred()
         val connectionTrace = com.example.performance.BackgroundWorkCoordinator.trace("MediaController connect")
         try {
             val sessionToken = SessionToken(context, ComponentName(context, MusicService::class.java))
-            controllerFuture = MediaController.Builder(context, sessionToken)
+            val connection = ++connectionGeneration
+            val readiness = controllerReady
+            val future = MediaController.Builder(context, sessionToken)
                 .setListener(object : MediaController.Listener {
                     override fun onExtrasChanged(controller: MediaController, extras: Bundle) {
+                        if (connection != connectionGeneration || this@PlaybackManager.controller !== controller) return
                         applyJioFallbackStatus(controller, extras.getBundle("jio_fallback_status"))
                         applyActualAudioProperties(controller, extras.getBundle("active_audio"))
                     }
                 }).buildAsync()
-            controllerFuture?.addListener({
+            controllerFuture = future
+            future.addListener({
                 scope.launch {
                     try {
-                        val connected = requireNotNull(controllerFuture?.get())
+                        val connected = completedConnectionValue(future, controllerFuture, connection == connectionGeneration)
+                            ?: return@launch
+                        if (connection != connectionGeneration || controllerFuture !== future) {
+                            MediaController.releaseFuture(future); return@launch
+                        }
                         controller = connected
                         if (pendingSelectionId != null) {
                             pendingRestoredSession = null
@@ -645,24 +658,27 @@ class PlaybackManager(
                             connected.clearMediaItems()
                         } else if (connected.mediaItemCount == 0) {
                             sessionRestored.await()
-                            hydrateRestoredSession(connected)
+                            hydrateRestoredSession(connected, connection)
                         }
+                        if (connection != connectionGeneration || controllerFuture !== future) return@launch
                         setupPlayerListener()
                         applyJioFallbackStatus(connected, connected.sessionExtras.getBundle("jio_fallback_status"))
                         applyActualAudioProperties(connected, connected.sessionExtras.getBundle("active_audio"))
-                        controllerReady.complete(connected)
+                        readiness.complete(connected)
                         networkQualityMonitor?.sourcePolicy?.value?.let { policy ->
                             val current = _uiState.value.currentTrack
                             if (current != null && !policyAllows(current, policy)) reconcileSourcePolicy(policy, force = true)
                         }
                         Log.i(TAG, "MediaController initialized successfully")
                     } catch (e: Exception) {
-                        if (e is CancellationException) throw e
-                        controller?.release()
-                        controllerFuture?.let(MediaController::releaseFuture)
+                        // A canceled connection future is a recoverable failure;
+                        // cancellation of this coroutine still propagates immediately.
+                        currentCoroutineContext().ensureActive()
+                        MediaController.releaseFuture(future)
+                        if (connection != connectionGeneration || controllerFuture !== future) return@launch
                         controllerFuture = null
                         controller = null
-                        controllerReady.completeExceptionally(e)
+                        readiness.completeExceptionally(e)
                         Log.e(TAG, "Failed to initialize MediaController: ${e.message}", e)
                         _uiState.update { it.copy(isLoading = false, errorMessage = "Player initialization failed") }
                     } finally { connectionTrace.close() }
@@ -677,12 +693,11 @@ class PlaybackManager(
         }
     }
 
-    private suspend fun hydrateRestoredSession(player: MediaController) {
+    private suspend fun hydrateRestoredSession(player: MediaController, connection: Long) {
         val saved = pendingRestoredSession ?: return
-        pendingRestoredSession = null
         val generation = selectionGeneration
         withContext(AppDispatchers.Io) { NetworkQualityMonitor.getInstance(context).snapshot() }
-        while (pendingSelectionId == null && player.mediaItemCount == 0) {
+        while (connection == connectionGeneration && controller === player && pendingSelectionId == null && player.mediaItemCount == 0) {
             val revision = queueRevision
             val quality = _uiState.value.selectedQuality
             val tracks = queueSnapshot()
@@ -691,9 +706,10 @@ class PlaybackManager(
                 val items = tracks.map { it.toMediaItem(quality) }
                 items to items.map(::controllerTrack).toMutableStateList()
             }
-            if (selectionGeneration != generation || pendingSelectionId != null || player.mediaItemCount > 0) return
+            if (connection != connectionGeneration || controller !== player || selectionGeneration != generation || pendingSelectionId != null || player.mediaItemCount > 0) return
             // A settings/favorite edit during hydration must not be lost or apply the old bitrate.
             if (revision != queueRevision || quality != _uiState.value.selectedQuality) continue
+            pendingRestoredSession = null
             activeQueue = prepared.second
             player.setMediaItems(prepared.first, saved.index.coerceIn(prepared.first.indices), saved.positionMs)
             player.pause() // Queue metadata only; prepare/play remain explicit user actions.
@@ -719,14 +735,17 @@ class PlaybackManager(
         initMediaController()
         if (onReady != null) {
             val generation = selectionGeneration
+            val connection = connectionGeneration
             val readiness = controllerReady
             scope.launch {
                 try {
                     val player = withTimeoutOrNull(8_000L) { readiness.await() } ?: return@launch
+                    if (connection != connectionGeneration || controller !== player) return@launch
                     if (!guardSelection || generation == selectionGeneration) onReady(player)
                 } catch (e: CancellationException) { throw e }
                 catch (e: Exception) {
-                    if (generation == selectionGeneration) showPlaybackFailure("Unable to connect to the player. Please try again.")
+                    if (connection == connectionGeneration && generation == selectionGeneration)
+                        showPlaybackFailure("Unable to connect to the player. Please try again.")
                 }
             }
         }
@@ -747,6 +766,7 @@ class PlaybackManager(
             isLiked = extras?.getBoolean("isLiked", false) ?: false,
             singers = extras?.getString("singers").orEmpty(), writer = extras?.getString("writer").orEmpty(),
             primaryArtists = extras?.getStringArrayList("primaryArtists")?.toList().orEmpty(),
+            playlistEntryId = extras?.getLong("playlist_entry_id", 0L) ?: 0L,
             language = extras?.getString("language") ?: "Unknown", year = extras?.getString("year").orEmpty(),
             isrc = extras?.getString("isrc").orEmpty(),
             source = source.ifBlank { if (item.mediaId.startsWith("yt_")) "Extended Stream" else "HD Stream" },
@@ -947,20 +967,22 @@ class PlaybackManager(
                     if (pendingSelectionId != null && pendingSelectionId != trackId) return
                     if (pendingSelectionId == trackId) pendingSelectionId = null
                     val oldTrack = _uiState.value.currentTrack
-                    if (oldTrack?.id != trackId || reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) {
+                    val sameOccurrence = oldTrack?.playlistEntryId == (mediaItem.mediaMetadata.extras?.getLong("playlist_entry_id", 0L) ?: 0L)
+                    if (!sameOccurrence) selectionGeneration++
+                    if (oldTrack?.id != trackId || !sameOccurrence || reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) {
                         recoveryJob?.cancel()
                         recoveryJob = null
                         recoveryGuard.select(trackId, newRequest = true)
                     } else {
                         recoveryGuard.select(trackId)
                     }
-                    val serviceSourceTransition = oldTrack?.id == trackId && reason != Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT &&
+                    val serviceSourceTransition = sameOccurrence && oldTrack?.id == trackId && reason != Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT &&
                         mediaItem.mediaMetadata.extras?.getBoolean("jio_youtube_fallback") == true
-                    val sourceOnlyTransition = oldTrack?.id == trackId && reason != Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT &&
+                    val sourceOnlyTransition = sameOccurrence && oldTrack?.id == trackId && reason != Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT &&
                         (serviceSourceTransition || losslessTransitionId == trackId || losslessFallback?.let {
                             it.original.id == trackId && it.upgradedUrl == mediaItem.localConfiguration?.uri?.toString()
                         } == true)
-                    if (oldTrack?.id != trackId) {
+                    if (oldTrack?.id != trackId || !sameOccurrence) {
                         youtubeQualityJob?.cancel()
                         cancelLosslessUpgrade()
                     }
@@ -968,7 +990,7 @@ class PlaybackManager(
                     // Keep the original quality and queue snapshot until this replacement
                     // is genuinely ready. A source change is not a new listening session.
                     if (sourceOnlyTransition && losslessFallback?.activated == false) return
-                    val newListeningPlay = _listeningState.value.track?.id != trackId ||
+                    val newListeningPlay = _listeningState.value.track?.id != trackId || !sameOccurrence ||
                         reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT
                     val elapsed = (System.currentTimeMillis() - currentTrackStartTimeMs).coerceAtLeast(0L)
                     val wasMeaningful = hasRecordedMeaningfulPlay
@@ -1260,7 +1282,8 @@ class PlaybackManager(
                 val updated = current.copy(bitrateKbps = if (saavn) current.bitrateKbps else extras.getInt("bitrate"),
                     qualityBadge = extras.getString("qualityBadge").orEmpty(), isLossless = false)
                 if (updated == current) return
-                val index = activeQueue.indexOfFirst { it.id == current.id }
+                val index = player.currentMediaItemIndex.takeIf { activeQueue.getOrNull(it)?.queueIdentity == current.queueIdentity }
+                    ?: activeQueue.indexOfFirst { it.queueIdentity == current.queueIdentity }
                 replaceQueueTrack(index, updated)
                 _uiState.update { it.copy(currentTrack = updated, qualityBadge = updated.qualityBadge,
                     queue = queueSnapshot()) }
@@ -1630,7 +1653,7 @@ class PlaybackManager(
         }
         val now = System.currentTimeMillis()
         val currentTrack = _uiState.value.currentTrack
-        val isSameTrack = currentTrack?.id == track.id
+        val isSameTrack = currentTrack?.queueIdentity == track.queueIdentity
 
         // 1. Double-tap on currently playing track:
         // If already playing smoothly, do nothing; if paused, resume playback.
@@ -1744,14 +1767,14 @@ class PlaybackManager(
             targetQuality = _uiState.value.selectedQuality
             prepared = withContext(AppDispatchers.CpuBounded) {
                 val tracks = if (autoplayEnabled && !isExplicitPlaylist) {
-                    val contextTracks = queue.filter { it.id != track.id && it.hasQueueSource() }.distinctBy { it.id }
+                    val contextTracks = queue.filter { it.queueIdentity != track.queueIdentity && it.hasQueueSource() }.distinctBy { it.queueIdentity }
                     (listOf(track) + contextTracks).toMutableStateList()
                 } else {
-                    (queue.map { if (it.id == track.id) track else it } + track)
-                        .filter { it.hasQueueSource() }.distinctBy { it.id }.toMutableStateList()
+                    (queue.map { if (it.queueIdentity == track.queueIdentity) track else it } + track)
+                        .filter { it.hasQueueSource() }.distinctBy { it.queueIdentity }.toMutableStateList()
                 }
                 Triple(tracks, tracks.map { queued -> queued.toMediaItem(targetQuality, preparedPolicy.takeIf { queued.id == track.id }) },
-                    tracks.indexOfFirst { it.id == track.id }.coerceAtLeast(0))
+                    tracks.indexOfFirst { it.queueIdentity == track.queueIdentity }.coerceAtLeast(0))
             }
             if (!ownsSelection(track.id, generation)) return
         } while (autoplayEnabled != _uiState.value.isAutoplayEnabled || targetQuality != _uiState.value.selectedQuality)
@@ -1905,7 +1928,7 @@ class PlaybackManager(
                     val events = listeningEventDao.getActualPlays(limit = 5000)
                     val groups = withContext(AppDispatchers.CpuBounded) { events.map { it.trackId }.distinct().chunked(900) }
                     val metadata = groups.flatMap { database.musicDao().getTracksByIds(it) }
-                    val favorites = repository?.getFavoriteTracks()?.first().orEmpty()
+                    val favorites = repository?.favoriteSnapshotOrRetained().orEmpty()
                     withContext(AppDispatchers.CpuBounded) { UserTasteProfile.fromEvents(events, metadata.map { it.toMusicTrack() }, favorites) }
                 }
                 suspend fun appendCandidates(pool: List<MusicTrack>, targetSize: Int = upcomingQueueTarget) {
@@ -2028,6 +2051,11 @@ class PlaybackManager(
      * Plays a track from search results, resolving its stream asynchronously on AppDispatchers.Io
      * and starting playback without freezing the UI or racing on MediaController.
      */
+    fun playQueuedTrack(track: MusicTrack) {
+        playTrack(track, _uiState.value.queue.ifEmpty { listOf(track) }, isExplicitPlaylist = isCurrentSessionExplicitPlaylist,
+            isInfiniteRadio = _uiState.value.isInfiniteRadio)
+    }
+
     fun playFromSearch(track: MusicTrack, @Suppress("UNUSED_PARAMETER") searchContextPool: List<MusicTrack>) {
         // Search is a discovery surface, never a playlist. Subsequent songs come
         // from the existing personalized radio pipeline, not neighboring results.
@@ -2335,11 +2363,22 @@ class PlaybackManager(
                     )
                 }
             }
-            // Also update inside activeQueue
-            val idx = activeQueue.indexOfFirst { it.id == trackId }
-            if (idx >= 0) {
-                replaceQueueTrack(idx, activeQueue[idx].copy(isLiked = isLiked))
-                _uiState.update { it.copy(queue = queueSnapshot()) }
+            // Favorite identity belongs to the recording, including every playlist occurrence.
+            scope.launch {
+                while (isActive) {
+                    val revision = queueRevision
+                    val snapshot = queueSnapshot()
+                    val prepared = withContext(AppDispatchers.CpuBounded) {
+                        snapshot.map { if (it.id == trackId) it.copy(isLiked = isLiked) else it }
+                            .takeUnless { it == snapshot }?.toMutableStateList()
+                    }
+                    if (revision != queueRevision) continue
+                    if (prepared != null) {
+                        activeQueue = prepared
+                        _uiState.update { it.copy(queue = queueSnapshot()) }
+                    }
+                    break
+                }
             }
             controller?.let { publishListeningState(it) }
             Log.d(TAG, "Updated favorite status for track $trackId: $isLiked")
@@ -2529,6 +2568,7 @@ class PlaybackManager(
                         }
                         putString("singers", singers); putString("writer", writer)
                         putStringArrayList("primaryArtists", ArrayList(primaryArtists))
+                        putLong("playlist_entry_id", playlistEntryId)
                         putString("language", language); putString("year", year); putString("isrc", isrc)
                         SourceTransitionOrigin.write(this, enhancerOrigin?.takeIf { it.track.id == id })
                     })
@@ -2539,3 +2579,7 @@ class PlaybackManager(
             NetworkQualityMonitor.getInstance(context).currentMaxBitrateBps)
     }
 }
+
+/** A completion for an old attempt can never wait on or adopt a new incomplete future. */
+internal fun <T> completedConnectionValue(expected: ListenableFuture<T>, current: ListenableFuture<T>?, ownsGeneration: Boolean): T? =
+    if (ownsGeneration && expected === current && expected.isDone) expected.get() else null

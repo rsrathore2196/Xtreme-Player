@@ -306,8 +306,8 @@ object SmartCacheManager {
             rootCache.listFiles()?.forEach { file ->
                 if (file.isFile && file.lastModified() < System.currentTimeMillis() - 24 * 60 * 60_000L &&
                     (file.name.endsWith(".tmp") || file.name.startsWith("temp_") || file.name.startsWith("cache_") || file.name.endsWith(".exo"))) {
-                    freed += file.length()
-                    file.delete()
+                    val bytes = file.length()
+                    if (file.delete()) freed += bytes
                 }
             }
 
@@ -325,12 +325,11 @@ object SmartCacheManager {
             repositoryRef?.clearSearchCache()
 
             refreshStats()
-            val reportedFreed = if (freed > 0L) formatBytes(freed) else "1.4 MB"
-            Pair(freed, "Cache optimized! Freed $reportedFreed and defragmented storage.")
+            Pair(freed, if (freed > 0L) "Cache optimized. Freed ${formatBytes(freed)}." else "Storage already optimized. No files needed removal.")
         } catch (e: CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "smartOptimize error: ${e.message}")
             refreshStats()
-            Pair(0L, "Cache optimized and audio buffers defragmented.")
+            Pair(freed, "Storage optimization could not complete. Please try again.")
         }
     }
 

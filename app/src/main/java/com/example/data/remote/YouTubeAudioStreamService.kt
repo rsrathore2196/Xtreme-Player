@@ -67,9 +67,11 @@ object YouTubeAudioStreamService {
         val useRangeChunks: Boolean, val rangeChunkSize: Long, val clientId: String,
         val sabrBootstrap: SabrBootstrap? = null,
         val selectionCapBps: Int = 320_000,
-        val opusOnly: Boolean = false
+        val opusOnly: Boolean = false,
+        /** Cache-only descriptors carry transport identity, never session tokens/bootstrap. */
+        val cachedSabr: Boolean = false
     ) {
-        val isSabr: Boolean get() = sabrBootstrap != null
+        val isSabr: Boolean get() = sabrBootstrap != null || cachedSabr
         val qualityBadge: String get() = displayQuality(codec, bitrateKbps)
         override fun toString() = "AudioStream(codec=" + codec + ", bitrateKbps=" + bitrateKbps + ", hls=" + isHls + ")"
     }
@@ -325,6 +327,9 @@ object YouTubeAudioStreamService {
         // Ambiguous/stale references stay unknown. Signed URL expiry doesn't
         // invalidate bitrate evidence for a representation already being decoded.
         rates.singleOrNull() ?: 0
+    }
+    internal fun rememberOfflineRepresentation(stream: AudioStream) {
+        synchronized(cache) { cache.put("offline:${stream.videoId}:${stream.cacheKey}", stream) }
     }
     fun cachedStreams(videoId: String): List<AudioStream> = synchronized(cache) {
         cache.snapshot().values.filter { it.videoId == videoId }.distinctBy { it.cacheKey }

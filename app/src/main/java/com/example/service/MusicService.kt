@@ -366,6 +366,7 @@ class MusicService : MediaLibraryService() {
             metadata.artworkUri?.toString().orEmpty(), item.localConfiguration?.uri?.toString().orEmpty(),
             bitrateKbps = extras?.getInt("bitrate") ?: 0, qualityBadge = extras?.getString("qualityBadge").orEmpty(),
             source = extras?.getString("media_source").orEmpty(), isLossless = extras?.getBoolean("isLossless") == true,
+            playlistEntryId = extras?.getLong("playlist_entry_id", 0L) ?: 0L,
             primaryArtists = extras?.getStringArrayList("primaryArtists")?.toList().orEmpty(), isrc = extras?.getString("isrc").orEmpty())
     }
 
@@ -393,7 +394,8 @@ class MusicService : MediaLibraryService() {
                     player.currentMediaItem?.mediaId != item.mediaId || player.currentMediaItem?.localConfiguration?.uri != uri ||
                     SabrSessionRegistry.controllerHandlesRecovery?.invoke() == true) return@launch
                 losslessDiscoveryJob = null
-                reconcileHeadlessPolicy(policy, preparedSource = candidate, automatic = true)
+                if (policy.allowsAutomaticReplacement(track, candidate))
+                    reconcileHeadlessPolicy(policy, preparedSource = candidate, automatic = true)
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) {
                 com.example.playback.LosslessDiagnostics.record(track.id,

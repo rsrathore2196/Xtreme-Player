@@ -544,9 +544,10 @@ class ExampleUnitTest {
         manager.setAskedStoragePermission(context, true)
         assertTrue(manager.hasAskedStoragePermission(context))
 
-        // Required permissions array should not be empty
+        // MediaStore-owned exports and SAF-selected documents require no broad media permission.
         val perms = manager.getRequiredStoragePermissions()
-        assertTrue(perms.isNotEmpty())
+        if (android.os.Build.VERSION.SDK_INT >= 29) assertTrue(perms.isEmpty())
+        else assertTrue(perms.contains(android.Manifest.permission.WRITE_EXTERNAL_STORAGE))
     }
 
     @Test
@@ -602,6 +603,9 @@ class ExampleUnitTest {
             com.example.data.local.PlaylistTrackCrossRef(playlistId = 777L, trackId = "test_track_101")
         )
 
+        // Exercise a real authorized file destination, not a synthetic MediaStore URI.
+        com.example.data.local.BackupRestoreManager.setAutoBackupLocation(context,
+            java.io.File(context.filesDir, "backup-cycle-test").absolutePath)
         // 2. Create actual backup
         val backupResult = com.example.data.local.BackupRestoreManager.createBackup(context, db1)
         assertTrue(backupResult.isSuccess)

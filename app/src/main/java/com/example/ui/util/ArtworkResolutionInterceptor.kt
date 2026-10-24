@@ -194,7 +194,8 @@ class ArtworkResolutionInterceptor internal constructor(
         val attempted = mutableSetOf<String>()
         val cachedImages = mutableMapOf<String, SuccessResult?>()
         var lastError: ImageResult? = null
-        var networkBudgetMs = 3_000L
+        var primaryNetworkBudgetMs = if (metadata.startupPreparation) 750L else 2_000L
+        var fallbackNetworkBudgetMs = if (metadata.startupPreparation) 1_000L else 3_000L
         fun sufficient(result: SuccessResult) = sufficientSize(result, chain.size)
         fun better(first: SuccessResult?, second: SuccessResult?): SuccessResult? = when {
             first == null -> second
@@ -213,12 +214,17 @@ class ArtworkResolutionInterceptor internal constructor(
                 if (cacheOnly) chain.proceed(candidate) else {
                     // Recheck after resource waits so duplicate cards share Coil's file.
                     val hit = chain.proceed(candidate.newBuilder().networkCachePolicy(CachePolicy.DISABLED).build())
+                    val fallbackRequest = url in fallbackUrls
+                    val budgetMs = if (fallbackRequest) fallbackNetworkBudgetMs else primaryNetworkBudgetMs
                     if (hit is SuccessResult && sufficient(hit)) hit
-                    else if (!attempted.add(url) || networkBudgetMs <= 0L) hit
+                    else if (!attempted.add(url) || budgetMs <= 0L) hit
                     else {
                         val started = android.os.SystemClock.elapsedRealtime()
-                        try { withTimeoutOrNull(networkBudgetMs) { chain.proceed(candidate) } ?: hit }
-                        finally { networkBudgetMs -= (android.os.SystemClock.elapsedRealtime() - started).coerceAtLeast(0L) }
+                        try { withTimeoutOrNull(budgetMs) { chain.proceed(candidate) } ?: hit }
+                        finally {
+                            val elapsed = (android.os.SystemClock.elapsedRealtime() - started).coerceAtLeast(0L)
+                            if (fallbackRequest) fallbackNetworkBudgetMs -= elapsed else primaryNetworkBudgetMs -= elapsed
+                        }
                     }
                 }
             }
@@ -277,7 +283,7 @@ class ArtworkResolutionInterceptor internal constructor(
         if (preferred != null && sufficient(preferred)) return preferred
         if (item != null) {
             if (!metadata.startupPreparation) coordinator.yieldToInteraction(awaitFrameQuiet = false)
-            val resolved = withTimeoutOrNull(if (metadata.startupPreparation) 1_000L else 5_000L) {
+            val resolved = withTimeoutOrNull(if (metadata.startupPreparation) 750L else 5_000L) {
                 repository()?.resolveArtwork(item, sourceDimension)
             }
             if (!resolved.isNullOrBlank()) preferred = better(preferred, load(resolved))

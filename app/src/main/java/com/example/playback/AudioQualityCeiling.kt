@@ -106,6 +106,16 @@ data class PlaybackSourcePolicy(val ceiling: AudioQualityCeiling, val enhancer: 
             state.enhancerPolicyKey == upgradePolicyKey
         return replaced || automaticallyEnhanced(state)
     }
+    /** Background discovery may move up the active order, never displace a preferred provider. */
+    fun allowsAutomaticReplacement(current: com.example.data.model.MusicTrack, candidate: com.example.data.model.MusicTrack): Boolean {
+        if (!acceptsRemoteTrack(candidate) || current.id != candidate.id || returnsToYouTube(current.id)) return false
+        val order = resolutionSourcesFor(current.id)
+        fun rank(track: com.example.data.model.MusicTrack): Int =
+            SourceTransitionOrigin.sourceId(track.id, track.audioUrl.toUri(), this)?.let { id -> order.indexOfFirst { it.id == id } }
+                ?.takeIf { it >= 0 } ?: Int.MAX_VALUE
+        return rank(candidate) < rank(current)
+    }
+
     fun isPreferred(track: com.example.data.model.MusicTrack): Boolean {
         val first = resolutionSourcesFor(track.id).firstOrNull() ?: return false
         val host = android.net.Uri.parse(track.audioUrl).host.orEmpty()

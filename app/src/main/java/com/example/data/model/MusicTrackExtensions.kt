@@ -38,6 +38,7 @@ fun MusicTrack.toMediaItem(): MediaItem {
             putBoolean("recommendation_only", recommendationOnly)
             putString("media_source", source)
             putStringArrayList("primaryArtists", ArrayList(primaryArtists))
+            putLong("playlist_entry_id", playlistEntryId)
         })
         .setArtworkUri(
             if (this.coverUrl.isNotBlank()) {

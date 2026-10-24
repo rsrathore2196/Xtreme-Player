@@ -4,6 +4,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.PagerState
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.invisibleToUser
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.testTag
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -150,5 +156,35 @@ private class RetainedPageLifecycle(private val parent: Lifecycle) : LifecycleOw
         // INITIALIZED cannot transition directly to DESTROYED.
         if (registry.currentState == Lifecycle.State.INITIALIZED) registry.currentState = Lifecycle.State.CREATED
         registry.currentState = Lifecycle.State.DESTROYED
+    }
+}
+
+/** Retain the primary tree through opaque destinations, with the existing Settings motion. */
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
+@Composable
+internal fun RetainedPrimaryTabHost(
+    state: PagerState, transition: androidx.compose.animation.core.Transition<Int>, covered: Boolean,
+    inputBlocked: Boolean = covered, prepareStartup: Boolean = false, content: @Composable (Int) -> Unit
+) {
+    val scale = transition.animateFloat(transitionSpec = {
+        androidx.compose.animation.core.tween(if (targetState == 3) 320 else 300,
+            easing = androidx.compose.animation.core.FastOutSlowInEasing)
+    }, label = "retained_primary_scale") { if (it == 3) 0.985f else 1f }
+    val opacity = transition.animateFloat(transitionSpec = {
+        if (targetState == 3) androidx.compose.animation.core.tween(240, easing = androidx.compose.animation.core.FastOutLinearInEasing)
+        else androidx.compose.animation.core.tween(240, easing = androidx.compose.animation.core.LinearOutSlowInEasing)
+    }, label = "retained_primary_alpha") { if (it == 3) 0f else 1f }
+    Box(Modifier.fillMaxSize().graphicsLayer {
+        scaleX = scale.value; scaleY = scale.value; alpha = opacity.value
+    }.drawWithContent { if (!covered) drawContent() }
+        .then(if (inputBlocked) Modifier.clearAndSetSemantics {
+            testTag = "retained_primary_tabs"
+            invisibleToUser()
+        }.pointerInput(Unit) {
+            awaitPointerEventScope {
+                while (true) awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial).changes.forEach { it.consume() }
+            }
+        } else Modifier.testTag("retained_primary_tabs"))) {
+        MainTabPager(state, pageCovered = covered, prepareStartup = prepareStartup, content = content)
     }
 }

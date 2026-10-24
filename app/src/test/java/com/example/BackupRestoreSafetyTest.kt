@@ -65,7 +65,7 @@ class BackupRestoreSafetyTest {
         val one = playlists.single { it.title == "Imported one" }.playlistId
         val two = playlists.single { it.title == "Imported two" }.playlistId
         assertNotEquals(one, two)
-        val refs = dao.getAllPlaylistCrossRefsSync()
+        val refs = dao.getAllPlaylistCrossRefsSync().map { it.copy(entryId = 0L) }
         assertTrue(refs.contains(PlaylistTrackCrossRef(1, local.id, 4)))
         assertTrue(refs.contains(PlaylistTrackCrossRef(one, "a", 8)))
         assertTrue(refs.contains(PlaylistTrackCrossRef(two, "b", 1)))
@@ -86,10 +86,10 @@ class BackupRestoreSafetyTest {
         assertTrue(result.message, result.success)
         assertEquals(listOf(local), dao.getAllTracksSync())
         assertEquals(listOf(event.copy(id = eventId)), db.listeningEventDao().getRecentEvents(10))
-        assertEquals(PlaylistTrackCrossRef(3, local.id, 7), dao.getAllPlaylistCrossRefsSync().single())
+        assertEquals(PlaylistTrackCrossRef(3, local.id, 7), dao.getAllPlaylistCrossRefsSync().map { it.copy(entryId = 0L) }.single())
     }
 
-    @Test fun duplicateImportedRecordingsUseOneTrackAndEarliestPlaylistPosition() = runBlocking {
+    @Test fun duplicateImportedRecordingsShareMetadataButPreserveEveryPlaylistOccurrence() = runBlocking {
         val json = backup(listOf(song("first").put("isrc", "GBAHS1600463"),
             song("second").put("isrc", "gb-ahs-16-00463").put("isCached", true)), listOf(playlist(3, "Imported")),
             listOf(ref(3, "first", 8), ref(3, "second", 2)))
@@ -97,9 +97,11 @@ class BackupRestoreSafetyTest {
         assertTrue(result.message, result.success)
         assertEquals(1, db.musicDao().getAllTracksSync().size)
         assertTrue(db.musicDao().getAllTracksSync().single().isCached)
-        val relationship = db.musicDao().getAllPlaylistCrossRefsSync().single()
-        assertEquals(2, relationship.orderIndex)
-        assertEquals(db.musicDao().getAllTracksSync().single().id, relationship.trackId)
+        val relationships = db.musicDao().getAllPlaylistCrossRefsSync()
+        assertEquals(listOf(2, 8), relationships.map { it.orderIndex })
+        assertEquals(2, relationships.map { it.entryId }.distinct().size)
+        val recordingId = db.musicDao().getAllTracksSync().single().id
+        assertTrue(relationships.all { it.trackId == recordingId })
     }
 
     @Test fun nonLatinTitlesAndDifferentRecordingVersionsStayDistinct() = runBlocking {
@@ -136,13 +138,13 @@ class BackupRestoreSafetyTest {
             assertFalse(result.success)
             assertEquals(listOf(local), dao.getAllTracksSync())
             assertEquals("Original", dao.getAllPlaylistsSync().single().title)
-            assertEquals(PlaylistTrackCrossRef(1, local.id, 4), dao.getAllPlaylistCrossRefsSync().single())
+            assertEquals(PlaylistTrackCrossRef(1, local.id, 4), dao.getAllPlaylistCrossRefsSync().map { it.copy(entryId = 0L) }.single())
         }
     }
 
     @Test fun unsupportedOrMalformedVersionsAreRejectedWithoutWrites() = runBlocking {
         db.musicDao().insertPlaylist(PlaylistEntity(1, "Original"))
-        for (version in listOf<Any>(0, 3, 10, 2.5, "2", JSONObject.NULL)) {
+        for (version in listOf<Any>(0, 4, 10, 2.5, "2", JSONObject.NULL)) {
             val json = backup(listOf(song("imported"))).put("schemaVersion", version)
             val result = BackupRestoreManager.restoreBackup(context, db, rawJson = json.toString())
             assertFalse("Accepted version $version", result.success)
@@ -186,7 +188,7 @@ class BackupRestoreSafetyTest {
         assertFalse(result.success)
         assertEquals(listOf(local), dao.getAllTracksSync())
         assertEquals("Original", dao.getAllPlaylistsSync().single().title)
-        assertEquals(PlaylistTrackCrossRef(1, local.id, 4), dao.getAllPlaylistCrossRefsSync().single())
+        assertEquals(PlaylistTrackCrossRef(1, local.id, 4), dao.getAllPlaylistCrossRefsSync().map { it.copy(entryId = 0L) }.single())
         assertEquals("Original", UserProfilePreferences.getUserProfile(context).name)
     }
 
@@ -205,7 +207,7 @@ class BackupRestoreSafetyTest {
             mode = BackupRestoreManager.RestoreMode.REPLACE, confirmReplace = true)
         assertTrue(result.message, result.success)
         assertEquals("Original", dao.getAllPlaylistsSync().single().title)
-        assertEquals(PlaylistTrackCrossRef(1, local.id, 4), dao.getAllPlaylistCrossRefsSync().single())
+        assertEquals(PlaylistTrackCrossRef(1, local.id, 4), dao.getAllPlaylistCrossRefsSync().map { it.copy(entryId = 0L) }.single())
         assertEquals(local, dao.getTrackById(local.id))
         assertTrue(dao.getTrackById("legacy")!!.isLiked)
     }
@@ -251,7 +253,7 @@ class BackupRestoreSafetyTest {
         assertFalse(result.success)
         assertEquals(listOf(local), dao.getAllTracksSync())
         assertEquals("Original", dao.getAllPlaylistsSync().single().title)
-        assertEquals(PlaylistTrackCrossRef(1, local.id, 4), dao.getAllPlaylistCrossRefsSync().single())
+        assertEquals(PlaylistTrackCrossRef(1, local.id, 4), dao.getAllPlaylistCrossRefsSync().map { it.copy(entryId = 0L) }.single())
         assertEquals("Original", UserProfilePreferences.getUserProfile(context).name)
         assertEquals("Original", UserProfilePreferences.getUserProfileFlow(context).value.name)
     }
@@ -267,7 +269,7 @@ class BackupRestoreSafetyTest {
         assertTrue(result.message, result.success)
         val importedId = dao.getAllPlaylistsSync().single().playlistId
         assertNotEquals(1L, importedId)
-        val refs = dao.getAllPlaylistCrossRefsSync()
+        val refs = dao.getAllPlaylistCrossRefsSync().map { it.copy(entryId = 0L) }
         assertTrue(refs.contains(PlaylistTrackCrossRef(1, local.id, 4)))
         assertEquals(listOf(PlaylistTrackCrossRef(importedId, "imported", 0)), refs.filter { it.playlistId == importedId })
     }

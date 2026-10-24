@@ -25,7 +25,11 @@ import kotlin.coroutines.resumeWithException
 import kotlin.math.abs
 
 /** One lookup session: bounded parallel requests, shared TTML downloads and cancellable HTTP. */
-internal class LyricsSources(private val identity: SongIdentity) {
+internal class LyricsSources(private val identity: SongIdentity,
+    private val sourceOverrides: Map<String, suspend () -> TrackLyrics?>? = null,
+    private val lookupBudgetMs: Long = 20_000L,
+    private val nowMs: () -> Long = android.os.SystemClock::elapsedRealtime
+) {
     private val title = LyricsProvider.sanitizeTitle(identity.title).first
     private val artist = identity.artist.orEmpty()
     private val duration = (identity.durationMs ?: 0L) / 1000
@@ -36,6 +40,8 @@ internal class LyricsSources(private val identity: SongIdentity) {
 
     suspend fun lookup(initial: TrackLyrics?, preferredProvider: String = "Auto", onCandidate: (TrackLyrics) -> Unit): TrackLyrics? = supervisorScope {
         var best = initial
+        suspend fun fetch(source: Source): TrackLyrics? = if (sourceOverrides == null) source.fetch()
+            else sourceOverrides[source.name]?.invoke()
         // 1. PaxSenix : Apple Music Style Syllable Lyrics
         val pref1PaxSenix = listOf(
             Source("PaxSenix") { paxApple() }
@@ -107,7 +113,7 @@ internal class LyricsSources(private val identity: SongIdentity) {
                     (preferredProvider.equals("PaxSenix", ignoreCase = true) && it.name == "PaxSenix")
                 }
                 for (source in matching) {
-                    val candidate = safely { withTimeoutOrNull(10_000L) { source.fetch() } }
+                    val candidate = safely { withTimeoutOrNull(10_000L) { fetch(source) } }
                         ?.takeIf { LyricsDocuments.verified(identity, it) }
                     if (candidate != null && LyricsDocuments.meaningfulUpgrade(candidate, best)) {
                         best = candidate
@@ -117,55 +123,50 @@ internal class LyricsSources(private val identity: SongIdentity) {
                 }
                 return@supervisorScope best
             }
-            withTimeoutOrNull(20_000L) {
-                channelFlow {
-                    suspend fun publish(source: Source) {
-                        val candidate = safely { withTimeoutOrNull(6_000L) { source.fetch() } }
+            val completed = ConcurrentHashMap.newKeySet<String>()
+            val preferred = pref1PaxSenix + pref2BetterLyrics + pref3BetterLyricsPortato +
+                pref4BiniLyrics + pref5LyricsPlus + pref5bPaxSpotify + pref5cPaxMusixmatch +
+                pref6LrcRed + pref7Musixmatch + pref8KuGou + pref10Unison
+            val emergency = pref11Genius + prefFallback.filterNot { it.name == "YouTube Music" }
+            val names = (preferred + emergency + pref9LrcLib).map { it.name }
+            val deadline = nowMs() + lookupBudgetMs
+            withTimeoutOrNull(lookupBudgetMs) {
+                channelFlow<TrackLyrics?> {
+                    suspend fun publish(source: Source, budget: Long) {
+                        val candidate = safely { withTimeoutOrNull(budget) { fetch(source) } }
                             ?.takeIf { LyricsDocuments.verified(identity, it) }
-                        if (candidate != null) send(candidate)
+                        completed.add(source.name)
+                        // A completion with no lyrics also releases preference waiting.
+                        send(candidate)
                     }
-                    suspend fun prioritized(sources: List<Source>, budget: Long) {
-                        withTimeoutOrNull(budget) {
-                            val next = AtomicInteger()
-                            coroutineScope {
-                                repeat(2) {
-                                    launch {
-                                        while (isActive) {
-                                            val source = sources.getOrNull(next.getAndIncrement()) ?: break
-                                            publish(source)
-                                        }
+                    val fastFallback = launch {
+                        publish(Source("LrcLib") { lrclib() }, minOf(6_000L, lookupBudgetMs))
+                        if (videoId != null && latest.get()?.let { LyricsDocuments.quality(it) >= 1 } != true)
+                            publish(Source("YouTube Music") { youtubeMusic() }, minOf(6_000L, (deadline - nowMs()).coerceAtLeast(1)))
+                    }
+                    val queue = preferred + emergency
+                    val next = AtomicInteger()
+                    coroutineScope {
+                        repeat(2) {
+                            launch {
+                                while (isActive) {
+                                    val index = next.getAndIncrement()
+                                    val source = queue.getOrNull(index) ?: break
+                                    if (index >= preferred.size && latest.get()?.let { LyricsDocuments.quality(it) >= 1 } == true) {
+                                        completed.add(source.name); continue
                                     }
+                                    val remaining = (deadline - nowMs()).coerceAtLeast(1L)
+                                    val rounds = ((queue.size - index + 1) / 2).coerceAtLeast(1)
+                                    // Reserve a fair share for every remaining tier instead
+                                    // of exhausting 20s on sequential preferred timeouts.
+                                    publish(source, minOf(6_000L, remaining / rounds).coerceAtLeast(1L))
                                 }
                             }
                         }
                     }
-                    // Fast availability channel: LrcLib responds instantly (<300ms) for immediate display
-                    val fastFallback = launch {
-                        publish(Source("LrcLib") { lrclib() })
-                        if (videoId != null && latest.get()?.let { LyricsDocuments.quality(it) >= 1 } != true) {
-                            publish(Source("YouTube Music") { youtubeMusic() })
-                        }
-                    }
-                    // Strictly prioritize matching user specified preference order:
-                    prioritized(pref1PaxSenix, 4_500L)
-                    prioritized(pref2BetterLyrics, 3_500L)
-                    prioritized(pref3BetterLyricsPortato, 3_000L)
-                    prioritized(pref4BiniLyrics, 3_000L)
-                    prioritized(pref5LyricsPlus, 3_000L)
-                    prioritized(pref5bPaxSpotify, 3_000L)
-                    prioritized(pref5cPaxMusixmatch, 3_000L)
-                    prioritized(pref6LrcRed, 3_000L)
-                    prioritized(pref7Musixmatch, 3_000L)
-                    prioritized(pref8KuGou, 2_500L)
                     fastFallback.join()
-                    prioritized(pref9LrcLib, 2_000L)
-                    prioritized(pref10Unison, 2_000L)
-                    // 11. Genius & Remaining fallbacks
-                    if (latest.get()?.let { LyricsDocuments.quality(it) >= 1 } != true) {
-                        prioritized(pref11Genius + prefFallback, 3_000L)
-                    }
                 }.firstOrNull { candidate ->
-                    if (LyricsDocuments.meaningfulUpgrade(candidate, best)) {
+                    if (candidate != null && LyricsDocuments.meaningfulUpgrade(candidate, best)) {
                         best = candidate
                         latest.set(candidate)
                         onCandidate(candidate)
@@ -175,7 +176,10 @@ internal class LyricsSources(private val identity: SongIdentity) {
                         val p = it.lowercase()
                         p.contains("paxsenix") || p.contains("pax") || p.contains("betterlyrics")
                     } == true
-                    timing?.tier == 3 && timing.complete && isTopPref
+                    val rank = best?.let { LyricsDocuments.providerPreferenceRank(it.provider) } ?: Int.MIN_VALUE
+                    timing?.tier == 3 && timing.complete && isTopPref && names.none {
+                        LyricsDocuments.providerPreferenceRank(it) > rank && it !in completed
+                    }
                 }
             }
         } finally { documents.values.forEach { if (!it.isCompleted) it.cancel() } }

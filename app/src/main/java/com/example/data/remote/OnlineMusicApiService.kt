@@ -111,15 +111,7 @@ object OnlineMusicApiService {
         return try {
             val cipher = mediaUrlCiphers.get()!!
 
-            val decodedBytes = try {
-                java.util.Base64.getDecoder().decode(encryptedUrl)
-            } catch (_: Throwable) {
-                try {
-                    android.util.Base64.decode(encryptedUrl, android.util.Base64.DEFAULT)
-                } catch (e2: Throwable) {
-                    throw e2
-                }
-            }
+            val decodedBytes = android.util.Base64.decode(encryptedUrl, android.util.Base64.DEFAULT)
             val decryptedBytes = cipher.doFinal(decodedBytes)
             val rawUrl = String(decryptedBytes, Charsets.UTF_8)
 

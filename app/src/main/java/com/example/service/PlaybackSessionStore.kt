@@ -65,41 +65,56 @@ internal object PlaybackSessionStore {
         scope.launch {
             for (snapshot in pending) fileMutex.withLock {
                 try {
-                    val json = withContext(AppDispatchers.CpuBounded) {
-                    val queue = JSONArray()
-                    snapshot.items.forEach { item ->
-                        val meta = item.mediaMetadata
-                        val extras = meta.extras
-                        queue.put(JSONObject().put("id", item.mediaId)
-                            .put("uri", item.localConfiguration?.uri?.toString().orEmpty())
-                            .put("title", meta.title?.toString().orEmpty()).put("artist", meta.artist?.toString().orEmpty())
-                            .put("album", meta.albumTitle?.toString().orEmpty()).put("artwork", meta.artworkUri?.toString().orEmpty())
-                            .put("genre", meta.genre?.toString() ?: extras?.getString("genre").orEmpty())
-                            .put("source", extras?.getString("media_source").orEmpty())
-                            .put("bitrate", extras?.getInt("bitrate", 0) ?: 0)
-                            .put("duration", extras?.getLong("duration", 0L) ?: 0L)
-                            .put("qualityBadge", extras?.getString("qualityBadge").orEmpty()).apply {
-                                listOf("singers", "writer", "language", "year", "isrc").forEach { key -> put(key, extras?.getString(key).orEmpty()) }
-                                put("enhancerOrigin", JSONObject().apply {
-                                    com.example.playback.SourceTransitionOrigin.keys.forEach { key ->
-                                        if (extras?.containsKey(key) == true) put(key, extras.get(key))
-                                    }
-                                })
-                                put("primaryArtists", JSONArray(extras?.getStringArrayList("primaryArtists").orEmpty()))
-                                put("isLiked", extras?.getBoolean("isLiked", false) ?: false)
-                                put("isLossless", extras?.getBoolean("isLossless", false) ?: false)
-                                put("recommendationOnly", extras?.getBoolean("recommendation_only", false) ?: false)
-                            })
-                    }
-                    JSONObject().put("version", 1).put("index", snapshot.index)
-                        .put("position", snapshot.positionMs).put("queue", queue).toString()
-                    }
+                    val queueBytes = withContext(AppDispatchers.CpuBounded) { encodedQueue(snapshot.items) }
+                    val header = JSONObject().put("version", 1).put("index", snapshot.index)
+                        .put("position", snapshot.positionMs).toString().dropLast(1).toByteArray(Charsets.UTF_8)
                     val output = requireNotNull(file).startWrite()
-                    try { output.write(json.toByteArray(Charsets.UTF_8)); requireNotNull(file).finishWrite(output) }
+                    try {
+                        output.write(header); output.write(",\"queue\":".toByteArray(Charsets.UTF_8))
+                        output.write(queueBytes); output.write('}'.code)
+                        requireNotNull(file).finishWrite(output)
+                    }
                     catch (error: Exception) { requireNotNull(file).failWrite(output); throw error }
                 } catch (e: CancellationException) { throw e }
                 catch (e: Exception) { android.util.Log.w("PlaybackSession", "Session checkpoint failed: ${e.message}") }
             }
+        }
+    }
+
+    private var encodedItems: List<MediaItem>? = null
+    private var queueBytes: ByteArray? = null
+    /** Called by the single checkpoint writer on the shared CPU lane. */
+    internal fun encodedQueue(items: List<MediaItem>): ByteArray {
+        if (encodedItems === items || encodedItems == items) queueBytes?.let { return it }
+        val queue = JSONArray()
+        items.forEach { item ->
+            val meta = item.mediaMetadata
+            val extras = meta.extras
+            queue.put(JSONObject().put("id", item.mediaId)
+                .put("uri", item.localConfiguration?.uri?.toString().orEmpty())
+                .put("title", meta.title?.toString().orEmpty()).put("artist", meta.artist?.toString().orEmpty())
+                .put("album", meta.albumTitle?.toString().orEmpty()).put("artwork", meta.artworkUri?.toString().orEmpty())
+                .put("genre", meta.genre?.toString() ?: extras?.getString("genre").orEmpty())
+                .put("source", extras?.getString("media_source").orEmpty())
+                .put("bitrate", extras?.getInt("bitrate", 0) ?: 0)
+                .put("duration", extras?.getLong("duration", 0L) ?: 0L)
+                .put("qualityBadge", extras?.getString("qualityBadge").orEmpty()).apply {
+                    listOf("singers", "writer", "language", "year", "isrc").forEach { key -> put(key, extras?.getString(key).orEmpty()) }
+                    put("enhancerOrigin", JSONObject().apply {
+                        com.example.playback.SourceTransitionOrigin.keys.forEach { key ->
+                            if (extras?.containsKey(key) == true) put(key, extras.get(key))
+                        }
+                    })
+                    put("primaryArtists", JSONArray(extras?.getStringArrayList("primaryArtists").orEmpty()))
+                    put("playlistEntryId", extras?.getLong("playlist_entry_id", 0L) ?: 0L)
+                    put("isLiked", extras?.getBoolean("isLiked", false) ?: false)
+                    put("isLossless", extras?.getBoolean("isLossless", false) ?: false)
+                    put("recommendationOnly", extras?.getBoolean("recommendation_only", false) ?: false)
+                })
+        }
+        return queue.toString().toByteArray(Charsets.UTF_8).also {
+            encodedItems = items
+            queueBytes = it
         }
     }
 
@@ -167,6 +182,7 @@ internal object PlaybackSessionStore {
                             val primary = entry.optJSONArray("primaryArtists")
                             putStringArrayList("primaryArtists", ArrayList((0 until (primary?.length() ?: 0))
                                 .map { primary!!.getString(it) }.filter(String::isNotBlank)))
+                            putLong("playlist_entry_id", entry.optLong("playlistEntryId", 0L))
                             putBoolean("isLiked", known[id]?.isLiked ?: entry.optBoolean("isLiked"))
                             putBoolean("isLossless", entry.optBoolean("isLossless"))
                             putBoolean("recommendation_only", entry.optBoolean("recommendationOnly"))

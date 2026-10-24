@@ -23,6 +23,7 @@ import com.example.playback.AudioQuality
 import com.example.playback.PlaybackManager
 import com.example.playback.PlayerUiState
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -39,6 +40,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.stateIn
 import androidx.compose.runtime.Immutable
 import kotlinx.coroutines.flow.update
@@ -207,6 +209,31 @@ class PlayerViewModel(
                 }
             } else emptyFlow()
         }.stateIn(libraryDataScope, SharingStarted.Lazily, initial)
+
+    private val _libraryMessages = kotlinx.coroutines.flow.MutableSharedFlow<String>(extraBufferCapacity = 8)
+    val libraryMessages = _libraryMessages.asSharedFlow()
+    val libraryFailures = repository.libraryFailures
+    fun retryLocalLibrary() = repository.retryLocalLibrary()
+
+    init {
+        viewModelScope.launch(AppDispatchers.Io) {
+            repository.libraryFailures.collect { failures ->
+                listOf("favorites", "recents", "playlists").forEachIndexed { index, key ->
+                    if (key in failures) localLibraryLoaded[index].completeExceptionally(
+                        java.io.IOException(failures.getValue(key)))
+                }
+            }
+        }
+    }
+
+    private fun libraryCommand(operation: String, block: suspend () -> Unit) = viewModelScope.launch {
+        try { block() }
+        catch (cancelled: CancellationException) { throw cancelled }
+        catch (error: Exception) {
+            android.util.Log.w("PlayerViewModel", "Library operation failed: $operation", error)
+            _libraryMessages.emit("Couldn't $operation. Please try again.")
+        }
+    }
 
     val favoriteTracks: StateFlow<List<MusicTrack>> = retainedLibraryData(repository.retainedFavoriteTracks, localLibraryLoaded[0]) {
         repository.getFavoriteTracks()
@@ -698,13 +725,13 @@ class PlayerViewModel(
     }
 
     fun renamePlaylist(playlistId: Long, newTitle: String) {
-        viewModelScope.launch(AppDispatchers.CpuBounded) {
+        libraryCommand("rename playlist") {
             withContext(AppDispatchers.Io) { repository.renamePlaylist(playlistId, newTitle) }
             val current = _selectedPlaylistTracks.value
             if (current != null && current.playlist.playlistId == playlistId) {
-                val renamed = current.copy(
+                val renamed = withContext(AppDispatchers.CpuBounded) { current.copy(
                     playlist = current.playlist.copy(title = newTitle.trim())
-                ).also { it.musicTracks }
+                ).also { it.musicTracks } }
                 _selectedPlaylistTracks.update { if (it === current) renamed else it }
             }
         }
@@ -766,6 +793,11 @@ class PlayerViewModel(
             val safeQueue = if (queue.isNotEmpty()) queue else _catalogTracks.value.ifEmpty { listOf(track) }
             playbackManager.playTrack(track, safeQueue, isExplicitPlaylist)
         }
+    }
+
+    fun playQueuedTrack(track: MusicTrack) {
+        activePlaybackLaunchJob?.cancel()
+        playbackManager.playQueuedTrack(track)
     }
 
     fun playPlaylistTrack(track: MusicTrack, tracks: List<MusicTrack>) {
@@ -859,14 +891,14 @@ class PlayerViewModel(
     }
 
     fun toggleLike(track: MusicTrack) {
-        viewModelScope.launch(AppDispatchers.CpuBounded) {
-          favoriteUpdateMutex.withLock {
-            val newLikedStatus = withContext(AppDispatchers.Io) { repository.toggleFavorite(track) }
-            withContext(Dispatchers.Main.immediate) { playbackManager.updateFavoriteStatus(track.id, newLikedStatus) }
-            _catalogTracks.update { list ->
-                list.map { if (it.id == track.id) it.copy(isLiked = newLikedStatus) else it }
+        libraryCommand("update favorite") {
+            favoriteUpdateMutex.withLock {
+                val newLikedStatus = withContext(AppDispatchers.Database) { repository.toggleFavorite(track) }
+                playbackManager.updateFavoriteStatus(track.id, newLikedStatus)
+                withContext(AppDispatchers.CpuBounded) {
+                    _catalogTracks.update { list -> list.map { if (it.id == track.id) it.copy(isLiked = newLikedStatus) else it } }
+                }
             }
-          }
         }
     }
 
@@ -948,14 +980,14 @@ class PlayerViewModel(
     }
 
     fun createPlaylist(title: String, description: String, onCreated: ((Long) -> Unit)? = null) {
-        viewModelScope.launch {
+        libraryCommand("create playlist") {
             val id = withContext(AppDispatchers.Io) { repository.createPlaylist(title, description) }
             onCreated?.invoke(id)
         }
     }
 
     fun deletePlaylist(playlistId: Long) {
-        viewModelScope.launch {
+        libraryCommand("delete playlist") {
             withContext(AppDispatchers.Io) { repository.deletePlaylist(playlistId) }
             if (_selectedPlaylistTracks.value?.playlist?.playlistId == playlistId) {
                 _selectedPlaylistTracks.value = null
@@ -964,20 +996,29 @@ class PlayerViewModel(
     }
 
     fun addTrackToPlaylist(playlistId: Long, track: MusicTrack) {
-        viewModelScope.launch(AppDispatchers.Io) {
-            repository.addTrackToPlaylist(playlistId, track)
+        libraryCommand("add song to playlist") {
+            withContext(AppDispatchers.Io) { repository.addTrackToPlaylist(playlistId, track) }
         }
     }
 
     fun removeTrackFromPlaylist(playlistId: Long, trackId: String) {
-        viewModelScope.launch(AppDispatchers.Io) {
-            repository.removeTrackFromPlaylist(playlistId, trackId)
+        libraryCommand("remove song from playlist") {
+            withContext(AppDispatchers.Io) { repository.removeTrackFromPlaylist(playlistId, trackId) }
+        }
+    }
+
+    fun removePlaylistEntry(playlistId: Long, track: MusicTrack) {
+        libraryCommand("remove song from playlist") {
+            withContext(AppDispatchers.Database) {
+                if (track.playlistEntryId > 0L) repository.removePlaylistEntry(playlistId, track.playlistEntryId)
+                else repository.removeTrackFromPlaylist(playlistId, track.id)
+            }
         }
     }
 
     fun openPlaylist(playlistId: Long) {
         playlistTracksJob?.cancel()
-        playlistTracksJob = viewModelScope.launch(AppDispatchers.CpuBounded) {
+        playlistTracksJob = libraryCommand("open playlist") {
             repository.getPlaylistWithTracks(playlistId).collect {
                 // Publication belongs to the selected-page state machine; all row preparation
                 // has already completed on the repository's Default dispatcher.
@@ -1262,8 +1303,8 @@ class PlayerViewModel(
             val work = com.example.performance.BackgroundWorkCoordinator.busy()
             try {
                 val matchedTracks = withContext(AppDispatchers.CpuBounded) {
-                    // Native IDs reconcile with the existing library; keep the first playlist position.
-                    summary.matchedItems.mapNotNull { it.matchedTrack }.distinctBy { it.id }
+                    // Keep each original occurrence; native IDs still reconcile the shared track metadata.
+                    summary.matchedItems.mapNotNull { it.matchedTrack }
                 }
                 if (matchedTracks.isEmpty()) {
                     _importState.update { it.copy(step = PlaylistImportStep.Error("Cannot save empty playlist. No tracks were matched.")) }

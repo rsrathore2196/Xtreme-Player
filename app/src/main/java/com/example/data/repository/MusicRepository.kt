@@ -47,6 +47,10 @@ import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.retryWhen
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
 import com.example.data.local.UserProfile
@@ -262,7 +266,7 @@ class MusicRepository private constructor(
             val events = withContext(AppDispatchers.Database) { MusicDatabase.getDatabase(it).listeningEventDao().getActualPlays(250) }
             val ids = events.map { event -> event.trackId }.distinct()
             val metadata = withContext(AppDispatchers.Database) { musicDao.getTracksByIds(ids) }.map { row -> row.toMusicTrack() }
-            UserTasteProfile.fromEvents(events, metadata, getFavoriteTracks().first())
+            UserTasteProfile.fromEvents(events, metadata, favoriteSnapshotOrRetained())
         } ?: UserTasteProfile.COLD_START_PROFILE
         recommendations.radio(seed, profile, actualTaste, alreadyQueued, limit)
     }
@@ -272,49 +276,65 @@ class MusicRepository private constructor(
 
     // Replay authoritative snapshots; multiple screens share both Room reads and
     // entity conversion. No initial empty value is mistaken for a loaded library.
+    private val libraryRetry = MutableStateFlow(0L)
+    private val _libraryFailures = MutableStateFlow<Map<String, String>>(emptyMap())
+    val libraryFailures = _libraryFailures.asStateFlow()
+
+    init {
+        initialCatalogScope.launch {
+            BackgroundWorkCoordinator.uiForeground.collect { if (it) retryLocalLibrary() }
+        }
+    }
+
+    /** Retry only failed observations. Healthy, shared Room collectors are never restarted. */
+    fun retryLocalLibrary() {
+        if (_libraryFailures.value.isNotEmpty()) libraryRetry.update { it + 1L }
+    }
+
+    private fun <T> sharedLibrarySnapshots(name: String, rows: Flow<T>, retain: (T) -> Unit) =
+        libraryRetry.map { revision -> if (revision == 0L || name in _libraryFailures.value) revision else -1L }
+            .let { triggers -> kotlinx.coroutines.flow.flow {
+                var accepted = 0L
+                triggers.collect { revision ->
+                    if (revision >= 0L) accepted = revision
+                    emit(accepted)
+                }
+            } }.distinctUntilChanged().flatMapLatest {
+            rows.distinctUntilChanged().onEach { value ->
+                retain(value)
+                _libraryFailures.update { failures -> failures - name }
+            }.retryWhen { error, attempt ->
+                if (error is CancellationException) throw error
+                if (attempt >= 2) false else { kotlinx.coroutines.delay(250L * (attempt + 1)); true }
+            }.catch { error ->
+                if (error is CancellationException) throw error
+                _libraryFailures.update { failures -> failures + (name to "Local library unavailable. Please retry.") }
+            }
+        }.shareIn(initialCatalogScope, SharingStarted.Lazily, replay = 1)
+
     private val favoriteSnapshots by lazy {
-        sharedTrackSnapshots(flow { emitAll(musicDao.getFavoriteTracks()) }) { retainedFavoriteTracks = it }
+        sharedTrackSnapshots("favorites", flow { emitAll(musicDao.getFavoriteTracks()) }) { retainedFavoriteTracks = it }
     }
     private val recentSnapshots by lazy {
-        sharedTrackSnapshots(flow { emitAll(musicDao.getRecentlyPlayedTracks()) }) { retainedRecentlyPlayed = it }
+        sharedTrackSnapshots("recents", flow { emitAll(musicDao.getRecentlyPlayedTracks()) }) { retainedRecentlyPlayed = it }
     }
+    private fun sharedTrackSnapshots(name: String, rows: Flow<List<TrackEntity>>, retain: (List<MusicTrack>) -> Unit) =
+        sharedLibrarySnapshots(name, rows.flowOn(AppDispatchers.Database).distinctUntilChanged()
+            .map { list -> list.map { it.toMusicTrack() } }.distinctUntilChanged().flowOn(AppDispatchers.CpuBounded), retain)
 
-    private fun sharedTrackSnapshots(rows: Flow<List<TrackEntity>>, retain: (List<MusicTrack>) -> Unit) =
-        rows.flowOn(AppDispatchers.Database).distinctUntilChanged()
-            .map { list -> list.map { it.toMusicTrack() } }.distinctUntilChanged()
-            .onEach(retain).flowOn(AppDispatchers.CpuBounded)
-            .map { Result.success(it) }
-            .retryWhen { _, attempt ->
-                if (attempt >= 2) false else { kotlinx.coroutines.delay(250L * (attempt + 1)); true }
-            }
-            .catch { emit(Result.failure(it)) }
-            .shareIn(initialCatalogScope, SharingStarted.Lazily, replay = 1)
+    fun getFavoriteTracks(): Flow<List<MusicTrack>> = favoriteSnapshots
+    /** Optional ranking must not wait indefinitely for unavailable local storage. */
+    suspend fun favoriteSnapshotOrRetained(): List<MusicTrack> =
+        if ("favorites" in libraryFailures.value) retainedFavoriteTracks
+        else kotlinx.coroutines.withTimeoutOrNull(1_500L) { getFavoriteTracks().first() } ?: retainedFavoriteTracks
 
-    fun getFavoriteTracks(): Flow<List<MusicTrack>> = favoriteSnapshots.map { it.getOrThrow() }
-    fun getRecentlyPlayedTracks(): Flow<List<MusicTrack>> = recentSnapshots.map { it.getOrThrow() }
+    fun getRecentlyPlayedTracks(): Flow<List<MusicTrack>> = recentSnapshots
 
-    // One app-owned Room observer, started on demand. Re-subscribing after a tab,
-    // Activity or foreground change replays its snapshot without querying again.
-    // Unlike stateIn(emptyList()), replay emits only after the authoritative read.
     private val playlistSnapshots by lazy {
-        flow { emitAll(musicDao.getAllPlaylists()) }
-            .flowOn(AppDispatchers.Database)
-            .distinctUntilChanged()
-            .onEach { retainedPlaylists = it }
-            .map { Result.success(it) }
-            .retryWhen { _, attempt ->
-                if (attempt >= 2) false else {
-                    kotlinx.coroutines.delay(250L * (attempt + 1))
-                    true
-                }
-            }
-            // Shared upstream errors must still reach the ViewModel's existing
-            // fallback handling, rather than escaping the app-owned scope.
-            .catch { emit(Result.failure(it)) }
-            .shareIn(initialCatalogScope, SharingStarted.Lazily, replay = 1)
+        sharedLibrarySnapshots("playlists", flow { emitAll(musicDao.getAllPlaylists()) }
+            .flowOn(AppDispatchers.Database)) { retainedPlaylists = it }
     }
-
-    fun getAllPlaylists(): Flow<List<PlaylistEntity>> = playlistSnapshots.map { it.getOrThrow() }
+    fun getAllPlaylists(): Flow<List<PlaylistEntity>> = playlistSnapshots
 
     fun getPlaylistWithTracks(playlistId: Long): Flow<PlaylistWithTracks?> {
         return flow { emitAll(musicDao.getPlaylistWithTracks(playlistId)) }
@@ -342,20 +362,10 @@ class MusicRepository private constructor(
     }
 
     suspend fun createPlaylistWithTracks(title: String, description: String, coverUrl: String = "", tracks: List<MusicTrack>): Long {
-        val playlistId = createPlaylist(title, description, coverUrl)
-        if (tracks.isNotEmpty()) {
-            val entities = tracks.map { TrackEntity.fromMusicTrack(it) }
-            val refs = tracks.mapIndexed { index, track ->
-                PlaylistTrackCrossRef(
-                    playlistId = playlistId,
-                    trackId = track.id,
-                    orderIndex = index
-                )
-            }
-            musicDao.mergeTracksMetadata(entities)
-            musicDao.insertPlaylistTrackRefs(refs)
+        val rows = withContext(AppDispatchers.CpuBounded) { tracks.map { TrackEntity.fromMusicTrack(it) } }
+        return withContext(AppDispatchers.Database) {
+            musicDao.createPlaylistWithEntries(PlaylistEntity(title = title, description = description, coverUrl = coverUrl), rows)
         }
-        return playlistId
     }
 
     suspend fun deletePlaylist(playlistId: Long) {
@@ -367,16 +377,10 @@ class MusicRepository private constructor(
     }
 
     suspend fun addTrackToPlaylist(playlistId: Long, track: MusicTrack) {
-        // Always ensure complete track entity is stored in DB so relationships persist
-        val entity = TrackEntity.fromMusicTrack(track)
-        musicDao.mergeTrackMetadata(entity)
-        musicDao.insertPlaylistTrackRef(
-            PlaylistTrackCrossRef(
-                playlistId = playlistId,
-                trackId = track.id
-            )
-        )
+        musicDao.appendPlaylistTrack(playlistId, TrackEntity.fromMusicTrack(track))
     }
+
+    suspend fun removePlaylistEntry(playlistId: Long, entryId: Long) = musicDao.removePlaylistEntry(playlistId, entryId)
 
     suspend fun removeTrackFromPlaylist(playlistId: Long, trackId: String) {
         musicDao.removeTrackFromPlaylist(playlistId, trackId)

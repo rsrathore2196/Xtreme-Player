@@ -27,7 +27,9 @@ data class MusicTrack(
     /** Request policy for recommendation queues, not persisted over library metadata. */
     val recommendationOnly: Boolean = false,
     /** Recording-level primary credits, never the provider's combined contributor list. */
-    val primaryArtists: List<String> = emptyList()
+    val primaryArtists: List<String> = emptyList(),
+    /** Playlist occurrence identity; catalog/song IDs and provider matching stay unchanged. */
+    val playlistEntryId: Long = 0L
 ) {
     val streamUrl: String get() = audioUrl
     val coverArtUrl: String get() = coverUrl
@@ -101,3 +103,6 @@ data class MusicTrack(
         }
     }
 }
+
+/** Distinct occurrences of one recording may coexist in an explicit playlist. */
+val MusicTrack.queueIdentity: String get() = if (playlistEntryId > 0L) "entry:$playlistEntryId" else id

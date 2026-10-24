@@ -30,6 +30,25 @@ class EnhancerSourceTransitionTest {
         source = "INTERNET_ARCHIVE", isLossless = true, bitrateKbps = 900, qualityBadge = "FLAC")
     @Before fun clear() { StreamResolver.clearVerifiedLosslessCache() }
     @After fun finish() { StreamResolver.clearVerifiedLosslessCache() }
+
+    @Test fun automaticLosslessCandidatesMustImproveTheConfiguredSourceRank() {
+        val policy = PlaybackSourcePolicy(AudioQualityCeiling.MAX, sources = PlaybackSource.builtIns)
+        val original = video.copy(audioUrl = jio.audioUrl, source = "JIOSAAVN", bitrateKbps = 320)
+        val lossless = video.copy(audioUrl = archive.audioUrl, source = "INTERNET_ARCHIVE", isLossless = true)
+        assertTrue(policy.allowsAutomaticReplacement(original, lossless))
+        assertFalse(policy.allowsAutomaticReplacement(lossless, original))
+        assertFalse(policy.copy(returnToYouTube = true).allowsAutomaticReplacement(original, lossless))
+        assertFalse(policy.copy(ceiling = AudioQualityCeiling.HIGH).allowsAutomaticReplacement(original, lossless))
+        assertFalse(policy.allowsAutomaticReplacement(original, lossless.copy(id = "different-recording")))
+        assertFalse(policy.allowsAutomaticReplacement(original, lossless.copy(audioUrl = "https://wrong.example/file.flac")))
+        val addon = PlaybackSource("custom_preferred", PlaybackSourceKind.ADDON, "Preferred", baseUrl = "https://server.example")
+        val customPolicy = policy.copy(sources = listOf(addon) + PlaybackSource.builtIns)
+        val custom = com.example.data.remote.StreamingAddons.parseStream(
+            """{"url":"https://server.example/song.m4a","codec":"aac","bitrate":320000}""",
+            addon.baseUrl, video, video, customPolicy, addon.id)!!
+        assertTrue(customPolicy.isPreferred(custom))
+        assertFalse(customPolicy.allowsAutomaticReplacement(custom, lossless))
+    }
     private fun resolver() = StreamResolver(searchStandard = { _, _ -> listOf(jio) }, searchLossless = { listOf(archive) },
         supportsLossless = { true }, resolveYouTube = { track, _, _, _ -> video.copy(id = track.id) })
 

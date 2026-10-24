@@ -140,6 +140,14 @@ fun MainNavigationScaffold(
     val isDynamicGlassEnabled by viewModel.isDynamicGlassEnabled.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
+    val messageLifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(viewModel, context, messageLifecycle) {
+        messageLifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+            viewModel.libraryMessages.collect { message ->
+                android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
+    }
     var selectedTabIndex by rememberSaveable { mutableIntStateOf(0) }
     // One lazy pager owns the page position. Selection changes on
     // tap, never from currentPage halfway through a slide (which retriggers pills).
@@ -151,6 +159,7 @@ fun MainNavigationScaffold(
     // data preparation and effects; tab motion does not reconstruct their trees.
     val previousTabIndex = remember { mutableIntStateOf(selectedTabIndex) }
     val selectTab: (Int) -> Unit = { index ->
+        if (index == 2) viewModel.retryLocalLibrary()
         if (selectedTabIndex != index) {
             com.example.performance.BackgroundWorkCoordinator.navigationInteraction()
             selectedTabIndex = index
@@ -313,39 +322,8 @@ fun MainNavigationScaffold(
                 CompositionLocalProvider(LocalVisualEffectsActive provides (!playerCoversContent && catalogDetail == null)) {
                 // If playlist detail is open, show it with a smooth animated transition
                 val currentPlaylist = selectedPlaylistWithTracks
-                AnimatedVisibility(
-                    visible = currentPlaylist != null,
-                    enter = slideInHorizontally(
-                        initialOffsetX = { it },
-                        animationSpec = tween(260, easing = FastOutSlowInEasing)
-                    ) + fadeIn(animationSpec = tween(220, easing = LinearOutSlowInEasing)),
-                    exit = slideOutHorizontally(
-                        targetOffsetX = { it },
-                        animationSpec = tween(220, easing = FastOutSlowInEasing)
-                    ) + fadeOut(animationSpec = tween(160, easing = FastOutLinearInEasing)),
-                    modifier = Modifier.graphicsLayer { clip = false }
-                ) {
-                    currentPlaylist?.let { playlist ->
-                        val detailPlayer by viewModel.playbackPresentationState.collectAsStateWithLifecycle()
-                        PlaylistDetailScreen(
-                            playlistWithTracks = playlist,
-                            playerUiState = detailPlayer,
-                            currentPlayingTrackId = currentPlayingTrackId,
-                            onBackClick = { viewModel.closePlaylist() },
-                            onPlayTrack = { track, queue -> viewModel.playPlaylistTrack(track, queue) },
-                            onToggleFavorite = { track -> viewModel.toggleLike(track) },
-                            onDeletePlaylist = { viewModel.deletePlaylist(playlist.playlist.playlistId) },
-                            onRemoveTrack = { trackId ->
-                                viewModel.removeTrackFromPlaylist(playlist.playlist.playlistId, trackId)
-                            },
-                            onRenamePlaylist = { newTitle ->
-                                viewModel.renamePlaylist(playlist.playlist.playlistId, newTitle)
-                            }
-                        )
-                    }
-                }
 
-                if (currentPlaylist == null || preparingStartup) {
+                run {
                     val tabContent: @Composable (Int) -> Unit = { tabIndex ->
                       tabState.SaveableStateProvider(tabIndex) {
                         when (tabIndex) {
@@ -432,6 +410,11 @@ fun MainNavigationScaffold(
                         }
                       }
                     }
+                    val primaryCovered = !preparingStartup && (playerCoversContent || catalogDetail != null ||
+                        currentPlaylist != null || selectedTabIndex == 3 && !tabTransition.isRunning)
+                    RetainedPrimaryTabHost(state = tabPagerState, transition = tabTransition,
+                        covered = primaryCovered, inputBlocked = primaryCovered || selectedTabIndex == 3,
+                        prepareStartup = preparingStartup) { tabIndex -> tabContent(tabIndex) }
                     tabTransition.AnimatedContent(
                         transitionSpec = {
                             // Expand from the Home settings button with one coordinated
@@ -464,14 +447,42 @@ fun MainNavigationScaffold(
                                 tabContent(3)
                             }
                         } else {
-                            MainTabPager(
-                                state = tabPagerState,
-                                pageCovered = !preparingStartup && (playerCoversContent || catalogDetail != null),
-                                prepareStartup = preparingStartup
-                            ) { tabIndex ->
-                                tabContent(tabIndex)
-                            }
+                            // The real primary host stays mounted immediately below this transition.
+                            Box(Modifier.fillMaxSize())
                         }
+                    }
+                }
+
+                AnimatedVisibility(
+                    visible = currentPlaylist != null,
+                    enter = slideInHorizontally(
+                        initialOffsetX = { it },
+                        animationSpec = tween(260, easing = FastOutSlowInEasing)
+                    ) + fadeIn(animationSpec = tween(220, easing = LinearOutSlowInEasing)),
+                    exit = slideOutHorizontally(
+                        targetOffsetX = { it },
+                        animationSpec = tween(220, easing = FastOutSlowInEasing)
+                    ) + fadeOut(animationSpec = tween(160, easing = FastOutLinearInEasing)),
+                    modifier = Modifier.graphicsLayer { clip = false }
+                ) {
+                    currentPlaylist?.let { playlist ->
+                        val detailPlayer by viewModel.playbackPresentationState.collectAsStateWithLifecycle()
+                        PlaylistDetailScreen(
+                            playlistWithTracks = playlist,
+                            playerUiState = detailPlayer,
+                            currentPlayingTrackId = currentPlayingTrackId,
+                            onBackClick = { viewModel.closePlaylist() },
+                            onPlayTrack = { track, queue -> viewModel.playPlaylistTrack(track, queue) },
+                            onToggleFavorite = { track -> viewModel.toggleLike(track) },
+                            onDeletePlaylist = { viewModel.deletePlaylist(playlist.playlist.playlistId) },
+                            onRemoveEntry = { track -> viewModel.removePlaylistEntry(playlist.playlist.playlistId, track) },
+                            onRemoveTrack = { trackId ->
+                                viewModel.removeTrackFromPlaylist(playlist.playlist.playlistId, trackId)
+                            },
+                            onRenamePlaylist = { newTitle ->
+                                viewModel.renamePlaylist(playlist.playlist.playlistId, newTitle)
+                            }
+                        )
                     }
                 }
 
@@ -624,7 +635,7 @@ fun MainNavigationScaffold(
             QueueBottomSheet(
                 queue = playerUiState.queue,
                 currentTrack = playerUiState.currentTrack,
-                onTrackClick = { track -> viewModel.playTrack(track, playerUiState.queue) },
+                onTrackClick = viewModel::playQueuedTrack,
                 onMoveTrack = { from, to -> viewModel.reorderQueue(from, to) },
                 onDismiss = { isQueueOpen = false },
                 isAutoplayEnabled = playerUiState.isAutoplayEnabled,

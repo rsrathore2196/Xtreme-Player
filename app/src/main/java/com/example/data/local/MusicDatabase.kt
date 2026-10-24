@@ -11,7 +11,7 @@ import kotlinx.coroutines.asExecutor
 
 @Database(
     entities = [TrackEntity::class, PlaylistEntity::class, PlaylistTrackCrossRef::class, ListeningEventEntity::class, ArtworkCacheEntity::class],
-    version = 10,
+    version = 11,
     exportSchema = true
 )
 abstract class MusicDatabase : RoomDatabase() {
@@ -172,6 +172,17 @@ abstract class MusicDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE `playlist_entries_new` (`playlistId` INTEGER NOT NULL, `trackId` TEXT NOT NULL, `orderIndex` INTEGER NOT NULL, `entryId` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL)")
+                db.execSQL("INSERT INTO `playlist_entries_new` (`playlistId`, `trackId`, `orderIndex`) SELECT `playlistId`, `trackId`, `orderIndex` FROM `playlist_track_cross_ref` ORDER BY rowid")
+                db.execSQL("DROP TABLE `playlist_track_cross_ref`")
+                db.execSQL("ALTER TABLE `playlist_entries_new` RENAME TO `playlist_track_cross_ref`")
+                db.execSQL("CREATE INDEX `index_playlist_track_cross_ref_trackId` ON `playlist_track_cross_ref` (`trackId`)")
+                db.execSQL("CREATE INDEX `index_playlist_track_cross_ref_playlistId_orderIndex` ON `playlist_track_cross_ref` (`playlistId`, `orderIndex`)")
+            }
+        }
+
         val ALL_MIGRATIONS = arrayOf(
             MIGRATION_1_2,
             MIGRATION_2_3,
@@ -182,7 +193,8 @@ abstract class MusicDatabase : RoomDatabase() {
             MIGRATION_7_8,
             MIGRATION_8_7,
             MIGRATION_8_9,
-            MIGRATION_9_10
+            MIGRATION_9_10,
+            MIGRATION_10_11
         )
 
         fun getDatabase(context: Context): MusicDatabase {
