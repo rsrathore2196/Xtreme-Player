@@ -31,6 +31,9 @@ object ArtistPhotoRepository {
     private const val PHOTO_VERSION = 4
     private const val PHOTO_TTL = 7 * 86_400_000L
     private const val PREFERRED_RECHECK = 86_400_000L
+    internal const val MAX_RESTORED_PORTRAITS = 512
+    internal const val HOT_PORTRAIT_KEYS = "portrait_hot_keys_v1"
+    @Volatile private var restoreDemanded = false
     private data class Photo(val expires: Long, val url: String?, val source: String,
         val musicBrainzId: String = "", val catalogId: String = "", val preferredAfter: Long = 0L,
         val canonicalName: String = "")
@@ -83,18 +86,35 @@ object ArtistPhotoRepository {
         photoRevision.update { it + 1L }
     }
 
-    /** Local restoration is small, shared and demand-driven, never parked behind optional network work. */
+    /** Bounded shared restoration; a visible caller promotes automatic warming immediately. */
     @Synchronized
-    fun prewarm(context: Context): Deferred<Unit> = warmup ?: photoScope.async {
-        val now = System.currentTimeMillis()
+    fun prewarm(context: Context, automatic: Boolean = false): Deferred<Unit> {
+        if (!automatic) restoreDemanded = true
+        return warmup ?: photoScope.async {
         val prefs = context.applicationContext.getSharedPreferences("artist_images_v2", Context.MODE_PRIVATE)
-        val stored = prefs.all
+        val hot = runCatching { prefs.getStringSet(HOT_PORTRAIT_KEYS, null) }.getOrNull()
+        val entries = if (hot != null) hot.asSequence().filter { it.startsWith("portrait:") }
+            .take(MAX_RESTORED_PORTRAITS).mapNotNull { key ->
+                runCatching { prefs.getString(key, null) }.getOrNull()?.let { key to it }
+            }.toList()
+        else prefs.all.asSequence().filter { it.key.startsWith("portrait:") }
+            .take(MAX_RESTORED_PORTRAITS).mapNotNull { (key, value) -> (value as? String)?.let { key to it } }.toList()
+        restoreEntries(entries, automatic)
+        }.also { warmup = it }
+    }
+
+    private suspend fun restoreEntries(entries: List<Pair<String, String>>, automatic: Boolean = false) {
+        val now = System.currentTimeMillis()
+        var changed = false
         var identitiesChanged = false
         withContext(AppDispatchers.CpuBounded) {
-            for ((index, entry) in stored.entries.withIndex()) {
-                if (index % 64 == 0) { ensureActive(); yield() }
-                if (!entry.key.startsWith("portrait:")) continue
-                val row = (entry.value as? String)?.let { runCatching { JSONObject(it) }.getOrNull() } ?: continue
+            for ((index, entry) in entries.withIndex()) {
+                if (index % 64 == 0) {
+                    ensureActive()
+                    if (automatic) BackgroundWorkCoordinator.yieldToInteraction(awaitFrameQuiet = false, bypass = { restoreDemanded })
+                    else yield()
+                }
+                val row = runCatching { JSONObject(entry.second) }.getOrNull() ?: continue
                 val version = row.optInt("version")
                 val source = row.optString("source")
                 // v3 verified photographs remain usable; its catalog/album fallbacks do not.
@@ -102,17 +122,29 @@ object ArtistPhotoRepository {
                 val url = image(row.optString("image"))
                 val expires = row.optLong("expires")
                 val canonical = row.optString("canonicalName")
-                if (canonical.isNotBlank() && !entry.key.startsWith("portrait:mbid:") &&
-                    entry.key.removePrefix("portrait:") != CatalogNames.normalize(canonical))
-                    identitiesChanged = true
-                if (expires > now || url != null) memory.put(entry.key, Photo(expires, url, source,
-                    mbid(row.optString("mbid")), row.optString("catalogId"), row.optLong("preferredAfter"),
-                    row.optString("canonicalName")))
+                if (expires > now || url != null) synchronized(memory) {
+                    // Disk restoration cannot overwrite a newer in-flight provider result.
+                    if (memory.get(entry.first) == null) {
+                        memory.put(entry.first, Photo(expires, url, source, mbid(row.optString("mbid")),
+                            row.optString("catalogId"), row.optLong("preferredAfter"), canonical))
+                        changed = true
+                        if (canonical.isNotBlank() && !entry.first.startsWith("portrait:mbid:") &&
+                            entry.first.removePrefix("portrait:") != CatalogNames.normalize(canonical)) identitiesChanged = true
+                    }
+                }
             }
         }
-        photoRevision.update { it + 1L }
+        if (changed) photoRevision.update { it + 1L }
         if (identitiesChanged) identityRevision.update { it + 1L }
-    }.also { warmup = it }
+    }
+
+    private suspend fun restoreArtist(context: Context, artist: CatalogArtist) {
+        if (cachedEntry(artist) != null) return
+        val prefs = context.applicationContext.getSharedPreferences("artist_images_v2", Context.MODE_PRIVATE)
+        val entries = listOf(key(artist), "portrait:${CatalogNames.normalize(artist.name)}").distinct()
+            .mapNotNull { key -> runCatching { prefs.getString(key, null) }.getOrNull()?.let { key to it } }
+        restoreEntries(entries)
+    }
 
     private fun needsRefresh(photo: Photo, now: Long) = photo.expires <= now ||
         photo.source == "youtube" && photo.preferredAfter <= now
@@ -144,7 +176,10 @@ object ArtistPhotoRepository {
     suspend fun photo(context: Context, artist: CatalogArtist): String? = withContext(AppDispatchers.Io) {
         val name = CatalogNames.normalize(artist.name)
         if (name in setOf("", "unknown", "unknown artist", "various artists")) return@withContext null
-        prewarm(context).await()
+        if (cachedEntry(artist) == null) {
+            prewarm(context).await()
+            restoreArtist(context, artist)
+        }
         val cached = cachedEntry(artist)
         val now = System.currentTimeMillis()
         image(cached?.url)?.let {
@@ -247,7 +282,9 @@ object ArtistPhotoRepository {
                         val current = edits.filterKeys { memory.get(it) == photo }
                         if (current.isNotEmpty()) {
                             val prefs = context.getSharedPreferences("artist_images_v2", Context.MODE_PRIVATE)
-                            prefs.edit().also { edit -> current.forEach { (key, value) -> edit.putString(key, value) } }.commit()
+                            val hot = synchronized(memory) { memory.snapshot().keys.toSet() }
+                            prefs.edit().putStringSet(HOT_PORTRAIT_KEYS, hot)
+                                .also { edit -> current.forEach { (key, value) -> edit.putString(key, value) } }.commit()
                         }
                     }
                     photoRevision.update { it + 1L }

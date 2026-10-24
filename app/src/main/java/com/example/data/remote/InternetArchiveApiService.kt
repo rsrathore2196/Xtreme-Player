@@ -54,6 +54,10 @@ import kotlin.coroutines.resumeWithException
  * Rejects items that only contain lossy formats (MP3/OGG/VBR/Opus/AAC).
  */
 object InternetArchiveApiService {
+    private val sourceBitrates = LruCache<String, Pair<String, Int>>(512)
+    internal fun bitrateForStream(url: String, decodedCodec: String): Int = sourceBitrates.get(url)?.let {
+        it.second.takeIf { rate -> rate > 0 && it.first == decodedCodec } ?: 0
+    } ?: 0
     private const val TAG = "InternetArchiveApi"
     private const val TIMEOUT_MS = 10_000L
     private const val PAGE_TIMEOUT_MS = 24_000L
@@ -662,7 +666,12 @@ object InternetArchiveApiService {
                         header.bitDepth > 16 && header.sampleRate >= 44_100) "Hi-Res • Lossless" else losslessQuality(file),
                     genre = text(file, "genre").ifBlank { "Unknown" },
                     year = text(file, "year").ifBlank { text(metadata, "year") }.ifBlank { text(doc, "year") },
-                    isrc = code, source = "INTERNET_ARCHIVE", isLossless = true)
+                    isrc = code, source = "INTERNET_ARCHIVE", isLossless = true).also {
+                        val codec = when (name.substringAfterLast('.').lowercase(java.util.Locale.ROOT)) {
+                            "flac" -> "FLAC"; "m4a", "alac" -> "ALAC"; "wav", "aiff", "aif" -> "PCM"; else -> ""
+                        }
+                        if (codec.isNotBlank() && bitrate > 0) sourceBitrates.put(streamUrl, codec to bitrate)
+                    }
             }
     }
 

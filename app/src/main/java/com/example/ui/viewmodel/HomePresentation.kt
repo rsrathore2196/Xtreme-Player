@@ -10,6 +10,20 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 
+/** Inspect only emitted shelves and retain their lists when no failed recording is removed. */
+internal fun com.example.recommendation.UnifiedRecommendationEngine.Batch.availableShelfTracks(
+    unavailable: Map<String, Long>, now: Long, sameSeed: Boolean
+): Map<Shelf, List<MusicTrack>> = requested.mapNotNull { shelf ->
+    if (!sameSeed && (shelf == Shelf.SIMILAR || shelf == Shelf.INSPIRED)) return@mapNotNull null
+    val tracks = when (shelf) {
+        Shelf.QUICK -> quick; Shelf.ERA -> era; Shelf.CHART -> chart.orEmpty()
+        Shelf.PERSONALIZED -> personalized; Shelf.SIMILAR -> similarArtists; Shelf.INSPIRED -> inspiredTrack
+    }
+    val usable = if (tracks.any { (unavailable[it.id] ?: 0L) > now })
+        tracks.filter { (unavailable[it.id] ?: 0L) <= now } else tracks
+    (shelf to usable).takeIf { usable.isNotEmpty() }
+}.toMap()
+
 @Immutable
 data class SectionState(
     val title: String = "",

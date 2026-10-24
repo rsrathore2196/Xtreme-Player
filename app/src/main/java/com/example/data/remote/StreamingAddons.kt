@@ -40,7 +40,7 @@ object StreamingAddons {
     data class Manifest(val name: String, val baseUrl: String)
     private data class Transport(val headers: Map<String, String>, val mime: String?, val bitrate: Int,
         val expires: Long, val headerScope: String?, val sourceId: String, val baseUrl: String, val provider: String,
-        val atmos: Boolean = false)
+        val atmos: Boolean = false, val codec: String = "")
     private val transports = ConcurrentHashMap<String, Transport>()
     private data class Cached(val track: MusicTrack?, val expires: Long)
     private val resolutions = ConcurrentHashMap<String, Cached>()
@@ -406,7 +406,7 @@ object StreamingAddons {
             .find(inlineXml)?.groupValues?.get(1)?.trim()?.replace("&amp;", "&")?.toHttpUrlOrNull()?.toString()
         val provider = policy.configuredSources.firstOrNull { it.id == sourceId && it.kind == PlaybackSourceKind.ADDON }?.name
             ?.let { "Streaming Addon: $it" } ?: candidate.source
-        transports[stream] = Transport(headers, mime, bitrate, minOf(expires - 5_000L, now + 180_000L), scope, sourceId, base, provider, atmos)
+        transports[stream] = Transport(headers, mime, bitrate, minOf(expires - 5_000L, now + 180_000L), scope, sourceId, base, provider, atmos, codec)
         return requested.copy(audioUrl = stream, source = provider, bitrateKbps = bitrate,
             isLossless = !atmos && codec in setOf("flac", "alac", "pcm", "wav"), qualityBadge = "Custom stream")
     }
@@ -442,4 +442,20 @@ object StreamingAddons {
     }
     fun mime(url: String): String? = transports[url]?.mime
     fun providerName(url: String): String? = transports[url]?.provider
+    /** Exact resolved representation only; segment URLs/catalog estimates are not bitrate evidence. */
+    internal fun bitrateForStream(url: String, decodedCodec: String): Int = transports[url]?.let { transport ->
+        // An adaptive manifest can contain several rates; only Media3's selected
+        // representation Format can establish which one is currently decoded.
+        if (transport.mime in setOf(androidx.media3.common.MimeTypes.APPLICATION_MPD,
+                androidx.media3.common.MimeTypes.APPLICATION_M3U8)) return@let 0
+        val expected = transport.codec.lowercase(Locale.ROOT)
+        val matches = when (decodedCodec.uppercase(Locale.ROOT)) {
+            "PCM" -> expected in setOf("pcm", "wav", "aiff", "audio/raw", "audio/wav")
+            "AAC" -> expected in setOf("aac", "audio/aac", "audio/mp4a-latm") || expected.startsWith("mp4a")
+            "E-AC-3 JOC" -> com.example.playback.DolbyAtmosSupport.isAtmosCodec(expected)
+            "E-AC-3" -> expected in setOf("eac3", "ec3", "e-ac-3", "audio/eac3")
+            else -> expected == decodedCodec.lowercase(Locale.ROOT)
+        }
+        transport.bitrate.takeIf { matches && it > 0 } ?: 0
+    } ?: 0
 }

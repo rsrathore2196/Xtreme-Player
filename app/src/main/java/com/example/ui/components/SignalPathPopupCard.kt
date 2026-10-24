@@ -220,7 +220,9 @@ fun SignalPathPopupCard(state: SignalPathState, modifier: Modifier = Modifier, o
                                 if (state.bufferCapacityFrames > 0) " (capacity ${state.bufferCapacityFrames})" else "" else "—"
                         stage(3, "DSP", Icons.Rounded.GraphicEq, listOf(
                             "PCM Format" to encoding(state.dspEncoding), "Sample Rate" to rate(state.dspRateHz),
-                            "Gain" to "—", "Measured" to "Not measured",
+                            "Gain" to if (state.eqActive) String.format(Locale.ROOT, "%.1f dB (configured; automatic headroom)",
+                                effects.loudnessGainMb / 100.0) else if (state.dspActive) "Automatic headroom (not measured)" else "0.0 dB (bypassed)",
+                            "Measured" to "Not measured",
                             "EQ Preset" to if (state.eqActive) effects.selectedPreset else "Flat (bypassed)",
                             "Stereo Expand" to if (state.eqActive) "${100 + effects.virtualizerStrength.coerceIn(0, 1000) * 30 / 1000}% (configured)" else "100% (bypassed)",
                             "Effects" to listOfNotNull("Equalizer".takeIf { state.eqActive }, "Spatial Audio".takeIf { state.spatialActive },

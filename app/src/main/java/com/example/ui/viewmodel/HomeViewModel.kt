@@ -524,7 +524,7 @@ class HomeViewModel(
         application.getSharedPreferences("home_shelf_exposure", Context.MODE_PRIVATE)
     }
 
-    private data class Candidates(
+    internal data class Candidates(
         val quick: List<MusicTrack> = emptyList(),
         val era: List<MusicTrack> = emptyList(),
         val chart: List<MusicTrack> = emptyList(),
@@ -534,7 +534,28 @@ class HomeViewModel(
         val inspired: List<MusicTrack> = emptyList(),
         val source: String = "", val seedKey: String = "", val seedArtist: String = "", val seedTitle: String = "",
         val ready: Set<Shelf> = emptySet(), val contextKey: String = "", val revision: Long = 0L
-    )
+    ) {
+        internal fun withResults(results: Map<Shelf, List<MusicTrack>>, batch: UnifiedRecommendationEngine.Batch,
+            profileKey: String, sameSeed: Boolean, nextGeneration: Long, explicit: Boolean): Candidates {
+            val trusted = source == UnifiedRecommendationEngine.SOURCE && contextKey == profileKey
+            fun retain(shelf: Shelf, previous: List<MusicTrack>): List<MusicTrack> = results[shelf]?.let {
+                if (it == previous) previous else it
+            } ?: previous.takeIf { trusted }.orEmpty()
+            val updatesSeed = sameSeed && results.keys.any { it == Shelf.SIMILAR || it == Shelf.INSPIRED }
+            val keepRelated = !updatesSeed || seedKey == batch.seedKey
+            val next = copy(quick = retain(Shelf.QUICK, quick), era = retain(Shelf.ERA, era),
+                chart = retain(Shelf.CHART, chart), personalized = retain(Shelf.PERSONALIZED, personalized),
+                similar = retain(Shelf.SIMILAR, similar.takeIf { keepRelated }.orEmpty()),
+                inspired = retain(Shelf.INSPIRED, inspired.takeIf { keepRelated }.orEmpty()),
+                source = UnifiedRecommendationEngine.SOURCE, contextKey = profileKey,
+                seedKey = if (updatesSeed) batch.seedKey else seedKey,
+                seedArtist = if (updatesSeed) batch.seedArtist else seedArtist,
+                seedTitle = if (updatesSeed) batch.seedTitle else seedTitle,
+                ready = ready.takeIf { trusted }.orEmpty() + results.keys)
+            return if (next == this && (!explicit || generation == nextGeneration)) this
+                else next.copy(generation = nextGeneration, revision = revision + 1)
+        }
+    }
     private fun restoredCandidates(cards: SavedHomeCards): Candidates {
         // Preview headers contain display tracks but intentionally omit pools.
         // Use those verified tracks until full enrichment, never mark empty pools ready.
@@ -1783,18 +1804,16 @@ class HomeViewModel(
         val nextGeneration = candidates.value.generation + 1
         enabled.forEach { shelfAttempts[it] = RecommendationShelfLoad(contexts.getValue(it), startedAt) }
         val fresh = linkedMapOf<String, MusicTrack>()
+        val candidatesBeforeRefresh = candidates.value
         try {
             repository.recommendations.refresh(profile, country, tasteProfile.value, seed,
                 personalizationHistory.value.tracks, favoriteTracks.value, _catalogTracks.value, force, shelves = enabled, startupBatch = startupBatch).collect { batch ->
                 currentCoroutineContext().ensureActive()
                 if (profileKey() != profileKey(profile) || requestGeneration != refreshGeneration) return@collect
                 val sameSeed = UnifiedRecommendationEngine.seedKey(activeRecommendationTrack()) == batch.seedKey
-                val results = mapOf(Shelf.QUICK to batch.quick, Shelf.ERA to batch.era, Shelf.CHART to batch.chart.orEmpty(),
-                    Shelf.PERSONALIZED to batch.personalized, Shelf.SIMILAR to batch.similarArtists, Shelf.INSPIRED to batch.inspiredTrack)
-                    .mapValues { (_, tracks) -> tracks.filter { track ->
-                        (repository.recommendations.unavailable.value[track.id] ?: 0L) <= android.os.SystemClock.elapsedRealtime() } }
-                val successful = batch.requested.filterTo(mutableSetOf()) { results.getValue(it).isNotEmpty() &&
-                    (it !in setOf(Shelf.SIMILAR, Shelf.INSPIRED) || sameSeed) }
+                val results = batch.availableShelfTracks(repository.recommendations.unavailable.value,
+                    android.os.SystemClock.elapsedRealtime(), sameSeed)
+                val successful = results.keys
                 if (successful.isEmpty()) return@collect
                 successful.forEach { shelf ->
                     shelfLoads[shelf.name] = RecommendationShelfLoad(contexts.getValue(shelf), batch.fetchedAt[shelf] ?: startedAt, partial = startupBatch)
@@ -1806,20 +1825,8 @@ class HomeViewModel(
                 // changes the shuffle seed or reranks already published positions.
                 if (force || activeRefreshIsExplicit) manualRenderGeneration = nextGeneration
                 candidates.update { old ->
-                    val trusted = old.source == UnifiedRecommendationEngine.SOURCE && old.contextKey == profileKey(profile)
-                    fun retain(shelf: Shelf, previous: List<MusicTrack>) = if (shelf in successful) results.getValue(shelf)
-                        else previous.takeIf { trusted }.orEmpty()
-                    val updatesSeed = sameSeed && successful.any { it == Shelf.SIMILAR || it == Shelf.INSPIRED }
-                    val keepRelated = !updatesSeed || old.seedKey == batch.seedKey
-                    old.copy(quick = retain(Shelf.QUICK, old.quick), era = retain(Shelf.ERA, old.era),
-                        chart = retain(Shelf.CHART, old.chart), personalized = retain(Shelf.PERSONALIZED, old.personalized),
-                        similar = retain(Shelf.SIMILAR, old.similar.takeIf { keepRelated }.orEmpty()),
-                        inspired = retain(Shelf.INSPIRED, old.inspired.takeIf { keepRelated }.orEmpty()),
-                        generation = nextGeneration, revision = old.revision + 1, source = UnifiedRecommendationEngine.SOURCE,
-                        seedKey = if (updatesSeed) batch.seedKey else old.seedKey,
-                        seedArtist = if (updatesSeed) batch.seedArtist else old.seedArtist,
-                        seedTitle = if (updatesSeed) batch.seedTitle else old.seedTitle,
-                        ready = old.ready.takeIf { trusted }.orEmpty() + successful, contextKey = profileKey(profile))
+                    old.withResults(results, batch, profileKey(profile), sameSeed, nextGeneration,
+                        explicit = force || activeRefreshIsExplicit)
                 }
                 if (initialPresentation) {
                     // A slow neighbouring shelf never holds verified content back.
@@ -1842,6 +1849,8 @@ class HomeViewModel(
             // At most one library transaction for this pass; no per-song Room
             // invalidation storm. Snapshot/mapping caches have their own batch writers.
             if (fresh.isNotEmpty() && requestGeneration == refreshGeneration && profileKey() == profileKey(profile)) {
+                // A content no-op still refreshes shelf TTLs, without forcing ranking/UI publication.
+                if (candidates.value === candidatesBeforeRefresh) savePreparedCards()
                 val verified = fresh.values.toList()
                 dataScope.launch {
                     BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.DEFERRED,

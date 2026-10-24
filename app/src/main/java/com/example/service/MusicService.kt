@@ -277,13 +277,17 @@ class MusicService : MediaLibraryService() {
 
     private fun audioInputQuality(item: MediaItem, format: Format): com.example.playback.StreamQualityBadge {
         val decoded = com.example.playback.StreamQualityBadge.from(format)
-        if (decoded.bitrateKbps > 0 || decoded.codec.isBlank() || decoded.lossless) return decoded
+        if (decoded.bitrateKbps > 0 || decoded.codec.isBlank()) return decoded
         val uri = item.localConfiguration?.uri ?: return decoded
         val host = uri.host.orEmpty().lowercase(java.util.Locale.ROOT)
-        // WebM/Opus often has no bitrate in Media3 Format. Use only the exact
-        // resolved representation with a matching decoder codec; never catalog
-        // metadata, the selected ceiling, or the previous provider's rate.
+        // Containers may omit compressed bitrate. Only an exact resolved URL
+        // and matching actual decoder codec can supply representation metadata;
+        // never use catalog estimates, the quality ceiling or a prior source's rate.
         val declaredRate = when {
+            com.example.data.remote.StreamingAddons.hasRegisteredTransport(uri.toString()) ->
+                com.example.data.remote.StreamingAddons.bitrateForStream(uri.toString(), decoded.codec)
+            host == "archive.org" || host.endsWith(".archive.org") ->
+                com.example.data.remote.InternetArchiveApiService.bitrateForStream(uri.toString(), decoded.codec)
             YouTubeAudioStreamService.isYouTubeAudio(item.mediaId, uri.toString()) ->
                 YouTubeAudioStreamService.bitrateForPlaybackUri(uri, decoded.codec)
             decoded.codec == "AAC" && (host == "saavncdn.com" || host.endsWith(".saavncdn.com")) ->

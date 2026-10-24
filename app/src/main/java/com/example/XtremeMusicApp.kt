@@ -144,8 +144,10 @@ class XtremeMusicApp : Application(), ImageLoaderFactory, androidx.work.Configur
             coordinator.startup(StartupPriority.DEFERRED, label = "Playback key prewarm") { runCatching { SecurityConfig.getDESKey(this@XtremeMusicApp) } }
             // Reuse the small shared portrait cache restore. Visible portraits can
             // request it independently, without waiting for optional prewarming.
-            runCatching { com.example.data.repository.ArtistPhotoRepository.prewarm(this@XtremeMusicApp).await() }
-                .onFailure { android.util.Log.w("XtremeMusicApp", "Artist prewarm unavailable", it) }
+            coordinator.startup(StartupPriority.DEFERRED, label = "Artist portrait prewarm") {
+                runCatching { com.example.data.repository.ArtistPhotoRepository.prewarm(this@XtremeMusicApp, automatic = true).await() }
+                    .onFailure { android.util.Log.w("XtremeMusicApp", "Artist prewarm unavailable", it) }
+            }
             coordinator.startup(StartupPriority.DEFERRED, label = "Audio devices prewarm") { runCatching { com.example.playback.AudioDeviceManager.init(this@XtremeMusicApp) }
                 .onFailure { android.util.Log.w("XtremeMusicApp", "Audio devices unavailable", it) } }
         }

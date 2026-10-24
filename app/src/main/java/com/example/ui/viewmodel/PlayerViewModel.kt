@@ -922,18 +922,13 @@ class PlayerViewModel(
                 repository.search(query, application)
             } else {
                 val profile = com.example.data.local.UserProfilePreferences.getUserProfile(application)
-                val tracks = repository.getTracksByGenre(genre, profile).shuffled()
-                val albums = repository.getGenreAlbums(genre, profile)
-                SearchResultCategory(
-                    topResult = tracks.firstOrNull(),
-                    exactMatches = tracks,
-                    similarTypeSongs = emptyList(),
-                    matchedGenreOrType = genre,
-                    songs = tracks,
-                    albums = albums.map { it.title }.ifEmpty { tracks.map { it.album }.filter { it.isNotBlank() && it != "Single" && it != "Online Stream" && it != "Unknown" }.distinct() },
-                    artists = emptyList(),
-                    catalogAlbums = albums
-                )
+                com.example.data.repository.loadGenreResults(genre,
+                    loadTracks = { repository.getTracksByGenre(genre, profile).shuffled() },
+                    loadAlbums = { tracks -> repository.getGenreAlbums(genre, profile, fallbackTracks = tracks) },
+                    onSongs = { partial ->
+                        _searchState.update { if (generation != it.requestId || it.query != query || it.selectedGenre != genre) it
+                            else it.copy(result = partial) }
+                    })
             }
             ensureActive()
             _searchState.update { if (generation != it.requestId || it.query != query || it.selectedGenre != genre) it else

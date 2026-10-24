@@ -43,12 +43,15 @@ class SignalPathUiTest {
         compose.onNodeWithTag("pipeline_0_Format").assertTextEquals("Format: OPUS")
         compose.onNodeWithTag("pipeline_0_Bit Depth").assertTextEquals("Bit Depth: —")
         compose.onNodeWithTag("pipeline_0_Bitrate").assertTextEquals("Bitrate: 160 kbps")
+        compose.onNodeWithTag("pipeline_0_Sample Rate").assertTextEquals("Sample Rate: 48.0 kHz")
+        compose.onNodeWithTag("pipeline_0_Channels").assertTextEquals("Channels: Stereo")
         compose.onNodeWithTag("pipeline_1_Decoder Name").assertTextEquals("Decoder Name: c2.android.opus.decoder")
         compose.onNodeWithText("Audio Enhancer").assertDoesNotExist()
         compose.onNodeWithTag("source_audio_enhancer").assertDoesNotExist()
         compose.onNodeWithText("Done").assertDoesNotExist()
         val close = compose.onNodeWithTag("pipeline_close").fetchSemanticsNode().boundsInRoot
         compose.onNodeWithTag("pipeline_3_Buffers").performScrollTo().assertTextEquals("Buffers: 500 ms, 24000 frames")
+        compose.onNodeWithTag("pipeline_3_Gain").performScrollTo().assertTextEquals("Gain: 0.0 dB (bypassed)")
         compose.onNodeWithTag("pipeline_4_System").performScrollTo()
             .assertTextEquals("System: Mixer / HAL format not exposed by Android")
         assertEquals(close, compose.onNodeWithTag("pipeline_close").fetchSemanticsNode().boundsInRoot)
@@ -94,5 +97,14 @@ class SignalPathUiTest {
         val after = compose.onNodeWithTag("signal_path_popup").fetchSemanticsNode().boundsInRoot
         assertEquals(before.center.x, after.center.x, 0.5f)
         assertEquals(before.width, after.width, 0.5f)
+    }
+
+    @Test fun unavailableBitrateAndMeasurementsStayUnknownRatherThanUsingTheQualitySetting() {
+        AudioSignalPath.update { playing().copy(quality = StreamQualityBadge("OPUS", 0, 48000, verified = true)) }
+        showBadge()
+        compose.onNodeWithText("OPUS • 48.0 kHz").performClick()
+        compose.onNodeWithTag("pipeline_0_Bitrate").assertTextEquals("Bitrate: —")
+        compose.onNodeWithTag("pipeline_3_Measured").performScrollTo().assertTextEquals("Measured: Not measured")
+        compose.onNodeWithTag("pipeline_4_Device Name").performScrollTo().assertTextEquals("Device Name: Bluetooth TWS")
     }
 }

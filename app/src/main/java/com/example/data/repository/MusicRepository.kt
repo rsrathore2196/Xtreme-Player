@@ -81,6 +81,23 @@ data class SearchResultCategory(
     val catalogAlbums: List<CatalogAlbum> = emptyList()
 )
 
+/** Publish usable songs without waiting for album discovery; preserve their exact snapshot. */
+internal suspend fun loadGenreResults(genre: String, loadTracks: suspend () -> List<MusicTrack>,
+    loadAlbums: suspend (List<MusicTrack>) -> List<CatalogAlbum>,
+    onSongs: suspend (SearchResultCategory) -> Unit): SearchResultCategory {
+    val tracks = loadTracks()
+    currentCoroutineContext().ensureActive()
+    val songs = SearchResultCategory(topResult = tracks.firstOrNull(), exactMatches = tracks,
+        songs = tracks, matchedGenreOrType = genre)
+    onSongs(songs)
+    val albums = try { loadAlbums(tracks) } catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) { emptyList() }
+    currentCoroutineContext().ensureActive()
+    return songs.copy(albums = albums.map { it.title }.ifEmpty {
+        tracks.map { it.album }.filter { it.isNotBlank() && it !in setOf("Single", "Online Stream", "Unknown") }.distinct()
+    }, catalogAlbums = albums)
+}
+
 @OptIn(ExperimentalCoroutinesApi::class)
 class MusicRepository private constructor(
     private val daoProvider: () -> MusicDao,
@@ -558,7 +575,8 @@ class MusicRepository private constructor(
         prioritized.ifEmpty { allTracks }
     }
 
-    suspend fun getGenreAlbums(genre: String, profile: UserProfile? = null): List<CatalogAlbum> = withContext(AppDispatchers.CpuBounded) {
+    suspend fun getGenreAlbums(genre: String, profile: UserProfile? = null,
+        fallbackTracks: List<MusicTrack>? = null): List<CatalogAlbum> = withContext(AppDispatchers.CpuBounded) {
         val userProfile = homeProfile(profile)
         val albumsFromCatalog = try {
             catalogBrowser.getGenreAlbums(
@@ -576,7 +594,7 @@ class MusicRepository private constructor(
         if (albumsFromCatalog.isNotEmpty()) return@withContext albumsFromCatalog
 
         // Fallback: extract albums from tracks related to the genre
-        val genreTracks = getTracksByGenre(genre, userProfile)
+        val genreTracks = fallbackTracks ?: getTracksByGenre(genre, userProfile)
         genreTracks.filter { it.album.isNotBlank() && it.album != "Single" && it.album != "Online Stream" && it.album != "Unknown" }
             .distinctBy { it.album.lowercase().trim() }
             .take(10)
