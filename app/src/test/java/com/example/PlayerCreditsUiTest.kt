@@ -5,6 +5,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.text.TextLayoutResult
 import com.example.data.model.MusicTrack
 import com.example.playback.PlayerUiState
 import com.example.ui.components.ExpandedPlayerScreen
@@ -47,6 +49,9 @@ class PlayerCreditsUiTest {
     @Config(qualifiers = "w891dp-h411dp-land")
     fun landscapeShowsTwoSingersAndKeepsQualityInTheBadgeOnly() = checkCredits()
 
+    @Test @Config(qualifiers = "w740dp-h360dp-land")
+    fun compactLandscapeKeepsLargerPlayerTextAndControlsVisible() = checkCredits()
+
     private fun checkCredits() {
         val song = MusicTrack("credits-track", "Song Title", "Composer, Producer, Lead", "Album Name",
             180_000, "", "", singers = "Lead, Guest, Third Singer", qualityBadge = "AAC • 320 kbps")
@@ -68,8 +73,13 @@ class PlayerCreditsUiTest {
         }
         compose.mainClock.advanceTimeBy(800)
         compose.onNodeWithText("Lead, Guest").assertIsDisplayed()
+        val landscape = androidx.test.core.app.ApplicationProvider.getApplicationContext<Application>()
+            .resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+        assertFont("NOW PLAYING", if (landscape) 13f else 11f)
+        assertFont("Lead, Guest", if (landscape) 16f else 14f)
         compose.onNodeWithText("Composer, Producer, Lead • Album Name").assertDoesNotExist()
-        compose.onNodeWithTag("expanded_player_play_pause").assertHasClickAction()
+        compose.onNodeWithTag("expanded_player_play_pause").assertIsDisplayed().assertHasClickAction()
+        compose.onNodeWithTag("player_minimize_button").assertIsDisplayed()
         compose.onNodeWithTag("player_options_button").performClick()
         compose.mainClock.advanceTimeBy(350)
         compose.onNodeWithTag("player_audio_upgrade").assertExists()
@@ -82,6 +92,15 @@ class PlayerCreditsUiTest {
         // Full credits and album details remain available behind the artwork.
         compose.onNodeWithText("Lead, Guest, Third Singer").assertExists()
         compose.onNodeWithText("Album Name").assertExists()
+        assertFont(if (landscape) "Album" else "Album / Movie", if (landscape) 13f else 11f)
+        assertFont("Album Name", if (landscape) 14f else 12f)
         compose.onAllNodesWithText("AAC • 320 kbps").assertCountEquals(1)
+    }
+
+    private fun assertFont(text: String, size: Float) {
+        val results = mutableListOf<TextLayoutResult>()
+        compose.onNodeWithText(text, useUnmergedTree = true)
+            .performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(results) }
+        org.junit.Assert.assertEquals(size, results.single().layoutInput.style.fontSize.value, .01f)
     }
 }

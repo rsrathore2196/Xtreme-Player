@@ -5,6 +5,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.*
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.media3.common.C
 import com.example.playback.*
 import com.example.ui.components.AudioQualityBadge
@@ -32,6 +34,20 @@ class SignalPathUiTest {
         dspEncoding = C.ENCODING_PCM_16BIT, dspRateHz = 48000,
         outputDevice = "Bluetooth TWS", outputType = "Bluetooth", inputRateHz = 48000, outputRateHz = 48000,
         outputEncoding = C.ENCODING_PCM_16BIT, bufferSizeFrames = 24000)
+
+    @Test @Config(qualifiers = "w400dp-h800dp-port")
+    fun portraitBadgeKeepsOriginalTextSize() = checkBadgeTextSize(10f)
+
+    @Test @Config(qualifiers = "w740dp-h360dp-land")
+    fun landscapeBadgeUsesLargerReadableText() = checkBadgeTextSize(12f)
+
+    private fun checkBadgeTextSize(expected: Float) {
+        AudioSignalPath.update { playing() }
+        showBadge()
+        val results = mutableListOf<TextLayoutResult>()
+        compose.onNodeWithText("OPUS • 160 kbps").performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(results) }
+        assertEquals(expected, results.single().layoutInput.style.fontSize.value, .01f)
+    }
 
     @Test fun badgeOpensPipelineWithActualStagesAndACompactCloseButton() {
         AudioSignalPath.update { playing() }

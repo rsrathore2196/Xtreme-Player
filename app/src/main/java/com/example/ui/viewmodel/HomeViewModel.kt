@@ -1573,7 +1573,8 @@ class HomeViewModel(
             return
         }
         val metrics = app.resources.displayMetrics
-        val recents = _listeningHistoryCard.value.tracks.take(6)
+        val landscape = app.resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+        val recents = _listeningHistoryCard.value.tracks.take(if (landscape) 3 else 6)
         val visibleQuickCount = kotlin.math.ceil((metrics.widthPixels / metrics.density - 20f) / 177.2f)
             .toInt().coerceIn(1, 4)
         val firstRow = if (recents.isNotEmpty()) recents else cards.quick.tracks.take(visibleQuickCount)
@@ -1600,7 +1601,9 @@ class HomeViewModel(
                                 val target = if (isHero) com.example.ui.util.ImageConfig.HERO_BANNER_SIZE
                                     else if (recents.isNotEmpty()) 100 else com.example.ui.util.ImageConfig.RECOMMENDATION_CARD_SIZE
                                 val size = if (isHero) androidx.compose.ui.unit.IntSize(
-                                    (metrics.widthPixels - 40 * metrics.density).toInt().coerceIn(1, 1_200),
+                                    (if (landscape) com.example.ui.util.landscapeHeroArtworkWidthDp(
+                                        app.resources.configuration.screenWidthDp.toFloat()) * metrics.density
+                                        else metrics.widthPixels - 40 * metrics.density).toInt().coerceIn(1, if (landscape) 3_000 else 1_200),
                                     (240 * metrics.density).toInt().coerceIn(1, 1_200))
                                 else if (recents.isNotEmpty()) androidx.compose.ui.unit.IntSize(
                                     kotlin.math.round(52 * metrics.density).toInt().coerceAtLeast(1),

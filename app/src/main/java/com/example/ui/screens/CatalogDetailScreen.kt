@@ -1,5 +1,9 @@
 package com.example.ui.screens
 
+import android.content.res.Configuration
+import androidx.compose.ui.platform.LocalConfiguration
+import com.example.ui.util.landscapeContentBounds
+
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -38,6 +42,7 @@ fun CatalogDetailScreen(state: CatalogDetailState, player: PlayerUiState, onBack
     onMore: () -> Unit, onPlay: (MusicTrack, List<MusicTrack>) -> Unit, onFavorite: (MusicTrack) -> Unit,
     onScroll: (Int, Int) -> Unit, handleBack: Boolean = true) {
     val colors = LocalAppColors.current
+    val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val list = rememberLazyListState(state.scrollIndex, state.scrollOffset)
     LaunchedEffect(list) { snapshotFlow { list.firstVisibleItemIndex to list.firstVisibleItemScrollOffset }
         .distinctUntilChanged().collect { (index, offset) -> onScroll(index, offset) } }
@@ -69,7 +74,8 @@ fun CatalogDetailScreen(state: CatalogDetailState, player: PlayerUiState, onBack
         is CatalogDestination.Playlist -> target.playlist.title
     }
     LazyColumn(state = list, modifier = Modifier.fillMaxSize().background(colors.scaffoldBackground)
-        .statusBarsPadding().bouncyOverscroll(), contentPadding = PaddingValues(bottom = 180.dp)) {
+        .landscapeContentBounds(landscape).statusBarsPadding().bouncyOverscroll(),
+        contentPadding = PaddingValues(bottom = if (landscape) 192.dp else 180.dp)) {
         item("header") {
             Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(38.dp).liquidGlassButton(colors, shape = CircleShape, elevation = 4.dp)
@@ -81,10 +87,10 @@ fun CatalogDetailScreen(state: CatalogDetailState, player: PlayerUiState, onBack
             }
             Column(Modifier.fillMaxWidth().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 when (val target = state.destination) {
-                    is CatalogDestination.Artist -> ArtistPortrait(target.artist, Modifier.size(180.dp).clip(CircleShape))
+                    is CatalogDestination.Artist -> ArtistPortrait(target.artist, Modifier.size(if (landscape) 112.dp else 180.dp).clip(CircleShape))
                     is CatalogDestination.Album -> {
                         AsyncImage(target.album.image, target.album.title, contentScale = ContentScale.Crop,
-                            modifier = Modifier.size(180.dp).clip(RoundedCornerShape(18.dp)))
+                            modifier = Modifier.size(if (landscape) 112.dp else 180.dp).clip(RoundedCornerShape(18.dp)))
                         Spacer(Modifier.height(12.dp))
                         Text(target.album.artists.joinToString { it.name }, color = colors.textMuted)
                         Text(target.album.year, color = colors.textMuted, style = MaterialTheme.typography.bodySmall)

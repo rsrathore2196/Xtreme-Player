@@ -32,6 +32,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalConfiguration
+import android.content.res.Configuration
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
@@ -59,17 +60,18 @@ import kotlin.math.min
 fun AudioQualityBadge(trackId: String, @Suppress("UNUSED_PARAMETER") fallbackText: String,
     background: Color, border: Color, content: Color, modifier: Modifier = Modifier, enabled: Boolean = true) {
     val path by AudioSignalPath.state.collectAsStateWithLifecycle()
+    val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     var showPipeline by remember(trackId) { mutableStateOf(false) }
     val current = path.takeIf { it.trackId == trackId } ?: SignalPathState()
     val label = current.quality.takeIf { it.verified && it.codec.isNotBlank() }?.badgeLabel ?: "Resolving audio"
     Surface(color = background, border = androidx.compose.foundation.BorderStroke(1.dp, border),
         shape = RoundedCornerShape(10.dp), modifier = modifier.clip(RoundedCornerShape(10.dp))
             .clickable(enabled = enabled, role = Role.Button, onClickLabel = "Show audio pipeline") { showPipeline = true }) {
-        Row(Modifier.padding(horizontal = 10.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(6.dp).clip(androidx.compose.foundation.shape.CircleShape).background(content))
-            Spacer(Modifier.width(6.dp))
+        Row(Modifier.padding(horizontal = if (landscape) 12.dp else 10.dp, vertical = if (landscape) 5.dp else 2.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(if (landscape) 7.dp else 6.dp).clip(androidx.compose.foundation.shape.CircleShape).background(content))
+            Spacer(Modifier.width(if (landscape) 8.dp else 6.dp))
             Text(label, style = MaterialTheme.typography.labelSmall.copy(color = content,
-                fontWeight = FontWeight.ExtraBold, fontSize = 10.sp, letterSpacing = 0.5.sp), maxLines = 1)
+                fontWeight = FontWeight.ExtraBold, fontSize = if (landscape) 12.sp else 10.sp, letterSpacing = 0.5.sp), maxLines = 1)
         }
     }
     if (showPipeline) AudioPipelineDialog(current) { showPipeline = false }

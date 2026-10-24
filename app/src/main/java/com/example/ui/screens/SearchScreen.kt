@@ -1,5 +1,9 @@
 package com.example.ui.screens
 
+import android.content.res.Configuration
+import androidx.compose.ui.platform.LocalConfiguration
+import com.example.ui.util.landscapeContentBounds
+
 import com.example.ui.components.VisibleCircularProgressIndicator
 
 import androidx.activity.compose.BackHandler
@@ -111,9 +115,10 @@ private fun GenreResultsPage(
     val colors = LocalAppColors.current
     val list = rememberLazyListState()
     val tracks = state.result.songs
+    val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     LazyColumn(state = list, modifier = modifier.fillMaxSize().background(colors.scaffoldBackground)
-        .statusBarsPadding().bouncyOverscroll().testTag("genre_results_page"),
-        contentPadding = PaddingValues(bottom = 150.dp)) {
+        .landscapeContentBounds(landscape).statusBarsPadding().bouncyOverscroll().testTag("genre_results_page"),
+        contentPadding = PaddingValues(bottom = if (landscape) 192.dp else 150.dp)) {
         item("genre_header", contentType = "header") {
             Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically) {
@@ -230,6 +235,7 @@ fun SearchScreen(
     }
 
     val hasQuery = searchState.query.isNotBlank()
+    val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val isGenreActive = !searchState.selectedGenre.equals("All", ignoreCase = true)
     val appColors = LocalAppColors.current
     // These pills tint a surface; they do not use the solid accent button fill.
@@ -321,10 +327,11 @@ fun SearchScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .widthIn(max = 640.dp)
+                .landscapeContentBounds(landscape)
                 .bouncyOverscroll()
                 .statusBarsPadding()
                 .testTag("search_screen"),
-            contentPadding = PaddingValues(bottom = 150.dp)
+            contentPadding = PaddingValues(bottom = if (landscape) 192.dp else 150.dp)
         ) {
         // SEARCH INPUT BAR
         item(key = "search_input", contentType = "search_input") {

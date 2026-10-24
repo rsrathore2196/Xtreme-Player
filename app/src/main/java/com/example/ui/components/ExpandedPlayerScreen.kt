@@ -649,8 +649,9 @@ fun ExpandedPlayerScreen(
                                                 .clip(RoundedCornerShape(10.dp)))
                                         Column(Modifier.weight(1f)) {
                                             Text(track.cleanTitle, color = appColors.textPrimary, fontWeight = FontWeight.Bold,
+                                                fontSize = 18.sp,
                                                 maxLines = 1, modifier = Modifier.basicMarquee(), softWrap = false)
-                                            Text(singerLabel, color = appColors.textSecondary, fontSize = 12.sp,
+                                            Text(singerLabel, color = appColors.textSecondary, fontSize = 14.sp,
                                                 maxLines = 1, modifier = Modifier.basicMarquee(), softWrap = false)
                                         }
                                         IconButton(onClick = { onToggleFavorite(track) }) {
@@ -750,7 +751,7 @@ fun ExpandedPlayerScreen(
                                                     Text(
                                                         text = track.cleanTitle,
                                                         fontWeight = FontWeight.ExtraBold,
-                                                        fontSize = 14.sp,
+                                                        fontSize = 16.sp,
                                                         color = appColors.textPrimary,
                                                         textAlign = TextAlign.Center,
                                                         maxLines = 1,
@@ -773,7 +774,7 @@ fun ExpandedPlayerScreen(
                                                     Spacer(modifier = Modifier.height(4.dp))
                                                     Text(
                                                         text = "🔄 Tap to flip",
-                                                        fontSize = 9.sp,
+                                                        fontSize = 11.sp,
                                                         color = appColors.textMuted
                                                     )
                                                 }
@@ -838,7 +839,7 @@ fun ExpandedPlayerScreen(
                                     text = "NOW PLAYING",
                                     style = MaterialTheme.typography.labelSmall.copy(
                                         fontWeight = FontWeight.Bold,
-                                        fontSize = 11.sp,
+                                        fontSize = 13.sp,
                                         letterSpacing = 2.0.sp,
                                         color = appColors.primaryAccent
                                     )
@@ -848,7 +849,7 @@ fun ExpandedPlayerScreen(
                                     text = track.cleanTitle,
                                     style = MaterialTheme.typography.titleSmall.copy(
                                         fontWeight = FontWeight.Bold,
-                                        fontSize = 14.sp,
+                                        fontSize = 17.sp,
                                         color = appColors.textPrimary
                                     ),
                                     maxLines = 1,
@@ -899,6 +900,7 @@ fun ExpandedPlayerScreen(
                                     text = track.cleanTitle,
                                     style = MaterialTheme.typography.titleMedium.copy(
                                         fontWeight = FontWeight.Bold,
+                                        fontSize = 22.sp,
                                         color = appColors.textPrimary
                                     ),
                                     maxLines = 1,
@@ -909,6 +911,7 @@ fun ExpandedPlayerScreen(
                                     text = singerLabel,
                                     style = MaterialTheme.typography.titleSmall.copy(
                                         color = appColors.textSecondary,
+                                        fontSize = 16.sp,
                                         fontWeight = FontWeight.Medium
                                     ),
                                     maxLines = 1,
@@ -2302,6 +2305,7 @@ private fun formatTime(timeMs: Long): String {
 @Composable
 private fun CreditDetailRow(label: String, value: String, isDark: Boolean = true) {
     val appColors = LocalAppColors.current
+    val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -2311,7 +2315,7 @@ private fun CreditDetailRow(label: String, value: String, isDark: Boolean = true
     ) {
         Text(
             text = label,
-            fontSize = 11.sp,
+            fontSize = if (landscape) 13.sp else 11.sp,
             color = appColors.textMuted,
             fontWeight = FontWeight.Medium,
             modifier = Modifier.padding(end = 8.dp)
@@ -2324,7 +2328,7 @@ private fun CreditDetailRow(label: String, value: String, isDark: Boolean = true
         ) {
             Text(
                 text = value,
-                fontSize = 12.sp,
+                fontSize = if (landscape) 14.sp else 12.sp,
                 color = appColors.textPrimary,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,

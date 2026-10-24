@@ -1,5 +1,8 @@
 package com.example.ui.components
 
+import android.content.res.Configuration
+import androidx.compose.ui.platform.LocalConfiguration
+
 import androidx.lifecycle.repeatOnLifecycle
 
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -514,14 +517,14 @@ fun MainNavigationScaffold(
 
                 // Floating Overlaid Container (MiniPlayer + Floating Pill Bottom Bar)
                 // Merges with the tab screen seamlessly and floats elevated above the content
-                Column(
+                AdaptiveBottomControls(
+                    landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE,
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
                         .navigationBarsPadding()
                         .padding(bottom = 12.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
+                    miniPlayer = {
                     // Floating MiniPlayer: Sleek, attractive, non-bouncy transition
                     val isMiniPlayerVisible = playerUiState.currentTrack != null && !isPlayerExpanded && !isSettingsSubpageOpen && !isEqualizerOpen
 
@@ -549,7 +552,7 @@ fun MainNavigationScaffold(
                         )
                     }
 
-                    AnimatedVisibility(
+                    }, dock = { AnimatedVisibility(
                         visible = !isSettingsSubpageOpen && !isPlayerExpanded,
                         enter = fadeIn(animationSpec = tween(180)),
                         exit = fadeOut(animationSpec = tween(140))
@@ -566,8 +569,8 @@ fun MainNavigationScaffold(
                                 viewModel.closePlaylist()
                             }
                         )
-                    }
-                }
+                    } }
+                )
 
                 // Floating 3D Liquid Glass Auto-Update Pop-up Bar at top of main screen
                 if (!isPlayerExpanded && !isSettingsSubpageOpen) {

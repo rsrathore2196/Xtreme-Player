@@ -1,5 +1,9 @@
 package com.example.ui.screens
 
+import android.content.res.Configuration
+import androidx.compose.ui.platform.LocalConfiguration
+import com.example.ui.util.landscapeContentBounds
+
 import com.example.ui.components.rememberVisibleInfiniteFloat
 
 import androidx.compose.animation.core.LinearEasing
@@ -14,6 +18,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -268,7 +273,7 @@ fun HomeScreen(
 
     HomeScreenContent(
         heroSeedTrack = recentlyPlayed.firstOrNull() ?: catalogTracks.firstOrNull(),
-        pillsCardTracks = recentlyPlayed.take(6),
+        pillsCardTracks = recentlyPlayed.take(if (LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE) 9 else 6),
         ytmCard = SectionState(title = "Quick Picks", tracks = com.example.recommendation.HomeRecommendationPolicy.diversify(catalogTracks, com.example.recommendation.HomeRecommendationPolicy.MAX_SHELF_TRACKS)),
         eraCard = SectionState(title = "Era-Specific Hits", tracks = shelves.firstOrNull { it.id == "shelf_era_classics" }?.tracks.orEmpty()),
         countryLanguageCard = SectionState(title = trendingTitle, tracks = shelves.firstOrNull { it.id == "shelf_country_trending" }?.tracks.orEmpty()),
@@ -325,6 +330,7 @@ fun HomeScreenContent(
     onOpenArtist: (com.example.data.repository.CatalogArtist) -> Unit = {},
     homeViewModel: HomeViewModel? = null
 ) {
+    val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     // Only structural visibility is observed by the lazy-list owner. Section
     // contents are collected inside the corresponding lazy item below.
     val hasRecent = homeViewModel?.hasRecentlyPlayed?.collectAsStateWithLifecycle()?.value
@@ -356,12 +362,13 @@ fun HomeScreenContent(
             modifier = Modifier
                 .fillMaxWidth()
                 .widthIn(max = 640.dp)
+                .landscapeContentBounds(landscape)
                 .graphicsLayer {
                     translationY = boundaryOffset()
                 }
                 .statusBarsPadding()
                 .testTag("home_screen"),
-            contentPadding = PaddingValues(bottom = 180.dp)
+            contentPadding = PaddingValues(bottom = if (landscape) 192.dp else 180.dp)
         ) {
             // HEADER BAR: Dynamic App Logo, XTREME PLAYER Title, Greeting & Settings Icon (Preserved)
             item(key = "header_bar", contentType = "header") {
@@ -499,6 +506,14 @@ fun HomeScreenContent(
             // =========================================================================
             artworkItem(state = listState, key = "hero_infinite_radio_card", contentType = "hero") {
                 val seed = homeViewModel?.heroSeedTrack?.collectAsStateWithLifecycle()?.value ?: heroSeedTrack
+                if (landscape) {
+                    val history = if (hasRecent) homeViewModel?.listeningHistoryCard?.collectAsStateWithLifecycle()?.value else null
+                    LandscapeHomeOverview(
+                        seed = currentTrack ?: seed, currentPlayingId = currentPlayingId, isPlaying = isPlaying,
+                        isLoading = isRadioLoading, isRadioSession = isRadioSession,
+                        recentTracks = if (hasRecent) (history?.tracks ?: pillsCardTracks).take(9) else emptyList(),
+                        onPlayRadio = { onPlayInfiniteRadio?.invoke(it) }, onTrackClick = onTrackClick)
+                } else {
                 InfiniteRadioHeroCard(
                     seedTrack = currentTrack ?: seed,
                     currentPlayingTrackId = currentPlayingId,
@@ -509,12 +524,13 @@ fun HomeScreenContent(
                         onPlayInfiniteRadio?.invoke(track)
                     }
                 )
+                }
             }
 
             // CARD 1: Recently Played (2 Columns Grid Layout, up to 6 items from real listening history)
             // Rendered only when pillsCardTracks contains genuine recently played tracks.
             // When history is empty, completely hide heading, card, placeholder message, and extra spacing.
-            if (hasRecent) {
+            if (hasRecent && !landscape) {
                 artworkItem(state = listState, key = "card_1_recently_played_grid", contentType = "recent_grid") {
                     val history = homeViewModel?.listeningHistoryCard?.collectAsStateWithLifecycle()?.value
                     val pillsTracks = history?.tracks?.take(6) ?: pillsCardTracks.take(6)
@@ -721,6 +737,49 @@ fun HomeScreenContent(
                 SectionCardLayout(state = section, tracksPrepared = homeViewModel != null, currentPlayingId = currentPlayingId,
                     cardBg = cardBg, cardBorderColor = cardBorderColor, textPrimaryColor = textPrimaryColor,
                     textMutedColor = textMutedColor, onTrackClick = onTrackClick)
+            }
+        }
+    }
+}
+
+@Composable
+private fun LandscapeHomeOverview(seed: MusicTrack?, currentPlayingId: String?, isPlaying: Boolean,
+    isLoading: Boolean, isRadioSession: Boolean, recentTracks: List<MusicTrack>,
+    onPlayRadio: (MusicTrack?) -> Unit, onTrackClick: (MusicTrack, List<MusicTrack>) -> Unit) {
+    val colors = LocalAppColors.current
+    BoxWithConstraints(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 12.dp)
+        .testTag("landscape_home_overview")) {
+        val heroWidth = ((maxWidth - 16.dp).coerceAtLeast(0.dp) / 3f)
+        val recentColumns = if (maxWidth - heroWidth - 16.dp >= 412.dp) 3 else 2
+        val visibleRecents = recentTracks.take(recentColumns * 3)
+        val radio: @Composable () -> Unit = {
+            InfiniteRadioHeroCard(seed, currentPlayingId, isPlaying, isLoading, onPlayRadio,
+                modifier = Modifier.width(heroWidth), isRadioSession = isRadioSession,
+                contentPadding = PaddingValues(0.dp), compactLayout = true)
+        }
+        if (recentTracks.isEmpty()) Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) { radio() }
+        else Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            radio()
+            Column(Modifier.weight(1f).height(240.dp).testTag("landscape_recent_grid"),
+                verticalArrangement = Arrangement.Center) {
+                Text("Recently Played", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp, color = colors.textPrimary))
+                Spacer(Modifier.height(8.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    for (row in 0 until (visibleRecents.size + recentColumns - 1) / recentColumns) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            repeat(recentColumns) { column ->
+                                val track = visibleRecents.getOrNull(row * recentColumns + column)
+                                if (track == null) Spacer(Modifier.weight(1f)) else HabitPillItem(
+                                    track = track, isPlaying = track.id == currentPlayingId,
+                                    cardBg = colors.cardBackground, cardBorderColor = colors.cardBorder,
+                                    textPrimaryColor = colors.textPrimary, textMutedColor = colors.textMuted,
+                                    modifier = Modifier.weight(1f),
+                                    onClick = { onTrackClick(track, recentTracks) })
+                            }
+                        }
+                    }
+                }
             }
         }
     }

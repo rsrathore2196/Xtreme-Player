@@ -1,5 +1,9 @@
 package com.example.ui.screens
 
+import android.content.res.Configuration
+import androidx.compose.ui.platform.LocalConfiguration
+import com.example.ui.util.landscapeContentBounds
+
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.FastOutLinearInEasing
@@ -161,6 +165,7 @@ fun SettingsScreen(
         modifier = modifier
             .fillMaxSize()
             .background(screenBg)
+            .landscapeContentBounds(LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE, maxWidthDp = 900)
             .statusBarsPadding()
             .testTag("settings_screen")
     ) {

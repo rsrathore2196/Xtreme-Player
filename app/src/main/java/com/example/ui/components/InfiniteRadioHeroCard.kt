@@ -49,7 +49,9 @@ fun InfiniteRadioHeroCard(
     isLoading: Boolean = false,
     onPlayInfiniteRadio: (MusicTrack?) -> Unit,
     modifier: Modifier = Modifier,
-    isRadioSession: Boolean = false
+    isRadioSession: Boolean = false,
+    contentPadding: PaddingValues = PaddingValues(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 12.dp),
+    compactLayout: Boolean = false
 ) {
     val appColors = LocalAppColors.current
     val isDark = appColors.isDark
@@ -70,7 +72,7 @@ fun InfiniteRadioHeroCard(
     )
 
     Box(
-        modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 12.dp)
+        modifier.fillMaxWidth().padding(contentPadding)
             .height(240.dp).shadow(if (glassEnabled) 14.dp else 6.dp, shape).clip(shape)
             .background(glassTint)
             .border(1.5.dp, if (!glassEnabled) SolidColor(appColors.cardBorder) else Brush.linearGradient(listOf(
@@ -113,19 +115,24 @@ fun InfiniteRadioHeroCard(
             1f to Color.White.copy(alpha = 0.08f)
         )))
         Column(
-            Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 16.dp),
+            Modifier.fillMaxSize().padding(horizontal = if (compactLayout) 16.dp else 20.dp,
+                vertical = if (compactLayout) 12.dp else 16.dp),
             verticalArrangement = Arrangement.Bottom,
             horizontalAlignment = Alignment.Start
         ) {
-            Text("Infinite Radio", style = MaterialTheme.typography.headlineMedium.copy(
+            Text("Infinite Radio", maxLines = if (compactLayout) 2 else Int.MAX_VALUE,
+                overflow = if (compactLayout) androidx.compose.ui.text.style.TextOverflow.Ellipsis else androidx.compose.ui.text.style.TextOverflow.Clip,
+                style = MaterialTheme.typography.headlineMedium.copy(
                 color = foreground, fontWeight = FontWeight.Black, fontSize = 26.sp, shadow = textShadow
-            ))
+            ).let { if (compactLayout) it.copy(lineHeight = 30.sp) else it })
             Spacer(Modifier.height(3.dp))
-            Text("A fresh random mix · Endless discoveries", style = MaterialTheme.typography.bodyMedium.copy(
+            Text("A fresh random mix · Endless discoveries", maxLines = if (compactLayout) 2 else Int.MAX_VALUE,
+                overflow = if (compactLayout) androidx.compose.ui.text.style.TextOverflow.Ellipsis else androidx.compose.ui.text.style.TextOverflow.Clip,
+                style = MaterialTheme.typography.bodyMedium.copy(
                 color = foreground, fontWeight = FontWeight.Medium,
                 fontSize = 13.sp, lineHeight = 18.sp, shadow = textShadow
             ))
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(if (compactLayout) 10.dp else 12.dp))
             val buttonShape = RoundedCornerShape(24.dp)
             Row(
                 Modifier.graphicsLayer { scaleX = scale; scaleY = scale }
@@ -146,7 +153,7 @@ fun InfiniteRadioHeroCard(
                         role = Role.Button,
                         onClick = { onPlayInfiniteRadio(null) }
                     )
-                    .padding(horizontal = 24.dp, vertical = 13.dp)
+                    .padding(horizontal = if (compactLayout) 16.dp else 24.dp, vertical = 13.dp)
                     .testTag("hero_play_infinite_radio_button"),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.Center

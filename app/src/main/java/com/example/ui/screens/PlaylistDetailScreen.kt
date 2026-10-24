@@ -1,5 +1,9 @@
 package com.example.ui.screens
 
+import android.content.res.Configuration
+import androidx.compose.ui.platform.LocalConfiguration
+import com.example.ui.util.landscapeContentBounds
+
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -96,6 +100,7 @@ fun PlaylistDetailScreen(
     val tracks = playlistWithTracks.musicTracks
     val currentPlayingId = currentPlayingTrackId ?: playerUiState?.currentTrack?.id
     val appColors = LocalAppColors.current
+    val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
 
     var showRenameDialog by remember { mutableStateOf(false) }
     var showDeletePlaylistDialog by remember { mutableStateOf(false) }
@@ -264,6 +269,7 @@ fun PlaylistDetailScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .widthIn(max = 640.dp)
+                .landscapeContentBounds(landscape)
                 .statusBarsPadding()
                 .testTag("playlist_detail_screen")
         ) {
@@ -338,10 +344,45 @@ fun PlaylistDetailScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .bouncyOverscroll(),
-            contentPadding = PaddingValues(bottom = 120.dp)
+            contentPadding = PaddingValues(bottom = if (landscape) 192.dp else 120.dp)
         ) {
             // PLAYLIST HEADER
-            item {
+            if (landscape) item("landscape_playlist_header") {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    AsyncImage(rememberPlaylistCoverRequest(playlist.coverUrl, ImageConfig.PLAYLIST_HEADER_SIZE),
+                        contentDescription = null, contentScale = ContentScale.Crop,
+                        modifier = Modifier.size(112.dp).clip(RoundedCornerShape(16.dp))
+                            .background(appColors.cardBackgroundElevated).testTag("landscape_playlist_artwork"))
+                    Spacer(Modifier.width(20.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(playlist.title, style = MaterialTheme.typography.headlineMedium.copy(
+                            fontWeight = FontWeight.Bold, color = appColors.textPrimary), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (playlist.description.isNotBlank()) Text(playlist.description, color = appColors.textSecondary,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text("${tracks.size} tracks", color = appColors.primaryAccent, fontSize = 12.sp)
+                        Spacer(Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                            Button(onClick = { tracks.firstOrNull()?.let { onPlayTrack(it, tracks) } },
+                                enabled = tracks.isNotEmpty(), shape = CircleShape,
+                                colors = ButtonDefaults.buttonColors(containerColor = appColors.primaryAccent,
+                                    contentColor = appColors.onPrimaryAccent), modifier = Modifier.height(46.dp)) {
+                                Icon(Icons.Default.PlayArrow, null, modifier = Modifier.size(22.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("PLAY ALL", fontWeight = FontWeight.Bold)
+                            }
+                            OutlinedButton(onClick = { if (tracks.isNotEmpty()) {
+                                val shuffled = tracks.shuffled(); onPlayTrack(shuffled.first(), shuffled)
+                            } }, enabled = tracks.isNotEmpty(), shape = CircleShape,
+                                border = BorderStroke(1.dp, appColors.cardBorder), modifier = Modifier.height(46.dp)) {
+                                Icon(Icons.Default.Shuffle, null, tint = appColors.textPrimary, modifier = Modifier.size(20.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("SHUFFLE", color = appColors.textPrimary, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+            } else item {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()

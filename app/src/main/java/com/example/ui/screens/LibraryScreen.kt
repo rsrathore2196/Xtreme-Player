@@ -1,5 +1,12 @@
 package com.example.ui.screens
 
+import android.content.res.Configuration
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
+import com.example.ui.util.landscapeContentBounds
+import com.example.ui.util.landscapePlaylistColumns
+import com.example.ui.util.landscapePlaylistTileWidth
+
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -116,7 +123,14 @@ fun LibraryScreen(
     val appColors = LocalAppColors.current
 
     val currentPlayingId = currentPlayingTrackId ?: playerUiState?.currentTrack?.id
-    val playlistRows = remember(playlists) { playlists.chunked(2) }
+    val configuration = LocalConfiguration.current
+    val landscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val columns = if (landscape) landscapePlaylistColumns(configuration.screenWidthDp.toFloat()) else 2
+    val tileWidth = if (landscape) landscapePlaylistTileWidth(configuration.screenWidthDp.toFloat()) else 0f
+    val playlistRows = remember(playlists, columns) { playlists.chunked(columns) }
+    val coverSize = if (landscape) with(LocalDensity.current) {
+        tileWidth.dp.roundToPx().coerceIn(120, 1000)
+    } else ImageConfig.PLAYLIST_HEADER_SIZE
 
     Box(
         modifier = modifier
@@ -129,10 +143,11 @@ fun LibraryScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .widthIn(max = 640.dp)
+                .landscapeContentBounds(landscape)
                 .bouncyOverscroll()
                 .statusBarsPadding()
                 .testTag("library_screen"),
-            contentPadding = PaddingValues(bottom = 150.dp)
+            contentPadding = PaddingValues(bottom = if (landscape) 192.dp else 150.dp)
         ) {
         // TOP BAR
         item {
@@ -525,7 +540,8 @@ fun LibraryScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 20.dp, vertical = 7.dp),
-                            horizontalArrangement = Arrangement.spacedBy(14.dp)
+                            horizontalArrangement = if (landscape) Arrangement.spacedBy(14.dp, Alignment.CenterHorizontally)
+                                else Arrangement.spacedBy(14.dp)
                         ) {
                             rowItems.forEach { playlist ->
                                 key(playlist.playlistId) {
@@ -533,12 +549,13 @@ fun LibraryScreen(
                                         playlist = playlist,
                                         onClick = { onOpenPlaylist(playlist.playlistId) },
                                         coverRequestsActive = rowVisible,
-                                        modifier = Modifier.weight(1f)
+                                        coverSize = coverSize,
+                                        modifier = if (landscape) Modifier.width(tileWidth.dp) else Modifier.weight(1f)
                                     )
                                 }
                             }
-                            if (rowItems.size == 1) {
-                                Spacer(modifier = Modifier.weight(1f))
+                            repeat(columns - rowItems.size) {
+                                Spacer(modifier = if (landscape) Modifier.width(tileWidth.dp) else Modifier.weight(1f))
                             }
                         }
                     }
@@ -607,7 +624,8 @@ fun PlaylistGridCard(
     playlist: PlaylistEntity,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    coverRequestsActive: Boolean = true
+    coverRequestsActive: Boolean = true,
+    coverSize: Int = ImageConfig.PLAYLIST_HEADER_SIZE
 ) {
     val appColors = LocalAppColors.current
     Column(
@@ -640,7 +658,7 @@ fun PlaylistGridCard(
         ) {
             if (playlist.coverUrl.isNotBlank()) {
                 AsyncImage(
-                    model = rememberPlaylistCoverRequest(playlist.coverUrl, ImageConfig.PLAYLIST_HEADER_SIZE,
+                    model = rememberPlaylistCoverRequest(playlist.coverUrl, coverSize,
                         loadAllowed = coverRequestsActive),
                     contentDescription = playlist.title,
                     contentScale = ContentScale.Crop,
