@@ -147,6 +147,7 @@ fun OtherSettingsPage(
     var isOptimizingCache by remember { mutableStateOf(false) }
 
     androidx.compose.runtime.LaunchedEffect(Unit) {
+        SmartCacheManager.configure(context)
         SmartCacheManager.refreshStats()
     }
 
@@ -302,7 +303,7 @@ fun OtherSettingsPage(
                                 color = appColors.textPrimary
                             )
                             Text(
-                                text = "Auto-purges old audio chunks when exceeding 80% quota",
+                                text = "Removes least recently used audio when the cache reaches its limit",
                                 fontSize = 10.5.sp,
                                 color = appColors.textMuted
                             )
@@ -321,7 +322,6 @@ fun OtherSettingsPage(
 
                 Spacer(modifier = Modifier.height(8.dp))
 
-                // Max Quota selector chips
                 Text(
                     text = "Max Cache Limit",
                     fontSize = 12.sp,
@@ -329,57 +329,7 @@ fun OtherSettingsPage(
                     color = appColors.textPrimary,
                     modifier = Modifier.padding(top = 4.dp, bottom = 6.dp)
                 )
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    listOf(
-                        ("40 MB" to "(Lean)") to SmartCacheManager.QUOTA_LEAN,
-                        ("60 MB" to "(Standard)") to SmartCacheManager.QUOTA_BALANCED,
-                        ("120 MB" to "(Generous)") to SmartCacheManager.QUOTA_GENEROUS
-                    ).forEach { (labels, quota) ->
-                        val (sizeText, descText) = labels
-                        val isSelected = cacheStats.maxQuotaBytes == quota
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = if (isSelected) accentColor.copy(alpha = 0.15f) else inputBg,
-                            border = BorderStroke(
-                                1.dp,
-                                if (isSelected) accentColor else cardBorder
-                            ),
-                            modifier = Modifier
-                                .weight(1f)
-                                .clickable {
-                                    SmartCacheManager.setQuota(quota)
-                                }
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 8.dp, horizontal = 4.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center
-                            ) {
-                                Text(
-                                    text = sizeText,
-                                    fontSize = 11.sp,
-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
-                                    color = if (isSelected) accentColor else appColors.textPrimary,
-                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                                )
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Text(
-                                    text = descText,
-                                    fontSize = 10.sp,
-                                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                                    color = if (isSelected) accentColor else appColors.textMuted,
-                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                                )
-                            }
-                        }
-                    }
-                }
+                CacheQuotaSlider(cacheStats.maxQuotaBytes, SmartCacheManager::setQuota)
 
                 Spacer(modifier = Modifier.height(14.dp))
 
@@ -892,6 +842,42 @@ private fun ProxySettingsCard(
                         color = accentColor
                     )
                 }
+            }
+        }
+    }
+}
+
+/** Drag locally; persistence and cache resizing happen once when the gesture finishes. */
+@Composable
+internal fun CacheQuotaSlider(quotaBytes: Long, onQuotaSelected: (Long) -> Unit) {
+    val colors = LocalAppColors.current
+    val megabyte = 1024L * 1024L
+    var selection by remember(quotaBytes) {
+        androidx.compose.runtime.mutableFloatStateOf((SmartCacheManager.normalizeQuota(quotaBytes) / megabyte).toFloat())
+    }
+    Surface(shape = RoundedCornerShape(16.dp), color = colors.cardBackgroundElevated,
+        border = BorderStroke(1.dp, colors.cardBorder)) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Recently played audio & artwork", fontSize = 11.sp, color = colors.textMuted,
+                    modifier = Modifier.weight(1f).padding(end = 8.dp))
+                Text(SmartCacheManager.formatBytes(selection.toLong() * megabyte),
+                    color = colors.primaryAccent, fontWeight = FontWeight.Bold, fontSize = 15.sp,
+                    modifier = Modifier.testTag("cache_limit_value"))
+            }
+            androidx.compose.material3.Slider(
+                value = selection,
+                onValueChange = { selection = it },
+                onValueChangeFinished = { onQuotaSelected(SmartCacheManager.normalizeQuota(selection.toLong() * megabyte)) },
+                valueRange = 512f..8192f,
+                colors = androidx.compose.material3.SliderDefaults.colors(
+                    thumbColor = colors.primaryAccent, activeTrackColor = colors.primaryAccent,
+                    inactiveTrackColor = colors.cardBorder),
+                modifier = Modifier.fillMaxWidth().testTag("slider_cache_quota"))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("512 MB", color = colors.textMuted, fontSize = 10.sp)
+                Text("8 GB", color = colors.textMuted, fontSize = 10.sp)
             }
         }
     }

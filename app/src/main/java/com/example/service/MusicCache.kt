@@ -12,14 +12,17 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.Dispatchers
 import java.io.IOException
 import androidx.media3.datasource.cache.CacheDataSource
-import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
+import androidx.media3.datasource.cache.Cache
+import androidx.media3.datasource.cache.CacheEvictor
+import androidx.media3.datasource.cache.CacheSpan
 import androidx.media3.datasource.cache.SimpleCache
 import java.io.File
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 object MusicCache {
-    const val DEFAULT_CACHE_SIZE = 50L * 1024L * 1024L // 50 MB lean LRU cache for 320kbps streams
-    private const val CACHE_SIZE = DEFAULT_CACHE_SIZE
+    const val DEFAULT_CACHE_SIZE = com.example.data.cache.SmartCacheManager.MIN_CACHE_BYTES -
+        com.example.data.cache.SmartCacheManager.ARTWORK_CACHE_MAX_BYTES
+    private var audioEvictor: AdjustableAudioCacheEvictor? = null
     private val saavnRate = Regex("_(320|160|96|48)\\.(?:mp4|m4a)(?:$|[?#])")
 
     internal fun fullyCached(context: Context, key: String, knownLength: Long? = null): Boolean = runCatching {
@@ -89,12 +92,26 @@ object MusicCache {
         simpleCacheInstance?.let { return it }
         return synchronized(this) { simpleCacheInstance ?: run {
             val cacheDir = File(context.cacheDir, "xtreme_audio_cache")
-            val evictor = LeastRecentlyUsedCacheEvictor(CACHE_SIZE)
+            val evictor = AdjustableAudioCacheEvictor(com.example.data.cache.SmartCacheManager.audioBudget(
+                com.example.data.cache.SmartCacheManager.configuredQuota(context)))
             val databaseProvider = StandaloneDatabaseProvider(context)
             val cache = SimpleCache(cacheDir, evictor, databaseProvider)
+            audioEvictor = evictor
             simpleCacheInstance = cache
             cache
         } }
+    }
+
+    /** Change the existing cache owner in place; do not recreate it or interrupt playback. IO only. */
+    internal fun applyConfiguredLimit(context: Context) {
+        val cache = simpleCacheInstance ?: return
+        synchronized(cache) {
+            audioEvictor?.setMaximumBytes(cache, com.example.data.cache.SmartCacheManager.audioBudget(
+                com.example.data.cache.SmartCacheManager.configuredQuota(context)))
+        }
+        peekCacheUsage()?.let { (bytes, count) ->
+            com.example.data.cache.SmartCacheManager.cacheUsageChanged(audioBytes = bytes, audioTrackCount = count)
+        }
     }
 
     fun createCacheDataSourceFactory(context: Context, connectTimeoutMs: Int = 15000,
@@ -310,5 +327,41 @@ object MusicCache {
             size += if (child.isDirectory) getFolderSize(child) else child.length()
         }
         return size
+    }
+}
+
+/** Media3 calls eviction callbacks under its cache lock, including reads that refresh recency. */
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+internal class AdjustableAudioCacheEvictor(initialBytes: Long) : CacheEvictor {
+    var maximumBytes: Long = initialBytes.coerceAtLeast(0L)
+        private set
+    private var size = 0L
+    private val oldest = java.util.TreeSet<CacheSpan> { a, b ->
+        val age = a.lastTouchTimestamp.compareTo(b.lastTouchTimestamp)
+        if (age != 0) age else a.compareTo(b)
+    }
+    fun setMaximumBytes(cache: Cache, bytes: Long) = synchronized(cache) {
+        maximumBytes = bytes.coerceAtLeast(0L)
+        evict(cache, 0L)
+    }
+    override fun requiresCacheSpanTouches() = true
+    override fun onCacheInitialized() {}
+    override fun onStartFile(cache: Cache, key: String, position: Long, length: Long) {
+        if (length >= 0L) evict(cache, length)
+    }
+    override fun onSpanAdded(cache: Cache, span: CacheSpan) {
+        if (oldest.add(span)) size += span.length
+        evict(cache, 0L)
+    }
+    override fun onSpanRemoved(cache: Cache, span: CacheSpan) {
+        if (oldest.remove(span)) size -= span.length
+    }
+    override fun onSpanTouched(cache: Cache, oldSpan: CacheSpan, newSpan: CacheSpan) {
+        onSpanRemoved(cache, oldSpan)
+        onSpanAdded(cache, newSpan)
+    }
+    private fun evict(cache: Cache, incoming: Long) {
+        while (oldest.isNotEmpty() && (size > maximumBytes || incoming > maximumBytes - size))
+            cache.removeSpan(oldest.first())
     }
 }

@@ -76,12 +76,22 @@ object SmartCacheManager {
     private val jobLock = Any()
     private var statisticsRequestedByUser = false
 
-    const val QUOTA_LEAN = 40L * 1024L * 1024L // 40 MB Lean
-    const val QUOTA_BALANCED = 60L * 1024L * 1024L // 60 MB Balanced (Default)
-    const val QUOTA_GENEROUS = 120L * 1024L * 1024L // 120 MB Generous
+    const val MIN_CACHE_BYTES = 512L * 1024L * 1024L
+    const val MAX_CACHE_BYTES = 8L * 1024L * 1024L * 1024L
+    const val QUOTA_LEAN = MIN_CACHE_BYTES
+    const val QUOTA_BALANCED = MIN_CACHE_BYTES
+    const val QUOTA_GENEROUS = MAX_CACHE_BYTES
     // Coil still owns one bounded persistent cache. Within the shared quota,
     // reserve up to one third for artwork before trimming audio under pressure.
     const val ARTWORK_CACHE_MAX_BYTES = 60L * 1024L * 1024L
+
+    fun normalizeQuota(bytes: Long): Long = bytes.coerceIn(MIN_CACHE_BYTES, MAX_CACHE_BYTES)
+
+    fun configuredQuota(context: Context): Long = normalizeQuota(
+        com.example.data.local.ReactiveSettingsRepository.preferences(context, PREFS_NAME)
+            .getLong(KEY_MAX_QUOTA, QUOTA_BALANCED))
+
+    internal fun audioBudget(quota: Long): Long = normalizeQuota(quota) - ARTWORK_CACHE_MAX_BYTES
 
     private val scope = CoroutineScope(SupervisorJob() + AppDispatchers.Io)
     private val maintenanceMutex = Mutex()
@@ -111,6 +121,9 @@ object SmartCacheManager {
         configure(context, repository)
         if (!initialized.compareAndSet(false, true)) return
         val prefs = getPrefs()
+        val quota = configuredQuota(context)
+        if (prefs?.getLong(KEY_MAX_QUOTA, QUOTA_BALANCED) != quota)
+            prefs?.edit()?.putLong(KEY_MAX_QUOTA, quota)?.apply()
         lastReconciliation.set(prefs?.getLong("stats_checked_at", 0L) ?: 0L)
         legacyImageBytes.set(prefs?.getLong("stats_legacy_images", 0L) ?: 0L)
         val audio = MusicCache.peekCacheUsage()
@@ -121,7 +134,7 @@ object SmartCacheManager {
         val metadata = prefs?.getLong("stats_metadata", 0L) ?: 0L
         _stats.value = CacheStats(audioBytes + imageBytes + lyrics + metadata, audioBytes, imageBytes,
             lyrics, metadata, audio?.second ?: prefs?.getInt("stats_audio_count", 0) ?: 0,
-            prefs?.getLong(KEY_MAX_QUOTA, QUOTA_BALANCED) ?: QUOTA_BALANCED,
+            quota,
             prefs?.getBoolean(KEY_SMART_AUTO_TRIM, true) ?: true,
             prefs?.getBoolean(KEY_AUTO_PRECACHE, true) ?: true,
             prefs?.getBoolean(KEY_WIFI_ONLY, false) ?: false, context.cacheDir.freeSpace)
@@ -202,7 +215,7 @@ object SmartCacheManager {
         val lyrics = LyricsProvider.getCacheSize()
         val metadata = calculateMetadataCacheBytes(ctx)
         _stats.value = CacheStats(audio + images + lyrics + metadata, audio, images, lyrics, metadata, count,
-            prefs?.getLong(KEY_MAX_QUOTA, QUOTA_BALANCED) ?: QUOTA_BALANCED,
+            configuredQuota(ctx),
             prefs?.getBoolean(KEY_SMART_AUTO_TRIM, true) ?: true,
             prefs?.getBoolean(KEY_AUTO_PRECACHE, true) ?: true,
             prefs?.getBoolean(KEY_WIFI_ONLY, false) ?: false, ctx.cacheDir.freeSpace)
@@ -222,7 +235,7 @@ object SmartCacheManager {
         maintenanceMutex.withLock {
             val prefs = getPrefs()
             if (prefs?.getBoolean(KEY_SMART_AUTO_TRIM, true) != false) {
-                val quota = prefs?.getLong(KEY_MAX_QUOTA, QUOTA_BALANCED) ?: QUOTA_BALANCED
+                val quota = configuredQuota(context)
                 enforceMediaQuota(context, quota)
             }
             reconcileStats(context)
@@ -318,7 +331,7 @@ object SmartCacheManager {
             }
 
             // 3/4. Preserve reusable covers unless the actual media quota is exceeded.
-            val quota = getPrefs()?.getLong(KEY_MAX_QUOTA, QUOTA_BALANCED) ?: QUOTA_BALANCED
+            val quota = configuredQuota(ctx)
             freed += enforceMediaQuota(ctx, quota)
 
             // 5. Clear stale metadata cache & in-memory search tokens
@@ -337,9 +350,13 @@ object SmartCacheManager {
         (ctx.imageLoader.diskCache as? ManagedImageDiskCache)?.trimToSize(targetBytes) ?: 0L
 
     fun setQuota(quotaBytes: Long) {
-        getPrefs()?.edit()?.putLong(KEY_MAX_QUOTA, quotaBytes)?.apply()
-        _stats.value = _stats.value.copy(maxQuotaBytes = quotaBytes)
-        smartAutoTrim()
+        val quota = normalizeQuota(quotaBytes)
+        getPrefs()?.edit()?.putLong(KEY_MAX_QUOTA, quota)?.apply()
+        _stats.update { it.copy(maxQuotaBytes = quota) }
+        appContext?.let { ctx -> scope.launch {
+            MusicCache.applyConfiguredLimit(ctx)
+            smartAutoTrim()
+        } }
     }
 
     fun setSmartAutoTrim(enabled: Boolean) {
