@@ -913,7 +913,8 @@ class PlayerViewModel(
     fun selectGenre(genre: String) {
         val generation = legacySearchGeneration.incrementAndGet()
         val query = _searchState.value.query
-        _searchState.update { it.copy(selectedGenre = genre, isSearching = true, requestId = generation) }
+        _searchState.update { it.copy(selectedGenre = genre, isSearching = true, requestId = generation,
+            result = if (it.selectedGenre == genre) it.result else SearchResultCategory(), displayDirectTracks = null) }
         searchJob?.cancel()
         searchJob = viewModelScope.launch(AppDispatchers.CpuBounded) {
             val allGenres = genre.equals("All", ignoreCase = true)

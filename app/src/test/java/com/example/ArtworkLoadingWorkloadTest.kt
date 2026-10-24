@@ -257,6 +257,25 @@ class ArtworkLoadingWorkloadTest {
         assertEquals(listOf(max to true, cover to true), chain.calls.filter { it.second })
     }
 
+    @Test fun missingArtworkUsesTheTracksOwnYoutubeIdentityAfterAnItunesMiss() = runBlocking {
+        val original = request().newBuilder().data("").setParameter(ARTWORK_METADATA_PARAMETER,
+            ArtworkRequestMetadata(item.copy(source = AudioSource.YOUTUBE_MUSIC, sourceArtworkUrl = ""),
+                "", 600, trackId = "yt_abcdefghijk"), null).build()
+        val chain = Chain(original)
+        val result = ArtworkResolutionInterceptor { repository { iTunesSearchResponse() } }.intercept(chain) as SuccessResult
+        assertEquals("https://i.ytimg.com/vi/abcdefghijk/maxresdefault.jpg", result.request.data)
+        assertEquals(1, chain.calls.count { it.second })
+    }
+
+    @Test fun absentMaximumRenditionTriesTheSameVideosAvailableStandardCover() = runBlocking {
+        val max = "https://i.ytimg.com/vi/abcdefghijk/maxresdefault.jpg"
+        val standard = "https://i.ytimg.com/vi/abcdefghijk/sddefault.jpg"
+        val chain = Chain(youtubeRequest(max), failures = setOf(max))
+        val result = ArtworkResolutionInterceptor { repository { iTunesSearchResponse() } }.intercept(chain) as SuccessResult
+        assertEquals(standard, result.request.data)
+        assertEquals(listOf(max to true, standard to true), chain.calls.filter { it.second })
+    }
+
     @Test fun anUnavailableItunesMatchDoesNotReturnOrFetchJioSaavnArtworkAsItsFallback() = runBlocking {
         val cover = "https://c.saavncdn.com/123/album-150x150.jpg"
         val original = request().newBuilder().data(cover).setParameter(ARTWORK_METADATA_PARAMETER,

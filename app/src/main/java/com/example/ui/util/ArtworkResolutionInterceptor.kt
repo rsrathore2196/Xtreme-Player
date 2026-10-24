@@ -91,6 +91,19 @@ private val googleArtworkSize = Regex("(^|-)([whs])(\\d+)(?=-|$)")
 private val youtubeArtworkSize = Regex("/(?:default|mqdefault|hqdefault|sddefault)\\.(jpg|webp)(?=[?#]|$)")
 private val appleArtworkSize = Regex("(?<=/)(\\d+)x(\\d+)(bb)?(?=\\.(?:jpg|png|webp))", RegexOption.IGNORE_CASE)
 
+/** Known catalog identity supplies safe alternatives when a thumbnail URL is absent or expires. */
+internal fun youtubeArtworkAlternatives(trackId: String?, urls: List<String>): List<String> {
+    val videoId = trackId?.takeIf { it.startsWith("yt_") }?.removePrefix("yt_")
+        ?.takeIf { artworkVideoId.matches(it) } ?: urls.firstNotNullOfOrNull { url ->
+            if (!isYouTubeArtworkUrl(url)) null else youtubeArtworkId.find(url)?.groupValues?.get(1)
+        } ?: return emptyList()
+    return listOf("maxresdefault", "sddefault", "hqdefault").map {
+        "https://i.ytimg.com/vi/$videoId/$it.jpg"
+    }
+}
+private val artworkVideoId = Regex("[A-Za-z0-9_-]{11}")
+private val youtubeArtworkId = Regex("/(?:vi|vi_webp)/([A-Za-z0-9_-]{11})/")
+
 /** Song covers use verified iTunes artwork, then the same recording's YouTube image. */
 class ArtworkResolutionInterceptor internal constructor(
     private val repositoryFor: (Context) -> iTunesArtworkRepository
@@ -178,7 +191,8 @@ class ArtworkResolutionInterceptor internal constructor(
         // A song's fallback is its own YouTube thumbnail, not unrelated artwork
         // or a small JioSaavn image. Artist/URL-only requests keep their providers.
         val fallbackSources = originals.filter { item == null || isYouTubeArtworkUrl(it) }
-        val fallbackUrls = (fallbackSources.map { providerArtworkUrl(it, sourceDimension) } + fallbackSources).distinct()
+        val fallbackUrls = (fallbackSources.map { providerArtworkUrl(it, sourceDimension) } + fallbackSources +
+            youtubeArtworkAlternatives(metadata.trackId, fallbackSources)).distinct()
         val explicitAppleUrls = (appleSources.map { providerArtworkUrl(it, sourceDimension) } + appleSources).distinct()
         var repository: iTunesArtworkRepository? = null
         fun repository(): iTunesArtworkRepository? = item?.let {

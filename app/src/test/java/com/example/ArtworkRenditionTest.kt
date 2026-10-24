@@ -1,10 +1,19 @@
 package com.example
 
 import com.example.ui.util.providerArtworkUrl
+import com.example.ui.util.youtubeArtworkAlternatives
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class ArtworkRenditionTest {
+    @Test fun fallbackRenditionsRequireTheSameKnownVideoIdentity() {
+        val urls = youtubeArtworkAlternatives("yt_abcdefghijk", emptyList())
+        assertEquals(listOf("maxresdefault", "sddefault", "hqdefault").map {
+            "https://i.ytimg.com/vi/abcdefghijk/$it.jpg"
+        }, urls)
+        assertEquals(emptyList<String>(), youtubeArtworkAlternatives("online_song", listOf("https://covers.example/album.jpg")))
+        assertEquals(emptyList<String>(), youtubeArtworkAlternatives("yt_invalid", listOf("https://ytimg.com.example/vi/abcdefghijk/maxresdefault.jpg")))
+    }
     @Test fun musicThumbnailsKeepTheirIdentityAndCropFlagsAtTheRequiredResolution() {
         assertEquals("https://lh3.googleusercontent.com/recording=w600-h600-l90-rj?token=unchanged",
             providerArtworkUrl("https://lh3.googleusercontent.com/recording=w60-h60-l90-rj?token=unchanged", 600))

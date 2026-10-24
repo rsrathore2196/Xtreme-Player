@@ -99,6 +99,73 @@ import com.example.ui.theme.XtremePurple
 import com.example.ui.theme.XtremeRose
 import com.example.ui.viewmodel.SearchUiState
 
+/** A separate genre destination; the parent Search list keeps its own scroll state. */
+@Composable
+private fun GenreResultsPage(
+    state: SearchUiState, modifier: Modifier, playingId: String?, isPlaying: Boolean,
+    isLoading: Boolean, pendingTrackId: String?, onBack: () -> Unit, onReshuffle: () -> Unit,
+    onPlay: (MusicTrack, List<MusicTrack>) -> Unit, onFavorite: (MusicTrack) -> Unit,
+    onOpenCatalog: (com.example.data.repository.CatalogDestination) -> Unit,
+    onOpenAlbumByName: (String) -> Unit
+) {
+    val colors = LocalAppColors.current
+    val list = rememberLazyListState()
+    val tracks = state.result.songs
+    LazyColumn(state = list, modifier = modifier.fillMaxSize().background(colors.scaffoldBackground)
+        .statusBarsPadding().bouncyOverscroll().testTag("genre_results_page"),
+        contentPadding = PaddingValues(bottom = 150.dp)) {
+        item("genre_header", contentType = "header") {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onBack, modifier = Modifier.testTag("back_to_all_genres_button")) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back to all genres", tint = colors.textPrimary)
+                }
+                Text(state.selectedGenre, style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold, color = colors.textPrimary, modifier = Modifier.weight(1f))
+                IconButton(onClick = onReshuffle, modifier = Modifier.testTag("reshuffle_genre_button")) {
+                    Icon(Icons.Default.Shuffle, "Reshuffle genre", tint = colors.primaryAccent)
+                }
+            }
+        }
+        if (tracks.isNotEmpty()) {
+            item("genre_songs_header", contentType = "header") { CatalogSectionTitle("Songs") }
+            items(tracks, key = { "genre_song:${it.id}" }, contentType = { "track" }) { track ->
+                TrackListItem(track = track, isPlaying = playingId == track.id && isPlaying,
+                    isLoading = pendingTrackId == track.id || playingId == track.id && isLoading,
+                    onClick = { onPlay(track, tracks) }, onToggleFavorite = { onFavorite(track) },
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
+            }
+        }
+        val albums = state.result.catalogAlbums
+        if (albums.isNotEmpty() || state.result.albums.isNotEmpty()) {
+            item("genre_albums_header", contentType = "header") {
+                Box(Modifier.testTag("genre_albums_section")) { CatalogSectionTitle("Albums") }
+            }
+            if (albums.isNotEmpty()) items(albums, key = { "genre_album:${it.id.ifBlank { it.title }}" },
+                contentType = { "catalog_entity" }) { album ->
+                Box(Modifier.padding(horizontal = 20.dp).testTag("album_item_${album.id.ifBlank { album.title.lowercase() }}")) {
+                    CatalogEntityRow(album.title, album.artists.joinToString { it.name }, album.image) {
+                        onOpenCatalog(com.example.data.repository.CatalogDestination.Album(album))
+                    }
+                }
+            } else items(state.result.albums, key = { "genre_album:$it" }, contentType = { "catalog_entity" }) { name ->
+                Box(Modifier.padding(horizontal = 20.dp)) {
+                    CatalogEntityRow(name, "Album • Tap to view songs", null) { onOpenAlbumByName(name) }
+                }
+            }
+        }
+        if (state.isSearching) item("genre_loading", contentType = "loading") {
+            Box(Modifier.fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) {
+                VisibleCircularProgressIndicator(Modifier.size(24.dp), color = colors.primaryAccent)
+            }
+        } else if (tracks.isEmpty() && albums.isEmpty() && state.result.albums.isEmpty()) {
+            item("genre_empty", contentType = "empty") {
+                Text("No results found", color = colors.textMuted, modifier = Modifier.padding(20.dp))
+            }
+        }
+    }
+}
+
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun SearchScreen(
@@ -202,10 +269,10 @@ fun SearchScreen(
     BackHandler(enabled = isScreenActive && (isGenreActive || hasQuery || selectedTypeFilter != null)) {
         keyboardController?.hide()
         focusManager.clearFocus()
-        if (selectedTypeFilter != null) {
-            onSelectType("All")
-        } else if (isGenreActive) {
+        if (isGenreActive) {
             onSelectGenre("All")
+        } else if (selectedTypeFilter != null) {
+            onSelectType("All")
         } else if (hasQuery) {
             onQueryChange("")
         }
@@ -219,7 +286,7 @@ fun SearchScreen(
         }
     }
 
-    val recentSearches = searchState.recentSearches
+    val recentSearches = searchState.recentSearches.take(com.example.data.local.RecentSearchPreferences.MAX_RECENT_SEARCHES)
 
     val triggerSearch: (String) -> Unit = { queryText ->
         val clean = queryText.trim()
@@ -229,6 +296,18 @@ fun SearchScreen(
             onRememberSearch(clean)
             onQueryChange(clean)
         }
+    }
+
+    if (isGenreActive) {
+        GenreResultsPage(
+            state = searchState, modifier = modifier,
+            playingId = currentPlayingId, isPlaying = isCurrentlyPlaying,
+            isLoading = isCurrentlyLoading, pendingTrackId = pendingLoadingTrackId,
+            onBack = { onSelectGenre("All") }, onReshuffle = { onSelectGenre(searchState.selectedGenre) },
+            onPlay = { track, queue -> pendingLoadingTrackId = track.id; onTrackClick(track, queue) },
+            onFavorite = onToggleFavorite, onOpenCatalog = onOpenCatalog, onOpenAlbumByName = onOpenAlbumByName
+        )
+        return
     }
 
     Box(
