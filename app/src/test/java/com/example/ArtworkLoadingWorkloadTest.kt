@@ -67,7 +67,8 @@ class ArtworkLoadingWorkloadTest {
 
     private class Dao : ArtworkCacheDao {
         val rows = ConcurrentHashMap<String, ArtworkCacheEntity>()
-        override suspend fun getUrl(key: String) = rows[key]?.rawArtworkUrl
+        val reads = AtomicInteger()
+        override suspend fun getUrl(key: String): String? { reads.incrementAndGet(); return rows[key]?.rawArtworkUrl }
         override suspend fun getNewest(limit: Int) = rows.values.take(limit)
         override suspend fun insert(entity: ArtworkCacheEntity) { rows[entity.cacheKey] = entity }
         override suspend fun deleteExpired(expiryTime: Long) = Unit
@@ -133,6 +134,51 @@ class ArtworkLoadingWorkloadTest {
     @Test fun cacheOnlyArtworkMissNeverStartsRemoteDiscovery() = runBlocking {
         val repo = repository { error("Cache-only lookup started a remote request") }
         assertNull(repo.cachedArtwork(item, 600))
+    }
+
+    @Test fun repeatedCacheMissesDoNotRepeatRoomQueriesOrBlockLaterVerifiedMetadata() = runBlocking {
+        val dao = Dao()
+        val repo = iTunesArtworkRepository(object : iTunesApiService {
+            override suspend fun searchSong(term: String, media: String, limit: Int) = match()
+        }, dao, lookupScope)
+        repeat(6) { assertNull(repo.cachedArtwork(item, 600)) }
+        assertEquals("A confirmed local miss is reusable while discovery is pending", 1, dao.reads.get())
+        assertEquals(apple, repo.resolveArtwork(item, 600))
+        assertEquals(apple, repo.cachedArtwork(item, 600))
+        assertEquals(1, dao.reads.get())
+    }
+
+    @Test fun stableCachedHomeFallbackFinishesBeforeIdleAndEnrichesOnlyOnce() = runBlocking {
+        val coordinator = com.example.performance.BackgroundWorkCoordinator
+        coordinator.foreground(false)
+        val cover = "https://lh3.googleusercontent.com/recording=w120-h120-l90-rj"
+        val high = "https://lh3.googleusercontent.com/recording=w600-h600-l90-rj"
+        val searches = AtomicInteger()
+        val repo = repository { searches.incrementAndGet(); match() }
+        val original = youtubeRequest(cover)
+        val metadata = original.parameters.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER)!!
+        val stable = original.newBuilder().setParameter(ARTWORK_METADATA_PARAMETER,
+            metadata.copy(preferStableArtwork = true), null).build()
+        try {
+            repeat(6) {
+                val chain = Chain(stable, cached = setOf(high))
+                val result = withTimeout(1_000) { ArtworkResolutionInterceptor { repo }.intercept(chain) } as SuccessResult
+                assertEquals(high, result.request.data)
+                assertTrue(chain.calls.none { it.second })
+            }
+            assertEquals("A finished cached image must not wait for or bypass optional admission", 0, searches.get())
+            coordinator.foreground(true)
+            coordinator.firstFrameRendered(); coordinator.nonHomeContentReady()
+            withTimeout(5_000) {
+                while (repo.getMemoryCachedResolvedUrl(metadata.item!!, 600) == null) {
+                    org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(16))
+                    delay(60)
+                }
+            }
+            assertEquals("Scroll re-entry shares one optional lookup", 1, searches.get())
+            val next = Chain(stable, cached = setOf(high, apple))
+            assertEquals(apple, (ArtworkResolutionInterceptor { repo }.intercept(next) as SuccessResult).request.data)
+        } finally { coordinator.foreground(false) }
     }
 
     @Test fun aColdCardShowsItsExistingItunesArtworkWithoutRepeatingMetadata() = runBlocking {

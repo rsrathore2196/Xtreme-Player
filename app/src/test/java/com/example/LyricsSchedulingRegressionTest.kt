@@ -3,6 +3,8 @@ package com.example
 import android.app.Application
 import com.example.data.model.*
 import com.example.data.remote.LyricsSources
+import com.example.data.remote.LyricsLookupPriority
+import com.example.performance.BackgroundWorkCoordinator
 import kotlinx.coroutines.*
 import kotlinx.coroutines.test.*
 import org.junit.Assert.*
@@ -15,6 +17,25 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = Application::class)
 class LyricsSchedulingRegressionTest {
+    @Test fun sharedLookupPriorityFollowsVisibleReadersAndYieldsDuringNavigation() {
+        BackgroundWorkCoordinator.firstFrameRendered()
+        (BackgroundWorkCoordinator::class.java.getDeclaredField("navigationUntil").apply { isAccessible = true }
+            .get(null) as java.util.concurrent.atomic.AtomicLong).set(0L)
+        val priority = LyricsLookupPriority()
+        var visible = false
+        val reader = { visible }
+        priority.add(reader)
+        assertFalse(priority.canRunImmediately())
+        visible = true
+        assertTrue("Opening the lyrics promotes an existing idle lookup", priority.canRunImmediately())
+        val transition = BackgroundWorkCoordinator.navigationBusy()
+        try { assertFalse("Visible lyrics CPU work must wait for transition completion", priority.canRunImmediately()) }
+        finally { transition.close() }
+        assertTrue(priority.canRunImmediately())
+        priority.remove(reader)
+        assertFalse("A departed reader must not leave a shared job permanently urgent", priority.canRunImmediately())
+    }
+
     private val identity = SongIdentity(title = "Song", artist = "Artist", durationMs = 180000, trackId = "song")
     private val names = listOf("PaxSenix", "BetterLyrics", "BetterLyrics Portato", "BiniLyrics", "LyricsPlus",
         "PaxSenix Spotify", "PaxSenix Musixmatch", "Lrc.Red", "Musixmatch", "KuGou", "LrcLib", "Unison", "Genius", "YouTube captions")

@@ -71,6 +71,14 @@ internal fun rememberPlayerArtworkRequest(track: MusicTrack, active: Boolean,
     }
 }
 
+/** Reuse the selected iTunes source at the actual header's bounded pixel size. */
+internal fun playerHeaderArtworkRequest(artwork: ImageRequest, targetPixels: Int = 192): ImageRequest = artwork.newBuilder()
+    .size(targetPixels.coerceAtLeast(1))
+    // Small shared-transition targets must never evict the full-size decoded cover.
+    .memoryCachePolicy(CachePolicy.READ_ONLY)
+    .crossfade(false)
+    .build()
+
 /** Sample the exact selected iTunes URL without another metadata lookup or provider fallback. */
 internal fun playerPaletteRequest(artwork: ImageRequest): ImageRequest = artwork.newBuilder()
     .size(ImageConfig.PALETTE_THUMBNAIL_SIZE)

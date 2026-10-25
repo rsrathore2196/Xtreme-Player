@@ -36,6 +36,15 @@ import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import java.util.regex.Pattern
 
+/** Shared lookups keep live reader priority without retaining a departed screen. */
+internal class LyricsLookupPriority {
+    private val readers = java.util.concurrent.CopyOnWriteArrayList<() -> Boolean>()
+    fun add(reader: () -> Boolean) { readers.add(reader) }
+    fun remove(reader: () -> Boolean) { readers.remove(reader) }
+    fun canRunImmediately(): Boolean =
+        com.example.performance.BackgroundWorkCoordinator.navigationIsIdle() && readers.any { it() }
+}
+
 object LyricsProvider {
     private const val TAG = "LyricsProvider"
     private val httpClient = OkHttpClient.Builder()
@@ -67,7 +76,8 @@ object LyricsProvider {
     }
     private const val CACHE_VERSION = 3
     private const val CACHE_TTL_MS = 30 * 60 * 1000L
-    private class LyricsFlight(val updates: MutableStateFlow<TrackLyrics?>, val result: Deferred<TrackLyrics>, var readers: Int = 0)
+    private class LyricsFlight(val updates: MutableStateFlow<TrackLyrics?>, val result: Deferred<TrackLyrics>,
+        val priority: LyricsLookupPriority, var readers: Int = 0)
     private val lookupScope = CoroutineScope(SupervisorJob() + AppDispatchers.CpuBounded)
     private val lookups = mutableMapOf<String, LyricsFlight>()
 
@@ -417,15 +427,19 @@ object LyricsProvider {
     suspend fun getLyricsForTrack(
         track: MusicTrack,
         forceRefresh: Boolean = false,
+        foreground: () -> Boolean = { true },
         onUpdate: (TrackLyrics) -> Unit = {}
-    ): TrackLyrics = getLyricsForIdentity(SongIdentity.from(track), track, forceRefresh, onUpdate)
+    ): TrackLyrics = getLyricsForIdentity(SongIdentity.from(track), track, forceRefresh, foreground, onUpdate)
 
     suspend fun getLyricsForIdentity(
         identity: SongIdentity,
         rawTrack: MusicTrack? = null,
         forceRefresh: Boolean = false,
+        foreground: () -> Boolean = { true },
         onUpdate: (TrackLyrics) -> Unit = {}
-    ): TrackLyrics = withContext(AppDispatchers.CpuBounded) {
+    ): TrackLyrics = com.example.performance.BackgroundWorkCoordinator.optionalProcessing(
+        urgent = { foreground() && com.example.performance.BackgroundWorkCoordinator.navigationIsIdle() }) {
+      withContext(AppDispatchers.CpuBounded) {
         val provider = withContext(Dispatchers.IO) {
             com.example.data.local.OtherSettingsPreferences.getLyricsProvider(XtremeMusicApp.instance)
         }
@@ -443,7 +457,9 @@ object LyricsProvider {
         val flight = synchronized(lookups) {
             lookups.getOrPut(key) {
                 val updates = MutableStateFlow(cached)
+                val priority = LyricsLookupPriority()
                 LyricsFlight(updates, lookupScope.async(start = CoroutineStart.LAZY) {
+                  com.example.performance.BackgroundWorkCoordinator.optionalProcessing(urgent = priority::canRunImmediately) {
                     val updateLock = Any()
                     val best = LyricsSources(identity).lookup(cached, provider) { candidate ->
                         synchronized(updateLock) {
@@ -461,8 +477,9 @@ object LyricsProvider {
                         withContext(Dispatchers.IO) { persistLyrics(identity, cleanTitle, primaryArtist, selected, identity.isrc.orEmpty(), provider, content) }
                         selected
                     } else TrackLyrics(identity.trackId.orEmpty(), identity.title, identity.artist.orEmpty(), false, emptyList())
-                })
-            }.also { it.readers++ }
+                  }
+                }, priority)
+            }.also { it.readers++; it.priority.add(foreground) }
         }
         try {
             coroutineScope {
@@ -487,12 +504,14 @@ object LyricsProvider {
             }
         } finally {
             synchronized(lookups) {
+                flight.priority.remove(foreground)
                 if (--flight.readers == 0) {
                     if (lookups[key] === flight) lookups.remove(key)
                     if (!flight.result.isCompleted) flight.result.cancel()
                 }
             }
         }
+      }
     }
 
     /**

@@ -45,6 +45,8 @@ class ArtworkRequestIdentityTest {
         assertTrue(first.allowHardware)
         compose.runOnIdle { track = track.copy(audioUrl = "https://audio.example/refreshed", bitrateKbps = 320) }
         compose.runOnIdle { assertSame("Transport refresh must not reload artwork", first, request) }
+        compose.runOnIdle { track = track.copy(source = "YOUTUBE_MUSIC", recommendationOnly = true) }
+        compose.runOnIdle { assertSame("Actual playback provider and queue policy do not change a cover", first, request) }
         compose.runOnIdle { track = track.copy(title = "Updated title", coverUrl = "https://covers.example/new.jpg") }
         compose.runOnIdle {
             assertNotSame(first, request)
@@ -56,6 +58,12 @@ class ArtworkRequestIdentityTest {
         compose.runOnIdle { dimensions = IntSize(600, 400) }
         compose.runOnIdle { assertNotSame(updated, request) }
         assertEquals(Size(600, 400), runBlocking { request.sizeResolver.size() })
+        val sized = request
+        compose.runOnIdle { track = track.copy(durationMs = 190_000L) }
+        compose.runOnIdle {
+            assertNotSame("Corrected recording duration must refresh matching metadata", sized, request)
+            assertEquals(190_000L, request.parameters.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER)!!.item!!.durationMs)
+        }
     }
 
     @Test fun playerArtworkUsesTheSameProcessWideDecodeBudgetAsHome() {

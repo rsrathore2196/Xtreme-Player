@@ -46,8 +46,14 @@ fun rememberPlaylistCoverRequest(
     if (url.isBlank() || !active && !previouslyRequested.value) return null
     val dimension = mapTargetSizeToArtworkDimension(targetSize)
     return remember(context, url, dimension, visibility) {
+        buildPlaylistCoverRequest(context, url, dimension, visibility)
+    }
+}
+
+internal fun buildPlaylistCoverRequest(context: android.content.Context, url: String,
+    dimension: Int, visibility: ArtworkVisibility): ImageRequest {
         val memoryKey = "playlist-cover:$dimension:$url"
-        ImageRequest.Builder(context)
+        return ImageRequest.Builder(context)
             .data(url)
             .setParameter(PLAYLIST_COVER_PARAMETER, true, null)
             .setParameter(ARTWORK_VISIBILITY_PARAMETER, visibility, null)
@@ -76,7 +82,6 @@ fun rememberPlaylistCoverRequest(
                     "cover=${Integer.toHexString(url.hashCode())} size=$dimension source=${result.dataSource}")
             })
             .build()
-    }
 }
 
 object ImageConfig {
@@ -209,14 +214,14 @@ fun rememberOptimizedImageRequest(
     val context = LocalContext.current
     val visibleContent = LocalArtworkRequestsActive.current
     val visibility = remember(context, url, track?.id, track?.title, track?.artist, track?.album,
-        track?.source, track?.coverUrl, track?.recommendationOnly, targetSize, decodeSize) {
+        track?.durationMs, track?.coverUrl, targetSize, decodeSize) {
         ArtworkVisibility(visibleContent)
     }
     SideEffect { visibility.active.value = visibleContent }
     // Transport URL/bitrate changes do not change artwork. Metadata edits and a larger
     // destination do create a new request, including when a recycled row keeps its ID.
     return remember(context, url, track?.id, track?.title, track?.artist, track?.album,
-        track?.source, track?.coverUrl, track?.recommendationOnly, targetSize, crossfadeEnabled, preferStableArtwork, decodeSize, visibility) {
+        track?.durationMs, track?.coverUrl, targetSize, crossfadeEnabled, preferStableArtwork, decodeSize, visibility) {
         buildOptimizedImageRequest(context, url, targetSize, track, crossfadeEnabled,
             preferStableArtwork, decodeSize, visibleContent, visibility = visibility)
     }

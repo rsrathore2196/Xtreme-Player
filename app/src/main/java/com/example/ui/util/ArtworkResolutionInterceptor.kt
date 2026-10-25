@@ -281,6 +281,14 @@ class ArtworkResolutionInterceptor internal constructor(
         if (preferred != null && sufficient(preferred)) return preferred
         var fallback = best(fallbackUrls, cacheOnly = true)
         present(preferred ?: fallback)
+        if (metadata.preferStableArtwork && fallback != null && sufficient(fallback) &&
+            persistedPreferred == null && explicitAppleUrls.isEmpty()) {
+            // Home rows must finish on their already-cached, full-size image.
+            // Otherwise each scroll disposes a painter still waiting for the
+            // optional fifteen-second iTunes gate and recreates all of its work.
+            item?.let { repository()?.prewarmOptionalArtwork(it, sourceDimension) }
+            return fallback
+        }
         if (!metadata.startupPreparation && startupRequest) {
             // Join the bounded first-viewport batch instead of racing its downloads.
             coordinator.startupReadiness.first {

@@ -257,6 +257,10 @@ fun ExpandedPlayerScreen(
     val resolvedArtworkRequest = com.example.ui.util.rememberPlayerArtworkRequest(track, isScreenVisible)
     val highResCoverUrl = resolvedArtworkRequest.data as? String ?: ""
     val highResImageRequest = resolvedArtworkRequest
+    val headerArtworkPixels = with(androidx.compose.ui.platform.LocalDensity.current) { 52.dp.roundToPx() }.coerceAtLeast(192)
+    val headerArtworkRequest = remember(resolvedArtworkRequest, headerArtworkPixels) {
+        com.example.ui.util.playerHeaderArtworkRequest(resolvedArtworkRequest, headerArtworkPixels)
+    }
 
     var isMenuOpen by remember { mutableStateOf(false) }
     var isSleepTimerOpen by remember { mutableStateOf(false) }
@@ -268,6 +272,9 @@ fun ExpandedPlayerScreen(
     }
     var isFlipped by remember(track.id) { mutableStateOf(false) }
     var showLyrics by remember(track.id) { mutableStateOf(false) }
+    val lyricsContentTransition = rememberPlayerLyricsTransition(showLyrics, isScreenVisible)
+    val lyricsContentAnimating = lyricsContentTransition.currentState != showLyrics ||
+        lyricsContentTransition.isRunning
     val lyricsTextController = rememberLyricsTextController(lyrics, showLyrics && isScreenVisible)
     val lyricsTextState by lyricsTextController.state.collectAsStateWithLifecycle()
     LaunchedEffect(lyricsTextController, lyricsTextState.message) {
@@ -296,6 +303,7 @@ fun ExpandedPlayerScreen(
     val lyricsViewportAnimating by remember(lyricsExpanded) {
         derivedStateOf { kotlin.math.abs(lyricsExpansion.value - if (lyricsExpanded) 1f else 0f) > 0.001f }
     }
+    val lyricsPresentationAnimating = lyricsViewportAnimating || lyricsContentAnimating
     DisposableEffect(lyricsViewportAnimating, isScreenVisible) {
         val lease = if (lyricsViewportAnimating && isScreenVisible)
             com.example.performance.BackgroundWorkCoordinator.navigationBusy() else null
@@ -383,8 +391,8 @@ fun ExpandedPlayerScreen(
     var accentColor by remember(track.id, appColors.primaryAccent) { mutableStateOf(cachedColors?.accentColor ?: appColors.primaryAccent) }
     var vibrantColor by remember(track.id, appColors.primaryAccent) { mutableStateOf(cachedColors?.vibrantColor ?: appColors.primaryAccent) }
 
-    LaunchedEffect(paletteKey, resolvedArtworkRequest, isScreenVisible, appColors.dynamicAlbumGlow) {
-        if (!isScreenVisible || !appColors.dynamicAlbumGlow) return@LaunchedEffect
+    LaunchedEffect(paletteKey, resolvedArtworkRequest, isScreenVisible, appColors.dynamicAlbumGlow, lyricsPresentationAnimating) {
+        if (!isScreenVisible || !appColors.dynamicAlbumGlow || lyricsPresentationAnimating) return@LaunchedEffect
         // Fast-path: If already in memory cache, avoid all processing
         val inMem = TrackPaletteCache.get(paletteKey)
         if (inMem != null) {
@@ -557,11 +565,9 @@ fun ExpandedPlayerScreen(
                     SharedTransitionLayout(
                         modifier = Modifier.fillMaxHeight()
                     ) {
-                        AnimatedContent(
-                            targetState = showLyrics,
+                        lyricsContentTransition.AnimatedContent(
                             transitionSpec = { lyricsArtworkTransition() },
                             contentAlignment = Alignment.Center,
-                            label = "lyrics_album_art_transition_landscape",
                             modifier = Modifier
                                 .fillMaxSize()
                                 .graphicsLayer { clip = false }
@@ -571,7 +577,7 @@ fun ExpandedPlayerScreen(
                                     Row(Modifier.fillMaxWidth().padding(vertical = 8.dp),
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                        AsyncImage(model = highResImageRequest, contentDescription = "Cover Art",
+                                        AsyncImage(model = headerArtworkRequest, contentDescription = "Cover Art",
                                             contentScale = ContentScale.Crop,
                                             modifier = Modifier.size(44.dp)
                                                 .sharedElement(rememberSharedContentState("lyrics_artwork_${track.id}"),
@@ -604,7 +610,7 @@ fun ExpandedPlayerScreen(
                                     onRetry = onRetryLyrics,
                                     showRomanization = lyricsTextState.active == com.example.data.remote.LyricsTextTransformer.Mode.ROMANIZE,
                                     showTranslation = lyricsTextState.active == com.example.data.remote.LyricsTextTransformer.Mode.TRANSLATE,
-                                    viewportAnimating = lyricsViewportAnimating,
+                                    viewportAnimating = lyricsPresentationAnimating,
                                     lyricsOffsetMs = lyricsOffsetMs,
                                     modifier = Modifier.weight(1f).fillMaxWidth()
                                 )
@@ -1413,11 +1419,9 @@ fun ExpandedPlayerScreen(
 
             // Shared artwork and metadata travel between their original bounds and the lyrics header.
             SharedTransitionLayout(Modifier.fillMaxSize()) {
-                AnimatedContent(
-                    targetState = showLyrics,
+                lyricsContentTransition.AnimatedContent(
                     transitionSpec = { lyricsArtworkTransition() },
                     modifier = Modifier.fillMaxSize(),
-                    label = "lyrics_header_transition"
                 ) { isLyricsActive ->
                     Column(Modifier.fillMaxSize()) {
                         if (isLyricsActive) {
@@ -1427,7 +1431,7 @@ fun ExpandedPlayerScreen(
                                 horizontalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
                                 AsyncImage(
-                                    model = highResImageRequest,
+                                    model = headerArtworkRequest,
                                     contentDescription = "Cover Art",
                                     contentScale = ContentScale.Crop,
                                     modifier = Modifier.size(52.dp)
@@ -1495,7 +1499,7 @@ fun ExpandedPlayerScreen(
                                 onRetry = onRetryLyrics,
                                 showRomanization = lyricsTextState.active == com.example.data.remote.LyricsTextTransformer.Mode.ROMANIZE,
                                 showTranslation = lyricsTextState.active == com.example.data.remote.LyricsTextTransformer.Mode.TRANSLATE,
-                                viewportAnimating = lyricsViewportAnimating,
+                                viewportAnimating = lyricsPresentationAnimating,
                                 lyricsOffsetMs = lyricsOffsetMs,
                                 modifier = Modifier.weight(1f).fillMaxWidth()
                             )
@@ -2352,7 +2356,8 @@ private fun PlayerSyncedLyrics(
     lyricsOffsetMs: Int = 0,
     modifier: Modifier
 ) {
-    // Palette fades only invalidate the lyrics subtree, never the complete player.
+    // Read palette animation in the lyric draw cache, not in the entire lyrics
+    // composition: a 650ms background fade must not rebuild every visible row.
     SyncedLyricsView(
         lyrics = lyrics,
         currentPositionMs = currentPositionMs,
@@ -2360,8 +2365,7 @@ private fun PlayerSyncedLyrics(
         isPlaying = isPlaying,
         currentPositionProvider = currentPositionProvider,
         onSeekTo = onSeekTo,
-        dominantColor = dominantColor.value,
-        accentColor = accentColor.value,
+        accentColorState = accentColor,
         isDark = isDark,
         onRetry = onRetry,
         showRomanization = showRomanization,
@@ -2447,7 +2451,7 @@ internal fun PlayerGlassBackground(
     // This small derivative is only for diffusion. The main album artwork stays full resolution.
     val backdropRequest = remember(artworkUrl, context, artworkRequest) {
         (artworkRequest?.newBuilder() ?: ImageRequest.Builder(context).data(artworkUrl))
-            .size(256).crossfade(650).build()
+            .size(256).memoryCachePolicy(coil.request.CachePolicy.READ_ONLY).crossfade(650).build()
     }
     val base = Color(0xff101010)
     Box(modifier.fillMaxSize().testTag("player_album_glow_backdrop").xtremeSharedBackdropSource(enabled = dynamicGlass).background(base)) {
@@ -2833,6 +2837,20 @@ private fun PlayerTimelineSection(
 
 private const val LYRICS_ARTWORK_TRANSITION_MS = 420
 private const val LYRICS_EXPANSION_MS = 420
+
+/** One transition owns foreground admission until its existing content/shared bounds settle. */
+@Composable
+internal fun rememberPlayerLyricsTransition(lyricsVisible: Boolean, active: Boolean): androidx.compose.animation.core.Transition<Boolean> {
+    val transition = androidx.compose.animation.core.updateTransition(lyricsVisible, label = "player_lyrics_content")
+    // The requested state changes before Transition publishes its target on the
+    // first frame. Close admission immediately, before lyrics effects can start.
+    val moving = transition.currentState != lyricsVisible || transition.isRunning
+    DisposableEffect(moving, active) {
+        val lease = if (moving && active) com.example.performance.BackgroundWorkCoordinator.navigationBusy() else null
+        onDispose { lease?.close() }
+    }
+    return transition
+}
 
 /** Keep the content fade alive for the entire shared artwork/header journey. */
 private fun AnimatedContentTransitionScope<Boolean>.lyricsArtworkTransition(): ContentTransform =

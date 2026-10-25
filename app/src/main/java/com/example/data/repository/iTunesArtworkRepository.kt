@@ -79,8 +79,10 @@ class iTunesArtworkRepository(
     private val metadataCache = LruCache<RawMetadata, LookupMetadata>(256)
     private val whitespace = Regex("\\s+")
     private val memoryCache = LruCache<String, Lookup>(2048)
+    private val databaseMisses = LruCache<String, Long>(256)
     private val networkSlots = Semaphore(2)
     private val inFlight = mutableMapOf<String, Flight>()
+    private val optionalWarmups = mutableSetOf<String>()
     init {
         lookupScope.launch {
             try {
@@ -112,7 +114,8 @@ class iTunesArtworkRepository(
         }
     }
 
-    suspend fun resolveArtwork(item: MediaItem, targetDimension: Int, optionalUpgrade: Boolean = false): String? = withContext(com.example.performance.BackgroundWorkCoordinator.optionalCpuDispatcher) {
+    suspend fun resolveArtwork(item: MediaItem, targetDimension: Int, optionalUpgrade: Boolean = false,
+        requireForeground: Boolean = false): String? = withContext(com.example.performance.BackgroundWorkCoordinator.optionalCpuDispatcher) {
         val metadata = lookupMetadata(item)
         val cleanedTitle = metadata.title
         val cleanedArtist = metadata.artist
@@ -131,7 +134,7 @@ class iTunesArtworkRepository(
                 Flight(lookupScope.async(start = CoroutineStart.LAZY) {
                     com.example.performance.BackgroundWorkCoordinator.startup(
                         com.example.performance.BackgroundWorkCoordinator.StartupPriority.DEFERRED,
-                        requireForeground = false, urgent = { urgent.get() }, label = "Artwork metadata lookup") {
+                        requireForeground = requireForeground, urgent = { urgent.get() }, label = "Artwork metadata lookup") {
                         lookup(cacheKey, cleanedTitle, cleanedArtist, item.durationMs, item.album)
                             .also { memoryCache.put(cacheKey, it) }
                     }
@@ -151,19 +154,50 @@ class iTunesArtworkRepository(
         }
     }
 
+    /** A crisp cached fallback is a finished image, not a placeholder waiting on
+     * idle admission. Reuse this repository's scope/flights to enrich its metadata
+     * once, without retaining/cancelling an image request on every scroll. */
+    internal suspend fun prewarmOptionalArtwork(item: MediaItem, targetDimension: Int) {
+        val metadata = withContext(com.example.performance.AppDispatchers.CpuBounded) { lookupMetadata(item) }
+        if (metadata.title.isBlank() || cached(metadata.key) != null) return
+        synchronized(optionalWarmups) {
+            // A fast scroll cannot enqueue the whole catalog behind the idle gate.
+            if (optionalWarmups.size >= 32 || !optionalWarmups.add(metadata.key)) return
+        }
+        lookupScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            try {
+                // The shared flight owns admission. Holding another optional
+                // lease here would wait on that flight while monopolizing its slot.
+                resolveArtwork(item, targetDimension, optionalUpgrade = true, requireForeground = true)
+            } finally { synchronized(optionalWarmups) { optionalWarmups.remove(metadata.key) } }
+        }
+    }
+
     /** Resolve only persisted metadata before decoding a provider fallback. Never searches the network. */
     suspend fun cachedArtwork(item: MediaItem, targetDimension: Int): String? {
         val key = withContext(com.example.performance.AppDispatchers.CpuBounded) { lookupMetadata(item).key }
         cached(key)?.let { return it.url?.let { url -> formatUrl(url, targetDimension) } }
+        val url = persistedArtworkUrl(key) ?: return null
+        memoryCache.put(key, Lookup(url, Long.MAX_VALUE))
+        return formatUrl(url, targetDimension)
+    }
+
+    /** A confirmed Room miss is distinct from an iTunes/network negative result.
+     * Re-entering an unchanged row must not repeat that query before enrichment. */
+    private suspend fun persistedArtworkUrl(key: String): String? {
+        databaseMisses.get(key)?.let { until ->
+            if (until > System.currentTimeMillis()) return null
+            databaseMisses.remove(key)
+        }
         return withContext(com.example.performance.AppDispatchers.Database) {
             com.example.performance.BackgroundWorkCoordinator.traceWork("Artwork cached mapping") {
                 val url = try { cacheDao.getUrl(key) }
                 catch (cancelled: CancellationException) { throw cancelled }
-                catch (_: Exception) { null }
-                if (url.isNullOrBlank()) null else {
-                    memoryCache.put(key, Lookup(url, Long.MAX_VALUE))
-                    formatUrl(url, targetDimension)
-                }
+                catch (_: Exception) { return@traceWork null }
+                if (url.isNullOrBlank()) {
+                    databaseMisses.put(key, System.currentTimeMillis() + 30_000L)
+                    null
+                } else url
             }
         }
     }
@@ -178,13 +212,7 @@ class iTunesArtworkRepository(
         cached(cacheKey)?.let { return it }
 
         // 2. Check Room Database Cache
-        val dbUrl = withContext(Dispatchers.IO) {
-            try {
-                cacheDao.getUrl(cacheKey)
-            } catch (e: CancellationException) { throw e } catch (_: Exception) {
-                null
-            }
-        }
+        val dbUrl = persistedArtworkUrl(cacheKey)
         if (dbUrl != null) {
             return Lookup(dbUrl, Long.MAX_VALUE)
         }

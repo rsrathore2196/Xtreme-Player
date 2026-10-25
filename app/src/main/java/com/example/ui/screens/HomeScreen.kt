@@ -223,9 +223,12 @@ fun HomeScreen(
     androidx.compose.runtime.LaunchedEffect(homeViewModel, listState, viewportOwner) {
         androidx.compose.runtime.snapshotFlow {
             val layout = listState.layoutInfo
-            layout.visibleItemsInfo.filter { item ->
-                item.offset + item.size >= layout.viewportStartOffset && item.offset < layout.viewportEndOffset
-            }.mapNotNull { it.key as? String }.toSet()
+            buildSet {
+                for (item in layout.visibleItemsInfo) {
+                    if (item.offset + item.size >= layout.viewportStartOffset && item.offset < layout.viewportEndOffset)
+                        (item.key as? String)?.let { add(it) }
+                }
+            }
         }.distinctUntilChanged().collect { homeViewModel.setRecommendationViewport(viewportOwner, it) }
     }
 

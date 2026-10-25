@@ -46,6 +46,7 @@ import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -157,7 +158,8 @@ fun SyncedLyricsView(
     viewportAnimating: Boolean = false,
     showRomanization: Boolean = true,
     showTranslation: Boolean = true,
-    lyricsOffsetMs: Int = 0
+    lyricsOffsetMs: Int = 0,
+    accentColorState: State<Color>? = null
 ) {
     val appColors = LocalAppColors.current
     val context = LocalContext.current
@@ -463,7 +465,8 @@ fun SyncedLyricsView(
                             activeTextColor = activeTextColor,
                             inactiveTextColor = if (isActive) inactiveTextColor else
                                 if (isDark) Color.White.copy(alpha = 0.40f) else Color.Black.copy(alpha = 0.38f),
-                            glowColor = lerp(activeTextColor, accentColor.takeIf { it.alpha > 0f } ?: activeTextColor, 0.25f),
+                            accentColor = accentColor,
+                            accentColorState = accentColorState,
                             currentPositionProvider = {
                                 (currentPlayheadMs - lyricsOffsetMs).coerceAtLeast(0L)
                             }
@@ -500,7 +503,8 @@ private fun KaraokeLineItem(
     trackArtist: String?,
     activeTextColor: Color,
     inactiveTextColor: Color,
-    glowColor: Color,
+    accentColor: Color,
+    accentColorState: State<Color>?,
     currentPositionProvider: () -> Long
 ) {
     // Keep line wrapping and row height fixed as activity changes. Emphasis is a
@@ -591,6 +595,8 @@ private fun KaraokeLineItem(
             val liftedCompleted = Path()
             val liftHeight = 2.dp.toPx()
             val feather = 8.dp.toPx()
+            val accent = accentColorState?.value ?: accentColor
+            val glowColor = lerp(activeTextColor, accent.takeIf { it.alpha > 0f } ?: activeTextColor, 0.25f)
             val revealPaint = RevealPaint(activeTextColor, glowColor, broadRadius, glyphGlows?.takeIf { layout != null && it.matches(layout) })
             onDrawWithContent {
                 // Read focus only while drawing, so the outgoing line's halo fades without relaying out text.

@@ -149,7 +149,7 @@ class PlayerViewModel(
     private var lyricsPrefetchStarted = false
     private var lyricsPrefetchAdmission: Job? = null
     @Volatile private var lyricsLookupComplete = false
-    private var lyricsVisible = false
+    @Volatile private var lyricsVisible = false
 
     private val _catalogTracks = MutableStateFlow<List<MusicTrack>>(emptyList())
     val catalogTracks: StateFlow<List<MusicTrack>> = _catalogTracks.asStateFlow()
@@ -700,7 +700,8 @@ class PlayerViewModel(
                     }
                 }
                 if (forceRefresh) LyricsProvider.clearCacheForTrack(track.id)
-                val lyrics = LyricsProvider.getLyricsForTrack(track, forceRefresh = forceRefresh) { improved ->
+                val lyrics = LyricsProvider.getLyricsForTrack(track, forceRefresh = forceRefresh,
+                    foreground = { forceRefresh || lyricsVisible }) { improved ->
                     if (stillSelected() && coroutineContext[kotlinx.coroutines.Job]?.isActive == true) {
                         _currentLyrics.value = improved
                     }

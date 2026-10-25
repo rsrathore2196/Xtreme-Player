@@ -116,6 +116,13 @@ class PlayerAppearanceUiTest {
         compose.waitForIdle()
         // Allow the remembered direct iTunes request's small IO producer to publish.
         compose.mainClock.advanceTimeBy(800)
+        // The manually advanced animation clock does not await Coil's real IO
+        // dispatcher. Wait for the cover to draw before checking its edge pixels.
+        compose.waitUntil(3_000) {
+            compose.mainClock.advanceTimeByFrame()
+            val ready = capture("flip_album_art_card")
+            ready.getRGB(ready.width / 2, ready.height / 2) == coverColor
+        }
         val image = capture("flip_album_art_card")
         for (fraction in listOf(.05f, .2f, .5f, .8f, .95f)) {
             assertEquals("Cover pixels must remain unmodified", coverColor,
