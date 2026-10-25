@@ -110,9 +110,7 @@ import androidx.compose.material.icons.filled.Usb
 import com.example.playback.AudioDeviceManager
 import com.example.playback.AudioQuality
 import com.example.playback.SoundOutputDevice
-import com.example.ui.util.ImageConfig
 import com.example.ui.util.TrackPaletteCache
-import com.example.ui.util.ExtractedTrackColors
 import com.example.util.AppHaptics
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -179,7 +177,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.palette.graphics.Palette
 import coil.ImageLoader
 import coil.imageLoader
 import coil.compose.AsyncImage
@@ -417,16 +414,18 @@ fun ExpandedPlayerScreen(
     val effectiveDevices = if (availableAudioDevices.isNotEmpty()) availableAudioDevices else fallbackDevices
     val activeOutputDevice = effectiveDevices.find { it.isSelected }
 
-    // Dynamic color extracted from album art with active theme fallback and in-memory song ID cache
-    val paletteKey = remember(track.id, track.coverUrl, isDark, appColors.primaryAccent, appColors.cardBackgroundElevated) {
-        com.example.ui.util.playerPaletteKey(track, isDark, appColors.primaryAccent, appColors.cardBackgroundElevated)
+    // Use the displayed cover's resolution pipeline and invalidate palettes from the old extractor.
+    val paletteKey = remember(track.id, track.title, track.artist, track.album, highResCoverUrl,
+        isDark, appColors.primaryAccent, appColors.cardBackgroundElevated) {
+        com.example.ui.util.playerPaletteKey(track, isDark, appColors.primaryAccent,
+            appColors.cardBackgroundElevated, highResCoverUrl)
     }
     val cachedColors = remember(paletteKey) { TrackPaletteCache.get(paletteKey) }
     var dominantColor by remember(track.id) { mutableStateOf(cachedColors?.dominantColor ?: appColors.cardBackgroundElevated) }
     var accentColor by remember(track.id, appColors.primaryAccent) { mutableStateOf(cachedColors?.accentColor ?: appColors.primaryAccent) }
     var vibrantColor by remember(track.id, appColors.primaryAccent) { mutableStateOf(cachedColors?.vibrantColor ?: appColors.primaryAccent) }
 
-    LaunchedEffect(paletteKey, isScreenVisible, appColors.dynamicAlbumGlow) {
+    LaunchedEffect(paletteKey, resolvedArtworkRequest, isScreenVisible, appColors.dynamicAlbumGlow) {
         if (!isScreenVisible || !appColors.dynamicAlbumGlow) return@LaunchedEffect
         // Fast-path: If already in memory cache, avoid all processing
         val inMem = TrackPaletteCache.get(paletteKey)
@@ -437,63 +436,22 @@ fun ExpandedPlayerScreen(
             return@LaunchedEffect
         }
 
-        if (track.coverUrl.isNotBlank()) {
+        if (highResCoverUrl.isNotBlank() || track.coverUrl.isNotBlank()) {
             // Preserve the opening/closing motion before starting uncached palette work.
             com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
             withContext(AppDispatchers.Io) {
                 try {
                     val loader = context.imageLoader
-                    val request = ImageRequest.Builder(context)
-                        .data(track.coverUrl)
-                        .size(ImageConfig.PALETTE_THUMBNAIL_SIZE, ImageConfig.PALETTE_THUMBNAIL_SIZE) // Explicit 100x100 for fast, lightweight palette extraction
-                        .allowHardware(false)
-                        .memoryCachePolicy(coil.request.CachePolicy.ENABLED)
-                        .diskCachePolicy(coil.request.CachePolicy.ENABLED)
-                        .build()
-                    val result = (loader.execute(request) as? SuccessResult)?.drawable
-                    val bitmap = (result as? BitmapDrawable)?.bitmap
+                    val request = com.example.ui.util.playerPaletteRequest(resolvedArtworkRequest)
+                    val result = loader.execute(request) as? SuccessResult ?: return@withContext
+                    val bitmap = (result.drawable as? BitmapDrawable)?.bitmap
                     if (bitmap != null) {
-                        val palette = withContext(AppDispatchers.CpuBounded) {
-                            Palette.from(bitmap).generate()
-                        }
-                        val defaultAccentInt = android.graphics.Color.rgb(
-                            (appColors.primaryAccent.red * 255).toInt(),
-                            (appColors.primaryAccent.green * 255).toInt(),
-                            (appColors.primaryAccent.blue * 255).toInt()
-                        )
-                        val defaultDomInt = android.graphics.Color.rgb(
-                            (appColors.cardBackgroundElevated.red * 255).toInt(),
-                            (appColors.cardBackgroundElevated.green * 255).toInt(),
-                            (appColors.cardBackgroundElevated.blue * 255).toInt()
-                        )
-                        val dom = if (isDark) {
-                            palette.getDarkVibrantColor(
-                                palette.getDominantColor(palette.getDarkMutedColor(defaultDomInt))
-                            )
-                        } else {
-                            palette.getLightMutedColor(
-                                palette.getLightVibrantColor(palette.getDominantColor(defaultDomInt))
-                            )
-                        }
-                        val acc = if (isDark) {
-                            palette.getLightVibrantColor(
-                                palette.getVibrantColor(defaultAccentInt)
-                            )
-                        } else {
-                            palette.getVibrantColor(
-                                palette.getDarkVibrantColor(defaultAccentInt)
-                            )
-                        }
-                        val vib = palette.getVibrantColor(
-                            palette.getLightVibrantColor(
-                                palette.getDominantColor(defaultAccentInt)
-                            )
-                        )
-                        val extracted = ExtractedTrackColors(
-                            dominantColor = Color(dom),
-                            accentColor = Color(acc),
-                            vibrantColor = Color(vib)
-                        )
+                        val extracted = withContext(AppDispatchers.CpuBounded) {
+                            com.example.ui.util.extractPlayerArtworkColors(bitmap, isDark)
+                        } ?: return@withContext
+                        val resolvedKey = com.example.ui.util.playerPaletteKey(track, isDark,
+                            appColors.primaryAccent, appColors.cardBackgroundElevated, result.request.data.toString())
+                        TrackPaletteCache.put(resolvedKey, extracted)
                         TrackPaletteCache.put(track.id, extracted)
                         TrackPaletteCache.put(paletteKey, extracted)
                         withContext(Dispatchers.Main) {
@@ -2588,13 +2546,18 @@ internal fun PlayerGlassBackground(
     Box(modifier.fillMaxSize().testTag("player_album_glow_backdrop").xtremeSharedBackdropSource(enabled = dynamicGlass).background(base)) {
         // Broad color fields provide the same soft finish on devices without RenderEffect.
         Box(Modifier.fillMaxSize().drawWithCache {
-            val field = Brush.linearGradient(listOf(dominantColor.value, base, vibrantColor.value.copy(alpha = 0.55f)),
+            val albumBase = dominantColor.value
+            val albumMidtone = androidx.compose.ui.graphics.lerp(albumBase, vibrantColor.value, 0.25f)
+            val field = Brush.linearGradient(listOf(albumBase, albumMidtone, vibrantColor.value.copy(alpha = 0.55f)),
                 Offset.Zero, Offset(size.width, size.height))
             val vibrantField = Brush.radialGradient(listOf(vibrantColor.value.copy(alpha = if (isDark) 0.50f else 0.25f), Color.Transparent),
                 center = Offset(size.width * 0.82f, size.height * 0.48f), radius = size.maxDimension * 0.7f)
             val accentField = Brush.radialGradient(listOf(accentColor.value.copy(alpha = if (isDark) 0.22f else 0.16f), Color.Transparent),
                 center = Offset(0f, size.height * 0.85f), radius = size.maxDimension * 0.6f)
             onDrawBehind {
+                // Translucent album fields blend into their own base hue rather
+                // than picking up an unrelated custom canvas color underneath.
+                drawRect(albumBase)
                 drawRect(field)
                 drawRect(vibrantField)
                 drawRect(accentField)
@@ -2610,7 +2573,7 @@ internal fun PlayerGlassBackground(
         }
         // High contrast strengthens only the neutral text backdrop, never text size/layout.
         Box(Modifier.fillMaxSize().drawWithCache {
-            val veil = if (isDark) Color.Black else base
+            val veil = if (isDark) Color.Black else Color.White
             val veilBrush = Brush.verticalGradient(
                 0f to veil.copy(alpha = if (appColors.highContrastTypography) 0.80f else if (isDark) 0.42f else 0.40f),
                 0.35f to veil.copy(alpha = if (appColors.highContrastTypography) 0.72f else if (isDark) 0.16f else 0.28f),

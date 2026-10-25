@@ -15,8 +15,12 @@ import androidx.test.core.app.ApplicationProvider
 import com.example.data.local.AppThemeMode
 import com.example.data.local.OtherSettingsPreferences
 import com.example.data.local.ThemePresets
+import com.github.takahirom.roborazzi.captureRoboImage
+import com.github.takahirom.roborazzi.RoborazziOptions
+import com.github.takahirom.roborazzi.RoborazziTaskType
 import com.example.ui.components.PlayerGlassBackground
 import com.example.ui.screens.settings.ThemesAppUiPage
+import com.example.ui.theme.LocalAppColors
 import com.example.ui.theme.MyApplicationTheme
 import kotlinx.coroutines.*
 import org.junit.Before
@@ -59,6 +63,44 @@ class PlayerVisualSettingsUiTest {
         }
         compose.onNodeWithTag("switch_high_contrast").performScrollTo().assertIsOn()
         compose.onNodeWithTag("switch_ambient_glow").performScrollTo().assertIsOff()
+    }
+
+    @OptIn(com.github.takahirom.roborazzi.ExperimentalRoborazziApi::class)
+    @Test fun albumBackdropDoesNotPickUpAnUnrelatedCustomCanvasHue() {
+        var canvas by mutableStateOf(Color.Blue)
+        var dark by mutableStateOf(true)
+        compose.setContent {
+            CompositionLocalProvider(LocalAppColors provides com.example.ui.theme.DarkAppColors.copy(
+                isDark = dark, scaffoldBackground = canvas, dynamicGlassEnabled = true, dynamicAlbumGlow = true),
+                com.example.ui.components.LocalDynamicGlassEnabled provides true) {
+                PlayerGlassBackground("", dominantColor = remember { mutableStateOf(Color(0xff164528)) },
+                    accentColor = remember { mutableStateOf(Color(0xff287c40)) },
+                    vibrantColor = remember { mutableStateOf(Color(0xff2c9c50)) }, isDark = dark)
+            }
+        }
+        fun capture(): java.awt.image.BufferedImage {
+            // The host renderer supports direct node capture, not device PixelCopy callbacks.
+            val file = java.io.File.createTempFile("album-background-", ".png")
+            return try {
+                compose.onNodeWithTag("player_album_glow_backdrop").captureRoboImage(file.absolutePath,
+                    roborazziOptions = RoborazziOptions(taskType = RoborazziTaskType.Record))
+                javax.imageio.ImageIO.read(file)
+            } finally { file.delete() }
+        }
+        for (mode in listOf(true, false)) {
+            compose.runOnIdle { dark = mode; canvas = Color.Blue }
+            compose.waitForIdle()
+            val before = capture()
+            compose.runOnIdle { canvas = Color.Magenta }
+            compose.waitForIdle()
+            val after = capture()
+            for (fraction in listOf(0.2f, 0.5f, 0.8f)) {
+                val x = before.width / 2
+                val y = (before.height * fraction).toInt()
+                org.junit.Assert.assertEquals("Album hue must stay independent of canvas hue (dark=$mode)",
+                    before.getRGB(x, y), after.getRGB(x, y))
+            }
+        }
     }
 
     @Test fun theSavedGlowOptionActuallyChangesThePlayerBackdrop() {
