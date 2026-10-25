@@ -4,6 +4,7 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -51,6 +52,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -95,7 +97,7 @@ fun LyricsOffsetBottomSheet(
 
     val offsetDisplayColor by animateColorAsState(
         targetValue = when {
-            activeOffsetMs == 0 -> appColors.primaryAccent
+            activeOffsetMs == 0 -> if (!isDark && appColors.primaryAccent.luminance() > 0.70f) appColors.textPrimary else appColors.primaryAccent
             activeOffsetMs > 0 -> if (isDark) Color(0xFFFBBF24) else Color(0xFFD97706)
             else -> if (isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
         },
@@ -143,17 +145,18 @@ fun LyricsOffsetBottomSheet(
                             .background(
                                 Brush.linearGradient(
                                     listOf(
-                                        appColors.primaryAccent.copy(alpha = 0.85f),
+                                        appColors.primaryAccent.copy(alpha = 0.90f),
                                         appColors.primaryAccent
                                     )
                                 )
-                            ),
+                            )
+                            .border(1.dp, appColors.cardBorder.copy(alpha = 0.5f), CircleShape),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             imageVector = Icons.Default.Tune,
                             contentDescription = null,
-                            tint = Color.White,
+                            tint = appColors.onPrimaryAccent,
                             modifier = Modifier.size(22.dp)
                         )
                     }
@@ -430,11 +433,12 @@ fun LyricsOffsetBottomSheet(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
+                                    val resetAccentColor = if (!isDark && appColors.primaryAccent.luminance() > 0.70f) appColors.textPrimary else appColors.primaryAccent
                                     if (isReset) {
                                         Icon(
                                             imageVector = Icons.Default.RestartAlt,
                                             contentDescription = null,
-                                            tint = if (activeOffsetMs == 0) appColors.primaryAccent else appColors.textSecondary,
+                                            tint = if (activeOffsetMs == 0) resetAccentColor else appColors.textSecondary,
                                             modifier = Modifier.size(14.dp)
                                         )
                                     }
@@ -442,7 +446,7 @@ fun LyricsOffsetBottomSheet(
                                         text = label,
                                         style = MaterialTheme.typography.labelSmall.copy(
                                             fontWeight = if (isReset || isSelected) FontWeight.Bold else FontWeight.Medium,
-                                            color = if (isReset && activeOffsetMs == 0) appColors.primaryAccent else appColors.textPrimary
+                                            color = if (isReset && activeOffsetMs == 0) resetAccentColor else appColors.textPrimary
                                         )
                                     )
                                 }
@@ -516,6 +520,8 @@ fun LyricsOffsetBottomSheet(
                 },
                 shape = RoundedCornerShape(16.dp),
                 color = appColors.primaryAccent,
+                contentColor = appColors.onPrimaryAccent,
+                border = BorderStroke(1.dp, appColors.cardBorder.copy(alpha = 0.35f)),
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(48.dp)
@@ -529,14 +535,14 @@ fun LyricsOffsetBottomSheet(
                         Icon(
                             imageVector = Icons.Default.Check,
                             contentDescription = null,
-                            tint = Color.White,
+                            tint = appColors.onPrimaryAccent,
                             modifier = Modifier.size(18.dp)
                         )
                         Text(
                             text = "Done",
                             style = MaterialTheme.typography.titleMedium.copy(
                                 fontWeight = FontWeight.Bold,
-                                color = Color.White
+                                color = appColors.onPrimaryAccent
                             )
                         )
                     }

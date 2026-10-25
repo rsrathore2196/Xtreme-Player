@@ -162,4 +162,24 @@ class PlayerExperienceSettingsTest {
             reopened.awaitPendingWrites()
         }
     }
+    @Test fun fullScreenAlbumArtIsOffByDefaultAndPersists() = runBlocking {
+        ReactiveSettingsRepository(app).use { repository ->
+            repository.preload()
+            val context = client(repository)
+            assertFalse(OtherSettingsPreferences.playerExperienceSettings(context).fullScreenAlbumArt)
+            OtherSettingsPreferences.setFullScreenAlbumArt(context, true)
+            assertTrue(OtherSettingsPreferences.playerExperienceSettings(context).fullScreenAlbumArt)
+            val observed = withTimeout(2_000) { OtherSettingsPreferences.observePlayerExperience(context).first() }
+            assertTrue(observed.fullScreenAlbumArt)
+            repository.awaitPendingWrites()
+        }
+        ReactiveSettingsRepository(app).use { reopened ->
+            reopened.preload()
+            val context = client(reopened)
+            assertTrue(OtherSettingsPreferences.playerExperienceSettings(context).fullScreenAlbumArt)
+            OtherSettingsPreferences.setFullScreenAlbumArt(context, false)
+            assertFalse(OtherSettingsPreferences.playerExperienceSettings(context).fullScreenAlbumArt)
+            reopened.awaitPendingWrites()
+        }
+    }
 }

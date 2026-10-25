@@ -441,6 +441,38 @@ private fun ThemesAppUiOverview(
                             .padding(end = 12.dp)
                     ) {
                         Text(
+                            text = "Full-Screen Album Art",
+                            fontSize = 13.5.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = appColors.textPrimary
+                        )
+                        Text(
+                            text = "Runs the cover art to the edges of the player instead of a square sleeve",
+                            fontSize = 11.sp,
+                            color = appColors.textMuted
+                        )
+                    }
+                    Switch(
+                        checked = playerExperience.fullScreenAlbumArt,
+                        onCheckedChange = { com.example.data.local.OtherSettingsPreferences.setFullScreenAlbumArt(settingsContext, it) },
+                        colors = liquidGlassSwitchColors(appColors),
+                        modifier = Modifier.testTag("switch_full_screen_album_art")
+                    )
+                }
+
+                HorizontalDivider(color = dividerColor, thickness = 1.dp, modifier = Modifier.padding(vertical = 12.dp))
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 12.dp)
+                    ) {
+                        Text(
                             text = "Dynamic Ambient Album Glow",
                             fontSize = 13.5.sp,
                             fontWeight = FontWeight.SemiBold,

@@ -57,7 +57,8 @@ data class PlayerExperienceSettings(
     val spatialAudio: Boolean = false,
     val skipSilence: Boolean = false,
     val outputPrecision: OutputPrecision = OutputPrecision.PCM_16,
-    val dolbyAtmos: Boolean = false
+    val dolbyAtmos: Boolean = false,
+    val fullScreenAlbumArt: Boolean = false
 )
 
 object OtherSettingsPreferences {
@@ -130,6 +131,7 @@ object OtherSettingsPreferences {
     private const val KEY_DYNAMIC_GLASS_ENABLED = "dynamic_glass_enabled"
     private const val KEY_ALBUM_GLOW = "player_dynamic_album_glow"
     private const val KEY_HIGH_CONTRAST = "player_high_contrast_typography"
+    private const val KEY_FULL_SCREEN_ALBUM_ART = "player_full_screen_album_art"
     private const val KEY_CROSSFADE = "playback_crossfade_enabled"
     private const val KEY_SPATIAL_AUDIO = "playback_spatial_audio"
     private const val KEY_DOLBY_ATMOS = "playback_dolby_atmos"
@@ -305,7 +307,8 @@ object OtherSettingsPreferences {
             spatialAudio = prefs.getBoolean(KEY_SPATIAL_AUDIO, false),
             skipSilence = prefs.getBoolean(KEY_SKIP_SILENCE, false),
             outputPrecision = OutputPrecision.fromStored(prefs.getString(KEY_OUTPUT_PRECISION, null)),
-            dolbyAtmos = prefs.getBoolean(KEY_DOLBY_ATMOS, false)
+            dolbyAtmos = prefs.getBoolean(KEY_DOLBY_ATMOS, false),
+            fullScreenAlbumArt = prefs.getBoolean(KEY_FULL_SCREEN_ALBUM_ART, false)
         )
     }
 
@@ -317,7 +320,8 @@ object OtherSettingsPreferences {
             KEY_SPATIAL_AUDIO,
             KEY_DOLBY_ATMOS,
             KEY_SKIP_SILENCE,
-            KEY_OUTPUT_PRECISION
+            KEY_OUTPUT_PRECISION,
+            KEY_FULL_SCREEN_ALBUM_ART
         )
         return callbackFlow {
             val app = context.applicationContext
@@ -348,6 +352,10 @@ object OtherSettingsPreferences {
 
     fun setHighContrastTypography(context: Context, enabled: Boolean) {
         getPrefs(context).edit().putBoolean(KEY_HIGH_CONTRAST, enabled).apply()
+    }
+
+    fun setFullScreenAlbumArt(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_FULL_SCREEN_ALBUM_ART, enabled).apply()
     }
 
     fun setCrossfade(context: Context, enabled: Boolean) {

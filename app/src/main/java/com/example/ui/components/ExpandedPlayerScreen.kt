@@ -152,7 +152,9 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.BlurEffect
@@ -323,6 +325,10 @@ fun ExpandedPlayerScreen(
     val integrationsFlow = remember(context) { com.example.data.local.OtherSettingsPreferences.observePlaybackIntegrations(context) }
     val integrations by integrationsFlow.collectAsStateWithLifecycle(
         initialValue = com.example.data.local.OtherSettingsPreferences.playbackIntegrations(context))
+    val playerExperienceFlow = remember(context) { com.example.data.local.OtherSettingsPreferences.observePlayerExperience(context) }
+    val playerExperience by playerExperienceFlow.collectAsStateWithLifecycle(
+        initialValue = com.example.data.local.OtherSettingsPreferences.playerExperienceSettings(context)
+    )
     KeepLyricsScreenAwake(showLyrics && isScreenVisible, integrations.keepLyricsAwake)
     var maximizeLyrics by remember(track.id) { mutableStateOf(false) }
     val lyricsExpanded = showLyrics && maximizeLyrics
@@ -617,6 +623,59 @@ fun ExpandedPlayerScreen(
 
             val configuration = LocalConfiguration.current
             val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+            val isFullScreenArt = playerExperience.fullScreenAlbumArt && !showLyrics && !isLandscape
+
+            if (isFullScreenArt) {
+                // Upper part background blur technique to seamlessly merge the top area with the album art
+                val topBackdropRequest = remember(highResCoverUrl, context, resolvedArtworkRequest) {
+                    resolvedArtworkRequest.newBuilder().size(256).crossfade(400).build()
+                }
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(220.dp)
+                        .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+                        .drawWithContent {
+                            drawContent()
+                            drawRect(
+                                brush = Brush.verticalGradient(
+                                    colors = listOf(
+                                        Color.Black,
+                                        Color.Black,
+                                        Color.Black.copy(alpha = 0.85f),
+                                        Color.Black.copy(alpha = 0.30f),
+                                        Color.Transparent
+                                    )
+                                ),
+                                blendMode = BlendMode.DstIn
+                            )
+                        }
+                ) {
+                    AsyncImage(
+                        model = topBackdropRequest,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer { scaleX = 1.25f; scaleY = 1.25f; alpha = if (isDark) 0.72f else 0.42f }
+                            .playerBackdropBlur(48.dp)
+                    )
+                    // Protective high-contrast scrim for upper controls
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(
+                                Brush.verticalGradient(
+                                    colors = listOf(
+                                        (if (isDark) Color.Black else appColors.scaffoldBackground).copy(alpha = 0.55f),
+                                        (if (isDark) Color.Black else appColors.scaffoldBackground).copy(alpha = 0.25f),
+                                        Color.Transparent
+                                    )
+                                )
+                            )
+                    )
+                }
+            }
 
             if (isLandscape) {
                 // LANDSCAPE DEDICATED TWO-PANE LAYOUT
@@ -1350,10 +1409,14 @@ fun ExpandedPlayerScreen(
                         .fillMaxSize()
                         .statusBarsPadding()
                         .navigationBarsPadding()
-                        .padding(horizontal = 24.dp)
+                        .padding(horizontal = if (isFullScreenArt) 0.dp else 24.dp)
                         .widthIn(max = 500.dp)
                 ) {
-            Column {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = if (isFullScreenArt) 24.dp else 0.dp)
+            ) {
             // TOP BAR
             Row(
                 modifier = Modifier
@@ -1368,9 +1431,9 @@ fun ExpandedPlayerScreen(
                         .liquidGlassButton(
                             colors = appColors,
                             shape = CircleShape,
-                            elevation = 4.dp,
+                            elevation = if (isFullScreenArt) 6.dp else 4.dp,
                             isActive = false,
-                            translucency = 0.82f
+                            translucency = if (isFullScreenArt) 0.88f else 0.82f
                         )
                         .bouncyClickable { onMinimize() }
                         .testTag("player_minimize_button"),
@@ -1379,7 +1442,7 @@ fun ExpandedPlayerScreen(
                     Icon(
                         imageVector = Icons.Default.KeyboardArrowDown,
                         contentDescription = "Minimize Player",
-                        tint = appColors.textPrimary,
+                        tint = if (isFullScreenArt) (if (isDark) Color.White else appColors.textPrimary) else appColors.textPrimary,
                         modifier = Modifier.size(28.dp)
                     )
                 }
@@ -1400,7 +1463,7 @@ fun ExpandedPlayerScreen(
                     Text(
                         text = "NOW PLAYING",
                         style = MaterialTheme.typography.labelSmall.copy(
-                            fontWeight = FontWeight.Bold,
+                            fontWeight = FontWeight.ExtraBold,
                             fontSize = 11.sp,
                             letterSpacing = 2.0.sp,
                             color = appColors.primaryAccent
@@ -1412,7 +1475,7 @@ fun ExpandedPlayerScreen(
                         style = MaterialTheme.typography.titleSmall.copy(
                             fontWeight = FontWeight.Bold,
                             fontSize = 14.sp,
-                            color = appColors.textPrimary
+                            color = if (isFullScreenArt) (if (isDark) Color.White else appColors.textPrimary) else appColors.textPrimary
                         ),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -1426,9 +1489,9 @@ fun ExpandedPlayerScreen(
                             .liquidGlassButton(
                                 colors = appColors,
                                 shape = CircleShape,
-                                elevation = 4.dp,
+                                elevation = if (isFullScreenArt) 6.dp else 4.dp,
                                 isActive = isMenuOpen,
-                                translucency = 0.82f
+                                translucency = if (isFullScreenArt) 0.88f else 0.82f
                             )
                             .bouncyClickable { isMenuOpen = true }
                             .testTag("player_options_button"),
@@ -1437,7 +1500,7 @@ fun ExpandedPlayerScreen(
                         Icon(
                             imageVector = Icons.Default.MoreVert,
                             contentDescription = "Options",
-                            tint = appColors.textPrimary,
+                            tint = if (isFullScreenArt) (if (isDark) Color.White else appColors.textPrimary) else appColors.textPrimary,
                             modifier = Modifier.size(22.dp)
                         )
                     }
@@ -1556,7 +1619,7 @@ fun ExpandedPlayerScreen(
                                 contentAlignment = Alignment.Center
                             ) {
                                 // Adaptive Ambient Glow Layer matching album art with hardware acceleration
-                                if (appColors.dynamicAlbumGlow) Box(
+                                if (appColors.dynamicAlbumGlow && !isFullScreenArt) Box(
                                     modifier = Modifier
                                     .size(if (isLandscape) 190.dp else 280.dp)
                                     .graphicsLayer()
@@ -1575,30 +1638,66 @@ fun ExpandedPlayerScreen(
 
                                 // 3D Flippable Card
                                 Box(
-                                    modifier = Modifier
-                                    .fillMaxHeight(if (isLandscape) 0.88f else 1f)
-                                    .animatedFillMaxWidth(albumArtScale)
-                                    .sizeIn(
-                                        maxWidth = if (isLandscape) 210.dp else 330.dp,
-                                        maxHeight = if (isLandscape) 210.dp else 330.dp
-                                    )
-                                    .aspectRatio(1f)
-                                    .sharedElement(
-                                        rememberSharedContentState("lyrics_artwork_${track.id}"),
-                                        animatedVisibilityScope = this@AnimatedContent,
-                                        boundsTransform = { _, _ -> tween(LYRICS_ARTWORK_TRANSITION_MS, easing = FastOutSlowInEasing) }
-                                    )
-                                    .graphicsLayer {
-                                        rotationY = flipRotation
-                                        cameraDistance = 14f * density
+                                    modifier = if (isFullScreenArt) {
+                                        Modifier
+                                            .fillMaxSize()
+                                            .sharedElement(
+                                                rememberSharedContentState("lyrics_artwork_${track.id}"),
+                                                animatedVisibilityScope = this@AnimatedContent,
+                                                boundsTransform = { _, _ -> tween(LYRICS_ARTWORK_TRANSITION_MS, easing = FastOutSlowInEasing) }
+                                            )
+                                            .graphicsLayer {
+                                                rotationY = flipRotation
+                                                cameraDistance = 14f * density
+                                                compositingStrategy = CompositingStrategy.Offscreen
+                                            }
+                                            .drawWithContent {
+                                                drawContent()
+                                                drawRect(
+                                                    brush = Brush.verticalGradient(
+                                                        0.0f to Color.Transparent,
+                                                        0.06f to Color.Black.copy(alpha = 0.35f),
+                                                        0.14f to Color.Black.copy(alpha = 0.85f),
+                                                        0.22f to Color.Black,
+                                                        0.50f to Color.Black,
+                                                        0.70f to Color.Black.copy(alpha = 0.80f),
+                                                        0.88f to Color.Black.copy(alpha = 0.35f),
+                                                        1.0f to Color.Transparent
+                                                    ),
+                                                    blendMode = BlendMode.DstIn
+                                                )
+                                            }
+                                            .clickable {
+                                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                isFlipped = !isFlipped
+                                            }
+                                            .testTag("flip_album_art_card")
+                                    } else {
+                                        Modifier
+                                            .fillMaxHeight(if (isLandscape) 0.88f else 1f)
+                                            .animatedFillMaxWidth(albumArtScale)
+                                            .sizeIn(
+                                                maxWidth = if (isLandscape) 210.dp else 330.dp,
+                                                maxHeight = if (isLandscape) 210.dp else 330.dp
+                                            )
+                                            .aspectRatio(1f)
+                                            .sharedElement(
+                                                rememberSharedContentState("lyrics_artwork_${track.id}"),
+                                                animatedVisibilityScope = this@AnimatedContent,
+                                                boundsTransform = { _, _ -> tween(LYRICS_ARTWORK_TRANSITION_MS, easing = FastOutSlowInEasing) }
+                                            )
+                                            .graphicsLayer {
+                                                rotationY = flipRotation
+                                                cameraDistance = 14f * density
+                                            }
+                                            .animatedArtworkShadow(animatedAccentColor, RoundedCornerShape(24.dp), appColors.dynamicAlbumGlow)
+                                            .clip(RoundedCornerShape(24.dp))
+                                            .clickable {
+                                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                isFlipped = !isFlipped
+                                            }
+                                            .testTag("flip_album_art_card")
                                     }
-                                    .animatedArtworkShadow(animatedAccentColor, RoundedCornerShape(24.dp), appColors.dynamicAlbumGlow)
-                                    .clip(RoundedCornerShape(24.dp))
-                                    .clickable {
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        isFlipped = !isFlipped
-                                    }
-                                    .testTag("flip_album_art_card")
                                 ) {
                                     if (showArtworkFront) {
                                         // FRONT SIDE: Album Artwork with Motion Video Support
@@ -1607,7 +1706,7 @@ fun ExpandedPlayerScreen(
                                             staticCoverUrl = highResCoverUrl,
                                             staticImageRequest = resolvedArtworkRequest,
                                             contentDescription = "Cover Art - Tap to flip",
-                                            shape = RoundedCornerShape(24.dp),
+                                            shape = if (isFullScreenArt) RoundedCornerShape(0.dp) else RoundedCornerShape(24.dp),
                                             modifier = Modifier.fillMaxSize(),
                                             placeholderMemoryCacheKey = cachedArtworkKey
                                         )
@@ -1619,8 +1718,8 @@ fun ExpandedPlayerScreen(
                                             .graphicsLayer { rotationY = 180f }
                                             .background(if (appColors.isAmoled) Color(0xFF000000) else appColors.cardBackground)
                                             .animatedArtworkBorder(animatedAccentColor, isDark,
-                                                appColors.cardBorder, RoundedCornerShape(24.dp))
-                                            .padding(20.dp),
+                                                appColors.cardBorder, if (isFullScreenArt) RoundedCornerShape(0.dp) else RoundedCornerShape(24.dp))
+                                            .padding(if (isFullScreenArt) 24.dp else 20.dp),
                                             contentAlignment = Alignment.Center
                                         ) {
                                             Column(
@@ -1717,7 +1816,9 @@ fun ExpandedPlayerScreen(
                             Spacer(Modifier.height(16.dp))
                             // TRACK INFO & FAVORITE TOGGLE
                             Row(
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = if (isFullScreenArt) 24.dp else 0.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
@@ -1784,7 +1885,11 @@ fun ExpandedPlayerScreen(
                 }
             }
 
-            Column(Modifier.fillMaxWidth()) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = if (isFullScreenArt) 24.dp else 0.dp)
+            ) {
             Spacer(modifier = Modifier.height(if (isLandscape) 4.dp else 14.dp))
 
             AnimatedVisibility(
@@ -1844,7 +1949,10 @@ fun ExpandedPlayerScreen(
 
             }
             Column(
-                Modifier.fillMaxWidth().collapsingPlayerControls(lyricsExpansion)
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = if (isFullScreenArt) 24.dp else 0.dp)
+                    .collapsingPlayerControls(lyricsExpansion)
                     .graphicsLayer { alpha = 1f - lyricsExpansion.value }
                     .then(if (lyricsExpanded) Modifier.clearAndSetSemantics { } else Modifier)
             ) {
@@ -2558,7 +2666,7 @@ private fun PlayerOptionsMenu(
             shape = RoundedCornerShape(22.dp),
             containerColor = opaqueMenuBaseColor,
             tonalElevation = 0.dp,
-            shadowElevation = 18.dp,
+            shadowElevation = 0.dp,
             border = menuBorderStroke,
             modifier = modifier
                 .widthIn(min = 220.dp)

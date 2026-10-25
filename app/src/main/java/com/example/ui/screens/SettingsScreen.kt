@@ -380,7 +380,7 @@ private fun SettingsOverviewList(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Group 1: Themes & App UI
+        // Group 1: Appearance
         SettingsCategoryCardGroup(
             categories = listOf(
                 SettingsCategory.THEMES_APP_UI
