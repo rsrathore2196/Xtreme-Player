@@ -763,9 +763,8 @@ fun ExpandedPlayerScreen(
                                                 modifier = Modifier
                                                     .fillMaxSize()
                                                     .graphicsLayer { rotationY = 180f }
-                                                    .background(if (appColors.isAmoled) Color(0xFF000000) else appColors.cardBackground)
-                                                    .animatedArtworkBorder(animatedAccentColor, isDark,
-                                                        appColors.cardBorder, RoundedCornerShape(22.dp))
+                                                    .background(if (isDark) Color(0xFF000000) else Color(0xFFFFFFFF))
+                                                    .border(BorderStroke(1.dp, if (isDark) Color(0x33FFFFFF) else Color(0x1F000000)), RoundedCornerShape(22.dp))
                                                     .padding(14.dp),
                                                 contentAlignment = Alignment.Center
                                             ) {
@@ -774,6 +773,31 @@ fun ExpandedPlayerScreen(
                                                     horizontalAlignment = Alignment.CenterHorizontally,
                                                     verticalArrangement = Arrangement.Center
                                                 ) {
+                                                    Surface(
+                                                        color = (if (isDark) Color.White else Color.Black).copy(alpha = 0.12f),
+                                                        shape = RoundedCornerShape(6.dp)
+                                                    ) {
+                                                        Row(
+                                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                                            verticalAlignment = Alignment.CenterVertically
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = Icons.Default.Info,
+                                                                contentDescription = null,
+                                                                tint = if (isDark) Color.White else Color.Black,
+                                                                modifier = Modifier.size(11.dp)
+                                                            )
+                                                            Spacer(modifier = Modifier.width(4.dp))
+                                                            Text(
+                                                                text = "TRACK CREDITS & DETAILS",
+                                                                fontSize = 8.sp,
+                                                                fontWeight = FontWeight.ExtraBold,
+                                                                color = if (isDark) Color.White else Color.Black,
+                                                                letterSpacing = 0.8.sp
+                                                            )
+                                                        }
+                                                    }
+                                                    Spacer(modifier = Modifier.height(4.dp))
                                                     Text(
                                                         text = track.cleanTitle,
                                                         fontWeight = FontWeight.ExtraBold,
@@ -867,7 +891,7 @@ fun ExpandedPlayerScreen(
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 13.sp,
                                         letterSpacing = 2.0.sp,
-                                        color = appColors.primaryAccent
+                                        color = if (isEffectivelyDark) Color.White else Color.Black
                                     )
                                 )
                                 Spacer(modifier = Modifier.height(2.dp))
@@ -1426,7 +1450,7 @@ fun ExpandedPlayerScreen(
                             fontWeight = FontWeight.ExtraBold,
                             fontSize = 11.sp,
                             letterSpacing = 2.0.sp,
-                            color = appColors.primaryAccent
+                            color = if (isEffectivelyDark) Color.White else Color.Black
                         )
                     )
                     Spacer(modifier = Modifier.height(2.dp))
@@ -1671,14 +1695,13 @@ fun ExpandedPlayerScreen(
                                             placeholderMemoryCacheKey = cachedArtworkKey
                                         )
                                     } else {
-                                        // BACK SIDE: Song credits and information (Fully theme adaptive)
+                                        // BACK SIDE: Song credits and information
                                         Box(
                                             modifier = Modifier
                                             .fillMaxSize()
                                             .graphicsLayer { rotationY = 180f }
-                                            .background(if (appColors.isAmoled) Color(0xFF000000) else appColors.cardBackground)
-                                            .animatedArtworkBorder(animatedAccentColor, isDark,
-                                                appColors.cardBorder, if (isFullScreenArt) RoundedCornerShape(0.dp) else RoundedCornerShape(24.dp))
+                                            .background(if (isDark) Color(0xFF000000) else Color(0xFFFFFFFF))
+                                            .border(BorderStroke(1.dp, if (isDark) Color(0x33FFFFFF) else Color(0x1F000000)), if (isFullScreenArt) RoundedCornerShape(0.dp) else RoundedCornerShape(24.dp))
                                             .padding(if (isFullScreenArt) 24.dp else 20.dp),
                                             contentAlignment = Alignment.Center
                                         ) {
@@ -1688,7 +1711,7 @@ fun ExpandedPlayerScreen(
                                                 verticalArrangement = Arrangement.Center
                                             ) {
                                                 Surface(
-                                                    color = animatedAccentColor.value.copy(alpha = 0.16f),
+                                                    color = (if (isDark) Color.White else Color.Black).copy(alpha = 0.12f),
                                                     shape = RoundedCornerShape(8.dp)
                                                 ) {
                                                     Row(
@@ -1698,7 +1721,7 @@ fun ExpandedPlayerScreen(
                                                         Icon(
                                                             imageVector = Icons.Default.Info,
                                                             contentDescription = null,
-                                                            tint = animatedAccentColor.value,
+                                                            tint = if (isDark) Color.White else Color.Black,
                                                             modifier = Modifier.size(13.dp)
                                                         )
                                                         Spacer(modifier = Modifier.width(6.dp))
@@ -1706,7 +1729,7 @@ fun ExpandedPlayerScreen(
                                                             text = "TRACK CREDITS & DETAILS",
                                                             fontSize = 9.sp,
                                                             fontWeight = FontWeight.ExtraBold,
-                                                            color = animatedAccentColor.value,
+                                                            color = if (isDark) Color.White else Color.Black,
                                                             letterSpacing = 1.sp
                                                         )
                                                     }
