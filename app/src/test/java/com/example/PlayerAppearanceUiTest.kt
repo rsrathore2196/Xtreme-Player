@@ -4,10 +4,17 @@ import android.app.Application
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.drawable.BitmapDrawable
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.unit.dp
 import androidx.test.core.app.ApplicationProvider
 import coil.Coil
 import coil.ImageLoader
@@ -97,7 +104,7 @@ class PlayerAppearanceUiTest {
         assertEquals(playerAppearanceColors(DarkAppColors).textPrimary, playerAppearanceColors(LightAppColors).textPrimary)
     }
 
-    @Test fun fullScreenItunesArtworkHasNoTintOrOpacityMask() {
+    @Test fun fullScreenItunesArtworkBlendsItsEdgesWithoutTintingItsCenter() {
         previousLoader = context.imageLoader
         val bitmap = Bitmap.createBitmap(300, 300, Bitmap.Config.ARGB_8888).apply { eraseColor(coverColor) }
         testLoader = ImageLoader.Builder(context).components {
@@ -124,9 +131,64 @@ class PlayerAppearanceUiTest {
             ready.getRGB(ready.width / 2, ready.height / 2) == coverColor
         }
         val image = capture("flip_album_art_card")
-        for (fraction in listOf(.05f, .2f, .5f, .8f, .95f)) {
-            assertEquals("Cover pixels must remain unmodified", coverColor,
+        for (fraction in listOf(.2f, .5f, .75f)) {
+            assertEquals("The center of the cover must remain unmodified", coverColor,
                 image.getRGB(image.width / 2, (image.height * fraction).toInt()))
         }
+        val backdrop = java.awt.Color(0xff101010.toInt())
+        for (fraction in listOf(.001f, .999f)) {
+            val pixel = java.awt.Color(image.getRGB(image.width / 2,
+                (image.height * fraction).toInt().coerceIn(0, image.height - 1)))
+            assertTrue("The top and bottom must dissolve into the backdrop",
+                kotlin.math.abs(pixel.green - backdrop.green) < 8)
+        }
+        for (fraction in listOf(.08f, .9f)) {
+            val pixel = java.awt.Color(image.getRGB(image.width / 2, (image.height * fraction).toInt()))
+            assertTrue("The edge blend must be gradual, not a cropped boundary",
+                pixel.green in (backdrop.green + 20) until (android.graphics.Color.green(coverColor) - 20))
+        }
     }
+
+    private fun assertClearPlayerControls() {
+        var colors by mutableStateOf(DarkAppColors.copy(primaryAccent = Color.Magenta))
+        compose.mainClock.autoAdvance = false
+        compose.setContent { MaterialTheme {
+            val backdrop = rememberLiquidGlassBackdrop()
+            CompositionLocalProvider(LocalAppColors provides colors, LocalDynamicGlassEnabled provides true,
+                LocalLiquidGlassBackdrop provides backdrop) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Box(Modifier.fillMaxSize().xtremeSharedBackdropSource().background(Color(0xffc82c60)))
+                    Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+                        Box(Modifier.size(72.dp).playerLiquidGlassButton(colors, isActive = true)
+                            .testTag("clear_secondary"))
+                        Box(Modifier.size(104.dp).playerPrimaryLiquidGlassButton(colors)
+                            .testTag("clear_primary"))
+                    }
+                }
+            }
+        } }
+        compose.mainClock.advanceTimeBy(800)
+        compose.waitForIdle()
+        val dark = listOf("clear_secondary", "clear_primary").map(::capture)
+        compose.runOnIdle { colors = LightAppColors.copy(primaryAccent = Color.Blue) }
+        compose.mainClock.advanceTimeBy(800)
+        compose.waitForIdle()
+        listOf("clear_secondary", "clear_primary").forEachIndexed { index, tag ->
+            val light = capture(tag)
+            val center = java.awt.Color(light.getRGB(light.width / 2, light.height / 2))
+            assertTrue("Player controls must reveal the backdrop, not a solid black fill", center.red > 160)
+            assertTrue("Player controls must not add a white wash", center.green < 100)
+            assertEquals(dark[index].width, light.width)
+            assertEquals(dark[index].height, light.height)
+            for (y in 0 until light.height) for (x in 0 until light.width) {
+                assertEquals("App theme and accent must not tint player controls",
+                    dark[index].getRGB(x, y), light.getRGB(x, y))
+            }
+        }
+    }
+
+    @Test fun playerControlsUseClearBackdropGlassInBothColorModes() = assertClearPlayerControls()
+
+    @Test @Config(sdk = [31])
+    fun clearPlayerControlsAlsoWorkOnAndroid12() = assertClearPlayerControls()
 }

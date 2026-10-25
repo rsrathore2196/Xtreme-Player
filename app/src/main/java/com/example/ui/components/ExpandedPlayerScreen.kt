@@ -150,7 +150,9 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.BlurEffect
@@ -1574,12 +1576,14 @@ fun ExpandedPlayerScreen(
                                     }
                                 ) {
                                     if (showArtworkFront) {
-                                        // One untinted iTunes cover; never substitute a provider image or video.
+                                        // Keep the cover untinted; full-screen edges dissolve into
+                                        // the existing album backdrop instead of ending at a hard seam.
                                         AsyncImage(
                                             model = highResImageRequest,
                                             contentScale = ContentScale.Crop,
                                             contentDescription = "Cover Art - Tap to flip",
                                             modifier = Modifier.fillMaxSize()
+                                                .playerArtworkEdgeBlend(isFullScreenArt)
                                                 .clip(if (isFullScreenArt) RoundedCornerShape(0.dp) else RoundedCornerShape(24.dp))
                                         )
                                     } else {
@@ -2429,6 +2433,23 @@ private fun Modifier.playerBackdropBlur(radius: Dp): Modifier {
         }
     }
 }
+
+internal fun Modifier.playerArtworkEdgeBlend(enabled: Boolean): Modifier = if (!enabled) this else
+    graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+        .drawWithCache {
+            // Alpha only: preserve the center's original pixels, without a black,
+            // white or theme-colored overlay. Cache one mask for the image bounds.
+            val edges = Brush.verticalGradient(
+                0f to Color.Transparent,
+                0.16f to Color.White,
+                0.78f to Color.White,
+                1f to Color.Transparent
+            )
+            onDrawWithContent {
+                drawContent()
+                drawRect(edges, blendMode = BlendMode.DstIn)
+            }
+        }
 
 @Composable
 internal fun PlayerGlassBackground(

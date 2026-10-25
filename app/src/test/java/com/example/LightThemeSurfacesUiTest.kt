@@ -181,7 +181,7 @@ class LightThemeSurfacesUiTest {
         }
     }
 
-    @Test fun lightFloatingControlsKeepTheirFillAndWorkAcrossTabsAndGlassModes() {
+    @Test fun lightFloatingControlsStayTranslucentAndWorkAcrossTabsAndGlassModes() {
         var colors by mutableStateOf(LightAppColors)
         var background by mutableStateOf(Color.Black)
         var selected by mutableIntStateOf(0)
@@ -204,13 +204,28 @@ class LightThemeSurfacesUiTest {
             compose.runOnIdle { colors = LightAppColors.copy(dynamicGlassEnabled = glass) }
             for (canvas in listOf(Color.Black, Color.White, Color(0xffe85080))) {
                 compose.runOnIdle { background = canvas }
+                // Publish the state write before settling the frozen test clock;
+                // otherwise a capture can still contain the previous canvas.
+                compose.mainClock.advanceTimeByFrame()
+                compose.waitForIdle()
                 compose.mainClock.advanceTimeBy(1600)
+                compose.waitForIdle()
                 val mini = capture("mini_player_container", "light-mini-$glass-${canvas.toArgb()}")
                 val fill = java.awt.Color(mini.getRGB(mini.width / 2, mini.height - 5))
-                assertTrue("Mini-player needs its own light fill over every background", minOf(fill.red, fill.green, fill.blue) > 195)
                 val dock = capture("floating_bottom_navigation_bar", "light-dock-$glass-${canvas.toArgb()}")
                 val dockFill = java.awt.Color(dock.getRGB(dock.width / 2, dock.height - 5))
-                assertTrue("Dock needs its own light fill over every background", minOf(dockFill.red, dockFill.green, dockFill.blue) > 195)
+                for (sample in listOf(fill, dockFill)) {
+                    when {
+                        !glass -> assertTrue("Glass-disabled surfaces keep their theme fill",
+                            minOf(sample.red, sample.green, sample.blue) > 195)
+                        canvas == Color.Black -> assertTrue("Clear glass must not add an opaque white wash",
+                            maxOf(sample.red, sample.green, sample.blue) < 110)
+                        canvas == Color.White -> assertTrue("Clear glass must still reveal a bright canvas",
+                            minOf(sample.red, sample.green, sample.blue) > 140)
+                        else -> assertTrue("Artwork color must show through both floating surfaces",
+                            sample.red - sample.green > 30)
+                    }
+                }
                 for ((tab, index) in listOf("search" to 1, "library" to 2, "home" to 0)) {
                     compose.onNodeWithTag("nav_tab_${tab}_inactive").performClick()
                     compose.mainClock.advanceTimeBy(1600)

@@ -167,11 +167,8 @@ fun AnimatedBottomBar(
             blurRadius = XtremeLiquidGlassDefaults.FloatingDockBlurRadius,
             surfaceTintAlpha = XtremeLiquidGlassDefaults.FloatingDockTintAlpha,
             tintColor = ambientGlowColor, borderWidth = 0.8.dp, elevation = 16.dp, appColors = appColors,
-            baseFillAlpha = if (appColors.isDark) XtremeLiquidGlassDefaults.FloatingDockDarkFillAlpha
-                else XtremeLiquidGlassDefaults.FloatingDockLightFillAlpha,
-            baseFillColor = appColors.cardBackground.takeUnless { appColors.isDark },
-            rimBrush = remember(appColors) { if (appColors.isDark) null
-                else com.example.ui.theme.LiquidGlass.specularBorderBrush(appColors) },
+            baseFillAlpha = XtremeLiquidGlassDefaults.FloatingDockDarkFillAlpha,
+            neutralFinish = true,
             stableCaptureWidthPx = geometry.reservedWidth + with(density) { 12.dp.toPx() },
             interaction = glassInteraction
         ))

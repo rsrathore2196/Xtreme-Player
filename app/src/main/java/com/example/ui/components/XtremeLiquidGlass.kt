@@ -65,7 +65,6 @@ object XtremeLiquidGlassDefaults {
     val FloatingDockBlurRadius: Dp = 8.dp
     const val FloatingDockTintAlpha: Float = 0.04f
     const val FloatingDockDarkFillAlpha: Float = 0.24f
-    const val FloatingDockLightFillAlpha: Float = 0.84f
     const val SurfaceTintAlpha: Float = 0.12f
     val RimBorderWidth: Dp = 0.8.dp
     val PillShape: Shape = CircleShape
@@ -108,13 +107,16 @@ fun Modifier.xtremeLiquidGlassBackground(
     baseFillAlpha: Float? = null,
     baseFillColor: Color? = null,
     interaction: DockGlassInteraction? = null,
-    rimBrush: Brush? = null
+    rimBrush: Brush? = null,
+    neutralFinish: Boolean = false
 ): Modifier {
     if (!enabled || !LocalDynamicGlassEnabled.current) return this
         .shadow(elevation, shape)
         .clip(shape)
         .background((baseFillColor?.takeUnless { appColors.isDark } ?: appColors.cardBackground).copy(alpha = 1f))
         .then(if (rimBrush != null) Modifier.border(BorderStroke(borderWidth, rimBrush), shape)
+            else if (neutralFinish && !appColors.isDark) Modifier.border(BorderStroke(borderWidth,
+                com.example.ui.theme.LiquidGlass.specularBorderBrush(appColors)), shape)
             else Modifier.border(borderWidth, appColors.cardBorder, shape))
 
     val density = LocalDensity.current
@@ -145,7 +147,9 @@ fun Modifier.xtremeLiquidGlassBackground(
                 }
             }
         }
-    val dark = appColors.isDark
+    // Floating chrome uses the same restrained finish in both color modes.
+    // Foreground colors and the glass-disabled surface still follow the app theme.
+    val dark = appColors.isDark || neutralFinish
     val rim = rimBrush ?: remember(dark) {
         Brush.linearGradient(listOf(
             Color.White.copy(alpha = if (dark) 0.48f else 0.92f),
@@ -224,11 +228,11 @@ fun Modifier.playerLiquidGlassButton(
     borderWidth: Dp = 0.8.dp
 ): Modifier = xtremeLiquidGlassBackground(
     shape = shape, elevation = elevation, appColors = com.example.ui.util.playerAppearanceColors(colors),
-    // Fixed neutral glass: neither the album backdrop nor app color mode tints controls.
+    // Sample the shared player backdrop without adding a colored or opaque fill.
     tintColor = Color.Transparent,
     surfaceTintAlpha = 0f,
     borderWidth = borderWidth,
-    backdrop = null, baseFillAlpha = 1f, baseFillColor = Color(0xff171717)
+    baseFillAlpha = 0f
 )
 
 @Composable
@@ -241,7 +245,7 @@ fun Modifier.playerPrimaryLiquidGlassButton(
 ): Modifier = xtremeLiquidGlassBackground(
     shape = shape, elevation = elevation, appColors = com.example.ui.util.playerAppearanceColors(colors),
     tintColor = Color.Transparent, surfaceTintAlpha = 0f, borderWidth = borderWidth,
-    backdrop = null, baseFillAlpha = 1f, baseFillColor = Color(0xff171717)
+    baseFillAlpha = 0f
 )
 
 /**
