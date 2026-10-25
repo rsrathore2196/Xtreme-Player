@@ -12,7 +12,6 @@ import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.FastOutLinearInEasing
@@ -27,7 +26,6 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.LocalOverscrollConfiguration
@@ -92,7 +90,6 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -200,13 +197,13 @@ fun MainNavigationScaffold(
             detailVisible = !preparingStartup && catalogDetail != null)
     }
     val tabState = rememberSaveableStateHolder()
-    // Allocate these outside AnimatedContent; tab disposal never serializes or
+    // Allocate these outside the Settings overlay; tab disposal never serializes or
     // reconstructs the visible lists' scroll state during a slide.
     val homeListState = rememberLazyListState()
     val searchListState = rememberLazyListState()
     val libraryListState = rememberLazyListState()
-    // Only Settings uses AnimatedContent. Primary tabs share the pager's one
-    // position/velocity and are composed lazily as they enter the viewport.
+    // Settings has one overlay transition. Retained primary tabs share the pager's
+    // position/velocity and keep their prepared content across navigation.
     val tabTransition = updateTransition(if (selectedTabIndex == 3 && !preparingStartup) 3 else 0, label = "settings_navigation_transition")
     var isPlayerExpanded by rememberSaveable { mutableStateOf(false) }
     var isQueueOpen by rememberSaveable { mutableStateOf(false) }
@@ -421,42 +418,8 @@ fun MainNavigationScaffold(
                     RetainedPrimaryTabHost(state = tabPagerState, transition = tabTransition,
                         covered = primaryCovered, inputBlocked = primaryCovered || selectedTabIndex == 3,
                         prepareStartup = preparingStartup) { tabIndex -> tabContent(tabIndex) }
-                    tabTransition.AnimatedContent(
-                        transitionSpec = {
-                            // Expand from the Home settings button with one coordinated
-                            // easing curve. Primary-tab paging is entirely unchanged.
-                            val origin = TransformOrigin(0.94f, 0.04f)
-                            (if (targetState == 3) {
-                                (scaleIn(initialScale = 0.94f, transformOrigin = origin,
-                                    animationSpec = tween(320, easing = FastOutSlowInEasing)) +
-                                    slideInVertically(initialOffsetY = { -it / 40 },
-                                        animationSpec = tween(320, easing = FastOutSlowInEasing)) +
-                                    fadeIn(tween(240, easing = LinearOutSlowInEasing))).togetherWith(
-                                    scaleOut(targetScale = 0.985f,
-                                        animationSpec = tween(320, easing = FastOutSlowInEasing)) +
-                                    fadeOut(tween(240, easing = FastOutLinearInEasing)))
-                            } else {
-                                (scaleIn(initialScale = 0.985f,
-                                    animationSpec = tween(300, easing = FastOutSlowInEasing)) +
-                                    fadeIn(tween(240, easing = LinearOutSlowInEasing))).togetherWith(
-                                    scaleOut(targetScale = 0.94f, transformOrigin = origin,
-                                        animationSpec = tween(300, easing = FastOutSlowInEasing)) +
-                                    slideOutVertically(targetOffsetY = { -it / 40 },
-                                        animationSpec = tween(300, easing = FastOutSlowInEasing)) +
-                                    fadeOut(tween(220, easing = FastOutLinearInEasing)))
-                            }).using(null)
-                        },
-                        modifier = Modifier.fillMaxSize()
-                    ) { tabHost ->
-                        if (tabHost == 3) {
-                            Box(Modifier.fillMaxSize().graphicsLayer { clip = false }) {
-                                tabContent(3)
-                            }
-                        } else {
-                            // The real primary host stays mounted immediately below this transition.
-                            Box(Modifier.fillMaxSize())
-                        }
-                    }
+                    SettingsNavigationOverlay(tabTransition) { tabContent(3) }
+
                 }
 
                 AnimatedVisibility(

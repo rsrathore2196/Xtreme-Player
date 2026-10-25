@@ -85,6 +85,24 @@ class ReactiveSettingsRepositoryTest {
         }
     }
 
+    @Test fun lyricsOffsetsSurviveRepositoryRecreationAndArePreloadedBeforeUiReads() = runBlocking {
+        val file = "lyrics_offset_preferences"
+        withContext(Dispatchers.IO) { context.getSharedPreferences(file, 0).edit().clear().commit() }
+        ReactiveSettingsRepository(context).use { first ->
+            first.preload()
+            first.preferences(file).edit().putInt("global_lyrics_offset_ms", 700)
+                .putInt("track_lyrics_offset_song", -300).apply()
+            first.awaitPendingWrites()
+        }
+        ReactiveSettingsRepository(context).use { relaunched ->
+            relaunched.preload()
+            // Main receives a fresh memory store, not the previous process's optimistic values.
+            val restored = relaunched.preferences(file)
+            assertEquals(700, restored.getInt("global_lyrics_offset_ms", 0))
+            assertEquals(-300, restored.getInt("track_lyrics_offset_song", 0))
+        }
+    }
+
     @Test fun mainThreadCommitIsRejectedInsteadOfBlockingOrClaimingDurability() {
         ReactiveSettingsRepository(context).use { repository ->
             assertThrows(IllegalStateException::class.java) { repository.preferences("test").edit().putInt("value", 1).commit() }

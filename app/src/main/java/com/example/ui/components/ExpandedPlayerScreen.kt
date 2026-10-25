@@ -309,7 +309,7 @@ fun ExpandedPlayerScreen(
     var isLyricsOffsetOpen by remember { mutableStateOf(false) }
     val lyricsOffsetMs by com.example.data.local.LyricsOffsetManager.activeOffsetMs.collectAsStateWithLifecycle()
     LaunchedEffect(track.id) {
-        com.example.data.local.LyricsOffsetManager.loadOffsetForTrack(context, track.id)
+        com.example.data.local.LyricsOffsetManager.observeOffsetForTrack(context, track.id).collect { }
     }
     var isFlipped by remember(track.id) { mutableStateOf(false) }
     var showLyrics by remember(track.id) { mutableStateOf(false) }
@@ -438,7 +438,9 @@ fun ExpandedPlayerScreen(
         }
 
         if (track.coverUrl.isNotBlank()) {
-            withContext(Dispatchers.IO) {
+            // Preserve the opening/closing motion before starting uncached palette work.
+            com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
+            withContext(AppDispatchers.Io) {
                 try {
                     val loader = context.imageLoader
                     val request = ImageRequest.Builder(context)

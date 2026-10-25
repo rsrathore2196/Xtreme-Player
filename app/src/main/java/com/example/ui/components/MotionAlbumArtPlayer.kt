@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -64,8 +66,19 @@ fun MotionAlbumArtPlayer(
     val visualActive = LocalVisualEffectsActive.current
     val shouldPlayVideo = !videoUrl.isNullOrBlank() && !hasVideoError
 
-    val exoPlayer = remember(videoUrl, hasVideoError) {
-        if (!videoUrl.isNullOrBlank() && !hasVideoError) {
+    var preparationAllowed by remember(videoUrl) { mutableStateOf(false) }
+    LaunchedEffect(videoUrl, visualActive, lifecycleOwner) {
+        if (videoUrl.isNullOrBlank() || !visualActive || preparationAllowed) return@LaunchedEffect
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
+            preparationAllowed = true
+            kotlinx.coroutines.awaitCancellation()
+        }
+    }
+    // ExoPlayer retains its application looper. Only its first construction is
+    // deferred until the navigation animation has released the UI.
+    val exoPlayer = remember(videoUrl, hasVideoError, preparationAllowed) {
+        if (preparationAllowed && !videoUrl.isNullOrBlank() && !hasVideoError) {
             val videoOnlyRenderersFactory = object : androidx.media3.exoplayer.DefaultRenderersFactory(context) {
                 override fun buildAudioRenderers(
                     context: android.content.Context,

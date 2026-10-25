@@ -33,6 +33,7 @@ import com.example.ui.components.AnimatedBottomBar
 import com.example.ui.components.AnimatedBottomBarItem
 import com.example.ui.components.MainTabPager
 import com.example.ui.components.RetainedPrimaryTabHost
+import com.example.ui.components.SettingsNavigationOverlay
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.awaitCancellation
@@ -89,6 +90,56 @@ class FeedNavigationIsolationTest {
         }
         assertArrayEquals(intArrayOf(1, 1, 1), mounts)
         assertArrayEquals(intArrayOf(0, 0, 0), disposals)
+    }
+
+    @Test fun settingsUsesOneOverlayAcrossInterruptedOpeningAndClosing() {
+        var destination by mutableIntStateOf(0)
+        var settingsMounts = 0
+        var settingsDisposals = 0
+        val pageMounts = IntArray(3)
+        compose.mainClock.autoAdvance = false
+        compose.setContent { MaterialTheme {
+            val pager = rememberPagerState(pageCount = { 3 })
+            val transition = androidx.compose.animation.core.updateTransition(destination, label = "settings_test")
+            Box(Modifier.fillMaxSize()) {
+                RetainedPrimaryTabHost(pager, transition,
+                    covered = destination == 3 && !transition.isRunning,
+                    inputBlocked = destination == 3) { page ->
+                    DisposableEffect(page) { pageMounts[page]++; onDispose { } }
+                    Text("Page $page")
+                }
+                SettingsNavigationOverlay(transition) {
+                    DisposableEffect(Unit) { settingsMounts++; onDispose { settingsDisposals++ } }
+                    Box(Modifier.fillMaxSize().testTag("settings_test_panel"))
+                }
+            }
+        } }
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeBy(500)
+        compose.onNodeWithTag("settings_navigation_overlay").assertDoesNotExist()
+        compose.runOnIdle { destination = 3 }
+        compose.mainClock.advanceTimeByFrame()
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeBy(100)
+        compose.runOnIdle { destination = 0 }
+        compose.mainClock.advanceTimeByFrame()
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeBy(50)
+        compose.runOnIdle { destination = 3 }
+        compose.mainClock.advanceTimeByFrame()
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeBy(500)
+        compose.onAllNodesWithTag("settings_test_panel").assertCountEquals(1)
+        compose.runOnIdle { assertEquals(1, settingsMounts); assertEquals(0, settingsDisposals) }
+        compose.runOnIdle { destination = 0 }
+        compose.mainClock.advanceTimeByFrame()
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeBy(500)
+        compose.onNodeWithTag("settings_navigation_overlay").assertDoesNotExist()
+        compose.runOnIdle {
+            assertEquals(1, settingsDisposals)
+            assertArrayEquals(intArrayOf(1, 1, 1), pageMounts)
+        }
     }
 
     @Test fun allPagesStayMountedButOnlyVisiblePagesCollectScreenData() {

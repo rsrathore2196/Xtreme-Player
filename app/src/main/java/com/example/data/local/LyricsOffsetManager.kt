@@ -1,6 +1,12 @@
 package com.example.data.local
 
 import android.content.Context
+import android.content.SharedPreferences
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.withContext
+import com.example.performance.AppDispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -18,19 +24,41 @@ object LyricsOffsetManager {
     private val _activeOffsetMs = MutableStateFlow(0)
     val activeOffsetMs: StateFlow<Int> = _activeOffsetMs.asStateFlow()
 
-    private var currentActiveTrackId: String? = null
+    @Volatile private var currentActiveTrackId: String? = null
+
+    /** Join the IO preload and keep the active value in sync with restore/external edits. */
+    fun observeOffsetForTrack(context: Context, trackId: String?) = callbackFlow {
+        val prefs = withContext(AppDispatchers.Io) {
+            ReactiveSettingsRepository.preferences(context, PREFS_NAME)
+        }
+        currentActiveTrackId = trackId
+        fun publish() {
+            val offset = effectiveOffset(prefs, trackId)
+            if (currentActiveTrackId == trackId) _activeOffsetMs.value = offset
+            trySend(offset)
+        }
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == null || key == KEY_GLOBAL_OFFSET || key == KEY_TRACK_OFFSET_PREFIX + trackId) publish()
+        }
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+        publish()
+        awaitClose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+    }.distinctUntilChanged()
 
     fun loadOffsetForTrack(context: Context, trackId: String?): Int {
         currentActiveTrackId = trackId
-        val prefs = ReactiveSettingsRepository.preferences(context, PREFS_NAME)
-        val offset = if (!trackId.isNullOrBlank() && prefs.contains(KEY_TRACK_OFFSET_PREFIX + trackId)) {
+        return getEffectiveOffset(context, trackId).also { _activeOffsetMs.value = it }
+    }
+
+    private fun effectiveOffset(prefs: SharedPreferences, trackId: String?): Int =
+        (if (!trackId.isNullOrBlank() && prefs.contains(KEY_TRACK_OFFSET_PREFIX + trackId))
             prefs.getInt(KEY_TRACK_OFFSET_PREFIX + trackId, 0)
-        } else {
-            prefs.getInt(KEY_GLOBAL_OFFSET, 0)
-        }
-        val clamped = offset.coerceIn(MIN_LYRICS_OFFSET_MS, MAX_LYRICS_OFFSET_MS)
-        _activeOffsetMs.value = clamped
-        return clamped
+        else prefs.getInt(KEY_GLOBAL_OFFSET, 0)).coerceIn(MIN_LYRICS_OFFSET_MS, MAX_LYRICS_OFFSET_MS)
+
+    fun usesGlobalOffset(context: Context, trackId: String?): Boolean {
+        val prefs = ReactiveSettingsRepository.preferences(context, PREFS_NAME)
+        return prefs.contains(KEY_GLOBAL_OFFSET) &&
+            (trackId.isNullOrBlank() || !prefs.contains(KEY_TRACK_OFFSET_PREFIX + trackId))
     }
 
     fun isTrackSpecificOffset(context: Context, trackId: String?): Boolean {
@@ -41,12 +69,7 @@ object LyricsOffsetManager {
 
     fun getEffectiveOffset(context: Context, trackId: String?): Int {
         val prefs = ReactiveSettingsRepository.preferences(context, PREFS_NAME)
-        val offset = if (!trackId.isNullOrBlank() && prefs.contains(KEY_TRACK_OFFSET_PREFIX + trackId)) {
-            prefs.getInt(KEY_TRACK_OFFSET_PREFIX + trackId, 0)
-        } else {
-            prefs.getInt(KEY_GLOBAL_OFFSET, 0)
-        }
-        return offset.coerceIn(MIN_LYRICS_OFFSET_MS, MAX_LYRICS_OFFSET_MS)
+        return effectiveOffset(prefs, trackId)
     }
 
     fun updateCurrentOffset(

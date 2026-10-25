@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.PagerState
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.input.pointer.pointerInput
@@ -186,5 +187,32 @@ internal fun RetainedPrimaryTabHost(
             }
         } else Modifier.testTag("retained_primary_tabs"))) {
         MainTabPager(state, pageCovered = covered, prepareStartup = prepareStartup, content = content)
+    }
+}
+
+/** One visibility owner for Settings; no animated empty page above the retained pager. */
+@Composable
+internal fun SettingsNavigationOverlay(
+    transition: androidx.compose.animation.core.Transition<Int>,
+    content: @Composable () -> Unit
+) {
+    val origin = androidx.compose.ui.graphics.TransformOrigin(0.94f, 0.04f)
+    transition.AnimatedVisibility(
+        visible = { it == 3 },
+        enter = androidx.compose.animation.scaleIn(initialScale = 0.94f, transformOrigin = origin,
+            animationSpec = androidx.compose.animation.core.tween(320, easing = androidx.compose.animation.core.FastOutSlowInEasing)) +
+            androidx.compose.animation.slideInVertically(initialOffsetY = { -it / 40 },
+                animationSpec = androidx.compose.animation.core.tween(320, easing = androidx.compose.animation.core.FastOutSlowInEasing)) +
+            androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(240,
+                easing = androidx.compose.animation.core.LinearOutSlowInEasing)),
+        exit = androidx.compose.animation.scaleOut(targetScale = 0.94f, transformOrigin = origin,
+            animationSpec = androidx.compose.animation.core.tween(300, easing = androidx.compose.animation.core.FastOutSlowInEasing)) +
+            androidx.compose.animation.slideOutVertically(targetOffsetY = { -it / 40 },
+                animationSpec = androidx.compose.animation.core.tween(300, easing = androidx.compose.animation.core.FastOutSlowInEasing)) +
+            androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(220,
+                easing = androidx.compose.animation.core.FastOutLinearInEasing)),
+        modifier = Modifier.fillMaxSize().testTag("settings_navigation_overlay")
+    ) {
+        Box(Modifier.fillMaxSize().graphicsLayer { clip = false }) { content() }
     }
 }

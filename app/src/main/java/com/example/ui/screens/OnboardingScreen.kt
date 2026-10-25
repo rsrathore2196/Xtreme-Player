@@ -853,7 +853,7 @@ fun OnboardingStartupPage(
                 StartupFeaturePill(
                     icon = Icons.Default.Lyrics,
                     title = "Real Time Synced Lyrics",
-                    description = "Follow lyrics in sync with your music"
+                    description = "Karoke Style Syllable Synced Lyrics"
                 )
                 StartupFeaturePill(
                     icon = Icons.Default.Star,

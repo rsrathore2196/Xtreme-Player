@@ -196,12 +196,18 @@ fun SyncedLyricsView(
         }
     }
 
-    val activeLineIndex by remember(lyrics?.trackId, lines, isSynced, lyricsOffsetMs) {
+    val timeline by androidx.compose.runtime.key(lines, isSynced) {
+        androidx.compose.runtime.produceState<LyricLineTimeline?>(null) {
+            if (isSynced) value = withContext(AppDispatchers.CpuBounded) { LyricLineTimeline.from(lines) }
+        }
+    }
+    val activeLineIndex by remember(lyrics?.trackId, lines, isSynced, lyricsOffsetMs, timeline) {
         derivedStateOf {
             if (!isSynced) -1
             else {
                 val effectivePlayhead = (currentPlayheadMs - lyricsOffsetMs).coerceAtLeast(0L)
-                lines.indexOfLast { effectivePlayhead >= it.timestampMs }
+                timeline?.activeLine(effectivePlayhead)
+                    ?: lines.indexOfLast { effectivePlayhead >= it.timestampMs }
             }
         }
     }
@@ -885,5 +891,25 @@ private fun DrawScope.drawReveal(
             }
         }
         remaining -= bounds.width
+    }
+}
+
+/** Upper-bound lookup preserves the last duplicate timestamp and backward seeking. */
+internal class LyricLineTimeline private constructor(private val times: LongArray, private val sorted: Boolean) {
+    fun activeLine(positionMs: Long): Int {
+        if (!sorted) return times.indexOfLast { it <= positionMs }
+        var low = 0
+        var high = times.size
+        while (low < high) {
+            val middle = low + (high - low) / 2
+            if (times[middle] <= positionMs) low = middle + 1 else high = middle
+        }
+        return low - 1
+    }
+    companion object {
+        fun from(lines: List<com.example.data.model.LyricLine>): LyricLineTimeline {
+            val times = LongArray(lines.size) { lines[it].timestampMs }
+            return LyricLineTimeline(times, (1 until times.size).all { times[it - 1] <= times[it] })
+        }
     }
 }

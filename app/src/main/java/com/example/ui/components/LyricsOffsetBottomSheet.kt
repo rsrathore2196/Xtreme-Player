@@ -86,7 +86,7 @@ fun LyricsOffsetBottomSheet(
     val isDark = appColors.isDark
 
     val activeOffsetMs by LyricsOffsetManager.activeOffsetMs.collectAsStateWithLifecycle()
-    var applyToAll by remember { mutableStateOf(false) }
+    var applyToAll by remember(track.id) { mutableStateOf(LyricsOffsetManager.usesGlobalOffset(context, track.id)) }
 
     // Internal slider state for smooth drag interactions
     var sliderFraction by remember(activeOffsetMs) {
