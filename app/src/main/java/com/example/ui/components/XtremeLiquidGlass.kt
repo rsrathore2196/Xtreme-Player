@@ -106,6 +106,7 @@ fun Modifier.xtremeLiquidGlassBackground(
     backdrop: LiquidGlassBackdrop? = LocalLiquidGlassBackdrop.current,
     stableCaptureWidthPx: Float = 0f,
     baseFillAlpha: Float? = null,
+    baseFillColor: Color? = null,
     interaction: DockGlassInteraction? = null
 ): Modifier {
     if (!enabled || !LocalDynamicGlassEnabled.current) return this
@@ -170,7 +171,7 @@ fun Modifier.xtremeLiquidGlassBackground(
             ) else Modifier
         )
         .drawWithCache {
-            val base = if (dark) Color(0xFF101013) else Color(0xFFF8FAFD)
+            val base = baseFillColor ?: if (dark) Color(0xFF101013) else Color(0xFFF8FAFD)
             val tint = tintColor.copy(alpha = surfaceTintAlpha.coerceIn(0f, 0.65f) * tintColor.alpha)
             val colorWash = Brush.linearGradient(listOf(tint, Color.Transparent, tint.copy(alpha = tint.alpha * 0.45f)),
                 Offset.Zero, Offset(size.width, size.height))
@@ -220,13 +221,12 @@ fun Modifier.playerLiquidGlassButton(
     translucency: Float = 0.75f,
     borderWidth: Dp = 0.8.dp
 ): Modifier = xtremeLiquidGlassBackground(
-    shape = shape, elevation = elevation, appColors = colors,
-    // The live album-colored backdrop supplies the body of player controls.
-    // Keep the lens, sheen and rim, without painting a dark/theme-accent disk over it.
+    shape = shape, elevation = elevation, appColors = com.example.ui.util.playerAppearanceColors(colors),
+    // Fixed neutral glass: neither the album backdrop nor app color mode tints controls.
     tintColor = Color.Transparent,
     surfaceTintAlpha = 0f,
     borderWidth = borderWidth,
-    baseFillAlpha = 0f
+    backdrop = null, baseFillAlpha = 1f, baseFillColor = Color(0xff171717)
 )
 
 @Composable
@@ -237,9 +237,9 @@ fun Modifier.playerPrimaryLiquidGlassButton(
     translucency: Float = 0.82f,
     borderWidth: Dp = 1.dp
 ): Modifier = xtremeLiquidGlassBackground(
-    shape = shape, elevation = elevation, appColors = colors,
+    shape = shape, elevation = elevation, appColors = com.example.ui.util.playerAppearanceColors(colors),
     tintColor = Color.Transparent, surfaceTintAlpha = 0f, borderWidth = borderWidth,
-    baseFillAlpha = 0f
+    backdrop = null, baseFillAlpha = 1f, baseFillColor = Color(0xff171717)
 )
 
 /**

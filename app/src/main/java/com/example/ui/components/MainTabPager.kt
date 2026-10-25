@@ -190,40 +190,35 @@ internal fun RetainedPrimaryTabHost(
     }
 }
 
-/** Brand-new modern aesthetic, eye-catching Shared-Axis slide & fade animation for Settings. */
+/** Transform the actual Settings layer from its first frame; never flash a laid-out preview. */
 @Composable
 internal fun SettingsNavigationOverlay(
     transition: androidx.compose.animation.core.Transition<Int>,
     content: @Composable () -> Unit
 ) {
-    transition.AnimatedVisibility(
-        visible = { it == 3 },
-        enter = androidx.compose.animation.slideInHorizontally(
-            initialOffsetX = { fullWidth -> fullWidth },
-            animationSpec = androidx.compose.animation.core.tween(
-                durationMillis = 320,
-                easing = androidx.compose.animation.core.CubicBezierEasing(0.05f, 0.7f, 0.1f, 1.0f)
-            )
-        ) + androidx.compose.animation.fadeIn(
-            animationSpec = androidx.compose.animation.core.tween(
-                durationMillis = 240,
-                easing = androidx.compose.animation.core.LinearOutSlowInEasing
-            )
-        ),
-        exit = androidx.compose.animation.slideOutHorizontally(
-            targetOffsetX = { fullWidth -> fullWidth },
-            animationSpec = androidx.compose.animation.core.tween(
-                durationMillis = 260,
-                easing = androidx.compose.animation.core.CubicBezierEasing(0.3f, 0.0f, 0.8f, 0.15f)
-            )
-        ) + androidx.compose.animation.fadeOut(
-            animationSpec = androidx.compose.animation.core.tween(
-                durationMillis = 180,
-                easing = androidx.compose.animation.core.FastOutLinearInEasing
-            )
-        ),
-        modifier = Modifier.fillMaxSize().testTag("settings_navigation_overlay")
-    ) {
-        Box(Modifier.fillMaxSize().graphicsLayer { clip = false }) { content() }
+    val slide = transition.animateFloat(transitionSpec = {
+        if (targetState == 3) androidx.compose.animation.core.tween(320,
+            easing = androidx.compose.animation.core.CubicBezierEasing(0.05f, 0.7f, 0.1f, 1.0f))
+        else androidx.compose.animation.core.tween(260,
+            easing = androidx.compose.animation.core.CubicBezierEasing(0.3f, 0.0f, 0.8f, 0.15f))
+    }, label = "settings_layer_position") { if (it == 3) 1f else 0f }
+    val opacity = transition.animateFloat(transitionSpec = {
+        if (targetState == 3) androidx.compose.animation.core.tween(240,
+            easing = androidx.compose.animation.core.LinearOutSlowInEasing)
+        else androidx.compose.animation.core.tween(180,
+            easing = androidx.compose.animation.core.FastOutLinearInEasing)
+    }, label = "settings_layer_alpha") { if (it == 3) 1f else 0f }
+    if (transition.currentState == 3 || transition.targetState == 3 || transition.isRunning) {
+        Box(Modifier.fillMaxSize().graphicsLayer {
+            translationX = size.width * (1f - slide.value)
+            // Enter as one opaque page: a translucent preview over Home looks
+            // like a second opening before the shared-axis slide has completed.
+            alpha = if (transition.targetState == 3) 1f else opacity.value
+            clip = false
+        }.drawWithContent {
+            // Includes the initial unmeasured frame: no ghost page can be captured
+            // in the shared backdrop before the real entrance has begun.
+            if (slide.value > 0f && (transition.targetState == 3 || opacity.value > 0f)) drawContent()
+        }.testTag("settings_navigation_overlay")) { content() }
     }
 }

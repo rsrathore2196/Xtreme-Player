@@ -87,6 +87,7 @@ class PlayerVisualSettingsUiTest {
                 javax.imageio.ImageIO.read(file)
             } finally { file.delete() }
         }
+        var darkPixels: List<Int>? = null
         for (mode in listOf(true, false)) {
             compose.runOnIdle { dark = mode; canvas = Color.Blue }
             compose.waitForIdle()
@@ -94,6 +95,10 @@ class PlayerVisualSettingsUiTest {
             compose.runOnIdle { canvas = Color.Magenta }
             compose.waitForIdle()
             val after = capture()
+            val modePixels = listOf(0.2f, 0.5f, 0.8f).map {
+                before.getRGB(before.width / 2, (before.height * it).toInt())
+            }
+            if (mode) darkPixels = modePixels else org.junit.Assert.assertEquals(darkPixels, modePixels)
             for (fraction in listOf(0.2f, 0.5f, 0.8f)) {
                 val x = before.width / 2
                 val y = (before.height * fraction).toInt()

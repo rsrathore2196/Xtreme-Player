@@ -58,13 +58,15 @@ class PlayerArtworkColorsTest {
         }
     }
 
-    @Test fun themeBrightnessChangesPreserveTheDominantArtworkHue() = sample(0xffd02844.toInt()) { bitmap ->
+    @Test fun colorModeDoesNotShadeOrRecolorTheArtworkPalette() = sample(0xffd02844.toInt()) { bitmap ->
         val dark = extractPlayerArtworkColors(bitmap, true)!!
         val light = extractPlayerArtworkColors(bitmap, false)!!
         assertEquals(hsl(dark.dominantColor)[0], hsl(light.dominantColor)[0], 1f)
         assertEquals(hsl(dark.dominantColor)[1], hsl(light.dominantColor)[1], 0.02f)
-        assertTrue(hsl(dark.dominantColor)[2] <= 0.29f)
-        assertTrue(hsl(light.dominantColor)[2] >= 0.71f)
+        assertEquals(dark, light)
+        assertTrue(kotlin.math.abs(0xd0 - android.graphics.Color.red(dark.dominantColor.toArgb())) <= 8)
+        assertTrue(kotlin.math.abs(0x28 - android.graphics.Color.green(dark.dominantColor.toArgb())) <= 8)
+        assertTrue(kotlin.math.abs(0x44 - android.graphics.Color.blue(dark.dominantColor.toArgb())) <= 8)
     }
 
     @Test fun samplingPreservesResolvedCoverMetadataWithoutReplacingTheFullSizeMemoryEntry() = runBlocking {
@@ -91,5 +93,6 @@ class PlayerArtworkColorsTest {
         assertNotEquals(key(), key(art = "replacement-cover"))
         assertNotEquals(key(), key(track.copy(album = "Corrected album")))
         assertEquals(key(), key(track.copy(audioUrl = "refreshed-signed-url", bitrateKbps = 320)))
+        assertEquals(key(), playerPaletteKey(track, false, Color.Red, Color.White, "resolved-cover"))
     }
 }

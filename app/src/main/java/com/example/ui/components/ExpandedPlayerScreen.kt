@@ -150,9 +150,7 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.BlurEffect
@@ -183,9 +181,6 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import coil.request.SuccessResult
 import com.example.data.model.MusicTrack
-import com.example.data.repository.ArtworkDimensions
-import com.example.data.repository.iTunesArtworkRepository
-import com.example.data.repository.toMediaItem
 import com.example.playback.PlayerUiState
 import com.example.playback.RepeatMode
 import com.example.ui.theme.LocalAppColors
@@ -253,59 +248,22 @@ fun ExpandedPlayerScreen(
     val displayedQuality = uiState.qualityBadge.ifBlank { track.qualityBadge }.ifBlank { "Resolving audio" }
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
-    val appColors = LocalAppColors.current
+    val themeColors = LocalAppColors.current
+    val appColors = remember(themeColors) { com.example.ui.util.playerAppearanceColors(themeColors) }
+    // The full player intentionally has one neutral appearance in both app color modes.
+    @Suppress("NAME_SHADOWING")
+    val isDark = appColors.isDark
 
-    val itunesRepo = iTunesArtworkRepository.peekInstance()
-    val artworkLoader = remember(context) { context.imageLoader }
-    val initialRawCoverUrl = remember(track.coverUrl) {
-        val raw = track.coverUrl
-        when {
-            raw.contains("150x150.jpg") -> raw.replace("150x150.jpg", "500x500.jpg")
-            raw.contains("50x50.jpg") -> raw.replace("50x50.jpg", "500x500.jpg")
-            raw.contains("hqdefault.jpg") -> raw.replace("hqdefault.jpg", "maxresdefault.jpg")
-            raw.contains("mqdefault.jpg") -> raw.replace("mqdefault.jpg", "maxresdefault.jpg")
-            raw.contains("default.jpg") && !raw.contains("maxresdefault.jpg") -> raw.replace("default.jpg", "maxresdefault.jpg")
-            raw.contains("100x100bb") -> iTunesArtworkRepository.formatArtworkUrl(raw, ArtworkDimensions.EXPANDED_PLAYER)
-            raw.contains("100x100") -> iTunesArtworkRepository.formatArtworkUrl(raw, ArtworkDimensions.EXPANDED_PLAYER)
-            else -> raw
-        }
-    }
-
-    val resolvedArtworkRequest = com.example.ui.util.rememberOptimizedImageRequest(
-        track = track, targetSize = if (isScreenVisible) com.example.ui.util.ImageConfig.PLAYER_SCREEN_SIZE else 192)
+    val resolvedArtworkRequest = com.example.ui.util.rememberPlayerArtworkRequest(track, isScreenVisible)
     val highResCoverUrl = resolvedArtworkRequest.data as? String ?: ""
-    val memoryItunesUrl = remember(track.id, track.title, track.artist, track.source, track.coverUrl, itunesRepo) {
-        itunesRepo?.peekMemoryCachedUrl(track.toMediaItem(), ArtworkDimensions.EXPANDED_PLAYER)
-    }
-    val cachedArtworkKey by key(track.id, track.title, track.artist, track.coverUrl,
-        highResCoverUrl, memoryItunesUrl, resolvedArtworkRequest.placeholderMemoryCacheKey) {
-        produceState(resolvedArtworkRequest.placeholderMemoryCacheKey) {
-            // Scanning Coil's decoded cache and comparing artwork variants is CPU
-            // work. A keyed producer cannot publish a previous song's placeholder.
-            value = withContext(AppDispatchers.CpuBounded) {
-                val urls = mutableSetOf(track.coverUrl, initialRawCoverUrl, highResCoverUrl)
-                memoryItunesUrl?.let { url ->
-                    val dimensions = Regex("\\d+x\\d+bb")
-                    listOf(200, 600, 1200).forEach { size ->
-                        urls.add(url.replace(dimensions, "${size}x${size}bb"))
-                    }
-                }
-                val cache = artworkLoader.memoryCache
-                cache?.keys?.asSequence()?.filter { it.key in urls }
-                    ?.mapNotNull { cacheKey -> cache[cacheKey]?.bitmap?.let { cacheKey to it.width.toLong() * it.height } }
-                    ?.maxByOrNull { it.second }?.first ?: resolvedArtworkRequest.placeholderMemoryCacheKey
-            }
-        }
-    }
-    val highResImageRequest = remember(resolvedArtworkRequest, cachedArtworkKey) {
-        resolvedArtworkRequest.newBuilder().placeholderMemoryCacheKey(cachedArtworkKey).build()
-    }
+    val highResImageRequest = resolvedArtworkRequest
 
     var isMenuOpen by remember { mutableStateOf(false) }
     var isSleepTimerOpen by remember { mutableStateOf(false) }
     var isLyricsOffsetOpen by remember { mutableStateOf(false) }
     val lyricsOffsetMs by com.example.data.local.LyricsOffsetManager.activeOffsetMs.collectAsStateWithLifecycle()
-    LaunchedEffect(track.id) {
+    LaunchedEffect(track.id, isScreenVisible) {
+        if (!isScreenVisible) return@LaunchedEffect
         com.example.data.local.LyricsOffsetManager.observeOffsetForTrack(context, track.id).collect { }
     }
     var isFlipped by remember(track.id) { mutableStateOf(false) }
@@ -436,7 +394,7 @@ fun ExpandedPlayerScreen(
             return@LaunchedEffect
         }
 
-        if (highResCoverUrl.isNotBlank() || track.coverUrl.isNotBlank()) {
+        if (highResCoverUrl.isNotBlank()) {
             // Preserve the opening/closing motion before starting uncached palette work.
             com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
             withContext(AppDispatchers.Io) {
@@ -552,7 +510,7 @@ fun ExpandedPlayerScreen(
     )
 
     val playerBackdrop = rememberLiquidGlassBackdrop()
-    CompositionLocalProvider(LocalLiquidGlassBackdrop provides playerBackdrop) {
+    CompositionLocalProvider(LocalLiquidGlassBackdrop provides playerBackdrop, LocalAppColors provides appColors) {
     Surface(
         modifier = modifier
             .fillMaxSize()
@@ -584,58 +542,6 @@ fun ExpandedPlayerScreen(
             val configuration = LocalConfiguration.current
             val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
             val isFullScreenArt = playerExperience.fullScreenAlbumArt && !showLyrics && !isLandscape
-
-            if (isFullScreenArt) {
-                // Upper part background blur technique to seamlessly merge the top area with the album art
-                val topBackdropRequest = remember(highResCoverUrl, context, resolvedArtworkRequest) {
-                    resolvedArtworkRequest.newBuilder().size(256).crossfade(400).build()
-                }
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(220.dp)
-                        .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
-                        .drawWithContent {
-                            drawContent()
-                            drawRect(
-                                brush = Brush.verticalGradient(
-                                    colors = listOf(
-                                        Color.Black,
-                                        Color.Black,
-                                        Color.Black.copy(alpha = 0.85f),
-                                        Color.Black.copy(alpha = 0.30f),
-                                        Color.Transparent
-                                    )
-                                ),
-                                blendMode = BlendMode.DstIn
-                            )
-                        }
-                ) {
-                    AsyncImage(
-                        model = topBackdropRequest,
-                        contentDescription = null,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .graphicsLayer { scaleX = 1.25f; scaleY = 1.25f; alpha = if (isDark) 0.72f else 0.42f }
-                            .playerBackdropBlur(48.dp)
-                    )
-                    // Protective high-contrast scrim for upper controls
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(
-                                Brush.verticalGradient(
-                                    colors = listOf(
-                                        (if (isDark) Color.Black else appColors.scaffoldBackground).copy(alpha = 0.55f),
-                                        (if (isDark) Color.Black else appColors.scaffoldBackground).copy(alpha = 0.25f),
-                                        Color.Transparent
-                                    )
-                                )
-                            )
-                    )
-                }
-            }
 
             if (isLandscape) {
                 // LANDSCAPE DEDICATED TWO-PANE LAYOUT
@@ -682,7 +588,7 @@ fun ExpandedPlayerScreen(
                                         IconButton(onClick = { onToggleFavorite(track) }) {
                                             Icon(if (uiState.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                                                 contentDescription = "Favorite",
-                                                tint = if (uiState.isFavorite) Color(0xFFF43F5E) else appColors.textMuted)
+                                                tint = appColors.textPrimary)
                                         }
                                     }
                                 PlayerSyncedLyrics(
@@ -747,15 +653,12 @@ fun ExpandedPlayerScreen(
                                             .testTag("flip_album_art_card")
                                     ) {
                                         if (showArtworkFront) {
-                                            // FRONT SIDE: Album Artwork with Motion Video Support
-                                            MotionAlbumArtPlayer(
-                                                videoUrl = track.motionArtworkUrl,
-                                                staticCoverUrl = highResCoverUrl,
-                                                staticImageRequest = resolvedArtworkRequest,
+                                            // One untinted iTunes cover; never substitute a provider image or video.
+                                            AsyncImage(
+                                                model = highResImageRequest,
+                                                contentScale = ContentScale.Crop,
                                                 contentDescription = "Cover Art - Tap to flip",
-                                                shape = RoundedCornerShape(22.dp),
-                                                modifier = Modifier.fillMaxSize(),
-                                                placeholderMemoryCacheKey = cachedArtworkKey
+                                                modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(22.dp))
                                             )
                                         } else {
                                             // BACK SIDE: Song credits
@@ -977,7 +880,7 @@ fun ExpandedPlayerScreen(
                                     .liquidGlassButton(
                                         colors = appColors,
                                         shape = CircleShape,
-                                        elevation = if (uiState.isFavorite) 6.dp else 3.dp,
+                                        elevation = 3.dp,
                                         isActive = uiState.isFavorite,
                                         translucency = 0.84f
                                     )
@@ -991,7 +894,7 @@ fun ExpandedPlayerScreen(
                                 Icon(
                                     imageVector = if (uiState.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                                     contentDescription = "Favorite",
-                                    tint = if (uiState.isFavorite) Color(0xFFF43F5E) else appColors.textMuted,
+                                    tint = appColors.textPrimary,
                                     modifier = Modifier.size(20.dp)
                                 )
                             }
@@ -1573,7 +1476,7 @@ fun ExpandedPlayerScreen(
                                     Icon(
                                         imageVector = if (uiState.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                                         contentDescription = "Favorite",
-                                        tint = if (uiState.isFavorite) Color(0xFFF43F5E) else appColors.textMuted,
+                                        tint = appColors.textPrimary,
                                         modifier = Modifier.size(24.dp)
                                     )
                                 }
@@ -1633,23 +1536,6 @@ fun ExpandedPlayerScreen(
                                             .graphicsLayer {
                                                 rotationY = flipRotation
                                                 cameraDistance = 14f * density
-                                                compositingStrategy = CompositingStrategy.Offscreen
-                                            }
-                                            .drawWithContent {
-                                                drawContent()
-                                                drawRect(
-                                                    brush = Brush.verticalGradient(
-                                                        0.0f to Color.Transparent,
-                                                        0.06f to Color.Black.copy(alpha = 0.35f),
-                                                        0.14f to Color.Black.copy(alpha = 0.85f),
-                                                        0.22f to Color.Black,
-                                                        0.50f to Color.Black,
-                                                        0.70f to Color.Black.copy(alpha = 0.80f),
-                                                        0.88f to Color.Black.copy(alpha = 0.35f),
-                                                        1.0f to Color.Transparent
-                                                    ),
-                                                    blendMode = BlendMode.DstIn
-                                                )
                                             }
                                             .clickable {
                                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -1684,15 +1570,13 @@ fun ExpandedPlayerScreen(
                                     }
                                 ) {
                                     if (showArtworkFront) {
-                                        // FRONT SIDE: Album Artwork with Motion Video Support
-                                        MotionAlbumArtPlayer(
-                                            videoUrl = track.motionArtworkUrl,
-                                            staticCoverUrl = highResCoverUrl,
-                                            staticImageRequest = resolvedArtworkRequest,
+                                        // One untinted iTunes cover; never substitute a provider image or video.
+                                        AsyncImage(
+                                            model = highResImageRequest,
+                                            contentScale = ContentScale.Crop,
                                             contentDescription = "Cover Art - Tap to flip",
-                                            shape = if (isFullScreenArt) RoundedCornerShape(0.dp) else RoundedCornerShape(24.dp),
-                                            modifier = Modifier.fillMaxSize(),
-                                            placeholderMemoryCacheKey = cachedArtworkKey
+                                            modifier = Modifier.fillMaxSize()
+                                                .clip(if (isFullScreenArt) RoundedCornerShape(0.dp) else RoundedCornerShape(24.dp))
                                         )
                                     } else {
                                         // BACK SIDE: Song credits and information
@@ -1857,7 +1741,7 @@ fun ExpandedPlayerScreen(
                                     Icon(
                                         imageVector = if (uiState.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                                         contentDescription = "Favorite",
-                                        tint = if (uiState.isFavorite) Color(0xFFF43F5E) else appColors.textMuted,
+                                        tint = appColors.textPrimary,
                                         modifier = Modifier.size(24.dp)
                                     )
                                 }
@@ -2500,7 +2384,7 @@ private fun Modifier.animatedArtworkShadow(accent: State<Color>, shape: androidx
         shadowElevation = 28.dp.toPx()
         this.shape = shape
         clip = true
-        spotShadowColor = if (albumGlow) accent.value.copy(alpha = 0.5f) else Color.Black
+        spotShadowColor = Color.Black
         ambientShadowColor = Color.Black
     }
 
@@ -2556,7 +2440,7 @@ internal fun PlayerGlassBackground(
     val dynamicGlass = LocalDynamicGlassEnabled.current
     if (!dynamicGlass || !appColors.dynamicAlbumGlow) {
         Box(modifier.fillMaxSize().testTag("player_neutral_backdrop").xtremeSharedBackdropSource(enabled = dynamicGlass)
-            .background(appColors.scaffoldBackground))
+            .background(Color(0xff101010)))
         return
     }
     val context = LocalContext.current
@@ -2565,7 +2449,7 @@ internal fun PlayerGlassBackground(
         (artworkRequest?.newBuilder() ?: ImageRequest.Builder(context).data(artworkUrl))
             .size(256).crossfade(650).build()
     }
-    val base = appColors.scaffoldBackground
+    val base = Color(0xff101010)
     Box(modifier.fillMaxSize().testTag("player_album_glow_backdrop").xtremeSharedBackdropSource(enabled = dynamicGlass).background(base)) {
         // Broad color fields provide the same soft finish on devices without RenderEffect.
         Box(Modifier.fillMaxSize().drawWithCache {
@@ -2573,9 +2457,9 @@ internal fun PlayerGlassBackground(
             val albumMidtone = androidx.compose.ui.graphics.lerp(albumBase, vibrantColor.value, 0.25f)
             val field = Brush.linearGradient(listOf(albumBase, albumMidtone, vibrantColor.value.copy(alpha = 0.55f)),
                 Offset.Zero, Offset(size.width, size.height))
-            val vibrantField = Brush.radialGradient(listOf(vibrantColor.value.copy(alpha = if (isDark) 0.50f else 0.25f), Color.Transparent),
+            val vibrantField = Brush.radialGradient(listOf(vibrantColor.value.copy(alpha = 0.50f), Color.Transparent),
                 center = Offset(size.width * 0.82f, size.height * 0.48f), radius = size.maxDimension * 0.7f)
-            val accentField = Brush.radialGradient(listOf(accentColor.value.copy(alpha = if (isDark) 0.22f else 0.16f), Color.Transparent),
+            val accentField = Brush.radialGradient(listOf(accentColor.value.copy(alpha = 0.22f), Color.Transparent),
                 center = Offset(0f, size.height * 0.85f), radius = size.maxDimension * 0.6f)
             onDrawBehind {
                 // Translucent album fields blend into their own base hue rather
@@ -2590,23 +2474,15 @@ internal fun PlayerGlassBackground(
             AsyncImage(
                 model = backdropRequest, contentDescription = null, contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
-                    .graphicsLayer { scaleX = 1.18f; scaleY = 1.18f; alpha = if (isDark) 0.58f else 0.32f }
+                    .graphicsLayer { scaleX = 1.18f; scaleY = 1.18f; alpha = 0.58f }
                     .playerBackdropBlur(56.dp)
             )
         }
-        // High contrast strengthens only the neutral text backdrop, never text size/layout.
+        // Keep the glossy reflection without a dark/light veil over the album colors.
         Box(Modifier.fillMaxSize().drawWithCache {
-            val veil = if (isDark) Color.Black else Color.White
-            val veilBrush = Brush.verticalGradient(
-                0f to veil.copy(alpha = if (appColors.highContrastTypography) 0.80f else if (isDark) 0.42f else 0.40f),
-                0.35f to veil.copy(alpha = if (appColors.highContrastTypography) 0.72f else if (isDark) 0.16f else 0.28f),
-                0.65f to veil.copy(alpha = if (appColors.highContrastTypography) 0.80f else if (isDark) 0.40f else 0.58f),
-                1f to veil.copy(alpha = if (appColors.highContrastTypography) 0.88f else if (isDark) 0.66f else 0.76f)
-            )
-            val reflection = Brush.linearGradient(listOf(Color.White.copy(alpha = if (isDark) 0.08f else 0.25f),
+            val reflection = Brush.linearGradient(listOf(Color.White.copy(alpha = 0.08f),
                 Color.Transparent, Color.Transparent), Offset.Zero, Offset(size.width, size.height * 0.7f))
             onDrawBehind {
-                drawRect(veilBrush)
                 drawRect(reflection)
             }
         })

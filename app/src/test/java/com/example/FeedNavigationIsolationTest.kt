@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.lazy.LazyListLayoutInfo
@@ -25,6 +26,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -34,6 +36,7 @@ import com.example.ui.components.AnimatedBottomBarItem
 import com.example.ui.components.MainTabPager
 import com.example.ui.components.RetainedPrimaryTabHost
 import com.example.ui.components.SettingsNavigationOverlay
+import com.github.takahirom.roborazzi.captureRoboImage
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.awaitCancellation
@@ -90,6 +93,45 @@ class FeedNavigationIsolationTest {
         }
         assertArrayEquals(intArrayOf(1, 1, 1), mounts)
         assertArrayEquals(intArrayOf(0, 0, 0), disposals)
+    }
+
+    @OptIn(com.github.takahirom.roborazzi.ExperimentalRoborazziApi::class)
+    @Test fun settingsDoesNotDrawAPreviewBeforeItsEntranceStarts() {
+        var destination by mutableIntStateOf(0)
+        var settingsDraws = 0
+        compose.mainClock.autoAdvance = false
+        compose.setContent { MaterialTheme {
+            val transition = androidx.compose.animation.core.updateTransition(destination, label = "first_settings_frame")
+            Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color.Blue)) {
+                Text("Home")
+                SettingsNavigationOverlay(transition) {
+                    Box(Modifier.fillMaxSize().drawWithContent { settingsDraws++; drawContent() }
+                        .background(androidx.compose.ui.graphics.Color.Red))
+                }
+            }
+        } }
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeBy(500)
+        compose.runOnIdle { destination = 3 }
+        compose.mainClock.advanceTimeByFrame()
+        compose.waitForIdle()
+        fun capturePixel(x: Float = 0.5f): Int {
+            val file = java.io.File.createTempFile("settings-first-frame-", ".png")
+            return try {
+                compose.onRoot().captureRoboImage(file.absolutePath,
+                    roborazziOptions = com.github.takahirom.roborazzi.RoborazziOptions(
+                        taskType = com.github.takahirom.roborazzi.RoborazziTaskType.Record))
+                val pixels = javax.imageio.ImageIO.read(file)
+                pixels.getRGB((pixels.width * x).toInt(), pixels.height / 2)
+            } finally { file.delete() }
+        }
+        assertEquals(android.graphics.Color.BLUE, capturePixel())
+        compose.runOnIdle { assertEquals("The initial invisible/offscreen Settings layer must not draw", 0, settingsDraws) }
+        compose.mainClock.advanceTimeBy(60)
+        assertEquals("The entering page must be opaque, not a translucent preview", android.graphics.Color.RED, capturePixel(.95f))
+        compose.mainClock.advanceTimeBy(340)
+        assertEquals(android.graphics.Color.RED, capturePixel())
+        compose.runOnIdle { assertTrue(settingsDraws > 0) }
     }
 
     @Test fun settingsUsesOneOverlayAcrossInterruptedOpeningAndClosing() {
