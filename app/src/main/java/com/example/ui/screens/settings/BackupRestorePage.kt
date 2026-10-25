@@ -225,7 +225,7 @@ fun BackupRestorePage(
                         Icon(
                             imageVector = Icons.Default.Backup,
                             contentDescription = null,
-                            tint = accentColor,
+                            tint = LiquidGlass.lightContentColor(appColors, accentColor),
                             modifier = Modifier.size(18.dp)
                         )
                     }
@@ -386,7 +386,7 @@ fun BackupRestorePage(
                             Icon(
                                 imageVector = Icons.Default.Sync,
                                 contentDescription = null,
-                                tint = accentColor,
+                                tint = LiquidGlass.lightContentColor(appColors, accentColor),
                                 modifier = Modifier.size(18.dp)
                             )
                         }
@@ -446,7 +446,7 @@ fun BackupRestorePage(
                         Icon(
                             imageVector = Icons.Default.Folder,
                             contentDescription = null,
-                            tint = accentColor,
+                            tint = LiquidGlass.lightContentColor(appColors, accentColor),
                             modifier = Modifier.size(18.dp)
                         )
                     }
@@ -523,7 +523,7 @@ fun BackupRestorePage(
                         Icon(
                             imageVector = Icons.Default.Restore,
                             contentDescription = null,
-                            tint = accentColor,
+                            tint = LiquidGlass.lightContentColor(appColors, accentColor),
                             modifier = Modifier.size(18.dp)
                         )
                     }
@@ -663,7 +663,7 @@ fun BackupRestorePage(
                                         text = "RESTORE",
                                         fontSize = 10.sp,
                                         fontWeight = FontWeight.ExtraBold,
-                                        color = accentColor,
+                                        color = LiquidGlass.lightContentColor(appColors, accentColor),
                                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                                     )
                                 }
@@ -690,7 +690,7 @@ fun BackupRestorePage(
                     Icon(
                         imageVector = Icons.Default.CheckCircle,
                         contentDescription = null,
-                        tint = accentColor,
+                        tint = LiquidGlass.lightContentColor(appColors, accentColor),
                         modifier = Modifier.size(18.dp)
                     )
                     Spacer(modifier = Modifier.width(10.dp))
@@ -719,7 +719,7 @@ fun BackupRestorePage(
                 Icon(
                     imageVector = Icons.Default.Security,
                     contentDescription = null,
-                    tint = accentColor,
+                    tint = LiquidGlass.lightContentColor(appColors, accentColor),
                     modifier = Modifier.size(28.dp)
                 )
             },

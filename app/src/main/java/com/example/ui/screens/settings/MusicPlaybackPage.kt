@@ -132,7 +132,7 @@ fun MusicPlaybackPage(
                         Icon(
                             imageVector = Icons.Default.Equalizer,
                             contentDescription = null,
-                            tint = accentColor,
+                            tint = LiquidGlass.lightContentColor(appColors, accentColor),
                             modifier = Modifier.size(18.dp)
                         )
                     }
@@ -233,7 +233,7 @@ fun MusicPlaybackPage(
                         Icon(
                             imageVector = Icons.Default.Tune,
                             contentDescription = null,
-                            tint = accentColor,
+                            tint = LiquidGlass.lightContentColor(appColors, accentColor),
                             modifier = Modifier.size(16.dp)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
@@ -309,7 +309,7 @@ fun MusicPlaybackPage(
                         Icon(
                             imageVector = Icons.Default.Speed,
                             contentDescription = null,
-                            tint = accentColor,
+                            tint = LiquidGlass.lightContentColor(appColors, accentColor),
                             modifier = Modifier.size(16.dp)
                         )
                     }
@@ -418,7 +418,7 @@ fun MusicPlaybackPage(
                             text = "ENABLED",
                             fontSize = 9.sp,
                             fontWeight = FontWeight.ExtraBold,
-                            color = accentColor,
+                            color = LiquidGlass.lightContentColor(appColors, accentColor),
                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
                         )
                     }

@@ -200,7 +200,7 @@ fun AboutPage(
                             Icon(
                                 imageVector = Icons.Default.Info,
                                 contentDescription = null,
-                                tint = accentColor,
+                                tint = LiquidGlass.lightContentColor(appColors, accentColor),
                                 modifier = Modifier.size(15.dp)
                             )
                         }
@@ -220,7 +220,7 @@ fun AboutPage(
                             text = APP_VERSION_DISPLAY,
                             fontSize = 13.5.sp,
                             fontWeight = FontWeight.Bold,
-                            color = accentColor,
+                            color = LiquidGlass.lightContentColor(appColors, accentColor),
                             textAlign = TextAlign.End
                         )
                     }
@@ -345,7 +345,7 @@ fun AboutPage(
                                         .fillMaxWidth()
                                         .height(4.dp)
                                         .clip(RoundedCornerShape(2.dp)),
-                                    color = accentColor,
+                                    color = LiquidGlass.lightContentColor(appColors, accentColor),
                                     trackColor = accentColor.copy(alpha = 0.20f)
                                 )
                             }
@@ -386,7 +386,7 @@ fun AboutPage(
                                 Icon(
                                     imageVector = Icons.Default.Refresh,
                                     contentDescription = null,
-                                    tint = accentColor,
+                                    tint = LiquidGlass.lightContentColor(appColors, accentColor),
                                     modifier = Modifier.size(16.dp)
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
@@ -413,7 +413,7 @@ fun AboutPage(
                                 Icon(
                                     imageVector = Icons.Default.Download,
                                     contentDescription = null,
-                                    tint = accentColor,
+                                    tint = LiquidGlass.lightContentColor(appColors, accentColor),
                                     modifier = Modifier.size(24.dp)
                                 )
                                 Spacer(modifier = Modifier.width(10.dp))
@@ -529,7 +529,7 @@ fun AboutPage(
                             Icon(
                                 imageVector = Icons.Default.Person,
                                 contentDescription = null,
-                                tint = accentColor,
+                                tint = LiquidGlass.lightContentColor(appColors, accentColor),
                                 modifier = Modifier.size(15.dp)
                             )
                         }
@@ -546,7 +546,7 @@ fun AboutPage(
                         text = "RS Rathore",
                         fontSize = 13.5.sp,
                         fontWeight = FontWeight.Bold,
-                        color = accentColor,
+                        color = LiquidGlass.lightContentColor(appColors, accentColor),
                         textAlign = TextAlign.End
                     )
                 }
@@ -575,7 +575,7 @@ fun AboutPage(
                             Icon(
                                 imageVector = Icons.Default.Verified,
                                 contentDescription = null,
-                                tint = accentColor,
+                                tint = LiquidGlass.lightContentColor(appColors, accentColor),
                                 modifier = Modifier.size(15.dp)
                             )
                         }

@@ -50,6 +50,7 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -143,8 +144,8 @@ private fun ThemesAppUiOverview(
     val appColors = LocalAppColors.current
     val cardBg = appColors.cardBackground
     val cardBorder = appColors.cardBorder
-    val accentColor = remember(customThemeState, appColors.primaryAccent) {
-        customThemeState?.accentColorHex?.let { hex ->
+    val accentColor = remember(customThemeState, appColors.primaryAccent, appColors.isDark) {
+        if (!appColors.isDark) appColors.primaryAccent else customThemeState?.accentColorHex?.let { hex ->
             try {
                 Color(android.graphics.Color.parseColor(hex.trim()))
             } catch (_: Exception) {
@@ -187,7 +188,7 @@ private fun ThemesAppUiOverview(
                         Icon(
                             imageVector = Icons.Default.Palette,
                             contentDescription = null,
-                            tint = accentColor,
+                            tint = LiquidGlass.lightContentColor(appColors, accentColor),
                             modifier = Modifier.size(16.dp)
                         )
                     }
@@ -282,7 +283,7 @@ private fun ThemesAppUiOverview(
                         Icon(
                             imageVector = Icons.Default.Tv,
                             contentDescription = null,
-                            tint = accentColor,
+                            tint = LiquidGlass.lightContentColor(appColors, accentColor),
                             modifier = Modifier.size(16.dp)
                         )
                     }
@@ -318,7 +319,7 @@ private fun ThemesAppUiOverview(
                         Icon(
                             imageVector = Icons.Default.Favorite,
                             contentDescription = null,
-                            tint = accentColor,
+                            tint = LiquidGlass.lightContentColor(appColors, accentColor),
                             modifier = Modifier.size(18.dp)
                         )
                         Spacer(modifier = Modifier.width(10.dp))
@@ -360,7 +361,7 @@ private fun ThemesAppUiOverview(
                         Icon(
                             imageVector = Icons.Default.SkipNext,
                             contentDescription = null,
-                            tint = accentColor,
+                            tint = LiquidGlass.lightContentColor(appColors, accentColor),
                             modifier = Modifier.size(18.dp)
                         )
                         Spacer(modifier = Modifier.width(10.dp))
@@ -408,7 +409,7 @@ private fun ThemesAppUiOverview(
                         Icon(
                             imageVector = Icons.Default.ViewCarousel,
                             contentDescription = null,
-                            tint = accentColor,
+                            tint = LiquidGlass.lightContentColor(appColors, accentColor),
                             modifier = Modifier.size(16.dp)
                         )
                     }
@@ -578,16 +579,23 @@ private fun ThemeModeOptionCard(
     val appColors = LocalAppColors.current
     val cardShape = remember { RoundedCornerShape(16.dp) }
     val isAmoled = appColors.isAmoled
+    val readableAccent = remember(appColors, accentColor) { LiquidGlass.lightContentColor(appColors, accentColor) }
 
     // Clear Water 3D Liquid Glass body: strictly 10% visibility (90% blur translucency)
     val glassBackground = if (isSelected) {
-        accentColor.copy(alpha = if (isAmoled) 0.18f else 0.14f)
+        if (appColors.isDark) accentColor.copy(alpha = if (isAmoled) 0.18f else 0.14f)
+        else accentColor.copy(alpha = 0.10f).compositeOver(appColors.cardBackground).copy(alpha = 0.96f)
     } else {
-        if (isDarkMode) Color.White.copy(alpha = 0.08f) else Color.White.copy(alpha = 0.88f)
+        if (isDarkMode) Color.White.copy(alpha = 0.08f) else appColors.cardBackground.copy(alpha = 0.96f)
     }
 
     // Specular border: Crisp top specular edge highlight
-    val borderBrush = if (isSelected) {
+    val borderBrush = if (!appColors.isDark) {
+        val outline = LiquidGlass.contrastColor(if (isSelected) accentColor else appColors.cardBorder,
+            listOf(glassBackground.compositeOver(appColors.cardBackground), appColors.cardBackground),
+            if (isSelected) 3f else 1.5f)
+        Brush.linearGradient(listOf(outline, outline))
+    } else if (isSelected) {
         Brush.linearGradient(
             colors = listOf(
                 Color.White.copy(alpha = 0.85f),
@@ -651,17 +659,26 @@ private fun ThemeModeOptionCard(
                 contrastingContentColor(accentColor)
             }
 
-            val circleBg = if (isSelected) {
+            val inactiveIcon = Color(0xff6b7280)
+            val circleBg = if (!appColors.isDark) {
+                val fill = (if (isSelected) accentColor.copy(alpha = 0.22f) else Color.Black.copy(alpha = 0.05f))
+                    .compositeOver(appColors.cardBackground)
+                // Only the active mode uses the real accent. Inactive icons stay
+                // neutral, and pale accents gain contrast through their backing.
+                LiquidGlass.contrastColor(fill, listOf(if (isSelected) accentColor else inactiveIcon), 3f)
+            } else if (isSelected) {
                 if (isAmoled && accentColor == Color.White) Color.White else accentColor.copy(alpha = 0.22f)
             } else {
                 if (isDarkMode) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.05f)
             }
             val circleBorder = if (isSelected) {
-                accentColor
+                if (appColors.isDark) accentColor else LiquidGlass.lightOutlineColor(appColors, true)
             } else {
                 if (isDarkMode) Color.White.copy(alpha = 0.18f) else Color.Black.copy(alpha = 0.10f)
             }
-            val iconTint = if (isSelected) {
+            val iconTint = if (!appColors.isDark) {
+                if (isSelected) accentColor else LiquidGlass.contrastColor(inactiveIcon, listOf(circleBg), 3f)
+            } else if (isSelected) {
                 if (isAmoled && accentColor == Color.White) Color(0xFF0A0A0A) else accentColor
             } else {
                 appColors.textSecondary
@@ -689,7 +706,8 @@ private fun ThemeModeOptionCard(
                 text = title,
                 fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
                 fontSize = 13.5.sp,
-                color = if (isSelected) (if (isAmoled && accentColor == Color.White) Color.White else accentColor) else appColors.textPrimary,
+                color = if (isSelected) (if (!appColors.isDark) readableAccent
+                    else if (isAmoled && accentColor == Color.White) Color.White else accentColor) else appColors.textPrimary,
                 maxLines = 1
             )
 
@@ -698,7 +716,8 @@ private fun ThemeModeOptionCard(
             Text(
                 text = subtitle,
                 fontSize = 10.5.sp,
-                color = if (isSelected) (if (isAmoled && accentColor == Color.White) Color.White.copy(alpha = 0.85f) else accentColor.copy(alpha = 0.85f)) else appColors.textMuted,
+                color = if (isSelected) (if (!appColors.isDark) readableAccent
+                    else if (isAmoled && accentColor == Color.White) Color.White.copy(alpha = 0.85f) else accentColor.copy(alpha = 0.85f)) else appColors.textMuted,
                 maxLines = 1
             )
 

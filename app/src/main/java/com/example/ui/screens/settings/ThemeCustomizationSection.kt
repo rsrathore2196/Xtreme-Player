@@ -617,7 +617,7 @@ fun ThemeCustomizationSection(
                         Icon(
                             imageVector = Icons.Default.Palette,
                             contentDescription = "Theme Presets",
-                            tint = accentColor,
+                            tint = LiquidGlass.lightContentColor(appColors, accentColor),
                             modifier = Modifier.size(22.dp)
                         )
                     }
@@ -651,7 +651,7 @@ fun ThemeCustomizationSection(
                         text = customState.currentThemeName,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
-                        color = accentColor,
+                        color = LiquidGlass.lightContentColor(appColors, accentColor),
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
                     )
                 }
@@ -664,7 +664,7 @@ fun ThemeCustomizationSection(
             elevation = 6.dp, translucency = 0.82f, tintAccent = true).bouncyClickable(onClick = onOpenCustomTheming)) {
             Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Icon(Icons.Default.Palette, contentDescription = null, tint = accentColor, modifier = Modifier.size(24.dp))
+                Icon(Icons.Default.Palette, contentDescription = null, tint = LiquidGlass.lightContentColor(appColors, accentColor), modifier = Modifier.size(24.dp))
                 Column(Modifier.weight(1f)) {
                     Text("Custom Theme Colors", color = appColors.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.Bold)
                     Text("Accent, canvas & card colours", color = appColors.textMuted, fontSize = 11.5.sp,
@@ -816,7 +816,7 @@ private fun ThemeExportSuccessDialog(
         Surface(
             shape = RoundedCornerShape(22.dp),
             color = cardBg,
-            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+            border = BorderStroke(1.dp, if (appColors.isDark) Color.White.copy(alpha = 0.08f) else appColors.cardBorder),
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(14.dp)
@@ -839,7 +839,7 @@ private fun ThemeExportSuccessDialog(
                     Icon(
                         imageVector = Icons.Default.Download,
                         contentDescription = "Success",
-                        tint = accentColor,
+                        tint = LiquidGlass.lightContentColor(appColors, accentColor),
                         modifier = Modifier.size(28.dp)
                     )
                 }
@@ -868,7 +868,7 @@ private fun ThemeExportSuccessDialog(
                 Surface(
                     shape = RoundedCornerShape(14.dp),
                     color = cardBorder.copy(alpha = 0.35f),
-                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+                    border = BorderStroke(1.dp, if (appColors.isDark) Color.White.copy(alpha = 0.08f) else appColors.cardBorder),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(12.dp)) {
@@ -898,7 +898,7 @@ private fun ThemeExportSuccessDialog(
                         Text(
                             text = "Path: $filePath",
                             fontSize = 10.sp,
-                            color = accentColor,
+                            color = LiquidGlass.lightContentColor(appColors, accentColor),
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -1010,7 +1010,7 @@ private fun AccentColorHueDialog(
         Surface(
             shape = RoundedCornerShape(22.dp),
             color = cardBg,
-            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+            border = BorderStroke(1.dp, if (appColors.isDark) Color.White.copy(alpha = 0.08f) else appColors.cardBorder),
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(12.dp)
@@ -1051,7 +1051,7 @@ private fun AccentColorHueDialog(
                 Surface(
                     shape = RoundedCornerShape(16.dp),
                     color = cardBorder.copy(alpha = 0.35f),
-                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.10f)),
+                    border = BorderStroke(1.dp, if (appColors.isDark) Color.White.copy(alpha = 0.10f) else appColors.cardBorder),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(
@@ -1591,7 +1591,7 @@ private fun GradientSelectionDialog(
                                     Icon(
                                         imageVector = Icons.Default.Check,
                                         contentDescription = "Selected",
-                                        tint = accentColor,
+                                        tint = LiquidGlass.lightContentColor(appColors, accentColor),
                                         modifier = Modifier.size(18.dp)
                                     )
                                 }
@@ -1662,7 +1662,7 @@ private fun ThemePresetsDialog(
                             Icon(
                                 imageVector = Icons.Default.Palette,
                                 contentDescription = "Theme Presets",
-                                tint = accentColor,
+                                tint = LiquidGlass.lightContentColor(appColors, accentColor),
                                 modifier = Modifier.size(20.dp)
                             )
                         }

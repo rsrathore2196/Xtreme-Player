@@ -66,7 +66,7 @@ fun SettingsCategoryCardGroup(
                 )
                 if (index < categories.size - 1) {
                     HorizontalDivider(
-                        color = dividerColor.copy(alpha = 0.6f),
+                        color = if (appColors.isDark) dividerColor.copy(alpha = 0.6f) else dividerColor,
                         thickness = 1.dp,
                         modifier = Modifier.padding(start = 72.dp, end = 16.dp)
                     )
@@ -120,7 +120,7 @@ fun SettingsCategoryItemRow(
                 Icon(
                     imageVector = category.icon,
                     contentDescription = category.title,
-                    tint = accentColor,
+                    tint = if (appColors.isDark) accentColor else LiquidGlass.lightContentColor(appColors, accentColor),
                     modifier = Modifier.size(22.dp)
                 )
             }

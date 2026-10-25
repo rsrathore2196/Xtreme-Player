@@ -191,7 +191,7 @@ fun OtherSettingsPage(
                             Icon(
                                 imageVector = Icons.Default.Storage,
                                 contentDescription = null,
-                                tint = accentColor,
+                                tint = LiquidGlass.lightContentColor(appColors, accentColor),
                                 modifier = Modifier.size(17.dp)
                             )
                         }
@@ -429,7 +429,7 @@ fun OtherSettingsPage(
             Column(Modifier.padding(16.dp)) {
                 Row(Modifier.fillMaxWidth().clickable { showLyricsProviders = true }.padding(vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.MusicNote, contentDescription = null, tint = accentColor, modifier = Modifier.size(24.dp))
+                    Icon(Icons.Default.MusicNote, contentDescription = null, tint = LiquidGlass.lightContentColor(appColors, accentColor), modifier = Modifier.size(24.dp))
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
                         Text("Lyrics Provider", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = appColors.textPrimary)
@@ -441,7 +441,7 @@ fun OtherSettingsPage(
                 Row(Modifier.fillMaxWidth().testTag("lyrics_translate_language_setting")
                     .clickable(enabled = lyricsSettings.ready) { showLyricsLanguage = true }.padding(vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Language, contentDescription = null, tint = accentColor, modifier = Modifier.size(24.dp))
+                    Icon(Icons.Default.Language, contentDescription = null, tint = LiquidGlass.lightContentColor(appColors, accentColor), modifier = Modifier.size(24.dp))
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
                         Text("Lyrics Translate Language", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = appColors.textPrimary)
@@ -498,7 +498,7 @@ fun OtherSettingsPage(
                             Icon(
                                 imageVector = Icons.Default.Vibration,
                                 contentDescription = null,
-                                tint = accentColor,
+                                tint = LiquidGlass.lightContentColor(appColors, accentColor),
                                 modifier = Modifier.size(16.dp)
                             )
                         }
@@ -687,7 +687,7 @@ private fun ProxySettingsCard(
                         Icon(
                             imageVector = Icons.Default.Security,
                             contentDescription = null,
-                            tint = accentColor,
+                            tint = LiquidGlass.lightContentColor(appColors, accentColor),
                             modifier = Modifier.size(16.dp)
                         )
                     }

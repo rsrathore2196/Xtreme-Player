@@ -143,7 +143,10 @@ fun MiniPlayer(
                     elevation = 14.dp,
                     appColors = appColors,
                     baseFillAlpha = if (appColors.isDark) XtremeLiquidGlassDefaults.FloatingDockDarkFillAlpha
-                        else XtremeLiquidGlassDefaults.FloatingDockLightFillAlpha
+                        else XtremeLiquidGlassDefaults.FloatingDockLightFillAlpha,
+                    baseFillColor = appColors.cardBackground.takeUnless { appColors.isDark },
+                    rimBrush = remember(appColors) { if (appColors.isDark) null
+                        else com.example.ui.theme.LiquidGlass.specularBorderBrush(appColors) }
                 )
         )
 

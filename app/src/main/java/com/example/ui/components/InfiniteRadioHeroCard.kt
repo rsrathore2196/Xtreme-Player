@@ -56,8 +56,10 @@ fun InfiniteRadioHeroCard(
     val appColors = LocalAppColors.current
     val isDark = appColors.isDark
     val glassEnabled = LocalDynamicGlassEnabled.current
-    val glassTint = if (isDark) Color(0xFF080D18) else Color(0xFFF5F8FF)
-    val foreground = if (isDark) Color.White else Color(0xFF122037)
+    // Artwork is not a light-theme surface: a localized dark scrim keeps white
+    // foreground readable regardless of the cover or surrounding app mode.
+    val glassTint = Color(0xFF080D18)
+    val foreground = Color.White
     val buttonForeground = if (glassEnabled) foreground else com.example.ui.theme.contrastingContentColor(appColors.cardBackground)
     val playbackActive = isPlaying
     val radioLoading = isRadioSession && isLoading && !playbackActive
@@ -67,7 +69,7 @@ fun InfiniteRadioHeroCard(
     val shape = RoundedCornerShape(26.dp)
     var artworkSize by remember { mutableStateOf(IntSize.Zero) }
     val textShadow = if (!glassEnabled) Shadow.None else Shadow(
-        if (isDark) Color.Black.copy(alpha = 0.85f) else Color.White.copy(alpha = 0.8f),
+        Color.Black.copy(alpha = 0.85f),
         Offset(0f, 1f), 6f
     )
 
@@ -102,9 +104,9 @@ fun InfiniteRadioHeroCard(
         // A continuous, theme-aware tint supports the lower content without a separate text panel.
         Box(Modifier.fillMaxSize().background(Brush.verticalGradient(
             0f to Color.Transparent,
-            0.22f to glassTint.copy(alpha = if (isDark) 0.15f else 0.03f),
-            0.48f to glassTint.copy(alpha = if (isDark) 0.72f else 0.06f),
-            1f to glassTint.copy(alpha = if (isDark) 0.92f else 0.12f)
+            0.22f to glassTint.copy(alpha = 0.15f),
+            0.48f to glassTint.copy(alpha = 0.72f),
+            1f to glassTint.copy(alpha = 0.92f)
         )))
         // A clear lens reflection keeps the artwork sharp beneath the glass.
         if (glassEnabled) Box(Modifier.fillMaxSize().background(Brush.linearGradient(
@@ -138,7 +140,10 @@ fun InfiniteRadioHeroCard(
                 Modifier.graphicsLayer { scaleX = scale; scaleY = scale }
                     .shadow(if (glassEnabled) 8.dp else 2.dp, buttonShape, spotColor = Color.Black.copy(alpha = 0.25f))
                     .clip(buttonShape)
-                    .background(if (!glassEnabled) SolidColor(appColors.cardBackground) else Brush.linearGradient(listOf(
+                    .background(if (!glassEnabled) SolidColor(appColors.cardBackground)
+                    else if (!isDark) Brush.linearGradient(listOf(
+                        glassTint.copy(alpha = 0.55f), glassTint.copy(alpha = 0.45f), glassTint.copy(alpha = 0.50f)))
+                    else Brush.linearGradient(listOf(
                         Color.White.copy(alpha = 0.34f), Color.White.copy(alpha = 0.10f),
                         Color.White.copy(alpha = 0.22f)
                     )))

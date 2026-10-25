@@ -119,7 +119,7 @@ fun ProfileDetailPage(
                 .background(avatarBg)
                 .border(
                     width = 2.dp,
-                    color = if (appColors.isDark) Color.White.copy(alpha = 0.35f) else Color.White.copy(alpha = 0.60f),
+                    color = if (appColors.isDark) Color.White.copy(alpha = 0.35f) else LiquidGlass.lightOutlineColor(appColors, true),
                     shape = CircleShape
                 ),
             contentAlignment = Alignment.Center
@@ -330,7 +330,7 @@ fun ProfileDetailPage(
         val editButtonBorder = if (isExtremelyDarkAccent) {
             BorderStroke(1.2.dp, Color.White.copy(alpha = 0.50f))
         } else {
-            BorderStroke(1.dp, if (appColors.isDark) Color.White.copy(alpha = 0.35f) else Color.White.copy(alpha = 0.55f))
+            BorderStroke(1.dp, if (appColors.isDark) Color.White.copy(alpha = 0.35f) else LiquidGlass.lightOutlineColor(appColors, true))
         }
         val editButtonContentColor = if (isExtremelyDarkAccent) {
             Color.White
@@ -411,7 +411,7 @@ private fun ProfileAttributeCard(
                 Icon(
                     imageVector = icon,
                     contentDescription = null,
-                    tint = accentColor,
+                    tint = LiquidGlass.lightContentColor(appColors, accentColor),
                     modifier = Modifier.size(18.dp)
                 )
             }

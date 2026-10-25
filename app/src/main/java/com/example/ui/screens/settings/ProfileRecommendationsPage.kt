@@ -1,5 +1,7 @@
 package com.example.ui.screens.settings
 
+import com.example.ui.theme.LiquidGlass
+
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -330,7 +332,7 @@ private fun ProfileOptionItemCard(
                 Icon(
                     imageVector = icon,
                     contentDescription = title,
-                    tint = accentColor,
+                    tint = LiquidGlass.lightContentColor(appColors, accentColor),
                     modifier = Modifier.size(20.dp)
                 )
             }

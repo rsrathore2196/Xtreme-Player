@@ -115,8 +115,10 @@ fun SettingsScreen(
     var subPageTitle by remember { mutableStateOf<String?>(null) }
     var subPageSubtitle by remember { mutableStateOf<String?>(null) }
     var subPageBackAction by remember { mutableStateOf<(() -> Boolean)?>(null) }
-    val accentColor = com.example.ui.theme.LocalAppColors.current.primaryAccent
-    val screenBg = com.example.ui.theme.LocalAppColors.current.scaffoldBackground
+    val themeColors = LocalAppColors.current
+    val settingsColors = remember(themeColors) { LiquidGlass.settingsColors(themeColors) }
+    val accentColor = settingsColors.primaryAccent
+    val screenBg = settingsColors.scaffoldBackground
 
     var showEditProfileSheet by remember { mutableStateOf(false) }
 
@@ -130,6 +132,7 @@ fun SettingsScreen(
         onSubpageStateChanged(selectedCategory != null || isViewingProfileDetail)
     }
 
+    androidx.compose.runtime.CompositionLocalProvider(LocalAppColors provides settingsColors) {
     if (showEditProfileSheet) {
         com.example.ui.components.EditProfileSheet(
             userProfile = userProfile ?: com.example.data.local.UserProfile(),
@@ -290,6 +293,7 @@ fun SettingsScreen(
             }
         }
     }
+}
 }
 }
 

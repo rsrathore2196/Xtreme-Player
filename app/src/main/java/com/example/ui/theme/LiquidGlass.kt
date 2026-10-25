@@ -28,6 +28,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
@@ -38,6 +40,51 @@ import androidx.compose.ui.unit.dp
  * to system light/dark mode and user-selected custom dynamic accent colors.
  */
 object LiquidGlass {
+
+    /** Derived display colors only: never changes the user's saved palette. */
+    internal fun contrastColor(color: Color, backgrounds: List<Color>, minimum: Float): Color {
+        val surfaces = backgrounds.map { it.copy(alpha = 1f) }
+        val initial = color.compositeOver(surfaces.first()).copy(alpha = 1f)
+        fun score(candidate: Color): Float = surfaces.minOf { surface ->
+            val a = candidate.luminance(); val b = surface.luminance()
+            (maxOf(a, b) + 0.05f) / (minOf(a, b) + 0.05f)
+        }
+        if (score(initial) >= minimum) return initial
+        var best = initial
+        var bestScore = score(initial)
+        val targets = listOf(Color.Black, Color.White)
+        for (step in 1..32) {
+            for (target in targets) {
+                val candidate = lerp(initial, target, step / 32f)
+                val contrast = score(candidate)
+                if (contrast >= minimum) return candidate
+                if (contrast > bestScore) { best = candidate; bestScore = contrast }
+            }
+        }
+        return best
+    }
+
+    internal fun lightSurfaceColors(colors: AppThemeColors, tintAccent: Boolean): List<Color> {
+        val base = colors.cardBackground.copy(alpha = 1f)
+        val top = if (tintAccent) colors.primaryAccent.copy(alpha = 0.035f).compositeOver(base) else base
+        return listOf(top.copy(alpha = 0.94f), base.copy(alpha = 0.96f),
+            lerp(base, colors.cardBackgroundElevated.copy(alpha = 1f), 0.25f).copy(alpha = 0.94f))
+    }
+
+    internal fun lightOutlineColor(colors: AppThemeColors, selected: Boolean = false): Color = contrastColor(
+        if (selected) colors.primaryAccent else colors.cardBorder,
+        listOf(colors.cardBackground, colors.scaffoldBackground), if (selected) 3f else 1.5f)
+
+    internal fun lightContentColor(colors: AppThemeColors, color: Color): Color = if (colors.isDark) color else
+        contrastColor(color, listOf(colors.cardBackground, colors.scaffoldBackground) +
+            lightSurfaceColors(colors, true).map { it.compositeOver(colors.scaffoldBackground) }, 4.5f)
+
+    internal fun settingsColors(colors: AppThemeColors): AppThemeColors = if (colors.isDark) colors else colors.copy(
+        cardBorder = lightOutlineColor(colors),
+        textPrimary = lightContentColor(colors, colors.textPrimary),
+        textSecondary = lightContentColor(colors, colors.textSecondary),
+        textMuted = lightContentColor(colors, colors.textMuted),
+        dividerColor = lightOutlineColor(colors).copy(alpha = 0.8f))
 
     /**
      * Bouncy spring animation specification for tab switches, icon hops, and playful micro-interactions.
@@ -126,25 +173,7 @@ object LiquidGlass {
                     )
                 )
             }
-        } else {
-            if (tintAccent) {
-                Brush.verticalGradient(
-                    colors = listOf(
-                        accent.copy(alpha = 0.22f),
-                        Color.White.copy(alpha = 0.88f),
-                        Color(0xFFF1F5F9).copy(alpha = 0.86f)
-                    )
-                )
-            } else {
-                Brush.verticalGradient(
-                    colors = listOf(
-                        Color(0xFFFFFFFF).copy(alpha = 0.88f),
-                        Color(0xFFF8FAFC).copy(alpha = 0.82f),
-                        Color(0xFFF1F5F9).copy(alpha = 0.86f)
-                    )
-                )
-            }
-        }
+        } else Brush.verticalGradient(lightSurfaceColors(colors, tintAccent))
     }
 
     /**
@@ -198,13 +227,7 @@ object LiquidGlass {
                     Color.White.copy(alpha = 0.18f),
                     Color.White.copy(alpha = 0.08f)
                 )
-            } else {
-                listOf(
-                    Color.White.copy(alpha = 0.85f),
-                    Color.White.copy(alpha = 0.40f),
-                    Color.White.copy(alpha = 0.20f)
-                )
-            }
+            } else listOf(lightOutlineColor(colors), lightOutlineColor(colors))
         )
     }
 
@@ -238,11 +261,12 @@ object LiquidGlass {
                 )
             }
         } else {
+            val base = colors.cardBackground.copy(alpha = 1f)
             Brush.verticalGradient(
                 colors = listOf(
-                    Color.White.copy(alpha = 0.90f),
-                    accent.copy(alpha = 0.18f),
-                    Color(0xFFF1F5F9).copy(alpha = 0.88f)
+                    base.copy(alpha = 0.96f),
+                    accent.copy(alpha = 0.10f).compositeOver(base).copy(alpha = 0.94f),
+                    base.copy(alpha = 0.96f)
                 )
             )
         }
@@ -273,19 +297,8 @@ object LiquidGlass {
                 )
             )
         } else {
-            // Light Theme 3D Liquid Glass Border:
-            // Top/Left Edge (Light Refraction): Semi-transparent white/accent highlight stroke (rgba(255, 255, 255, 0.8) blended with accentColor * 0.15)
-            // Bottom/Right Edge (Glass Depth Shadow): Low-opacity theme accent stroke (accentColor at 20%-30% opacity or subtle light slate/blue glass tint)
-            val topHighlight = Color.White.copy(alpha = 0.80f)
-            val midBlend = accent.copy(alpha = 0.18f)
-            val botShadow = accent.copy(alpha = 0.28f)
-            Brush.linearGradient(
-                colors = listOf(
-                    topHighlight,
-                    midBlend,
-                    botShadow
-                )
-            )
+            val outline = lightOutlineColor(colors)
+            Brush.linearGradient(listOf(outline, outline))
         }
     }
 
@@ -322,7 +335,8 @@ private fun Modifier.matteThemeSurface(colors: AppThemeColors, shape: Shape, ele
     .clip(shape)
     .background(if (active) colors.primaryAccent.copy(alpha = 0.16f).compositeOver(colors.cardBackground)
         else colors.cardBackground.copy(alpha = 1f))
-    .border(borderWidth, if (active) colors.primaryAccent.copy(alpha = 0.45f) else colors.cardBorder, shape)
+    .border(borderWidth, if (!colors.isDark) LiquidGlass.lightOutlineColor(colors, active)
+        else if (active) colors.primaryAccent.copy(alpha = 0.45f) else colors.cardBorder, shape)
 
 fun Modifier.liquidGlass(
     colors: AppThemeColors,
@@ -341,6 +355,7 @@ fun Modifier.liquidGlass(
     val effectiveTint = albumArtTint ?: if (tintAccent) colors.primaryAccent else null
 
     val glassBackgroundBrush = when {
+        !isDark -> LiquidGlass.glassBrush(colors, translucency, effectiveTint != null)
         effectiveTint != null -> {
             Brush.verticalGradient(
                 listOf(
@@ -355,7 +370,7 @@ fun Modifier.liquidGlass(
 
     val specularBorder = BorderStroke(
         borderWidth,
-        Brush.verticalGradient(
+        if (!isDark) LiquidGlass.specularBorderBrush(colors) else Brush.verticalGradient(
             colors = listOf(
                 Color.White.copy(alpha = highlightAlpha),
                 Color.White.copy(alpha = highlightAlpha * 0.25f),
@@ -368,21 +383,19 @@ fun Modifier.liquidGlass(
         .shadow(
             elevation = if (isDark) elevation else (elevation + 2.dp),
             shape = shape,
-            spotColor = if (isDark) Color.Black.copy(alpha = 0.50f) else (effectiveTint ?: colors.primaryAccent).copy(alpha = 0.12f),
+            spotColor = if (isDark) Color.Black.copy(alpha = 0.50f) else Color.Black.copy(alpha = 0.12f),
             ambientColor = if (isDark) Color.Black.copy(alpha = 0.20f) else Color.Black.copy(alpha = 0.05f)
         )
         .clip(shape)
         .background(glassBackgroundBrush)
-        .drawWithContent {
+        .drawWithCache {
             // Optical frosted diffusion layer beneath content
             val frostedDiffusion = Brush.verticalGradient(
                 colors = listOf(
-                    Color.White.copy(alpha = if (colors.isDark) 0.09f else 0.38f),
-                    Color.White.copy(alpha = if (colors.isDark) 0.02f else 0.10f)
+                    Color.White.copy(alpha = if (colors.isDark) 0.09f else 0.10f),
+                    Color.White.copy(alpha = if (colors.isDark) 0.02f else 0.025f)
                 )
             )
-            drawRect(frostedDiffusion)
-            drawContent()
             // Top specular reflection sheen (glass curvature light catch)
             val sheenBrush = if (colors.isDark) {
                 Brush.verticalGradient(
@@ -397,15 +410,20 @@ fun Modifier.liquidGlass(
             } else {
                 Brush.verticalGradient(
                     colors = listOf(
-                        Color.White.copy(alpha = 0.60f),
-                        Color.White.copy(alpha = 0.10f),
+                        Color.White.copy(alpha = 0.16f),
+                        Color.White.copy(alpha = 0.035f),
                         Color.Transparent
                     ),
                     startY = 0f,
                     endY = size.height * 0.55f
                 )
             }
-            drawRect(sheenBrush)
+            onDrawWithContent {
+                drawRect(frostedDiffusion)
+                if (!colors.isDark) drawRect(sheenBrush)
+                drawContent()
+                if (colors.isDark) drawRect(sheenBrush)
+            }
         }
         .border(specularBorder, shape)
 }
@@ -432,11 +450,12 @@ fun Modifier.liquidGlassButton(
             )
         )
     } else {
+        val base = colors.cardBackground.copy(alpha = 1f)
         Brush.verticalGradient(
             listOf(
-                colors.primaryAccent.copy(alpha = 0.25f),
-                colors.primaryAccent.copy(alpha = 0.14f),
-                Color.White.copy(alpha = 0.35f)
+                colors.primaryAccent.copy(alpha = 0.12f).compositeOver(base).copy(alpha = 0.96f),
+                colors.primaryAccent.copy(alpha = 0.08f).compositeOver(base).copy(alpha = 0.94f),
+                base.copy(alpha = 0.96f)
             )
         )
     }
@@ -451,13 +470,8 @@ fun Modifier.liquidGlassButton(
                 )
             )
         } else {
-            Brush.verticalGradient(
-                listOf(
-                    Color.White.copy(alpha = 0.85f),
-                    colors.primaryAccent.copy(alpha = 0.65f),
-                    colors.primaryAccent.copy(alpha = 0.30f)
-                )
-            )
+            val outline = LiquidGlass.lightOutlineColor(colors, true)
+            Brush.verticalGradient(listOf(outline, outline))
         }
     )
 
@@ -465,7 +479,7 @@ fun Modifier.liquidGlassButton(
         .shadow(
             elevation = if (colors.isDark) (if (isActive) (elevation + 2.dp) else elevation) else (elevation + 2.dp),
             shape = shape,
-            spotColor = if (colors.isDark) Color.Black.copy(alpha = 0.45f) else colors.primaryAccent.copy(alpha = if (isActive) 0.16f else 0.10f),
+            spotColor = if (colors.isDark) Color.Black.copy(alpha = 0.45f) else Color.Black.copy(alpha = if (isActive) 0.14f else 0.10f),
             ambientColor = if (colors.isDark) Color.Transparent else Color.Black.copy(alpha = 0.05f)
         )
         .clip(shape)
@@ -482,16 +496,14 @@ fun Modifier.liquidGlassButton(
                 )
             }
         )
-        .drawWithContent {
+        .drawWithCache {
             // Optical frosted diffusion layer beneath content
             val frostedDiffusion = Brush.verticalGradient(
                 colors = listOf(
-                    Color.White.copy(alpha = if (colors.isDark) 0.09f else 0.35f),
-                    Color.White.copy(alpha = if (colors.isDark) 0.02f else 0.10f)
+                    Color.White.copy(alpha = if (colors.isDark) 0.09f else 0.10f),
+                    Color.White.copy(alpha = if (colors.isDark) 0.02f else 0.025f)
                 )
             )
-            drawRect(frostedDiffusion)
-            drawContent()
             val sheenBrush = if (colors.isDark) {
                 Brush.verticalGradient(
                     colors = listOf(
@@ -504,15 +516,20 @@ fun Modifier.liquidGlassButton(
             } else {
                 Brush.verticalGradient(
                     colors = listOf(
-                        Color.White.copy(alpha = if (isActive) 0.45f else 0.60f),
-                        Color.White.copy(alpha = 0.10f),
+                        Color.White.copy(alpha = if (isActive) 0.20f else 0.16f),
+                        Color.White.copy(alpha = 0.035f),
                         Color.Transparent
                     ),
                     startY = 0f,
                     endY = size.height * 0.52f
                 )
             }
-            drawRect(sheenBrush)
+            onDrawWithContent {
+                drawRect(frostedDiffusion)
+                if (!colors.isDark) drawRect(sheenBrush)
+                drawContent()
+                if (colors.isDark) drawRect(sheenBrush)
+            }
         }
         .then(
             if (isActive) {
@@ -548,21 +565,19 @@ fun Modifier.primaryLiquidGlassButton(
     .shadow(
         elevation = if (colors.isDark) elevation else (elevation + 2.dp),
         shape = shape,
-        spotColor = colors.primaryAccent.copy(alpha = if (colors.isDark) 0.35f else 0.20f),
+        spotColor = if (colors.isDark) colors.primaryAccent.copy(alpha = 0.35f) else Color.Black.copy(alpha = 0.14f),
         ambientColor = if (colors.isDark) Color.Transparent else Color.Black.copy(alpha = 0.05f)
     )
     .clip(shape)
     .background(LiquidGlass.primaryGlassBrush(colors, translucency))
-    .drawWithContent {
+    .drawWithCache {
         // Optical frosted diffusion layer beneath content
         val frostedDiffusion = Brush.verticalGradient(
             colors = listOf(
-                Color.White.copy(alpha = if (colors.isDark) 0.12f else 0.40f),
-                Color.White.copy(alpha = if (colors.isDark) 0.03f else 0.12f)
+                Color.White.copy(alpha = 0.12f),
+                Color.White.copy(alpha = if (colors.isDark) 0.03f else 0.025f)
             )
         )
-        drawRect(frostedDiffusion)
-        drawContent()
         val sheenBrush = if (colors.isDark) {
             Brush.verticalGradient(
                 colors = listOf(
@@ -576,15 +591,20 @@ fun Modifier.primaryLiquidGlassButton(
         } else {
             Brush.verticalGradient(
                 colors = listOf(
-                    Color.White.copy(alpha = 0.65f),
-                    Color.White.copy(alpha = 0.15f),
+                    Color.White.copy(alpha = 0.20f),
+                    Color.White.copy(alpha = 0.035f),
                     Color.Transparent
                 ),
                 startY = 0f,
                 endY = size.height * 0.55f
             )
         }
-        drawRect(sheenBrush)
+        onDrawWithContent {
+            drawRect(frostedDiffusion)
+            if (!colors.isDark) drawRect(sheenBrush)
+            drawContent()
+            if (colors.isDark) drawRect(sheenBrush)
+        }
     }
     .border(
         BorderStroke(
@@ -617,7 +637,7 @@ fun Modifier.liquidGlassCard(
     .shadow(
         elevation = if (colors.isDark) elevation else (elevation + 2.dp),
         shape = shape,
-        spotColor = if (colors.isDark) Color.Black.copy(alpha = 0.45f) else colors.primaryAccent.copy(alpha = 0.10f),
+        spotColor = if (colors.isDark) Color.Black.copy(alpha = 0.45f) else Color.Black.copy(alpha = 0.10f),
         ambientColor = if (colors.isDark) Color.Black.copy(alpha = 0.20f) else Color.Black.copy(alpha = 0.05f)
     )
     .clip(shape)
@@ -626,8 +646,8 @@ fun Modifier.liquidGlassCard(
         // Optical frosted diffusion layer beneath content
         val frostedDiffusion = Brush.verticalGradient(
             colors = listOf(
-                Color.White.copy(alpha = if (colors.isDark) 0.09f else 0.35f),
-                Color.White.copy(alpha = if (colors.isDark) 0.02f else 0.08f)
+                Color.White.copy(alpha = if (colors.isDark) 0.09f else 0.10f),
+                Color.White.copy(alpha = if (colors.isDark) 0.02f else 0.025f)
             )
         )
         val sheen = if (colors.isDark) {
@@ -642,8 +662,8 @@ fun Modifier.liquidGlassCard(
         } else {
             Brush.verticalGradient(
                 colors = listOf(
-                    Color.White.copy(alpha = 0.60f),
-                    Color.White.copy(alpha = 0.10f),
+                    Color.White.copy(alpha = 0.16f),
+                    Color.White.copy(alpha = 0.035f),
                     Color.Transparent
                 ),
                 startY = 0f,
@@ -652,8 +672,9 @@ fun Modifier.liquidGlassCard(
         }
         onDrawWithContent {
             drawRect(frostedDiffusion)
+            if (!colors.isDark) drawRect(sheen)
             drawContent()
-            drawRect(sheen)
+            if (colors.isDark) drawRect(sheen)
         }
     }
     .border(
@@ -716,11 +737,12 @@ private fun createLiquidGlassPill(
             )
         )
     } else {
+        val base = colors.cardBackground.copy(alpha = 1f)
         Brush.verticalGradient(
             listOf(
-                colors.primaryAccent.copy(alpha = 0.25f),
-                colors.primaryAccent.copy(alpha = 0.12f),
-                Color.White.copy(alpha = 0.40f)
+                colors.primaryAccent.copy(alpha = 0.12f).compositeOver(base).copy(alpha = 0.96f),
+                colors.primaryAccent.copy(alpha = 0.08f).compositeOver(base).copy(alpha = 0.94f),
+                base.copy(alpha = 0.96f)
             )
         )
     }
@@ -736,13 +758,8 @@ private fun createLiquidGlassPill(
                 )
             )
         } else {
-            Brush.verticalGradient(
-                listOf(
-                    Color.White.copy(alpha = 0.85f),
-                    colors.primaryAccent.copy(alpha = 0.65f),
-                    colors.primaryAccent.copy(alpha = 0.30f)
-                )
-            )
+            val outline = LiquidGlass.lightOutlineColor(colors, true)
+            Brush.verticalGradient(listOf(outline, outline))
         }
     )
 
@@ -750,7 +767,7 @@ private fun createLiquidGlassPill(
         .shadow(
             elevation = if (colors.isDark) (if (isActive) (elevation + 2.dp) else elevation) else (elevation + 1.dp),
             shape = shape,
-            spotColor = if (colors.isDark) Color.Black.copy(alpha = 0.40f) else colors.primaryAccent.copy(alpha = if (isActive) 0.18f else 0.08f),
+            spotColor = if (colors.isDark) Color.Black.copy(alpha = 0.40f) else Color.Black.copy(alpha = if (isActive) 0.14f else 0.08f),
             ambientColor = if (colors.isDark) Color.Transparent else Color.Black.copy(alpha = 0.04f)
         )
         .clip(shape)
@@ -759,8 +776,8 @@ private fun createLiquidGlassPill(
             // Optical frosted diffusion layer beneath content
             val frostedDiffusion = Brush.verticalGradient(
                 colors = listOf(
-                    Color.White.copy(alpha = if (colors.isDark) 0.08f else 0.35f),
-                    Color.White.copy(alpha = if (colors.isDark) 0.02f else 0.08f)
+                    Color.White.copy(alpha = if (colors.isDark) 0.08f else 0.10f),
+                    Color.White.copy(alpha = if (colors.isDark) 0.02f else 0.025f)
                 )
             )
             val sheenBrush = if (colors.isDark) {
@@ -775,8 +792,8 @@ private fun createLiquidGlassPill(
             } else {
                 Brush.verticalGradient(
                     colors = listOf(
-                        Color.White.copy(alpha = if (isActive) 0.45f else 0.60f),
-                        Color.White.copy(alpha = 0.10f),
+                        Color.White.copy(alpha = if (isActive) 0.20f else 0.16f),
+                        Color.White.copy(alpha = 0.035f),
                         Color.Transparent
                     ),
                     startY = 0f,
@@ -785,8 +802,9 @@ private fun createLiquidGlassPill(
             }
             onDrawWithContent {
                 drawRect(frostedDiffusion)
+                if (!colors.isDark) drawRect(sheenBrush)
                 drawContent()
-                drawRect(sheenBrush)
+                if (colors.isDark) drawRect(sheenBrush)
             }
         }
         .border(border, shape)
@@ -834,10 +852,14 @@ fun Modifier.bouncyClickable(
 @Composable
 fun liquidGlassSwitchColors(appColors: AppThemeColors): androidx.compose.material3.SwitchColors {
     val isDark = appColors.isDark
+    val checkedTrack = appColors.primaryAccent.copy(alpha = if (isDark) 0.65f else 0.85f)
+    val checkedThumb = if (isDark) Color.White else remember(appColors, checkedTrack) {
+        LiquidGlass.contrastColor(Color.White, listOf(checkedTrack.compositeOver(appColors.cardBackground)), 3f)
+    }
     return androidx.compose.material3.SwitchDefaults.colors(
-        checkedThumbColor = Color.White,
-        checkedTrackColor = appColors.primaryAccent.copy(alpha = if (isDark) 0.65f else 0.85f),
-        checkedBorderColor = appColors.primaryAccent,
+        checkedThumbColor = checkedThumb,
+        checkedTrackColor = checkedTrack,
+        checkedBorderColor = if (isDark) appColors.primaryAccent else remember(appColors) { LiquidGlass.lightOutlineColor(appColors, true) },
         uncheckedThumbColor = if (isDark) Color(0xFFE2E8F0) else Color(0xFF64748B),
         uncheckedTrackColor = if (isDark) Color.White.copy(alpha = 0.12f) else Color.Black.copy(alpha = 0.08f),
         uncheckedBorderColor = if (isDark) Color.White.copy(alpha = 0.35f) else Color.Black.copy(alpha = 0.22f)

@@ -65,7 +65,7 @@ object XtremeLiquidGlassDefaults {
     val FloatingDockBlurRadius: Dp = 8.dp
     const val FloatingDockTintAlpha: Float = 0.04f
     const val FloatingDockDarkFillAlpha: Float = 0.24f
-    const val FloatingDockLightFillAlpha: Float = 0.28f
+    const val FloatingDockLightFillAlpha: Float = 0.84f
     const val SurfaceTintAlpha: Float = 0.12f
     val RimBorderWidth: Dp = 0.8.dp
     val PillShape: Shape = CircleShape
@@ -107,13 +107,15 @@ fun Modifier.xtremeLiquidGlassBackground(
     stableCaptureWidthPx: Float = 0f,
     baseFillAlpha: Float? = null,
     baseFillColor: Color? = null,
-    interaction: DockGlassInteraction? = null
+    interaction: DockGlassInteraction? = null,
+    rimBrush: Brush? = null
 ): Modifier {
     if (!enabled || !LocalDynamicGlassEnabled.current) return this
         .shadow(elevation, shape)
         .clip(shape)
-        .background(appColors.cardBackground.copy(alpha = 1f))
-        .border(borderWidth, appColors.cardBorder, shape)
+        .background((baseFillColor?.takeUnless { appColors.isDark } ?: appColors.cardBackground).copy(alpha = 1f))
+        .then(if (rimBrush != null) Modifier.border(BorderStroke(borderWidth, rimBrush), shape)
+            else Modifier.border(borderWidth, appColors.cardBorder, shape))
 
     val density = LocalDensity.current
     val radius = with(density) { blurRadius.toPx() }
@@ -144,7 +146,7 @@ fun Modifier.xtremeLiquidGlassBackground(
             }
         }
     val dark = appColors.isDark
-    val rim = remember(dark) {
+    val rim = rimBrush ?: remember(dark) {
         Brush.linearGradient(listOf(
             Color.White.copy(alpha = if (dark) 0.48f else 0.92f),
             Color.White.copy(alpha = if (dark) 0.08f else 0.32f),

@@ -1,5 +1,7 @@
 package com.example.ui.screens.settings
 
+import com.example.ui.theme.LiquidGlass
+
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -427,7 +429,7 @@ fun EditCountrySubPage(
                             Icon(
                                 imageVector = Icons.Default.CheckCircle,
                                 contentDescription = "Selected",
-                                tint = accentColor,
+                                tint = LiquidGlass.lightContentColor(appColors, accentColor),
                                 modifier = Modifier.size(20.dp)
                             )
                         }
@@ -513,7 +515,7 @@ fun EditRecommendationLanguagesSubPage(
                     text = "${selectedLanguages.size} Selected",
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
-                    color = accentColor,
+                    color = LiquidGlass.lightContentColor(appColors, accentColor),
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
                 )
             }
@@ -523,7 +525,7 @@ fun EditRecommendationLanguagesSubPage(
                     text = "Select All",
                     fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold,
-                    color = accentColor,
+                    color = LiquidGlass.lightContentColor(appColors, accentColor),
                     modifier = Modifier
                         .clip(RoundedCornerShape(6.dp))
                         .clickable { selectedLanguages = availableLanguages.toSet() }
@@ -588,7 +590,7 @@ fun EditRecommendationLanguagesSubPage(
                             Icon(
                                 imageVector = Icons.Default.Check,
                                 contentDescription = null,
-                                tint = accentColor,
+                                tint = LiquidGlass.lightContentColor(appColors, accentColor),
                                 modifier = Modifier.size(14.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
@@ -749,7 +751,7 @@ fun EditAppLanguageSubPage(
                             Icon(
                                 imageVector = Icons.Default.CheckCircle,
                                 contentDescription = "Selected",
-                                tint = accentColor,
+                                tint = LiquidGlass.lightContentColor(appColors, accentColor),
                                 modifier = Modifier.size(20.dp)
                             )
                         }
