@@ -156,7 +156,8 @@ fun SyncedLyricsView(
     modifier: Modifier = Modifier,
     viewportAnimating: Boolean = false,
     showRomanization: Boolean = true,
-    showTranslation: Boolean = true
+    showTranslation: Boolean = true,
+    lyricsOffsetMs: Int = 0
 ) {
     val appColors = LocalAppColors.current
     val context = LocalContext.current
@@ -195,10 +196,13 @@ fun SyncedLyricsView(
         }
     }
 
-    val activeLineIndex by remember(lyrics?.trackId, lines, isSynced) {
+    val activeLineIndex by remember(lyrics?.trackId, lines, isSynced, lyricsOffsetMs) {
         derivedStateOf {
             if (!isSynced) -1
-            else lines.indexOfLast { currentPlayheadMs >= it.timestampMs }
+            else {
+                val effectivePlayhead = (currentPlayheadMs - lyricsOffsetMs).coerceAtLeast(0L)
+                lines.indexOfLast { effectivePlayhead >= it.timestampMs }
+            }
         }
     }
 
@@ -419,7 +423,7 @@ fun SyncedLyricsView(
                                 onClick = {
                                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                     followPlayback = true
-                                    onSeekTo(item.timestampMs)
+                                    onSeekTo((item.timestampMs + lyricsOffsetMs).coerceAtLeast(0L))
                                 }
                             )
                             .padding(vertical = if (isSynced) 6.dp else 3.dp),
@@ -455,7 +459,7 @@ fun SyncedLyricsView(
                                 if (isDark) Color.White.copy(alpha = 0.40f) else Color.Black.copy(alpha = 0.38f),
                             glowColor = lerp(activeTextColor, accentColor.takeIf { it.alpha > 0f } ?: activeTextColor, 0.25f),
                             currentPositionProvider = {
-                                currentPlayheadMs
+                                (currentPlayheadMs - lyricsOffsetMs).coerceAtLeast(0L)
                             }
                         )
                         if (showTranslation && !item.translation.isNullOrBlank()) {

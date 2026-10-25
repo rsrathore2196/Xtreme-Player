@@ -103,6 +103,7 @@ import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Equalizer
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.BluetoothAudio
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Usb
@@ -303,6 +304,11 @@ fun ExpandedPlayerScreen(
 
     var isMenuOpen by remember { mutableStateOf(false) }
     var isSleepTimerOpen by remember { mutableStateOf(false) }
+    var isLyricsOffsetOpen by remember { mutableStateOf(false) }
+    val lyricsOffsetMs by com.example.data.local.LyricsOffsetManager.activeOffsetMs.collectAsStateWithLifecycle()
+    LaunchedEffect(track.id) {
+        com.example.data.local.LyricsOffsetManager.loadOffsetForTrack(context, track.id)
+    }
     var isFlipped by remember(track.id) { mutableStateOf(false) }
     var showLyrics by remember(track.id) { mutableStateOf(false) }
     val lyricsTextController = rememberLyricsTextController(lyrics, showLyrics && isScreenVisible)
@@ -674,6 +680,7 @@ fun ExpandedPlayerScreen(
                                     showRomanization = lyricsTextState.active == com.example.data.remote.LyricsTextTransformer.Mode.ROMANIZE,
                                     showTranslation = lyricsTextState.active == com.example.data.remote.LyricsTextTransformer.Mode.TRANSLATE,
                                     viewportAnimating = lyricsViewportAnimating,
+                                    lyricsOffsetMs = lyricsOffsetMs,
                                     modifier = Modifier.weight(1f).fillMaxWidth()
                                 )
                                 }
@@ -883,6 +890,7 @@ fun ExpandedPlayerScreen(
                                     onAddToPlaylist = onAddToPlaylist,
                                     onOpenEqualizer = onOpenEqualizer,
                                     onOpenSleepTimer = { isSleepTimerOpen = true },
+                                    onOpenLyricsOffset = { isLyricsOffsetOpen = true },
                                     isDark = isDark,
                                     appColors = appColors
                                 )
@@ -1443,6 +1451,7 @@ fun ExpandedPlayerScreen(
                         onAddToPlaylist = onAddToPlaylist,
                         onOpenEqualizer = onOpenEqualizer,
                         onOpenSleepTimer = { isSleepTimerOpen = true },
+                        onOpenLyricsOffset = { isLyricsOffsetOpen = true },
                         isDark = isDark,
                         appColors = appColors
                     )
@@ -1537,6 +1546,7 @@ fun ExpandedPlayerScreen(
                                 showRomanization = lyricsTextState.active == com.example.data.remote.LyricsTextTransformer.Mode.ROMANIZE,
                                 showTranslation = lyricsTextState.active == com.example.data.remote.LyricsTextTransformer.Mode.TRANSLATE,
                                 viewportAnimating = lyricsViewportAnimating,
+                                lyricsOffsetMs = lyricsOffsetMs,
                                 modifier = Modifier.weight(1f).fillMaxWidth()
                             )
 
@@ -2138,6 +2148,12 @@ fun ExpandedPlayerScreen(
     if (isSleepTimerOpen) {
         SleepTimerDialog(onDismiss = { isSleepTimerOpen = false })
     }
+    if (isLyricsOffsetOpen) {
+        LyricsOffsetBottomSheet(
+            track = track,
+            onDismiss = { isLyricsOffsetOpen = false }
+        )
+    }
     if (showSoundOutputDialog) {
         SoundOutputDeviceDialog(
             devices = effectiveDevices,
@@ -2358,6 +2374,7 @@ private fun PlayerSyncedLyrics(
     showRomanization: Boolean,
     showTranslation: Boolean,
     viewportAnimating: Boolean,
+    lyricsOffsetMs: Int = 0,
     modifier: Modifier
 ) {
     // Palette fades only invalidate the lyrics subtree, never the complete player.
@@ -2375,7 +2392,8 @@ private fun PlayerSyncedLyrics(
         showRomanization = showRomanization,
         showTranslation = showTranslation,
         modifier = modifier,
-        viewportAnimating = viewportAnimating
+        viewportAnimating = viewportAnimating,
+        lyricsOffsetMs = lyricsOffsetMs
     )
 }
 
@@ -2509,6 +2527,7 @@ private fun PlayerOptionsMenu(
     onAddToPlaylist: (MusicTrack) -> Unit,
     onOpenEqualizer: () -> Unit,
     onOpenSleepTimer: () -> Unit,
+    onOpenLyricsOffset: () -> Unit = {},
     isDark: Boolean,
     appColors: com.example.ui.theme.AppThemeColors = LocalAppColors.current,
     modifier: Modifier = Modifier
@@ -2564,8 +2583,11 @@ private fun PlayerOptionsMenu(
         ) {
             val itemIconBg = if (appColors.isAmoled) Color(0xFF141414) else if (isDark) appColors.cardBorder.copy(alpha = 0.35f) else appColors.chipBackground
 
-            listOf(Triple("Sleep Mode", Icons.Default.Timer, onOpenSleepTimer),
-                Triple("Equalizer", Icons.Default.Equalizer, onOpenEqualizer)).forEach { (title, icon, action) ->
+            listOf(
+                Triple("Sleep Mode", Icons.Default.Timer, onOpenSleepTimer),
+                Triple("Equalizer", Icons.Default.Equalizer, onOpenEqualizer),
+                Triple("Lyrics Offset", Icons.Default.Tune, onOpenLyricsOffset)
+            ).forEach { (title, icon, action) ->
                 DropdownMenuItem(
                     text = { Text(title, style = MaterialTheme.typography.bodyMedium.copy(
                         fontWeight = FontWeight.SemiBold, color = appColors.textPrimary)) },
