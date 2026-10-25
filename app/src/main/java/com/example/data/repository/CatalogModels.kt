@@ -7,9 +7,27 @@ import com.example.data.model.MusicTrack
 
 /** Provider IDs are kept separate from display names and from TheAudioDB IDs. */
 data class CatalogArtist(val id: String, val name: String, val musicBrainzId: String = "", val aliases: List<String> = emptyList(), val image: String = "")
-data class CatalogAlbum(val id: String, val title: String, val artists: List<CatalogArtist>, val image: String, val year: String)
+enum class CatalogProvider { JIOSAAVN, YOUTUBE_MUSIC }
+enum class ExploreCategoryKind { MOOD, GENRE, OTHER }
+
 @androidx.compose.runtime.Immutable
-data class CatalogPlaylist(val id: String, val title: String, val image: String)
+data class ExploreCategory(val title: String, val browseId: String, val params: String? = null,
+    val kind: ExploreCategoryKind = ExploreCategoryKind.OTHER, val sectionTitle: String = "",
+    val provider: CatalogProvider = CatalogProvider.YOUTUBE_MUSIC) {
+    val key: String get() = "${provider.name}:$browseId:${params.orEmpty()}"
+}
+
+data class CatalogAlbum(val id: String, val title: String, val artists: List<CatalogArtist>, val image: String, val year: String,
+    val provider: CatalogProvider = CatalogProvider.JIOSAAVN, val browseParams: String? = null,
+    val countryCode: String = "US", val languageCode: String = "en")
+@androidx.compose.runtime.Immutable
+data class CatalogPlaylist(val id: String, val title: String, val image: String,
+    val provider: CatalogProvider = CatalogProvider.JIOSAAVN, val browseParams: String? = null,
+    val countryCode: String = "US", val languageCode: String = "en")
+/** Immutable next-page request; a token is never consumed before its result is accepted. */
+data class CatalogBrowseContinuation(val browseId: String, val params: String?, val token: String,
+    val countryCode: String = "US", val languageCode: String = "en",
+    val seenTokens: Set<String> = emptySet(), val page: Int = 2)
 /** Independent song-provider cursors and results waiting for the next ten rows. */
 data class TrackSearchContinuation(
     val query: String, val standardPage: Int? = null,
@@ -25,13 +43,16 @@ data class CatalogPage(
     val nextPage: Int? = null, val warning: String? = null,
     val trackSearchContinuation: TrackSearchContinuation? = null,
     val artistContinuation: ArtistCatalogContinuation? = null,
-    val resolvedArtist: CatalogArtist? = null
+    val resolvedArtist: CatalogArtist? = null,
+    val browseContinuation: CatalogBrowseContinuation? = null
 )
 sealed interface CatalogDestination {
     val key: String
     data class Artist(val artist: CatalogArtist) : CatalogDestination { override val key = "artist:${artist.id.ifBlank { CatalogNames.normalize(artist.name) }}" }
-    data class Album(val album: CatalogAlbum) : CatalogDestination { override val key = "album:${album.id}" }
-    data class Playlist(val playlist: CatalogPlaylist) : CatalogDestination { override val key = "playlist:${playlist.id}" }
+    data class Album(val album: CatalogAlbum) : CatalogDestination { override val key =
+        if (album.provider == CatalogProvider.JIOSAAVN) "album:${album.id}" else "album:${album.provider}:${album.id}:${album.browseParams.orEmpty()}" }
+    data class Playlist(val playlist: CatalogPlaylist) : CatalogDestination { override val key =
+        if (playlist.provider == CatalogProvider.JIOSAAVN) "playlist:${playlist.id}" else "playlist:${playlist.provider}:${playlist.id}:${playlist.browseParams.orEmpty()}" }
 }
 object CatalogNames {
     private val latinText = Regex("[a-z0-9 ]+")

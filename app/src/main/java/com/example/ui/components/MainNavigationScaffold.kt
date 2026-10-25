@@ -362,6 +362,8 @@ fun MainNavigationScaffold(
                                     isLoading = playerUiState.isLoading,
                                     onQueryChange = { q -> viewModel.onSearchQueryChange(q) },
                                     onSelectGenre = { g -> viewModel.selectGenre(g) },
+                                    onExploreVisibilityChanged = viewModel::setExploreVisible,
+                                    onSelectExploreCategory = { category, force -> viewModel.selectExploreCategory(category, force) },
                                     onSelectSource = { s -> viewModel.selectSource(s) },
                                     onTrackClick = { track, queue -> viewModel.playFromSearch(track, queue) },
                                     onToggleFavorite = { track -> viewModel.toggleLike(track) }

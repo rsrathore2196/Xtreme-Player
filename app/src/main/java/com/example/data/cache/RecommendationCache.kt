@@ -9,6 +9,8 @@ import com.example.performance.AppDispatchers
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -37,14 +39,24 @@ abstract class RecommendationCacheDatabase : RoomDatabase() {
 /** A transaction acknowledges precisely its captured versions, never a newer put.
  * Failure/cancellation leaves the pending batch intact for the next bounded retry. */
 internal suspend fun persistRecommendationBatch(pending: MutableMap<String, RecommendationCacheEntry>,
-    commit: suspend (List<RecommendationCacheEntry>) -> Unit): Boolean {
+    persistence: Mutex = Mutex(), commit: suspend (List<RecommendationCacheEntry>) -> Unit): Boolean = persistence.withLock {
     val batch = synchronized(pending) { pending.values.toList() }
-    if (batch.isEmpty()) return false
+    if (batch.isEmpty()) return@withLock false
     commit(batch)
     synchronized(pending) {
         batch.forEach { entry -> if (pending[entry.cacheKey] === entry) pending.remove(entry.cacheKey) }
     }
-    return true
+    true
+}
+
+/** The same lane covers checkpoint validation, commit and acknowledgement. */
+internal suspend fun persistRecommendationCheckpoint(pending: MutableMap<String, RecommendationCacheEntry>,
+    entry: RecommendationCacheEntry, persistence: Mutex,
+    commit: suspend (List<RecommendationCacheEntry>) -> Unit): Boolean = persistence.withLock {
+    if (synchronized(pending) { pending[entry.cacheKey] !== entry }) return@withLock false
+    commit(listOf(entry))
+    synchronized(pending) { if (pending[entry.cacheKey] === entry) pending.remove(entry.cacheKey) }
+    true
 }
 
 /** Memory hits first; batched writes never delay a matched song or invalidate the library. */
@@ -54,6 +66,7 @@ internal class RecommendationCache private constructor(context: Context) {
     private val scope = CoroutineScope(SupervisorJob() + AppDispatchers.Io)
     private val memory = LruCache<String, RecommendationCacheEntry>(512)
     private val pending = linkedMapOf<String, RecommendationCacheEntry>()
+    private val persistence = Mutex()
     private val writes = Channel<Unit>(Channel.CONFLATED)
     private val database by lazy { Room.databaseBuilder(app, RecommendationCacheDatabase::class.java,
         "recommendation_cache.db")
@@ -70,7 +83,7 @@ internal class RecommendationCache private constructor(context: Context) {
                     try {
                         BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.DEFERRED,
                             requireForeground = false) {
-                            if (persistRecommendationBatch(pending) { database.entries().put(it) })
+                            if (persistRecommendationBatch(pending, persistence) { database.entries().put(it) })
                                 lastWrite = android.os.SystemClock.elapsedRealtime()
                         }
                         break
@@ -88,8 +101,12 @@ internal class RecommendationCache private constructor(context: Context) {
         catch (e: CancellationException) { throw e } catch (_: Exception) { null }
     }
     suspend fun put(key: String, tracks: List<MusicTrack>, ttl: Long) {
-        val now = System.currentTimeMillis()
         val body = withContext(com.example.performance.AppDispatchers.CpuBounded) { RecommendationTrackCodec.encode(tracks) }
+        putBody(key, body, ttl)
+    }
+    /** Small public catalog snapshots share the existing bounded metadata cache and writer. */
+    suspend fun putBody(key: String, body: String, ttl: Long, checkpoint: Boolean = false) {
+        val now = System.currentTimeMillis()
         val entry = RecommendationCacheEntry(key, body, now, now + ttl)
         memory.put(key, entry)
         synchronized(pending) {
@@ -97,6 +114,12 @@ internal class RecommendationCache private constructor(context: Context) {
             if (pending.size > 512) pending.remove(pending.keys.first())
         }
         writes.trySend(Unit)
+        if (checkpoint) withContext(AppDispatchers.Io) {
+            try {
+                persistRecommendationCheckpoint(pending, entry, persistence) { database.entries().put(it) }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { /* The existing bounded writer retains this exact entry. */ }
+        }
     }
     companion object {
         @Volatile private var instance: RecommendationCache? = null
@@ -114,9 +137,9 @@ internal object RecommendationTrackCodec {
         .put("bitrate", t.bitrateKbps).put("badge", t.qualityBadge).put("genre", t.genre)
         .put("singers", t.singers).put("primaryArtists", JSONArray(t.primaryArtists)).put("language", t.language).put("year", t.year)
         .put("source", t.source).put("isrc", t.isrc) }).toString()
-    fun decode(body: String): List<MusicTrack> = try {
+    fun decode(body: String, maxTracks: Int = 80): List<MusicTrack> = try {
         val rows = JSONArray(body)
-        (0 until minOf(rows.length(), 80)).mapNotNull { i -> rows.optJSONObject(i)?.let { t ->
+        (0 until minOf(rows.length(), maxTracks)).mapNotNull { i -> rows.optJSONObject(i)?.let { t ->
             MusicTrack(id = t.getString("id"), title = t.getString("title"), artist = t.getString("artist"),
                 album = t.optString("album"), durationMs = t.optLong("duration"), coverUrl = t.optString("cover"),
                 audioUrl = t.optString("audio"), bitrateKbps = t.optInt("bitrate"), qualityBadge = t.optString("badge"),

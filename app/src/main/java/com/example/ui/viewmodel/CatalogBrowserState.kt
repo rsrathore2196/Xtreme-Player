@@ -42,6 +42,7 @@ data class CatalogDetailState(
     val loading: Boolean = false, val error: String? = null, val warning: String? = null,
     val scrollIndex: Int = 0, val scrollOffset: Int = 0, val initialized: Boolean = false,
     val artistContinuation: ArtistCatalogContinuation? = null,
+    val browseContinuation: CatalogBrowseContinuation? = null,
     internal val requestId: Int = 0,
     val playlistContent: com.example.data.local.PlaylistWithTracks? = null
 )
@@ -59,6 +60,14 @@ internal suspend fun CatalogDetailState.preparePlaybackQueue(fallback: MusicTrac
     withContext(AppDispatchers.CpuBounded) {
         (tracks + pending).distinctBy { it.id }.ifEmpty { listOf(fallback) }
     }
+
+/** Each loader captures its cursor; retries cannot consume the next provider page. */
+internal fun collectionPlaybackPages(page: Int, cursor: CatalogBrowseContinuation?,
+    load: suspend (Int, CatalogBrowseContinuation?) -> CatalogPage): com.example.playback.CollectionPlaybackContinuation =
+    com.example.playback.CollectionPlaybackContinuation(page,
+        continueWith = { result -> result.nextPage?.takeIf { it > page }?.let {
+            collectionPlaybackPages(it, result.browseContinuation, load)
+        } }, fetch = { requestedPage -> load(requestedPage, cursor) })
 
 /** Owned by PlayerViewModel's scope; browsing never changes playback state. */
 class CatalogBrowserState(private val repository: CatalogRepository, private val scope: CoroutineScope,
@@ -439,11 +448,17 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
     }
     /** Playback continuation captures catalog identity only; closing the page cannot cancel music. */
     fun playlistPlaybackContinuation(state: CatalogDetailState): com.example.playback.CollectionPlaybackContinuation? {
-        val playlist = (state.destination as? CatalogDestination.Playlist)?.playlist ?: return null
         val page = state.nextPage ?: return null
         val catalog = repository
-        return com.example.playback.CollectionPlaybackContinuation(page) { cursor ->
-            catalog.playlistSongs(playlist, cursor)
+        return when (val destination = state.destination) {
+            is CatalogDestination.Playlist -> collectionPlaybackPages(page, state.browseContinuation) { number, cursor ->
+                catalog.playlistSongs(destination.playlist, number, cursor)
+            }
+            is CatalogDestination.Album -> if (state.browseContinuation == null) null else
+                collectionPlaybackPages(page, state.browseContinuation) { _, cursor ->
+                    catalog.albumSongs(destination.album, cursor)
+                }
+            else -> null
         }
     }
 
@@ -455,14 +470,15 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
     }
     fun loadMoreDetail() {
         val state = _detail.value ?: return
-        if (state.loading || (state.initialized && state.nextPage == null && state.pending.isEmpty())) return
+        if (state.loading || (state.initialized && state.nextPage == null && state.browseContinuation == null && state.pending.isEmpty())) return
         val generation = detailGeneration
         _detail.update { it?.copy(loading = true, error = null) }
         detailJob = dataScope.launch {
             try {
                 var destination = state.destination
                 val page: CatalogPage = if (state.pending.isNotEmpty()) CatalogPage(tracks = state.pending,
-                    nextPage = state.nextPage, warning = state.warning, artistContinuation = state.artistContinuation)
+                    nextPage = state.nextPage, warning = state.warning, artistContinuation = state.artistContinuation,
+                    browseContinuation = state.browseContinuation)
                 else when (val selected = destination) {
                     is CatalogDestination.Artist -> {
                         val artist = if (state.artistContinuation != null) selected.artist else repository.resolveArtist(selected.artist)
@@ -471,12 +487,13 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
                             destination = CatalogDestination.Artist(it.resolvedArtist ?: artist)
                         }
                     }
-                    is CatalogDestination.Album -> repository.albumSongs(selected.album)
-                    is CatalogDestination.Playlist -> repository.playlistSongs(selected.playlist, state.nextPage ?: 1)
+                    is CatalogDestination.Album -> repository.albumSongs(selected.album, state.browseContinuation)
+                    is CatalogDestination.Playlist -> repository.playlistSongs(selected.playlist, state.nextPage ?: 1, state.browseContinuation)
                 }
                 if (generation != _detail.value?.requestId) return@launch
                 val fresh = withContext(AppDispatchers.CpuBounded) {
-                    if (destination is CatalogDestination.Album) page.tracks else repository.uniqueTracks(state.tracks + page.tracks).drop(state.tracks.size)
+                    if (destination is CatalogDestination.Album && state.tracks.isEmpty()) page.tracks
+                    else repository.uniqueTracks(state.tracks + page.tracks).drop(state.tracks.size)
                 }
                 if (generation != _detail.value?.requestId) return@launch
                 val album = destination is CatalogDestination.Album
@@ -486,12 +503,13 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
                 // failure. Its first page may overlap loaded songs; keep its own cursor
                 // so later, genuinely new matches remain reachable without duplicates.
                 val repeated = page.tracks.isNotEmpty() && fresh.isEmpty() && (page.nextPage ?: 0) >= 0 &&
-                    page.artistContinuation == null
+                    page.artistContinuation == null && page.browseContinuation == null
                 ensureActive()
                 _detail.update { current -> if (current?.requestId != generation) current else current.copy(destination = destination,
                     nextPage = if (repeated) null else page.nextPage, loading = false,
                     initialized = true, error = null, warning = page.warning,
-                    artistContinuation = page.artistContinuation).withTracks(liked(state.tracks + added), liked(pending)) }
+                    artistContinuation = page.artistContinuation, browseContinuation = page.browseContinuation)
+                    .withTracks(liked(state.tracks + added), liked(pending)) }
                 // Store both name-only Home routes and provider-ID routes against the same loaded data.
                 synchronized(details) {
                     if (generation == _detail.value?.requestId) {

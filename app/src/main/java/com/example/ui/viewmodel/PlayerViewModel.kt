@@ -19,6 +19,7 @@ import com.example.data.remote.LyricsProvider
 import com.example.data.remote.MusicDataSource
 import com.example.data.repository.MusicRepository
 import com.example.data.repository.SearchResultCategory
+import com.example.data.repository.ExploreCategory
 import com.example.playback.AudioQuality
 import com.example.playback.PlaybackManager
 import com.example.playback.PlayerUiState
@@ -94,7 +95,11 @@ data class SearchUiState(
     val recentSearches: List<String> = emptyList(),
     val displayDirectTracks: List<MusicTrack>? = null,
     val matchingPlaylistGenres: List<String>? = null,
-    internal val requestId: Long = 0L
+    internal val requestId: Long = 0L,
+    val exploreCategories: List<ExploreCategory> = emptyList(),
+    val selectedExploreCategory: ExploreCategory? = null,
+    val isExploreLoading: Boolean = false,
+    val genreError: String? = null
 )
 
 /** Navigation has no dependency on queue enrichment, decoder details or progress. */
@@ -155,7 +160,9 @@ class PlayerViewModel(
         addonSearch = { query, policy -> com.example.data.remote.StreamingAddons.search(application, query, policy) })
 
     private val _searchState = MutableStateFlow(SearchUiState())
-    fun hasActiveSearch(): Boolean = _searchState.value.let { it.query.isNotBlank() || it.selectedGenre != "All" }
+    fun hasActiveSearch(): Boolean = _searchState.value.let {
+        it.query.isNotBlank() || it.selectedGenre != "All" || it.selectedExploreCategory != null
+    }
     fun resetSearchNavigation() {
         selectGenre("All")
         if (_searchState.value.query.isNotBlank()) onSearchQueryChange("")
@@ -169,8 +176,10 @@ class PlayerViewModel(
             else -> raw
         }
         state.copy(displayDirectTracks = if (state.query.isNotBlank()) direct.take(5) else direct,
-            matchingPlaylistGenres = MusicDataSource.genres.filter { it.contains(state.query, ignoreCase = true) }
-                .ifEmpty { MusicDataSource.genres.take(6) })
+            matchingPlaylistGenres = state.exploreCategories.map { it.title }.distinct()
+                .ifEmpty { MusicDataSource.genres }.let { names ->
+                    names.filter { it.contains(state.query, ignoreCase = true) }.ifEmpty { names.take(6) }
+                })
     }.flowOn(derivedStateDispatcher)
         // Only local transformations; keep the prepared state alive before the first
         // Search composition. This starts no catalog or recommendation request.
@@ -180,6 +189,12 @@ class PlayerViewModel(
     val selectedPlaylistTracks: StateFlow<PlaylistWithTracks?> = _selectedPlaylistTracks.asStateFlow()
 
     private var searchJob: Job? = null
+    private var exploreIndexJob: Job? = null
+    @Volatile private var exploreVisible = false
+    private val exploreIndexGeneration = AtomicLong()
+    private var exploreIndexContext = ""
+    private var exploreIndexLoadedAt = 0L
+    private var exploreIndexFailedAt = 0L
     private val legacySearchGeneration = AtomicLong()
     private val recentSearchDispatcher = AppDispatchers.Io
     private val recentSearchMutex = Mutex()
@@ -905,18 +920,96 @@ class PlayerViewModel(
     fun onSearchQueryChange(newQuery: String) {
         val generation = legacySearchGeneration.incrementAndGet()
         searchJob?.cancel()
+        if (newQuery.isNotBlank()) setExploreVisible(false)
         _searchState.update { it.copy(query = newQuery, isSearching = false, requestId = generation) }
         catalogBrowser.queryChanged(newQuery)
         if (newQuery.isBlank()) selectGenre(_searchState.value.selectedGenre)
     }
 
-    fun selectGenre(genre: String) {
+    /** Hidden retained tabs and active text searches never start category discovery. */
+    fun setExploreVisible(visible: Boolean) {
+        exploreVisible = visible
+        if (!visible) {
+            exploreIndexGeneration.incrementAndGet()
+            exploreIndexJob?.cancel()
+            exploreIndexJob = null
+            _searchState.update { if (it.isExploreLoading) it.copy(isExploreLoading = false) else it }
+            return
+        }
+        if (exploreIndexJob?.isActive == true) return
+        val generation = exploreIndexGeneration.incrementAndGet()
+        exploreIndexJob = viewModelScope.launch(AppDispatchers.Io) {
+            val profile = com.example.data.local.UserProfilePreferences.getUserProfile(application)
+            val context = "${profile.countryCode}|${application.resources.configuration.locales.toLanguageTags()}"
+            val now = android.os.SystemClock.elapsedRealtime()
+            if (context != exploreIndexContext) {
+                exploreIndexContext = context
+                exploreIndexLoadedAt = 0L
+                exploreIndexFailedAt = 0L
+            }
+            if (exploreIndexLoadedAt > 0L && now - exploreIndexLoadedAt in 0 until 24 * 60 * 60_000L &&
+                _searchState.value.exploreCategories.isNotEmpty()) return@launch
+            if (exploreIndexFailedAt > 0L && now - exploreIndexFailedAt in 0 until 60_000L) return@launch
+            if (!exploreVisible || generation != exploreIndexGeneration.get()) return@launch
+            _searchState.update { it.copy(isExploreLoading = true) }
+            try {
+                val categories = repository.getExploreCategories(profile)
+                ensureActive()
+                if (!exploreVisible || generation != exploreIndexGeneration.get()) return@launch
+                if (categories.isNotEmpty()) {
+                    exploreIndexLoadedAt = android.os.SystemClock.elapsedRealtime()
+                    exploreIndexFailedAt = 0L
+                    _searchState.update { it.copy(exploreCategories = categories, isExploreLoading = false) }
+                } else exploreIndexFailedAt = android.os.SystemClock.elapsedRealtime()
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { exploreIndexFailedAt = android.os.SystemClock.elapsedRealtime() }
+            finally {
+                if (generation == exploreIndexGeneration.get())
+                    _searchState.update { if (it.isExploreLoading) it.copy(isExploreLoading = false) else it }
+            }
+        }
+    }
+
+    fun selectExploreCategory(category: ExploreCategory, forceRefresh: Boolean = false) {
         val generation = legacySearchGeneration.incrementAndGet()
         val query = _searchState.value.query
-        _searchState.update { it.copy(selectedGenre = genre, isSearching = true, requestId = generation,
-            result = if (it.selectedGenre == genre) it.result else SearchResultCategory(), displayDirectTracks = null) }
+        _searchState.update { it.copy(selectedGenre = category.title, selectedExploreCategory = category,
+            isSearching = true, genreError = null, requestId = generation,
+            result = if (it.selectedExploreCategory?.key == category.key) it.result else SearchResultCategory(),
+            displayDirectTracks = null) }
         searchJob?.cancel()
         searchJob = viewModelScope.launch(AppDispatchers.CpuBounded) {
+            try {
+                val results = repository.getExploreCategoryResults(category, forceRefresh = forceRefresh)
+                ensureActive()
+                _searchState.update { if (generation != it.requestId || it.query != query ||
+                    it.selectedExploreCategory?.key != category.key) it else
+                    it.copy(result = results, isSearching = false) }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) {
+                _searchState.update { if (generation != it.requestId || it.selectedExploreCategory?.key != category.key) it else
+                    it.copy(isSearching = false, genreError = "This category couldn't load. Tap refresh to try again.") }
+            }
+        }
+    }
+
+    fun selectGenre(genre: String) {
+        val category = _searchState.value.selectedExploreCategory?.takeIf { it.title == genre }
+            ?: _searchState.value.exploreCategories.firstOrNull { it.title == genre }
+        if (!genre.equals("All", ignoreCase = true) && category != null) {
+            selectExploreCategory(category)
+            return
+        }
+        val generation = legacySearchGeneration.incrementAndGet()
+        val query = _searchState.value.query
+        _searchState.update { it.copy(selectedGenre = genre, selectedExploreCategory = null,
+            isSearching = !genre.equals("All", true) || query.isNotBlank(), genreError = null, requestId = generation,
+            result = if (it.selectedGenre == genre && it.selectedExploreCategory == null) it.result else SearchResultCategory(),
+            displayDirectTracks = null) }
+        searchJob?.cancel()
+        if (genre.equals("All", true) && query.isBlank()) return
+        searchJob = viewModelScope.launch(AppDispatchers.CpuBounded) {
+          try {
             val allGenres = genre.equals("All", ignoreCase = true)
             val results = if (allGenres) {
                 repository.search(query, application)
@@ -933,6 +1026,11 @@ class PlayerViewModel(
             ensureActive()
             _searchState.update { if (generation != it.requestId || it.query != query || it.selectedGenre != genre) it else
                 it.copy(selectedGenre = if (allGenres) "All" else genre, result = results, isSearching = false) }
+          } catch (cancelled: CancellationException) { throw cancelled }
+          catch (_: Exception) {
+              _searchState.update { if (generation != it.requestId || it.selectedGenre != genre) it else
+                  it.copy(isSearching = false, genreError = "This category couldn't load. Tap refresh to try again.") }
+          }
         }
     }
 
@@ -1364,6 +1462,7 @@ class PlayerViewModel(
         super.onCleared()
         lyricsJob?.cancel()
         searchJob?.cancel()
+        exploreIndexJob?.cancel()
         playlistTracksJob?.cancel()
         importJob?.cancel()
         cancelImportRetries()

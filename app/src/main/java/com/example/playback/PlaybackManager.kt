@@ -101,8 +101,15 @@ data class ListeningPlaybackState(
 /** Immutable cursor: advance only after its songs have entered the Media3 queue. */
 data class CollectionPlaybackContinuation(
     val page: Int,
+    val continueWith: ((com.example.data.repository.CatalogPage) -> CollectionPlaybackContinuation?)? = null,
     val fetch: suspend (Int) -> com.example.data.repository.CatalogPage
-)
+) {
+    /** Opaque provider tokens advance only after the returned songs enter the queue. */
+    internal fun after(result: com.example.data.repository.CatalogPage): CollectionPlaybackContinuation? {
+        val next = result.nextPage?.takeIf { it > page } ?: return null
+        return if (continueWith != null) continueWith.invoke(result) else copy(page = next)
+    }
+}
 
 /** Accept a real seek position; reject a transient zero reported while the new source initializes. */
 internal fun losslessRecoveryPosition(resumePositionMs: Long, reportedPositionMs: Long, activated: Boolean): Long {
@@ -2198,7 +2205,7 @@ class PlaybackManager(
                 }
                 // No suspension between native queue mutation and cursor commit.
                 // Canceled page requests therefore cannot skip unheard playlist tracks.
-                collectionContinuation = next?.let { loader.copy(page = it) }
+                collectionContinuation = loader.after(result)
                 publishQueueState()
                 if (advance && player.hasNextMediaItem()) {
                     advanceWhenQueueReady = false

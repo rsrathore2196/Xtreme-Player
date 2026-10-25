@@ -64,6 +64,9 @@ import com.example.ui.components.TrackListItem
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.key
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -91,6 +94,7 @@ import com.example.ui.util.ImageConfig
 import com.example.ui.util.rememberOptimizedImageRequest
 import com.example.data.model.MusicTrack
 import com.example.data.remote.MusicDataSource
+import com.example.data.repository.ExploreCategory
 import com.example.playback.PlayerUiState
 import com.example.ui.theme.LocalAppColors
 import com.example.ui.theme.XtremeBorder
@@ -141,6 +145,18 @@ private fun GenreResultsPage(
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
             }
         }
+        val playlists = state.result.catalogPlaylists
+        if (playlists.isNotEmpty()) {
+            item("genre_playlists_header", contentType = "header") { CatalogSectionTitle("Playlists") }
+            items(playlists, key = { "genre_playlist:${com.example.data.repository.CatalogDestination.Playlist(it).key}" },
+                contentType = { "catalog_entity" }) { playlist ->
+                Box(Modifier.padding(horizontal = 20.dp).testTag("playlist_item_${playlist.id}")) {
+                    CatalogEntityRow(playlist.title, "Playlist • Tap to view songs", playlist.image) {
+                        onOpenCatalog(com.example.data.repository.CatalogDestination.Playlist(playlist))
+                    }
+                }
+            }
+        }
         val albums = state.result.catalogAlbums
         if (albums.isNotEmpty() || state.result.albums.isNotEmpty()) {
             item("genre_albums_header", contentType = "header") {
@@ -163,7 +179,11 @@ private fun GenreResultsPage(
             Box(Modifier.fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) {
                 VisibleCircularProgressIndicator(Modifier.size(24.dp), color = colors.primaryAccent)
             }
-        } else if (tracks.isEmpty() && albums.isEmpty() && state.result.albums.isEmpty()) {
+        } else if (state.genreError != null) {
+            item("genre_error", contentType = "error") {
+                Text(state.genreError, color = colors.textMuted, modifier = Modifier.padding(20.dp))
+            }
+        } else if (tracks.isEmpty() && albums.isEmpty() && playlists.isEmpty() && state.result.albums.isEmpty()) {
             item("genre_empty", contentType = "empty") {
                 Text("No results found", color = colors.textMuted, modifier = Modifier.padding(20.dp))
             }
@@ -195,7 +215,9 @@ fun SearchScreen(
     onOpenAlbumByName: (String) -> Unit = {},
     onRememberSearch: (String) -> Unit = {},
     onRemoveRecentSearch: (String) -> Unit = {},
-    onClearRecentSearches: () -> Unit = {}
+    onClearRecentSearches: () -> Unit = {},
+    onExploreVisibilityChanged: (Boolean) -> Unit = {},
+    onSelectExploreCategory: ((ExploreCategory, Boolean) -> Unit)? = null
 ) {
     val currentPlayingId = currentPlayingTrackId ?: playerUiState?.currentTrack?.id
     val isCurrentlyPlaying = isPlaying || (playerUiState?.isPlaying == true)
@@ -236,7 +258,13 @@ fun SearchScreen(
 
     val hasQuery = searchState.query.isNotBlank()
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
-    val isGenreActive = !searchState.selectedGenre.equals("All", ignoreCase = true)
+    val isGenreActive = searchState.selectedExploreCategory != null || !searchState.selectedGenre.equals("All", ignoreCase = true)
+    val exploreVisibilityChanged by rememberUpdatedState(onExploreVisibilityChanged)
+    val localeKey = LocalConfiguration.current.locales.toLanguageTags()
+    LaunchedEffect(isScreenActive, hasQuery, isGenreActive, localeKey) {
+        exploreVisibilityChanged(isScreenActive && !hasQuery && !isGenreActive)
+    }
+    DisposableEffect(Unit) { onDispose { exploreVisibilityChanged(false) } }
     val appColors = LocalAppColors.current
     // These pills tint a surface; they do not use the solid accent button fill.
     val selectedPillContentColor = remember(appColors) {
@@ -309,7 +337,11 @@ fun SearchScreen(
             state = searchState, modifier = modifier,
             playingId = currentPlayingId, isPlaying = isCurrentlyPlaying,
             isLoading = isCurrentlyLoading, pendingTrackId = pendingLoadingTrackId,
-            onBack = { onSelectGenre("All") }, onReshuffle = { onSelectGenre(searchState.selectedGenre) },
+            onBack = { onSelectGenre("All") }, onReshuffle = {
+                val category = searchState.selectedExploreCategory
+                if (category != null && onSelectExploreCategory != null) onSelectExploreCategory(category, true)
+                else onSelectGenre(searchState.selectedGenre)
+            },
             onPlay = { track, queue -> pendingLoadingTrackId = track.id; onTrackClick(track, queue) },
             onFavorite = onToggleFavorite, onOpenCatalog = onOpenCatalog, onOpenAlbumByName = onOpenAlbumByName
         )
@@ -663,8 +695,13 @@ fun SearchScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        MusicDataSource.genres.forEach { genre ->
-                            val isSelected = searchState.selectedGenre.equals(genre, ignoreCase = true)
+                        val pills = remember(searchState.exploreCategories) {
+                            if (searchState.exploreCategories.isEmpty()) MusicDataSource.genres.map { it to null }
+                            else searchState.exploreCategories.map { it.title to it }
+                        }
+                        pills.forEach { (genre, category) -> key(category?.key ?: genre) {
+                            val isSelected = if (category == null) searchState.selectedGenre.equals(genre, ignoreCase = true)
+                                else searchState.selectedExploreCategory?.key == category.key
                             Box(
                                 modifier = Modifier
                                     .rememberLiquidGlassPill(
@@ -676,9 +713,10 @@ fun SearchScreen(
                                     .bouncyClickable {
                                         keyboardController?.hide()
                                         focusManager.clearFocus()
-                                        onSelectGenre(genre)
+                                        if (category != null && onSelectExploreCategory != null) onSelectExploreCategory(category, false)
+                                        else onSelectGenre(genre)
                                     }
-                                    .testTag("genre_chip_${genre.lowercase()}")
+                                    .testTag(if (category == null) "genre_chip_${genre.lowercase()}" else "explore_chip_${category.key}")
                             ) {
                                 Text(
                                     text = genre,
@@ -688,7 +726,7 @@ fun SearchScreen(
                                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
                                 )
                             }
-                        }
+                        } }
                     }
                 }
             }

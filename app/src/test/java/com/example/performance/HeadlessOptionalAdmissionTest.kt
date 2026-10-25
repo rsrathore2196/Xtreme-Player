@@ -13,6 +13,10 @@ import org.robolectric.annotation.Config
 class HeadlessOptionalAdmissionTest {
     @Test fun serviceEnrichmentDoesNotRequireAnActivityOrHomeInitialization() = runBlocking {
         BackgroundWorkCoordinator.foreground(false)
+        // Robolectric rewinds uptime between tests while retaining this singleton.
+        // Rebase only its completion sample; real admission/queue guards remain active.
+        (BackgroundWorkCoordinator::class.java.getDeclaredField("lastOptionalCompleted").apply { isAccessible = true }
+            .get(null) as java.util.concurrent.atomic.AtomicLong).set(0L)
         assertEquals("prepared", withTimeout(2_000) {
             BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.DEFERRED,
                 requireForeground = false) { "prepared" }

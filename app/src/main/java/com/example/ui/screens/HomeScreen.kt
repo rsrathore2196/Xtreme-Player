@@ -91,6 +91,19 @@ import com.example.ui.util.rememberOptimizedImageRequest
 import com.example.ui.viewmodel.MostListenedArtist
 import com.example.ui.viewmodel.HomeViewModel
 import com.example.ui.viewmodel.SectionState
+import com.example.ui.viewmodel.HomeFeedSection
+import com.example.ui.viewmodel.HomeFeedWindow
+import com.example.ui.viewmodel.HomeRevealGesture
+import com.example.recommendation.UnifiedRecommendationEngine.Shelf
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Velocity
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.Saver
 import java.util.Calendar
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -337,6 +350,25 @@ fun HomeScreenContent(
         ?: pillsCardTracks.isNotEmpty()
     val hasArtists = homeViewModel?.hasListenedArtists?.collectAsStateWithLifecycle()?.value
         ?: mostListenedArtists.isNotEmpty()
+    val retainedWindow = rememberSaveable(stateSaver = Saver<HomeFeedWindow, ArrayList<String>>(
+        save = { ArrayList(it.sections.map(HomeFeedSection::name)) },
+        restore = { names -> HomeFeedWindow(names.map(HomeFeedSection::valueOf)) }
+    )) { mutableStateOf(HomeFeedWindow()) }
+    val window = homeViewModel?.feedWindow?.collectAsStateWithLifecycle()?.value ?: retainedWindow.value
+    val revealModifier = rememberHomeRevealModifier(listState) {
+        if (homeViewModel != null) homeViewModel.revealNextHomeSection()
+        else {
+            val eligible = HomeFeedSection.entries.filterTo(mutableSetOf()) { section -> when (section) {
+                HomeFeedSection.QUICK, HomeFeedSection.CHART -> true
+                HomeFeedSection.ARTISTS -> hasArtists
+                HomeFeedSection.ERA -> eraCard.tracks.isNotEmpty()
+                HomeFeedSection.PERSONALIZED -> personalizedCard.tracks.isNotEmpty()
+                HomeFeedSection.SIMILAR -> similarArtistsCard.tracks.isNotEmpty()
+                HomeFeedSection.INSPIRED -> inspiredTrackCard.tracks.isNotEmpty()
+            } }
+            retainedWindow.value = retainedWindow.value.appendNext(eligible)
+        }
+    }
     val greeting = rememberGreeting()
     val resolvedCurrentTrack = currentTrack
     val currentPlayingId = currentPlayingTrackId ?: resolvedCurrentTrack?.id
@@ -363,6 +395,7 @@ fun HomeScreenContent(
                 .fillMaxWidth()
                 .widthIn(max = 640.dp)
                 .landscapeContentBounds(landscape, maxWidthDp = null)
+                .then(revealModifier)
                 .graphicsLayer {
                     translationY = boundaryOffset()
                 }
@@ -595,151 +628,132 @@ fun HomeScreenContent(
                 }
             }
 
-            // CARD 2: YouTube Music Home Screen-Based Card ("Quick Picks")
-            artworkItem(state = listState, key = "card_2_ytm_dynamic_feed", contentType = "song_shelf") {
-                val section = homeViewModel?.sectionState(com.example.recommendation.UnifiedRecommendationEngine.Shelf.QUICK)
-                    ?.collectAsStateWithLifecycle()?.value ?: ytmCard
-                SectionCardLayout(
-                    state = section,
-                    tracksPrepared = homeViewModel != null,
-                    currentPlayingId = currentPlayingId,
-                    cardBg = cardBg,
-                    cardBorderColor = cardBorderColor,
-                    textPrimaryColor = textPrimaryColor,
-                    textMutedColor = textMutedColor,
-                    onTrackClick = onTrackClick
-                )
-            }
-
-            if (hasArtists) {
-                artworkItem(state = listState, key = "most_listened_artists", contentType = "artist_shelf") {
-                    val artists = homeViewModel?.mostListenedArtists?.collectAsStateWithLifecycle()?.value ?: mostListenedArtists
-                    if (artists.isEmpty()) return@artworkItem
-                    var artistPage by rememberSaveable(artists.firstOrNull()?.name) { mutableIntStateOf(0) }
-                    val pageCount = (artists.size + 14) / 15
-                    val page = artistPage.coerceIn(0, pageCount - 1)
-                    val visibleArtists = remember(artists, page) {
-                        artists.drop(page * 15).take(15)
-                    }
-                    val artistListState = rememberLazyListState()
-                    ObserveHomeScroll(artistListState)
-                    val artistScope = rememberCoroutineScope()
-                    Column(Modifier.padding(top = 22.dp)) {
-                        Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text(
-                                "Most Listened Artists",
-                                modifier = Modifier.weight(1f),
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = textPrimaryColor
-                            )
-                            if (page > 0) ArtistPageButton(forward = false, tint = textPrimaryColor) {
-                                artistPage = page - 1
-                                artistScope.launch { artistListState.scrollToItem(0) }
+            for (feedSection in window.sections) {
+                if (feedSection == HomeFeedSection.ARTISTS) {
+                    if (hasArtists) {
+                        artworkItem(state = listState, key = "most_listened_artists", contentType = "artist_shelf") {
+                            val artists = homeViewModel?.mostListenedArtists?.collectAsStateWithLifecycle()?.value ?: mostListenedArtists
+                            if (artists.isEmpty()) return@artworkItem
+                            var artistPage by rememberSaveable(artists.firstOrNull()?.name) { mutableIntStateOf(0) }
+                            val pageCount = (artists.size + 14) / 15
+                            val page = artistPage.coerceIn(0, pageCount - 1)
+                            val visibleArtists = remember(artists, page) {
+                                artists.drop(page * 15).take(15)
                             }
-                            if (page + 1 < pageCount) ArtistPageButton(forward = true, tint = textPrimaryColor) {
-                                artistPage = page + 1
-                                artistScope.launch { artistListState.scrollToItem(0) }
-                            }
-                        }
-                        Spacer(Modifier.height(12.dp))
-                        LazyRow(
-                            state = artistListState,
-                            contentPadding = PaddingValues(horizontal = 20.dp),
-                            horizontalArrangement = Arrangement.spacedBy(14.dp)
-                        ) {
-                            items(visibleArtists, key = { it.name }, contentType = { "artist_card" }) { artist ->
-                                Column(
-                                    Modifier.width(168.dp).clip(RoundedCornerShape(18.dp))
-                                        .background(cardBg)
-                                        .clickable {
-                                            onOpenArtist(com.example.data.repository.CatalogArtist("", artist.name))
-                                        }.padding(12.dp),
-                                    horizontalAlignment = Alignment.CenterHorizontally
-                                ) {
-                                    VisibleItemArtwork(artistListState, artist.name) {
-                                        com.example.ui.components.ArtistPortrait(
-                                            artist = com.example.data.repository.CatalogArtist("", artist.name),
-                                            deferEnrichment = true,
-                                            modifier = Modifier.size(124.8.dp).clip(CircleShape)
-                                        )
+                            val artistListState = rememberLazyListState()
+                            ObserveHomeScroll(artistListState)
+                            val artistScope = rememberCoroutineScope()
+                            Column(Modifier.padding(top = 22.dp)) {
+                                Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text(
+                                        "Most Listened Artists",
+                                        modifier = Modifier.weight(1f),
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = textPrimaryColor
+                                    )
+                                    if (page > 0) ArtistPageButton(forward = false, tint = textPrimaryColor) {
+                                        artistPage = page - 1
+                                        artistScope.launch { artistListState.scrollToItem(0) }
                                     }
-                                    Spacer(Modifier.height(8.dp))
-                                    Text(artist.name, color = textPrimaryColor, fontWeight = FontWeight.SemiBold,
-                                        modifier = Modifier.fillMaxWidth().basicMarquee(iterations = Int.MAX_VALUE),
-                                        maxLines = 1, softWrap = false, textAlign = TextAlign.Center)
+                                    if (page + 1 < pageCount) ArtistPageButton(forward = true, tint = textPrimaryColor) {
+                                        artistPage = page + 1
+                                        artistScope.launch { artistListState.scrollToItem(0) }
+                                    }
+                                }
+                                Spacer(Modifier.height(12.dp))
+                                LazyRow(
+                                    state = artistListState,
+                                    contentPadding = PaddingValues(horizontal = 20.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(14.dp)
+                                ) {
+                                    items(visibleArtists, key = { it.name }, contentType = { "artist_card" }) { artist ->
+                                        Column(
+                                            Modifier.width(168.dp).clip(RoundedCornerShape(18.dp))
+                                                .background(cardBg)
+                                                .clickable {
+                                                    onOpenArtist(com.example.data.repository.CatalogArtist("", artist.name))
+                                                }.padding(12.dp),
+                                            horizontalAlignment = Alignment.CenterHorizontally
+                                        ) {
+                                            VisibleItemArtwork(artistListState, artist.name) {
+                                                com.example.ui.components.ArtistPortrait(
+                                                    artist = com.example.data.repository.CatalogArtist("", artist.name),
+                                                    deferEnrichment = true,
+                                                    modifier = Modifier.size(124.8.dp).clip(CircleShape)
+                                                )
+                                            }
+                                            Spacer(Modifier.height(8.dp))
+                                            Text(artist.name, color = textPrimaryColor, fontWeight = FontWeight.SemiBold,
+                                                modifier = Modifier.fillMaxWidth().basicMarquee(iterations = Int.MAX_VALUE),
+                                                maxLines = 1, softWrap = false, textAlign = TextAlign.Center)
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
+
+                } else {
+                    val shelf = feedSection.shelf ?: continue
+                    artworkItem(state = listState, key = shelf.itemKey, contentType = "song_shelf") {
+                        val fallback = when (shelf) {
+                            Shelf.QUICK -> ytmCard
+                            Shelf.CHART -> countryLanguageCard
+                            Shelf.ERA -> eraCard
+                            Shelf.PERSONALIZED -> personalizedCard
+                            Shelf.SIMILAR -> similarArtistsCard
+                            Shelf.INSPIRED -> inspiredTrackCard
+                        }
+                        val section = homeViewModel?.sectionState(shelf)?.collectAsStateWithLifecycle()?.value ?: fallback
+                        SectionCardLayout(state = section, tracksPrepared = homeViewModel != null,
+                            currentPlayingId = currentPlayingId, cardBg = cardBg, cardBorderColor = cardBorderColor,
+                            textPrimaryColor = textPrimaryColor, textMutedColor = textMutedColor, onTrackClick = onTrackClick)
+                    }
                 }
             }
 
-            // CARD 3: Era-Specific Hits Card (90s Hits, 2000s Nostalgia, Retro Classics)
-            artworkItem(state = listState, key = "card_3_era_specific_hits", contentType = "song_shelf") {
-                val section = homeViewModel?.sectionState(com.example.recommendation.UnifiedRecommendationEngine.Shelf.ERA)
-                    ?.collectAsStateWithLifecycle()?.value ?: eraCard
-                SectionCardLayout(
-                    state = section,
-                    tracksPrepared = homeViewModel != null,
-                    currentPlayingId = currentPlayingId,
-                    cardBg = cardBg,
-                    cardBorderColor = cardBorderColor,
-                    textPrimaryColor = textPrimaryColor,
-                    textMutedColor = textMutedColor,
-                    onTrackClick = onTrackClick
-                )
-            }
-
-            // CARD 4: User Selected Country & Language Card (Dynamically powered by user prefs)
-            artworkItem(state = listState, key = "card_4_country_language_hits", contentType = "song_shelf") {
-                val section = homeViewModel?.sectionState(com.example.recommendation.UnifiedRecommendationEngine.Shelf.CHART)
-                    ?.collectAsStateWithLifecycle()?.value ?: countryLanguageCard
-                SectionCardLayout(
-                    state = section,
-                    tracksPrepared = homeViewModel != null,
-                    currentPlayingId = currentPlayingId,
-                    cardBg = cardBg,
-                    cardBorderColor = cardBorderColor,
-                    textPrimaryColor = textPrimaryColor,
-                    textMutedColor = textMutedColor,
-                    onTrackClick = onTrackClick
-                )
-            }
-
-            // CARD 5: Fully Personalized Recommendation Card (PersonalizedHomeRecommendationEngine)
-            artworkItem(state = listState, key = "card_6_personalized_recommendation", contentType = "song_shelf") {
-                val section = homeViewModel?.sectionState(com.example.recommendation.UnifiedRecommendationEngine.Shelf.PERSONALIZED)
-                    ?.collectAsStateWithLifecycle()?.value ?: personalizedCard
-                SectionCardLayout(
-                    state = section,
-                    tracksPrepared = homeViewModel != null,
-                    currentPlayingId = currentPlayingId,
-                    cardBg = cardBg,
-                    cardBorderColor = cardBorderColor,
-                    textPrimaryColor = textPrimaryColor,
-                    textMutedColor = textMutedColor,
-                    onTrackClick = onTrackClick
-                )
-            }
-            artworkItem(state = listState, key = "card_7_similar_artists", contentType = "song_shelf") {
-                val section = homeViewModel?.sectionState(com.example.recommendation.UnifiedRecommendationEngine.Shelf.SIMILAR)
-                    ?.collectAsStateWithLifecycle()?.value ?: similarArtistsCard
-                SectionCardLayout(state = section, tracksPrepared = homeViewModel != null, currentPlayingId = currentPlayingId,
-                    cardBg = cardBg, cardBorderColor = cardBorderColor, textPrimaryColor = textPrimaryColor,
-                    textMutedColor = textMutedColor, onTrackClick = onTrackClick)
-            }
-            artworkItem(state = listState, key = "card_8_inspired_by_track", contentType = "song_shelf") {
-                val section = homeViewModel?.sectionState(com.example.recommendation.UnifiedRecommendationEngine.Shelf.INSPIRED)
-                    ?.collectAsStateWithLifecycle()?.value ?: inspiredTrackCard
-                SectionCardLayout(state = section, tracksPrepared = homeViewModel != null, currentPlayingId = currentPlayingId,
-                    cardBg = cardBg, cardBorderColor = cardBorderColor, textPrimaryColor = textPrimaryColor,
-                    textMutedColor = textMutedColor, onTrackClick = onTrackClick)
-            }
         }
     }
+}
+
+
+/** Observe user intent without consuming scroll or changing any gesture/animation. */
+@Composable
+private fun rememberHomeRevealModifier(state: LazyListState, reveal: () -> Unit): Modifier {
+    val currentReveal by rememberUpdatedState(reveal)
+    val gesture = remember(state) { HomeRevealGesture() }
+    val intent = remember(state) { mutableLongStateOf(0L) }
+    val threshold = with(LocalDensity.current) { 192.dp.toPx() }
+    val connection = remember(state) { object : NestedScrollConnection {
+        override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
+            if (source == NestedScrollSource.UserInput && (consumed.y < 0f || available.y < 0f))
+                intent.longValue = gesture.forwardInput()
+            return Offset.Zero
+        }
+        override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
+            gesture.settled()
+            return Velocity.Zero
+        }
+    } }
+    androidx.compose.runtime.LaunchedEffect(state, threshold) {
+        androidx.compose.runtime.snapshotFlow {
+            val layout = state.layoutInfo
+            val last = layout.visibleItemsInfo.lastOrNull()
+            intent.longValue to (last != null && last.index == layout.totalItemsCount - 1 &&
+                last.offset + last.size <= layout.viewportEndOffset + threshold)
+        }.collect { (token, nearTail) ->
+            if (gesture.consumeNearTail(token, nearTail)) currentReveal()
+        }
+    }
+    androidx.compose.runtime.LaunchedEffect(state) {
+        androidx.compose.runtime.snapshotFlow { state.isScrollInProgress }.collect { scrolling ->
+            if (!scrolling) gesture.settled()
+        }
+    }
+    return Modifier.nestedScroll(connection)
 }
 
 @Composable

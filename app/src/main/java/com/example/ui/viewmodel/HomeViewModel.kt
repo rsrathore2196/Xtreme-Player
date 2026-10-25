@@ -449,22 +449,13 @@ class HomeViewModel(
         tasteProfile.value.isColdStart, activeRecommendationTrack() != null, preparedCards.value)
 
     private fun shelfDemand(allowDeferred: Boolean = false): Set<Shelf> {
-        val eligible = eligibleShelves()
-        if (!deferredHomeReady && !allowDeferred) {
-            // Cold Home only bootstraps its first shelf. Cached cards stay visible
-            // without scheduling discovery for every empty/lower section.
-            val emptyVisible = recommendationViewport.value.filterTo(mutableSetOf()) {
-                preparedCards.value.section(it).tracks.isEmpty() && needsShelfLoad(it)
-            }
-            return (emptyVisible + if (preparedCards.value.quick.tracks.isEmpty() && preparedCards.value.chart.tracks.isEmpty())
-                setOf(Shelf.QUICK) else emptySet()).intersect(eligible)
-        }
-        val visible = recommendationViewport.value
-        val next = Shelf.entries.drop((visible.maxOfOrNull { it.ordinal } ?: -1) + 1)
-            .firstOrNull { it in eligible && needsShelfLoad(it) }
+        val eligible = eligibleShelves().intersect(_feedWindow.value.shelves)
+        if (allowDeferred) return eligible
+        foregroundShelf?.let { if (it in eligible) return setOf(it) }
+        val visible = recommendationViewport.value.intersect(eligible)
         val bootstrap = if (preparedCards.value.quick.tracks.isEmpty() && preparedCards.value.chart.tracks.isEmpty())
             setOf(Shelf.QUICK) else emptySet()
-        return (visible + listOfNotNull(next) + bootstrap).intersect(eligible)
+        return (visible + bootstrap).intersect(eligible)
     }
 
     fun setRecommendationViewport(owner: Any, keys: Set<String>) {
@@ -500,15 +491,23 @@ class HomeViewModel(
     private fun hideRecentRecommendations(cards: RecommendationCards, recent: List<MusicTrack>,
         taste: UserTasteProfile): RecommendationCards = recentRecommendationFilter.prepare(cards, recent, taste)
 
+    private val _feedWindow = MutableStateFlow(HomeFeedWindow())
+    val feedWindow: StateFlow<HomeFeedWindow> = _feedWindow.asStateFlow()
+    private var revealJob: Job? = null
+    @Volatile private var foregroundShelf: Shelf? = null
+    @Volatile private var foregroundPresentation = false
+    @Volatile private var foregroundArtist = false
+    private val artistPreparationRevision = MutableStateFlow(0L)
+
     // One publication for the coordinated recommendation cards; history/artist updates stay independent.
     private val _recommendationCards = MutableStateFlow(preparedCards.value)
     private var urgentPresentationCards: RecommendationCards? = null
     val recommendationCards: StateFlow<RecommendationCards> = _recommendationCards.asStateFlow()
     fun sectionState(shelf: Shelf): StateFlow<SectionState> = sectionStates.getValue(shelf)
     private val sectionStates = Shelf.entries.associateWith { shelf ->
-        combine(recommendationCards, _userMode) { cards, mode ->
+        combine(recommendationCards, _userMode, feedWindow) { cards, mode, window ->
             val state = cards.section(shelf)
-            if (mode == HomeUserMode.NEW_USER && shelf !in setOf(Shelf.QUICK, Shelf.CHART))
+            if (shelf !in window.shelves || mode == HomeUserMode.NEW_USER && shelf !in HomeFeedWindow.BOOTSTRAP_SHELVES)
                 state.copy(tracks = emptyList(), isLoading = false, isLoaded = false, isError = false)
             else state
         }.distinctUntilChanged()
@@ -519,6 +518,71 @@ class HomeViewModel(
     val eraSection get() = eraCard
     val countryLanguageCard get() = sectionState(Shelf.CHART)
     val personalizedCard get() = sectionState(Shelf.PERSONALIZED)
+
+    /** Called only after a genuine forward scroll reaches the current feed tail. */
+    fun revealNextHomeSection() {
+        ownerScope.launch {
+            if (revealJob?.isActive == true || !homeVisible.value || preparingInitialHome) return@launch
+            revealJob = ownerScope.launch {
+                try {
+                    awaitHomePresentation()
+                    val eligible = HomeFeedSection.entries.filterTo(mutableSetOf()) { section ->
+                        if (section == HomeFeedSection.ARTISTS) _mostListenedArtists.value.isNotEmpty() ||
+                            (_userMode.value == HomeUserMode.EXISTING_USER && actualPlays.value.any(UserTasteProfile::played))
+                        else section.shelf in eligibleShelves()
+                    }
+                    val current = _feedWindow.value
+                    val next = current.appendNext(eligible)
+                    if (next === current) return@launch
+                    val section = next.sections.last()
+                    foregroundPresentation = section.shelf != null
+                    foregroundShelf = section.shelf?.takeIf { preparedCards.value.section(it).tracks.isEmpty() }
+                    foregroundArtist = section == HomeFeedSection.ARTISTS
+                    _feedWindow.value = next
+                    if (foregroundArtist) {
+                        val before = artistPreparationRevision.value
+                        listeningCardRequests.update { it + 1L }
+                        withTimeoutOrNull(8_000L) { artistPreparationRevision.first { it > before } }
+                    } else {
+                        val shelf = section.shelf ?: return@launch
+                        // Reuse the prepared cache immediately. Only a genuinely missing
+                        // revealed shelf owns foreground discovery; unseen pools stay cached.
+                        publishVisibleSnapshot()
+                        if (preparedCards.value.section(shelf).tracks.isEmpty()) {
+                            if (!activeRefreshIsExplicit) homeRefreshJob?.cancelAndJoin()
+                            preparedCards.update { cards -> cards.withSection(shelf, cards.section(shelf).copy(isLoading = true)) }
+                            publishVisibleSnapshot()
+                            refreshHome(false, setOf(shelf)).join()
+                            homeRefreshJob?.join()
+                        }
+                        renderRecommendations()
+                        publishVisibleSnapshot()
+                    }
+                } finally {
+                    foregroundShelf = null
+                    foregroundPresentation = false
+                    foregroundArtist = false
+                }
+            }
+        }
+    }
+
+    private fun visibleCards(cards: RecommendationCards): RecommendationCards = Shelf.entries.fold(cards) { visible, shelf ->
+        if (shelf in _feedWindow.value.shelves && shelf in eligibleShelves()) visible
+        else visible.withSection(shelf, visible.section(shelf).copy(tracks = emptyList(), isLoading = false,
+            isLoaded = false, isError = false, errorMessage = ""))
+    }
+
+    private suspend fun publishVisibleSnapshot() {
+        val cards = preparedCards.value
+        val window = _feedWindow.value
+        val snapshot = BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI,
+            label = "Visible Home shelf") { withContext(workerDispatcher) {
+                hideRecentRecommendations(visibleCards(cards), recentlyPlayed.value + _listeningHistoryCard.value.tracks +
+                    listOfNotNull(activeRecommendationTrack()), tasteProfile.value)
+            } }
+        if (cards === preparedCards.value && window == _feedWindow.value) _recommendationCards.value = snapshot
+    }
 
     private val exposurePreferences by lazy {
         application.getSharedPreferences("home_shelf_exposure", Context.MODE_PRIVATE)
@@ -613,6 +677,23 @@ class HomeViewModel(
                 if (_mostListenedArtists.value.isEmpty()) StartupStatus.UNAVAILABLE else StartupStatus.FALLBACK_READY)
             return
         }
+        if (HomeFeedSection.ARTISTS !in _feedWindow.value.sections) {
+            // Recents are essential; an unseen artist shelf must not trigger a
+            // historical ranking pass or hold the startup readiness fence.
+            val pending = pendingCardPlays.values.toList().asReversed()
+            val recent = withContext(workerDispatcher) {
+                val byId = rows.tracks.associateBy { it.id }
+                val seen = HomeRecommendationPolicy.Recordings()
+                (pending.asSequence() + events.asSequence().filter(UserTasteProfile::played)
+                    .mapNotNull { byId[it.trackId] }).filter(seen::add).take(30).toList()
+            }
+            _listeningHistoryCard.update { it.copy(tracks = recent, isLoaded = recent.isNotEmpty(), isLoading = false) }
+            listeningCardsPublished = true
+            listeningCardsReady.complete(Unit)
+            BackgroundWorkCoordinator.startupTask(StartupTask.RECENT_HISTORY, StartupStatus.READY)
+            BackgroundWorkCoordinator.startupTask(StartupTask.RECENT_ARTISTS, StartupStatus.SKIPPED)
+            return
+        }
         if (_userMode.value == HomeUserMode.NEW_USER) {
             // Empty is a completed authoritative result; there is no artist/taste
             // ranking to prepare. Room will request this again after real playback.
@@ -650,7 +731,7 @@ class HomeViewModel(
             rankedIdentityRevision == ArtistPhotoRepository.identities.value
         val cachedArtists = _mostListenedArtists.value
         val priority = when {
-            preparingInitialHome -> BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI
+            preparingInitialHome || foregroundArtist -> BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI
             else -> BackgroundWorkCoordinator.StartupPriority.DEFERRED
         }
         val (recent, artists, committed) = BackgroundWorkCoordinator.startup(priority, label = "Listening cards prepare") {
@@ -707,6 +788,7 @@ class HomeViewModel(
         BackgroundWorkCoordinator.startupTask(StartupTask.RECENT_HISTORY, StartupStatus.READY)
         BackgroundWorkCoordinator.startupTask(StartupTask.RECENT_ARTISTS, StartupStatus.READY)
         if (changed) savePreparedCards()
+        artistPreparationRevision.update { it + 1L }
     }
 
     private data class ArtistCredits(val artist: String, val primary: List<String>, val writer: String,
@@ -780,7 +862,7 @@ class HomeViewModel(
     private var previousExposure: Set<String> = emptySet()
     private data class RenderInputs(val pool: Candidates, val taste: UserTasteProfile,
         val profile: UserProfile, val catalog: List<MusicTrack>, val history: List<MusicTrack>,
-        val favorites: List<MusicTrack>, val recent: List<MusicTrack>)
+        val favorites: List<MusicTrack>, val recent: List<MusicTrack>, val window: HomeFeedWindow)
     private data class RenderTrigger(val pool: List<Any>, val taste: UserTasteProfile,
         val favorites: List<MusicTrack>, val profile: UserProfile, val recent: List<MusicTrack>)
     private data class DisplayInputs(val cards: RecommendationCards, val recent: List<MusicTrack>,
@@ -795,6 +877,8 @@ class HomeViewModel(
 
     private suspend fun renderRecommendations() {
         if (preparingInitialHome || activeRefreshIsExplicit) prepareRecommendations()
+        else if (foregroundPresentation) BackgroundWorkCoordinator.startup(
+            BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI, label = "Demanded Home ranking") { prepareRecommendations() }
         else {
             awaitHomePresentation()
             BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.DEFERRED,
@@ -818,7 +902,7 @@ class HomeViewModel(
         val recent = (recentlyPlayed.value + _listeningHistoryCard.value.tracks +
             listOfNotNull(activeRecommendationTrack())).filter(recentSeen::add)
         val inputs = RenderInputs(pool, taste, snapshot.profile, _catalogTracks.value,
-            snapshot.rows.tracks, snapshot.favorites, recent)
+            snapshot.rows.tracks, snapshot.favorites, recent, _feedWindow.value)
         if (inputs == lastRenderInputs) return@withContext
         val signalInputs = SignalInputs(snapshot.events, inputs.history, inputs.favorites, profileKey(inputs.profile))
         val previousSignal = preparedSignal.get()
@@ -827,14 +911,15 @@ class HomeViewModel(
                 it.genre, it.language, it.year, it.isLiked) }.hashCode()
             "${snapshot.events.hashCode()}|$metadataSignal|${inputs.favorites.map { it.id }.sorted()}|${signalInputs.profile}"
         }.also { preparedSignal.set(PreparedSignal(signalInputs, it)) }
-        if (pool == savedCandidates && pool.generation == savedGeneration && signal == savedSignal) {
+        if (pool == savedCandidates && pool.generation == savedGeneration && signal == savedSignal &&
+            inputs.window == lastRenderInputs?.window) {
             lastRenderInputs = inputs
             return@withContext
         }
         val exposure = if (pool.generation == renderedGeneration) previousExposure else withContext(AppDispatchers.Io) {
             exposurePreferences.getStringSet("recordings_v2", emptySet()).orEmpty().toSet()
         }
-        val eligible = eligibleShelves()
+        val eligible = eligibleShelves().intersect(inputs.window.shelves)
         val relevantSeed = pool.seedKey.isNotBlank() && pool.seedKey == UnifiedRecommendationEngine.seedKey(activeRecommendationTrack())
         val sections = shelfPreparation.prepare(mapOf(Shelf.QUICK to pool.quick, Shelf.ERA to pool.era,
             Shelf.CHART to pool.chart, Shelf.PERSONALIZED to pool.personalized, Shelf.SIMILAR to pool.similar,
@@ -904,7 +989,8 @@ class HomeViewModel(
         if (!activeRefreshIsExplicit) {
             homeScrolling.first { !it }
             BackgroundWorkCoordinator.yieldToInteraction(requireForeground = true,
-                awaitFrameQuiet = !preparingInitialHome && (deferredHomeReady || startupRecommendationsComplete.isCompleted))
+                awaitFrameQuiet = !preparingInitialHome && !foregroundPresentation && !foregroundArtist &&
+                    (deferredHomeReady || startupRecommendationsComplete.isCompleted))
         }
         kotlinx.coroutines.yield()
     }
@@ -1225,6 +1311,7 @@ class HomeViewModel(
                         if (_listeningHistoryCard.value.tracks.isEmpty()) StartupStatus.UNAVAILABLE else StartupStatus.FALLBACK_READY)
                     BackgroundWorkCoordinator.startupTask(StartupTask.RECENT_ARTISTS,
                         if (_mostListenedArtists.value.isEmpty()) StartupStatus.UNAVAILABLE else StartupStatus.FALLBACK_READY)
+                    artistPreparationRevision.update { it + 1L }
                 }
             }
         }
@@ -1251,7 +1338,7 @@ class HomeViewModel(
                     else BackgroundWorkCoordinator.StartupPriority.DEFERRED,
                     label = "Home presentation prepare") {
                     withContext(workerDispatcher) {
-                        hideRecentRecommendations(inputs.cards,
+                        hideRecentRecommendations(visibleCards(inputs.cards),
                             inputs.recent + inputs.listening.tracks + listOfNotNull(inputs.seed), inputs.taste)
                     }
                 }
@@ -1486,18 +1573,18 @@ class HomeViewModel(
             BackgroundWorkCoordinator.startupTask(StartupTask.PERSONALIZATION,
                 if (newUser) StartupStatus.SKIPPED else if (taste != null) StartupStatus.READY else StartupStatus.FALLBACK_READY)
             val visibleCache = withContext(workerDispatcher) {
-                hideRecentRecommendations(preparedCards.value,
+                hideRecentRecommendations(visibleCards(preparedCards.value),
                     recentlyPlayed.value + _listeningHistoryCard.value.tracks + listOfNotNull(activeRecommendationTrack()), tasteProfile.value)
             }
             val missing = Shelf.entries.filterTo(linkedSetOf()) { shelf ->
                 val eligible = shelf in eligibleShelves()
                 val cached = visibleCache.section(shelf).tracks.isNotEmpty()
                 BackgroundWorkCoordinator.startupTask(shelf.startupTask(), when {
-                    !eligible -> StartupStatus.SKIPPED
+                    !eligible || shelf !in HomeFeedWindow.BOOTSTRAP_SHELVES -> StartupStatus.SKIPPED
                     cached -> StartupStatus.FALLBACK_READY
                     else -> StartupStatus.RUNNING
                 })
-                eligible && !cached
+                eligible && shelf in HomeFeedWindow.BOOTSTRAP_SHELVES && !cached
             }
             if (missing.isNotEmpty()) {
                 val request = refreshHome(false, missing, initialPresentation = true)
@@ -1515,24 +1602,23 @@ class HomeViewModel(
             // Small prepared shelves were published independently during discovery.
             renderRecommendations()
             val ready = withContext(workerDispatcher) {
-                val cards = hideRecentRecommendations(preparedCards.value,
+                val cards = preparedCards.value
+                Shelf.entries.fold(cards) { result, shelf -> result.withSection(shelf, result.section(shelf).copy(isLoading = false)) }
+            }
+            val displayed = withContext(workerDispatcher) {
+                hideRecentRecommendations(visibleCards(ready),
                     recentlyPlayed.value + _listeningHistoryCard.value.tracks + listOfNotNull(activeRecommendationTrack()), tasteProfile.value)
-                Shelf.entries.fold(cards) { result, shelf ->
-                    val section = result.section(shelf)
-                    result.withSection(shelf, if (shelf !in eligibleShelves())
-                        section.copy(tracks = emptyList(), isLoading = false, isLoaded = false, isError = false)
-                    else section.copy(isLoading = false))
-                }
             }
             preparedCards.value = ready
-            if (_recommendationCards.value != ready) _recommendationCards.value = ready
+            if (_recommendationCards.value != displayed) _recommendationCards.value = displayed
             savePreparedCards(initialComplete = true)
             // The retained per-section flows, including offscreen sections, must
             // contain this snapshot before the final draw fence can be released.
-            Shelf.entries.forEach { shelf -> sectionStates.getValue(shelf).first { it == ready.section(shelf) } }
+            Shelf.entries.forEach { shelf -> sectionStates.getValue(shelf).first { it == displayed.section(shelf) } }
             Shelf.entries.forEach { shelf ->
                 BackgroundWorkCoordinator.startupTask(shelf.startupTask(),
-                    if (ready.section(shelf).tracks.isNotEmpty()) StartupStatus.READY else StartupStatus.UNAVAILABLE)
+                    if (shelf !in HomeFeedWindow.BOOTSTRAP_SHELVES || shelf !in eligibleShelves()) StartupStatus.SKIPPED
+                    else if (displayed.section(shelf).tracks.isNotEmpty()) StartupStatus.READY else StartupStatus.UNAVAILABLE)
             }
             BackgroundWorkCoordinator.startupTask(StartupTask.HERO, StartupStatus.RUNNING)
             val hero = playbackManager.uiState.value.currentTrack ?: heroSeedTrack.value
@@ -1551,8 +1637,13 @@ class HomeViewModel(
                 cards.withSection(shelf, cards.section(shelf).copy(isLoading = false))
             }
             preparedCards.value = fallback
-            _recommendationCards.value = fallback
-            (Shelf.entries.map { it.startupTask() } + StartupTask.HERO + StartupTask.PERSONALIZATION + StartupTask.INITIAL_ARTWORK).forEach {
+            _recommendationCards.value = visibleCards(fallback)
+            // A bootstrap failure says nothing about intentionally unrevealed shelves.
+            Shelf.entries.forEach { shelf ->
+                BackgroundWorkCoordinator.startupTask(shelf.startupTask(),
+                    if (shelf in HomeFeedWindow.BOOTSTRAP_SHELVES) StartupStatus.UNAVAILABLE else StartupStatus.SKIPPED)
+            }
+            listOf(StartupTask.HERO, StartupTask.PERSONALIZATION, StartupTask.INITIAL_ARTWORK).forEach {
                 BackgroundWorkCoordinator.startupTask(it, StartupStatus.UNAVAILABLE)
             }
         } finally {
@@ -1654,6 +1745,7 @@ class HomeViewModel(
             val demand = if (initialPresentation) requestedShelves.orEmpty() else
                 shelfDemand(allowDeferred = isExplicitPull || pendingExplicitRefresh || activeRefreshIsExplicit) + bootstrap
             val requested = (requestedShelves ?: demand).intersect(demand).intersect(eligibleShelves())
+                .intersect(_feedWindow.value.shelves)
                 .filterTo(mutableSetOf()) { initialPresentation || isExplicitPull || pendingExplicitRefresh || needsShelfLoad(it) }
                 // A failed/negative-cached bootstrap must not discard another
                 // visible shelf's demand and leave a first installation empty.
@@ -1687,12 +1779,13 @@ class HomeViewModel(
             pendingSilentRefresh = false
             val initialExplicit = isExplicitPull || pendingExplicitRefresh || _isRefreshing.value
             pendingExplicitRefresh = false
-            val startupBatch = initialPresentation || (!BackgroundWorkCoordinator.startupReadiness.value.complete &&
+            val foregroundDemand = foregroundShelf?.let { it in requested } == true
+            val startupBatch = initialPresentation || foregroundDemand || (!BackgroundWorkCoordinator.startupReadiness.value.complete &&
                 !deferredHomeReady && !initialExplicit && requested.any(bootstrap::contains))
             val priority = DiscoveryRequestCoordinator.HomeRefresh(initialExplicit, initialShelf = startupBatch,
                 // Once initial content is prepared, automatic retries/revalidation
                 // are optional even for an empty shelf. A pull promotes its pass.
-                essentialShelves = if (initialPresentation) requested else emptySet(),
+                essentialShelves = if (initialPresentation || foregroundDemand) requested else emptySet(),
                 initialPresentation = initialPresentation)
             activeRefreshPriority = priority
             activeRefreshIsExplicit = initialExplicit
@@ -1710,7 +1803,7 @@ class HomeViewModel(
                         restored.await()
                         essentialsLoaded.await()
                         if (initialPresentation) awaitHomePresentation()
-                        else if (!activeRefreshIsExplicit) {
+                        else if (!activeRefreshIsExplicit && !foregroundDemand) {
                             refreshWaitingForIdle = true
                             try {
                                 // Empty shelves after initial preparation are still
@@ -1726,7 +1819,7 @@ class HomeViewModel(
                         preparedCards.update { cards -> requested.fold(cards) { next, shelf ->
                             val section = next.section(shelf)
                             next.withSection(shelf, section.copy(isLoading = section.tracks.isEmpty() &&
-                                (initialPresentation || activeRefreshIsExplicit), isError = false, errorMessage = ""))
+                                (initialPresentation || activeRefreshIsExplicit || foregroundDemand), isError = false, errorMessage = ""))
                         } }
                         try {
                             // Each shelf owns its own admission/deadline. A silent
@@ -1749,7 +1842,7 @@ class HomeViewModel(
                         }
                         // Finish the visible refresh only after the coherent shelf set
                         // is ready; do not add the normal idle/debounce delay to a pull.
-                        if (activeRefreshIsExplicit) {
+                        if (activeRefreshIsExplicit || foregroundDemand) {
                             manualRenderGeneration = candidates.value.generation
                             // A drag, tab change or delayed taste snapshot must not hold
                             // the pull indicator indefinitely; the retained render collector
@@ -1768,7 +1861,7 @@ class HomeViewModel(
                             // Verification can finish before the renderer publishes.
                             // Keep its skeleton instead of briefly hiding the ready shelf.
                             next.withSection(shelf, section.finishPreparation(shelf in candidates.value.ready,
-                                showPending = initialPresentation || activeRefreshIsExplicit))
+                                showPending = initialPresentation || activeRefreshIsExplicit || foregroundDemand))
                         } }
                         if (manualRenderGeneration == candidates.value.generation) manualRenderGeneration = -1L
                         activeRefreshIsExplicit = false
@@ -1781,7 +1874,8 @@ class HomeViewModel(
                         // not a reason to drop the next cards until manual refresh.
                         val pending = pendingShelfRequests.toSet() + shelfDemand().filter(::needsShelfLoad)
                         pendingShelfRequests.clear()
-                        if (!preparingInitialHome && pending.isNotEmpty() && homeVisible.value)
+                        if (!preparingInitialHome && !foregroundDemand && revealJob?.isActive != true &&
+                            pending.isNotEmpty() && homeVisible.value)
                             refreshHome(false, pending)
                     }
                 }

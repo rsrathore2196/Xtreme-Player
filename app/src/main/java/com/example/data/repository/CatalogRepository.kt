@@ -1,6 +1,11 @@
 package com.example.data.repository
 
 import com.example.performance.AppDispatchers
+import android.content.Context
+import com.example.data.cache.RecommendationCache
+import com.example.data.remote.YouTubeAudioStreamService
+import com.example.data.remote.YouTubeExploreParser
+import com.example.recommendation.DiscoveryRequestCoordinator
 
 import com.example.data.model.MusicTrack
 import com.example.data.remote.OnlineMusicApiService
@@ -53,12 +58,105 @@ internal suspend fun loadSearchCategories(load: suspend (String) -> CatalogPage,
 }
 
 /** Typed browsing through the app's existing catalog provider and stream URL decoder. */
-class CatalogRepository {
+class CatalogRepository(context: Context? = null,
+    private val browseLoader: suspend (String, String?, String?, String, String) -> String =
+        { id, params, continuation, country, language ->
+            YouTubeAudioStreamService.discoveryResponse("browse", id, country, params, continuation, language)
+        }) {
+    private val application = context?.applicationContext
+    private val metadataCache by lazy { application?.let(RecommendationCache::get) }
     // Construct TLS/network resources on the first IO request, not a UI-owned browser constructor.
     private val client by lazy { OkHttpClient.Builder().connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(12, TimeUnit.SECONDS).callTimeout(20, TimeUnit.SECONDS).build() }
     private val cache = object : android.util.LruCache<String, Pair<Long, String>>(80) {}
     private val locks = Array(8) { Mutex() }
+    companion object { private val browseLocks = Array(8) { Mutex() } }
+    private fun locale(country: String, language: String): Pair<String, String> =
+        (country.uppercase(java.util.Locale.ROOT).takeIf { it.matches(Regex("[A-Z]{2}")) } ?: "US") to
+            (language.replace('_', '-').takeIf { it.matches(Regex("[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*")) } ?: "en")
+    private fun browseCacheKey(kind: String, country: String, language: String, id: String,
+        params: String?, continuation: String?): String {
+        val descriptor = JSONArray(listOf(kind, country, language, id, params.orEmpty(), continuation.orEmpty())).toString()
+        val digest = java.security.MessageDigest.getInstance("SHA-256").digest(descriptor.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(java.util.Locale.ROOT, it.toInt() and 255) }
+        return "explore-catalog-v1:$digest"
+    }
+    private suspend fun <T> cachedBrowse(key: String, ttl: Long, forceRefresh: Boolean,
+        decode: (String) -> T, encode: (T) -> String, checkpoint: Boolean = false,
+        cacheable: (T) -> Boolean = { true }, load: suspend () -> T): T = withContext(AppDispatchers.Io) {
+        browseLocks[(key.hashCode() and Int.MAX_VALUE) % browseLocks.size].withLock {
+            var cached = synchronized(cache) { cache.get(key) }
+            if (cached == null) metadataCache?.get(key)?.let { entry ->
+                cached = entry.fetchedAt to entry.body
+                synchronized(cache) { cache.put(key, cached!!) }
+            }
+            val now = System.currentTimeMillis()
+            suspend fun decoded(): T? = cached?.takeIf { now >= it.first && now - it.first < TimeUnit.DAYS.toMillis(7) }?.let {
+                try { withContext(AppDispatchers.CpuBounded) { decode(it.second) } }
+                catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { null }
+            }
+            if (!forceRefresh && cached?.let { now >= it.first && now - it.first < ttl } == true)
+                decoded()?.let { return@withLock it }
+            try {
+                val result = load()
+                currentCoroutineContext().ensureActive()
+                val body = withContext(AppDispatchers.CpuBounded) { encode(result) }
+                // Public catalogue metadata only, bounded independently of audio buffers.
+                if (body.length <= 512 * 1024 && cacheable(result)) {
+                    synchronized(cache) { cache.put(key, System.currentTimeMillis() to body) }
+                    metadataCache?.putBody(key, body, ttl, checkpoint)
+                }
+                result
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) { decoded() ?: throw failure }
+        }
+    }
+    suspend fun exploreCategories(countryCode: String = "US", languageCode: String = "en",
+        forceRefresh: Boolean = false): List<ExploreCategory> {
+        val (country, language) = locale(countryCode, languageCode)
+        val key = browseCacheKey("categories", country, language, "FEmusic_moods_and_genres", null, null)
+        return cachedBrowse(key, TimeUnit.DAYS.toMillis(1), forceRefresh, YouTubeExploreParser::decodeCategories,
+            YouTubeExploreParser::encodeCategories, checkpoint = true) {
+            val body = DiscoveryRequestCoordinator.network(essential = true) {
+                browseLoader("FEmusic_moods_and_genres", null, null, country, language)
+            }
+            withContext(AppDispatchers.CpuBounded) {
+                val job = currentCoroutineContext()
+                YouTubeExploreParser.categories(JSONObject(body)) { job.ensureActive() }
+            }
+        }
+    }
+    suspend fun exploreCategory(category: ExploreCategory, countryCode: String = "US", languageCode: String = "en",
+        forceRefresh: Boolean = false): CatalogPage {
+        if (category.provider != CatalogProvider.YOUTUBE_MUSIC || category.browseId.isBlank())
+            throw IOException("Music category is unavailable")
+        return youtubeBrowse(category.browseId, category.params, countryCode, languageCode, null, false, forceRefresh)
+    }
+    private suspend fun youtubeBrowse(id: String, params: String?, countryCode: String, languageCode: String,
+        continuation: CatalogBrowseContinuation?, collectionOnly: Boolean, forceRefresh: Boolean = false): CatalogPage {
+        val (country, language) = locale(countryCode, languageCode)
+        if (continuation != null && (continuation.browseId != id || continuation.params != params ||
+                continuation.countryCode != country || continuation.languageCode != language))
+            throw IOException("Music continuation does not belong to this collection")
+        val key = browseCacheKey(if (collectionOnly) "collection" else "category", country, language, id, params, continuation?.token)
+        val page = cachedBrowse(key, TimeUnit.MINUTES.toMillis(30), forceRefresh,
+            { YouTubeExploreParser.decodePage(it, country, language) }, YouTubeExploreParser::encodePage,
+            cacheable = { it.tracks.isNotEmpty() || it.albums.isNotEmpty() || it.playlists.isNotEmpty() || it.browseContinuation != null }) {
+            val body = DiscoveryRequestCoordinator.network(essential = true) {
+                browseLoader(id, params, continuation?.token, country, language)
+            }
+            withContext(AppDispatchers.CpuBounded) {
+                val job = currentCoroutineContext()
+                YouTubeExploreParser.page(JSONObject(body), country, language, collectionOnly) { job.ensureActive() }
+            }
+        }
+        val seen = continuation?.seenTokens.orEmpty() + listOfNotNull(continuation?.token)
+        val next = page.browseContinuation?.token?.takeUnless { it in seen }
+        val marker = (continuation?.page ?: 1) + 1
+        return page.copy(nextPage = marker.takeIf { next != null }, browseContinuation = next?.let {
+            CatalogBrowseContinuation(id, params, it, country, language, seen, marker)
+        })
+    }
     private suspend fun request(call: String, vararg params: Pair<String, String>, artistBrowse: Boolean = false): JSONObject = withContext(Dispatchers.IO) {
         val url = "https://www.jiosaavn.com/api.php".toHttpUrl().newBuilder()
             .addQueryParameter("__call", call).addQueryParameter("_format", "json").addQueryParameter("_marker", "0")
@@ -465,7 +563,9 @@ class CatalogRepository {
         albums.distinctBy { it.id.ifBlank { it.title.lowercase() } }.take(limit)
     }
 
-    suspend fun albumSongs(selected: CatalogAlbum): CatalogPage = withContext(AppDispatchers.CpuBounded) {
+    suspend fun albumSongs(selected: CatalogAlbum, continuation: CatalogBrowseContinuation? = null): CatalogPage = withContext(AppDispatchers.CpuBounded) {
+        if (selected.provider == CatalogProvider.YOUTUBE_MUSIC) return@withContext youtubeBrowse(selected.id,
+            selected.browseParams, selected.countryCode, selected.languageCode, continuation, collectionOnly = true)
         val root = try {
             request("content.getAlbumDetails", "albumid" to selected.id)
         } catch (e: CancellationException) {
@@ -501,7 +601,9 @@ class CatalogRepository {
         }
         CatalogPage(tracks = fallbackTracks)
     }
-    suspend fun playlistSongs(selected: CatalogPlaylist, page: Int): CatalogPage = withContext(AppDispatchers.CpuBounded) {
+    suspend fun playlistSongs(selected: CatalogPlaylist, page: Int, continuation: CatalogBrowseContinuation? = null): CatalogPage = withContext(AppDispatchers.CpuBounded) {
+        if (selected.provider == CatalogProvider.YOUTUBE_MUSIC) return@withContext youtubeBrowse(selected.id,
+            selected.browseParams, selected.countryCode, selected.languageCode, continuation, collectionOnly = true)
         val root = request("playlist.getDetails", "listid" to selected.id, "p" to page.toString(), "n" to "10")
         if (text(root, "id").ifBlank { text(root, "listid") } != selected.id) throw IOException("Playlist identity mismatch")
         val raw = (root.optJSONArray("list") ?: root.optJSONArray("songs")).objects()

@@ -53,7 +53,7 @@ import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Lyrics
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -773,42 +773,12 @@ fun OnboardingStartupPage(
             horizontalAlignment = Alignment.CenterHorizontally,
             modifier = Modifier.fillMaxWidth()
         ) {
-            // Big App Logo with ambient theme-matching circular halo
-            Box(
-                modifier = Modifier
-                    .size(144.dp)
-                    .clip(CircleShape)
-                    .background(
-                        Brush.radialGradient(
-                            colors = listOf(
-                                primaryAccent.copy(alpha = if (isDark) 0.32f else 0.22f),
-                                primaryAccent.copy(alpha = if (isDark) 0.10f else 0.05f),
-                                Color.Transparent
-                            )
-                        )
-                    )
-                    .border(
-                        BorderStroke(
-                            1.5.dp,
-                            Brush.sweepGradient(
-                                listOf(
-                                    primaryAccent.copy(alpha = 0.75f),
-                                    appColors.secondaryAccent.copy(alpha = 0.4f),
-                                    primaryAccent.copy(alpha = 0.75f)
-                                )
-                            )
-                        ),
-                        CircleShape
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                AppDynamicLogo(
-                    modifier = Modifier.size(104.dp),
-                    primaryAccent = primaryAccent,
-                    secondaryAccent = appColors.secondaryAccent,
-                    cutoutColor = appColors.scaffoldBackground
-                )
-            }
+            // Use the actual launcher foreground, without an enclosing ring or badge.
+            Image(
+                painter = painterResource(R.drawable.ic_launcher_foreground),
+                contentDescription = "Xtreme Player Logo",
+                modifier = Modifier.size(144.dp).testTag("onboarding_brand_logo")
+            )
 
             Spacer(modifier = Modifier.height(26.dp))
 
@@ -881,9 +851,9 @@ fun OnboardingStartupPage(
                     description = "Crystal-clear high-definition sound and lossless FLAC"
                 )
                 StartupFeaturePill(
-                    icon = Icons.Default.Speed,
-                    title = "Instant Zero Buffering",
-                    description = "Intelligent pre-caching ensures uninterrupted playback"
+                    icon = Icons.Default.Lyrics,
+                    title = "Real Time Synced Lyrics",
+                    description = "Follow lyrics in sync with your music"
                 )
                 StartupFeaturePill(
                     icon = Icons.Default.Star,

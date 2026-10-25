@@ -78,7 +78,8 @@ data class SearchResultCategory(
     val songs: List<MusicTrack> = emptyList(),
     val albums: List<String> = emptyList(),
     val artists: List<String> = emptyList(),
-    val catalogAlbums: List<CatalogAlbum> = emptyList()
+    val catalogAlbums: List<CatalogAlbum> = emptyList(),
+    val catalogPlaylists: List<CatalogPlaylist> = emptyList()
 )
 
 /** Publish usable songs without waiting for album discovery; preserve their exact snapshot. */
@@ -127,7 +128,7 @@ class MusicRepository private constructor(
     @Volatile var retainedPlaylists: List<PlaylistEntity> = emptyList()
         private set
 
-    val catalogBrowser = CatalogRepository()
+    val catalogBrowser = CatalogRepository(context)
     // Home's owners and workers share this cap, including discovery ranking.
     internal val homeDispatcher = BackgroundWorkCoordinator.optionalCpuDispatcher
     val recommendations by lazy { com.example.recommendation.UnifiedRecommendationEngine(context) }
@@ -248,6 +249,9 @@ class MusicRepository private constructor(
     private suspend fun homeProfile(profile: UserProfile? = null): UserProfile = profile ?: withContext(AppDispatchers.Io) {
         context?.let { UserProfilePreferences.getUserProfile(it) } ?: UserProfile()
     }
+
+    private fun browseLanguage(): String = (context?.resources?.configuration?.locales?.get(0)
+        ?: java.util.Locale.getDefault()).language.ifBlank { "en" }
 
     /** Compatibility entry points delegate to the same engine; no independent discovery. */
     private suspend fun recommendationShelf(profile: UserProfile, shelf: com.example.recommendation.UnifiedRecommendationEngine.Shelf,
@@ -573,6 +577,23 @@ class MusicRepository private constructor(
 
         val prioritized = scored.sortedByDescending { it.second }.map { it.first }
         prioritized.ifEmpty { allTracks }
+    }
+
+    /** Public category browsing stays metadata-only and uses the active profile's region. */
+    suspend fun getExploreCategories(profile: UserProfile? = null): List<ExploreCategory> = withContext(AppDispatchers.Io) {
+        val preferences = homeProfile(profile)
+        catalogBrowser.exploreCategories(preferences.countryCode.ifBlank { "US" },
+            browseLanguage())
+    }
+
+    suspend fun getExploreCategoryResults(category: ExploreCategory, profile: UserProfile? = null,
+        forceRefresh: Boolean = false): SearchResultCategory = withContext(AppDispatchers.Io) {
+        val preferences = homeProfile(profile)
+        val page = catalogBrowser.exploreCategory(category, preferences.countryCode.ifBlank { "US" },
+            browseLanguage(), forceRefresh)
+        // Provider identity, browse parameters and continuation belong to each collection.
+        SearchResultCategory(matchedGenreOrType = category.title, songs = page.tracks,
+            catalogAlbums = page.albums, catalogPlaylists = page.playlists)
     }
 
     suspend fun getGenreAlbums(genre: String, profile: UserProfile? = null,

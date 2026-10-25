@@ -16,10 +16,17 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import java.util.concurrent.atomic.AtomicLong
 
+internal typealias RecommendationDiscoveryLookup = suspend (String, String, String, Boolean, Boolean, Long) -> List<MusicTrack>
+
 /** One metadata-discovery / local-ranking / verified-catalog pipeline for Home and radio. */
 @OptIn(ExperimentalCoroutinesApi::class)
-class UnifiedRecommendationEngine(context: Context?,
-    private val limits: Limits = Limits(), private val weights: Weights = Weights()) {
+class UnifiedRecommendationEngine private constructor(context: Context?,
+    private val limits: Limits, private val weights: Weights,
+    lookup: RecommendationDiscoveryLookup?) {
+    constructor(context: Context?, limits: Limits = Limits(), weights: Weights = Weights()) :
+        this(context, limits, weights, null)
+    internal constructor(lookup: RecommendationDiscoveryLookup, limits: Limits = Limits(), weights: Weights = Weights()) :
+        this(null, limits, weights, lookup)
     enum class Shelf(val itemKey: String) {
         QUICK("card_2_ytm_dynamic_feed"), ERA("card_3_era_specific_hits"),
         CHART("card_4_country_language_hits"), PERSONALIZED("card_6_personalized_recommendation"),
@@ -38,7 +45,7 @@ class UnifiedRecommendationEngine(context: Context?,
         val related: Boolean = false, val era: Boolean = false, val ordinal: Int = 0,
         val mood: String = "")
     private val cache = context?.let { RecommendationCache.get(it) }
-    private val discovery = YouTubeRecommendationDiscovery(cache)
+    private val discovery: RecommendationDiscoveryLookup = lookup ?: YouTubeRecommendationDiscovery(cache)::tracks
     private val ranking = BackgroundWorkCoordinator.optionalCpuDispatcher
     private val urgentRanking = AppDispatchers.CpuBounded
     private val discoveryWorkers = Semaphore(2)
@@ -130,11 +137,12 @@ class UnifiedRecommendationEngine(context: Context?,
                         // No independent 15s wait is added for each initial shelf.
                         withTimeout(if (initialPresentation) DiscoveryRequestCoordinator.INITIAL_DISCOVERY_BUDGET_MS else 40_000L) {
                             yieldHomeWork()
-                            val candidates = discover(shelf, profile, country, taste, seed, history, favorites, force, variation, initialPresentation,
-                                initialBatch = initialBatch)
+                            val targetSize = requestedShelfSize(startupBatch, initialPresentation, limits.shelfSize + limits.reserve)
+                            val candidates = discover(shelf, profile, country, taste, seed, history, favorites, force, variation, essential,
+                                initialBatch = initialBatch, targetSize = targetSize, recent = recent)
                                 .filterNot { recent.contains(it.track) || taste.keyFor(it.track) in taste.recentRecordings }
-                            resolveBatches(candidates, shelf, profile, taste, known + history + favorites, initialPresentation,
-                                recent = recent, maxResults = requestedShelfSize(startupBatch, initialPresentation, limits.shelfSize + limits.reserve),
+                            resolveBatches(candidates, shelf, profile, taste, known + history + favorites, essential,
+                                recent = recent, maxResults = targetSize,
                                 concurrency = if (initialBatch) minOf(2, limits.matchConcurrency) else limits.matchConcurrency).collect { tracks ->
                                 val now = System.currentTimeMillis()
                                 send(Batch(quick = tracks.takeIf { shelf == Shelf.QUICK }.orEmpty(),
@@ -207,19 +215,34 @@ class UnifiedRecommendationEngine(context: Context?,
 
     private suspend fun discover(shelf: Shelf, profile: UserProfile, country: String, taste: UserTasteProfile,
         seed: MusicTrack?, history: List<MusicTrack>, favorites: List<MusicTrack>, force: Boolean,
-        variation: Long, essential: Boolean, initialBatch: Boolean = false): List<Candidate> {
+        variation: Long, essential: Boolean, initialBatch: Boolean = false,
+        targetSize: Int = INITIAL_SHELF_SIZE, recent: HomeRecommendationPolicy.Recordings? = null): List<Candidate> {
         val languages = profile.languages.map(::language).filter(HomeRecommendationPolicy::known).distinct()
         val gl = profile.countryCode.trim().uppercase(java.util.Locale.ROOT)
         val ttl = if (shelf == Shelf.ERA) 24 * 60 * 60_000L else if (shelf in setOf(Shelf.QUICK, Shelf.CHART)) CHART_TTL else CONTEXT_TTL
         val found = mutableListOf<Candidate>()
+        var ranked: List<Candidate>? = null
+        var initialReady: Boolean? = null
         val moods = recentMoods(history, taste)
         val mood = moods.maxByOrNull { it.value }?.key.orEmpty()
+        suspend fun rankedCandidates(): List<Candidate> = ranked ?: rank(found, shelf, profile, taste, moods, variation, essential)
+            .also { ranked = it }
+        suspend fun enoughForInitialShelf(): Boolean {
+            initialReady?.let { return it }
+            // Count what this shelf can actually publish, not raw result rows.
+            // Reuse the existing language, originality, identity, recency and
+            // diversity rules; cached ranking is also the final returned pool.
+            return ((resolveBatches(rankedCandidates(), shelf, profile, taste, emptyList(), essential,
+                recent = recent, maxResults = targetSize).lastOrNull()?.size ?: 0) >= targetSize)
+                .also { initialReady = it }
+        }
         suspend fun pool(op: String, query: String, lang: String = "", regional: Boolean = false,
             related: Boolean = false, era: Boolean = false, moodHint: String = "") {
             if (!essential) yieldHomeWork()
             val tracks = discoveryWorkers.withPermit { withTimeoutOrNull(8_000L) {
-                discovery.tracks(op, query, gl, force, essential, ttl)
+                discovery(op, query, gl, force, essential, ttl)
             }.orEmpty() }
+            if (tracks.isNotEmpty()) { ranked = null; initialReady = null }
             tracks.forEachIndexed { index, track -> found.add(Candidate(track, lang, regional, related, era, index, moodHint)) }
         }
         withTimeoutOrNull(12_000L) {
@@ -236,7 +259,7 @@ class UnifiedRecommendationEngine(context: Context?,
                 }
                 else {
                     if (video == null) {
-                        val seeds = discoveryWorkers.withPermit { discovery.tracks("search", query, gl, false, essential, CONTEXT_TTL) }
+                        val seeds = discoveryWorkers.withPermit { discovery("search", query, gl, false, essential, CONTEXT_TTL) }
                         video = seeds.firstOrNull { confidence(pivot, it) != null }?.id?.removePrefix("yt_")
                     }
                     if (video != null) pool("related", video, related = true)
@@ -244,7 +267,7 @@ class UnifiedRecommendationEngine(context: Context?,
             }
             // Anonymous related/artist browse renderers may be empty. Use a small,
             // section-specific metadata search instead of leaving the card permanently blank.
-            if (found.size < limits.shelfSize) {
+            if (if (initialBatch) !enoughForInitialShelf() else found.size < limits.shelfSize) {
                 val performer = pivot?.let(CustomRecommendationQueryWrapper::extractPrimaryArtist).orEmpty()
                 for (lang in languages.ifEmpty { listOf("") }.take(2)) {
                     when (shelf) {
@@ -257,7 +280,7 @@ class UnifiedRecommendationEngine(context: Context?,
                             lang, related = true, moodHint = mood)
                         else -> Unit
                     }
-                    if (found.size >= limits.candidatesPerShelf) break
+                    if (if (initialBatch) enoughForInitialShelf() else found.size >= limits.candidatesPerShelf) break
                 }
             }
         } else {
@@ -281,13 +304,13 @@ class UnifiedRecommendationEngine(context: Context?,
                     moodHint = mood.takeIf { shelf == Shelf.QUICK }.orEmpty())
                 // First installation needs a usable first shelf, not the whole
                 // multilingual pool. The normal follow-up resumes all preferences.
-                if (initialBatch && found.size >= limits.shelfSize) break
+                if (initialBatch && enoughForInitialShelf()) break
             }
             // Anonymous editorial discovery is supporting evidence only, never a
             // substitute for selected-language candidates or a claimed official chart.
-            if (found.isEmpty() && shelf == Shelf.CHART && initialBatch)
+            if (shelf == Shelf.CHART && initialBatch && !enoughForInitialShelf())
                 pool("charts", "FEmusic_charts", regional = true)
-            if (found.isEmpty() && shelf != Shelf.ERA)
+            if (shelf != Shelf.ERA && (if (initialBatch) !enoughForInitialShelf() else found.isEmpty()))
                 pool("browse", "FEmusic_home")
             // Public-feed candidates still pass language filtering and exact
             // recording/JioSaavn verification; regional defaults never override
@@ -295,7 +318,7 @@ class UnifiedRecommendationEngine(context: Context?,
 
         }
         }
-        return rank(found, shelf, profile, taste, moods, variation, essential)
+        return rankedCandidates()
     }
 
     private suspend fun rank(pool: List<Candidate>, shelf: Shelf, profile: UserProfile, taste: UserTasteProfile,

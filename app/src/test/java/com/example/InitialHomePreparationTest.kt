@@ -107,6 +107,9 @@ class InitialHomePreparationTest {
             assertNull(player.uiState.value.currentTrack)
             assertEquals(quick.tracks, home.recommendationCards.value.quick.tracks)
             assertTrue(home.recommendationCards.value.era.tracks.isEmpty())
+            assertEquals(com.example.ui.viewmodel.HomeFeedWindow.INITIAL, home.feedWindow.value.sections)
+            assertEquals("Unrevealed cards must remain available in the cache", era.tracks,
+                cache.peek("US|English")?.era?.tracks)
             assertFalse(home.eraCard.value.isLoading)
             assertFalse(home.recommendationCards.value.quick.isLoading)
             assertNotNull(home.heroSeedTrack.value)
