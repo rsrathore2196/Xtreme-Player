@@ -167,16 +167,16 @@ internal fun RetainedPrimaryTabHost(
     state: PagerState, transition: androidx.compose.animation.core.Transition<Int>, covered: Boolean,
     inputBlocked: Boolean = covered, prepareStartup: Boolean = false, content: @Composable (Int) -> Unit
 ) {
-    val scale = transition.animateFloat(transitionSpec = {
-        androidx.compose.animation.core.tween(if (targetState == 3) 320 else 300,
-            easing = androidx.compose.animation.core.FastOutSlowInEasing)
-    }, label = "retained_primary_scale") { if (it == 3) 0.985f else 1f }
     val opacity = transition.animateFloat(transitionSpec = {
-        if (targetState == 3) androidx.compose.animation.core.tween(240, easing = androidx.compose.animation.core.FastOutLinearInEasing)
-        else androidx.compose.animation.core.tween(240, easing = androidx.compose.animation.core.LinearOutSlowInEasing)
+        if (targetState == 3) androidx.compose.animation.core.tween(260, easing = androidx.compose.animation.core.FastOutLinearInEasing)
+        else androidx.compose.animation.core.tween(280, easing = androidx.compose.animation.core.LinearOutSlowInEasing)
     }, label = "retained_primary_alpha") { if (it == 3) 0f else 1f }
+    val parallaxX = transition.animateFloat(transitionSpec = {
+        androidx.compose.animation.core.tween(320, easing = androidx.compose.animation.core.FastOutSlowInEasing)
+    }, label = "retained_primary_parallax") { if (it == 3) -100f else 0f }
     Box(Modifier.fillMaxSize().graphicsLayer {
-        scaleX = scale.value; scaleY = scale.value; alpha = opacity.value
+        translationX = parallaxX.value
+        alpha = opacity.value
     }.drawWithContent { if (!covered) drawContent() }
         .then(if (inputBlocked) Modifier.clearAndSetSemantics {
             testTag = "retained_primary_tabs"
@@ -190,28 +190,37 @@ internal fun RetainedPrimaryTabHost(
     }
 }
 
-/** One visibility owner for Settings; no animated empty page above the retained pager. */
+/** Brand-new modern aesthetic, eye-catching Shared-Axis slide & fade animation for Settings. */
 @Composable
 internal fun SettingsNavigationOverlay(
     transition: androidx.compose.animation.core.Transition<Int>,
     content: @Composable () -> Unit
 ) {
-    val origin = androidx.compose.ui.graphics.TransformOrigin(0.94f, 0.04f)
     transition.AnimatedVisibility(
         visible = { it == 3 },
-        enter = androidx.compose.animation.scaleIn(
-            initialScale = 0.94f,
-            transformOrigin = origin,
-            animationSpec = androidx.compose.animation.core.tween(300, easing = androidx.compose.animation.core.FastOutSlowInEasing)
+        enter = androidx.compose.animation.slideInHorizontally(
+            initialOffsetX = { fullWidth -> fullWidth },
+            animationSpec = androidx.compose.animation.core.tween(
+                durationMillis = 320,
+                easing = androidx.compose.animation.core.CubicBezierEasing(0.05f, 0.7f, 0.1f, 1.0f)
+            )
         ) + androidx.compose.animation.fadeIn(
-            animationSpec = androidx.compose.animation.core.tween(240, easing = androidx.compose.animation.core.LinearOutSlowInEasing)
+            animationSpec = androidx.compose.animation.core.tween(
+                durationMillis = 240,
+                easing = androidx.compose.animation.core.LinearOutSlowInEasing
+            )
         ),
-        exit = androidx.compose.animation.scaleOut(
-            targetScale = 0.94f,
-            transformOrigin = origin,
-            animationSpec = androidx.compose.animation.core.tween(260, easing = androidx.compose.animation.core.FastOutSlowInEasing)
+        exit = androidx.compose.animation.slideOutHorizontally(
+            targetOffsetX = { fullWidth -> fullWidth },
+            animationSpec = androidx.compose.animation.core.tween(
+                durationMillis = 260,
+                easing = androidx.compose.animation.core.CubicBezierEasing(0.3f, 0.0f, 0.8f, 0.15f)
+            )
         ) + androidx.compose.animation.fadeOut(
-            animationSpec = androidx.compose.animation.core.tween(200, easing = androidx.compose.animation.core.FastOutLinearInEasing)
+            animationSpec = androidx.compose.animation.core.tween(
+                durationMillis = 180,
+                easing = androidx.compose.animation.core.FastOutLinearInEasing
+            )
         ),
         modifier = Modifier.fillMaxSize().testTag("settings_navigation_overlay")
     ) {
