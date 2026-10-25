@@ -316,7 +316,8 @@ class PlaybackManager(
             try {
                 val (saved, tracks) = startup.startup(
                     com.example.performance.BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI,
-                    urgent = { MusicService.liveSession.value }, label = "Player session preparation") {
+                    urgent = { MusicService.liveSession.value }, boundToInitialPresentation = false,
+                    label = "Player session preparation") {
                     val snapshot = PlaybackSessionStore.restore(context)
                     snapshot to withContext(AppDispatchers.CpuBounded) { snapshot?.items?.map(::controllerTrack).orEmpty().toMutableStateList() }
                 }

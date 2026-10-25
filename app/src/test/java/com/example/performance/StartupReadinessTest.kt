@@ -4,6 +4,19 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class StartupReadinessTest {
+    @Test fun deadlinePreservesCompletedWorkAndLabelsUnfinishedTasksUnavailable() {
+        val before = StartupReadiness().withStatus(StartupTask.HOME_CACHE, StartupStatus.READY)
+            .withStatus(StartupTask.QUICK, StartupStatus.RUNNING)
+        val expired = before.expirePreparation()
+        assertTrue(expired.complete)
+        assertTrue(expired.hasUnavailable)
+        assertEquals(StartupStatus.READY, expired.tasks[StartupTask.HOME_CACHE])
+        assertEquals(StartupStatus.UNAVAILABLE, expired.tasks[StartupTask.QUICK])
+        assertEquals(StartupStatus.FALLBACK_READY, expired.tasks[StartupTask.PRESENTATION])
+        assertSame(expired, expired.expirePreparation())
+        assertSame(expired, expired.withStatus(StartupTask.QUICK, StartupStatus.READY))
+    }
+
     @Test fun skippedHistoryDependentWorkIsTerminalWithoutClaimingItWasFetched() {
         val skipped = StartupReadiness().withStatus(StartupTask.ERA, StartupStatus.SKIPPED)
         assertTrue(StartupStatus.SKIPPED.terminal)

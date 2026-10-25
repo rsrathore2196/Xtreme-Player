@@ -73,7 +73,7 @@ class iTunesArtworkRepository(
     private val lookupScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 ) {
     private data class Lookup(val url: String?, val expiresAt: Long)
-    private data class Flight(val result: Deferred<Lookup>, var readers: Int = 0)
+    private data class Flight(val result: Deferred<Lookup>, val urgent: java.util.concurrent.atomic.AtomicBoolean, var readers: Int = 0)
     private data class RawMetadata(val title: String, val artist: String?, val source: AudioSource)
     private data class LookupMetadata(val title: String, val artist: String, val key: String)
     private val metadataCache = LruCache<RawMetadata, LookupMetadata>(256)
@@ -112,7 +112,7 @@ class iTunesArtworkRepository(
         }
     }
 
-    suspend fun resolveArtwork(item: MediaItem, targetDimension: Int): String? = withContext(com.example.performance.BackgroundWorkCoordinator.optionalCpuDispatcher) {
+    suspend fun resolveArtwork(item: MediaItem, targetDimension: Int, optionalUpgrade: Boolean = false): String? = withContext(com.example.performance.BackgroundWorkCoordinator.optionalCpuDispatcher) {
         val metadata = lookupMetadata(item)
         val cleanedTitle = metadata.title
         val cleanedArtist = metadata.artist
@@ -127,10 +127,16 @@ class iTunesArtworkRepository(
         // A lookup belongs to all its callers. Only the last departing caller cancels its HTTP work.
         val flight = synchronized(inFlight) {
             inFlight.getOrPut(cacheKey) {
+                val urgent = java.util.concurrent.atomic.AtomicBoolean(!optionalUpgrade)
                 Flight(lookupScope.async(start = CoroutineStart.LAZY) {
-                    lookup(cacheKey, cleanedTitle, cleanedArtist, item.durationMs, item.album).also { memoryCache.put(cacheKey, it) }
-                })
-            }.also { it.readers++ }
+                    com.example.performance.BackgroundWorkCoordinator.startup(
+                        com.example.performance.BackgroundWorkCoordinator.StartupPriority.DEFERRED,
+                        requireForeground = false, urgent = { urgent.get() }, label = "Artwork metadata lookup") {
+                        lookup(cacheKey, cleanedTitle, cleanedArtist, item.durationMs, item.album)
+                            .also { memoryCache.put(cacheKey, it) }
+                    }
+                }, urgent)
+            }.also { if (!optionalUpgrade) it.urgent.set(true); it.readers++ }
         }
         try {
             flight.result.start()
@@ -140,6 +146,23 @@ class iTunesArtworkRepository(
                 if (--flight.readers == 0) {
                     if (inFlight[cacheKey] === flight) inFlight.remove(cacheKey)
                     if (!flight.result.isCompleted) flight.result.cancel()
+                }
+            }
+        }
+    }
+
+    /** Resolve only persisted metadata before decoding a provider fallback. Never searches the network. */
+    suspend fun cachedArtwork(item: MediaItem, targetDimension: Int): String? {
+        val key = withContext(com.example.performance.AppDispatchers.CpuBounded) { lookupMetadata(item).key }
+        cached(key)?.let { return it.url?.let { url -> formatUrl(url, targetDimension) } }
+        return withContext(com.example.performance.AppDispatchers.Database) {
+            com.example.performance.BackgroundWorkCoordinator.traceWork("Artwork cached mapping") {
+                val url = try { cacheDao.getUrl(key) }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { null }
+                if (url.isNullOrBlank()) null else {
+                    memoryCache.put(key, Lookup(url, Long.MAX_VALUE))
+                    formatUrl(url, targetDimension)
                 }
             }
         }

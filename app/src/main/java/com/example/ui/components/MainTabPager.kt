@@ -80,16 +80,16 @@ internal fun MainTabPager(
                 // Do not hold an admission lease while waiting for another owner.
                 coordinator.startupReadiness.first { readiness ->
                     if (readiness.presentationGeneration != generation) true
-                    else if (index == 0) listOf(StartupTask.HOME_CACHE, StartupTask.HERO,
-                        StartupTask.QUICK, StartupTask.ERA, StartupTask.CHART, StartupTask.PERSONALIZED,
-                        StartupTask.SIMILAR, StartupTask.INSPIRED).all { readiness.tasks.getValue(it).terminal }
+                    // Measure the cached Home shell without waiting on remote shelves.
+                    // The final presentation fence still waits for the populated draw.
+                    else if (index == 0) readiness.tasks.getValue(StartupTask.HOME_CACHE).terminal
                     else readiness.tasks.getValue(StartupTask.LOCAL_TABS).terminal
                 }
                 if (coordinator.startupReadiness.value.presentationGeneration != generation) return@repeatOnLifecycle
                 coordinator.startupTask(task, StartupStatus.RUNNING, generation)
                 withContext(AppDispatchers.Io) {
                     coordinator.startup(BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI,
-                        label = "Initial tab layout $index") {
+                        boundToInitialPresentation = true, label = "Initial tab layout $index") {
                         withContext(AppDispatchers.Main) {
                             mounted = mounted + index
                             measured[index].await()

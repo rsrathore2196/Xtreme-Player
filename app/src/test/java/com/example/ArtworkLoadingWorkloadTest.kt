@@ -54,6 +54,9 @@ class ArtworkLoadingWorkloadTest {
         Dispatchers.setMain(UnconfinedTestDispatcher())
         lookupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         // Robolectric's Android clock does not advance with real coroutine delays.
+        // Robolectric resets uptime between tests but retains process admission samples.
+        (com.example.performance.BackgroundWorkCoordinator::class.java.getDeclaredField("lastOptionalCompleted")
+            .apply { isAccessible = true }.get(null) as java.util.concurrent.atomic.AtomicLong).set(0L)
         com.example.performance.BackgroundWorkCoordinator.interaction()
         org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(300))
     }
@@ -113,6 +116,23 @@ class ArtworkLoadingWorkloadTest {
             }
             return SuccessResult(drawable, request, if (remote) DataSource.NETWORK else DataSource.DISK)
         }
+    }
+
+    @Test fun persistedItunesMappingIsAvailableBeforeAnyNetworkSearch() = runBlocking {
+        val dao = Dao()
+        dao.insert(ArtworkCacheEntity("test song_test artist", apple))
+        val repo = iTunesArtworkRepository(object : iTunesApiService {
+            override suspend fun searchSong(term: String, media: String, limit: Int): iTunesSearchResponse {
+                error("A persisted mapping must never need network discovery")
+            }
+        }, dao, lookupScope)
+        assertEquals(apple, repo.cachedArtwork(item, 600))
+        assertEquals(apple, repo.resolveArtwork(item, 600))
+    }
+
+    @Test fun cacheOnlyArtworkMissNeverStartsRemoteDiscovery() = runBlocking {
+        val repo = repository { error("Cache-only lookup started a remote request") }
+        assertNull(repo.cachedArtwork(item, 600))
     }
 
     @Test fun aColdCardShowsItsExistingItunesArtworkWithoutRepeatingMetadata() = runBlocking {

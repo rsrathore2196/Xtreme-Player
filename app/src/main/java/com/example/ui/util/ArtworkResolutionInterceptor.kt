@@ -276,7 +276,8 @@ class ArtworkResolutionInterceptor internal constructor(
         if (item == null && fallbackMemory != null && sufficient(fallbackMemory)) return fallbackMemory
         present(appleMemory ?: fallbackMemory)
         if (!metadata.startupPreparation) coordinator.awaitNavigationIdle()
-        var preferred = best(listOfNotNull(preferredUrl()) + explicitAppleUrls, cacheOnly = true)
+        val persistedPreferred = preferredUrl() ?: item?.let { repository()?.cachedArtwork(it, sourceDimension) }
+        var preferred = best(listOfNotNull(persistedPreferred) + explicitAppleUrls, cacheOnly = true)
         if (preferred != null && sufficient(preferred)) return preferred
         var fallback = best(fallbackUrls, cacheOnly = true)
         present(preferred ?: fallback)
@@ -297,7 +298,15 @@ class ArtworkResolutionInterceptor internal constructor(
         if (preferred != null && sufficient(preferred)) return preferred
         if (item != null) {
             if (!metadata.startupPreparation) coordinator.yieldToInteraction(awaitFrameQuiet = false)
-            val resolved = withTimeoutOrNull(if (metadata.startupPreparation) 750L else 5_000L) {
+            val hasUsableFallback = fallback?.let(::sufficient) == true
+            // Startup can finish on a crisp cached fallback. The visible request
+            // owns its later iTunes upgrade and cancels it when the row hides.
+            if (metadata.startupPreparation && hasUsableFallback) return checkNotNull(fallback)
+            val resolved = if (hasUsableFallback) {
+                // Admission time is not a network timeout. Do not repeatedly cancel
+                // an optional lookup before the fifteen-second idle gate can open.
+                repository()?.resolveArtwork(item, sourceDimension, optionalUpgrade = true)
+            } else withTimeoutOrNull(if (metadata.startupPreparation) 750L else 5_000L) {
                 repository()?.resolveArtwork(item, sourceDimension)
             }
             if (!resolved.isNullOrBlank()) preferred = better(preferred, load(resolved))

@@ -69,6 +69,13 @@ data class StartupReadiness(
         }
     }
 
+    internal fun expirePreparation(): StartupReadiness = if (complete) this else copy(
+        tasks = tasks.mapValues { (task, status) ->
+            if (status.terminal) status
+            else if (task == StartupTask.PRESENTATION) StartupStatus.FALLBACK_READY
+            else StartupStatus.UNAVAILABLE
+        })
+
     internal fun withStatus(task: StartupTask, status: StartupStatus): StartupReadiness {
         // Process-scoped completion survives Activity recreation and warm reopening.
         if (complete || tasks.getValue(task).terminal || tasks[task] == status) return this

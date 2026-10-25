@@ -18,6 +18,13 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = Application::class)
 class HomeStartupWorkloadTest {
+    @Test fun initialHistoryWindowIsSmallUnlessRepeatedPlaysNeedMoreRows() {
+        assertEquals(60, com.example.ui.viewmodel.initialRecentEventCount((0..299).map { "track-$it" }))
+        val repeats = List(90) { "same-track" } + (1..210).map { "track-$it" }
+        assertEquals(119, com.example.ui.viewmodel.initialRecentEventCount(repeats))
+        assertEquals(300, com.example.ui.viewmodel.initialRecentEventCount(List(300) { "same-track" }))
+    }
+
     private fun track(index: Int) = MusicTrack("track-$index", "Recording $index", "Artist $index",
         "Album $index", 180_000, "https://image/$index", "https://audio/$index",
         language = if (index % 2 == 0) "Punjabi" else "Hindi", genre = "dance")

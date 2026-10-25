@@ -220,3 +220,13 @@ internal fun eligibleHomeShelves(
         if (hasSeed || cards.inspiredTrack.tracks.isNotEmpty()) add(Shelf.INSPIRED)
     }
 }
+
+/** Usually 60 rows suffice; repeated plays must not truncate the 30-track Recents shelf. */
+internal fun initialRecentEventCount(trackIds: List<String>): Int {
+    val distinct = HashSet<String>()
+    for ((index, id) in trackIds.withIndex()) {
+        distinct.add(id)
+        if (index >= 59 && distinct.size >= 30) return index + 1
+    }
+    return trackIds.size.coerceAtLeast(60)
+}

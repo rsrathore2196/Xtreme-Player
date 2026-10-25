@@ -39,14 +39,24 @@ import org.robolectric.shadows.ShadowSystemClock
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [31], application = Application::class)
 class InitialHomePreparationTest {
-    @Test fun confirmedEmptyHistoryUsesOnlyCachedDiscoveryShelvesWithoutANetworkBootstrapOrVisibleHome() = runBlocking {
+    @Test fun confirmedEmptyHistoryUsesOnlyCachedDiscoveryShelvesWithoutANetworkBootstrapOrVisibleHome() = prepare(false)
+    @Test fun returningUserWithCachedShelvesDoesNotWaitForFreshTaste() = prepare(true)
+
+    private fun prepare(existingUser: Boolean) = runBlocking {
         Dispatchers.setMain(UnconfinedTestDispatcher())
         val app = ApplicationProvider.getApplicationContext<Application>()
         val store = ViewModelStore()
         var player: PlaybackManager? = null
         val cache = HomeCardCache(app)
         val coordinator = BackgroundWorkCoordinator
+        @Suppress("UNCHECKED_CAST")
+        val readiness = BackgroundWorkCoordinator::class.java.getDeclaredField("_startupReadiness")
+            .apply { isAccessible = true }.get(null) as kotlinx.coroutines.flow.MutableStateFlow<com.example.performance.StartupReadiness>
+        readiness.value = com.example.performance.StartupReadiness()
+        (BackgroundWorkCoordinator::class.java.getDeclaredField("initialStartedAt")
+            .apply { isAccessible = true }.get(null) as java.util.concurrent.atomic.AtomicLong).set(0L)
         try {
+            com.example.data.local.MusicDatabase.getDatabase(app).listeningEventDao().pruneOldEvents(Long.MAX_VALUE)
             val profile = UserProfile(countryCode = "US", country = "United States", languages = listOf("English"), isOnboardingCompleted = true)
             UserProfilePreferences.saveUserProfile(app, profile)
             fun track(id: String) = MusicTrack("online_$id", "Recording $id", "Original Artist", "Original Album",
@@ -73,6 +83,15 @@ class InitialHomePreparationTest {
                 coordinator.startupTask(it, StartupStatus.READY)
             }
             ShadowSystemClock.advanceBy(Duration.ofSeconds(2))
+            if (existingUser) {
+                val db = com.example.data.local.MusicDatabase.getDatabase(app)
+                val played = track("previous-play")
+                db.musicDao().insertOrUpdateTrack(com.example.data.local.TrackEntity.fromMusicTrack(played))
+                repeat(300) { index ->
+                    db.listeningEventDao().insertListeningEvent(com.example.data.local.ListeningEventEntity.fromTrack(
+                        played, "saved-session-$index", 30_000L, played.durationMs, "ACTUAL_PLAY"))
+                }
+            }
             val repository = MusicRepository(app)
             player = PlaybackManager(app, repository)
             val home = HomeViewModel(repository, player, app)
@@ -98,11 +117,14 @@ class InitialHomePreparationTest {
             assertEquals(StartupStatus.READY, ready.status(StartupGroup.PLAYER))
             assertEquals(StartupStatus.FALLBACK_READY, ready.tasks[StartupTask.QUICK])
             assertEquals(StartupStatus.SKIPPED, ready.tasks[StartupTask.ERA])
-            assertEquals(com.example.recommendation.HomeUserMode.NEW_USER, home.userMode.value)
-            listOf(StartupTask.PERSONALIZATION, StartupTask.PERSONALIZED, StartupTask.SIMILAR, StartupTask.INSPIRED,
+            assertEquals(if (existingUser) com.example.recommendation.HomeUserMode.EXISTING_USER else
+                com.example.recommendation.HomeUserMode.NEW_USER, home.userMode.value)
+            assertEquals(if (existingUser) StartupStatus.FALLBACK_READY else StartupStatus.SKIPPED,
+                ready.tasks[StartupTask.PERSONALIZATION])
+            listOf(StartupTask.PERSONALIZED, StartupTask.SIMILAR, StartupTask.INSPIRED,
                 StartupTask.RECENT_ARTISTS).forEach { assertEquals("$it must not initialize", StartupStatus.SKIPPED, ready.tasks[it]) }
             assertEquals(StartupStatus.FALLBACK_READY, ready.tasks[StartupTask.CHART])
-            assertTrue(home.listeningHistoryCard.value.tracks.isEmpty())
+            assertEquals(!existingUser, home.listeningHistoryCard.value.tracks.isEmpty())
             assertTrue(home.mostListenedArtists.value.isEmpty())
             assertNull(player.uiState.value.currentTrack)
             assertEquals(quick.tracks, home.recommendationCards.value.quick.tracks)

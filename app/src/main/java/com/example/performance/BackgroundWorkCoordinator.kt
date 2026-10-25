@@ -7,6 +7,8 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
@@ -41,8 +43,30 @@ object BackgroundWorkCoordinator {
         if (_startupReadiness.value.complete) initialPresentationPending.set(false)
     }
 
+    // Leave 200ms for the existing 180ms exit animation within the six-second budget.
+    internal const val INITIAL_PREPARATION_MS = 5_800L
+    private val initialStartedAt = AtomicLong(0L)
+    private var initialDeadlineJob: Job? = null
+    private val deadlineScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + AppDispatchers.Io)
+    val initialPreparationRemainingMillis: Long get() = initialStartedAt.get().let { start ->
+        if (start == 0L) INITIAL_PREPARATION_MS
+        else (INITIAL_PREPARATION_MS - (SystemClock.elapsedRealtime() - start)).coerceIn(0L, INITIAL_PREPARATION_MS)
+    }
     fun beginInitialPresentation() {
-        if (!_startupReadiness.value.complete) initialPresentationPending.set(true)
+        if (_startupReadiness.value.complete) return
+        initialPresentationPending.set(true)
+        if (initialStartedAt.compareAndSet(0L, SystemClock.elapsedRealtime().coerceAtLeast(1L))) {
+            initialDeadlineJob?.cancel()
+            initialDeadlineJob = deadlineScope.launch {
+                delay(INITIAL_PREPARATION_MS)
+                if (!_startupReadiness.value.complete) {
+                    _startupReadiness.update { it.expirePreparation() }
+                    // A deadline is a fallback, never evidence that a remote fetch succeeded.
+                    interaction()
+                    initialPresentationPending.set(false)
+                }
+            }
+        }
     }
     fun startupTask(task: StartupTask, status: StartupStatus, presentationGeneration: Long? = null) {
         _startupReadiness.update {
@@ -247,18 +271,24 @@ object BackgroundWorkCoordinator {
     suspend fun <T> startup(priority: StartupPriority, requireForeground: Boolean = true,
         urgent: () -> Boolean = { false },
         cardWork: Boolean = false,
+        // Long-lived settings/history collectors must survive a presentation timeout.
+        // Only caller-owned, disposable preparation opts into cancellation.
+        boundToInitialPresentation: Boolean = false,
         label: String = priority.name,
         block: suspend () -> T): T {
         if (currentCoroutineContext()[Admission] != null) return traceWork(label, block)
         if (!cardWork && (priority == StartupPriority.CRITICAL || urgent()))
             return withContext(Admission(StartupPriority.CRITICAL)) { work { traceWork(label, block) } }
         if (requireForeground || foreground.get()) awaitFirstFrame()
+        val initialWork = boundToInitialPresentation && initialPresentationPending.get() && priority == StartupPriority.ESSENTIAL_UI
         val ticket = Ticket(priority, requireForeground, cardWork, urgent)
         synchronized(admissionLock) { waiting.add(ticket) }
         var admitted = false
         var admittedEssential = false
         try {
             while (!admitted) {
+                if (initialWork && initialPreparationRemainingMillis == 0L)
+                    throw kotlinx.coroutines.CancellationException("Initial preparation deadline reached")
                 currentCoroutineContext().ensureActive()
                 if (!cardWork && urgent()) {
                     synchronized(admissionLock) { waiting.remove(ticket) }
@@ -302,7 +332,11 @@ object BackgroundWorkCoordinator {
             if (priority == StartupPriority.MAINTENANCE) maintenanceReady.complete(Unit)
             val admission = Admission(if (admittedEssential) StartupPriority.ESSENTIAL_UI else priority, cardWork)
             val context = if (admittedEssential) admission else admission + optionalContext(requireForeground, urgent)
-            return withContext(context) { work { traceWork(label, block) } }
+            return withContext(context) {
+                if (initialWork) withTimeout(initialPreparationRemainingMillis.coerceAtLeast(1L)) {
+                    work { traceWork(label, block) }
+                } else work { traceWork(label, block) }
+            }
         } finally {
             synchronized(admissionLock) {
                 waiting.remove(ticket)
