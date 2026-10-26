@@ -284,6 +284,10 @@ fun SearchScreen(
     }
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
+    val explorePills = remember(searchState.exploreCategories) {
+        if (searchState.exploreCategories.isEmpty()) com.example.data.remote.MusicDataSource.genres.map { it to null }
+        else searchState.exploreCategories.map { it.title to it }
+    }
     var wasScreenActive by remember { mutableStateOf(isScreenActive) }
     LaunchedEffect(isScreenActive) {
         // Retention must preserve the old disposal behavior when leaving Search,
@@ -672,63 +676,70 @@ fun SearchScreen(
             }
         }
 
-        // GENRE QUICK-FILTER CHIPS (Multi-line FlowRow with fixed 8dp spacing)
+        // 2-COLUMN EXPLORE GENRE GRID
         if (!hasQuery) {
-            item(key = "search_genres", contentType = "search_chips") {
-                Column(
+            item(key = "search_genres_header", contentType = "header") {
+                Text(
+                    text = "Explore Genres",
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        fontWeight = FontWeight.Bold,
+                        color = appColors.textPrimary,
+                        fontSize = 18.sp
+                    ),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 14.dp)
-                ) {
-                    Text(
-                        text = "Explore Genres",
-                        style = MaterialTheme.typography.titleMedium.copy(
-                            fontWeight = FontWeight.Bold,
-                            color = appColors.textPrimary,
-                            fontSize = 18.sp
-                        ),
-                        modifier = Modifier.padding(bottom = 10.dp)
-                    )
+                        .padding(start = 20.dp, end = 20.dp, top = 6.dp, bottom = 10.dp)
+                )
+            }
 
-                    FlowRow(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        val pills = remember(searchState.exploreCategories) {
-                            if (searchState.exploreCategories.isEmpty()) MusicDataSource.genres.map { it to null }
-                            else searchState.exploreCategories.map { it.title to it }
-                        }
-                        pills.forEach { (genre, category) -> key(category?.key ?: genre) {
-                            val isSelected = if (category == null) searchState.selectedGenre.equals(genre, ignoreCase = true)
-                                else searchState.selectedExploreCategory?.key == category.key
-                            Box(
-                                modifier = Modifier
-                                    .rememberLiquidGlassPill(
-                                        colors = appColors,
-                                        shape = RoundedCornerShape(23.dp),
-                                        isActive = isSelected,
-                                        elevation = if (isSelected) 6.dp else 2.dp
-                                    )
-                                    .bouncyClickable {
-                                        keyboardController?.hide()
-                                        focusManager.clearFocus()
-                                        if (category != null && onSelectExploreCategory != null) onSelectExploreCategory(category, false)
-                                        else onSelectGenre(genre)
-                                    }
-                                    .testTag(if (category == null) "genre_chip_${genre.lowercase()}" else "explore_chip_${category.key}")
-                            ) {
-                                Text(
-                                    text = genre,
-                                    color = if (isSelected) selectedPillContentColor else (if (appColors.isDark) Color.White else appColors.textPrimary),
-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
-                                    fontSize = 14.5.sp,
-                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-                                )
-                            }
-                        } }
+            items(
+                items = explorePills.chunked(2),
+                key = { row -> "genre_grid_row_${row.first().second?.key ?: row.first().first}" },
+                contentType = { "genre_grid_row" }
+            ) { rowItems ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp, vertical = 5.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    val first = rowItems[0]
+                    ExploreGenreCard(
+                        genre = first.first,
+                        category = first.second,
+                        isSelected = if (first.second == null) searchState.selectedGenre.equals(first.first, ignoreCase = true)
+                            else searchState.selectedExploreCategory?.key == first.second?.key,
+                        onClick = {
+                            keyboardController?.hide()
+                            focusManager.clearFocus()
+                            if (first.second != null && onSelectExploreCategory != null) onSelectExploreCategory(first.second!!, false)
+                            else onSelectGenre(first.first)
+                        },
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (rowItems.size > 1) {
+                        val second = rowItems[1]
+                        ExploreGenreCard(
+                            genre = second.first,
+                            category = second.second,
+                            isSelected = if (second.second == null) searchState.selectedGenre.equals(second.first, ignoreCase = true)
+                                else searchState.selectedExploreCategory?.key == second.second?.key,
+                            onClick = {
+                                keyboardController?.hide()
+                                focusManager.clearFocus()
+                                if (second.second != null && onSelectExploreCategory != null) onSelectExploreCategory(second.second!!, false)
+                                else onSelectGenre(second.first)
+                            },
+                            modifier = Modifier.weight(1f)
+                        )
+                    } else {
+                        Spacer(modifier = Modifier.weight(1f))
                     }
                 }
+            }
+
+            item(key = "search_genres_spacing", contentType = "spacing") {
+                Spacer(modifier = Modifier.height(14.dp))
             }
         }
 
