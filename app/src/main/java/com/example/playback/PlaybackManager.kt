@@ -1032,6 +1032,8 @@ class PlaybackManager(
 
                     // The upcoming song in queue is the next recommended track
                     val nextTrackInQueue = activeQueue.getOrNull(index + 1)
+                    com.example.ui.util.prefetchPlayerArtwork(context, matchedTrack)
+                    com.example.ui.util.prefetchPlayerArtwork(context, nextTrackInQueue)
 
                     _uiState.update {
                         it.copy(
@@ -1634,6 +1636,7 @@ class PlaybackManager(
         _playbackPosition.value = 0L
         _bufferedPosition.value = 0L
         _trackDuration.value = track.durationMs
+        com.example.ui.util.prefetchPlayerArtwork(context, track)
         _uiState.update { it.copy(currentTrack = track, isPlaying = false, isLoading = true,
             qualityBadge = track.qualityBadge.ifBlank { "HQ Stream" },
             currentPositionMs = 0L, bufferedPositionMs = 0L, durationMs = track.durationMs,
@@ -1714,6 +1717,9 @@ class PlaybackManager(
         playResolutionJob?.cancel()
         cancelQueueRefill()
         rememberQueueCandidates(queue)
+        com.example.ui.util.prefetchPlayerArtwork(context, track)
+        val nextTrack = queue.getOrNull(queue.indexOfFirst { it.id == track.id } + 1)
+        com.example.ui.util.prefetchPlayerArtwork(context, nextTrack)
         val generation = beginSelection(track)
         pendingPolicyRestart = { playTrack(track, queue, isExplicitPlaylist, isInfiniteRadio, collectionLoader) }
         val jioDeadline = initialJioDeadlineMs

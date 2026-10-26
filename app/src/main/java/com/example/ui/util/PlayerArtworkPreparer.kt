@@ -48,6 +48,8 @@ internal fun prepareCurrentPlayerArtwork(context: Context, tracks: Flow<MusicTra
                     track, decodeSize = IntSize(pixels, pixels), currentTrack = true)
                 val loader = loaderFor(context)
                 val result = loader.execute(request) as? SuccessResult ?: return@collectLatest
+                val directRequest = buildOptimizedImageRequest(context, track.coverUrl, PLAYER_ARTWORK_DIMENSION, track, currentTrack = true)
+                loader.enqueue(directRequest)
                 val key = playerPaletteKey(track, true, Color.White, Color.Black, request.data.toString())
                 if (TrackPaletteCache.get(key) == null) {
                     // Network and decoding started at selection; optional color analysis
@@ -66,6 +68,17 @@ internal fun prepareCurrentPlayerArtwork(context: Context, tracks: Flow<MusicTra
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { /* A failed prefetch never prevents normal on-demand image loading. */ }
         }
+}
+
+/** Pre-fetch the high-res player artwork immediately when a track is queued or selected. */
+fun prefetchPlayerArtwork(context: Context, track: MusicTrack?) {
+    if (track == null || track.coverUrl.isBlank()) return
+    try {
+        val app = context.applicationContext
+        val loader = app.imageLoader
+        val request = buildOptimizedImageRequest(app, track.coverUrl, PLAYER_ARTWORK_DIMENSION, track, currentTrack = true)
+        loader.enqueue(request)
+    } catch (_: Exception) {}
 }
 
 /** Neutral player controls are independent of app accents, album colors, and color mode. */

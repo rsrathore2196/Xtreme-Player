@@ -78,6 +78,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -128,7 +129,7 @@ enum class OnboardingStep {
 }
 
 private val FEATURED_LANGUAGE_NAMES = listOf(
-    "English", "Hindi", "Punjabi", "Spanish", "Korean", "Tamil", "Telugu", "Arabic"
+    "English", "Hindi", "Punjabi", "Spanish", "Korean", "Tamil", "Telugu"
 )
 
 /** Repair a dark saved palette in light mode only for the first-run flow. */
@@ -228,15 +229,9 @@ private fun OnboardingContent(
 
     val isFormValid = nameInput.trim().isNotBlank() && selectedLanguages.isNotEmpty()
 
-    // Top languages to show as quick pills: featured + any custom ones selected
-    val visibleLanguages = remember(selectedLanguages) {
-        val list = FEATURED_LANGUAGE_NAMES.toMutableList()
-        selectedLanguages.forEach { lang ->
-            if (!list.contains(lang)) {
-                list.add(lang)
-            }
-        }
-        list
+    // Exactly 7 quick-pick languages on screen; remaining languages in "+ More"
+    val visibleLanguages = remember {
+        FEATURED_LANGUAGE_NAMES.take(7)
     }
 
     Box(
@@ -265,28 +260,45 @@ private fun OnboardingContent(
                             .fillMaxSize()
                             .widthIn(max = 560.dp)
                             .verticalScroll(rememberScrollState())
-                            .padding(horizontal = 20.dp, vertical = 12.dp),
-                        verticalArrangement = Arrangement.SpaceBetween,
+                            .padding(horizontal = 20.dp, vertical = 16.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        // TOP HEADER: Centered Logo and App Name
+                        // 1. TOP HERO HEADER: Centered Logo with Ambient Halo, App Title & Step Badge
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(top = 4.dp, bottom = 14.dp)
+                                .padding(top = 4.dp, bottom = 4.dp)
                         ) {
-                            // 1. Logo in the center
-                            AppDynamicLogo(
-                                modifier = Modifier.size(56.dp),
-                                primaryAccent = primaryAccent,
-                                secondaryAccent = appColors.secondaryAccent,
-                                cutoutColor = appColors.scaffoldBackground
-                            )
+                            // Logo with ambient aura
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier
+                                    .size(76.dp)
+                                    .drawBehind {
+                                        drawCircle(
+                                            brush = Brush.radialGradient(
+                                                colors = listOf(
+                                                    primaryAccent.copy(alpha = if (isDark) 0.28f else 0.16f),
+                                                    Color.Transparent
+                                                )
+                                            ),
+                                            radius = size.width * 0.75f
+                                        )
+                                    }
+                            ) {
+                                AppDynamicLogo(
+                                    modifier = Modifier.size(56.dp),
+                                    primaryAccent = primaryAccent,
+                                    secondaryAccent = appColors.secondaryAccent,
+                                    cutoutColor = appColors.scaffoldBackground
+                                )
+                            }
 
-                            Spacer(modifier = Modifier.height(10.dp))
+                            Spacer(modifier = Modifier.height(8.dp))
 
-                            // 2. App Name "Xtreme Player" under the logo in the center
+                            // App Name "Xtreme Player"
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.Center
@@ -295,7 +307,7 @@ private fun OnboardingContent(
                                     text = "Xtreme",
                                     style = MaterialTheme.typography.titleLarge.copy(
                                         fontWeight = FontWeight.Black,
-                                        letterSpacing = 1.2.sp,
+                                        letterSpacing = 1.sp,
                                         fontSize = 24.sp,
                                         color = primaryAccent
                                     )
@@ -305,409 +317,475 @@ private fun OnboardingContent(
                                     text = "Player",
                                     style = MaterialTheme.typography.titleLarge.copy(
                                         fontWeight = FontWeight.Black,
-                                        letterSpacing = 1.2.sp,
+                                        letterSpacing = 1.sp,
                                         fontSize = 24.sp,
                                         color = textPrimary
                                     )
                                 )
                             }
 
-                            Spacer(modifier = Modifier.height(3.dp))
+                            Spacer(modifier = Modifier.height(4.dp))
 
                             Text(
                                 text = "Personalize your recommendations",
-                                style = MaterialTheme.typography.bodySmall.copy(
+                                style = MaterialTheme.typography.bodyMedium.copy(
                                     color = textMuted,
-                                    fontSize = 12.5.sp,
+                                    fontSize = 13.sp,
                                     fontWeight = FontWeight.Medium
                                 )
                             )
+
+
                         }
 
-            // UNIFIED COMPACT CARD: Name, Country, and Languages with Liquid Glass Layer
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .liquidGlass(
-                        colors = appColors,
-                        shape = RoundedCornerShape(22.dp),
-                        elevation = 0.dp,
-                        translucency = 0.90f,
-                        sheenAlpha = 0.10f,
-                        highlightAlpha = 0.25f
-                    )
-                    .testTag("onboarding_name_card")
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 18.dp, vertical = 16.dp)
-                ) {
-                    // 1. NAME FIELD
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Box(
+                        // 2. DISPLAY NAME CARD (Solid modern card, zero glass effect)
+                        Card(
+                            shape = RoundedCornerShape(20.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (isDark) Color(0xFF101824) else appColors.cardBackground
+                            ),
+                            border = BorderStroke(
+                                1.dp,
+                                if (isDark) Color(0xFF1E2D40) else appColors.cardBorder
+                            ),
+                            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
                             modifier = Modifier
-                                .size(28.dp)
-                                .clip(CircleShape)
-                                .background(primaryAccent.copy(alpha = 0.14f)),
-                            contentAlignment = Alignment.Center
+                                .fillMaxWidth()
+                                .testTag("onboarding_name_card")
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.Person,
-                                contentDescription = null,
-                                tint = primaryAccent,
-                                modifier = Modifier.size(16.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Text(
-                            text = "Your Display Name",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 13.5.sp,
-                            color = textPrimary
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    OutlinedTextField(
-                        value = nameInput,
-                        onValueChange = { if (it.length <= 40) nameInput = it },
-                        placeholder = {
-                            Text(
-                                "Enter your name (e.g. Alex)",
-                                color = textMuted.copy(alpha = if (isDark) 0.6f else 1f),
-                                fontSize = 13.5.sp
-                            )
-                        },
-                        singleLine = true,
-                        trailingIcon = {
-                            if (nameInput.isNotBlank()) {
-                                IconButton(onClick = { nameInput = "" }, modifier = Modifier.size(28.dp)) {
-                                    Icon(
-                                        imageVector = Icons.Default.Clear,
-                                        contentDescription = "Clear",
-                                        tint = textMuted,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                }
-                            }
-                        },
-                        keyboardOptions = KeyboardOptions(
-                            capitalization = KeyboardCapitalization.Words,
-                            imeAction = ImeAction.Done
-                        ),
-                        keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() }),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = primaryAccent,
-                            unfocusedBorderColor = cardBorder.copy(alpha = 0.5f),
-                            focusedTextColor = textPrimary,
-                            unfocusedTextColor = textPrimary,
-                            focusedContainerColor = Color.Transparent,
-                            unfocusedContainerColor = Color.Transparent
-                        ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(52.dp)
-                            .testTag("onboarding_name_input")
-                    )
-
-                    Spacer(modifier = Modifier.height(14.dp))
-                    HorizontalDivider(color = appColors.dividerColor, thickness = 0.8.dp)
-                    Spacer(modifier = Modifier.height(14.dp))
-
-                    // 2. COUNTRY & REGION SELECTOR
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("onboarding_country_card")
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(
+                            Column(
                                 modifier = Modifier
-                                    .size(28.dp)
-                                    .clip(CircleShape)
-                                    .background(primaryAccent.copy(alpha = 0.14f)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Public,
-                                    contentDescription = null,
-                                    tint = primaryAccent,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Column {
-                                Text(
-                                    text = "Country & Charts",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 13.5.sp,
-                                    color = textPrimary
-                                )
-                                Text(
-                                    text = "Regional hits priority",
-                                    fontSize = 11.sp,
-                                    color = textMuted
-                                )
-                            }
-                        }
-
-                        // Compact Clickable Country Pill
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = primaryAccent.copy(alpha = 0.10f),
-                            border = BorderStroke(1.dp, primaryAccent.copy(alpha = 0.35f)),
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(10.dp))
-                                .clickable {
-                                    AppHaptics.performTap(context)
-                                    isCountryPickerOpen = true
-                                }
-                                .testTag("onboarding_country_selector")
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                            ) {
-                                Text(text = selectedCountry.flag, fontSize = 16.sp)
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = selectedCountry.name,
-                                    fontSize = 12.5.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = textPrimary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.widthIn(max = 110.dp)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.ArrowForwardIos,
-                                    contentDescription = "Change country",
-                                    tint = primaryAccent,
-                                    modifier = Modifier.size(11.dp)
-                                )
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(14.dp))
-                    HorizontalDivider(color = appColors.dividerColor, thickness = 0.8.dp)
-                    Spacer(modifier = Modifier.height(14.dp))
-
-                    // 3. RECOMMENDATIONS LANGUAGES
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("onboarding_languages_card")
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(
-                                modifier = Modifier
-                                    .size(28.dp)
-                                    .clip(CircleShape)
-                                    .background(primaryAccent.copy(alpha = 0.14f)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Language,
-                                    contentDescription = null,
-                                    tint = primaryAccent,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Text(
-                                text = "Music Languages",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.5.sp,
-                                color = textPrimary
-                            )
-                        }
-
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = primaryAccent.copy(alpha = 0.12f)
-                        ) {
-                            Text(
-                                text = "${selectedLanguages.size} chosen",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = primaryAccent,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    // Compact Language Chips Flow
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        visibleLanguages.forEach { langName ->
-                            val isSelected = selectedLanguages.contains(langName)
-                            Surface(
-                                shape = RoundedCornerShape(10.dp),
-                                color = if (isSelected) {
-                                    primaryAccent.copy(alpha = if (isDark) 0.22f else 0.16f)
-                                } else {
-                                    appColors.cardBackgroundElevated.copy(alpha = 0.5f)
-                                },
-                                border = BorderStroke(
-                                    1.dp,
-                                    if (isSelected) primaryAccent else cardBorder
-                                ),
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .clickable {
-                                        AppHaptics.performTap(context)
-                                        selectedLanguages = if (isSelected) {
-                                            if (selectedLanguages.size > 1) selectedLanguages - langName else selectedLanguages
-                                        } else {
-                                            selectedLanguages + langName
-                                        }
-                                    }
-                                    .testTag("language_chip_$langName")
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 18.dp, vertical = 16.dp)
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                    modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    if (isSelected) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(32.dp)
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(primaryAccent.copy(alpha = 0.14f)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
                                         Icon(
-                                            imageVector = Icons.Default.Check,
+                                            imageVector = Icons.Default.Person,
                                             contentDescription = null,
                                             tint = primaryAccent,
-                                            modifier = Modifier.size(12.dp)
+                                            modifier = Modifier.size(17.dp)
                                         )
-                                        Spacer(modifier = Modifier.width(4.dp))
                                     }
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column {
+                                        Text(
+                                            text = "Your Display Name",
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 14.sp,
+                                            color = textPrimary
+                                        )
+                                        Text(
+                                            text = "Used for your personal mixes and profile",
+                                            fontSize = 11.5.sp,
+                                            color = textMuted
+                                        )
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(12.dp))
+
+                                OutlinedTextField(
+                                    value = nameInput,
+                                    onValueChange = { if (it.length <= 40) nameInput = it },
+                                    placeholder = {
+                                        Text(
+                                            "Enter your name (e.g. Alex)",
+                                            color = textMuted.copy(alpha = if (isDark) 0.65f else 0.9f),
+                                            fontSize = 14.sp
+                                        )
+                                    },
+                                    singleLine = true,
+                                    trailingIcon = {
+                                        if (nameInput.isNotBlank()) {
+                                            IconButton(onClick = { nameInput = "" }, modifier = Modifier.size(32.dp)) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Clear,
+                                                    contentDescription = "Clear",
+                                                    tint = textMuted,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                            }
+                                        }
+                                    },
+                                    keyboardOptions = KeyboardOptions(
+                                        capitalization = KeyboardCapitalization.Words,
+                                        imeAction = ImeAction.Done
+                                    ),
+                                    keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() }),
+                                    shape = RoundedCornerShape(14.dp),
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedBorderColor = primaryAccent,
+                                        unfocusedBorderColor = if (isDark) Color(0xFF223247) else cardBorder.copy(alpha = 0.7f),
+                                        focusedTextColor = textPrimary,
+                                        unfocusedTextColor = textPrimary,
+                                        focusedContainerColor = if (isDark) Color(0xFF162232) else appColors.scaffoldBackground.copy(alpha = 0.5f),
+                                        unfocusedContainerColor = if (isDark) Color(0xFF162232) else appColors.scaffoldBackground.copy(alpha = 0.35f)
+                                    ),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(52.dp)
+                                        .testTag("onboarding_name_input")
+                                )
+                            }
+                        }
+
+                        // 3. COUNTRY & CHARTS CARD (Solid modern card, zero glass effect)
+                        Card(
+                            shape = RoundedCornerShape(20.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (isDark) Color(0xFF101824) else appColors.cardBackground
+                            ),
+                            border = BorderStroke(
+                                1.dp,
+                                if (isDark) Color(0xFF1E2D40) else appColors.cardBorder
+                            ),
+                            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("onboarding_country_card")
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 18.dp, vertical = 14.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f, fill = false)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(32.dp)
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(primaryAccent.copy(alpha = 0.14f)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Public,
+                                            contentDescription = null,
+                                            tint = primaryAccent,
+                                            modifier = Modifier.size(17.dp)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column {
+                                        Text(
+                                            text = "Country & Charts",
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 14.sp,
+                                            color = textPrimary
+                                        )
+                                        Text(
+                                            text = "Regional hits & trending priority",
+                                            fontSize = 11.5.sp,
+                                            color = textMuted
+                                        )
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.width(10.dp))
+
+                                // Sleek Interactive Country Pill
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = primaryAccent.copy(alpha = if (isDark) 0.12f else 0.09f),
+                                    border = BorderStroke(1.dp, primaryAccent.copy(alpha = if (isDark) 0.35f else 0.28f)),
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .clickable {
+                                            AppHaptics.performTap(context)
+                                            isCountryPickerOpen = true
+                                        }
+                                        .testTag("onboarding_country_selector")
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                                    ) {
+                                        Text(text = selectedCountry.flag, fontSize = 17.sp)
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = selectedCountry.name,
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = textPrimary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.widthIn(max = 120.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(5.dp))
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Filled.ArrowForwardIos,
+                                            contentDescription = "Change country",
+                                            tint = primaryAccent,
+                                            modifier = Modifier.size(11.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        // 4. MUSIC LANGUAGES CARD (Solid modern card, zero glass effect)
+                        Card(
+                            shape = RoundedCornerShape(20.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (isDark) Color(0xFF101824) else appColors.cardBackground
+                            ),
+                            border = BorderStroke(
+                                1.dp,
+                                if (isDark) Color(0xFF1E2D40) else appColors.cardBorder
+                            ),
+                            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("onboarding_languages_card")
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 18.dp, vertical = 16.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.weight(1f, fill = false)
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(32.dp)
+                                                .clip(RoundedCornerShape(10.dp))
+                                                .background(primaryAccent.copy(alpha = 0.14f)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Language,
+                                                contentDescription = null,
+                                                tint = primaryAccent,
+                                                modifier = Modifier.size(17.dp)
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.width(10.dp))
+                                        Column {
+                                            Text(
+                                                text = "Music Languages",
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 14.sp,
+                                                color = textPrimary
+                                            )
+                                            Text(
+                                                text = "Tailor songs to your preference",
+                                                fontSize = 11.5.sp,
+                                                color = textMuted
+                                            )
+                                        }
+                                    }
+
+                                    Surface(
+                                        shape = RoundedCornerShape(10.dp),
+                                        color = primaryAccent.copy(alpha = if (isDark) 0.14f else 0.10f),
+                                        border = BorderStroke(1.dp, primaryAccent.copy(alpha = if (isDark) 0.35f else 0.25f))
+                                    ) {
+                                        Text(
+                                            text = "${selectedLanguages.size} chosen",
+                                            fontSize = 11.5.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = primaryAccent,
+                                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
+                                        )
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(14.dp))
+
+                                // Modern Language Chips Flow
+                                FlowRow(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(9.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    visibleLanguages.forEach { langName ->
+                                        val isSelected = selectedLanguages.contains(langName)
+                                        Surface(
+                                            shape = RoundedCornerShape(12.dp),
+                                            color = if (isSelected) {
+                                                primaryAccent
+                                            } else {
+                                                if (isDark) Color(0xFF162232) else appColors.cardBackgroundElevated
+                                            },
+                                            border = BorderStroke(
+                                                1.dp,
+                                                if (isSelected) primaryAccent else (if (isDark) Color(0xFF26374D) else cardBorder)
+                                            ),
+                                            shadowElevation = if (isSelected && isDark) 3.dp else 0.dp,
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(12.dp))
+                                                .clickable {
+                                                    AppHaptics.performTap(context)
+                                                    selectedLanguages = if (isSelected) {
+                                                        if (selectedLanguages.size > 1) selectedLanguages - langName else selectedLanguages
+                                                    } else {
+                                                        selectedLanguages + langName
+                                                    }
+                                                }
+                                                .testTag("language_chip_$langName")
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+                                            ) {
+                                                if (isSelected) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Check,
+                                                        contentDescription = null,
+                                                        tint = Color.White,
+                                                        modifier = Modifier.size(13.dp)
+                                                    )
+                                                    Spacer(modifier = Modifier.width(5.dp))
+                                                }
+                                                Text(
+                                                    text = langName,
+                                                    fontSize = 12.5.sp,
+                                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
+                                                    color = if (isSelected) Color.White else (if (isDark) Color(0xFFE2E8F0) else textPrimary)
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    // "+ More" Button with modern aesthetic styling
+                                    Surface(
+                                        shape = RoundedCornerShape(12.dp),
+                                        color = primaryAccent.copy(alpha = if (isDark) 0.10f else 0.08f),
+                                        border = BorderStroke(1.dp, primaryAccent.copy(alpha = 0.35f)),
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .clickable {
+                                                AppHaptics.performTap(context)
+                                                isLanguagePickerOpen = true
+                                            }
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Add,
+                                                contentDescription = "More languages",
+                                                tint = primaryAccent,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text(
+                                                text = "More",
+                                                fontSize = 12.5.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = primaryAccent
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(4.dp))
+
+                        // 5. BOTTOM CTA BUTTON & HELPER
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 12.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Button(
+                                onClick = {
+                                    if (isFormValid) {
+                                        AppHaptics.performStrong(context)
+                                        onComplete(
+                                            nameInput.trim(),
+                                            selectedLanguages.toList(),
+                                            selectedCountry.name,
+                                            selectedCountry.code,
+                                            selectedCountry.flag
+                                        )
+                                    }
+                                },
+                                enabled = isFormValid,
+                                shape = RoundedCornerShape(18.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = primaryAccent,
+                                    disabledContainerColor = primaryAccent.copy(alpha = if (isDark) 0.18f else 0.12f),
+                                    contentColor = Color.White,
+                                    disabledContentColor = textMuted.copy(alpha = 0.7f)
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(54.dp)
+                                    .shadow(
+                                        elevation = if (isFormValid) 16.dp else 0.dp,
+                                        shape = RoundedCornerShape(18.dp),
+                                        spotColor = primaryAccent.copy(alpha = 0.55f)
+                                    )
+                                    .testTag("onboarding_submit_button")
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.Center
+                                ) {
                                     Text(
-                                        text = langName,
+                                        text = "Continue to Music",
+                                        fontSize = 16.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        letterSpacing = 0.3.sp
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(19.dp)
+                                    )
+                                }
+                            }
+
+                            if (!isFormValid) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.Center
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(5.dp)
+                                            .clip(CircleShape)
+                                            .background(primaryAccent.copy(alpha = 0.7f))
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = if (nameInput.isBlank()) "Enter your display name above to continue" else "Select at least one language to continue",
                                         fontSize = 12.sp,
-                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                        color = if (isSelected) textPrimary else textMuted
+                                        fontWeight = FontWeight.Medium,
+                                        color = textMuted
                                     )
                                 }
                             }
                         }
-
-                        // "+ More" Button to open full language bottom sheet
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = primaryAccent.copy(alpha = 0.08f),
-                            border = BorderStroke(1.dp, primaryAccent.copy(alpha = 0.25f)),
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(10.dp))
-                                .clickable {
-                                    AppHaptics.performTap(context)
-                                    isLanguagePickerOpen = true
-                                }
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Add,
-                                    contentDescription = "More languages",
-                                    tint = primaryAccent,
-                                    modifier = Modifier.size(13.dp)
-                                )
-                                Spacer(modifier = Modifier.width(3.dp))
-                                Text(
-                                    text = "More",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = primaryAccent
-                                )
-                            }
-                        }
                     }
                 }
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            // BOTTOM CTA BUTTON
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 6.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Button(
-                    onClick = {
-                        if (isFormValid) {
-                            AppHaptics.performStrong(context)
-                            onComplete(
-                                nameInput.trim(),
-                                selectedLanguages.toList(),
-                                selectedCountry.name,
-                                selectedCountry.code,
-                                selectedCountry.flag
-                            )
-                        }
-                    },
-                    enabled = isFormValid,
-                    shape = RoundedCornerShape(16.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = primaryAccent,
-                        disabledContainerColor = primaryAccent.copy(alpha = 0.2f),
-                        contentColor = if (isDark) Color.White else appColors.onPrimaryAccent,
-                        disabledContentColor = textMuted
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(50.dp)
-                        .shadow(
-                            elevation = if (isFormValid) 12.dp else 0.dp,
-                            shape = RoundedCornerShape(16.dp),
-                            spotColor = primaryAccent.copy(alpha = 0.6f)
-                        )
-                        .testTag("onboarding_submit_button")
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center
-                    ) {
-                        Text(
-                            text = "Continue to Music",
-                            fontSize = 15.5.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-                }
-
-                if (!isFormValid) {
-                    Text(
-                        text = if (nameInput.isBlank()) "Enter your name to continue" else "Select at least one language",
-                        fontSize = 11.5.sp,
-                        color = textMuted,
-                        modifier = Modifier.padding(top = 6.dp)
-                    )
-                }
-            }
-        }
-    }
 }
     }
 }

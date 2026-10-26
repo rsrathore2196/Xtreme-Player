@@ -165,16 +165,23 @@ class ArtworkResolutionInterceptor : Interceptor {
     private suspend fun <T> admittedArtwork(url: String, startup: Boolean = false, block: suspend () -> T): T {
         val coordinator = com.example.performance.BackgroundWorkCoordinator
         val lock = artworkFlights[(url.hashCode() and Int.MAX_VALUE) % artworkFlights.size]
+        // Foreground/current player artwork must execute immediately without waiting for background permits
+        if (startup) {
+            lock.lock()
+            try {
+                return block()
+            } finally { lock.unlock() }
+        }
         while (true) {
             // Visible cache misses need the short gesture-idle gate, not optional
             // enrichment's fifteen-second admission. Explicit startup prefetch is
             // already bounded by the initial presentation's own artwork budget.
-            if (!startup) coordinator.yieldToInteraction(awaitFrameQuiet = false)
+            coordinator.yieldToInteraction(awaitFrameQuiet = false)
             coldArtworkRequests.acquire()
             try {
                 lock.lock()
                 try {
-                    if (startup || coordinator.isInteractionIdle(awaitFrameQuiet = false))
+                    if (coordinator.isInteractionIdle(awaitFrameQuiet = false))
                         return coordinator.finishBoundedBatch { coordinator.traceWork("Artwork decode or fetch", block) }
                 } finally { lock.unlock() }
             } finally { coldArtworkRequests.release() }
@@ -205,7 +212,8 @@ class ArtworkResolutionInterceptor : Interceptor {
             // The provider can cap a requested 2000px rendition at its real source
             // resolution. A full, unsampled decode cannot improve by downloading
             // that same URL again. Sampled thumbnail decodes still need upgrading.
-            result.request.data == urls.firstOrNull() && !result.isSampled
+            result.request.data == urls.firstOrNull() && !result.isSampled ||
+            (metadata.currentTrack && urls.contains(result.request.data) && !result.isSampled)
         fun better(first: SuccessResult?, second: SuccessResult?): SuccessResult? = when {
             first == null -> second
             second == null -> first
@@ -228,7 +236,8 @@ class ArtworkResolutionInterceptor : Interceptor {
                     else if (!attempted.add(url) || budgetMs <= 0L) hit
                     else {
                         val started = android.os.SystemClock.elapsedRealtime()
-                        try { withTimeoutOrNull(budgetMs) { chain.proceed(candidate) } ?: hit }
+                        val timeout = if (metadata.currentTrack) minOf(budgetMs, 1_500L) else budgetMs
+                        try { withTimeoutOrNull(timeout) { chain.proceed(candidate) } ?: hit }
                         finally {
                             val elapsed = (android.os.SystemClock.elapsedRealtime() - started).coerceAtLeast(0L)
                             networkBudgetMs -= elapsed
@@ -256,6 +265,10 @@ class ArtworkResolutionInterceptor : Interceptor {
         }
         suspend fun present(result: SuccessResult?) {
             if (request.target == null || result == null) return
+            val bitmap = (result.drawable as? BitmapDrawable)?.bitmap
+            val width = bitmap?.width ?: result.drawable.intrinsicWidth
+            // Never present tiny list thumbnails (<250px) on the music player screen to avoid blurry expansion
+            if (metadata.currentTrack && width < 250) return
             withContext(Dispatchers.Main.immediate) {
                 currentCoroutineContext().ensureActive()
                 request.target?.onStart(result.drawable)
@@ -277,8 +290,14 @@ class ArtworkResolutionInterceptor : Interceptor {
         // BitmapDrawable intrinsic dimensions are density-scaled dp equivalents,
         // not source pixels. A 120px cover must not pass as 360px on a 3x device.
         val bitmap = (result.drawable as? BitmapDrawable)?.bitmap
-        return (bitmap?.width ?: result.drawable.intrinsicWidth) >= ((size.width as? Dimension.Pixels)?.px ?: 0) &&
-            (bitmap?.height ?: result.drawable.intrinsicHeight) >= ((size.height as? Dimension.Pixels)?.px ?: 0)
+        val width = bitmap?.width ?: result.drawable.intrinsicWidth
+        val height = bitmap?.height ?: result.drawable.intrinsicHeight
+        val targetWidth = (size.width as? Dimension.Pixels)?.px ?: 0
+        val targetHeight = (size.height as? Dimension.Pixels)?.px ?: 0
+        return (width >= targetWidth && height >= targetHeight) ||
+            // High quality provider images (e.g. 480px, 500px, 600px) are sharp and sufficient for display
+            (width >= 480 && height >= 480) ||
+            (targetWidth > 0 && width >= (targetWidth * 0.7f).toInt())
     }
 
     private fun pixelArea(result: SuccessResult): Long {
