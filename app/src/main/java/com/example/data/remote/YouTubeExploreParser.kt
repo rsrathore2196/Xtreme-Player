@@ -15,10 +15,11 @@ internal object YouTubeExploreParser {
         if (value == null) return ""
         val runs = value.optJSONArray("runs")
         return if (runs != null) (0 until runs.length()).joinToString("") { runs.optJSONObject(it)?.optString("text").orEmpty() }
-            .trim() else string(value, "simpleText").trim()
+            .trim() else string(value, "simpleText").ifBlank { string(value, "content") }.trim()
     }
     private fun nullable(value: JSONObject, key: String): String? = string(value, key).takeIf(String::isNotBlank)
     private fun endpoint(value: JSONObject?): JSONObject? = value?.optJSONObject("browseEndpoint")
+        ?: value?.optJSONObject("innertubeCommand")?.optJSONObject("browseEndpoint")
     private fun title(value: JSONObject): JSONObject? = value.optJSONObject("title") ?: value.optJSONArray("flexColumns")
         ?.optJSONObject(0)?.optJSONObject("musicResponsiveListItemFlexColumnRenderer")?.optJSONObject("text")
     private fun runs(value: JSONObject?): List<JSONObject> = value?.optJSONArray("runs")?.let { array ->
@@ -78,8 +79,8 @@ internal object YouTubeExploreParser {
 
     private fun thumbnail(value: JSONObject): String {
         val thumbnails = mutableListOf<JSONObject>()
-        walk(value.optJSONObject("thumbnailRenderer") ?: value.optJSONObject("thumbnail"), {}) { node ->
-            node.optJSONArray("thumbnails")?.let { array ->
+        walk(value.optJSONObject("thumbnailRenderer") ?: value.optJSONObject("thumbnail") ?: value.optJSONObject("image"), {}) { node ->
+            (node.optJSONArray("thumbnails") ?: node.optJSONArray("sources"))?.let { array ->
                 for (i in 0 until array.length()) array.optJSONObject(i)?.let(thumbnails::add)
             }
             true
@@ -95,7 +96,8 @@ internal object YouTubeExploreParser {
         val rows = runs(value.optJSONObject("subtitle")) + value.optJSONArray("flexColumns")?.let { columns ->
             (1 until columns.length()).flatMap { index -> runs(columns.optJSONObject(index)
                 ?.optJSONObject("musicResponsiveListItemFlexColumnRenderer")?.optJSONObject("text")) }
-        }.orEmpty()
+        }.orEmpty() + runs(value.optJSONObject("longBylineText") ?: value.optJSONObject("shortBylineText"))
+            .takeWhile { !string(it, "text").contains('•') && !string(it, "text").contains('·') }
         return rows.mapNotNull { row ->
             val target = endpoint(row.optJSONObject("navigationEndpoint")) ?: return@mapNotNull null
             val id = string(target, "browseId")
@@ -104,6 +106,10 @@ internal object YouTubeExploreParser {
                 CatalogArtist(id, name) else null
         }.distinctBy { it.id.ifBlank { it.name } }
     }
+    /** Linked music-artist entities only; album links and view-count text never become performers. */
+    internal fun performingArtists(value: JSONObject): List<String> = artists(value).map { it.name }
+        .distinctBy(CatalogNames::normalize)
+
     private fun twoRowTrack(value: JSONObject): MusicTrack? {
         val id = value.optJSONObject("navigationEndpoint")?.optJSONObject("watchEndpoint")?.optString("videoId")
             ?: value.optJSONObject("overlay")?.optJSONObject("musicItemThumbnailOverlayRenderer")
@@ -182,22 +188,34 @@ internal object YouTubeExploreParser {
      * header supplies the portrait/counts; album and song thumbnails cannot win. */
     fun artistProfile(root: JSONObject, selected: CatalogArtist): CatalogArtistProfile {
         validate(root)
-        val headers = root.optJSONObject("header") ?: throw IOException("Missing artist header")
-        val header = headers.optJSONObject("musicImmersiveHeaderRenderer")
-            ?: headers.optJSONObject("musicVisualHeaderRenderer") ?: throw IOException("Unsupported artist header")
-        val name = text(header.optJSONObject("title")).ifBlank { selected.name }
+        var header: JSONObject? = null
+        for (section in listOf(root.opt("header"), root.opt("contents"))) {
+            if (header != null) break
+            walk(section, {}) { node ->
+                val found = node.optJSONObject("musicImmersiveHeaderRenderer")
+                    ?: node.optJSONObject("musicVisualHeaderRenderer") ?: node.optJSONObject("musicResponsiveHeaderRenderer")
+                if (found != null && header == null) header = found
+                found == null
+            }
+        }
+        val artistHeader = header ?: throw IOException("Unsupported artist header")
+        val name = text(artistHeader.optJSONObject("title")).ifBlank { selected.name }
         if ((listOf(selected.name) + selected.aliases).none { CatalogNames.same(it, name) })
             throw IOException("Artist header identity mismatch")
-        val portrait = header.optJSONObject("foregroundThumbnail") ?: header.optJSONObject("thumbnail")
+        val portrait = artistHeader.optJSONObject("foregroundThumbnail") ?: artistHeader.optJSONObject("thumbnail")
         val image = portrait?.let { thumbnail(JSONObject().put("thumbnail", it)) }.orEmpty().ifBlank { selected.image }
         val artist = selected.copy(name = name, image = image)
-        val buttons = listOfNotNull(header.optJSONObject("subscriptionButton2")?.optJSONObject("subscribeButtonRenderer"),
-            header.optJSONObject("subscriptionButton")?.optJSONObject("subscribeButtonRenderer"))
+        val buttons = mutableListOf<JSONObject>().apply { addAll(listOfNotNull(artistHeader.optJSONObject("subscriptionButton2")?.optJSONObject("subscribeButtonRenderer"),
+            artistHeader.optJSONObject("subscriptionButton")?.optJSONObject("subscribeButtonRenderer"))) }
+        walk(artistHeader.opt("buttons"), {}) { node ->
+            node.optJSONObject("subscribeButtonRenderer")?.let(buttons::add)
+            true
+        }
         val subscribers = buttons.firstNotNullOfOrNull { button ->
-            listOf("subscriberCountWithSubscribeText", "longSubscriberCountText", "shortSubscriberCountText")
+            listOf("longSubscriberCountText", "subscriberCountWithSubscribeText", "shortSubscriberCountText", "subscriberCountText")
                 .firstNotNullOfOrNull { field -> text(button.optJSONObject(field)).takeIf(String::isNotBlank) }
-        }.orEmpty()
-        var description = text(header.optJSONObject("description"))
+        }.orEmpty().ifBlank { text(artistHeader.optJSONObject("subscriberCountText")) }
+        var description = text(artistHeader.optJSONObject("description"))
         val songs = linkedMapOf<String, MusicTrack>()
         val releases = mutableListOf<ArtistReleaseSection>()
         val related = linkedMapOf<String, CatalogArtist>()
@@ -214,19 +232,22 @@ internal object YouTubeExploreParser {
                 for (index in 0 until (rows?.length() ?: 0)) rows?.optJSONObject(index)?.let { row ->
                     YouTubeMusicApiService.parseAnyRenderer(row)?.let { song ->
                         val credits = row.optJSONObject("musicResponsiveListItemRenderer")?.let(::artists).orEmpty()
-                        val names = credits.map { it.name }.ifEmpty { listOf(artist.name) }
+                        val names = song.primaryArtists.ifEmpty { credits.map { it.name } }.ifEmpty { listOf(artist.name) }
                         songs.putIfAbsent(song.id, song.copy(artist = names.joinToString(", "), primaryArtists = names))
                     }
                 }
             }
-            node.optJSONObject("musicCarouselShelfRenderer")?.let { shelf ->
+            (node.optJSONObject("musicCarouselShelfRenderer") ?: node.optJSONObject("gridRenderer"))?.let { shelf ->
                 val heading = shelf.optJSONObject("header")?.optJSONObject("musicCarouselShelfBasicHeaderRenderer")
+                    ?: shelf.optJSONObject("header")?.optJSONObject("gridHeaderRenderer")
                 val label = text(heading?.optJSONObject("title"))
                 val target = runs(heading?.optJSONObject("title")).firstNotNullOfOrNull { endpoint(it.optJSONObject("navigationEndpoint")) }
                     ?: heading?.optJSONObject("moreContentButton")?.optJSONObject("buttonRenderer")?.optJSONObject("navigationEndpoint")?.let(::endpoint)
-                val contents = shelf.optJSONArray("contents")
+                val contents = shelf.optJSONArray("contents") ?: shelf.optJSONArray("items")
                 val albums = (0 until (contents?.length() ?: 0)).mapNotNull { i ->
-                    val item = contents?.optJSONObject(i)?.optJSONObject("musicTwoRowItemRenderer") ?: return@mapNotNull null
+                    val row = contents?.optJSONObject(i) ?: return@mapNotNull null
+                    val item = row.optJSONObject("musicTwoRowItemRenderer") ?: row.optJSONObject("musicResponsiveListItemRenderer")
+                        ?: return@mapNotNull null
                     val destination = browseEndpoint(item) ?: return@mapNotNull null
                     val id = string(destination, "browseId")
                     if (id.startsWith("UC") || pageType(destination) == "MUSIC_PAGE_TYPE_ARTIST") {
@@ -242,7 +263,14 @@ internal object YouTubeExploreParser {
             }
             true
         }
-        return CatalogArtistProfile(artist, description, subscribers, text(header.optJSONObject("monthlyListenerCount")),
+        val monthly = listOf("monthlyListenerCount", "monthlyListeners", "monthlyAudienceCount")
+            .firstNotNullOfOrNull { text(artistHeader.optJSONObject(it)).takeIf(String::isNotBlank) }
+            ?: listOf("subtitle", "straplineTextOne", "straplineTextTwo").firstNotNullOfOrNull {
+                text(artistHeader.optJSONObject(it)).takeIf { value ->
+                    Regex("(?i)monthly (?:listeners|audience)").containsMatchIn(value)
+                }
+            }.orEmpty()
+        return CatalogArtistProfile(artist, description, subscribers, monthly,
             songs.values.toList(), moreSongs, releases, related.values.filter { it.id != artist.id })
     }
 
@@ -250,6 +278,7 @@ internal object YouTubeExploreParser {
         val matches = linkedMapOf<String, CatalogArtist>()
         walk(root, {}) { node ->
             val item = node.optJSONObject("musicResponsiveListItemRenderer") ?: node.optJSONObject("musicTwoRowItemRenderer")
+                ?: node.optJSONObject("musicCardShelfRenderer")
             if (item != null) {
                 val target = browseEndpoint(item)
                 val id = target?.let { string(it, "browseId") }.orEmpty()
@@ -260,6 +289,20 @@ internal object YouTubeExploreParser {
             } else true
         }
         return matches.values.toList()
+    }
+
+    /** Prefer a unique exact artist explicitly surfaced as the provider's top result.
+     * Ambiguous ordinary rows still cannot choose between unrelated same-name channels. */
+    internal fun artistMatch(root: JSONObject, name: String): CatalogArtist? {
+        val featured = linkedMapOf<String, CatalogArtist>()
+        walk(root, {}) { node ->
+            val card = node.optJSONObject("musicCardShelfRenderer")
+            if (card != null) {
+                artistMatches(JSONObject().put("musicCardShelfRenderer", card), name).forEach { featured[it.id] = it }
+                false
+            } else true
+        }
+        return featured.values.singleOrNull() ?: artistMatches(root, name).singleOrNull()
     }
 
     internal fun encodeArtistIdentity(artist: CatalogArtist): String = JSONObject()
@@ -274,7 +317,7 @@ internal object YouTubeExploreParser {
         return selected.copy(id = id, name = name, image = string(row, "image"))
     }
 
-    internal fun encodeArtistProfile(profile: CatalogArtistProfile): String = JSONObject()
+    internal fun encodeArtistProfile(profile: CatalogArtistProfile): String = JSONObject().put("profileVersion", 2)
         .put("artist", JSONObject(encodeArtistIdentity(profile.artist)))
         .put("description", profile.description).put("subscribers", profile.subscriberCount)
         .put("listeners", profile.monthlyListeners).put("songs", JSONArray(RecommendationTrackCodec.encode(profile.songs)))

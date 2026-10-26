@@ -5,6 +5,8 @@ import androidx.compose.ui.platform.LocalConfiguration
 import com.example.ui.util.landscapeContentBounds
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -34,6 +36,7 @@ import com.example.ui.util.rememberOptimizedImageRequest
 import androidx.compose.ui.text.style.TextOverflow
 import com.example.playback.PlayerUiState
 import com.example.ui.components.ArtistPortrait
+import com.example.ui.components.playerArtworkEdgeBlend
 import com.example.ui.components.TrackListItem
 import com.example.ui.components.bouncyOverscroll
 import com.example.ui.theme.LocalAppColors
@@ -80,10 +83,14 @@ fun CatalogDetailScreen(state: CatalogDetailState, player: PlayerUiState, onBack
         is CatalogDestination.Album -> target.album.title
         is CatalogDestination.Playlist -> target.playlist.title
     }
-    LazyColumn(state = list, modifier = Modifier.fillMaxSize().background(colors.scaffoldBackground)
-        .landscapeContentBounds(landscape).statusBarsPadding().bouncyOverscroll(),
+    LazyColumn(state = list, modifier = Modifier.fillMaxSize().testTag("catalog_detail_list").background(colors.scaffoldBackground)
+        .then(if (state.destination is CatalogDestination.Artist) Modifier
+            else Modifier.landscapeContentBounds(landscape).statusBarsPadding()).bouncyOverscroll(),
         contentPadding = PaddingValues(bottom = if (landscape) 192.dp else 180.dp)) {
         item("header") {
+            if (state.destination is CatalogDestination.Artist) {
+                ArtistProfileHeader(state.artistProfile?.artist ?: state.destination.artist, onBack)
+            } else {
             Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(38.dp).liquidGlassButton(colors, shape = CircleShape, elevation = 4.dp)
                     .bouncyClickable(onClick = onBack), contentAlignment = Alignment.Center) {
@@ -94,13 +101,7 @@ fun CatalogDetailScreen(state: CatalogDetailState, player: PlayerUiState, onBack
             }
             Column(Modifier.fillMaxWidth().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 when (val target = state.destination) {
-                    is CatalogDestination.Artist -> {
-                        val artist = state.artistProfile?.artist ?: target.artist
-                        ArtistPortrait(artist, Modifier.size(if (landscape) 112.dp else 180.dp).clip(CircleShape))
-                        Spacer(Modifier.height(12.dp))
-                        Text(artist.name, color = colors.textPrimary, style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold, modifier = Modifier.testTag("artist_profile_name"))
-                    }
+                    is CatalogDestination.Artist -> Unit
                     is CatalogDestination.Album -> {
                         AsyncImage(target.album.image, target.album.title, contentScale = ContentScale.Crop,
                             modifier = Modifier.size(if (landscape) 112.dp else 180.dp).clip(RoundedCornerShape(18.dp)))
@@ -112,13 +113,15 @@ fun CatalogDetailScreen(state: CatalogDetailState, player: PlayerUiState, onBack
                         contentScale = ContentScale.Crop, modifier = Modifier.size(180.dp).clip(RoundedCornerShape(18.dp)))
                 }
             }
+            }
         }
         state.artistProfile?.let { profile ->
-            if (profile.subscriberCount.isNotBlank() || profile.monthlyListeners.isNotBlank()) item("artist_stats") {
-                Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    if (profile.subscriberCount.isNotBlank()) Text(profile.subscriberCount, color = colors.textSecondary)
-                    if (profile.monthlyListeners.isNotBlank()) Text(profile.monthlyListeners, color = colors.textSecondary)
+            item("artist_stats") {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    ArtistStatistic("Subscribers", profile.subscriberCount, Modifier.weight(1f))
+                    ArtistStatistic(if (profile.monthlyListeners.contains("audience", true)) "Monthly audience" else "Monthly listeners",
+                        profile.monthlyListeners, Modifier.weight(1f))
                 }
             }
             if (profile.description.isNotBlank()) item("artist_about") {
@@ -137,7 +140,7 @@ fun CatalogDetailScreen(state: CatalogDetailState, player: PlayerUiState, onBack
                     fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp))
                 LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     items(section.albums, key = { it.id }, contentType = { "artist_release" }) { album ->
-                        Column(Modifier.width(136.dp).clickable { onOpenAlbum(album) }) {
+                        Column(Modifier.width(136.dp).clickable { onOpenAlbum(album) }.testTag("artist_release_${album.id}")) {
                             AsyncImage(rememberOptimizedImageRequest(album.image, targetSize = 600), album.title,
                                 contentScale = ContentScale.Crop, modifier = Modifier.size(136.dp).clip(RoundedCornerShape(18.dp)))
                             Text(album.title, color = colors.textPrimary, maxLines = 2, overflow = TextOverflow.Ellipsis,
@@ -179,5 +182,46 @@ fun CatalogDetailScreen(state: CatalogDetailState, player: PlayerUiState, onBack
             }
         }
         state.warning?.let { warning -> item("warning") { Text(warning, color = colors.textMuted, modifier = Modifier.padding(20.dp)) } }
+    }
+}
+
+/** Full-bleed official artist photography; alpha edges reveal the same page canvas.
+ * The small Home/related portraits retain their existing size, shape and requests. */
+@Composable
+private fun ArtistProfileHeader(artist: CatalogArtist, onBack: () -> Unit) {
+    val colors = LocalAppColors.current
+    val configuration = LocalConfiguration.current
+    val landscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val height = if (landscape) (configuration.screenHeightDp * .72f).dp.coerceIn(220.dp, 360.dp)
+        else (configuration.screenHeightDp * .54f).dp.coerceIn(320.dp, 520.dp)
+    Box(Modifier.fillMaxWidth().height(height).testTag("artist_profile_header")) {
+        ArtistPortrait(artist, Modifier.matchParentSize().playerArtworkEdgeBlend(true), targetSize = 1200,
+            backgroundColor = colors.scaffoldBackground)
+        Box(Modifier.align(Alignment.TopStart).statusBarsPadding().padding(horizontal = 20.dp, vertical = 8.dp)
+            .size(38.dp).liquidGlassButton(colors, shape = CircleShape, elevation = 4.dp)
+            .bouncyClickable(onClick = onBack), contentAlignment = Alignment.Center) {
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = colors.textPrimary, modifier = Modifier.size(19.dp))
+        }
+        Column(Modifier.align(Alignment.BottomStart).padding(horizontal = 24.dp, vertical = 12.dp)) {
+            Text("ARTIST", color = colors.textMuted, style = MaterialTheme.typography.labelMedium)
+            Text(artist.name, color = colors.textPrimary, style = MaterialTheme.typography.headlineLarge,
+                fontWeight = FontWeight.ExtraBold, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.testTag("artist_profile_name"))
+        }
+    }
+}
+
+@Composable
+private fun ArtistStatistic(label: String, rawValue: String, modifier: Modifier) {
+    val colors = LocalAppColors.current
+    // Some API variants return bare counts; others include the unit. The heading
+    // always identifies it, and a missing provider value is never invented as zero.
+    val value = remember(rawValue) { rawValue.replace(Regex("(?i)\\s*(?:subscribers?|monthly (?:listeners?|audience))\\s*$"), "").trim() }
+    Column(modifier.clip(RoundedCornerShape(20.dp)).background(colors.cardBackgroundElevated)
+        .border(BorderStroke(1.dp, colors.cardBorder), RoundedCornerShape(20.dp)).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(label, color = colors.textMuted, style = MaterialTheme.typography.labelMedium)
+        Text(value.ifBlank { "Not provided" }, color = colors.textPrimary,
+            style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
     }
 }

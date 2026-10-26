@@ -799,7 +799,7 @@ class HomeViewModel(
         artistPreparationRevision.update { it + 1L }
     }
 
-    private data class ArtistCredits(val artist: String, val primary: List<String>, val writer: String,
+    private data class ArtistCredits(val artist: String, val primary: List<String>, val writer: String, val singers: String,
         val keys: List<String>, val names: Map<String, String>)
     private var rankedArtistCredits: Map<String, ArtistCredits> = emptyMap()
     private var rankedIdentityRevision = ArtistPhotoRepository.identities.value
@@ -821,11 +821,11 @@ class HomeViewModel(
             byId.entries.forEachIndexed { index, (id, track) ->
                 checkpoint(index)
                 credits[id] = rankedArtistCredits[id]?.takeIf {
-                    it.artist == track.artist && it.primary == track.primaryArtists && it.writer == track.writer
+                    it.artist == track.artist && it.primary == track.primaryArtists && it.writer == track.writer && it.singers == track.singers
                 } ?: run {
                     val display = HomeRecommendationPolicy.mainArtists(track)
                         .associateBy(HomeRecommendationPolicy::mainArtistKey)
-                    ArtistCredits(track.artist, track.primaryArtists, track.writer, display.keys.toList(), display)
+                    ArtistCredits(track.artist, track.primaryArtists, track.writer, track.singers, display.keys.toList(), display)
                 }
             }
             val current = linkedMapOf<Pair<String, String>, List<String>>()

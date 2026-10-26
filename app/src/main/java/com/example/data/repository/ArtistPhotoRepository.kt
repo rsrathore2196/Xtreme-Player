@@ -17,7 +17,7 @@ import java.util.concurrent.ConcurrentHashMap
 object ArtistPhotoRepository {
     private val locks = Array(8) { Mutex() }
     private val persistenceLock = Mutex()
-    private const val PHOTO_VERSION = 6
+    private const val PHOTO_VERSION = 7
     private const val PHOTO_TTL = 7 * 86_400_000L
     internal const val MAX_RESTORED_PORTRAITS = 512
     internal const val HOT_PORTRAIT_KEYS = "portrait_hot_keys_v1"
@@ -109,8 +109,8 @@ object ArtistPhotoRepository {
                 // v3 verified photographs remain usable; its catalog/album fallbacks do not.
                 if (version !in 3..PHOTO_VERSION || source != "youtube") continue
                 val url = image(row.optString("image"))
-                // Older misses were produced by a songs-only artist request. Keep
-                // valid portraits, but retry those obsolete negative entries now.
+                // Older misses used incomplete artist/header parsing. Keep valid
+                // portraits, but retry those obsolete negative entries now.
                 if (url == null && version < PHOTO_VERSION) continue
                 val expires = row.optLong("expires")
                 val canonical = row.optString("canonicalName")
@@ -204,11 +204,11 @@ object ArtistPhotoRepository {
                 var verifiedIdentity = artist
                 var identityVerified = false
                 val result = attempt {
-                    YouTubeMusicApiService.artistProfile(artist, context)?.let { profile ->
-                        verifiedIdentity = profile.artist.copy(musicBrainzId = artist.musicBrainzId,
+                    YouTubeMusicApiService.artistIdentity(artist, context)?.let { identity ->
+                        verifiedIdentity = identity.copy(musicBrainzId = artist.musicBrainzId,
                             aliases = artist.aliases)
                         identityVerified = true
-                        profile.artist.image
+                        identity.image
                     }
                 } ?: image(cached?.url)?.takeIf { cached?.source == "youtube" }
                 val completed = System.currentTimeMillis()

@@ -207,7 +207,8 @@ object YouTubeAudioStreamService {
                 continuation = continuation, setLogin = false)
             else -> session.search(client = YouTubeClient.WEB_REMIX, query = value.takeIf { continuation == null },
                 // Artist lookups must retain their artist filter, rather than searching songs.
-                params = (params ?: "EgWKAQIIAWoKEAkQBRAKEAMQBA==").takeIf { continuation == null },
+                params = (params ?: "EgWKAQIIAWoKEAkQBRAKEAMQBA==".takeUnless { operation == "searchAll" })
+                    .takeIf { continuation == null },
                 continuation = continuation, setLogin = false)
         }
         val body = response.bodyAsTextLimited(4 * 1024 * 1024)

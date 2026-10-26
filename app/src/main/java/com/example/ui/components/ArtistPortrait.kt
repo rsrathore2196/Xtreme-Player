@@ -25,7 +25,8 @@ import kotlinx.coroutines.flow.collect
 
 @Composable
 fun ArtistPortrait(artist: CatalogArtist, modifier: Modifier = Modifier,
-    deferEnrichment: Boolean = false) {
+    deferEnrichment: Boolean = false, targetSize: Int = 400,
+    backgroundColor: Color = Color(0xFF163255)) {
     val context = LocalContext.current.applicationContext
     val active = LocalArtworkRequestsActive.current && LocalVisualEffectsActive.current
     var retries by remember(artist.name, artist.id, artist.musicBrainzId) { mutableIntStateOf(0) }
@@ -49,9 +50,9 @@ fun ArtistPortrait(artist: CatalogArtist, modifier: Modifier = Modifier,
         }
     }
     val displayed = photo?.takeUnless { it in failedUrls }
-    Box(modifier.background(Color(0xFF163255)), contentAlignment = Alignment.Center) {
+    Box(modifier.background(backgroundColor), contentAlignment = Alignment.Center) {
         Icon(Icons.Default.Person, contentDescription = null, tint = XtremeLightBlue, modifier = Modifier.fillMaxSize(0.55f))
-        AsyncImage(model = rememberOptimizedImageRequest(url = displayed.orEmpty(), targetSize = 400,
+        AsyncImage(model = rememberOptimizedImageRequest(url = displayed.orEmpty(), targetSize = targetSize,
             crossfadeEnabled = false, preferStableArtwork = deferEnrichment),
             contentDescription = artist.name, contentScale = ContentScale.Crop,
             onError = {

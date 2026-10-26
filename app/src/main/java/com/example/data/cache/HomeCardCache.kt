@@ -473,7 +473,7 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
         }
         return root.put("profile", s.profileKey).put("signal", s.signal)
             .put("generation", s.generation).put("refreshedAt", s.refreshedAt)
-            .put("mainArtistsVersion", 1)
+            .put("mainArtistsVersion", 2)
             .put("chartRefreshedAt", s.chartRefreshedAt)
             .put("tracks", JSONArray(tracks.mapIndexed { index, t ->
                 if (index % 64 == 0) BackgroundWorkCoordinator.yieldToInteraction(bypass = { closing.get() })
@@ -532,9 +532,9 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
             val value = root.getJSONObject(name); val list = tracks(value.optJSONArray("tracks"))
             return SectionState(value.getString("title"), value.optString("subtitle"), list, isLoaded = list.isNotEmpty())
         }
-        // Old counts included secondary credits. Rebuild only this derived shelf
-        // from actual Room history; leave all history and recommendation caches intact.
-        val artists = root.optJSONArray("artists").takeIf { root.optInt("mainArtistsVersion") == 1 }
+        // Rebuild outdated artist-credit rankings from actual Room history only;
+        // leave playback history and every other recommendation shelf intact.
+        val artists = root.optJSONArray("artists").takeIf { root.optInt("mainArtistsVersion") == 2 }
         val saved = SavedHomeCards(profile, root.optString("signal"), root.optLong("generation"), root.optLong("refreshedAt"),
             section("quick"), section("era"), section("chart"), section("history"), section("personalized"),
             (0 until (artists?.length() ?: 0)).mapNotNull { i ->

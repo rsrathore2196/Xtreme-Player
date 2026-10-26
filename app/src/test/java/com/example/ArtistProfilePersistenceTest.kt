@@ -43,6 +43,16 @@ class ArtistProfilePersistenceTest {
         assertSame(restored, withTimeout(2_000L) { YouTubeMusicApiService.artistProfile(artist, context) })
     }
 
+    @Test fun verifiedPortraitReloadsWithoutWaitingForAnyProfileOrDiscographyRequest() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val artist = CatalogArtist("UCdiljit", "Diljit Dosanjh", image = "https://yt3.googleusercontent.com/diljit=w600-h600")
+        RecommendationCache.get(context).putBody("artist-channel-v1:diljit dosanjh",
+            YouTubeExploreParser.encodeArtistIdentity(artist), 86_400_000L, checkpoint = true)
+        val restored = withTimeout(2_000L) { YouTubeMusicApiService.artistIdentity(CatalogArtist("", artist.name), context) }
+        assertEquals(artist, restored)
+        assertEquals(artist, withTimeout(2_000L) { YouTubeMusicApiService.artistIdentity(artist, context) })
+    }
+
     @Test(expected = java.io.IOException::class)
     fun sameNamedDifferentChannelCannotOverwriteTheRequestedArtist() {
         val artist = CatalogArtist("UCfirst", "Same Name")

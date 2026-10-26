@@ -79,7 +79,7 @@ object HomeRecommendationPolicy {
     private val secondaryRole = Regex("(?i)\\b(?:written|lyrics|lyricist|composed|composer|producer|produced|music director|background vocals)\\b")
 
     /** Ranking only: keep recording identity/recommendation matching rules independent.
-     * Structured primary credits may name up to three collaborators. Older combined
+     * Structured primary credits retain every credited collaborator. Older combined
      * contributor fields cannot establish that every comma-separated person is primary. */
     fun mainArtists(track: MusicTrack): List<String> {
         val verified = track.primaryArtists.isNotEmpty()
@@ -87,15 +87,21 @@ object HomeRecommendationPolicy {
         fun eligibleLegacy(name: String) = known(name) && !secondaryRole.containsMatchIn(name) &&
             CatalogNames.normalize(name) !in writers
         val names = if (verified) track.primaryArtists else {
-            // Exclude explicitly identified writers before choosing the conservative
-            // first primary credit. Do not promote the remaining comma-separated list.
-            val primary = track.artist.replace(topicSuffix, "").split(guestCredit, limit = 2).first()
-                .split(',').map(CatalogNames::clean).firstOrNull(::eligibleLegacy).orEmpty()
-            primary.split(mainCollaboration)
+            // Exclude explicit writers/guests and require independent performer
+            // evidence before trusting an older combined contributor list.
+            val credits = track.artist.replace(topicSuffix, "").split(guestCredit, limit = 2).first()
+                .split(',').map(CatalogNames::clean)
+            val singers = track.singers.replace(topicSuffix, "").split(guestCredit, limit = 2).first()
+                .split(artistSeparator).map(CatalogNames::normalize).toSet()
+            // A clean performer list independently corroborated by singer credits
+            // can retain every collaborator. Mixed writer/producer lists remain conservative.
+            if (credits.size > 1 && credits.all(::eligibleLegacy) &&
+                credits.all { CatalogNames.normalize(it) in singers }) credits
+            else credits.firstOrNull(::eligibleLegacy).orEmpty().split(mainCollaboration)
         }
         return names.map(CatalogNames::clean).map { it.replace(topicSuffix, "").trim() }
             .filter { known(it) && !guestCredit.containsMatchIn(it) && (verified || eligibleLegacy(it)) }
-            .distinctBy(::mainArtistKey).take(3)
+            .distinctBy(::mainArtistKey)
     }
 
     fun mainArtistKey(name: String): String = CatalogNames.normalize(ArtistPhotoRepository.canonicalName(name))

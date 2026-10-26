@@ -67,6 +67,8 @@ class ArtistDiscoveryRequestTest {
             // Ordinary recommendation discovery retains its existing songs-only filter.
             YouTubeAudioStreamService.requestDiscovery(inner, "search", "Song")
             assertEquals("EgWKAQIIAWoKEAkQBRAKEAMQBA==", requests.last().second.getString("params"))
+            YouTubeAudioStreamService.requestDiscovery(inner, "searchAll", "Exact Artist")
+            assertTrue("Artist fallback must be unfiltered, not songs-only", requests.last().second.optString("params").isBlank())
         } finally { inner.close(); http.close() }
     }
 }

@@ -162,6 +162,63 @@ object YouTubeMusicApiService {
     private val profileCache = android.util.LruCache<String, ProfileLookup>(64)
     private val profileLocks = Array(8) { Mutex() }
 
+    private val artistIdentityLocks = Array(8) { Mutex() }
+    private val artistIdentityCache = android.util.LruCache<String, Pair<Long, com.example.data.repository.CatalogArtist>>(128)
+
+    /** Portraits need a verified artist entity, not the entire biography/discography.
+     * Share its channel/URL with detail browsing through the same bounded lock/cache. */
+    suspend fun artistIdentity(selected: com.example.data.repository.CatalogArtist, context: android.content.Context):
+        com.example.data.repository.CatalogArtist? = withContext(AppDispatchers.Io) {
+        val name = com.example.data.repository.CatalogNames.normalize(selected.name)
+        if (name.isBlank()) return@withContext null
+        val artist = lookupArtistIdentity(selected, context) ?: return@withContext null
+        if (artist.image.isNotBlank()) artist else artistProfile(artist, context)?.artist ?: artist
+    }
+
+    private suspend fun lookupArtistIdentity(selected: com.example.data.repository.CatalogArtist,
+        context: android.content.Context?): com.example.data.repository.CatalogArtist? {
+        val name = com.example.data.repository.CatalogNames.normalize(selected.name)
+        // Identity requests share each other, without parking a visible portrait
+        // behind a profile mutex held through a slow biography/discography browse.
+        return artistIdentityLocks[(name.hashCode() and Int.MAX_VALUE) % artistIdentityLocks.size].withLock {
+            loadArtistIdentity(selected, context)
+        }
+    }
+
+    private suspend fun loadArtistIdentity(selected: com.example.data.repository.CatalogArtist,
+        context: android.content.Context?): com.example.data.repository.CatalogArtist? {
+        val name = com.example.data.repository.CatalogNames.normalize(selected.name)
+        val now = System.currentTimeMillis()
+        fun compatible(artist: com.example.data.repository.CatalogArtist) =
+            !selected.id.startsWith("UC") || artist.id == selected.id
+        val key = selected.id.takeIf { it.startsWith("UC") } ?: name
+        artistIdentityCache.get(key)?.takeIf { it.first > now && compatible(it.second) }?.let { return it.second }
+        val metadata = context?.let(com.example.data.cache.RecommendationCache::get)
+        val channelKey = "artist-channel-v1:$name"
+        var expires = now + TimeUnit.DAYS.toMillis(7)
+        val saved = metadata?.get(channelKey)?.takeIf { it.expiresAt > now }?.let { row ->
+            expires = row.expiresAt
+            try { withContext(AppDispatchers.CpuBounded) { YouTubeExploreParser.decodeArtistIdentity(row.body, selected) } }
+            catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { null }
+        }
+        val artist = saved ?: if (selected.id.startsWith("UC")) selected else {
+            suspend fun search(operation: String, params: String?): com.example.data.repository.CatalogArtist? {
+                val body = com.example.recommendation.DiscoveryRequestCoordinator.network(essential = true) {
+                    YouTubeAudioStreamService.discoveryResponse(operation, selected.name, "US", params)
+                }
+                return withContext(AppDispatchers.CpuBounded) { YouTubeExploreParser.artistMatch(JSONObject(body), selected.name) }
+            }
+            search("search", "EgWKAQIgAWoKEAkQChAFEAMQBA==") ?: search("searchAll", null)
+        } ?: return null
+        artistIdentityCache.put(key, expires to artist)
+        artistIdentityCache.put(artist.id, expires to artist)
+        artistIdentityCache.put(name, expires to artist)
+        if (saved == null) metadata?.putBody(channelKey, withContext(AppDispatchers.CpuBounded) {
+            YouTubeExploreParser.encodeArtistIdentity(artist)
+        }, TimeUnit.DAYS.toMillis(7), checkpoint = true)
+        return artist
+    }
+
     /** Shared artist-filtered search and channel browse, independent of song artwork.
      * Public profiles and verified channel IDs reuse the existing persistent metadata cache. */
     suspend fun artistProfile(selected: com.example.data.repository.CatalogArtist,
@@ -180,7 +237,6 @@ object YouTubeMusicApiService {
                 }
                 val metadata = context?.let(com.example.data.cache.RecommendationCache::get)
                 val profileKey = "artist-profile-v1:$name"
-                val channelKey = "artist-channel-v1:$name"
                 var fallback = cached?.profile
                 suspend fun <T> restored(cacheKey: String, decode: (String) -> T): Pair<Long, T>? {
                     val entry = metadata?.get(cacheKey)?.takeIf {
@@ -190,35 +246,24 @@ object YouTubeMusicApiService {
                     catch (cancelled: CancellationException) { throw cancelled }
                     catch (_: Exception) { null }
                 }
-                val saved = restored(profileKey) { YouTubeExploreParser.decodeArtistProfile(it, selected) }
+                val saved = restored(profileKey) {
+                    YouTubeExploreParser.decodeArtistProfile(it, selected) to (JSONObject(it).optInt("profileVersion") >= 2)
+                }
                 if (saved != null) {
-                    fallback = saved.second
-                    if (saved.first > now) {
-                        val entry = ProfileLookup(saved.first, saved.second)
-                        profileCache.put(key, entry); profileCache.put(saved.second.artist.id, entry)
+                    val profile = saved.second.first
+                    fallback = profile
+                    val completeLegacy = profile.artist.image.isNotBlank() && profile.description.isNotBlank() &&
+                        profile.subscriberCount.isNotBlank() && profile.monthlyListeners.isNotBlank() && profile.releases.isNotEmpty()
+                    if (saved.first > now && (saved.second.second || completeLegacy)) {
+                        val entry = ProfileLookup(saved.first, profile)
+                        profileCache.put(key, entry); profileCache.put(profile.artist.id, entry)
                         profileCache.put(name, entry)
-                        return@withLock saved.second
+                        return@withLock profile
                     }
                 }
                 try {
-                    val savedArtist = fallback?.artist ?: restored(channelKey) {
-                        YouTubeExploreParser.decodeArtistIdentity(it, selected)
-                    }?.takeIf { it.first > now }?.second
-                    val artist = if (selected.id.startsWith("UC")) selected else savedArtist ?: run {
-                        val body = com.example.recommendation.DiscoveryRequestCoordinator.network(essential = true) {
-                            YouTubeAudioStreamService.discoveryResponse("search", selected.name, "US", "EgWKAQIgAWoKEAkQChAFEAMQBA==")
-                        }
-                        val match = withContext(AppDispatchers.CpuBounded) {
-                            YouTubeExploreParser.artistMatches(JSONObject(body), selected.name).singleOrNull()
-                        } ?: return@withLock fallback.also {
-                            profileCache.put(key, ProfileLookup(now + 60_000L, it))
-                        }
-                        // Save the verified channel even if the subsequent browse times out.
-                        metadata?.putBody(channelKey, withContext(AppDispatchers.CpuBounded) {
-                            YouTubeExploreParser.encodeArtistIdentity(match)
-                        }, TimeUnit.DAYS.toMillis(7), checkpoint = true)
-                        match
-                    }
+                    val artist = fallback?.artist ?: lookupArtistIdentity(selected, context)
+                        ?: return@withLock null.also { profileCache.put(key, ProfileLookup(now + 60_000L, null)) }
                     val body = com.example.recommendation.DiscoveryRequestCoordinator.network(essential = true) {
                         YouTubeAudioStreamService.discoveryResponse("browse", artist.id, "US")
                     }
@@ -408,7 +453,8 @@ object YouTubeMusicApiService {
                     ?.optJSONObject("text")?.optJSONArray("runs")?.optJSONObject(0)?.optString("text").orEmpty()
                 if (text.matches(Regex("[0-9]{1,2}:[0-9]{2}(?::[0-9]{2})?"))) durationMs = parseDurationText(text)
             }
-            val artist = artists.distinct().joinToString(", ").ifBlank { "Unknown" }
+            val performingArtists = YouTubeExploreParser.performingArtists(r)
+            val artist = performingArtists.ifEmpty { artists.distinct() }.joinToString(", ").ifBlank { "Unknown" }
 
             // Video ID
             var videoId = r.optJSONObject("playlistItemData")?.optString("videoId", "") ?: ""
@@ -465,7 +511,8 @@ object YouTubeMusicApiService {
                 language = r.optString("language", "Unknown").ifBlank { "Unknown" },
                 year = releaseYear,
                 isrc = r.optString("isrc", ""),
-                source = "YouTube Music"
+                source = "YouTube Music",
+                primaryArtists = performingArtists
             )
         } catch (e: Exception) {
             return null
@@ -778,8 +825,14 @@ object YouTubeMusicApiService {
             val vid = pvr.optString("videoId", "")
             val rawTitle = pvr.optJSONObject("title")?.optJSONArray("runs")?.optJSONObject(0)?.optString("text", "")
                 ?: pvr.optJSONObject("title")?.optString("simpleText", "").orEmpty()
-            val rawArtist = (pvr.optJSONObject("shortBylineText") ?: pvr.optJSONObject("longBylineText"))
-                ?.optJSONArray("runs")?.optJSONObject(0)?.optString("text", "Unknown").orEmpty()
+            val byline = pvr.optJSONObject("longBylineText") ?: pvr.optJSONObject("shortBylineText")
+            val credits = YouTubeExploreParser.performingArtists(pvr)
+            val bylineRuns = byline?.optJSONArray("runs")
+            val rawArtist = credits.joinToString(", ").ifBlank {
+                // Preserve the complete leading byline, excluding view/like counts.
+                (0 until (bylineRuns?.length() ?: 0)).map { bylineRuns?.optJSONObject(it)?.optString("text").orEmpty() }
+                    .takeWhile { !it.contains('•') && !it.contains('·') }.joinToString("").trim()
+            }
             val durSec = pvr.optString("lengthSeconds", "0").toLongOrNull() ?: 0L
             val thumbs = pvr.optJSONObject("thumbnail")?.optJSONArray("thumbnails")
             val thumbUrl = if (thumbs != null && thumbs.length() > 0) thumbs.getJSONObject(thumbs.length() - 1).optString("url", "") else ""
@@ -798,7 +851,8 @@ object YouTubeMusicApiService {
                     bitrateKbps = 0,
                     qualityBadge = "HQ Stream",
                     genre = "Unknown",
-                    source = "YouTube Music"
+                    source = "YouTube Music",
+                    primaryArtists = credits
                 )
             }
         }

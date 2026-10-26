@@ -71,4 +71,48 @@ class ArtistProfileParserTest {
         val ambiguous = JSONObject().put("contents", JSONArray().put(artist).put(item("Main Artist", "UCsecond", "MUSIC_PAGE_TYPE_ARTIST")))
         assertEquals(2, YouTubeExploreParser.artistMatches(ambiguous, "Main Artist").size)
     }
+    @Test fun exactTopArtistCardFindsDiljitWithoutSelectingOtherSameNameChannels() {
+        val card = item("Diljit Dosanjh", "UCofficial", "MUSIC_PAGE_TYPE_ARTIST").getJSONObject("musicTwoRowItemRenderer")
+        val response = JSONObject().put("contents", JSONArray().put(JSONObject().put("musicCardShelfRenderer", card))
+            .put(item("Diljit Dosanjh", "UCother", "MUSIC_PAGE_TYPE_ARTIST")))
+        assertEquals("UCofficial", YouTubeExploreParser.artistMatch(response, "Diljit Dosanjh")?.id)
+        assertNull(YouTubeExploreParser.artistMatch(response, "Unrelated Artist"))
+        assertNull(YouTubeExploreParser.artistMatch(JSONObject().put("contents", JSONArray()
+            .put(item("Same Name", "UCone", "MUSIC_PAGE_TYPE_ARTIST"))
+            .put(item("Same Name", "UCtwo", "MUSIC_PAGE_TYPE_ARTIST"))), "Same Name"))
+    }
+
+    @Test fun nestedResponsiveArtistHeaderAndAlbumGridPreserveRealProfileFields() {
+        val header = JSONObject().put("title", text("Diljit Dosanjh"))
+            .put("thumbnail", JSONObject().put("thumbnailViewModel", JSONObject().put("image", JSONObject()
+                .put("sources", JSONArray().put(JSONObject().put("url", "https://yt3.googleusercontent.com/official=w1200-h1200").put("width", 1200))))))
+            .put("subscriberCountText", text("8.1M"))
+            .put("monthlyAudienceCount", JSONObject().put("content", "24M monthly audience"))
+            .put("description", JSONObject().put("content", "Artist biography"))
+        val grid = JSONObject().put("gridRenderer", JSONObject().put("header", JSONObject().put("gridHeaderRenderer",
+            JSONObject().put("title", text("Albums")))).put("items", JSONArray().put(item("Release", "MPREone", "MUSIC_PAGE_TYPE_ALBUM"))))
+        val response = JSONObject().put("contents", JSONObject().put("twoColumnBrowseResultsRenderer", JSONObject()
+            .put("header", JSONObject().put("musicResponsiveHeaderRenderer", header)).put("contents", JSONArray().put(grid))))
+        val profile = YouTubeExploreParser.artistProfile(response, CatalogArtist("UCofficial", "Diljit Dosanjh"))
+        assertTrue(profile.artist.image.contains("official"))
+        assertEquals("8.1M", profile.subscriberCount)
+        assertEquals("24M monthly audience", profile.monthlyListeners)
+        assertEquals("Artist biography", profile.description)
+        assertEquals("MPREone", profile.releases.single().albums.single().id)
+    }
+
+    @Test fun artistPageSongsKeepCollaboratorsAlreadyVerifiedByTheirQueueByline() {
+        fun credit(name: String, id: String) = JSONObject().put("text", name).put("navigationEndpoint", JSONObject()
+            .put("browseEndpoint", JSONObject().put("browseId", id).put("browseEndpointContextSupportedConfigs",
+                JSONObject().put("browseEndpointContextMusicConfig", JSONObject().put("pageType", "MUSIC_PAGE_TYPE_ARTIST")))))
+        val song = JSONObject().put("playlistPanelVideoRenderer", JSONObject().put("videoId", "abcdefghijk")
+            .put("title", text("Duet"))
+            .put("longBylineText", JSONObject().put("runs", JSONArray().put(credit("Main Artist", "UCmain"))
+                .put(JSONObject().put("text", " & ")).put(credit("Second Artist", "UCsecond")))))
+        val response = root().put("contents", JSONArray().put(JSONObject().put("musicShelfRenderer",
+            JSONObject().put("contents", JSONArray().put(song)))))
+        val profile = YouTubeExploreParser.artistProfile(response, CatalogArtist("UCmain", "Main Artist"))
+        assertEquals(listOf("Main Artist", "Second Artist"), profile.songs.single().primaryArtists)
+    }
+
 }
