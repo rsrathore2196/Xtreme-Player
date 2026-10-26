@@ -58,7 +58,7 @@ data class PlayerExperienceSettings(
     val skipSilence: Boolean = false,
     val outputPrecision: OutputPrecision = OutputPrecision.PCM_16,
     val dolbyAtmos: Boolean = false,
-    val fullScreenAlbumArt: Boolean = false
+    val fullScreenAlbumArt: Boolean = true
 )
 
 object OtherSettingsPreferences {
@@ -308,7 +308,7 @@ object OtherSettingsPreferences {
             skipSilence = prefs.getBoolean(KEY_SKIP_SILENCE, false),
             outputPrecision = OutputPrecision.fromStored(prefs.getString(KEY_OUTPUT_PRECISION, null)),
             dolbyAtmos = prefs.getBoolean(KEY_DOLBY_ATMOS, false),
-            fullScreenAlbumArt = prefs.getBoolean(KEY_FULL_SCREEN_ALBUM_ART, false)
+            fullScreenAlbumArt = prefs.getBoolean(KEY_FULL_SCREEN_ALBUM_ART, true)
         )
     }
 
