@@ -140,7 +140,7 @@ fun LibraryScreen(
         }
         liked?.let { PlaylistDetailScreen(it, currentPlayingTrackId = currentPlayingTrackId,
             onBackClick = { likedOpen = false }, onPlayTrack = onTrackClick, onToggleFavorite = onToggleFavorite,
-            onDeletePlaylist = {}, onRemoveTrack = {}, readOnly = true, listState = likedScroll) }
+            onDeletePlaylist = {}, onRemoveTrack = {}, readOnly = true, pinPlaybackActions = true, listState = likedScroll) }
         return
     }
     val isDark = isDarkMode

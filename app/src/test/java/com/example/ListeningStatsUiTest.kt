@@ -38,19 +38,29 @@ class ListeningStatsUiTest {
     @Test fun likedPlayConsumesItsClickAndTheWholeRowOpensTheExistingList() {
         var plays = 0
         var queue = emptyList<MusicTrack>()
+        var selected: MusicTrack? = null
+        val favorites = listOf(song, song.copy(id = "two", title = "Second Song"), song.copy(id = "three", title = "Third Song"))
         content {
-            LibraryScreen(listOf(song), emptyList(), onTrackClick = { _, tracks -> plays++; queue = tracks },
+            LibraryScreen(favorites, emptyList(), onTrackClick = { track, tracks -> plays++; queue = tracks; selected = track },
                 onToggleFavorite = {}, onOpenPlaylist = {}, onCreatePlaylistClick = {})
         }
         compose.onNodeWithText("Listening Stats").assertExists()
         compose.onNodeWithTag("play_liked_songs").performClick()
-        compose.runOnIdle { assertEquals(1, plays); assertEquals(listOf(song), queue) }
+        compose.runOnIdle { assertEquals(1, plays); assertEquals(favorites, queue) }
         compose.onNodeWithTag("library_screen").assertExists()
         compose.onNodeWithTag("open_liked_songs").performClick()
         compose.waitUntil(5_000) { compose.onAllNodesWithText("Favorite Song").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithTag("library_screen").assertDoesNotExist()
         compose.onNodeWithText("Favorite Song").assertExists()
         compose.runOnIdle { assertEquals("Opening liked songs must not start playback", 1, plays) }
+        compose.onNodeWithTag("liked_songs_play").assertIsDisplayed().performClick()
+        compose.runOnIdle { assertEquals(2, plays); assertEquals(favorites.map { it.id }, queue.map { it.id }) }
+        compose.onNodeWithTag("liked_songs_shuffle").assertIsDisplayed().performClick()
+        compose.waitUntil(5000) { plays == 3 }
+        compose.runOnIdle {
+            assertEquals(favorites.map { it.id }.toSet(), queue.map { it.id }.toSet())
+            assertEquals(3, queue.size); assertEquals(queue.first().id, selected?.id)
+        }
     }
     @Test fun statsNavigationKeepsTheSelectedPeriodWhenReopened() {
         content {

@@ -17,7 +17,7 @@ class NewUserHomePolicyTest {
     private val recording = MusicTrack("online_cached", "Title", "Artist", "Album", 180_000,
         "https://image", "https://aac.saavncdn.com/cached.mp4", source = "JIOSAAVN")
     private val allCached = empty.copy(era = SectionState(tracks = listOf(recording)),
-        personalized = SectionState(tracks = listOf(recording)), similarArtists = SectionState(tracks = listOf(recording)),
+        personalized = SectionState(tracks = listOf(recording)),
         inspiredTrack = SectionState(tracks = listOf(recording)))
 
     @Test fun smallStartupBatchesStayUsableAndOnlyTopUpAfterIdleAdmission() {
@@ -61,7 +61,6 @@ class NewUserHomePolicyTest {
         assertTrue(firstPlay.containsAll(fresh))
         assertTrue(Shelf.ERA in firstPlay)
         assertFalse(Shelf.PERSONALIZED in firstPlay)
-        assertFalse(Shelf.SIMILAR in firstPlay)
         assertEquals(Shelf.entries.toSet(), withTasteAndSeed)
     }
 }

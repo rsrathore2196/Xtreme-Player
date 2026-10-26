@@ -5,6 +5,10 @@ import com.example.data.model.MusicTrack
 import com.example.data.repository.StreamResolver
 import com.example.data.repository.TrackUnavailableException
 import com.example.playback.AudioQuality
+import com.example.playback.AudioQualityCeiling
+import com.example.playback.PlaybackSource
+import com.example.playback.PlaybackSourceKind
+import com.example.playback.PlaybackSourcePolicy
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -13,6 +17,9 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -38,6 +45,19 @@ class StreamResolverRegressionTest {
         searchStandard = search, searchLossless = { emptyList() }, fetchById = { _, _ -> null },
         resolveYouTube = { _, _, _, _ -> null }, searchYouTube = { emptyList() })
 
+    @Test fun oneSelectionNeverRepeatsTheSameFailedProviderDetailLookup() = runBlocking {
+        val calls = AtomicInteger()
+        val selected = requested.copy(id = "online_selected")
+        val resolver = StreamResolver(searchStandard = { _, _ -> listOf(selected.copy(audioUrl = "")) },
+            fetchById = { _, _ -> calls.incrementAndGet(); null }, resolveYouTube = { _, _, _, _ -> null },
+            searchYouTube = { emptyList() }, searchLossless = { emptyList() })
+        try { resolver.resolve(selected, quality, preferredSourceId = "jiosaavn"); fail("Unavailable recording must fail safely") }
+        catch (_: TrackUnavailableException) { }
+        assertEquals(1, calls.get())
+        try { resolver.resolve(selected, quality, preferredSourceId = "jiosaavn") }
+        catch (_: TrackUnavailableException) { }
+        assertEquals("A later selection can retry temporary failures", 2, calls.get())
+    }
     @Test fun unavailableSongNeverReceivesDemoAudioOrCacheEntry() = runBlocking {
         val resolver = resolver { _, _ -> emptyList() }
         for (q in listOf(quality, AudioQuality.HI_RES_LOSSLESS)) {
@@ -144,5 +164,38 @@ class StreamResolverRegressionTest {
         assertEquals("xtreme-youtube://audio/abcdefghijk?itag=251", result.audioUrl)
         assertEquals(160, result.bitrateKbps)
         assertFalse(result.isLossless)
+    }
+
+    @Test fun failedAddonGroupCannotSpendTheColdYouTubeExtractionWindow() = runTest {
+        val sources = (1..3).map { PlaybackSource("addon_$it", PlaybackSourceKind.ADDON, "Server $it", baseUrl = "https://server$it.example") } +
+            PlaybackSource.newInstallDefaults
+        var extractions = 0
+        val resolver = StreamResolver(ioDispatcher = StandardTestDispatcher(testScheduler),
+            resolveAddon = { _, _, _, _ -> delay(60_000); null },
+            resolveYouTube = { requested, _, _, _ ->
+                extractions++
+                delay(30_000)
+                requested.copy(audioUrl = "xtreme-youtube://audio/abcdefghijk/stream.audio?cap=320000&itag=251", bitrateKbps = 146)
+            }, searchStandard = { _, _ -> error("Disabled provider") }, searchLossless = { error("Disabled provider") })
+        val result = resolver.resolve(youtube, AudioQuality.HI_RES_LOSSLESS,
+            sourcePolicy = PlaybackSourcePolicy(AudioQualityCeiling.MAX, sources = sources))
+        assertEquals(youtube.id, result.id)
+        assertEquals(1, extractions)
+        assertEquals(StreamResolver.ADDON_STARTUP_TIMEOUT_MS + 30_000, testScheduler.currentTime)
+    }
+
+    @Test fun exhaustedProvidersTerminateWithinTheOverallBudgetWithoutCachingAFailure() = runTest {
+        val resolver = StreamResolver(ioDispatcher = StandardTestDispatcher(testScheduler),
+            resolveAddon = { _, _, _, _ -> awaitCancellation() },
+            resolveYouTube = { _, _, _, _ -> awaitCancellation() },
+            searchStandard = { _, _ -> awaitCancellation() }, searchLossless = { awaitCancellation() })
+        val sources = listOf(PlaybackSource("addon", PlaybackSourceKind.ADDON, "Server", baseUrl = "https://server.example")) + PlaybackSource.builtIns
+        try {
+            resolver.resolve(youtube, AudioQuality.HI_RES_LOSSLESS,
+                sourcePolicy = PlaybackSourcePolicy(AudioQualityCeiling.MAX, sources = sources))
+            fail("Expected a bounded unavailable result")
+        } catch (_: TrackUnavailableException) { }
+        assertTrue(testScheduler.currentTime <= StreamResolver.PLAYBACK_RESOLUTION_TIMEOUT_MS)
+        assertEquals(0, resolver.cacheSize)
     }
 }

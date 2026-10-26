@@ -207,13 +207,14 @@ class ArtworkResolutionInterceptor : Interceptor {
         val attempted = mutableSetOf<String>()
         val cachedImages = mutableMapOf<String, SuccessResult?>()
         var lastError: ImageResult? = null
-        var networkBudgetMs = if (metadata.startupPreparation) 1_000L else 3_000L
+        var networkBudgetMs = if (metadata.startupPreparation) 1_000L else if (metadata.currentTrack) 6_000L else 3_000L
         fun sufficient(result: SuccessResult) = sufficientSize(result, chain.size) ||
             // The provider can cap a requested 2000px rendition at its real source
             // resolution. A full, unsampled decode cannot improve by downloading
             // that same URL again. Sampled thumbnail decodes still need upgrading.
-            result.request.data == urls.firstOrNull() && !result.isSampled ||
-            (metadata.currentTrack && urls.contains(result.request.data) && !result.isSampled)
+            result.request.data == urls.firstOrNull() && !result.isSampled &&
+                minOf((result.drawable as? BitmapDrawable)?.bitmap?.width ?: result.drawable.intrinsicWidth,
+                    (result.drawable as? BitmapDrawable)?.bitmap?.height ?: result.drawable.intrinsicHeight) >= 480
         fun better(first: SuccessResult?, second: SuccessResult?): SuccessResult? = when {
             first == null -> second
             second == null -> first
@@ -236,8 +237,7 @@ class ArtworkResolutionInterceptor : Interceptor {
                     else if (!attempted.add(url) || budgetMs <= 0L) hit
                     else {
                         val started = android.os.SystemClock.elapsedRealtime()
-                        val timeout = if (metadata.currentTrack) minOf(budgetMs, 1_500L) else budgetMs
-                        try { withTimeoutOrNull(timeout) { chain.proceed(candidate) } ?: hit }
+                        try { withTimeoutOrNull(budgetMs) { chain.proceed(candidate) } ?: hit }
                         finally {
                             val elapsed = (android.os.SystemClock.elapsedRealtime() - started).coerceAtLeast(0L)
                             networkBudgetMs -= elapsed
@@ -265,10 +265,6 @@ class ArtworkResolutionInterceptor : Interceptor {
         }
         suspend fun present(result: SuccessResult?) {
             if (request.target == null || result == null) return
-            val bitmap = (result.drawable as? BitmapDrawable)?.bitmap
-            val width = bitmap?.width ?: result.drawable.intrinsicWidth
-            // Never present tiny list thumbnails (<250px) on the music player screen to avoid blurry expansion
-            if (metadata.currentTrack && width < 250) return
             withContext(Dispatchers.Main.immediate) {
                 currentCoroutineContext().ensureActive()
                 request.target?.onStart(result.drawable)
@@ -294,10 +290,7 @@ class ArtworkResolutionInterceptor : Interceptor {
         val height = bitmap?.height ?: result.drawable.intrinsicHeight
         val targetWidth = (size.width as? Dimension.Pixels)?.px ?: 0
         val targetHeight = (size.height as? Dimension.Pixels)?.px ?: 0
-        return (width >= targetWidth && height >= targetHeight) ||
-            // High quality provider images (e.g. 480px, 500px, 600px) are sharp and sufficient for display
-            (width >= 480 && height >= 480) ||
-            (targetWidth > 0 && width >= (targetWidth * 0.7f).toInt())
+        return width >= targetWidth && height >= targetHeight
     }
 
     private fun pixelArea(result: SuccessResult): Long {

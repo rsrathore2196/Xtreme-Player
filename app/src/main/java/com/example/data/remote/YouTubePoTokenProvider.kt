@@ -26,10 +26,11 @@ internal class YouTubePoTokenProvider(
         val visitorToken: String, val videos: LinkedHashMap<String, String> = linkedMapOf())
     private val lock = Mutex()
     private var session: Session? = null
-    private var retryAfterMs = 0L
+    @Volatile private var retryAfterMs = 0L
     @Volatile private var closed = false
+    private val webViewSupported by lazy(LazyThreadSafetyMode.PUBLICATION) { runCatching(supported).getOrDefault(false) }
     override val capabilities: TokenProviderCapabilities
-        get() = if (!closed && runCatching(supported).getOrDefault(false))
+        get() = if (!closed && now() >= retryAfterMs && webViewSupported)
             TokenProviderCapabilities(setOf(PoTokenProviderKind.WEB_BOTGUARD), usesWebView = true)
         else TokenProviderCapabilities()
 
@@ -40,10 +41,12 @@ internal class YouTubePoTokenProvider(
         val account = cookie?.takeIf(String::isNotEmpty)?.let {
             MessageDigest.getInstance("SHA-256").digest(it.toByteArray()).joinToString("") { b -> "%02x".format(b) }
         }.orEmpty()
-        return withTimeoutOrNull(timeoutMs) {
-            lock.withLock {
-                if (closed) return@withLock null
-                if (now() < retryAfterMs) return@withLock null
+        return lock.withLock {
+            if (closed) return@withLock null
+            if (now() < retryAfterMs) return@withLock null
+            // Waiting for another token request is cancellable, but does not
+            // consume this session's attestation deadline or mark it failed.
+            val result = withTimeoutOrNull(timeoutMs) {
                 repeat(2) { attempt ->
                     try {
                         var current = session
@@ -69,7 +72,7 @@ internal class YouTubePoTokenProvider(
                         check(active.browser.alive && active.browser.expiresAtMs > now())
                         // Native v0.8.6 chooses these by binding, not by their field names:
                         // VISITOR_DATA -> playerRequestToken, VIDEO_ID -> streamingDataToken.
-                        return@withLock PoTokenResult(active.visitorToken, videoToken, visitorData)
+                        return@withTimeoutOrNull PoTokenResult(active.visitorToken, videoToken, visitorData)
                     } catch (cancelled: CancellationException) {
                         withContext(NonCancellable) { discard() }
                         throw cancelled
@@ -77,13 +80,19 @@ internal class YouTubePoTokenProvider(
                         discard()
                         PlaybackDiagnostics.youtubeEvent(videoId, "TOKEN_FAILED", reason = PlaybackDiagnostics.reason(error))
                         if (attempt == 1) {
-                            retryAfterMs = now() + 5_000L
-                            return@withLock null
+                            return@withTimeoutOrNull null
                         }
                     }
                 }
                 null
             }
+            if (result == null) {
+                // Includes our own deadline, which previously bypassed cooldown
+                // and advertised unusable token-required clients repeatedly.
+                retryAfterMs = now() + 5_000L
+                discard()
+            }
+            result
         }.also {
             currentCoroutineContext().ensureActive()
             if (it == null) PlaybackDiagnostics.youtubeEvent(videoId, "TOKEN_UNAVAILABLE")

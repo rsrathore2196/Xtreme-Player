@@ -43,6 +43,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -92,6 +93,7 @@ fun PlaylistDetailScreen(
     onRenamePlaylist: (String) -> Unit = {},
     modifier: Modifier = Modifier,
     readOnly: Boolean = false,
+    pinPlaybackActions: Boolean = false,
     listState: androidx.compose.foundation.lazy.LazyListState = androidx.compose.foundation.lazy.rememberLazyListState(),
     footer: (@Composable () -> Unit)? = null,
     onRemoveEntry: ((MusicTrack) -> Unit)? = null
@@ -339,6 +341,7 @@ fun PlaylistDetailScreen(
             }
         }
 
+        if (pinPlaybackActions) PlaylistPlaybackActions(tracks, onPlayTrack)
         LazyColumn(
             state = listState,
             modifier = Modifier
@@ -361,23 +364,25 @@ fun PlaylistDetailScreen(
                         if (playlist.description.isNotBlank()) Text(playlist.description, color = appColors.textSecondary,
                             maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text("${tracks.size} tracks", color = appColors.primaryAccent, fontSize = 12.sp)
-                        Spacer(Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                            Button(onClick = { tracks.firstOrNull()?.let { onPlayTrack(it, tracks) } },
-                                enabled = tracks.isNotEmpty(), shape = CircleShape,
-                                colors = ButtonDefaults.buttonColors(containerColor = appColors.primaryAccent,
-                                    contentColor = appColors.onPrimaryAccent), modifier = Modifier.height(46.dp)) {
-                                Icon(Icons.Default.PlayArrow, null, modifier = Modifier.size(22.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text("PLAY ALL", fontWeight = FontWeight.Bold)
-                            }
-                            OutlinedButton(onClick = { if (tracks.isNotEmpty()) {
-                                val shuffled = tracks.shuffled(); onPlayTrack(shuffled.first(), shuffled)
-                            } }, enabled = tracks.isNotEmpty(), shape = CircleShape,
-                                border = BorderStroke(1.dp, appColors.cardBorder), modifier = Modifier.height(46.dp)) {
-                                Icon(Icons.Default.Shuffle, null, tint = appColors.textPrimary, modifier = Modifier.size(20.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text("SHUFFLE", color = appColors.textPrimary, fontWeight = FontWeight.Bold)
+                        if (!pinPlaybackActions) {
+                            Spacer(Modifier.height(8.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                                Button(onClick = { tracks.firstOrNull()?.let { onPlayTrack(it, tracks) } },
+                                    enabled = tracks.isNotEmpty(), shape = CircleShape,
+                                    colors = ButtonDefaults.buttonColors(containerColor = appColors.primaryAccent,
+                                        contentColor = appColors.onPrimaryAccent), modifier = Modifier.height(46.dp)) {
+                                    Icon(Icons.Default.PlayArrow, null, modifier = Modifier.size(22.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("PLAY ALL", fontWeight = FontWeight.Bold)
+                                }
+                                OutlinedButton(onClick = { if (tracks.isNotEmpty()) {
+                                    val shuffled = tracks.shuffled(); onPlayTrack(shuffled.first(), shuffled)
+                                } }, enabled = tracks.isNotEmpty(), shape = CircleShape,
+                                    border = BorderStroke(1.dp, appColors.cardBorder), modifier = Modifier.height(46.dp)) {
+                                    Icon(Icons.Default.Shuffle, null, tint = appColors.textPrimary, modifier = Modifier.size(20.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("SHUFFLE", color = appColors.textPrimary, fontWeight = FontWeight.Bold)
+                                }
                             }
                         }
                     }
@@ -437,63 +442,65 @@ fun PlaylistDetailScreen(
                         modifier = Modifier.padding(top = 6.dp)
                     )
 
-                    Spacer(modifier = Modifier.height(18.dp))
+                    if (!pinPlaybackActions) {
+                        Spacer(modifier = Modifier.height(18.dp))
 
-                    // ACTION BUTTONS (PLAY ALL & SHUFFLE)
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.Center
-                    ) {
-                        Button(
-                            onClick = {
-                                if (tracks.isNotEmpty()) {
-                                    onPlayTrack(tracks.first(), tracks)
-                                }
-                            },
-                            enabled = tracks.isNotEmpty(),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = appColors.primaryAccent,
-                                contentColor = appColors.onPrimaryAccent
-                            ),
-                            shape = CircleShape,
-                            modifier = Modifier.height(46.dp)
+                        // ACTION BUTTONS (PLAY ALL & SHUFFLE)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.Center
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.PlayArrow,
-                                contentDescription = null,
-                                tint = appColors.onPrimaryAccent,
-                                modifier = Modifier.size(22.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("PLAY ALL", color = appColors.onPrimaryAccent, fontWeight = FontWeight.Bold)
+                            Button(
+                                onClick = {
+                                    if (tracks.isNotEmpty()) {
+                                        onPlayTrack(tracks.first(), tracks)
+                                    }
+                                },
+                                enabled = tracks.isNotEmpty(),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = appColors.primaryAccent,
+                                    contentColor = appColors.onPrimaryAccent
+                                ),
+                                shape = CircleShape,
+                                modifier = Modifier.height(46.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.PlayArrow,
+                                    contentDescription = null,
+                                    tint = appColors.onPrimaryAccent,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("PLAY ALL", color = appColors.onPrimaryAccent, fontWeight = FontWeight.Bold)
+                            }
+
+                            Spacer(modifier = Modifier.width(14.dp))
+
+                            OutlinedButton(
+                                onClick = {
+                                    if (tracks.isNotEmpty()) {
+                                        val shuffled = tracks.shuffled()
+                                        onPlayTrack(shuffled.first(), shuffled)
+                                    }
+                                },
+                                enabled = tracks.isNotEmpty(),
+                                border = BorderStroke(1.dp, appColors.cardBorder),
+                                shape = CircleShape,
+                                modifier = Modifier.height(46.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Shuffle,
+                                    contentDescription = null,
+                                    tint = appColors.textPrimary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("SHUFFLE", color = appColors.textPrimary, fontWeight = FontWeight.Bold)
+                            }
                         }
 
-                        Spacer(modifier = Modifier.width(14.dp))
-
-                        OutlinedButton(
-                            onClick = {
-                                if (tracks.isNotEmpty()) {
-                                    val shuffled = tracks.shuffled()
-                                    onPlayTrack(shuffled.first(), shuffled)
-                                }
-                            },
-                            enabled = tracks.isNotEmpty(),
-                            border = BorderStroke(1.dp, appColors.cardBorder),
-                            shape = CircleShape,
-                            modifier = Modifier.height(46.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Shuffle,
-                                contentDescription = null,
-                                tint = appColors.textPrimary,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("SHUFFLE", color = appColors.textPrimary, fontWeight = FontWeight.Bold)
-                        }
+                        Spacer(modifier = Modifier.height(20.dp))
                     }
-
-                    Spacer(modifier = Modifier.height(20.dp))
                 }
             }
 
@@ -535,4 +542,36 @@ fun PlaylistDetailScreen(
         }
     }
 }
+}
+
+/** The liked-song actions remain available as the list scrolls, using the existing playlist style. */
+@Composable
+private fun PlaylistPlaybackActions(tracks: List<MusicTrack>, onPlay: (MusicTrack, List<MusicTrack>) -> Unit) {
+    val colors = LocalAppColors.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var preparation by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    Row(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+        Button(onClick = {
+            preparation?.cancel()
+            tracks.firstOrNull()?.let { onPlay(it, tracks) }
+        }, enabled = tracks.isNotEmpty(), shape = CircleShape,
+            colors = ButtonDefaults.buttonColors(containerColor = colors.primaryAccent, contentColor = colors.onPrimaryAccent),
+            modifier = Modifier.weight(1f).height(46.dp).testTag("liked_songs_play")) {
+            Icon(Icons.Default.PlayArrow, null, Modifier.size(22.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("PLAY ALL", fontWeight = FontWeight.Bold)
+        }
+        OutlinedButton(onClick = {
+            preparation?.cancel()
+            preparation = scope.launch {
+                val queue = kotlinx.coroutines.withContext(com.example.performance.AppDispatchers.CpuBounded) { tracks.shuffled() }
+                queue.firstOrNull()?.let { onPlay(it, queue) }
+            }
+        }, enabled = tracks.isNotEmpty(), shape = CircleShape, border = BorderStroke(1.dp, colors.cardBorder),
+            modifier = Modifier.weight(1f).height(46.dp).testTag("liked_songs_shuffle")) {
+            Icon(Icons.Default.Shuffle, null, tint = colors.textPrimary, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("SHUFFLE", color = colors.textPrimary, fontWeight = FontWeight.Bold)
+        }
+    }
 }

@@ -31,6 +31,11 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 
 /** Use the original provider's highest suitable cover, including full-screen art. */
 internal const val PLAYER_ARTWORK_DIMENSION = 2000
+private fun playerArtworkDecodeSize(context: Context): IntSize {
+    val pixels = maxOf(context.resources.displayMetrics.widthPixels, context.resources.displayMetrics.heightPixels)
+        .coerceIn(1, PLAYER_ARTWORK_DIMENSION)
+    return IntSize(pixels, pixels)
+}
 private val neutralPlayerBackground = Brush.verticalGradient(listOf(Color(0xff101010), Color(0xff101010)))
 
 /** Only the selected recording is prefetched; no catalog-wide lookups or extra cache. */
@@ -42,14 +47,10 @@ internal fun prepareCurrentPlayerArtwork(context: Context, tracks: Flow<MusicTra
         .collectLatest { (track, visible) ->
             if (track == null || !visible) return@collectLatest
             try {
-                val pixels = maxOf(context.resources.displayMetrics.widthPixels,
-                    context.resources.displayMetrics.heightPixels).coerceIn(1, PLAYER_ARTWORK_DIMENSION)
                 val request = buildOptimizedImageRequest(context, track.coverUrl, PLAYER_ARTWORK_DIMENSION,
-                    track, decodeSize = IntSize(pixels, pixels), currentTrack = true)
+                    track, decodeSize = playerArtworkDecodeSize(context), currentTrack = true)
                 val loader = loaderFor(context)
                 val result = loader.execute(request) as? SuccessResult ?: return@collectLatest
-                val directRequest = buildOptimizedImageRequest(context, track.coverUrl, PLAYER_ARTWORK_DIMENSION, track, currentTrack = true)
-                loader.enqueue(directRequest)
                 val key = playerPaletteKey(track, true, Color.White, Color.Black, request.data.toString())
                 if (TrackPaletteCache.get(key) == null) {
                     // Network and decoding started at selection; optional color analysis
@@ -68,17 +69,6 @@ internal fun prepareCurrentPlayerArtwork(context: Context, tracks: Flow<MusicTra
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { /* A failed prefetch never prevents normal on-demand image loading. */ }
         }
-}
-
-/** Pre-fetch the high-res player artwork immediately when a track is queued or selected. */
-fun prefetchPlayerArtwork(context: Context, track: MusicTrack?) {
-    if (track == null || track.coverUrl.isBlank()) return
-    try {
-        val app = context.applicationContext
-        val loader = app.imageLoader
-        val request = buildOptimizedImageRequest(app, track.coverUrl, PLAYER_ARTWORK_DIMENSION, track, currentTrack = true)
-        loader.enqueue(request)
-    } catch (_: Exception) {}
 }
 
 /** Neutral player controls are independent of app accents, album colors, and color mode. */
@@ -107,7 +97,7 @@ internal fun rememberPlayerArtworkRequest(track: MusicTrack, active: Boolean): I
     SideEffect { visibility.active.value = active }
     return remember(context, track.id, track.coverUrl, visibility) {
         buildOptimizedImageRequest(context, track.coverUrl, PLAYER_ARTWORK_DIMENSION, track,
-            visibility = visibility, currentTrack = true)
+            decodeSize = playerArtworkDecodeSize(context), visibility = visibility, currentTrack = true)
     }
 }
 

@@ -127,6 +127,14 @@ internal fun resumeMediaSearchPlayback(player: Player) {
     player.play()
 }
 
+internal suspend fun <T> resolveWhileConnecting(connect: suspend () -> Unit, resolve: suspend () -> T): T =
+    kotlinx.coroutines.coroutineScope {
+        val connection = async(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) { connect() }
+        val result = resolve()
+        connection.await()
+        result
+    }
+
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class PlaybackManager(
     private val context: Context,
@@ -522,8 +530,7 @@ class PlaybackManager(
                     forceRefresh = failedUrl != null, failedUrl = failedUrl,
                     preferredSourceId = sameSource ?: if (returnToYouTube) policy.sourceId(PlaybackSourceKind.YOUTUBE) else origin?.sourceId.takeIf { restoring }, manualUpgrade = enhancerTurnedOn) }
                 if (!owns() || player.currentMediaItem?.playbackUri()?.toString() != originalUri) return@launch
-                if (resolved.audioUrl == originalUri || failedUrl == null && originalUri != null &&
-                    com.example.data.remote.YouTubeAudioStreamService.sameRepresentation(originalUri, resolved.audioUrl)) {
+                if (keepResolvedSource(originalUri, resolved.audioUrl, failedUrl)) {
                     if (restoring) {
                         enhancerOrigin = null
                         val item = player.currentMediaItem ?: return@launch
@@ -1032,8 +1039,6 @@ class PlaybackManager(
 
                     // The upcoming song in queue is the next recommended track
                     val nextTrackInQueue = activeQueue.getOrNull(index + 1)
-                    com.example.ui.util.prefetchPlayerArtwork(context, matchedTrack)
-                    com.example.ui.util.prefetchPlayerArtwork(context, nextTrackInQueue)
 
                     _uiState.update {
                         it.copy(
@@ -1171,6 +1176,10 @@ class PlaybackManager(
                     // or DSP failure and would unnecessarily change this recording.
                     recoveryJob?.cancel()
                     recoveryJob = null
+                    if (error.canRetryAudioOutput() && MusicService.recoveringAudioTrackId == current.id) {
+                        _uiState.update { it.copy(isLoading = true, errorMessage = null) }
+                        return
+                    }
                     showPlaybackFailure("Audio output failed. Please try playing again.")
                     return
                 }
@@ -1637,7 +1646,6 @@ class PlaybackManager(
         _playbackPosition.value = 0L
         _bufferedPosition.value = 0L
         _trackDuration.value = track.durationMs
-        com.example.ui.util.prefetchPlayerArtwork(context, track)
         _uiState.update { it.copy(currentTrack = track, isPlaying = false, isLoading = true,
             qualityBadge = track.qualityBadge.ifBlank { "HQ Stream" },
             currentPositionMs = 0L, bufferedPositionMs = 0L, durationMs = track.durationMs,
@@ -1718,9 +1726,6 @@ class PlaybackManager(
         playResolutionJob?.cancel()
         cancelQueueRefill()
         rememberQueueCandidates(queue)
-        com.example.ui.util.prefetchPlayerArtwork(context, track)
-        val nextTrack = queue.getOrNull(queue.indexOfFirst { it.id == track.id } + 1)
-        com.example.ui.util.prefetchPlayerArtwork(context, nextTrack)
         val generation = beginSelection(track)
         pendingPolicyRestart = { playTrack(track, queue, isExplicitPlaylist, isInfiniteRadio, collectionLoader) }
         val jioDeadline = initialJioDeadlineMs
@@ -1734,15 +1739,16 @@ class PlaybackManager(
                 ownedQueue = withContext(AppDispatchers.CpuBounded) { queue.toList() }
                 if (!ownsSelection(track.id, generation)) return@launch
                 selectionContext = ownedQueue
-                awaitController()
-                val resolved = if (needsResolution) withContext(AppDispatchers.Io) {
-                    (repo ?: throw IllegalStateException("Music catalogue is unavailable. Please try again."))
-                        .resolvePlayableTrack(track, jioDeadlineMs = jioDeadline, onAddonLookupFinished = { elapsed ->
-                            withContext(Dispatchers.Main.immediate) {
-                                if (ownsSelection(track.id, generation)) initialJioDeadlineMs = jioDeadline + elapsed
-                            }
-                        })
-                } else track
+                val resolved = resolveWhileConnecting(connect = { awaitController() }) {
+                    if (needsResolution) withContext(AppDispatchers.Io) {
+                        (repo ?: throw IllegalStateException("Music catalogue is unavailable. Please try again."))
+                            .resolvePlayableTrack(track, jioDeadlineMs = jioDeadline, onAddonLookupFinished = { elapsed ->
+                                withContext(Dispatchers.Main.immediate) {
+                                    if (ownsSelection(track.id, generation)) initialJioDeadlineMs = jioDeadline + elapsed
+                                }
+                            })
+                    } else track
+                }
                 if (isActive && ownsSelection(track.id, generation)) {
                     val host = Uri.parse(resolved.audioUrl).host.orEmpty()
                     initialJioDeadlineMs = if (host == "saavncdn.com" || host.endsWith(".saavncdn.com"))

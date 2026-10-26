@@ -429,8 +429,6 @@ class HomeViewModel(
         initialCards?.chart?.limitShelf() ?: SectionState(title = getAuthoritativeTrendingTitle(resolveCountryDisplayName(_userProfile.value)),
             subtitle = "Regional chart discoveries", isLoading = true),
         initialCards?.personalized?.limitShelf() ?: SectionState(title = "Recommended for You", subtitle = "Curated picks tailored to your sonic taste"),
-        initialCards?.similarArtists?.limitShelf()?.withSeedHeading(Shelf.SIMILAR, initialCards.seedArtist)
-            ?: SectionState(title = "More from Similar Artists"),
         initialCards?.inspiredTrack?.limitShelf()?.withSeedHeading(Shelf.INSPIRED, initialCards.seedTitle)
             ?: SectionState(title = "Because You Listened")
     ))
@@ -477,7 +475,7 @@ class HomeViewModel(
     private fun shelfContext(shelf: Shelf): String {
         val seed = activeRecommendationTrack()
         val extra = when (shelf) {
-            Shelf.SIMILAR, Shelf.INSPIRED -> UnifiedRecommendationEngine.seedKey(seed)
+            Shelf.INSPIRED -> UnifiedRecommendationEngine.seedKey(seed)
             Shelf.PERSONALIZED -> tasteProfile.value.topRecentTrackIds.joinToString(",") + "|" + favoriteTracks.value.map { it.id }.sorted().joinToString(",")
             else -> ""
         }
@@ -487,7 +485,7 @@ class HomeViewModel(
     private fun needsShelfLoad(shelf: Shelf): Boolean {
         if (shelf !in eligibleShelves()) return false
         if (shelf == Shelf.PERSONALIZED && tasteProfile.value.isColdStart) return false
-        if (shelf in setOf(Shelf.SIMILAR, Shelf.INSPIRED) && activeRecommendationTrack() == null) return false
+        if (shelf in setOf(Shelf.INSPIRED) && activeRecommendationTrack() == null) return false
         val context = shelfContext(shelf)
         val now = System.currentTimeMillis()
         if (shelfAttempts[shelf]?.let { it.context == context && now - it.fetchedAt in 0 until 60_000L } == true) return false
@@ -602,9 +600,8 @@ class HomeViewModel(
         val chart: List<MusicTrack> = emptyList(),
         val generation: Long = 0L,
         val personalized: List<MusicTrack> = emptyList(),
-        val similar: List<MusicTrack> = emptyList(),
         val inspired: List<MusicTrack> = emptyList(),
-        val source: String = "", val seedKey: String = "", val seedArtist: String = "", val seedTitle: String = "",
+        val source: String = "", val seedKey: String = "", val seedTitle: String = "",
         val ready: Set<Shelf> = emptySet(), val contextKey: String = "", val revision: Long = 0L
     ) {
         internal fun withResults(results: Map<Shelf, List<MusicTrack>>, batch: UnifiedRecommendationEngine.Batch,
@@ -613,15 +610,13 @@ class HomeViewModel(
             fun retain(shelf: Shelf, previous: List<MusicTrack>): List<MusicTrack> = results[shelf]?.let {
                 if (it == previous) previous else it
             } ?: previous.takeIf { trusted }.orEmpty()
-            val updatesSeed = sameSeed && results.keys.any { it == Shelf.SIMILAR || it == Shelf.INSPIRED }
+            val updatesSeed = sameSeed && results.keys.any { it == Shelf.INSPIRED }
             val keepRelated = !updatesSeed || seedKey == batch.seedKey
             val next = copy(quick = retain(Shelf.QUICK, quick), era = retain(Shelf.ERA, era),
                 chart = retain(Shelf.CHART, chart), personalized = retain(Shelf.PERSONALIZED, personalized),
-                similar = retain(Shelf.SIMILAR, similar.takeIf { keepRelated }.orEmpty()),
                 inspired = retain(Shelf.INSPIRED, inspired.takeIf { keepRelated }.orEmpty()),
                 source = UnifiedRecommendationEngine.SOURCE, contextKey = profileKey,
                 seedKey = if (updatesSeed) batch.seedKey else seedKey,
-                seedArtist = if (updatesSeed) batch.seedArtist else seedArtist,
                 seedTitle = if (updatesSeed) batch.seedTitle else seedTitle,
                 ready = ready.takeIf { trusted }.orEmpty() + results.keys)
             return if (next == this && (!explicit || generation == nextGeneration)) this
@@ -635,12 +630,11 @@ class HomeViewModel(
         val era = cards.eraCandidates.ifEmpty { cards.era.tracks }
         val chart = cards.chartCandidates.ifEmpty { cards.chart.tracks }
         val personal = cards.personalizedCandidates.ifEmpty { cards.personalized.tracks }
-        val similar = cards.similarArtistCandidates.ifEmpty { cards.similarArtists.tracks }
         val inspired = cards.inspiredTrackCandidates.ifEmpty { cards.inspiredTrack.tracks }
         val pools = mapOf(Shelf.QUICK to quick, Shelf.ERA to era, Shelf.CHART to chart,
-            Shelf.PERSONALIZED to personal, Shelf.SIMILAR to similar, Shelf.INSPIRED to inspired)
-        return Candidates(quick, era, chart, cards.generation, personal, similar, inspired,
-            cards.recommendationSource, cards.seedKey, cards.seedArtist, cards.seedTitle,
+            Shelf.PERSONALIZED to personal, Shelf.INSPIRED to inspired)
+        return Candidates(quick, era, chart, cards.generation, personal, inspired,
+            cards.recommendationSource, cards.seedKey, cards.seedTitle,
             pools.filterValues { it.isNotEmpty() }.keys, cards.profileKey)
     }
     private val candidates = MutableStateFlow(initialCards?.let {
@@ -930,15 +924,13 @@ class HomeViewModel(
         val eligible = eligibleShelves().intersect(inputs.window.shelves)
         val relevantSeed = pool.seedKey.isNotBlank() && pool.seedKey == UnifiedRecommendationEngine.seedKey(activeRecommendationTrack())
         val sections = shelfPreparation.prepare(mapOf(Shelf.QUICK to pool.quick, Shelf.ERA to pool.era,
-            Shelf.CHART to pool.chart, Shelf.PERSONALIZED to pool.personalized, Shelf.SIMILAR to pool.similar,
-            Shelf.INSPIRED to pool.inspired), eligible, taste, recent, exposure, relevantSeed, ::yieldHomePreparation)
+            Shelf.CHART to pool.chart, Shelf.PERSONALIZED to pool.personalized, Shelf.INSPIRED to pool.inspired), eligible, taste, recent, exposure, relevantSeed, ::yieldHomePreparation)
         val chart = sections.getValue(Shelf.CHART)
         val era = sections.getValue(Shelf.ERA)
         val personalized = sections.getValue(Shelf.PERSONALIZED)
         val quick = sections.getValue(Shelf.QUICK)
-        val similar = sections.getValue(Shelf.SIMILAR)
         val inspired = sections.getValue(Shelf.INSPIRED)
-        val shown = chart + era + quick + personalized + similar + inspired + _mostListenedArtists.value.flatMap { it.tracks }
+        val shown = chart + era + quick + personalized + inspired + _mostListenedArtists.value.flatMap { it.tracks }
         val nextExposure = shown.map(HomeRecommendationPolicy::metadataKey).toSet()
         val country = resolveCountryDisplayName(inputs.profile)
         val chartTitle = getAuthoritativeTrendingTitle(country)
@@ -965,10 +957,6 @@ class HomeViewModel(
                 chart = if (Shelf.CHART in pool.ready) ready(old.chart, chart, "Popular in $country • your selected languages")
                     .let { if (it.title == chartTitle) it else it.copy(title = chartTitle) } else old.chart,
                 personalized = if (rankingReady && Shelf.PERSONALIZED in pool.ready) ready(old.personalized, personalized, "Inspired by your listening") else old.personalized,
-                similarArtists = if (relevantSeed && Shelf.SIMILAR in pool.ready) {
-                    val heading = old.similarArtists.withSeedHeading(Shelf.SIMILAR, pool.seedArtist)
-                    ready(old.similarArtists, similar, heading.subtitle, heading.title)
-                } else old.similarArtists,
                 inspiredTrack = if (relevantSeed && Shelf.INSPIRED in pool.ready) {
                     val heading = old.inspiredTrack.withSeedHeading(Shelf.INSPIRED, pool.seedTitle)
                     ready(old.inspiredTrack, inspired, heading.subtitle, heading.title)
@@ -1012,10 +1000,9 @@ class HomeViewModel(
             cards.quick, cards.era, cards.chart, _listeningHistoryCard.value, cards.personalized,
             _mostListenedArtists.value.take(20), pool.quick, pool.era, pool.chart,
             _catalogTracks.value, chartRefreshedAt = lastRegionalRefresh,
-            similarArtists = cards.similarArtists, inspiredTrack = cards.inspiredTrack,
-            personalizedCandidates = pool.personalized, similarArtistCandidates = pool.similar,
-            inspiredTrackCandidates = pool.inspired, recommendationSource = pool.source,
-            seedKey = pool.seedKey, seedArtist = pool.seedArtist, seedTitle = pool.seedTitle,
+            inspiredTrack = cards.inspiredTrack,
+            personalizedCandidates = pool.personalized, inspiredTrackCandidates = pool.inspired, recommendationSource = pool.source,
+            seedKey = pool.seedKey, seedTitle = pool.seedTitle,
             shelfLoads = shelfLoads.toMap(), readyShelves = pool.ready.mapTo(mutableSetOf()) { it.name },
             presentationComplete = initialComplete || !preparingInitialHome)
         shelfCache.savePresentationCheckpoint(snapshot, initialComplete)
@@ -1138,7 +1125,6 @@ class HomeViewModel(
     private var cachePreviewPool: Candidates? = initialCards?.let { candidates.value }
     private fun cachedSections(cached: SavedHomeCards) = RecommendationCards(cached.quick.limitShelf(),
         cached.era.limitShelf(), cached.chart.limitShelf(), cached.personalized.limitShelf(),
-        cached.similarArtists.limitShelf().withSeedHeading(Shelf.SIMILAR, cached.seedArtist),
         cached.inspiredTrack.limitShelf().withSeedHeading(Shelf.INSPIRED, cached.seedTitle))
 
     private suspend fun restoreCachedCards(cached: SavedHomeCards, additional: Boolean) {
@@ -1178,11 +1164,10 @@ class HomeViewModel(
                     era = pool(current.era, baseline.era, restoredPool.era),
                     chart = pool(current.chart, baseline.chart, restoredPool.chart),
                     personalized = pool(current.personalized, baseline.personalized, restoredPool.personalized),
-                    similar = if (sameSeed) pool(current.similar, baseline.similar, restoredPool.similar) else current.similar,
                     inspired = if (sameSeed) pool(current.inspired, baseline.inspired, restoredPool.inspired) else current.inspired,
                     ready = current.ready + restoredPool.ready.filter { shelf ->
                         preparedCards.value.section(shelf) == sections.section(shelf) &&
-                            (shelf !in setOf(Shelf.SIMILAR, Shelf.INSPIRED) || sameSeed)
+                            (shelf !in setOf(Shelf.INSPIRED) || sameSeed)
                     })
                 if (savedCandidates == baseline) savedCandidates = candidates.value
             }
@@ -1508,12 +1493,12 @@ class HomeViewModel(
                 val failed = failures.filterValues { it > android.os.SystemClock.elapsedRealtime() }.keys
                 val old = candidates.value
                 val affected = mapOf(Shelf.QUICK to old.quick, Shelf.ERA to old.era, Shelf.CHART to old.chart,
-                    Shelf.PERSONALIZED to old.personalized, Shelf.SIMILAR to old.similar, Shelf.INSPIRED to old.inspired)
+                    Shelf.PERSONALIZED to old.personalized, Shelf.INSPIRED to old.inspired)
                     .filterValues { tracks -> tracks.any { it.id in failed } }.keys
                 if (affected.isEmpty()) return@collectLatest
                 fun usable(tracks: List<MusicTrack>) = tracks.filterNot { it.id in failed }
                 candidates.update { pool -> pool.copy(quick = usable(pool.quick), era = usable(pool.era), chart = usable(pool.chart),
-                    personalized = usable(pool.personalized), similar = usable(pool.similar), inspired = usable(pool.inspired), revision = pool.revision + 1) }
+                    personalized = usable(pool.personalized), inspired = usable(pool.inspired), revision = pool.revision + 1) }
                 _catalogTracks.update { tracks -> tracks.filterNot { it.recommendationOnly && it.id in failed } }
                 playbackManager.setCandidatePool(_catalogTracks.value)
                 affected.forEach { shelfLoads.remove(it.name); shelfAttempts.remove(it) }
@@ -1533,7 +1518,7 @@ class HomeViewModel(
                 initialHomePrepared.await()
                 awaitHomePresentation()
                 if (activeRecommendationSeed != demand.second && activeRecommendationShelves.isNotEmpty() &&
-                    activeRecommendationShelves.all { it == Shelf.SIMILAR || it == Shelf.INSPIRED }) {
+                    activeRecommendationShelves.all { it == Shelf.INSPIRED }) {
                     // An obsolete contextual-only pass must not delay the newly selected song.
                     homeRefreshJob?.cancelAndJoin()
                 }
@@ -1571,7 +1556,6 @@ class HomeViewModel(
         Shelf.ERA -> StartupTask.ERA
         Shelf.CHART -> StartupTask.CHART
         Shelf.PERSONALIZED -> StartupTask.PERSONALIZED
-        Shelf.SIMILAR -> StartupTask.SIMILAR
         Shelf.INSPIRED -> StartupTask.INSPIRED
     }
 

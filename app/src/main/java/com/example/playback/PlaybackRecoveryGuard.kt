@@ -6,6 +6,24 @@ import androidx.media3.common.PlaybackException
 internal fun PlaybackException.isAudioPipelineFailure(): Boolean =
     errorCode in 5000..5999 || errorCode == PlaybackException.ERROR_CODE_FAILED_RUNTIME_CHECK
 
+internal fun PlaybackException.canRetryAudioOutput(): Boolean = errorCode in setOf(
+    PlaybackException.ERROR_CODE_AUDIO_TRACK_INIT_FAILED, PlaybackException.ERROR_CODE_AUDIO_TRACK_WRITE_FAILED)
+
+internal fun keepResolvedSource(currentUri: String?, resolvedUri: String, failedUri: String?): Boolean =
+    failedUri == null && (currentUri == resolvedUri || currentUri != null &&
+        com.example.data.remote.YouTubeAudioStreamService.sameRepresentation(currentUri, resolvedUri))
+
+/** Application-looper only. Rebuild the output on the same player/source and keep the queue intact. */
+internal fun restartAudioOutput(player: androidx.media3.common.Player) {
+    val index = player.currentMediaItemIndex
+    val position = player.currentPosition.coerceAtLeast(0L)
+    val resume = player.playWhenReady
+    player.stop()
+    player.seekTo(index, position)
+    player.prepare()
+    player.playWhenReady = resume
+}
+
 /** Main-thread-owned retry budget and generation for asynchronous stream recovery. */
 internal class PlaybackRecoveryGuard {
     private var trackId: String? = null

@@ -10,8 +10,8 @@ import com.example.performance.AppDispatchers
 import kotlinx.coroutines.asExecutor
 
 @Database(
-    entities = [TrackEntity::class, PlaylistEntity::class, PlaylistTrackCrossRef::class, ListeningEventEntity::class, ListeningTotal::class, ListeningCheckpoint::class],
-    version = 13,
+    entities = [TrackEntity::class, PlaylistEntity::class, PlaylistTrackCrossRef::class, ListeningEventEntity::class, ListeningTotal::class, ListeningCheckpoint::class, ListeningIdentityMigration::class],
+    version = 14,
     exportSchema = true
 )
 abstract class MusicDatabase : RoomDatabase() {
@@ -199,6 +199,16 @@ abstract class MusicDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE listening_checkpoint_new (occurrence TEXT NOT NULL PRIMARY KEY, days TEXT NOT NULL, eventId INTEGER NOT NULL)")
+                db.execSQL("INSERT INTO listening_checkpoint_new (occurrence, days, eventId) SELECT occurrence, days, eventId FROM listening_checkpoint")
+                db.execSQL("DROP TABLE listening_checkpoint")
+                db.execSQL("ALTER TABLE listening_checkpoint_new RENAME TO listening_checkpoint")
+                db.execSQL("CREATE TABLE listening_identity_migrations (origin TEXT NOT NULL, bucket TEXT NOT NULL, catalogIdentity TEXT NOT NULL, canonicalIdentity TEXT NOT NULL, listenedMs INTEGER NOT NULL, plays INTEGER NOT NULL, PRIMARY KEY(origin, bucket, catalogIdentity))")
+            }
+        }
+
         val ALL_MIGRATIONS = arrayOf(
             MIGRATION_1_2,
             MIGRATION_2_3,
@@ -211,7 +221,7 @@ abstract class MusicDatabase : RoomDatabase() {
             MIGRATION_8_9,
             MIGRATION_9_10,
             MIGRATION_10_11,
-            MIGRATION_11_12, MIGRATION_12_13
+            MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14
         )
 
         fun getDatabase(context: Context): MusicDatabase {

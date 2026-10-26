@@ -18,7 +18,7 @@ enum class StartupTask(val group: StartupGroup) {
     HOME_LAYOUT(StartupGroup.HOME), SEARCH_LAYOUT(StartupGroup.HOME), LIBRARY_LAYOUT(StartupGroup.HOME),
     INITIAL_ARTWORK(StartupGroup.HOME),
     PERSONALIZATION(StartupGroup.HOME), QUICK(StartupGroup.HOME), ERA(StartupGroup.HOME),
-    CHART(StartupGroup.HOME), PERSONALIZED(StartupGroup.HOME), SIMILAR(StartupGroup.HOME),
+    CHART(StartupGroup.HOME), PERSONALIZED(StartupGroup.HOME),
     INSPIRED(StartupGroup.HOME), HERO(StartupGroup.HOME), PRESENTATION(StartupGroup.HOME),
     RECENT_HISTORY(StartupGroup.RECENTS), RECENT_ARTISTS(StartupGroup.RECENTS),
     PLAYER_SESSION(StartupGroup.PLAYER), PLAYER_CONNECTION(StartupGroup.PLAYER)
@@ -48,7 +48,7 @@ data class StartupReadiness(
             StartupTask.RECENT_HISTORY, StartupTask.RECENT_ARTISTS -> "Syncing your listening history"
             StartupTask.PLAYER_SESSION, StartupTask.PLAYER_CONNECTION -> "Restoring your last session"
             StartupTask.QUICK, StartupTask.ERA, StartupTask.CHART, StartupTask.PERSONALIZED,
-            StartupTask.SIMILAR, StartupTask.INSPIRED -> "Finding music for your taste"
+            StartupTask.INSPIRED -> "Finding music for your taste"
             StartupTask.HERO, StartupTask.PRESENTATION -> "Preparing the final view"
             null -> "Preparing your music"
         }

@@ -111,11 +111,30 @@ class YouTubePoTokenProviderTest {
         val provider = YouTubePoTokenProvider({ opens++; throw IOException("transient") }, { true }, { now })
         assertNull(provider.getPoToken("abcdefghijk", "visitor", null))
         assertEquals(2, opens)
+        assertTrue("Failed attestation must not advertise token-required clients", provider.capabilities.providers.isEmpty())
         assertNull(provider.getPoToken("abcdefghijk", "visitor", null))
         assertEquals(2, opens)
         now = 5_001
+        assertFalse(provider.capabilities.providers.isEmpty())
         assertNull(provider.getPoToken("abcdefghijk", "visitor", null))
         assertEquals(4, opens)
+        provider.close()
+    }
+
+    @Test fun tokenTimeoutEntersCooldownAndLeavesUntokenizedNativeClientsAvailable() = runTest {
+        var now = 0L
+        var opens = 0
+        val provider = YouTubePoTokenProvider({ opens++; Browser().apply { suspended = true } }, { true }, { now }, timeoutMs = 100)
+        assertNull(provider.getPoToken("abcdefghijk", "visitor", null))
+        assertTrue(provider.capabilities.providers.isEmpty())
+        assertNull(provider.getPoToken("lmnopqrstuv", "visitor", null))
+        assertEquals("Another song must not restart a timed-out WebView during cooldown", 1, opens)
+        val selection = ContentAwareFallbackStrategy().selectClients(ClientSelectionRequest(ContentHints(wantVideo = false),
+            authenticated = false, webViewAvailable = provider.capabilities.usesWebView,
+            availablePoTokenProviders = provider.capabilities.providers))
+        assertTrue("Native fallback can still consider non-token clients", selection.candidates.isNotEmpty())
+        now = 5_001
+        assertFalse(provider.capabilities.providers.isEmpty())
         provider.close()
     }
 

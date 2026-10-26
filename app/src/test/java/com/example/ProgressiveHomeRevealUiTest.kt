@@ -35,7 +35,7 @@ class ProgressiveHomeRevealUiTest {
                 LocalArtworkRequestsActive provides false) {
                 HomeScreenContent(ytmCard = shelf("Quick Picks"), countryLanguageCard = shelf("Country Chart"),
                     eraCard = shelf("Era Hits"), personalizedCard = shelf("Personalized"),
-                    similarArtistsCard = shelf("Similar"), inspiredTrackCard = shelf("Inspired"),
+                    inspiredTrackCard = shelf("Inspired"),
                     onTrackClick = { _, _ -> }, onToggleFavorite = {})
             } }
         }

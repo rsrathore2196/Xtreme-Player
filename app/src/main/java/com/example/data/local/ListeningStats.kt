@@ -19,7 +19,12 @@ data class ListeningTotal(
         source = if (trackId.startsWith("yt_")) "YouTube Music" else "", isrc = isrc)
 }
 @Entity(tableName = "listening_checkpoint")
-data class ListeningCheckpoint(@PrimaryKey val id: Int = 1, val occurrence: String, val days: String, val eventId: Long)
+data class ListeningCheckpoint(@PrimaryKey val occurrence: String, val days: String, val eventId: Long)
+
+/** Contribution already folded from a catalog identity into an ISRC, retained across backup imports. */
+@Entity(tableName = "listening_identity_migrations", primaryKeys = ["origin", "bucket", "catalogIdentity"])
+data class ListeningIdentityMigration(val origin: String, val bucket: String, val catalogIdentity: String,
+    val canonicalIdentity: String, val listenedMs: Long, val plays: Long)
 
 @Dao
 interface ListeningStatsDao {
@@ -28,13 +33,36 @@ interface ListeningStatsDao {
     @Query("SELECT * FROM listening_totals") suspend fun all(): List<ListeningTotal>
     @Query("SELECT * FROM listening_totals WHERE kind='song' AND identity=:identity")
     suspend fun songRows(identity: String): List<ListeningTotal>
-    @Query("DELETE FROM listening_totals WHERE kind='song' AND identity=:identity")
-    suspend fun deleteSongIdentity(identity: String)
+    @Query("DELETE FROM listening_totals WHERE origin=:origin AND bucket=:bucket AND kind='song' AND identity=:identity")
+    suspend fun deleteSongRow(origin: String, bucket: String, identity: String)
     @Query("SELECT * FROM listening_totals WHERE origin=:origin AND bucket=:bucket AND kind=:kind AND identity=:identity")
     suspend fun row(origin: String, bucket: String, kind: String, identity: String): ListeningTotal?
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun put(row: ListeningTotal)
-    @Query("SELECT * FROM listening_checkpoint WHERE id=1") suspend fun checkpoint(): ListeningCheckpoint?
+    @Query("SELECT * FROM listening_checkpoint WHERE occurrence=:occurrence") suspend fun checkpoint(occurrence: String): ListeningCheckpoint?
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun checkpoint(row: ListeningCheckpoint)
+    // Pending journal entries must retain their watermarks until the journal's acknowledgement is durable.
+    @Query("DELETE FROM listening_checkpoint WHERE occurrence NOT IN (:pending) AND rowid NOT IN (SELECT rowid FROM listening_checkpoint ORDER BY rowid DESC LIMIT 32)")
+    suspend fun pruneCheckpoints(pending: List<String>)
+    @Query("SELECT * FROM listening_identity_migrations") suspend fun identityMigrations(): List<ListeningIdentityMigration>
+    @Query("SELECT * FROM listening_identity_migrations WHERE origin=:origin AND bucket=:bucket AND catalogIdentity=:catalog")
+    suspend fun identityMigration(origin: String, bucket: String, catalog: String): ListeningIdentityMigration?
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun putMigration(row: ListeningIdentityMigration)
+}
+
+/** Caller owns the Room transaction. Apply only a contribution not previously included in its ISRC total. */
+internal suspend fun ListeningStatsDao.migrateSongIdentity(row: ListeningTotal, canonical: String): Boolean {
+    val previous = identityMigration(row.origin, row.bucket, row.identity)
+    if (previous != null && previous.canonicalIdentity != canonical) return false // Conflicting ISRC evidence stays separate.
+    val target = this.row(row.origin, row.bucket, "song", canonical)
+    val millis = (row.listenedMs - (previous?.listenedMs ?: 0L)).coerceAtLeast(0L)
+    val plays = (row.plays - (previous?.plays ?: 0L)).coerceAtLeast(0L)
+    if (target != null || millis > 0L || plays > 0L) put((target ?: row).copy(identity = canonical,
+        isrc = canonical.removePrefix("isrc:"), listenedMs = (target?.listenedMs ?: 0L) + millis,
+        plays = (target?.plays ?: 0L) + plays))
+    putMigration(ListeningIdentityMigration(row.origin, row.bucket, row.identity, canonical,
+        maxOf(row.listenedMs, previous?.listenedMs ?: 0L), maxOf(row.plays, previous?.plays ?: 0L)))
+    deleteSongRow(row.origin, row.bucket, row.identity)
+    return true
 }
 
 enum class ListeningPeriod(val label: String) {
@@ -125,6 +153,25 @@ object ListeningSessions {
 
 /** Optional backup section: original per-installation counters make repeated imports idempotent. */
 object ListeningStatsBackup {
+    fun encodeMigrations(rows: List<ListeningIdentityMigration>) = org.json.JSONArray(rows.map { row ->
+        org.json.JSONObject().put("origin", row.origin).put("bucket", row.bucket).put("catalog", row.catalogIdentity)
+            .put("canonical", row.canonicalIdentity).put("listenedMs", row.listenedMs).put("plays", row.plays)
+    })
+    fun decodeMigrations(array: org.json.JSONArray): List<ListeningIdentityMigration> {
+        require(array.length() <= 500_000) { "Listening identities are too large" }
+        return (0 until array.length()).map { index ->
+            val row = array.getJSONObject(index)
+            val origin = row.getString("origin").also { require(it.isNotBlank() && it.length <= 8192) }
+            val bucket = row.getString("bucket")
+            if (bucket.length == 7) YearMonth.parse(bucket) else { require(bucket.length == 10); LocalDate.parse(bucket) }
+            val catalog = row.getString("catalog").also { require(it.startsWith("catalog:") && it.length in 9..8192) }
+            val canonical = row.getString("canonical").also { require(it.startsWith("isrc:") &&
+                RecordingIdentity.isrc(it.removePrefix("isrc:")) == it.removePrefix("isrc:")) }
+            val millis = row.getLong("listenedMs").also { require(it in 0..1_000_000_000_000L) }
+            val plays = row.getLong("plays").also { require(it in 0..1_000_000_000_000L) }
+            ListeningIdentityMigration(origin, bucket, catalog, canonical, millis, plays)
+        }.also { rows -> require(rows.map { listOf(it.origin, it.bucket, it.catalogIdentity) }.distinct().size == rows.size) }
+    }
     fun encode(rows: List<ListeningTotal>) = org.json.JSONArray().apply {
         rows.forEach { r -> put(org.json.JSONObject().put("origin", r.origin).put("bucket", r.bucket)
             .put("kind", r.kind).put("identity", r.identity).put("trackId", r.trackId).put("title", r.title)
@@ -146,10 +193,25 @@ object ListeningStatsBackup {
                 text("artistId"), text("coverUrl"), number("durationMs"), text("isrc"), number("listenedMs"), number("plays"))
         }.also { rows -> require(rows.map { listOf(it.origin, it.bucket, it.kind, it.identity) }.distinct().size == rows.size) }
     }
-    suspend fun merge(dao: ListeningStatsDao, rows: List<ListeningTotal>) {
+    suspend fun merge(dao: ListeningStatsDao, rows: List<ListeningTotal>, migrations: List<ListeningIdentityMigration> = emptyList()) {
+        for (migration in migrations) {
+            val old = dao.identityMigration(migration.origin, migration.bucket, migration.catalogIdentity)
+            require(old == null || old.canonicalIdentity == migration.canonicalIdentity) { "Conflicting listening recording identities" }
+            dao.putMigration(migration.copy(listenedMs = maxOf(migration.listenedMs, old?.listenedMs ?: 0L),
+                plays = maxOf(migration.plays, old?.plays ?: 0L)))
+        }
         for (row in rows) {
             val old = dao.row(row.origin, row.bucket, row.kind, row.identity)
             dao.put(row.copy(listenedMs = maxOf(row.listenedMs, old?.listenedMs ?: 0), plays = maxOf(row.plays, old?.plays ?: 0)))
+        }
+        // Merge canonical counters first; then only the unmigrated part of an
+        // older/local catalog row can add to those counters, in either import order.
+        for (migration in dao.identityMigrations()) {
+            require(dao.row(migration.origin, migration.bucket, "song", migration.canonicalIdentity) != null) {
+                "Listening identity is missing its canonical total"
+            }
+            val row = dao.row(migration.origin, migration.bucket, "song", migration.catalogIdentity) ?: continue
+            dao.migrateSongIdentity(row, migration.canonicalIdentity)
         }
     }
 }

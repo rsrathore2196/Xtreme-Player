@@ -20,26 +20,18 @@ class HomePresentationRegressionTest {
         RecommendationCards(quick, era, SectionState(), SectionState())
 
     @Test fun relatedHeadingsIncludeTheirActualSeedAndRemoveTheDuplicateSubtitle() {
-        val similar = section("More From Similar Artists").copy(subtitle = "Related to old artist")
         val inspired = section("Inspired by this Track").copy(subtitle = "Inspired by old track")
-        val artist = similar.withSeedHeading(Shelf.SIMILAR, "Karan Aujla")
         val track = inspired.withSeedHeading(Shelf.INSPIRED, "On Top")
-        assertEquals("More From 'Karan Aujla'", artist.title)
         assertEquals("Because You Listened 'On Top'", track.title)
-        assertEquals("", artist.subtitle)
         assertEquals("", track.subtitle)
-        assertSame(similar.tracks, artist.tracks)
         assertSame(inspired.tracks, track.tracks)
-        assertSame(artist, artist.withSeedHeading(Shelf.SIMILAR, "Karan Aujla"))
     }
 
     @Test fun oldCachedSubtitlesSupplyMissingSeedMetadataWithoutGuessing() {
-        assertEquals("More From 'Artist'", section("old").copy(subtitle = "Related to Artist")
-            .withSeedHeading(Shelf.SIMILAR, "").title)
         assertEquals("Because You Listened 'Song'", section("old").copy(subtitle = "Inspired by Song")
             .withSeedHeading(Shelf.INSPIRED, "").title)
-        val unknown = section("More from Similar Artists")
-        assertSame(unknown, unknown.withSeedHeading(Shelf.SIMILAR, ""))
+        val unknown = section("Because You Listened")
+        assertSame(unknown, unknown.withSeedHeading(Shelf.INSPIRED, ""))
         assertSame(unknown, unknown.withSeedHeading(Shelf.QUICK, "Artist"))
     }
 

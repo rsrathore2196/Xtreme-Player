@@ -333,7 +333,6 @@ fun HomeScreenContent(
     onPlayInfiniteRadio: ((MusicTrack?) -> Unit)? = null,
     onAddToQueue: ((MusicTrack) -> Unit)? = null,
     mostListenedArtists: List<MostListenedArtist> = emptyList(),
-    similarArtistsCard: SectionState = SectionState(),
     inspiredTrackCard: SectionState = SectionState(),
     isRadioSession: Boolean = false,
     isRadioLoading: Boolean = false,
@@ -355,7 +354,7 @@ fun HomeScreenContent(
         ?: mostListenedArtists.isNotEmpty()
     val retainedWindow = rememberSaveable(stateSaver = Saver<HomeFeedWindow, ArrayList<String>>(
         save = { ArrayList(it.sections.map(HomeFeedSection::name)) },
-        restore = { names -> HomeFeedWindow(names.map(HomeFeedSection::valueOf)) }
+        restore = { names -> HomeFeedWindow(names.mapNotNull { runCatching { HomeFeedSection.valueOf(it) }.getOrNull() }) }
     )) { mutableStateOf(HomeFeedWindow()) }
     val window = homeViewModel?.feedWindow?.collectAsStateWithLifecycle()?.value ?: retainedWindow.value
     val revealModifier = rememberHomeRevealModifier(listState) {
@@ -366,7 +365,6 @@ fun HomeScreenContent(
                 HomeFeedSection.ARTISTS -> hasArtists
                 HomeFeedSection.ERA -> eraCard.tracks.isNotEmpty()
                 HomeFeedSection.PERSONALIZED -> personalizedCard.tracks.isNotEmpty()
-                HomeFeedSection.SIMILAR -> similarArtistsCard.tracks.isNotEmpty()
                 HomeFeedSection.INSPIRED -> inspiredTrackCard.tracks.isNotEmpty()
             } }
             retainedWindow.value = retainedWindow.value.appendNext(eligible)
@@ -707,7 +705,6 @@ fun HomeScreenContent(
                             Shelf.CHART -> countryLanguageCard
                             Shelf.ERA -> eraCard
                             Shelf.PERSONALIZED -> personalizedCard
-                            Shelf.SIMILAR -> similarArtistsCard
                             Shelf.INSPIRED -> inspiredTrackCard
                         }
                         val section = homeViewModel?.sectionState(shelf)?.collectAsStateWithLifecycle()?.value ?: fallback

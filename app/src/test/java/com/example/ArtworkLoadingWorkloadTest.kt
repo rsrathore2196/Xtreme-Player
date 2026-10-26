@@ -59,10 +59,11 @@ class ArtworkLoadingWorkloadTest {
         val calls: MutableList<Pair<String, Boolean>> = CopyOnWriteArrayList(),
         val onNetwork: suspend (String) -> Unit = {},
         val dimensions: Map<String, Int> = emptyMap(),
-        val densityScaled: Boolean = false
+        val densityScaled: Boolean = false,
+        val nativeCache: Boolean = false
     ) : Interceptor.Chain {
-        override fun withRequest(request: ImageRequest) = Chain(request, cached, failures, cachedDimension, size, calls, onNetwork, dimensions, densityScaled)
-        override fun withSize(size: Size) = Chain(request, cached, failures, cachedDimension, size, calls, onNetwork, dimensions, densityScaled)
+        override fun withRequest(request: ImageRequest) = Chain(request, cached, failures, cachedDimension, size, calls, onNetwork, dimensions, densityScaled, nativeCache)
+        override fun withSize(size: Size) = Chain(request, cached, failures, cachedDimension, size, calls, onNetwork, dimensions, densityScaled, nativeCache)
         override suspend fun proceed(request: ImageRequest): ImageResult {
             val url = request.data.toString()
             val remote = request.networkCachePolicy.readEnabled
@@ -78,7 +79,7 @@ class ArtworkLoadingWorkloadTest {
                 drawable.setTargetDensity(480)
             }
             return SuccessResult(drawable, request, if (remote) DataSource.NETWORK else DataSource.DISK,
-                isSampled = !remote && dimension < 300)
+                isSampled = !nativeCache && !remote && dimension < 300)
         }
     }
 
@@ -100,6 +101,29 @@ class ArtworkLoadingWorkloadTest {
         assertEquals(listOf(large), chain.calls.filter { it.second }.map { it.first })
     }
 
+    @Test fun nativeListThumbnailCannotFinishAFullPlayerRequest() = runBlocking {
+        val small = "https://lh3.googleusercontent.com/album=w60-h60-l90-rj"
+        val large = providerArtworkUrl(small, 2000)
+        val request = request().newBuilder().data(large).size(1600, 1600).setParameter(ARTWORK_METADATA_PARAMETER,
+            ArtworkRequestMetadata(small, 2000, currentTrack = true), null).build()
+        val chain = Chain(request, cached = setOf(small), cachedDimension = 60, nativeCache = true,
+            size = Size(1600, 1600), dimensions = mapOf(large to 2000))
+        val result = ArtworkResolutionInterceptor().intercept(chain) as SuccessResult
+        assertEquals(large, result.request.data)
+        assertTrue(chain.calls.any { it.first == large && it.second })
+    }
+    @Test fun cachedSixHundredPixelCoverIsPreviewOnlyAndSlowFullCoverStillCompletes() = runBlocking {
+        val small = "https://lh3.googleusercontent.com/album=w60-h60-l90-rj"
+        val preview = providerArtworkUrl(small, 600)
+        val large = providerArtworkUrl(small, 2000)
+        val request = request().newBuilder().data(large).size(1600, 1600).setParameter(ARTWORK_METADATA_PARAMETER,
+            ArtworkRequestMetadata(small, 2000, currentTrack = true), null).build()
+        val chain = Chain(request, cached = setOf(preview), cachedDimension = 600, nativeCache = true,
+            size = Size(1600, 1600), dimensions = mapOf(large to 2000), onNetwork = { delay(1600) })
+        val result = withTimeout(4000) { ArtworkResolutionInterceptor().intercept(chain) } as SuccessResult
+        assertEquals(large, result.request.data)
+        assertEquals(listOf(large), chain.calls.filter { it.second }.map { it.first })
+    }
     @Test fun missingMaxResolutionUsesTheSameVideosAvailableStandardCover() = runBlocking {
         val urls = youtubeArtworkAlternatives("yt_abcdefghijk", emptyList())
         val req = request().newBuilder().data("").setParameter(ARTWORK_METADATA_PARAMETER,

@@ -1,6 +1,10 @@
 package com.example.service
 
 import com.example.playback.isAudioPipelineFailure
+import com.example.playback.canRetryAudioOutput
+import com.example.playback.restartAudioOutput
+import com.example.playback.PlaybackRecoveryGuard
+import com.example.playback.keepResolvedSource
 
 import com.example.performance.AppDispatchers
 
@@ -56,7 +60,9 @@ class MusicService : MediaLibraryService() {
     private var checkpointJob: Job? = null
     private var queueGeneration = 0L
     private var sabrRecoveryTrackId: String? = null
-    private var sabrRecoveryCount = 0
+    private val sourceRecoveryGuard = PlaybackRecoveryGuard()
+    private val outputRecoveryGuard = PlaybackRecoveryGuard()
+    private var outputRecoveryJob: Job? = null
     private var sourceRecoveryJob: Job? = null
     private var losslessDiscoveryJob: Job? = null
     private var losslessDiscoveryKey: String? = null
@@ -518,8 +524,7 @@ class MusicService : MediaLibraryService() {
                     forceRefresh = failedUrl != null, failedUrl = failedUrl,
                     preferredSourceId = sameSource ?: if (returnToYouTube) policy.sourceId(com.example.playback.PlaybackSourceKind.YOUTUBE) else origin?.sourceId.takeIf { restoring }, manualUpgrade = manualUpgrade) }
                 if (!owns()) return@launch
-                if (resolved.audioUrl == track.audioUrl || failedUrl == null &&
-                    YouTubeAudioStreamService.sameRepresentation(track.audioUrl, resolved.audioUrl)) {
+                if (keepResolvedSource(track.audioUrl, resolved.audioUrl, failedUrl)) {
                     if (manualUpgrade) com.example.playback.LosslessDiagnostics.record(track.id,
                         com.example.playback.LosslessDiagnostics.Reason.NO_RESULTS, "manual-source-upgrade")
                     val unchanged = Bundle(extras ?: Bundle()).apply {
@@ -633,6 +638,96 @@ class MusicService : MediaLibraryService() {
         }
     }
 
+    /** Same exact-recording recovery for notification/Auto, regardless of catalog ID. */
+    private fun recoverHeadlessSource(item: MediaItem, failedUri: Uri) {
+        if (sourceRecoveryJob?.isActive == true || SabrSessionRegistry.controllerHandlesRecovery?.invoke() == true) return
+        val player = exoPlayer ?: return
+        sourceRecoveryGuard.select(item.mediaId)
+        val token = sourceRecoveryGuard.claim(item.mediaId) ?: run {
+            android.util.Log.w("MusicService", "Recording recovery budget exhausted")
+            return
+        }
+        val selected = currentPolicyTrack(player, item)
+        val recoveryPolicy = networkQuality.sourcePolicy.value
+        sourceRecoveryGuard.reject(item.mediaId, token, failedUri.toString())
+        sourceRecoveryJob = serviceScope.launch {
+            var activeToken = token
+            fun owns() = sourceRecoveryGuard.isCurrent(item.mediaId, activeToken) &&
+                player.currentMediaItem?.mediaId == item.mediaId &&
+                player.currentMediaItem?.localConfiguration?.uri == failedUri &&
+                networkQuality.sourcePolicy.value.key == recoveryPolicy.key &&
+                SabrSessionRegistry.controllerHandlesRecovery?.invoke() != true
+            while (owns()) {
+                try {
+                    val currentOnly = sourceRecoveryGuard.stage(item.mediaId, activeToken) < 2
+                    val rejected = sourceRecoveryGuard.rejectedUrls(item.mediaId, activeToken)
+                    val resolved = withContext(AppDispatchers.Io) {
+                        app.repository.resolvePlayableTrack(selected, forceRefresh = true, failedUrl = failedUri.toString(),
+                            currentSourceOnly = currentOnly, rejectedUrls = rejected)
+                    }
+                    if (!owns() || !recoveryPolicy.acceptsRemoteTrack(resolved)) return@launch
+                    val index = player.currentMediaItemIndex
+                    val position = player.currentPosition.coerceAtLeast(0L)
+                    val resume = player.playWhenReady
+                    val extras = Bundle(item.mediaMetadata.extras ?: Bundle()).apply {
+                        ACTUAL_AUDIO_KEYS.forEach(::remove)
+                        putInt("bitrate", resolved.bitrateKbps); putString("qualityBadge", resolved.qualityBadge)
+                        putString("media_source", resolved.source); putBoolean("isLossless", resolved.isLossless)
+                        putBoolean("audio_actual", false); putString("source_policy_key", recoveryPolicy.key)
+                        putLong("jio_start_deadline", 0L)
+                    }
+                    val replacement = item.buildUpon().setUri(resolved.audioUrl)
+                        .setRequestMetadata(item.requestMetadata.buildUpon().setMediaUri(Uri.parse(resolved.audioUrl)).build())
+                        .setMimeType(com.example.data.remote.StreamingAddons.mime(resolved.audioUrl) ?:
+                            if (Uri.parse(resolved.audioUrl).lastPathSegment?.endsWith(".m3u8") == true) MimeTypes.APPLICATION_M3U8 else null)
+                        .setMediaMetadata(item.mediaMetadata.buildUpon().setExtras(extras).build()).build()
+                    player.replaceMediaItem(index, replacement)
+                    player.seekTo(index, position); player.prepare(); player.playWhenReady = resume
+                    checkpoint()
+                    return@launch
+                } catch (cancelled: CancellationException) { throw cancelled }
+                catch (error: Exception) {
+                    if (!owns()) return@launch
+                    activeToken = sourceRecoveryGuard.claim(item.mediaId) ?: run {
+                        android.util.Log.w("MusicService", "Recording recovery exhausted: ${error.javaClass.simpleName}")
+                        return@launch
+                    }
+                }
+            }
+        }
+    }
+
+    private fun recoverAudioOutput(player: ExoPlayer, error: androidx.media3.common.PlaybackException): Boolean {
+        if (!error.canRetryAudioOutput()) return false
+        val item = player.currentMediaItem ?: return false
+        if (outputRecoveryJob?.isActive == true) return true
+        outputRecoveryGuard.select(item.mediaId)
+        val token = outputRecoveryGuard.claim(item.mediaId) ?: return false
+        if (outputRecoveryGuard.stage(item.mediaId, token) != 1) return false
+        val uri = item.localConfiguration?.uri ?: return false
+        recoveringAudioTrackId = item.mediaId
+        outputRecoveryJob = serviceScope.launch {
+            yield() // Leave the error callback before resetting Media3's renderer/output.
+            if (!outputRecoveryGuard.isCurrent(item.mediaId, token) || player.currentMediaItem?.mediaId != item.mediaId ||
+                player.currentMediaItem?.localConfiguration?.uri != uri) return@launch
+            val policy = networkQuality.sourcePolicy.value
+            if (uri.scheme !in setOf("file", "content") && !policy.acceptsRemoteTrack(currentPolicyTrack(player, item))) {
+                recoveringAudioTrackId = null
+                reconcileHeadlessPolicy(policy, failedUrl = uri.toString())
+                return@launch
+            }
+            try {
+                crossfade?.cancelTransition()
+                restartAudioOutput(player)
+                checkpoint()
+            } catch (error: RuntimeException) {
+                recoveringAudioTrackId = null
+                android.util.Log.w("MusicService", "Audio output restart failed: ${error.javaClass.simpleName}")
+            }
+        }
+        return true
+    }
+
     override fun onCreate() {
         super.onCreate()
         serviceScope.launch(AppDispatchers.Io) { com.example.playback.AudioDeviceManager.init(this@MusicService) }
@@ -727,6 +822,7 @@ class MusicService : MediaLibraryService() {
         val cacheDataSourceFactory = MusicCache.createCacheDataSourceFactory(this)
         val transportSources = DefaultMediaSourceFactory(this)
             .setDataSourceFactory(cacheDataSourceFactory)
+            .setLoadErrorHandlingPolicy(PlaybackLoadErrorPolicy())
         val mediaSourceFactory = object : androidx.media3.exoplayer.source.MediaSource.Factory by transportSources {
             override fun createMediaSource(item: MediaItem): androidx.media3.exoplayer.source.MediaSource {
                 val address = item.localConfiguration?.uri
@@ -907,7 +1003,7 @@ class MusicService : MediaLibraryService() {
         jioFallback = JioSaavnPlaybackFallback(player, serviceScope,
             requestRecovery = { id, failedUrl ->
                 if (SabrSessionRegistry.requestSourceRecovery?.invoke(id, failedUrl) != true)
-                    reconcileHeadlessPolicy(networkQuality.sourcePolicy.value, failedUrl = failedUrl)
+                    player.currentMediaItem?.takeIf { it.mediaId == id }?.let { recoverHeadlessSource(it, Uri.parse(failedUrl)) }
             },
             status = { status -> mediaLibrarySession?.let { session ->
                 session.setSessionExtras(Bundle(session.sessionExtras).apply { putBundle("jio_fallback_status", status) })
@@ -935,7 +1031,10 @@ class MusicService : MediaLibraryService() {
                     losslessDiscoveryKey = null
                     sourceRecoveryJob?.cancel()
                     sabrRecoveryTrackId = mediaItem?.mediaId
-                    sabrRecoveryCount = 0
+                    sourceRecoveryGuard.select(mediaItem?.mediaId)
+                    outputRecoveryGuard.select(mediaItem?.mediaId)
+                    outputRecoveryJob?.cancel()
+                    recoveringAudioTrackId = null
                 }
                 applyAudioCeiling(trackSelector, player)
                 scheduleUpcomingCeilings()
@@ -1017,7 +1116,9 @@ class MusicService : MediaLibraryService() {
                     jioFallback?.cancel()
                     sourceRecoveryJob?.cancel()
                     sourceRecoveryJob = null
-                    android.util.Log.w("MusicService", "Audio pipeline failure; keeping the selected source: ${error.errorCodeName}")
+                    if (recoverAudioOutput(player, error)) return
+                    recoveringAudioTrackId = null
+                    android.util.Log.w("MusicService", "Audio pipeline recovery unavailable; keeping the selected source: ${error.errorCodeName}")
                     return
                 }
                 if (jioFallback?.onError() == true) return
@@ -1031,7 +1132,7 @@ class MusicService : MediaLibraryService() {
                     val next = failedUri?.toString()?.let(SabrSessionRegistry::takeReplacement)
                     val initialTransportSelection = failedUri?.scheme == "xtreme-youtube" &&
                         failedUri.getQueryParameter("itag") == null
-                    if (item != null && next != null && (initialTransportSelection || sabrRecoveryCount++ < 1)) {
+                    if (item != null && next != null && sourceRecoveryGuard.claim(item.mediaId, initialSelection = initialTransportSelection) != null) {
                         val policy = networkQuality.sourcePolicy.value
                         val targetUri = YouTubeAudioStreamService.playbackUri("yt_${next.videoId}", next.url)
                         val resolved = currentPolicyTrack(player, item).copy(audioUrl = targetUri,
@@ -1066,53 +1167,8 @@ class MusicService : MediaLibraryService() {
                         return
                     }
                     if (item != null && failedUri != null && next == null &&
-                        (item.mediaId.startsWith("yt_") || item.mediaId.startsWith("online_")) && sabrRecoveryCount++ < 1) {
-                        // A headset/Auto session can outlive the UI controller. Reuse the
-                        // same exact-recording resolver and one retry budget in that case.
-                        val metadata = item.mediaMetadata
-                        val extras = metadata.extras
-                        val selected = MusicTrack(item.mediaId, metadata.title?.toString().orEmpty(),
-                            metadata.artist?.toString().orEmpty(), metadata.albumTitle?.toString().orEmpty(),
-                            player.duration.takeIf { it > 0L } ?: extras?.getLong("duration", 0L) ?: 0L,
-                            metadata.artworkUri?.toString().orEmpty(), failedUri.toString(),
-                            source = extras?.getString("media_source").orEmpty(),
-                            primaryArtists = extras?.getStringArrayList("primaryArtists")?.toList().orEmpty(),
-                            isrc = extras?.getString("isrc").orEmpty(),
-                            recommendationOnly = extras?.getBoolean("recommendation_only", false) == true)
-                        val recoveryPolicyKey = networkQuality.sourcePolicy.value.key
-                        sourceRecoveryJob = serviceScope.launch {
-                            try {
-                                val resolved = withContext(AppDispatchers.Io) {
-                                    app.repository.resolvePlayableTrack(selected, forceRefresh = true,
-                                        failedUrl = failedUri.toString())
-                                }
-                                if (player.currentMediaItem?.mediaId != item.mediaId ||
-                                    player.currentMediaItem?.localConfiguration?.uri != failedUri || player.playerError == null ||
-                                    networkQuality.sourcePolicy.value.key != recoveryPolicyKey ||
-                                    !networkQuality.sourcePolicy.value.acceptsRemoteTrack(resolved) ||
-                                    SabrSessionRegistry.controllerHandlesRecovery?.invoke() == true) return@launch
-                                val index = player.currentMediaItemIndex
-                                val position = player.currentPosition.coerceAtLeast(0L)
-                                val resume = player.playWhenReady
-                                val replacementExtras = Bundle(extras ?: Bundle()).apply {
-                                    ACTUAL_AUDIO_KEYS.forEach(::remove)
-                                    putInt("bitrate", resolved.bitrateKbps); putString("qualityBadge", resolved.qualityBadge)
-                                    putString("media_source", resolved.source); putBoolean("isLossless", resolved.isLossless)
-                                    putBoolean("audio_actual", false)
-                                    putString("source_policy_key", recoveryPolicyKey)
-                                }
-                                val replacement = item.buildUpon().setUri(resolved.audioUrl)
-                                    .setRequestMetadata(MediaItem.RequestMetadata.Builder()
-                                        .setMediaUri(Uri.parse(resolved.audioUrl)).build())
-                                    .setMimeType(if (Uri.parse(resolved.audioUrl).lastPathSegment?.endsWith(".m3u8") == true)
-                                        androidx.media3.common.MimeTypes.APPLICATION_M3U8 else null)
-                                    .setMediaMetadata(metadata.buildUpon().setExtras(replacementExtras).build()).build()
-                                player.replaceMediaItem(index, replacement)
-                                player.seekTo(index, position); player.prepare(); player.playWhenReady = resume
-                                checkpoint()
-                            } catch (e: CancellationException) { throw e }
-                            catch (e: Exception) { android.util.Log.w("MusicService", "Recording recovery unavailable: ${e.javaClass.simpleName}") }
-                        }
+                        failedUri.scheme !in setOf("file", "content", "asset", "android.resource")) {
+                        recoverHeadlessSource(item, failedUri)
                         return
                     }
                 }
@@ -1185,6 +1241,7 @@ class MusicService : MediaLibraryService() {
         volumeObserver?.let(contentResolver::unregisterContentObserver)
         volumeObserver = null
         _liveSession.value = false
+        recoveringAudioTrackId = null
         checkpoint()
         listeningClock.update(null, false, android.os.SystemClock.elapsedRealtime(), System.currentTimeMillis(), advancing = false)
         checkpointJob?.cancel()
@@ -1565,6 +1622,8 @@ class MusicService : MediaLibraryService() {
         private val SAAVN_AUDIO_RATE = Regex("_(320|160|96|48)\\.(?:mp4|m4a)$", RegexOption.IGNORE_CASE)
         private val ACTUAL_AUDIO_KEYS = arrayOf("audio_codec", "audio_codecs", "audio_mime_type", "bitrate", "sample_rate",
             "bit_depth", "isLossless", "media_source", "audio_actual", "qualityBadge", "lossless_invalid")
+        @Volatile internal var recoveringAudioTrackId: String? = null
+            private set
         private val _liveSession = kotlinx.coroutines.flow.MutableStateFlow(false)
         internal val liveSession: kotlinx.coroutines.flow.StateFlow<Boolean> = _liveSession
         const val COMMAND_SET_EQUALIZER = "com.example.COMMAND_SET_EQUALIZER"

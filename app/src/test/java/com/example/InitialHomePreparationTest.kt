@@ -121,7 +121,7 @@ class InitialHomePreparationTest {
                 com.example.recommendation.HomeUserMode.NEW_USER, home.userMode.value)
             assertEquals(if (existingUser) StartupStatus.FALLBACK_READY else StartupStatus.SKIPPED,
                 ready.tasks[StartupTask.PERSONALIZATION])
-            listOf(StartupTask.PERSONALIZED, StartupTask.SIMILAR, StartupTask.INSPIRED,
+            listOf(StartupTask.PERSONALIZED, StartupTask.INSPIRED,
                 StartupTask.RECENT_ARTISTS).forEach { assertEquals("$it must not initialize", StartupStatus.SKIPPED, ready.tasks[it]) }
             assertEquals(StartupStatus.FALLBACK_READY, ready.tasks[StartupTask.CHART])
             assertEquals(!existingUser, home.listeningHistoryCard.value.tracks.isEmpty())

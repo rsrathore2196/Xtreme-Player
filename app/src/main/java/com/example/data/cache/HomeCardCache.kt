@@ -38,13 +38,11 @@ data class SavedHomeCards(
     val quickCandidates: List<MusicTrack>, val eraCandidates: List<MusicTrack>,
     val chartCandidates: List<MusicTrack>, val catalog: List<MusicTrack>,
     val chartRefreshedAt: Long = refreshedAt,
-    val similarArtists: SectionState = SectionState(title = "More from Similar Artists"),
     val inspiredTrack: SectionState = SectionState(title = "Inspired by this Track"),
     val personalizedCandidates: List<MusicTrack> = emptyList(),
-    val similarArtistCandidates: List<MusicTrack> = emptyList(),
     val inspiredTrackCandidates: List<MusicTrack> = emptyList(),
     val recommendationSource: String = "",
-    val seedKey: String = "", val seedArtist: String = "", val seedTitle: String = "",
+    val seedKey: String = "", val seedTitle: String = "",
     val shelfLoads: Map<String, RecommendationShelfLoad> = emptyMap(),
     val readyShelves: Set<String> = emptySet(),
     /** All displayed shelves are present; large discovery pools may still be omitted. */
@@ -56,10 +54,9 @@ private fun compactPresentation(s: SavedHomeCards) = s.copy(
     quick = s.quick.copy(tracks = s.quick.tracks.take(12)), era = s.era.copy(tracks = s.era.tracks.take(12)),
     chart = s.chart.copy(tracks = s.chart.tracks.take(12)), history = s.history.copy(tracks = s.history.tracks.take(30)),
     personalized = s.personalized.copy(tracks = s.personalized.tracks.take(12)),
-    similarArtists = s.similarArtists.copy(tracks = s.similarArtists.tracks.take(12)),
     inspiredTrack = s.inspiredTrack.copy(tracks = s.inspiredTrack.tracks.take(12)),
     quickCandidates = emptyList(), eraCandidates = emptyList(), chartCandidates = emptyList(),
-    personalizedCandidates = emptyList(), similarArtistCandidates = emptyList(), inspiredTrackCandidates = emptyList(),
+    personalizedCandidates = emptyList(), inspiredTrackCandidates = emptyList(),
     catalog = s.catalog.take(1).ifEmpty { listOfNotNull(s.history.tracks.firstOrNull() ?:
         s.quick.tracks.firstOrNull() ?: s.chart.tracks.firstOrNull()) },
     artists = s.artists.take(20).map { it.copy(tracks = it.tracks.take(1)) })
@@ -76,12 +73,11 @@ internal fun mergePresentation(full: SavedHomeCards, preview: SavedHomeCards?): 
         generation = maxOf(full.generation, preview.generation),
         quick = section(full.quick, preview.quick), era = section(full.era, preview.era), chart = section(full.chart, preview.chart),
         personalized = section(full.personalized, preview.personalized),
-        similarArtists = section(full.similarArtists, preview.similarArtists), inspiredTrack = section(full.inspiredTrack, preview.inspiredTrack),
+        inspiredTrack = section(full.inspiredTrack, preview.inspiredTrack),
         quickCandidates = pool(full.quickCandidates, full.quick, preview.quick),
         eraCandidates = pool(full.eraCandidates, full.era, preview.era),
         chartCandidates = pool(full.chartCandidates, full.chart, preview.chart),
         personalizedCandidates = pool(full.personalizedCandidates, full.personalized, preview.personalized),
-        similarArtistCandidates = pool(full.similarArtistCandidates, full.similarArtists, preview.similarArtists),
         inspiredTrackCandidates = pool(full.inspiredTrackCandidates, full.inspiredTrack, preview.inspiredTrack),
         catalog = full.catalog.ifEmpty { preview.catalog },
         shelfLoads = full.shelfLoads + preview.shelfLoads.filter { (key, load) ->
@@ -205,17 +201,17 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
         if (!file.baseFile.exists() || file.baseFile.length() > 4_000_000L) return@withLock null
         val root = JSONObject()
         val omitted = setOf("tracks", "quickCandidates", "eraCandidates", "chartCandidates", "personalizedCandidates",
-            "similarArtistCandidates", "inspiredTrackCandidates", "preview")
+            "inspiredTrackCandidates", "preview")
         file.openRead().bufferedReader().use { input -> JsonReader(input).use { reader ->
             reader.beginObject()
             while (reader.hasNext()) {
                 val name = reader.nextName()
-                if (name in omitted) reader.skipValue() else root.put(name, readJson(reader))
+                if (name in omitted || name.endsWith("Candidates")) reader.skipValue() else root.put(name, readJson(reader))
             }
             reader.endObject()
         } }
         if (root.optString("profile") != profile || root.optInt("version") !in 1..4) return@withLock null
-        for (name in listOf("era", "personalized", "similarArtists", "inspiredTrack"))
+        for (name in listOf("era", "personalized", "inspiredTrack"))
             root.optJSONObject(name)?.put("tracks", JSONArray())
         val catalog = root.optJSONArray("catalog")
         root.put("catalog", JSONArray().apply { if (catalog != null && catalog.length() > 0) put(catalog.optString(0)) })
@@ -371,7 +367,7 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
     fun savePresentationCheckpoint(snapshot: SavedHomeCards, initialComplete: Boolean = false) {
         if (snapshot.recommendationSource != UnifiedRecommendationEngine.SOURCE ||
             listOf(snapshot.quick, snapshot.chart, snapshot.era, snapshot.personalized,
-                snapshot.similarArtists, snapshot.inspiredTrack).none { it.tracks.isNotEmpty() }) return
+                snapshot.inspiredTrack).none { it.tracks.isNotEmpty() }) return
         if (firstCheckpointProfile == snapshot.profileKey && !initialComplete) return
         val previous = peekPresentation(snapshot.profileKey)
         firstCheckpointProfile = snapshot.profileKey
@@ -450,19 +446,19 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
         // visible shelf batch. The file only retains this 80-track prefix.
         val s = if (!includePreview) snapshot else snapshot.copy(catalog = HomeRecommendationPolicy.originalsCooperatively(
             sequenceOf(snapshot.catalog, snapshot.quickCandidates, snapshot.eraCandidates, snapshot.chartCandidates,
-                snapshot.personalizedCandidates, snapshot.similarArtistCandidates, snapshot.inspiredTrackCandidates,
+                snapshot.personalizedCandidates, snapshot.inspiredTrackCandidates,
                 snapshot.history.tracks).flatMap { it.asSequence() }, MAX_POOL_TRACKS,
             checkpoint = { BackgroundWorkCoordinator.yieldToInteraction(bypass = { closing.get() }) }))
         // The shared ID table must prefer current presentation metadata over
         // older copies in candidate/catalog pools (including artwork changes).
         val tracks = (s.quick.tracks.take(MAX_TRACKS_PER_LIST) + s.era.tracks.take(MAX_TRACKS_PER_LIST) +
             s.chart.tracks.take(MAX_TRACKS_PER_LIST) + s.history.tracks.take(MAX_TRACKS_PER_LIST) +
-            s.personalized.tracks.take(MAX_TRACKS_PER_LIST) + s.similarArtists.tracks.take(MAX_TRACKS_PER_LIST) +
+            s.personalized.tracks.take(MAX_TRACKS_PER_LIST) +
             s.inspiredTrack.tracks.take(MAX_TRACKS_PER_LIST) + s.artists.flatMap { it.tracks.take(MAX_TRACKS_PER_LIST) } +
             s.catalog.take(MAX_POOL_TRACKS) + s.quickCandidates.take(MAX_CANDIDATE_TRACKS) +
             s.eraCandidates.take(MAX_CANDIDATE_TRACKS) + s.chartCandidates.take(MAX_CANDIDATE_TRACKS) +
             s.personalizedCandidates.take(MAX_CANDIDATE_TRACKS) +
-            s.similarArtistCandidates.take(MAX_CANDIDATE_TRACKS) + s.inspiredTrackCandidates.take(MAX_CANDIDATE_TRACKS)).distinctBy { it.id }
+            s.inspiredTrackCandidates.take(MAX_CANDIDATE_TRACKS)).distinctBy { it.id }
         fun ids(list: List<MusicTrack>) = JSONArray(list.map { it.id })
         fun section(value: SectionState) = JSONObject().put("title", value.title)
             .put("subtitle", value.subtitle).put("tracks", ids(value.tracks.take(MAX_TRACKS_PER_LIST)))
@@ -489,12 +485,11 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
                 .put("motion", t.motionArtworkUrl.orEmpty()).put("recommendationOnly", t.recommendationOnly) }))
             .put("quick", section(s.quick)).put("era", section(s.era)).put("chart", section(s.chart))
             .put("history", section(s.history)).put("personalized", section(s.personalized))
-            .put("similarArtists", section(s.similarArtists)).put("inspiredTrack", section(s.inspiredTrack))
+            .put("inspiredTrack", section(s.inspiredTrack))
             .put("personalizedCandidates", ids(s.personalizedCandidates.take(MAX_CANDIDATE_TRACKS)))
-            .put("similarArtistCandidates", ids(s.similarArtistCandidates.take(MAX_CANDIDATE_TRACKS)))
             .put("inspiredTrackCandidates", ids(s.inspiredTrackCandidates.take(MAX_CANDIDATE_TRACKS)))
             .put("recommendationSource", s.recommendationSource).put("seedKey", s.seedKey)
-            .put("seedArtist", s.seedArtist).put("seedTitle", s.seedTitle)
+            .put("seedTitle", s.seedTitle)
             .put("shelfLoads", JSONObject().apply { s.shelfLoads.forEach { (key, value) ->
                 put(key, JSONObject().put("context", value.context).put("fetchedAt", value.fetchedAt).put("partial", value.partial)) } })
             .put("readyShelves", JSONArray(s.readyShelves.toList()))
@@ -544,15 +539,15 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
             }, tracks(root.optJSONArray("quickCandidates")), tracks(root.optJSONArray("eraCandidates")),
             tracks(root.optJSONArray("chartCandidates")), tracks(root.optJSONArray("catalog")),
             root.optLong("chartRefreshedAt", root.optLong("refreshedAt")),
-            if (root.has("similarArtists")) section("similarArtists") else SectionState(title = "More from Similar Artists"),
             if (root.has("inspiredTrack")) section("inspiredTrack") else SectionState(title = "Inspired by this Track"),
-            tracks(root.optJSONArray("personalizedCandidates")), tracks(root.optJSONArray("similarArtistCandidates")),
+            tracks(root.optJSONArray("personalizedCandidates")),
             tracks(root.optJSONArray("inspiredTrackCandidates")), root.optString("recommendationSource"),
-            root.optString("seedKey"), root.optString("seedArtist"), root.optString("seedTitle"),
+            root.optString("seedKey"), root.optString("seedTitle"),
             root.optJSONObject("shelfLoads")?.let { loads -> loads.keys().asSequence().mapNotNull { key ->
                 loads.optJSONObject(key)?.let { key to RecommendationShelfLoad(it.optString("context"), it.optLong("fetchedAt"), it.optBoolean("partial", false)) }
-            }.toMap() }.orEmpty(),
-            root.optJSONArray("readyShelves")?.let { a -> (0 until a.length()).map { a.optString(it) }.toSet() }.orEmpty(),
+            }.toMap().filterKeys { key -> UnifiedRecommendationEngine.Shelf.entries.any { it.name == key } } }.orEmpty(),
+            root.optJSONArray("readyShelves")?.let { a -> (0 until a.length()).map { a.optString(it) }
+                .filter { name -> UnifiedRecommendationEngine.Shelf.entries.any { it.name == name } }.toSet() }.orEmpty(),
             presentationComplete, root.optLong("checkpointRevision"))
         fun verified(list: List<MusicTrack>) = list.filter(UnifiedRecommendationEngine::verified).map { it.copy(recommendationOnly = true) }
         fun clean(section: SectionState): SectionState {
@@ -564,15 +559,14 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
             UnifiedRecommendationEngine.Shelf.ERA.name to saved.era,
             UnifiedRecommendationEngine.Shelf.CHART.name to saved.chart,
             UnifiedRecommendationEngine.Shelf.PERSONALIZED.name to saved.personalized,
-            UnifiedRecommendationEngine.Shelf.SIMILAR.name to saved.similarArtists,
             UnifiedRecommendationEngine.Shelf.INSPIRED.name to saved.inspiredTrack
         ).filterValues { section -> section.tracks.any { !UnifiedRecommendationEngine.verified(it) } }.keys
         return if (saved.recommendationSource == UnifiedRecommendationEngine.SOURCE) saved.copy(
             quick = clean(saved.quick), era = clean(saved.era), chart = clean(saved.chart),
-            personalized = clean(saved.personalized), similarArtists = clean(saved.similarArtists), inspiredTrack = clean(saved.inspiredTrack),
+            personalized = clean(saved.personalized), inspiredTrack = clean(saved.inspiredTrack),
             quickCandidates = verified(saved.quickCandidates), eraCandidates = verified(saved.eraCandidates),
             chartCandidates = verified(saved.chartCandidates), personalizedCandidates = verified(saved.personalizedCandidates),
-            similarArtistCandidates = verified(saved.similarArtistCandidates), inspiredTrackCandidates = verified(saved.inspiredTrackCandidates),
+            inspiredTrackCandidates = verified(saved.inspiredTrackCandidates),
             catalog = verified(saved.catalog),
             // Keep usable cached catalog tracks visible; refill shelves containing
             // unsupported catalog identities on their next demand.
@@ -580,9 +574,9 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
             readyShelves = saved.readyShelves - rejectedShelves) else saved.copy(
                 quick = SectionState(title = "Quick Picks"), era = SectionState(title = "Era-Specific Hits"),
                 chart = SectionState(title = saved.chart.title), personalized = SectionState(title = "Recommended for You"),
-                similarArtists = SectionState(title = "More from Similar Artists"), inspiredTrack = SectionState(title = "Inspired by this Track"),
+                inspiredTrack = SectionState(title = "Inspired by this Track"),
                 quickCandidates = emptyList(), eraCandidates = emptyList(), chartCandidates = emptyList(),
-                personalizedCandidates = emptyList(), similarArtistCandidates = emptyList(), inspiredTrackCandidates = emptyList(),
+                personalizedCandidates = emptyList(), inspiredTrackCandidates = emptyList(),
                 catalog = emptyList(), recommendationSource = "", shelfLoads = emptyMap(), readyShelves = emptySet(),
                 refreshedAt = 0, chartRefreshedAt = 0, signal = "")
 

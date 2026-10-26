@@ -18,7 +18,7 @@ class HomeFeedWindowTest {
         var window = HomeFeedWindow()
         val all = HomeFeedSection.entries.toSet()
         for (section in listOf(HomeFeedSection.ARTISTS, HomeFeedSection.ERA, HomeFeedSection.PERSONALIZED,
-            HomeFeedSection.SIMILAR, HomeFeedSection.INSPIRED)) {
+            HomeFeedSection.INSPIRED)) {
             val previous = window.sections
             window = window.appendNext(all)
             assertEquals(previous + section, window.sections)

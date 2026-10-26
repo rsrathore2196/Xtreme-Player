@@ -221,12 +221,19 @@ internal class StreamResolver(
             }
                 ?.also { retainProvider("youtube", request) }
         }
+        val detailLookups = mutableMapOf<String, MusicTrack?>()
+        suspend fun detail(id: String, timeoutMs: Long): MusicTrack? {
+            if (detailLookups.containsKey(id)) return detailLookups[id]
+            val result = attempt(timeoutMs) { fetchById(id, forceRefresh) }
+            detailLookups[id] = result
+            return result
+        }
         suspend fun jioExact(): MusicTrack? {
             val already = track.takeIf { !forceRefresh && !YouTubeAudioStreamService.isYouTubeAudio(it.id, it.audioUrl) && !archiveTransport(it.audioUrl) && usable(it) }
             if (already != null) return already
             val catalogId = track.id.takeIf { it.startsWith("online_") }
                 ?: matchedProvider("jio")?.id?.takeIf { it.startsWith("online_") } ?: return null
-            val detailed = attempt(8_000L) { fetchById(catalogId.removePrefix("online_"), forceRefresh) } ?: return null
+            val detailed = detail(catalogId.removePrefix("online_"), 8_000L) ?: return null
             if (!isValidStreamUrl(detailed.audioUrl) && detailed.audioUrl.isNotBlank()) {
                 failureReason = PlaybackDiagnostics.Reason.INVALID_URL
                 failureStage = PlaybackDiagnostics.Stage.VALIDATION
@@ -241,7 +248,7 @@ internal class StreamResolver(
         suspend fun standardFallback(): MusicTrack? = attempt(12_000L) {
             matchedProvider("jio")?.let { previous ->
                 if (!forceRefresh && usable(previous)) return@attempt previous
-                val updated = attempt(3_000L) { fetchById(previous.id.removePrefix("online_"), forceRefresh) }
+                val updated = detail(previous.id.removePrefix("online_"), 3_000L)
                 if (updated != null && matches(track, updated) && usable(updated)) return@attempt updated
             }
             for (query in queries) {
@@ -252,13 +259,15 @@ internal class StreamResolver(
                 for (candidate in ranked) {
                     if (usable(candidate)) { retainProvider("jio", candidate); return@attempt candidate }
                     if (!candidate.id.startsWith("online_") || candidate.audioUrl.isNotBlank()) continue
-                    val detailed = attempt(3_000L) { fetchById(candidate.id.removePrefix("online_"), forceRefresh) }
+                    val detailed = detail(candidate.id.removePrefix("online_"), 3_000L)
                     if (detailed != null && usable(detailed) && withContext(AppDispatchers.CpuBounded) { matches(track, detailed) }) { retainProvider("jio", detailed); return@attempt detailed }
                 }
             }
             null
         }
-        suspend fun youtubeFallback(): MusicTrack? = attempt(YouTubeAudioStreamService.RESOLUTION_TIMEOUT_MS + 15_000L) {
+        // All metadata queries/candidates share one provider window, rather than
+        // granting every candidate a new extraction-length timeout.
+        suspend fun youtubeFallback(): MusicTrack? = attempt(YouTubeAudioStreamService.RESOLUTION_TIMEOUT_MS + 11_000L) {
             matchedProvider("youtube")?.let { youtubeExact(it)?.let { resolved -> return@attempt resolved } }
             var extractions = 0
             for (query in queries.take(2)) {
@@ -328,7 +337,7 @@ internal class StreamResolver(
             }
             return found
         }
-        val resolved = withTimeoutOrNull(105_000L) {
+        val resolved = withTimeoutOrNull(PLAYBACK_RESOLUTION_TIMEOUT_MS) {
             suspend fun boundedJio(): MusicTrack? {
                 if (preferYouTube && sourcePolicy == null) return null
                 if (!forceRefresh) {
@@ -367,7 +376,7 @@ internal class StreamResolver(
                         PlaybackSourceKind.YOUTUBE -> if (selectedVideoId(track) != null) youtubeExact(track) else youtubeFallback()
                         PlaybackSourceKind.JIOSAAVN -> boundedJio()
                         PlaybackSourceKind.INTERNET_ARCHIVE -> if (selectedArchive) {
-                            val direct = attempt(12_000L) { verifyArchive(track.copy(audioUrl = archiveUrl,
+                            val direct = attempt(if (manualUpgrade) 12_000L else 6_000L) { verifyArchive(track.copy(audioUrl = archiveUrl,
                                 isLossless = true, source = "INTERNET_ARCHIVE")) }
                             direct?.takeIf { it.audioUrl == archiveUrl && usable(it) && supportsLossless(it) }
                         } else archive()
@@ -386,7 +395,10 @@ internal class StreamResolver(
                 // Reserve a real fallback budget: several unavailable custom
                 // servers must not consume YouTube's entire extraction window.
                 val custom = providers.takeWhile { it.kind == PlaybackSourceKind.ADDON }
-                val answer = withTimeoutOrNull(30_000L) { walk(custom) }
+                // One full add-on lookup (15s internally), not 30s of serial
+                // failed servers before native extraction even starts. Explicit
+                // upgrades retain a larger window while existing audio plays.
+                val answer = withTimeoutOrNull(if (manualUpgrade) 30_000L else ADDON_STARTUP_TIMEOUT_MS) { walk(custom) }
                 // Native extraction owns its full deadline even when YouTube is
                 // first. A timed-out provider must not cancel the later fallbacks.
                 answer ?: walk(providers.drop(custom.size))
@@ -461,6 +473,10 @@ internal class StreamResolver(
         primaryArtists = track.primaryArtists.ifEmpty { stream.primaryArtists })
 
     companion object {
+        // 16s add-on group + 2.5s Archive + 6s Jio + the native 40s
+        // extraction deadline, with handoff slack; never the former 105s.
+        const val PLAYBACK_RESOLUTION_TIMEOUT_MS = 70_000L
+        const val ADDON_STARTUP_TIMEOUT_MS = 16_000L
         const val LOSSLESS_LOOKUP_TIMEOUT_MS = 2_500L
         private const val MANUAL_LOSSLESS_LOOKUP_TIMEOUT_MS = 20_000L
         private val verifiedLosslessCache = LinkedHashMap<String, Pair<MusicTrack, Long>>(128, 0.75f, true)

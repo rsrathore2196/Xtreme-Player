@@ -161,6 +161,26 @@ class ListeningStatsTest {
                 repository.summary(ListeningPeriod.MONTHLY, LocalDate.of(2026, 9, 5)))
         } finally { repository.close(); db.close() }
     }
+
+    @Test fun restoringAPreIsrcBackupCannotReintroduceAlreadyMigratedListeningTotals() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = MusicDatabase.createInMemoryDatabase(context)
+        val repository = ListeningStatsRepository(context, db)
+        try {
+            val day = "2026-10-26"
+            repository.record(ListeningSnapshot("same-play", song, mapOf(day to ListeningDay(60_000, 1)), 60_000, false))
+            repository.flush()
+            val oldBackup = db.listeningStatsDao().all()
+            repository.record(ListeningSnapshot("same-play", song.copy(isrc = "USABC2600001"),
+                mapOf(day to ListeningDay(90_000, 1)), 90_000, false))
+            repository.flush()
+            ListeningStatsBackup.merge(db.listeningStatsDao(), oldBackup)
+            repository.invalidate()
+            assertEquals("An old catalog identity must not duplicate its migrated minutes", 90_000L,
+                repository.summary(ListeningPeriod.LIFETIME).millis)
+            assertEquals(1L, repository.summary(ListeningPeriod.LIFETIME).plays)
+        } finally { repository.close(); db.close() }
+    }
     @Test fun statsCheckpointsDoNotForceExtraHomeHistoryRefreshes() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val db = MusicDatabase.createInMemoryDatabase(context)

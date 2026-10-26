@@ -188,12 +188,12 @@ class MusicDatabaseMigrationTest {
 
     @Test
     fun everySupportedVersionPreservesAllExistingRecordsAndOrder() = runBlocking {
-        for (version in 1..12) {
+        for (version in 1..13) {
             context.deleteDatabase(testDbName)
             val before = createOldDatabase(version)
             openCurrentDatabase().withClose { db ->
                 val sqlite = db.openHelper.writableDatabase // Force the real Room migration and validation.
-                assertEquals(13, sqlite.version)
+                assertEquals(14, sqlite.version)
                 sqlite.query("SELECT COUNT(*) FROM sqlite_master WHERE name = 'artwork_cache'").use {
                     assertTrue(it.moveToFirst()); assertEquals(0, it.getInt(0))
                 }
@@ -215,6 +215,18 @@ class MusicDatabaseMigrationTest {
                 val eventId = db.listeningEventDao().insertListeningEvent(ListeningEventEntity(trackId = "old_favorite"))
                 assertTrue("Listening-event IDs must remain monotonic", eventId > if (version >= 6) 701 else 0)
             }
+        }
+    }
+
+    @Test
+    fun listeningCheckpointMigrationKeepsTheExistingOccurrenceWatermark() = runBlocking {
+        createOldDatabase(13) { db ->
+            db.execSQL("INSERT INTO listening_checkpoint VALUES (1, 'existing-play', '{\"2026-10-26\":[60000,1]}', 701)")
+        }
+        openCurrentDatabase().withClose { db ->
+            val checkpoint = requireNotNull(db.listeningStatsDao().checkpoint("existing-play"))
+            assertEquals("{\"2026-10-26\":[60000,1]}", checkpoint.days)
+            assertEquals(701L, checkpoint.eventId)
         }
     }
 
@@ -251,7 +263,7 @@ class MusicDatabaseMigrationTest {
 
     @Test
     fun unsupportedFutureDowngradeFailsWithoutDeletingAnyRecords() {
-        val before = createOldDatabase(version = 14, schemaVersion = 12)
+        val before = createOldDatabase(version = 15, schemaVersion = 12)
         val room = openCurrentDatabase()
         try {
             room.openHelper.writableDatabase
@@ -261,8 +273,8 @@ class MusicDatabaseMigrationTest {
         } finally {
             room.close()
         }
-        helper(14).use { original ->
-            assertEquals(14, original.writableDatabase.version)
+        helper(15).use { original ->
+            assertEquals(15, original.writableDatabase.version)
             assertPreserved(before, snapshot(original.writableDatabase))
         }
     }

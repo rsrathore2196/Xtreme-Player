@@ -30,12 +30,12 @@ class UnifiedRecommendationEngine private constructor(context: Context?,
     enum class Shelf(val itemKey: String) {
         QUICK("card_2_ytm_dynamic_feed"), ERA("card_3_era_specific_hits"),
         CHART("card_4_country_language_hits"), PERSONALIZED("card_6_personalized_recommendation"),
-        SIMILAR("card_7_similar_artists"), INSPIRED("card_8_inspired_by_track")
+        INSPIRED("card_8_inspired_by_track")
     }
     data class Batch(val quick: List<MusicTrack> = emptyList(), val era: List<MusicTrack> = emptyList(),
         val chart: List<MusicTrack>? = null, val personalized: List<MusicTrack> = emptyList(),
-        val similarArtists: List<MusicTrack> = emptyList(), val inspiredTrack: List<MusicTrack> = emptyList(),
-        val chartFetchedAt: Long = 0, val seedKey: String = "", val seedArtist: String = "", val seedTitle: String = "",
+        val inspiredTrack: List<MusicTrack> = emptyList(),
+        val chartFetchedAt: Long = 0, val seedKey: String = "", val seedTitle: String = "",
         val requested: Set<Shelf> = emptySet(), val fetchedAt: Map<Shelf, Long> = emptyMap())
     data class Weights(val language: Float = .50f, val country: Float = .30f,
         val mood: Float = .15f, val discovery: Float = .05f)
@@ -108,13 +108,12 @@ class UnifiedRecommendationEngine private constructor(context: Context?,
         shelves: Set<Shelf> = Shelf.entries.toSet(), startupBatch: Boolean = false): Flow<Batch> = channelFlow {
         val variation = if (force) rotation.incrementAndGet() else rotation.get()
         val seed = current ?: history.firstOrNull()
-        val artist = seed?.let(CustomRecommendationQueryWrapper::extractPrimaryArtist).orEmpty()
         val recent = HomeRecommendationPolicy.Recordings().apply {
             current?.let { add(it) }
             history.filter { taste.keyFor(it) in taste.recentRecordings || it.id in taste.topRecentTrackIds }
                 .forEach { add(it) }
         }
-        val ordering = listOf(Shelf.QUICK, Shelf.CHART, Shelf.ERA, Shelf.PERSONALIZED, Shelf.SIMILAR, Shelf.INSPIRED)
+        val ordering = listOf(Shelf.QUICK, Shelf.CHART, Shelf.ERA, Shelf.PERSONALIZED, Shelf.INSPIRED)
         // Only requested/visible shelves are queued. Below-the-fold shelves do no work.
         val requested = ordering.filter { it in shelves }
         val priority = currentCoroutineContext()[DiscoveryRequestCoordinator.HomeRefresh]
@@ -149,10 +148,8 @@ class UnifiedRecommendationEngine private constructor(context: Context?,
                                     era = tracks.takeIf { shelf == Shelf.ERA }.orEmpty(),
                                     chart = tracks.takeIf { shelf == Shelf.CHART },
                                     personalized = tracks.takeIf { shelf == Shelf.PERSONALIZED }.orEmpty(),
-                                    similarArtists = tracks.takeIf { shelf == Shelf.SIMILAR }.orEmpty(),
                                     inspiredTrack = tracks.takeIf { shelf == Shelf.INSPIRED }.orEmpty(),
-                                    chartFetchedAt = now, seedKey = seedKey(seed), seedArtist = artist,
-                                    seedTitle = seed?.title.orEmpty(), requested = setOf(shelf), fetchedAt = mapOf(shelf to now)))
+                                    chartFetchedAt = now, seedKey = seedKey(seed), seedTitle = seed?.title.orEmpty(), requested = setOf(shelf), fetchedAt = mapOf(shelf to now)))
                             }
                         }
                     }
@@ -246,24 +243,18 @@ class UnifiedRecommendationEngine private constructor(context: Context?,
             tracks.forEachIndexed { index, track -> found.add(Candidate(track, lang, regional, related, era, index, moodHint)) }
         }
         withTimeoutOrNull(12_000L) {
-        if (shelf in setOf(Shelf.INSPIRED, Shelf.SIMILAR, Shelf.PERSONALIZED)) {
+        if (shelf in setOf(Shelf.INSPIRED, Shelf.PERSONALIZED)) {
             val personal = (favorites + history).distinctBy(HomeRecommendationPolicy::metadataKey)
                 .maxByOrNull { track -> HomeRecommendationPolicy.artists(track).maxOfOrNull { taste.artistAffinities[it] ?: 0f } ?: 0f }
             val pivot = if (shelf == Shelf.PERSONALIZED) personal ?: seed else seed
             if (pivot != null) withTimeoutOrNull(5_000L) {
                 var video = pivot.id.removePrefix("yt_").takeIf { pivot.id.startsWith("yt_") && it.length == 11 }
                 val query = "${StreamResolver.extractCleanTitle(pivot.title, pivot.artist)} ${CustomRecommendationQueryWrapper.extractPrimaryArtist(pivot)}"
-                if (shelf == Shelf.SIMILAR) {
-                    val performer = CustomRecommendationQueryWrapper.extractPrimaryArtist(pivot)
-                    if (performer.isNotBlank()) pool("similar", performer, related = true)
-                }
-                else {
                     if (video == null) {
                         val seeds = discoveryWorkers.withPermit { discovery("search", query, gl, false, essential, CONTEXT_TTL) }
                         video = seeds.firstOrNull { confidence(pivot, it) != null }?.id?.removePrefix("yt_")
                     }
                     if (video != null) pool("related", video, related = true)
-                }
             }
             // Anonymous related/artist browse renderers may be empty. Use a small,
             // section-specific metadata search instead of leaving the card permanently blank.
@@ -273,8 +264,6 @@ class UnifiedRecommendationEngine private constructor(context: Context?,
                     when (shelf) {
                         Shelf.PERSONALIZED -> pool("search", "$lang $mood songs $country".trim(),
                             lang, regional = true, moodHint = mood)
-                        Shelf.SIMILAR -> if (performer.isNotBlank()) pool("search", "$lang artists like $performer songs".trim(),
-                            lang, related = true)
                         Shelf.INSPIRED -> if (pivot != null) pool("search",
                             "$lang $mood songs like ${StreamResolver.extractCleanTitle(pivot.title, pivot.artist)} $performer".trim(),
                             lang, related = true, moodHint = mood)

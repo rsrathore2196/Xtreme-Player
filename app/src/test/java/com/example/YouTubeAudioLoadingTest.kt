@@ -9,6 +9,11 @@ import androidx.media3.common.MimeTypes
 import androidx.media3.datasource.ByteArrayDataSource
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
+import androidx.media3.datasource.HttpDataSource
+import androidx.media3.datasource.TransferListener
+import androidx.media3.exoplayer.source.LoadEventInfo
+import androidx.media3.exoplayer.source.MediaLoadData
+import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
 import androidx.media3.extractor.DefaultExtractorInput
 import androidx.media3.extractor.DummyTrackOutput
 import androidx.media3.extractor.Extractor
@@ -25,6 +30,8 @@ import com.example.playback.AudioQualityCeiling
 import com.example.playback.PlaybackSource
 import com.example.playback.PlaybackSourcePolicy
 import com.example.service.YouTubeMediaDataSource
+import com.example.service.PlaybackLoadErrorPolicy
+import com.example.service.YouTubeStreamRefreshRequiredException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -36,6 +43,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import java.util.Base64
+import java.io.IOException
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 @OptIn(com.metrolist.innertubex.sabr.ExperimentalSabrApi::class)
@@ -53,6 +61,37 @@ class YouTubeAudioLoadingTest {
     @Suppress("UNCHECKED_CAST")
     private fun rejectedClients() = YouTubeAudioStreamService::class.java.getDeclaredMethod("rejectedClients", String::class.java)
         .apply { isAccessible = true }.invoke(YouTubeAudioStreamService, "abcdefghijk") as Set<String>
+
+    @Test fun expiredAudioReturnsImmediatelyToAsyncRecoveryWithoutInlineExtraction() {
+        val url = "https://rr.googlevideo.com/videoplayback?itag=139"
+        val spec = DataSpec(Uri.parse(url))
+        val refused = HttpDataSource.InvalidResponseCodeException(403, "Expired", null, emptyMap(), spec, byteArrayOf())
+        cache.put("abcdefghijk:96000:false", YouTubeAudioStreamService.AudioStream(url, 48, false, "old",
+            System.currentTimeMillis() + 60_000, emptyMap(), "AAC", 139, null, "abcdefghijk", false,
+            512_000, "native", selectionCapBps = 96_000))
+        var opens = 0
+        val source = YouTubeMediaDataSource(RuntimeEnvironment.getApplication(), DataSource.Factory {
+            object : DataSource {
+                override fun addTransferListener(listener: TransferListener) = Unit
+                override fun open(dataSpec: DataSpec): Long { opens++; throw refused }
+                override fun read(buffer: ByteArray, offset: Int, length: Int) = C.RESULT_END_OF_INPUT
+                override fun getUri() = spec.uri
+                override fun close() = Unit
+            }
+        })
+        try {
+            val failure = assertThrows(YouTubeStreamRefreshRequiredException::class.java) { source.open(spec) }
+            assertSame(refused, failure.cause)
+            assertEquals(1, opens)
+            assertEquals(setOf("native"), rejectedClients())
+            val info = LoadErrorHandlingPolicy.LoadErrorInfo(LoadEventInfo(1, spec, 0),
+                MediaLoadData(C.DATA_TYPE_MEDIA), failure, 1)
+            assertEquals("Expired URLs must not be reopened before asynchronous renewal", C.TIME_UNSET,
+                PlaybackLoadErrorPolicy().getRetryDelayMsFor(info))
+            val transient = LoadErrorHandlingPolicy.LoadErrorInfo(info.loadEventInfo, info.mediaLoadData, IOException("Network"), 2)
+            assertTrue("Ordinary network retries remain scheduled by Media3", PlaybackLoadErrorPolicy().getRetryDelayMsFor(transient) >= 0)
+        } finally { source.close() }
+    }
 
     @Test fun qualityRenewalDoesNotBlacklistTheWorkingClientOrClearARealCdnRefusal() = runBlocking {
         val url = "https://rr.googlevideo.com/videoplayback?itag=251"

@@ -14,10 +14,10 @@ import kotlinx.coroutines.ensureActive
 internal fun com.example.recommendation.UnifiedRecommendationEngine.Batch.availableShelfTracks(
     unavailable: Map<String, Long>, now: Long, sameSeed: Boolean
 ): Map<Shelf, List<MusicTrack>> = requested.mapNotNull { shelf ->
-    if (!sameSeed && (shelf == Shelf.SIMILAR || shelf == Shelf.INSPIRED)) return@mapNotNull null
+    if (!sameSeed && (shelf == Shelf.INSPIRED)) return@mapNotNull null
     val tracks = when (shelf) {
         Shelf.QUICK -> quick; Shelf.ERA -> era; Shelf.CHART -> chart.orEmpty()
-        Shelf.PERSONALIZED -> personalized; Shelf.SIMILAR -> similarArtists; Shelf.INSPIRED -> inspiredTrack
+        Shelf.PERSONALIZED -> personalized; Shelf.INSPIRED -> inspiredTrack
     }
     val usable = if (tracks.any { (unavailable[it.id] ?: 0L) > now })
         tracks.filter { (unavailable[it.id] ?: 0L) <= now } else tracks
@@ -43,7 +43,6 @@ internal fun SectionState.limitShelf(): SectionState {
 /** Also upgrades retained/older cache headings without changing their tracks or keys. */
 internal fun SectionState.withSeedHeading(shelf: Shelf, seed: String): SectionState {
     val (heading, legacySubtitle) = when (shelf) {
-        Shelf.SIMILAR -> "More From" to "Related to "
         Shelf.INSPIRED -> "Because You Listened" to "Inspired by "
         else -> return this
     }
@@ -73,7 +72,7 @@ internal fun SectionState.finishPreparation(hasVerifiedCandidate: Boolean, showP
 @Immutable
 data class RecommendationCards(val quick: SectionState, val era: SectionState,
     val chart: SectionState, val personalized: SectionState,
-    val similarArtists: SectionState = SectionState(), val inspiredTrack: SectionState = SectionState())
+    val inspiredTrack: SectionState = SectionState())
 
 @Immutable
 data class MostListenedArtist(
@@ -100,7 +99,6 @@ internal fun RecommendationCards.section(shelf: Shelf): SectionState = when (she
     Shelf.ERA -> era
     Shelf.CHART -> chart
     Shelf.PERSONALIZED -> personalized
-    Shelf.SIMILAR -> similarArtists
     Shelf.INSPIRED -> inspiredTrack
 }
 
@@ -111,7 +109,6 @@ internal fun RecommendationCards.withSection(shelf: Shelf, section: SectionState
         Shelf.ERA -> copy(era = section)
         Shelf.CHART -> copy(chart = section)
         Shelf.PERSONALIZED -> copy(personalized = section)
-        Shelf.SIMILAR -> copy(similarArtists = section)
         Shelf.INSPIRED -> copy(inspiredTrack = section)
     }
 }
@@ -137,10 +134,10 @@ internal class IncrementalShelfPreparation {
         val seen = HomeRecommendationPolicy.Recordings()
         val excluded = HomeRecommendationPolicy.Recordings().apply { recent.forEach { add(it) } }
         val upstream = mutableListOf<Constraint>()
-        for (shelf in listOf(Shelf.CHART, Shelf.ERA, Shelf.PERSONALIZED, Shelf.QUICK, Shelf.SIMILAR, Shelf.INSPIRED)) {
+        for (shelf in listOf(Shelf.CHART, Shelf.ERA, Shelf.PERSONALIZED, Shelf.QUICK, Shelf.INSPIRED)) {
             checkpoint()
             val enabled = shelf in eligible && (shelf != Shelf.PERSONALIZED || !taste.isColdStart) &&
-                (shelf !in setOf(Shelf.SIMILAR, Shelf.INSPIRED) || relevantSeed)
+                (shelf !in setOf(Shelf.INSPIRED) || relevantSeed)
             val key = LocalKey(pools[shelf].orEmpty(), taste, recent,
                 if (shelf == Shelf.CHART) emptySet() else exposure, enabled)
             val previous = before[shelf]
@@ -216,7 +213,6 @@ internal fun eligibleHomeShelves(
         if (mode == HomeUserMode.NEW_USER) return@buildSet
         if (mode != HomeUserMode.LOADING || cards.era.tracks.isNotEmpty()) add(Shelf.ERA)
         if (!isColdStart || cards.personalized.tracks.isNotEmpty()) add(Shelf.PERSONALIZED)
-        if (hasSeed || cards.similarArtists.tracks.isNotEmpty()) add(Shelf.SIMILAR)
         if (hasSeed || cards.inspiredTrack.tracks.isNotEmpty()) add(Shelf.INSPIRED)
     }
 }

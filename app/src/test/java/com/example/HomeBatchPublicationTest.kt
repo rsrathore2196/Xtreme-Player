@@ -33,20 +33,20 @@ class HomeBatchPublicationTest {
         assertSame(result, result.withResults(mapOf(Shelf.QUICK to tracks), batch, "profile", true, 5, true))
     }
     @Test fun profileAndSeedChangesDoNotRetainStaleContextualShelves() {
-        val old = current.copy(similar = tracks, inspired = tracks, seedKey = "old")
-        val fresh = batch.copy(similarArtists = tracks, requested = setOf(Shelf.SIMILAR), seedKey = "new")
-        val result = old.withResults(mapOf(Shelf.SIMILAR to tracks), fresh, "new-profile", true, 5, false)
+        val old = current.copy(inspired = tracks, seedKey = "old")
+        val fresh = batch.copy(inspiredTrack = tracks, requested = setOf(Shelf.INSPIRED), seedKey = "new")
+        val result = old.withResults(mapOf(Shelf.INSPIRED to tracks), fresh, "new-profile", true, 5, false)
         assertTrue(result.quick.isEmpty())
-        assertTrue(result.inspired.isEmpty())
+        assertEquals(tracks, result.inspired)
         assertEquals("new", result.seedKey)
-        assertEquals(setOf(Shelf.SIMILAR), result.ready)
+        assertEquals(setOf(Shelf.INSPIRED), result.ready)
     }
     @Test fun onlyRequestedEligibleShelvesAreFilteredAndUnchangedListsAreReused() {
         val result = batch.copy(era = tracks).availableShelfTracks(emptyMap(), 100, true)
         assertEquals(setOf(Shelf.QUICK), result.keys)
         assertSame(tracks, result[Shelf.QUICK])
         assertTrue(batch.availableShelfTracks(mapOf(tracks.single().id to 101L), 100, true).isEmpty())
-        assertTrue(batch.copy(similarArtists = tracks, requested = setOf(Shelf.SIMILAR))
+        assertTrue(batch.copy(inspiredTrack = tracks, requested = setOf(Shelf.INSPIRED))
             .availableShelfTracks(emptyMap(), 100, false).isEmpty())
     }
 }

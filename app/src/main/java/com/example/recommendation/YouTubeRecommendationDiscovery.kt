@@ -5,7 +5,6 @@ import com.example.performance.AppDispatchers
 import com.example.data.cache.RecommendationCache
 import com.example.data.cache.RecommendationTrackCodec
 import com.example.data.model.MusicTrack
-import com.example.data.repository.CatalogNames
 import com.example.data.remote.YouTubeAudioStreamService
 import com.example.data.remote.YouTubeMusicApiService
 import kotlinx.coroutines.*
@@ -21,7 +20,7 @@ internal class YouTubeRecommendationDiscovery(private val cache: RecommendationC
         val now = System.currentTimeMillis()
         if (cached != null && now < cached.expiresAt && (!force || now - cached.fetchedAt < 30_000L))
             return decode(cached.body)
-        if (!force && cached != null && operation in setOf("related", "similar") &&
+        if (!force && cached != null && operation == "related" &&
             now - cached.expiresAt in 0L..ttl) {
             val retained = decode(cached.body)
             if (retained.isNotEmpty()) {
@@ -47,22 +46,12 @@ internal class YouTubeRecommendationDiscovery(private val cache: RecommendationC
                         JSONObject()
                     }
                 } ?: JSONObject()
-                var found = withContext(AppDispatchers.CpuBounded) { if (operation in setOf("similar", "charts")) emptyList() else parse(root) }
+                var found = withContext(AppDispatchers.CpuBounded) { if (operation == "charts") emptyList() else parse(root) }
                 // The related tab is returned by next as a browse endpoint on some
                 // anonymous clients. Follow the real endpoint, never invent a radio ID.
                 if (operation == "related" && found.size < 12) {
                     val related = withContext(AppDispatchers.CpuBounded) { endpoints(root, "related").firstOrNull() }
                     if (related != null) found = found + response("browse", related, country, essential).let { withContext(AppDispatchers.CpuBounded) { parse(it) } }
-                }
-                if (operation == "similar") {
-                    // Search the seed, then browse its real artist identity. Relationships
-                    // are supplied by YouTube Music, not guessed from similarly named artists.
-                    val artist = withContext(AppDispatchers.CpuBounded) { matchedArtistEndpoint(root, value) }
-                    if (artist != null) {
-                        val page = response("browse", artist, country, essential)
-                        val relatedIds = withContext(AppDispatchers.CpuBounded) { relatedArtists(page).take(2) }
-                        for (id in relatedIds) found = found + response("browse", id, country, essential).let { withContext(AppDispatchers.CpuBounded) { parse(it) } }
-                    }
                 }
                 if (operation == "charts") {
                     val playlist = withContext(AppDispatchers.CpuBounded) { regionalChart(root, country) }
@@ -93,7 +82,7 @@ internal class YouTubeRecommendationDiscovery(private val cache: RecommendationC
     }
     private suspend fun response(operation: String, value: String, country: String, essential: Boolean): JSONObject =
         DiscoveryRequestCoordinator.network(essential) {
-            val body = YouTubeAudioStreamService.discoveryResponse(when (operation) { "similar" -> "search"; "charts" -> "browse"; else -> operation }, value, country)
+            val body = YouTubeAudioStreamService.discoveryResponse(when (operation) { "charts" -> "browse"; else -> operation }, value, country)
             withContext(AppDispatchers.CpuBounded) { JSONObject(body) }
         }
     private fun parse(root: JSONObject): List<MusicTrack> {
@@ -105,18 +94,6 @@ internal class YouTubeRecommendationDiscovery(private val cache: RecommendationC
             }
         }
         return found.values.toList()
-    }
-    private fun matchedArtistEndpoint(root: JSONObject, artist: String): String? {
-        val expected = CatalogNames.normalize(artist)
-        var result: String? = null
-        walk(root) { node ->
-            val endpoint = node.optJSONObject("navigationEndpoint")?.optJSONObject("browseEndpoint")
-            val id = endpoint?.optString("browseId").orEmpty()
-            val name = node.optString("text")
-            if (result == null && id.startsWith("UC") && name.isNotBlank() &&
-                CatalogNames.spellingEquivalent(CatalogNames.normalize(name), expected)) result = id
-        }
-        return result
     }
     private fun regionalChart(root: JSONObject, countryCode: String): String? {
         if (!countryCode.matches(Regex("[A-Z]{2}"))) return null
@@ -135,18 +112,6 @@ internal class YouTubeRecommendationDiscovery(private val cache: RecommendationC
         }
         return result
     }
-    private fun artistEndpoints(root: JSONObject): List<String> = buildList {
-        walk(root) { node -> node.optJSONObject("browseEndpoint")?.optString("browseId")
-            ?.takeIf { it.startsWith("UC") }?.let(::add) }
-    }.distinct()
-    private fun relatedArtists(root: JSONObject): List<String> = buildList {
-        walk(root) { node ->
-            val shelf = node.optJSONObject("musicCarouselShelfRenderer") ?: return@walk
-            val heading = shelf.optJSONObject("header")?.toString().orEmpty().lowercase()
-            if (listOf("similar artists", "related artists", "fans might also like").any { it in heading })
-                addAll(artistEndpoints(shelf))
-        }
-    }.distinct()
     private fun endpoints(root: JSONObject, name: String): List<String> = buildList {
         walk(root) { node -> node.optJSONObject("tabRenderer")?.let { tab ->
             if (tab.optString("title").contains(name, true)) {

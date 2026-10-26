@@ -29,7 +29,7 @@ class IncrementalHomePreparationTest {
         val seen = HomeRecommendationPolicy.Recordings()
         val excluded = HomeRecommendationPolicy.Recordings().apply { recent.forEach { add(it) } }
         fun notRecent(t: MusicTrack) = !excluded.contains(t) && taste.keyFor(t) !in taste.recentRecordings
-        return listOf(Shelf.CHART, Shelf.ERA, Shelf.PERSONALIZED, Shelf.QUICK, Shelf.SIMILAR, Shelf.INSPIRED)
+        return listOf(Shelf.CHART, Shelf.ERA, Shelf.PERSONALIZED, Shelf.QUICK, Shelf.INSPIRED)
             .associateWith { shelf ->
                 if (shelf == Shelf.CHART) HomeRecommendationPolicy.originals(pools.getValue(shelf)).filter(::notRecent)
                     .take(HomeRecommendationPolicy.MAX_SHELF_TRACKS).also { it.forEach { t -> seen.add(t) } }

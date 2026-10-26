@@ -7,11 +7,7 @@ import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.TransferListener
-import com.example.data.local.AudioQualityPreferences
 import com.example.data.remote.YouTubeAudioStreamService
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.runBlocking
 import java.io.EOFException
 import java.io.IOException
 
@@ -27,7 +23,6 @@ internal class YouTubeMediaDataSource(private val context: Context, private val 
     private var position = 0L
     private var remaining = C.LENGTH_UNSET.toLong()
     private var chunkRemaining = C.LENGTH_UNSET.toLong()
-    private var recoveries = 0
 
     override fun addTransferListener(listener: TransferListener) {
         listeners.add(listener); delegate?.addTransferListener(listener)
@@ -43,12 +38,11 @@ internal class YouTubeMediaDataSource(private val context: Context, private val 
         }
         original = dataSpec
         audio = YouTubeAudioStreamService.cachedForUrl(dataSpec.uri.toString())?.takeUnless { it.isHls }
-        recoveries = 0
         position = dataSpec.position
         remaining = if (dataSpec.length != C.LENGTH_UNSET.toLong()) dataSpec.length
             else audio?.contentLength?.let { (it - position).coerceAtLeast(0L) } ?: C.LENGTH_UNSET.toLong()
         if (remaining == 0L) return 0L
-        openRecovering()
+        openChecked()
         return remaining
     }
     private fun openChunk() {
@@ -102,69 +96,36 @@ internal class YouTubeMediaDataSource(private val context: Context, private val 
         if (remaining < 0 && available >= 0 && stream?.useRangeChunks != true) remaining = available
         chunkRemaining = if (size >= 0) size else available
     }
-    private fun openRecovering() {
-        while (true) try { openChunk(); return }
-        catch (error: IOException) { recover(error) }
+    private fun openChecked() {
+        try { openChunk() } catch (error: IOException) { throw recoveryFailure(error) }
     }
-    private fun recover(error: IOException) {
-        val stream = audio ?: throw error // Other providers keep their existing Media3 behavior.
-        if (recoveries++ >= 2 || Thread.currentThread().isInterrupted) throw error
+    private fun recoveryFailure(error: IOException): IOException {
+        val stream = audio ?: return error // Other providers keep their existing Media3 behavior.
         val status = generateSequence<Throwable>(error) { it.cause }.take(8)
             .filterIsInstance<HttpDataSource.InvalidResponseCodeException>().firstOrNull()?.responseCode
-        val expired = status in setOf(401, 403, 410)
-        val transient = status == null || status in setOf(408, 429) || status in 500..599
-        if (!expired && !transient) throw error
-        closeDelegate()
-        if (expired) {
-            val videoId = stream.videoId
-            val failedRoot = YouTubeAudioStreamService.playbackUri("yt_$videoId", stream.url)
-            YouTubeAudioStreamService.reject(videoId, stream.url, stream.clientId)
-            if (!YouTubeAudioStreamService.isVideoId(videoId)) throw error
-            val refreshed = try {
-                runBlocking(Dispatchers.IO) {
-                    YouTubeAudioStreamService.resolve(videoId, AudioQualityPreferences.getSelectedQuality(context),
-                        forceRefresh = true, hlsOnly = false, excludedClient = stream.clientId,
-                        maxBitrateBps = stream.selectionCapBps, requireOpus = stream.opusOnly)
-                }
-            } catch (e: InterruptedException) {
-                Thread.currentThread().interrupt()
-                throw IOException("Audio stream refresh interrupted", e)
-            } catch (e: CancellationException) {
-                throw IOException("Audio stream refresh canceled or timed out", e)
-            } catch (e: Exception) {
-                throw IOException("Couldn't refresh the audio stream", e)
-            }
-            // Cached bytes/extractor offsets are valid only for the same representation.
-            // A format change is recovered by the player's existing time-based retry.
-            if (refreshed.isHls || refreshed.isSabr || refreshed.cacheKey != stream.cacheKey) {
-                SabrSessionRegistry.recordReplacement(failedRoot, refreshed)
-                throw SabrStreamChangedException(refreshed)
-            }
-            audio = refreshed
-        } else {
-            try { Thread.sleep(200L * recoveries) }
-            catch (_: InterruptedException) { Thread.currentThread().interrupt(); throw error }
-        }
+        if (status !in setOf(401, 403, 410) || Thread.currentThread().isInterrupted) return error
+        // Extraction belongs to the controller/service's cancellable coroutine.
+        // Never block this synchronous loader callback on WebView/network recovery.
+        YouTubeAudioStreamService.reject(stream.videoId, stream.url, stream.clientId)
+        return YouTubeStreamRefreshRequiredException(error)
     }
     override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
         if (original?.uri?.scheme == "xtreme-sabr") return requireNotNull(delegate).read(buffer, offset, length)
         if (length == 0) return 0
         if (remaining == 0L) return C.RESULT_END_OF_INPUT
-        while (true) {
-            try {
-                if (chunkRemaining == 0L) { closeDelegate(); openRecovering() }
-                val size = if (chunkRemaining >= 0) minOf(length.toLong(), chunkRemaining).toInt() else length
-                val count = requireNotNull(delegate).read(buffer, offset, size)
-                if (count == C.RESULT_END_OF_INPUT) {
-                    if (remaining > 0) throw EOFException("Audio response ended before its declared length")
-                    remaining = 0L; return count
-                }
-                position += count
-                if (remaining >= 0) remaining -= count
-                if (chunkRemaining >= 0) chunkRemaining -= count
-                return count
-            } catch (error: IOException) { recover(error); openRecovering() }
-        }
+        try {
+            if (chunkRemaining == 0L) { closeDelegate(); openChecked() }
+            val size = if (chunkRemaining >= 0) minOf(length.toLong(), chunkRemaining).toInt() else length
+            val count = requireNotNull(delegate).read(buffer, offset, size)
+            if (count == C.RESULT_END_OF_INPUT) {
+                if (remaining > 0) throw EOFException("Audio response ended before its declared length")
+                remaining = 0L; return count
+            }
+            position += count
+            if (remaining >= 0) remaining -= count
+            if (chunkRemaining >= 0) chunkRemaining -= count
+            return count
+        } catch (error: IOException) { throw recoveryFailure(error) }
     }
     private fun closeDelegate() { try { delegate?.close() } finally { delegate = null } }
     override fun getUri(): Uri? = delegate?.uri ?: original?.uri

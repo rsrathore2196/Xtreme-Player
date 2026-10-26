@@ -366,9 +366,11 @@ object BackupRestoreManager {
             com.example.data.repository.ListeningStatsRepository.flushExisting()
             val dao = musicDatabase.musicDao()
             var listeningTotals = emptyList<ListeningTotal>()
+            var listeningMigrations = emptyList<ListeningIdentityMigration>()
             val (playlists, allTracks, crossRefs) = musicDatabase.withTransaction {
                 dao.removeOrphanPlaylistTrackRefs()
                 listeningTotals = musicDatabase.listeningStatsDao().all()
+                listeningMigrations = musicDatabase.listeningStatsDao().identityMigrations()
                 Triple(dao.getAllPlaylistsSync(), dao.getAllTracksSync(), dao.getAllPlaylistCrossRefsSync())
             }
             val userProfile = UserProfilePreferences.getUserProfile(context)
@@ -383,6 +385,7 @@ object BackupRestoreManager {
             rootJson.put("version", com.example.BuildConfig.VERSION_NAME)
             rootJson.put("schemaVersion", 4)
             rootJson.put("listeningStats", ListeningStatsBackup.encode(listeningTotals))
+            rootJson.put("listeningIdentityMigrations", ListeningStatsBackup.encodeMigrations(listeningMigrations))
             rootJson.put("createdAt", System.currentTimeMillis())
 
             // User Profile
@@ -510,7 +513,8 @@ object BackupRestoreManager {
         val profile: JSONObject?,
         val hasPlaylists: Boolean,
         val ignoredOrphanRefs: Int = 0,
-        val listeningStats: List<ListeningTotal> = emptyList()
+        val listeningStats: List<ListeningTotal> = emptyList(),
+        val listeningMigrations: List<ListeningIdentityMigration> = emptyList()
     )
 
     private fun normalizeText(text: String): String =
@@ -697,7 +701,8 @@ object BackupRestoreManager {
         }
         require(playlists.isNotEmpty() || tracks.isNotEmpty() || profile != null) { "Backup file is empty" }
         return ParsedBackup(playlists, tracks, validParentRefs, profile, root.has("playlists"), refs.size - validParentRefs.size,
-            if (root.has("listeningStats")) ListeningStatsBackup.decode(root.getJSONArray("listeningStats")) else emptyList())
+            if (root.has("listeningStats")) ListeningStatsBackup.decode(root.getJSONArray("listeningStats")) else emptyList(),
+            if (root.has("listeningIdentityMigrations")) ListeningStatsBackup.decodeMigrations(root.getJSONArray("listeningIdentityMigrations")) else emptyList())
     }
 
     private fun restoredProfile(json: JSONObject, previous: UserProfile): UserProfile = previous.copy(
@@ -846,6 +851,9 @@ object BackupRestoreManager {
                             val trackId = trackIdMap[row.trackId] ?: row.trackId
                             row.copy(trackId = trackId, identity = if (row.kind == "song" && row.identity == "catalog:${row.trackId}")
                                 "catalog:$trackId" else row.identity)
+                        }, backup.listeningMigrations.map { migration ->
+                            val originalId = migration.catalogIdentity.removePrefix("catalog:")
+                            migration.copy(catalogIdentity = "catalog:${trackIdMap[originalId] ?: originalId}")
                         })
                         profile?.let {
                             profileWriteAttempted = true

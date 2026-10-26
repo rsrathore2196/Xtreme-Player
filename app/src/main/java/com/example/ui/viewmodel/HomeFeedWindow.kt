@@ -6,7 +6,7 @@ import com.example.recommendation.UnifiedRecommendationEngine.Shelf
 /** Display ownership is retained by Home, independently of cached discovery pools. */
 enum class HomeFeedSection(val shelf: Shelf?) {
     QUICK(Shelf.QUICK), CHART(Shelf.CHART), ARTISTS(null), ERA(Shelf.ERA),
-    PERSONALIZED(Shelf.PERSONALIZED), SIMILAR(Shelf.SIMILAR), INSPIRED(Shelf.INSPIRED)
+    PERSONALIZED(Shelf.PERSONALIZED), INSPIRED(Shelf.INSPIRED)
 }
 
 @Immutable
