@@ -24,13 +24,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ColorMatrix
-import androidx.compose.ui.graphics.ColorMatrixColorFilter
-import androidx.compose.ui.graphics.layer.CompositingStrategy
-import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Shape
-import androidx.compose.ui.graphics.layer.drawLayer
-import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
@@ -39,9 +33,7 @@ import com.example.ui.components.backdrop.backdrops.LayerBackdrop
 import com.example.ui.components.backdrop.backdrops.layerBackdrop
 import com.example.ui.components.backdrop.backdrops.rememberLayerBackdrop
 import com.example.ui.components.backdrop.drawBackdrop
-import com.example.ui.components.backdrop.drawPlainBackdrop
 import com.example.ui.components.backdrop.effects.blur
-import com.example.ui.components.backdrop.effects.colorFilter
 import com.example.ui.components.backdrop.effects.lens
 import com.example.ui.theme.AppThemeColors
 import com.example.ui.theme.LocalAppColors
@@ -118,7 +110,7 @@ fun Modifier.xtremeLiquidGlassBackground(
     interaction: DockGlassInteraction? = null,
     rimBrush: Brush? = null,
     neutralFinish: Boolean = false,
-    foregroundBackdrop: LayerBackdrop? = null
+    innerWhiteTintAlpha: Float = 0f
 ): Modifier {
     if (!enabled || !LocalDynamicGlassEnabled.current) return this
         .shadow(elevation, shape)
@@ -172,9 +164,6 @@ fun Modifier.xtremeLiquidGlassBackground(
         .then(if (baseFillAlpha == 0f) Modifier else Modifier.shadow(elevation, shape, clip = false,
             spotColor = Color.Black.copy(alpha = if (dark) 0.42f else 0.14f),
             ambientColor = Color.Black.copy(alpha = 0.08f)))
-        // Light floating labels sample this already-rendered surface, not the screen
-        // or a bitmap. Capture the background only, excluding content and shadows.
-        .then(if (foregroundBackdrop != null) Modifier.layerBackdrop(foregroundBackdrop) else Modifier)
         .clip(shape)
         .then(
             if (useBackdrop) Modifier.drawBackdrop(
@@ -214,6 +203,7 @@ fun Modifier.xtremeLiquidGlassBackground(
                 drawRect(colorWash)
                 drawRect(sheen)
                 drawRect(reflection)
+                if (innerWhiteTintAlpha > 0f) drawRect(Color.White.copy(alpha = innerWhiteTintAlpha.coerceIn(0f, 1f)))
                 if (touchGlow != null && interaction != null) {
                     val press = interaction.pressProgress.coerceIn(0f, 1f)
                     val touch = interaction.touchPosition
@@ -357,38 +347,4 @@ fun XtremeLiquidGlassSurface(
     ) {
         content()
     }
-}
-
-/** Plain black/white ink selected from the actual glass beneath each glyph.
- * GPU-only alpha masking: no outline, glow, bitmap readback or composition ticker.
- * Dark floating chrome never installs these layers. */
-@Composable
-internal fun Modifier.lightGlassContentContrast(backdrop: LayerBackdrop?): Modifier {
-    if (backdrop == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return this
-    val glyphs = rememberGraphicsLayer().apply {
-        compositingStrategy = CompositingStrategy.Offscreen
-        blendMode = BlendMode.DstIn
-    }
-    val filter = remember {
-        // Weighted surface brightness chooses plain dark/light ink. A steep
-        // threshold keeps the result neutral without an outline or translucent
-        // glyphs, using the same Android 12-compatible GPU path on every device.
-        val r = -40f * .2126f; val g = -40f * .7152f; val b = -40f * .0722f
-        val threshold = 40f * .46f * 255f
-        ColorMatrixColorFilter(ColorMatrix(floatArrayOf(
-            r, g, b, 0f, threshold,
-            r, g, b, 0f, threshold,
-            r, g, b, 0f, threshold,
-            0f, 0f, 0f, 0f, 255f)))
-    }
-    val effects: com.example.ui.components.backdrop.BackdropEffectScope.() -> Unit = remember(filter) {
-        { colorFilter(filter) }
-    }
-    return drawPlainBackdrop(backdrop, { RectangleShape }, effects)
-        .drawWithCache {
-            onDrawWithContent {
-                glyphs.record { this@onDrawWithContent.drawContent() }
-                drawLayer(glyphs)
-            }
-        }
 }

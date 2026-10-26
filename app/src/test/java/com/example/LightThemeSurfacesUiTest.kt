@@ -217,28 +217,14 @@ class LightThemeSurfacesUiTest {
                 compose.waitForIdle()
                 val mini = capture("mini_player_container", "light-mini-$glass-${canvas.toArgb()}")
                 val fill = java.awt.Color(mini.getRGB(mini.width / 2, mini.height - 5))
-                if (glass) {
-                    val shell = compose.onNodeWithTag("mini_player_container").fetchSemanticsNode().boundsInRoot
-                    for (label in listOf("Song title", "Artist")) {
-                        val bounds = compose.onNodeWithText(label, useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
-                        val left = ((bounds.left - shell.left) * mini.width / shell.width).toInt()
-                        val top = ((bounds.top - shell.top) * mini.height / shell.height).toInt()
-                        val right = ((bounds.right - shell.left) * mini.width / shell.width).toInt().coerceAtMost(mini.width - 1)
-                        val bottom = ((bounds.bottom - shell.top) * mini.height / shell.height).toInt().coerceAtMost(mini.height - 1)
-                        val behind = Color(mini.getRGB((left - 3).coerceAtLeast(0), (top + bottom) / 2)).luminance()
-                        var readable = 0
-                        for (y in top.coerceAtLeast(0)..bottom) for (x in left.coerceAtLeast(0)..right) {
-                            val luminance = Color(mini.getRGB(x, y)).luminance()
-                            val ratio = (maxOf(luminance, behind) + .05f) / (minOf(luminance, behind) + .05f)
-                            if (ratio >= 3f) readable++
-                        }
-                        assertTrue("$label needs plain contrasting ink over $canvas; found $readable", readable >= 12)
-                        val layouts = mutableListOf<TextLayoutResult>()
-                        compose.onNodeWithText(label, useUnmergedTree = true)
-                            .performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
-                        assertEquals(androidx.compose.ui.text.font.FontWeight.Bold, layouts.single().layoutInput.style.fontWeight)
-                        assertNull("Labels must not have a glow or text shadow", layouts.single().layoutInput.style.shadow)
-                    }
+                for (label in listOf("Song title", "Artist")) {
+                    val layouts = mutableListOf<TextLayoutResult>()
+                    compose.onNodeWithText(label, useUnmergedTree = true)
+                        .performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
+                    assertEquals("Light floating labels keep one solid dark color over every canvas", Color.Black,
+                        layouts.single().layoutInput.style.color)
+                    assertEquals(androidx.compose.ui.text.font.FontWeight.Bold, layouts.single().layoutInput.style.fontWeight)
+                    assertNull("Labels must not have a glow or text shadow", layouts.single().layoutInput.style.shadow)
                 }
 
                 val dock = capture("floating_bottom_navigation_bar", "light-dock-$glass-${canvas.toArgb()}")

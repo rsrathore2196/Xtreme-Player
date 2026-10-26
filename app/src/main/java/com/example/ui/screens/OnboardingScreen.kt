@@ -1,14 +1,10 @@
 package com.example.ui.screens
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.updateTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
@@ -72,6 +68,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -79,6 +78,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.invisibleToUser
+import androidx.compose.ui.semantics.testTag
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -102,6 +107,11 @@ import com.example.data.model.CountryItem
 import com.example.data.model.LanguageData
 import com.example.data.model.LanguageOption
 import com.example.ui.components.AppDynamicLogo
+import com.example.ui.components.awaitStartupContentDraw
+import com.example.performance.BackgroundWorkCoordinator
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import com.example.ui.theme.LocalAppColors
 import com.example.ui.theme.AppThemeColors
 import com.example.ui.theme.LightAppColors
@@ -194,6 +204,8 @@ private fun OnboardingContent(
     var isLanguagePickerOpen by remember { mutableStateOf(false) }
 
     BackHandler(enabled = currentStep == OnboardingStep.DETAILS) {
+        focusManager.clearFocus(force = true)
+        BackgroundWorkCoordinator.navigationInteraction()
         currentStep = OnboardingStep.STARTUP
     }
 
@@ -237,24 +249,12 @@ private fun OnboardingContent(
             .testTag("onboarding_screen"),
         contentAlignment = Alignment.Center
     ) {
-        AnimatedContent(
-            targetState = currentStep,
-            modifier = Modifier.fillMaxSize(),
-            transitionSpec = {
-                val direction = if (targetState == OnboardingStep.DETAILS) 1 else -1
-                // Both pages occupy the viewport. Animate placement/opacity only;
-                // a default spring and size animation add a long settling tail.
-                ((slideInHorizontally(tween(220, easing = FastOutSlowInEasing)) { direction * it / 6 } +
-                    fadeIn(tween(160))) togetherWith
-                    (slideOutHorizontally(tween(220, easing = FastOutSlowInEasing)) { -direction * it / 6 } +
-                        fadeOut(tween(120)))).using(null)
-            },
-            label = "onboarding_step_crossfade"
-        ) { step ->
+        RetainedOnboardingPages(currentStep) { step ->
             when (step) {
                 OnboardingStep.STARTUP -> {
                     OnboardingStartupPage(
                         onStartListening = {
+                            BackgroundWorkCoordinator.navigationInteraction()
                             currentStep = OnboardingStep.DETAILS
                         }
                     )
@@ -737,6 +737,71 @@ private fun OnboardingContent(
             },
             onDismiss = { isLanguagePickerOpen = false }
         )
+    }
+}
+
+/** Prepare the small local form after the intro's first draw, then retain both
+ * pages. Only placement/opacity animate; entering never constructs a TextField,
+ * logo or language-chip tree during the slide. Hidden pages are not placed,
+ * exposed to accessibility, or allowed to accept input. */
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
+@Composable
+internal fun RetainedOnboardingPages(step: OnboardingStep, content: @Composable (OnboardingStep) -> Unit) {
+    val view = LocalView.current
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    var detailsPrepared by remember { mutableStateOf(false) }
+    val transition = updateTransition(step, label = "onboarding_step_crossfade")
+    val moving = transition.isRunning || transition.currentState != step
+    DisposableEffect(moving) {
+        val work = if (moving) BackgroundWorkCoordinator.navigationBusy() else null
+        onDispose { work?.close() }
+    }
+    LaunchedEffect(view, lifecycle, step) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            if (detailsPrepared) return@repeatOnLifecycle
+            if (step == OnboardingStep.DETAILS) {
+                detailsPrepared = true
+                return@repeatOnLifecycle
+            }
+            // Real traversals, not a timer. Compose/measure stays on Main and the
+            // existing admission gate protects this one-time preparation as well.
+            view.awaitStartupContentDraw { }
+            val work = BackgroundWorkCoordinator.navigationBusy()
+            try {
+                detailsPrepared = true
+                view.awaitStartupContentDraw { }
+            } finally { work.close() }
+        }
+    }
+    Box(Modifier.fillMaxSize()) {
+        for (page in OnboardingStep.entries) key(page) {
+            if (page == OnboardingStep.STARTUP || detailsPrepared || step == OnboardingStep.DETAILS) {
+                val opacity = transition.animateFloat(transitionSpec = {
+                    tween(if (targetState == page) 160 else 120)
+                }, label = "onboarding_${page}_opacity") { if (it == page) 1f else 0f }
+                val offset = transition.animateFloat(transitionSpec = {
+                    tween(220, easing = FastOutSlowInEasing)
+                }, label = "onboarding_${page}_offset") {
+                    if (it == page) 0f else if (page == OnboardingStep.STARTUP) -1f / 6f else 1f / 6f
+                }
+                Layout(content = { content(page) }, modifier = Modifier.fillMaxSize()
+                    .zIndex(if (step == page) 1f else 0f)
+                    .then(if (step == page) Modifier else Modifier.clearAndSetSemantics {
+                        testTag = "onboarding_${page.name.lowercase()}_prepared"
+                        invisibleToUser()
+                    })) { measurables, constraints ->
+                    val child = measurables.single().measure(constraints)
+                    layout(child.width, child.height) {
+                        // Measuring an unplaced page prepares it without drawing
+                        // it or intercepting touches meant for the visible page.
+                        if (step == page || opacity.value > 0f) child.placeWithLayer(0, 0) {
+                            alpha = opacity.value
+                            translationX = child.width * offset.value
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

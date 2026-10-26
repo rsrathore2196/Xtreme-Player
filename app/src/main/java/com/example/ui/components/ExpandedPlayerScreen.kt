@@ -2435,12 +2435,21 @@ internal fun Modifier.playerArtworkEdgeBlend(enabled: Boolean): Modifier = if (!
         .drawWithCache {
             // Alpha only: preserve the center's original pixels, without a black,
             // white or theme-colored overlay. Cache one mask for the image bounds.
-            val edges = Brush.verticalGradient(
-                0f to Color.Transparent,
-                0.16f to Color.White,
-                0.78f to Color.White,
-                1f to Color.Transparent
-            )
+            // Leave a transparent margin at each actual image boundary, then
+            // use a smooth ramp with zero slope at both ends. Linear fades ended
+            // abruptly against contrasting artwork and exposed a horizontal seam.
+            val stops = ArrayList<Pair<Float, Color>>(52)
+            for (i in 0..24) {
+                val t = i / 24f
+                val alpha = t * t * (3f - 2f * t)
+                stops += (0.02f + t * 0.22f) to Color.White.copy(alpha = alpha)
+            }
+            for (i in 0..24) {
+                val t = i / 24f
+                val alpha = 1f - t * t * (3f - 2f * t)
+                stops += (0.76f + t * 0.22f) to Color.White.copy(alpha = alpha)
+            }
+            val edges = Brush.verticalGradient(*stops.toTypedArray())
             onDrawWithContent {
                 drawContent()
                 drawRect(edges, blendMode = BlendMode.DstIn)

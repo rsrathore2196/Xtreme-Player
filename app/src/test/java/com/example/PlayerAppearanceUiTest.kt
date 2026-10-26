@@ -131,7 +131,7 @@ class PlayerAppearanceUiTest {
             ready.getRGB(ready.width / 2, ready.height / 2) == coverColor
         }
         val image = capture("flip_album_art_card")
-        for (fraction in listOf(.2f, .5f, .75f)) {
+        for (fraction in listOf(.3f, .5f, .7f)) {
             assertEquals("The center of the cover must remain unmodified", coverColor,
                 image.getRGB(image.width / 2, (image.height * fraction).toInt()))
         }
