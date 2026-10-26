@@ -437,7 +437,13 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
                 it.copy(loadingMore = false, error = "Couldn't load more. Tap to retry.") } }
         }
     }
+    private val detailBackStack = ArrayDeque<CatalogDetailState>()
+
     fun open(destination: CatalogDestination) {
+        _detail.value?.takeIf { it.destination.key != destination.key }?.let {
+            if (detailBackStack.size == 20) detailBackStack.removeFirst()
+            detailBackStack.addLast(it)
+        }
         saveDetail()
         detailJob?.cancel(); detailGeneration++
         val key = detailAliases[destination.key] ?: destination.key
@@ -463,7 +469,21 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
         }
     }
 
-    fun close() { saveDetail(); detailJob?.cancel(); detailGeneration++; _detail.value = null }
+    fun back() {
+        val parent = detailBackStack.removeLastOrNull() ?: return close()
+        saveDetail()
+        detailJob?.cancel(); detailGeneration++
+        val position = scrollPositions.get(parent.destination.key)
+        _detail.value = parent.copy(loading = false, requestId = detailGeneration,
+            scrollIndex = position?.first ?: parent.scrollIndex,
+            scrollOffset = position?.second ?: parent.scrollOffset)
+        if (!parent.initialized) loadMoreDetail()
+    }
+
+    fun close() {
+        saveDetail(); detailJob?.cancel(); detailGeneration++; _detail.value = null
+        detailBackStack.clear()
+    }
     private fun saveDetail() { _detail.value?.let { details[it.destination.key] = it.copy(loading = false) } }
     fun rememberScroll(index: Int, offset: Int) {
         // Do not emit Home/player state on every scroll frame.

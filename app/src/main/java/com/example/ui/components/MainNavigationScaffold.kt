@@ -269,7 +269,7 @@ fun MainNavigationScaffold(
         if (isPlayerExpanded) {
             isPlayerExpanded = false
         } else if (catalogDetail != null) {
-            viewModel.catalogBrowser.close()
+            viewModel.catalogBrowser.back()
         } else if (selectedPlaylistWithTracks != null) {
             viewModel.closePlaylist()
         } else if (selectedTabIndex == 1 && viewModel.hasActiveSearch()) {
@@ -463,7 +463,7 @@ fun MainNavigationScaffold(
                         val detailPlayer by viewModel.playbackPresentationState.collectAsStateWithLifecycle()
                         com.example.ui.screens.CatalogDetailScreen(
                             state = detail, player = detailPlayer,
-                            onBack = viewModel.catalogBrowser::close,
+                            onBack = viewModel.catalogBrowser::back,
                             onMore = viewModel.catalogBrowser::loadMoreDetail,
                             onPlay = { track, queue ->
                                 if (detail.destination is com.example.data.repository.CatalogDestination.Album ||

@@ -81,9 +81,12 @@ internal fun rememberLyricsTextController(lyrics: TrackLyrics?, visible: Boolean
     val language = com.example.data.local.LyricsTranslationLanguages.effectiveTag(
         settings.translationLanguageTag, config.locales[0].toLanguageTag())
     val scope = rememberCoroutineScope()
-    val transformer = remember(context) { LyricsTextTransformer.get(context) }
     val controller = remember(lyrics, language) {
-        LyricsTextController(lyrics, scope) { original, mode -> transformer.transform(original, mode, language) }
+        LyricsTextController(lyrics, scope) { original, mode ->
+            withContext(com.example.performance.AppDispatchers.Io) {
+                LyricsTextTransformer.get(context).transform(original, mode, language)
+            }
+        }
     }
     val owner = LocalLifecycleOwner.current
     DisposableEffect(controller, owner) {

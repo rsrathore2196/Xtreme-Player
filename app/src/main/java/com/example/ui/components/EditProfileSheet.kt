@@ -78,7 +78,10 @@ fun EditProfileSheet(
 ) {
     val appColors = LocalAppColors.current
     val isDark = appColors.isDark
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true,
+        confirmValueChange = { it != androidx.compose.material3.SheetValue.Hidden })
+    val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+    val hideKeyboard = { keyboard?.hide(); Unit }
     val focusManager = LocalFocusManager.current
 
     var nameInput by remember { mutableStateOf(userProfile.name) }
@@ -102,11 +105,13 @@ fun EditProfileSheet(
     val isFormValid = nameInput.trim().isNotBlank() && selectedLanguages.isNotEmpty()
 
     ModalBottomSheet(
-        onDismissRequest = onDismiss,
+        onDismissRequest = hideKeyboard,
+        properties = androidx.compose.material3.ModalBottomSheetProperties(shouldDismissOnBackPress = false),
         sheetState = sheetState,
         containerColor = bg,
         dragHandle = null
     ) {
+        androidx.activity.compose.BackHandler(enabled = !isCountryPickerOpen) { keyboard?.hide() }
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -141,10 +146,10 @@ fun EditProfileSheet(
                             color = textMuted
                         )
                     }
-                    IconButton(onClick = onDismiss) {
+                    IconButton(onClick = hideKeyboard) {
                         Icon(
                             imageVector = Icons.Default.Clear,
-                            contentDescription = "Close",
+                            contentDescription = "Hide keyboard",
                             tint = textMuted
                         )
                     }

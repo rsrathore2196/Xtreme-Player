@@ -62,14 +62,21 @@ internal fun MainTabPager(
     }
     LaunchedEffect(view, lifecycle, prepareStartup) {
         if (!prepareStartup) {
-            mounted = setOf(0, 1, 2)
+            // A preparation timeout must not mount all unfinished screens on the
+            // first interactive frame. User navigation still mounts its target immediately.
+            for (index in 0..2) {
+                if (index in mounted) continue
+                BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.DEFERRED,
+                    label = "Retained tab preparation $index") {
+                    mounted = mounted + index
+                    measured[index].await()
+                    view.awaitStartupContentDraw { }
+                }
+            }
             return@LaunchedEffect
         }
         BackgroundWorkCoordinator.beginTabPreparation()
-        if (BackgroundWorkCoordinator.startupReadiness.value.complete) {
-            mounted = setOf(0, 1, 2)
-            return@LaunchedEffect
-        }
+        if (BackgroundWorkCoordinator.startupReadiness.value.complete) return@LaunchedEffect
         val generation = BackgroundWorkCoordinator.startupReadiness.value.presentationGeneration
         lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             val coordinator = BackgroundWorkCoordinator

@@ -571,6 +571,9 @@ private fun KaraokeLineItem(
         // Never allocate new halo bitmaps for intermediate transition geometry.
         if (viewportAnimating || !isActive || glyphGlows?.matches(layout) == true) return@LaunchedEffect
         val regions = if (revealUnits.isEmpty()) fallbackRegions else revealUnits.flatMap { it.regions }
+        // Halo allocation/painting is optional while the player or another page
+        // is moving; retain the existing lyric text and reveal during that interval.
+        com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle()
         glyphGlows = prepareGlyphGlows(layout, regions, broadRadius, coreRadius)
     }
 

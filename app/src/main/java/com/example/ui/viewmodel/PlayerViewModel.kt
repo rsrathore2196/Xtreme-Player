@@ -943,6 +943,9 @@ class PlayerViewModel(
         if (exploreIndexJob?.isActive == true) return
         val generation = exploreIndexGeneration.incrementAndGet()
         exploreIndexJob = viewModelScope.launch(AppDispatchers.Io) {
+            // Retained Search becomes visible at the start of its slide. Keep
+            // optional category discovery out of that navigation interval.
+            com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
             val profile = com.example.data.local.UserProfilePreferences.getUserProfile(application)
             val context = "${profile.countryCode}|${application.resources.configuration.locales.toLanguageTags()}"
             val now = android.os.SystemClock.elapsedRealtime()
@@ -959,6 +962,8 @@ class PlayerViewModel(
             try {
                 val categories = repository.getExploreCategories(profile)
                 ensureActive()
+                // A response may arrive during a later navigation gesture.
+                com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
                 if (!exploreVisible || generation != exploreIndexGeneration.get()) return@launch
                 if (categories.isNotEmpty()) {
                     exploreIndexLoadedAt = android.os.SystemClock.elapsedRealtime()

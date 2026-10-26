@@ -18,6 +18,13 @@ import org.robolectric.annotation.Config
 @Config(sdk = [31, 34], application = Application::class)
 class LyricsTextControllerTest {
     private val source = TrackLyrics("song", "Title", "Artist", true, listOf(LyricLine(1000, "दिल मेरा")))
+    @Test fun preparingOriginalLyricsNeverStartsTextConversion() = runTest {
+        var requests = 0
+        val controller = LyricsTextController(source, this) { _, _ -> requests++; Result.Unavailable }
+        testScheduler.advanceUntilIdle()
+        assertSame(source, controller.state.value.lyrics)
+        assertEquals(0, requests)
+    }
     @Test fun toggleOnlyActivatesAfterSuccessAndOffImmediatelyRestoresTheOriginal() = runTest {
         val answer = CompletableDeferred<Result>(); var calls = 0
         val translated = source.copy(lines = source.lines.map { it.copy(translation = "My heart") })

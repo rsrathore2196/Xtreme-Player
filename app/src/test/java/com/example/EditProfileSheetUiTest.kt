@@ -23,6 +23,23 @@ import org.robolectric.annotation.GraphicsMode
 class EditProfileSheetUiTest {
     @get:Rule val compose = createComposeRule()
 
+    @Test fun backKeepsUnsavedEditsAndOnlySaveSubmits() {
+        var dismissed = 0
+        var saved: UserProfile? = null
+        compose.setContent { MaterialTheme {
+            EditProfileSheet(UserProfile(name = "Listener", languages = listOf("English")),
+                onDismiss = { dismissed++ }, onSave = { saved = it })
+        } }
+        compose.onNodeWithTag("edit_profile_name_input").performTextReplacement("Draft")
+        androidx.test.espresso.Espresso.pressBack()
+        androidx.test.espresso.Espresso.pressBack()
+        compose.onNodeWithTag("edit_profile_sheet").assertIsDisplayed()
+        compose.onNodeWithTag("edit_profile_name_input").assertTextContains("Draft")
+        compose.runOnIdle { assertNull(saved); assertEquals(0, dismissed) }
+        compose.onNodeWithTag("save_profile_button").performClick()
+        compose.runOnIdle { assertEquals("Draft", saved?.name); assertEquals(1, dismissed) }
+    }
+
     @Test fun saveStaysVisibleAndInPlaceWhileTheFormScrollsAndSavesCurrentValues() {
         var saved: UserProfile? = null
         val profile = UserProfile(name = "Listener", languages = listOf("English"), countryCode = "IN", country = "India")

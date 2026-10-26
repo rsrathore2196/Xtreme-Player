@@ -39,6 +39,7 @@ import com.example.ui.components.SettingsNavigationOverlay
 import com.github.takahirom.roborazzi.captureRoboImage
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -55,6 +56,30 @@ import org.robolectric.annotation.GraphicsMode
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class FeedNavigationIsolationTest {
     @get:Rule val compose = createComposeRule()
+
+    @Test fun endingPreparationDoesNotMountAllUnfinishedTabsAtOnce() {
+        var preparing by mutableStateOf(true)
+        val mounts = IntArray(3)
+        lateinit var pager: PagerState
+        lateinit var scope: kotlinx.coroutines.CoroutineScope
+        compose.mainClock.autoAdvance = false
+        compose.setContent { MaterialTheme {
+            pager = rememberPagerState(pageCount = { 3 })
+            scope = rememberCoroutineScope()
+            MainTabPager(pager, pageCovered = false, prepareStartup = preparing) { page ->
+                DisposableEffect(page) { mounts[page]++; onDispose { } }
+                Text("Prepared page $page")
+            }
+        } }
+        compose.mainClock.advanceTimeBy(100)
+        compose.runOnIdle { preparing = false }
+        repeat(3) { compose.mainClock.advanceTimeBy(100); compose.waitForIdle() }
+        assertArrayEquals(intArrayOf(1, 0, 0), mounts)
+        compose.runOnIdle { scope.launch { pager.scrollToPage(2) } }
+        repeat(3) { compose.mainClock.advanceTimeBy(100); compose.waitForIdle() }
+        compose.onNodeWithText("Prepared page 2").assertIsDisplayed()
+        assertArrayEquals(intArrayOf(1, 0, 1), mounts)
+    }
 
     @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
     @Test fun settingsAndPlaylistCoverageNeverDisposeOrRebuildThePrimaryPages() {
