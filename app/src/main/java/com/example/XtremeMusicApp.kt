@@ -43,8 +43,8 @@ class XtremeMusicApp : Application(), ImageLoaderFactory, androidx.work.Configur
         PlaybackManager(this, repository).also {
             val player = it
             startupScope.launch {
-                // The observer is essential to playback, but acquiring its DAOs is not UI work.
-                com.example.recommendation.RecommendationListeningObserver(database.listeningEventDao(), database.musicDao()).start(player)
+                // Observe service-owned listening measurements without opening storage on Main.
+                com.example.recommendation.RecommendationListeningObserver(this@XtremeMusicApp).start(player)
             }
         }
     }

@@ -62,6 +62,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -115,11 +116,33 @@ fun LibraryScreen(
     onOpenPlaylist: (Long) -> Unit,
     onCreatePlaylistClick: () -> Unit,
     onImportPlaylistClick: () -> Unit = {},
+    onOpenArtist: (com.example.data.repository.CatalogArtist) -> Unit = {},
     modifier: Modifier = Modifier,
     listState: LazyListState = rememberLazyListState()
 ) {
     var selectedTab by androidx.compose.runtime.saveable.rememberSaveable { mutableIntStateOf(0) }
-    val tabs = listOf("Playlists", "Liked Songs")
+    val tabs = listOf("Playlists", "Listening Stats")
+    var likedOpen by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
+    var period by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(com.example.data.local.ListeningPeriod.WEEKLY) }
+    val statsScroll = rememberLazyListState()
+    val likedScroll = rememberLazyListState()
+    if (selectedTab == 1) {
+        ListeningStatsScreen(period, { period = it }, { selectedTab = 0 }, onTrackClick, onOpenArtist, statsScroll)
+        return
+    }
+    if (likedOpen) {
+        androidx.activity.compose.BackHandler { likedOpen = false }
+        val liked by androidx.compose.runtime.produceState<com.example.data.local.PlaylistWithTracks?>(null, favoriteTracks) {
+            value = kotlinx.coroutines.withContext(com.example.performance.AppDispatchers.CpuBounded) {
+                com.example.data.local.PlaylistWithTracks(com.example.data.local.PlaylistEntity(-1L, "Liked Songs", "Your favorite songs",
+                    favoriteTracks.firstOrNull()?.coverUrl.orEmpty()), favoriteTracks.map(com.example.data.local.TrackEntity::fromMusicTrack)).also { it.musicTracks }
+            }
+        }
+        liked?.let { PlaylistDetailScreen(it, currentPlayingTrackId = currentPlayingTrackId,
+            onBackClick = { likedOpen = false }, onPlayTrack = onTrackClick, onToggleFavorite = onToggleFavorite,
+            onDeletePlaylist = {}, onRemoveTrack = {}, readOnly = true, listState = likedScroll) }
+        return
+    }
     val isDark = isDarkMode
     val appColors = LocalAppColors.current
 
@@ -307,11 +330,8 @@ fun LibraryScreen(
                             .fillMaxWidth()
                             .padding(horizontal = 20.dp, vertical = 6.dp)
                             .liquidGlassCard(appColors, shape = RoundedCornerShape(18.dp), elevation = 2.dp, translucency = 0.90f, tintAccent = true)
-                            .clickable {
-                                if (favoriteTracks.isNotEmpty()) {
-                                    onTrackClick(favoriteTracks.first(), favoriteTracks)
-                                }
-                            }
+                            .clickable { likedOpen = true }
+                            .testTag("open_liked_songs")
                     ) {
                         Row(
                             modifier = Modifier
@@ -373,6 +393,8 @@ fun LibraryScreen(
                                 Box(
                                     modifier = Modifier
                                         .size(38.dp)
+                                        .clickable { favoriteTracks.firstOrNull()?.let { onTrackClick(it, favoriteTracks) } }
+                                        .testTag("play_liked_songs")
                                         .clip(CircleShape)
                                         .background(appColors.primaryAccent),
                                     contentAlignment = Alignment.Center
@@ -558,55 +580,6 @@ fun LibraryScreen(
                                 Spacer(modifier = if (landscape) Modifier.width(tileWidth.dp) else Modifier.weight(1f))
                             }
                         }
-                    }
-                }
-            }
-
-            1 -> {
-                // LIKED SONGS TAB
-                if (favoriteTracks.isEmpty()) {
-                    item(key = "empty_liked_songs") {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 40.dp, start = 20.dp, end = 20.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.FavoriteBorder,
-                                contentDescription = null,
-                                tint = appColors.textMuted,
-                                modifier = Modifier.size(48.dp)
-                            )
-                            Spacer(modifier = Modifier.height(10.dp))
-                            Text(
-                                text = "Songs you like will appear here",
-                                color = appColors.textPrimary,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 16.sp,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                            Text(
-                                text = "Tap the heart icon on any song to save it to your library.",
-                                color = appColors.textMuted,
-                                fontSize = 13.sp,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(top = 4.dp, start = 16.dp, end = 16.dp)
-                            )
-                        }
-                    }
-                } else {
-                    items(favoriteTracks, key = { "fav_${it.id}" }) { track ->
-                        TrackListItem(
-                            track = track,
-                            isPlaying = track.id == currentPlayingId,
-                            onClick = { onTrackClick(track, favoriteTracks) },
-                            onToggleFavorite = { onToggleFavorite(track) },
-                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
-                        )
                     }
                 }
             }

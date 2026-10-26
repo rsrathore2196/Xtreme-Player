@@ -379,6 +379,7 @@ fun MainNavigationScaffold(
                                     onToggleFavorite = { track -> viewModel.toggleLike(track) },
                                     onOpenPlaylist = { id -> viewModel.openPlaylist(id) },
                                     onCreatePlaylistClick = { isCreatePlaylistOpen = true },
+                                    onOpenArtist = { viewModel.catalogBrowser.open(com.example.data.repository.CatalogDestination.Artist(it)) },
                                     onImportPlaylistClick = { viewModel.openImportDialog() }
                                 )
                             }

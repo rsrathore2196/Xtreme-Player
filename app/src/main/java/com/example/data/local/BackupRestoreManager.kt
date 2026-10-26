@@ -363,9 +363,12 @@ object BackupRestoreManager {
     ): Result<BackupInfo> = withContext(Dispatchers.IO) {
         val work = com.example.performance.BackgroundWorkCoordinator.busy()
         try {
+            com.example.data.repository.ListeningStatsRepository.flushExisting()
             val dao = musicDatabase.musicDao()
+            var listeningTotals = emptyList<ListeningTotal>()
             val (playlists, allTracks, crossRefs) = musicDatabase.withTransaction {
                 dao.removeOrphanPlaylistTrackRefs()
+                listeningTotals = musicDatabase.listeningStatsDao().all()
                 Triple(dao.getAllPlaylistsSync(), dao.getAllTracksSync(), dao.getAllPlaylistCrossRefsSync())
             }
             val userProfile = UserProfilePreferences.getUserProfile(context)
@@ -378,7 +381,8 @@ object BackupRestoreManager {
             val rootJson = JSONObject()
             rootJson.put("app", "Xtreme Player")
             rootJson.put("version", com.example.BuildConfig.VERSION_NAME)
-            rootJson.put("schemaVersion", 3)
+            rootJson.put("schemaVersion", 4)
+            rootJson.put("listeningStats", ListeningStatsBackup.encode(listeningTotals))
             rootJson.put("createdAt", System.currentTimeMillis())
 
             // User Profile
@@ -505,7 +509,8 @@ object BackupRestoreManager {
         val refs: List<PlaylistTrackCrossRef>,
         val profile: JSONObject?,
         val hasPlaylists: Boolean,
-        val ignoredOrphanRefs: Int = 0
+        val ignoredOrphanRefs: Int = 0,
+        val listeningStats: List<ListeningTotal> = emptyList()
     )
 
     private fun normalizeText(text: String): String =
@@ -599,7 +604,7 @@ object BackupRestoreManager {
         val root = JSONObject(text)
         if (root.has("app")) require(stringField(root, "app").equals("Xtreme Player", true)) { "Not an Xtreme Player backup" }
         val schema = longField(root, "schemaVersion", 1L)
-        require(schema in 1L..3L) { "Unsupported backup schema version: $schema" }
+        require(schema in 1L..4L) { "Unsupported backup schema version: $schema" }
         require(listOf("playlists", "libraryTracks", "tracks", "favoriteTracks", "userProfile").any(root::has)) {
             "No backup data found"
         }
@@ -691,7 +696,8 @@ object BackupRestoreManager {
             }
         }
         require(playlists.isNotEmpty() || tracks.isNotEmpty() || profile != null) { "Backup file is empty" }
-        return ParsedBackup(playlists, tracks, validParentRefs, profile, root.has("playlists"), refs.size - validParentRefs.size)
+        return ParsedBackup(playlists, tracks, validParentRefs, profile, root.has("playlists"), refs.size - validParentRefs.size,
+            if (root.has("listeningStats")) ListeningStatsBackup.decode(root.getJSONArray("listeningStats")) else emptyList())
     }
 
     private fun restoredProfile(json: JSONObject, previous: UserProfile): UserProfile = previous.copy(
@@ -836,6 +842,11 @@ object BackupRestoreManager {
                         dao.insertRestoredPlaylists(playlists)
                         dao.insertRestoredTracks(importedTracks.values.toList())
                         dao.insertRestoredPlaylistTrackRefs(refs)
+                        ListeningStatsBackup.merge(musicDatabase.listeningStatsDao(), backup.listeningStats.map { row ->
+                            val trackId = trackIdMap[row.trackId] ?: row.trackId
+                            row.copy(trackId = trackId, identity = if (row.kind == "song" && row.identity == "catalog:${row.trackId}")
+                                "catalog:$trackId" else row.identity)
+                        })
                         profile?.let {
                             profileWriteAttempted = true
                             check(UserProfilePreferences.persistUserProfile(context, it)) { "Could not save restored user profile" }
@@ -843,6 +854,7 @@ object BackupRestoreManager {
                         importedTracks.size
                     }
                     databaseCommitted = true
+                    com.example.data.repository.ListeningStatsRepository.invalidateExisting()
                     profile?.let { UserProfilePreferences.publishUserProfile(it) }
                     restoredCount
                 }

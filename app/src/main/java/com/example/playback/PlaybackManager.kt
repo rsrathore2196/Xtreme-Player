@@ -1426,8 +1426,9 @@ class PlaybackManager(
             player.isPlaying && !autoplaySuppressedBySleepTimer,
             player.duration.takeIf { it > 0L } ?: track?.durationMs ?: 0L,
             previous.playSequence + if (newPlay && track != null) 1L else 0L,
-            if (track != null && (newPlay || previous.track?.id != track.id || previous.playSessionId.isBlank()))
-                java.util.UUID.randomUUID().toString() else previous.playSessionId) }
+            track?.id?.let(com.example.data.local.ListeningSessions::forTrack)
+                ?: if (track != null && (newPlay || previous.track?.id != track.id || previous.playSessionId.isBlank()))
+                    java.util.UUID.randomUUID().toString() else previous.playSessionId) }
     }
 
     internal fun recordMeaningfulListening(trackId: String, playSequence: Long, listenedMs: Long, durationMs: Long) {

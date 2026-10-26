@@ -10,11 +10,12 @@ import com.example.performance.AppDispatchers
 import kotlinx.coroutines.asExecutor
 
 @Database(
-    entities = [TrackEntity::class, PlaylistEntity::class, PlaylistTrackCrossRef::class, ListeningEventEntity::class],
-    version = 12,
+    entities = [TrackEntity::class, PlaylistEntity::class, PlaylistTrackCrossRef::class, ListeningEventEntity::class, ListeningTotal::class, ListeningCheckpoint::class],
+    version = 13,
     exportSchema = true
 )
 abstract class MusicDatabase : RoomDatabase() {
+    abstract fun listeningStatsDao(): ListeningStatsDao
     abstract fun musicDao(): MusicDao
     abstract fun listeningEventDao(): ListeningEventDao
 
@@ -189,6 +190,15 @@ abstract class MusicDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS listening_totals (origin TEXT NOT NULL, bucket TEXT NOT NULL, kind TEXT NOT NULL, identity TEXT NOT NULL, trackId TEXT NOT NULL, title TEXT NOT NULL, artist TEXT NOT NULL, artistId TEXT NOT NULL, coverUrl TEXT NOT NULL, durationMs INTEGER NOT NULL, isrc TEXT NOT NULL, listenedMs INTEGER NOT NULL, plays INTEGER NOT NULL, PRIMARY KEY(origin, bucket, kind, identity))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_listening_totals_kind_bucket ON listening_totals (kind, bucket)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_listening_totals_kind_identity ON listening_totals (kind, identity)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS listening_checkpoint (id INTEGER NOT NULL PRIMARY KEY, occurrence TEXT NOT NULL, days TEXT NOT NULL, eventId INTEGER NOT NULL)")
+            }
+        }
+
         val ALL_MIGRATIONS = arrayOf(
             MIGRATION_1_2,
             MIGRATION_2_3,
@@ -201,7 +211,7 @@ abstract class MusicDatabase : RoomDatabase() {
             MIGRATION_8_9,
             MIGRATION_9_10,
             MIGRATION_10_11,
-            MIGRATION_11_12
+            MIGRATION_11_12, MIGRATION_12_13
         )
 
         fun getDatabase(context: Context): MusicDatabase {

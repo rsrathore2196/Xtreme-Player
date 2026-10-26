@@ -64,6 +64,12 @@ object ArtistPhotoRepository {
     /** Memory-only, provider-verified aliases; never fuzzy-merge unrelated performers. */
     fun canonicalName(name: String): String = memory.get("portrait:${CatalogNames.normalize(name)}")
         ?.takeIf { it.source == "youtube" }?.canonicalName?.takeIf(String::isNotBlank) ?: name
+    /** Memory-only identity shared by rankings and artist navigation; never starts enrichment. */
+    fun cachedArtist(name: String): CatalogArtist {
+        val saved = memory.get("portrait:${CatalogNames.normalize(name)}")?.takeIf { it.source == "youtube" }
+        return CatalogArtist(saved?.catalogId?.takeIf { it.startsWith("UC") }.orEmpty(),
+            saved?.canonicalName?.takeIf(String::isNotBlank) ?: name, image = saved?.url.orEmpty())
+    }
     fun observePhoto(artist: CatalogArtist): Flow<String?> = photoRevision.map { cachedPhoto(artist) }
         .distinctUntilChanged().flowOn(AppDispatchers.Io)
 

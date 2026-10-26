@@ -78,6 +78,9 @@ interface MusicDao {
     @Query("SELECT * FROM tracks WHERE language = :language OR genre LIKE '%' || :language || '%' ORDER BY addedAt DESC LIMIT :limit")
     suspend fun getTracksByLanguageSync(language: String, limit: Int = 30): List<TrackEntity>
 
+    @Query("UPDATE tracks SET isrc=:isrc WHERE id=:trackId AND isrc=''")
+    suspend fun rememberRecordingIsrc(trackId: String, isrc: String)
+
     @Query("SELECT * FROM tracks WHERE id = :trackId LIMIT 1")
     suspend fun getTrackById(trackId: String): TrackEntity?
 

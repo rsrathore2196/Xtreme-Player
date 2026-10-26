@@ -217,7 +217,30 @@ class MusicService : MediaLibraryService() {
             else codec in setOf("AAC", "Opus", "Vorbis")
     }
 
-    private fun checkpoint() {
+    private val listeningClock = com.example.data.local.ListeningClock(
+        emit = { snapshot -> com.example.data.repository.ListeningStatsRepository.get(this).record(snapshot) },
+        onOccurrence = com.example.data.local.ListeningSessions::publish)
+    private var listeningPosition = 0L
+    private var listeningTrackId: String? = null
+    private var listeningIndex = C.INDEX_UNSET
+    private var listeningRestart = false
+    private var listeningBeforeDiscontinuity: Player.PositionInfo? = null
+    private fun sampleListening(newOccurrence: Boolean = false, before: Player.PositionInfo? = null) {
+        val player = exoPlayer ?: return
+        val track = player.currentMediaItem?.let { currentPolicyTrack(player, it) }
+        val position = player.currentPosition
+        val changed = track?.id != listeningTrackId || newOccurrence
+        listeningClock.update(track, player.isPlaying, android.os.SystemClock.elapsedRealtime(),
+            System.currentTimeMillis(), newOccurrence = newOccurrence,
+            advancing = if (before != null && before.mediaItem?.mediaId == listeningTrackId) before.positionMs != listeningPosition
+                else changed || position != listeningPosition)
+        listeningPosition = position
+        listeningTrackId = track?.id
+        listeningIndex = player.currentMediaItemIndex
+    }
+
+    private fun checkpoint(sampleListeningTime: Boolean = true) {
+        if (sampleListeningTime) sampleListening()
         val player = exoPlayer ?: return
         if (player.mediaItemCount == 0) return
         // Immutable timeline capture is O(1). Building/validating its item list is
@@ -897,6 +920,9 @@ class MusicService : MediaLibraryService() {
                 }
             }
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                listeningRestart = listeningRestart || reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT ||
+                    reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO ||
+                    reason == Player.MEDIA_ITEM_TRANSITION_REASON_SEEK && player.currentMediaItemIndex != listeningIndex
                 if (mediaItem?.mediaId != verifiedSignalId) {
                     verifiedSignalUri = null
                     verifiedSignalId = null
@@ -922,7 +948,7 @@ class MusicService : MediaLibraryService() {
             }
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 checkpointJob?.cancel()
-                checkpoint()
+                checkpoint(sampleListeningTime = false)
                 if (isPlaying) checkpointJob = serviceScope.launch {
                     while (isActive) { delay(15_000L); checkpoint() }
                 }
@@ -930,6 +956,14 @@ class MusicService : MediaLibraryService() {
             }
 
             override fun onEvents(player: Player, events: Player.Events) {
+                // Measure once per Media3 event batch, using the position BEFORE
+                // a seek as liveness evidence. A jump cannot turn stalled time into listening.
+                if (events.contains(Player.EVENT_IS_PLAYING_CHANGED) || events.contains(Player.EVENT_PLAYBACK_STATE_CHANGED) ||
+                    events.contains(Player.EVENT_MEDIA_ITEM_TRANSITION) || events.contains(Player.EVENT_POSITION_DISCONTINUITY)) {
+                    sampleListening(listeningRestart, listeningBeforeDiscontinuity)
+                    listeningRestart = false
+                    listeningBeforeDiscontinuity = null
+                }
                 publishSignalSource(player.currentMediaItem)
                 com.example.playback.AudioSignalPath.update { it.copy(buffering = player.playbackState == Player.STATE_BUFFERING,
                     playbackStatus = when {
@@ -943,7 +977,7 @@ class MusicService : MediaLibraryService() {
                 val queueChanged = events.contains(Player.EVENT_TIMELINE_CHANGED)
                 if (queueChanged || events.contains(Player.EVENT_MEDIA_ITEM_TRANSITION) ||
                     events.contains(Player.EVENT_POSITION_DISCONTINUITY) || events.contains(Player.EVENT_PLAY_WHEN_READY_CHANGED)) {
-                    checkpoint()
+                    checkpoint(sampleListeningTime = false)
                 }
             }
 
@@ -958,6 +992,11 @@ class MusicService : MediaLibraryService() {
             }
 
             override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+                if (listeningBeforeDiscontinuity == null) listeningBeforeDiscontinuity = oldPosition
+                if (reason == Player.DISCONTINUITY_REASON_SEEK && headlessTransition == null &&
+                    oldPosition.mediaItem?.mediaId == newPosition.mediaItem?.mediaId &&
+                    oldPosition.mediaItem?.localConfiguration?.uri == newPosition.mediaItem?.localConfiguration?.uri &&
+                    oldPosition.positionMs > 10_000L && newPosition.positionMs < 1_000L) listeningRestart = true
                 val pending = headlessTransition
                 if (pending != null && reason == Player.DISCONTINUITY_REASON_SEEK &&
                     newPosition.mediaItem?.localConfiguration?.uri?.toString() == pending.first)
@@ -1147,6 +1186,7 @@ class MusicService : MediaLibraryService() {
         volumeObserver = null
         _liveSession.value = false
         checkpoint()
+        listeningClock.update(null, false, android.os.SystemClock.elapsedRealtime(), System.currentTimeMillis(), advancing = false)
         checkpointJob?.cancel()
         crossfade?.close(); crossfade = null
         jioFallback?.cancel(); jioFallback = null
