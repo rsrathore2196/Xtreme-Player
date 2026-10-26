@@ -285,8 +285,15 @@ fun SearchScreen(
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
     val explorePills = remember(searchState.exploreCategories) {
-        if (searchState.exploreCategories.isEmpty()) com.example.data.remote.MusicDataSource.genres.map { it to null }
+        val raw = if (searchState.exploreCategories.isEmpty()) com.example.data.remote.MusicDataSource.genres.map { it to null }
         else searchState.exploreCategories.map { it.title to it }
+        raw.mapNotNull { (title, cat) ->
+            if (com.example.data.remote.YouTubeExploreParser.isExcludedGenre(title)) null
+            else {
+                val cleanTitle = com.example.data.remote.YouTubeExploreParser.normalizeGenreTitle(title)
+                cleanTitle to (cat?.copy(title = cleanTitle) ?: cat)
+            }
+        }
     }
     var wasScreenActive by remember { mutableStateOf(isScreenActive) }
     LaunchedEffect(isScreenActive) {
@@ -553,7 +560,7 @@ fun SearchScreen(
                         .horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    val filterCategories = listOf("All", "Tracks", "Albums", "Playlists", "Artists")
+                    val filterCategories = listOf("All", "Tracks", "Artists", "Albums")
                     filterCategories.forEach { filterName ->
                         val isSelected = catalogState.type == filterName
                         Box(

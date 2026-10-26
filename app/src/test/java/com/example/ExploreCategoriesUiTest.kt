@@ -105,4 +105,41 @@ class ExploreCategoriesUiTest {
         compose.onNodeWithTag("reshuffle_genre_button").performClick()
         assertEquals(mood to true, request)
     }
+
+    @Test fun excludedGenresAreRemovedAndDanceRenamedAndSearchPillsExcludePlaylists() {
+        val carnatic = ExploreCategory("Carnatic Classical", "cat_carnatic", null, ExploreCategoryKind.GENRE)
+        val country = ExploreCategory("Country & Americana", "cat_country", null, ExploreCategoryKind.GENRE)
+        val hindustani = ExploreCategory("Hindustani Classical", "cat_hindustani", null, ExploreCategoryKind.GENRE)
+        val indie = ExploreCategory("Indie & Alternative", "cat_indie", null, ExploreCategoryKind.GENRE)
+        val reggae = ExploreCategory("Reggae & Caribbean", "cat_reggae", null, ExploreCategoryKind.GENRE)
+        val danceElectronic = ExploreCategory("Dance & Electronic", "cat_dance", null, ExploreCategoryKind.GENRE)
+        val pop = ExploreCategory("Pop Hits", "cat_pop", null, ExploreCategoryKind.GENRE)
+
+        val categories = listOf(carnatic, country, hindustani, indie, reggae, danceElectronic, pop)
+
+        content {
+            SearchScreen(SearchUiState(exploreCategories = categories), onQueryChange = {}, onSelectGenre = {},
+                onTrackClick = { _, _ -> }, onToggleFavorite = {})
+        }
+
+        // Verify Search Type Filter Pills: All, Tracks, Artists, Albums exist; Playlists does not
+        compose.onNodeWithTag("filter_pill_all").assertExists()
+        compose.onNodeWithTag("filter_pill_tracks").assertExists()
+        compose.onNodeWithTag("filter_pill_artists").assertExists()
+        compose.onNodeWithTag("filter_pill_albums").assertExists()
+        compose.onNodeWithTag("filter_pill_playlists").assertDoesNotExist()
+
+        // Excluded 5 genres must not exist in Explore Genres
+        compose.onNodeWithText("Carnatic Classical").assertDoesNotExist()
+        compose.onNodeWithText("Country & Americana").assertDoesNotExist()
+        compose.onNodeWithText("Hindustani Classical").assertDoesNotExist()
+        compose.onNodeWithText("Indie & Alternative").assertDoesNotExist()
+        compose.onNodeWithText("Reggae & Caribbean").assertDoesNotExist()
+
+        // Dance & Electronic must be renamed to Dance
+        compose.onNodeWithText("Dance & Electronic").assertDoesNotExist()
+        compose.onNodeWithTag("search_screen").performScrollToNode(hasText("Dance"))
+        compose.onNodeWithText("Dance").assertExists()
+        compose.onNodeWithText("Pop Hits").assertExists()
+    }
 }

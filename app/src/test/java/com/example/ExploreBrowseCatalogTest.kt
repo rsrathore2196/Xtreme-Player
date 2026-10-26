@@ -62,6 +62,24 @@ class ExploreBrowseCatalogTest {
         assertEquals(result, YouTubeExploreParser.decodeCategories(YouTubeExploreParser.encodeCategories(result)))
     }
 
+    @Test fun excludedGenresAreFilteredAndDanceElectronicIsRenamed() {
+        val root = JSONObject(categories(
+            grid("Genres",
+                button("Carnatic Classical", "FEmusic_carnatic", "carnatic"),
+                button("Country & Americana", "FEmusic_country", "country"),
+                button("Hindustani Classical", "FEmusic_hindustani", "hindustani"),
+                button("Indie & Alternative", "FEmusic_indie", "indie"),
+                button("Reggae & Caribbean", "FEmusic_reggae", "reggae"),
+                button("Dance & Electronic", "FEmusic_dance", "dance"),
+                button("Rock", "FEmusic_rock", "rock")
+            )
+        ))
+        val result = YouTubeExploreParser.categories(root)
+        assertEquals(listOf("Dance", "Rock"), result.map { it.title })
+        assertEquals("FEmusic_dance", result.first().browseId)
+        assertEquals("dance", result.first().params)
+    }
+
     @Test fun categoryCollectionsKeepTheirProviderAndParametersWithoutResolvingAudio() {
         val root = JSONObject().put("contents", JSONObject().put("sectionListRenderer", JSONObject()
             .put("contents", JSONArray().put(JSONObject().put("musicCarouselShelfRenderer", JSONObject()

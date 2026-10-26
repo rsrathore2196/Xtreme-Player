@@ -44,6 +44,27 @@ internal object YouTubeExploreParser {
             throw IOException("Music browse catalogue is unavailable")
     }
 
+    fun isExcludedGenre(title: String): Boolean {
+        val lower = title.trim().lowercase()
+        return lower.contains("carnatic") ||
+            (lower.contains("country") && lower.contains("americana")) ||
+            lower.contains("hindustani") ||
+            (lower.contains("indie") && (lower.contains("alternat") || lower.contains("alternate") || lower.contains("alternative"))) ||
+            (lower.contains("reggae") && (lower.contains("caribb") || lower.contains("carribb")))
+    }
+
+    fun normalizeGenreTitle(title: String): String {
+        val trimmed = title.trim()
+        return if (trimmed.equals("Dance & Electronic", ignoreCase = true) ||
+            trimmed.equals("Dance and Electronic", ignoreCase = true) ||
+            trimmed.equals("Dance & electronic", ignoreCase = true)
+        ) {
+            "Dance"
+        } else {
+            trimmed
+        }
+    }
+
     fun categories(root: JSONObject, checkpoint: () -> Unit = {}): List<ExploreCategory> {
         validate(root)
         val groups = mutableListOf<Pair<String, List<ExploreCategory>>>()
@@ -56,8 +77,9 @@ internal object YouTubeExploreParser {
                 val target = endpoint(button.optJSONObject("clickCommand")) ?: endpoint(button.optJSONObject("navigationEndpoint"))
                     ?: return@mapNotNull null
                 val id = string(target, "browseId")
-                val label = text(button.optJSONObject("buttonText"))
-                if (id.isBlank() || label.isBlank()) return@mapNotNull null
+                val rawLabel = text(button.optJSONObject("buttonText"))
+                if (id.isBlank() || rawLabel.isBlank() || isExcludedGenre(rawLabel)) return@mapNotNull null
+                val label = normalizeGenreTitle(rawLabel)
                 val kind = when {
                     heading.contains("mood", true) -> ExploreCategoryKind.MOOD
                     heading.contains("genre", true) -> ExploreCategoryKind.GENRE
@@ -347,8 +369,8 @@ internal object YouTubeExploreParser {
         .put("kind", category.kind.name).put("section", category.sectionTitle) }).toString()
     fun decodeCategories(body: String): List<ExploreCategory> = JSONArray(body).let { rows ->
         (0 until rows.length()).mapNotNull { index -> rows.optJSONObject(index)?.let { row ->
-            val id = string(row, "browseId"); val name = string(row, "title")
-            if (id.isBlank() || name.isBlank()) null else ExploreCategory(name, id, nullable(row, "params"),
+            val id = string(row, "browseId"); val rawName = string(row, "title")
+            if (id.isBlank() || rawName.isBlank() || isExcludedGenre(rawName)) null else ExploreCategory(normalizeGenreTitle(rawName), id, nullable(row, "params"),
                 runCatching { ExploreCategoryKind.valueOf(string(row, "kind")) }.getOrDefault(ExploreCategoryKind.OTHER), string(row, "section"))
         } }.also { if (it.isEmpty()) throw IOException("No cached categories") }
     }

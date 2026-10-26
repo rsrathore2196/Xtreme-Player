@@ -82,7 +82,12 @@ fun ExploreGenreCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val theme = remember(genre) { getGenreVisualTheme(genre) }
+    val displayTitle = remember(genre) {
+        if (genre.equals("Dance & Electronic", ignoreCase = true) ||
+            genre.equals("Dance and Electronic", ignoreCase = true)
+        ) "Dance" else genre
+    }
+    val theme = remember(displayTitle) { getGenreVisualTheme(displayTitle) }
 
     Box(
         modifier = modifier
@@ -151,7 +156,7 @@ fun ExploreGenreCard(
             verticalArrangement = Arrangement.Center
         ) {
             Text(
-                text = genre,
+                text = displayTitle,
                 style = MaterialTheme.typography.titleMedium.copy(
                     fontWeight = FontWeight.Bold,
                     fontSize = 16.sp,
@@ -250,7 +255,7 @@ fun getGenreVisualTheme(genreName: String): GenreVisualTheme {
             icon = Icons.Rounded.Whatshot,
             subtitle = "Riffs & Anthems"
         )
-        clean == "electronic" || clean.contains("edm") || clean.contains("techno") || clean.contains("house") -> GenreVisualTheme(
+        clean == "dance" || clean == "electronic" || clean.contains("dance") || clean.contains("edm") || clean.contains("techno") || clean.contains("house") -> GenreVisualTheme(
             gradientColors = listOf(Color(0xFF007791), Color(0xFF009FB7), Color(0xFF2EC4B6)),
             icon = Icons.Rounded.Album,
             subtitle = "Club & Synth Anthems"
