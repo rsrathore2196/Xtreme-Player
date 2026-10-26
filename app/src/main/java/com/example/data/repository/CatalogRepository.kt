@@ -580,8 +580,15 @@ class CatalogRepository(context: Context? = null,
     }
 
     suspend fun albumSongs(selected: CatalogAlbum, continuation: CatalogBrowseContinuation? = null): CatalogPage = withContext(AppDispatchers.CpuBounded) {
-        if (selected.provider == CatalogProvider.YOUTUBE_MUSIC) return@withContext youtubeBrowse(selected.id,
-            selected.browseParams, selected.countryCode, selected.languageCode, continuation, collectionOnly = true)
+        if (selected.provider == CatalogProvider.YOUTUBE_MUSIC) {
+            val page = youtubeBrowse(selected.id, selected.browseParams, selected.countryCode,
+                selected.languageCode, continuation, collectionOnly = true)
+            // Album rows often omit thumbnails. Keep this exact release's catalog
+            // cover instead of the parser's low-resolution video fallback.
+            return@withContext if (selected.image.isBlank()) page else page.copy(tracks = page.tracks.map {
+                it.copy(coverUrl = selected.image)
+            })
+        }
         val root = try {
             request("content.getAlbumDetails", "albumid" to selected.id)
         } catch (e: CancellationException) {

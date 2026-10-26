@@ -23,6 +23,34 @@ import java.util.concurrent.atomic.AtomicInteger
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = Application::class)
 class ExploreBrowseCatalogTest {
+    @Test fun albumPlaybackUsesTheExactReleaseCoverOnEveryPageWithoutAdditionalLookups() = runBlocking {
+        var calls = 0
+        val repository = CatalogRepository(browseLoader = { _, _, token, _, _ ->
+            calls++
+            page(if (token == null) "abcdefghijk" else "bcdefghijkl", if (token == null) "next" else null)
+        })
+        val cover = "https://lh3.googleusercontent.com/exact-release=w544-h544-l90-rj"
+        val album = CatalogAlbum("MPRErelease", "Release", emptyList(), cover, "2026", CatalogProvider.YOUTUBE_MUSIC)
+        val first = repository.albumSongs(album)
+        val second = repository.albumSongs(album, first.browseContinuation)
+        assertEquals(cover, first.tracks.single().coverUrl)
+        assertEquals(cover, second.tracks.single().coverUrl)
+        assertEquals("yt_abcdefghijk", first.tracks.single().id)
+        assertEquals(2, calls)
+        assertEquals(first, repository.albumSongs(album))
+        assertEquals(2, calls)
+        assertTrue(repository.albumSongs(album.copy(image = "")).tracks.single().coverUrl.contains("abcdefghijk"))
+    }
+
+    @Test fun artistRowThumbnailsUseTheLargestProviderImageRegardlessOfArrayOrder() {
+        val row = song("abcdefghijk").getJSONObject("playlistVideoRenderer")
+        row.put("thumbnailRenderer", JSONObject().put("musicThumbnailRenderer", JSONObject().put("thumbnail",
+            JSONObject().put("thumbnails", JSONArray()
+                .put(JSONObject().put("url", "https://lh3.googleusercontent.com/cover=w544-h544").put("width", 544))
+                .put(JSONObject().put("url", "https://lh3.googleusercontent.com/cover=w60-h60").put("width", 60))))))
+        val track = com.example.data.remote.YouTubeMusicApiService.parseAnyRenderer(JSONObject().put("playlistVideoRenderer", row))!!
+        assertEquals("https://lh3.googleusercontent.com/cover=w544-h544", track.coverUrl)
+    }
     private fun label(value: String) = JSONObject().put("runs", JSONArray().put(JSONObject().put("text", value)))
     private fun button(name: String, id: String, params: String) = JSONObject().put("musicNavigationButtonRenderer",
         JSONObject().put("buttonText", label(name)).put("clickCommand", JSONObject().put("browseEndpoint",

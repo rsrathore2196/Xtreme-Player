@@ -475,12 +475,7 @@ object YouTubeMusicApiService {
             if (!YouTubeAudioStreamService.isVideoId(videoId)) return null
 
             // Thumbnail
-            var thumbUrl = ""
-            val thumbObj = r.optJSONObject("thumbnail")?.optJSONObject("musicThumbnailRenderer")?.optJSONObject("thumbnail")
-            val thumbs = thumbObj?.optJSONArray("thumbnails")
-            if (thumbs != null && thumbs.length() > 0) {
-                thumbUrl = thumbs.getJSONObject(thumbs.length() - 1).optString("url", "")
-            }
+            var thumbUrl = YouTubeExploreParser.thumbnail(r)
             if (thumbUrl.isBlank()) {
                 thumbUrl = "https://i.ytimg.com/vi/$videoId/hqdefault.jpg"
             }
@@ -834,8 +829,7 @@ object YouTubeMusicApiService {
                     .takeWhile { !it.contains('•') && !it.contains('·') }.joinToString("").trim()
             }
             val durSec = pvr.optString("lengthSeconds", "0").toLongOrNull() ?: 0L
-            val thumbs = pvr.optJSONObject("thumbnail")?.optJSONArray("thumbnails")
-            val thumbUrl = if (thumbs != null && thumbs.length() > 0) thumbs.getJSONObject(thumbs.length() - 1).optString("url", "") else ""
+            val thumbUrl = YouTubeExploreParser.thumbnail(pvr)
 
             if (YouTubeAudioStreamService.isVideoId(vid) && rawTitle.isNotBlank() && rawTitle != "Private video" && rawTitle != "Deleted video") {
                 val cleanTitle = cleanTitle(rawTitle)

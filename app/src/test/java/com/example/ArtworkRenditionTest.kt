@@ -6,6 +6,12 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class ArtworkRenditionTest {
+    @Test fun catalogVideoResizeRecipesCannotKeepThePlayerCoverAtThumbnailResolution() {
+        assertEquals("https://i.ytimg.com/vi/abcdefghijk/maxresdefault.jpg?token=keep#image",
+            providerArtworkUrl("https://i.ytimg.com/vi/abcdefghijk/hqdefault.jpg?sqp=small&token=keep&rs=signature#image", 2000))
+        assertEquals("https://i.ytimg.com/vi/abcdefghijk/maxresdefault.jpg",
+            providerArtworkUrl("https://i.ytimg.com/vi/abcdefghijk/maxresdefault.jpg?sqp=small&rs=signature", 2000))
+    }
     @Test fun fallbackRenditionsRequireTheSameKnownVideoIdentity() {
         val urls = youtubeArtworkAlternatives("yt_abcdefghijk", emptyList())
         assertEquals(listOf("maxresdefault", "sddefault", "hqdefault").map {

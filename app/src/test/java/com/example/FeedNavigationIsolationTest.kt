@@ -57,6 +57,85 @@ import org.robolectric.annotation.GraphicsMode
 class FeedNavigationIsolationTest {
     @get:Rule val compose = createComposeRule()
 
+    @Test fun retainedDataDoesNotPublishIntoPagesDuringATabSlide() {
+        val data = List(3) { MutableStateFlow(0) }
+        val rendered = IntArray(3) { -1 }
+        var selected by mutableIntStateOf(0)
+        lateinit var pager: PagerState
+        compose.mainClock.autoAdvance = false
+        compose.setContent { MaterialTheme {
+            pager = rememberPagerState(pageCount = { 3 })
+            LaunchedEffect(selected) { pager.animateScrollToPage(selected,
+                animationSpec = androidx.compose.animation.core.tween(1000)) }
+            MainTabPager(pager, pageCovered = false) { page ->
+                val value by data[page].collectAsStateWithLifecycle()
+                SideEffect { rendered[page] = value }
+                Text("Data $page: $value")
+            }
+        } }
+        compose.mainClock.advanceTimeBy(100)
+        compose.runOnIdle { selected = 1 }
+        repeat(3) { compose.mainClock.advanceTimeBy(32); compose.waitForIdle() }
+        compose.runOnIdle {
+            assertTrue(pager.isScrollInProgress)
+            data.forEach { it.value = 9 }
+        }
+        repeat(3) { compose.mainClock.advanceTimeBy(32); compose.waitForIdle() }
+        compose.runOnIdle {
+            assertTrue(pager.isScrollInProgress)
+            assertArrayEquals(intArrayOf(0, 0, 0), rendered)
+        }
+        compose.mainClock.advanceTimeBy(1600)
+        repeat(3) { compose.mainClock.advanceTimeByFrame(); compose.waitForIdle() }
+        compose.runOnIdle { assertEquals(9, rendered[1]); assertEquals(0, rendered[0]) }
+    }
+
+    @Test fun startupPreparationBindsHiddenCachedDataBeforeFirstNavigation() {
+        val coordinator = com.example.performance.BackgroundWorkCoordinator
+        // Other navigation fixtures intentionally leave startup incomplete. This
+        // fixture models a fresh process and owns its presentation generation.
+        @Suppress("UNCHECKED_CAST")
+        val readiness = coordinator.javaClass.getDeclaredField("_startupReadiness").apply { isAccessible = true }
+            .get(null) as MutableStateFlow<com.example.performance.StartupReadiness>
+        readiness.value = com.example.performance.StartupReadiness()
+        (coordinator.javaClass.getDeclaredField("initialDeadlineJob").apply { isAccessible = true }
+            .get(null) as? kotlinx.coroutines.Job)?.cancel()
+        for (name in listOf("initialStartedAt", "navigationUntil")) {
+            (coordinator.javaClass.getDeclaredField(name).apply { isAccessible = true }.get(null)
+                as java.util.concurrent.atomic.AtomicLong).set(0L)
+        }
+        coordinator.firstFrameRendered()
+        coordinator.foreground(true)
+        coordinator.startupTask(com.example.performance.StartupTask.HOME_CACHE, com.example.performance.StartupStatus.READY)
+        coordinator.startupTask(com.example.performance.StartupTask.LOCAL_TABS, com.example.performance.StartupStatus.READY)
+        val collected = IntArray(3)
+        val rendered = IntArray(3) { -1 }
+        lateinit var view: android.view.View
+        compose.mainClock.autoAdvance = false
+        compose.setContent { MaterialTheme {
+            view = androidx.compose.ui.platform.LocalView.current
+            val pager = rememberPagerState(pageCount = { 3 })
+            MainTabPager(pager, pageCovered = false, prepareStartup = true) { page ->
+                val source = remember { flow { collected[page]++; emit(42); awaitCancellation() } }
+                val value by source.collectAsStateWithLifecycle(-1)
+                SideEffect { rendered[page] = value }
+                Text("Cached $page: $value")
+            }
+        } }
+        try { compose.waitUntil(5_000) {
+            compose.mainClock.advanceTimeBy(32); compose.waitForIdle()
+            compose.runOnIdle { view.viewTreeObserver.dispatchOnDraw() }
+            collected.all { it > 0 }
+        } } catch (error: androidx.compose.ui.test.ComposeTimeoutException) {
+            throw AssertionError("Preparation stalled: ${readiness.value}; collected=${collected.toList()}", error)
+        }
+        repeat(3) { compose.mainClock.advanceTimeByFrame(); compose.waitForIdle() }
+        compose.runOnIdle {
+            assertArrayEquals("Startup: ${coordinator.startupReadiness.value}", intArrayOf(1, 1, 1), collected)
+            assertArrayEquals(intArrayOf(42, 42, 42), rendered)
+        }
+    }
+
     @Test fun endingPreparationDoesNotMountAllUnfinishedTabsAtOnce() {
         var preparing by mutableStateOf(true)
         val mounts = IntArray(3)
@@ -249,6 +328,7 @@ class FeedNavigationIsolationTest {
             compose.mainClock.advanceTimeByFrame()
             compose.waitForIdle()
             compose.mainClock.advanceTimeBy(1600)
+            repeat(3) { compose.mainClock.advanceTimeByFrame(); compose.waitForIdle() }
             compose.runOnIdle {
                 assertEquals(target, pager.currentPage)
                 assertArrayEquals(intArrayOf(1, 1, 1), mounts)

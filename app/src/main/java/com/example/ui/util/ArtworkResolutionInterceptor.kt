@@ -64,7 +64,20 @@ internal fun providerArtworkUrl(url: String, minimumDimension: Int): String {
         return url.substring(0, equals + 1) + resized + url.substring(pathEnd)
     }
     if (host.endsWith(".ytimg.com") || host == "img.youtube.com") {
-        return youtubeArtworkSize.replace(url) { "/maxresdefault.${it.groupValues[1]}" }
+        val resized = youtubeArtworkSize.replace(url) { "/maxresdefault.${it.groupValues[1]}" }
+        // Catalog video thumbnails carry a signed resize recipe (sqp/rs). Keeping
+        // that recipe on maxresdefault can still return the tiny list thumbnail.
+        // Strip only those image-transform fields on recognized public thumbnails.
+        if (resized != url || youtubeMaxArtworkSize.containsMatchIn(url)) {
+            val fragment = resized.indexOf('#').let { if (it < 0) resized.length else it }
+            val query = resized.indexOf('?').takeIf { it in 0 until fragment } ?: return resized
+            val kept = resized.substring(query + 1, fragment).split('&').filterNot {
+                val name = it.substringBefore('=')
+                name == "sqp" || name == "rs"
+            }
+            return resized.substring(0, query) + (if (kept.isEmpty()) "" else "?" + kept.joinToString("&")) + resized.substring(fragment)
+        }
+        return resized
     }
     if (host == "saavncdn.com" || host.endsWith(".saavncdn.com")) {
         // This provider supplies covers up to 500px; never invent a larger tier.
@@ -84,6 +97,7 @@ private fun isYouTubeArtworkUrl(url: String): Boolean {
 
 private val googleArtworkSize = Regex("(^|-)([whs])(\\d+)(?=-|$)")
 private val youtubeArtworkSize = Regex("/(?:default|mqdefault|hqdefault|sddefault)\\.(jpg|webp)(?=[?#]|$)")
+private val youtubeMaxArtworkSize = Regex("/maxresdefault\\.(jpg|webp)(?=[?#]|$)")
 
 /** Known catalog identity supplies safe alternatives when a thumbnail URL is absent or expires. */
 internal fun youtubeArtworkAlternatives(trackId: String?, urls: List<String>): List<String> {

@@ -21,6 +21,7 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
@@ -55,6 +56,7 @@ internal fun MainTabPager(
     val view = LocalView.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     var mounted by remember { mutableStateOf(if (prepareStartup) setOf(state.currentPage) else setOf(0, 1, 2)) }
+    var preparingPage by remember { mutableIntStateOf(-1) }
     val measured = remember { List(3) { CompletableDeferred<Unit>() } }
     // Visible navigation always wins over optional hidden-tab preparation.
     LaunchedEffect(state.currentPage, state.targetPage) {
@@ -68,9 +70,12 @@ internal fun MainTabPager(
                 if (index in mounted) continue
                 BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.DEFERRED,
                     label = "Retained tab preparation $index") {
-                    mounted = mounted + index
-                    measured[index].await()
-                    view.awaitStartupContentDraw { }
+                    try {
+                        preparingPage = index
+                        mounted = mounted + index
+                        measured[index].await()
+                        view.awaitStartupContentDraw { }
+                    } finally { preparingPage = -1 }
                 }
             }
             return@LaunchedEffect
@@ -101,11 +106,14 @@ internal fun MainTabPager(
                     coordinator.startup(BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI,
                         boundToInitialPresentation = true, label = "Initial tab layout $index") {
                         withContext(AppDispatchers.Main) {
-                            mounted = mounted + index
-                            measured[index].await()
-                            // Retain this lease through the real traversal. The next
-                            // tab cannot compete with composition/measurement here.
-                            view.awaitStartupContentDraw { }
+                            try {
+                                preparingPage = index
+                                mounted = mounted + index
+                                measured[index].await()
+                                // Bind cached flows while preparing, not on the first
+                                // slide into the page. Hidden effects stay inactive.
+                                view.awaitStartupContentDraw { }
+                            } finally { preparingPage = -1 }
                         }
                     }
                 }
@@ -138,7 +146,15 @@ internal fun MainTabPager(
             parent.addObserver(observer)
             onDispose { parent.removeObserver(observer); page.destroy() }
         }
-        SideEffect { page.visible = visible; page.update() }
+        val collectVisibleData = settled
+        val collectPreparedData = preparingPage == index && !state.isScrollInProgress
+        SideEffect {
+            // Keep the retained pixels moving, without publishing data into an
+            // incoming/outgoing page during the animation itself.
+            page.visible = collectVisibleData
+            page.preparing = collectPreparedData
+            page.update()
+        }
         CompositionLocalProvider(LocalVisualEffectsActive provides (visible && parentEffectsActive),
             LocalArtworkRequestsActive provides visible, LocalLifecycleOwner provides page) {
             Box(Modifier.fillMaxSize().graphicsLayer { clip = false }
@@ -155,12 +171,16 @@ internal fun MainTabPager(
 private class RetainedPageLifecycle(private val parent: Lifecycle) : LifecycleOwner {
     private val registry = LifecycleRegistry(this)
     var visible = false
+    var preparing = false
     override val lifecycle: Lifecycle get() = registry
     fun update() {
         if (registry.currentState == Lifecycle.State.DESTROYED) return
         if (parent.currentState == Lifecycle.State.DESTROYED) { destroy(); return }
-        registry.currentState = if (visible) parent.currentState else
-            minOf(parent.currentState, Lifecycle.State.CREATED)
+        registry.currentState = when {
+            visible -> parent.currentState
+            preparing -> minOf(parent.currentState, Lifecycle.State.STARTED)
+            else -> minOf(parent.currentState, Lifecycle.State.CREATED)
+        }
     }
     fun destroy() {
         // INITIALIZED cannot transition directly to DESTROYED.

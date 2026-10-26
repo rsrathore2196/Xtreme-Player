@@ -99,7 +99,7 @@ internal object YouTubeExploreParser {
         return categories
     }
 
-    private fun thumbnail(value: JSONObject): String {
+    internal fun thumbnail(value: JSONObject): String {
         val thumbnails = mutableListOf<JSONObject>()
         walk(value.optJSONObject("thumbnailRenderer") ?: value.optJSONObject("thumbnail") ?: value.optJSONObject("image"), {}) { node ->
             (node.optJSONArray("thumbnails") ?: node.optJSONArray("sources"))?.let { array ->
