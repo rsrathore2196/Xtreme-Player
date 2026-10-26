@@ -147,7 +147,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.BlendMode
@@ -520,7 +519,8 @@ fun ExpandedPlayerScreen(
     )
 
     val playerBackdrop = rememberLiquidGlassBackdrop()
-    CompositionLocalProvider(LocalLiquidGlassBackdrop provides playerBackdrop, LocalAppColors provides appColors) {
+    CompositionLocalProvider(LocalLiquidGlassBackdrop provides playerBackdrop, LocalAppColors provides appColors,
+        LocalPlayerPopupColors provides themeColors) {
     Surface(
         modifier = modifier
             .fillMaxSize()
@@ -2535,52 +2535,21 @@ private fun PlayerOptionsMenu(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    @Suppress("NAME_SHADOWING") val appColors = rememberPlayerPopupColors(appColors)
+    @Suppress("NAME_SHADOWING") val isDark = appColors.isDark
 
-    val opaqueMenuBaseColor = if (appColors.isAmoled) Color(0xFF000000) else appColors.cardBackground
-    val opaqueMenuBrush = Brush.verticalGradient(
-        if (appColors.isAmoled) {
-            listOf(Color(0xFF000000), Color(0xFF000000))
-        } else {
-            listOf(appColors.cardBackground, appColors.cardBackground)
-        }
-    )
-
-    val menuBorderStroke = if (appColors.isAmoled) {
-        BorderStroke(1.2.dp, Color(0xFF222222))
-    } else {
-        BorderStroke(1.2.dp, appColors.cardBorder.copy(alpha = if (isDark) 0.60f else 0.75f))
-    }
-
-    CompositionLocalProvider(
-        LocalAppColors provides appColors
-    ) {
+    PlayerPopupTheme(appColors) {
         DropdownMenu(
             expanded = expanded,
             onDismissRequest = onDismissRequest,
             shape = RoundedCornerShape(22.dp),
-            containerColor = opaqueMenuBaseColor,
+            containerColor = appColors.cardBackground,
             tonalElevation = 0.dp,
             shadowElevation = 0.dp,
-            border = menuBorderStroke,
             modifier = modifier
+                .testTag("player_options_popup")
                 .widthIn(min = 220.dp)
                 .clip(RoundedCornerShape(22.dp))
-                .background(opaqueMenuBrush)
-                .drawWithContent {
-                    drawContent()
-                    if (!appColors.isAmoled && appColors.dynamicGlassEnabled) {
-                        // Top specular reflection sheen
-                        val sheenBrush = Brush.verticalGradient(
-                            colors = listOf(
-                                Color.White.copy(alpha = if (isDark) 0.12f else 0.25f),
-                                Color.Transparent
-                            ),
-                            startY = 0f,
-                            endY = 40f
-                        )
-                        drawRect(sheenBrush)
-                    }
-                }
                 .padding(vertical = 4.dp, horizontal = 4.dp)
         ) {
             val itemIconBg = if (appColors.isAmoled) Color(0xFF141414) else if (isDark) appColors.cardBorder.copy(alpha = 0.35f) else appColors.chipBackground

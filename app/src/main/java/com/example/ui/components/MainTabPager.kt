@@ -4,9 +4,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.PagerState
-import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.background
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.invisibleToUser
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -26,6 +27,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.LifecycleOwner
@@ -160,24 +162,15 @@ private class RetainedPageLifecycle(private val parent: Lifecycle) : LifecycleOw
     }
 }
 
-/** Retain the primary tree through opaque destinations, with the existing Settings motion. */
+/** Retain the primary tree without drawing a second page beneath Settings. */
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 internal fun RetainedPrimaryTabHost(
     state: PagerState, transition: androidx.compose.animation.core.Transition<Int>, covered: Boolean,
     inputBlocked: Boolean = covered, prepareStartup: Boolean = false, content: @Composable (Int) -> Unit
 ) {
-    val opacity = transition.animateFloat(transitionSpec = {
-        if (targetState == 3) androidx.compose.animation.core.tween(260, easing = androidx.compose.animation.core.FastOutLinearInEasing)
-        else androidx.compose.animation.core.tween(280, easing = androidx.compose.animation.core.LinearOutSlowInEasing)
-    }, label = "retained_primary_alpha") { if (it == 3) 0f else 1f }
-    val parallaxX = transition.animateFloat(transitionSpec = {
-        androidx.compose.animation.core.tween(320, easing = androidx.compose.animation.core.FastOutSlowInEasing)
-    }, label = "retained_primary_parallax") { if (it == 3) -100f else 0f }
-    Box(Modifier.fillMaxSize().graphicsLayer {
-        translationX = parallaxX.value
-        alpha = opacity.value
-    }.drawWithContent { if (!covered) drawContent() }
+    val settingsCoversContent = transition.currentState == 3 || transition.targetState == 3 || transition.isRunning
+    Box(Modifier.fillMaxSize().drawWithContent { if (!covered && !settingsCoversContent) drawContent() }
         .then(if (inputBlocked) Modifier.clearAndSetSemantics {
             testTag = "retained_primary_tabs"
             invisibleToUser()
@@ -186,39 +179,31 @@ internal fun RetainedPrimaryTabHost(
                 while (true) awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial).changes.forEach { it.consume() }
             }
         } else Modifier.testTag("retained_primary_tabs"))) {
-        MainTabPager(state, pageCovered = covered, prepareStartup = prepareStartup, content = content)
+        MainTabPager(state, pageCovered = covered || settingsCoversContent, prepareStartup = prepareStartup, content = content)
     }
 }
 
-/** Transform the actual Settings layer from its first frame; never flash a laid-out preview. */
+/** One opaque page, with a short rise and settle; no translucent preview or outgoing-page fade. */
 @Composable
 internal fun SettingsNavigationOverlay(
     transition: androidx.compose.animation.core.Transition<Int>,
     content: @Composable () -> Unit
 ) {
-    val slide = transition.animateFloat(transitionSpec = {
-        if (targetState == 3) androidx.compose.animation.core.tween(320,
-            easing = androidx.compose.animation.core.CubicBezierEasing(0.05f, 0.7f, 0.1f, 1.0f))
-        else androidx.compose.animation.core.tween(260,
-            easing = androidx.compose.animation.core.CubicBezierEasing(0.3f, 0.0f, 0.8f, 0.15f))
-    }, label = "settings_layer_position") { if (it == 3) 1f else 0f }
-    val opacity = transition.animateFloat(transitionSpec = {
-        if (targetState == 3) androidx.compose.animation.core.tween(240,
-            easing = androidx.compose.animation.core.LinearOutSlowInEasing)
-        else androidx.compose.animation.core.tween(180,
-            easing = androidx.compose.animation.core.FastOutLinearInEasing)
-    }, label = "settings_layer_alpha") { if (it == 3) 1f else 0f }
+    val progress = transition.animateFloat(transitionSpec = {
+        androidx.compose.animation.core.tween(if (targetState == 3) 240 else 180,
+            easing = androidx.compose.animation.core.FastOutSlowInEasing)
+    }, label = "settings_page_presentation") { if (it == 3) 1f else 0f }
     if (transition.currentState == 3 || transition.targetState == 3 || transition.isRunning) {
-        Box(Modifier.fillMaxSize().graphicsLayer {
-            translationX = size.width * (1f - slide.value)
-            // Enter as one opaque page: a translucent preview over Home looks
-            // like a second opening before the shared-axis slide has completed.
-            alpha = if (transition.targetState == 3) 1f else opacity.value
-            clip = false
-        }.drawWithContent {
-            // Includes the initial unmeasured frame: no ghost page can be captured
-            // in the shared backdrop before the real entrance has begun.
-            if (slide.value > 0f && (transition.targetState == 3 || opacity.value > 0f)) drawContent()
-        }.testTag("settings_navigation_overlay")) { content() }
+        Box(Modifier.fillMaxSize().clipToBounds()
+            .background(com.example.ui.theme.LocalAppColors.current.scaffoldBackground)
+            .testTag("settings_navigation_overlay")) {
+            Box(Modifier.fillMaxSize().graphicsLayer {
+                val remaining = 1f - progress.value
+                scaleX = 1f - 0.015f * remaining
+                scaleY = scaleX
+                translationY = 12.dp.toPx() * remaining
+                clip = true
+            }.testTag("settings_navigation_content")) { content() }
+        }
     }
 }

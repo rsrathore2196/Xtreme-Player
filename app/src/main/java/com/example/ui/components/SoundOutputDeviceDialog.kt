@@ -66,7 +66,6 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -132,7 +131,8 @@ fun SoundOutputDeviceDialog(
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
     val latestDismiss by rememberUpdatedState(onDismiss)
-    val appColors = LocalAppColors.current
+    val appColors = rememberPlayerPopupColors()
+    @Suppress("NAME_SHADOWING") val isDark = appColors.isDark
 
     // Audio Manager & Volume Management
     val audioManager = remember { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
@@ -250,9 +250,7 @@ fun SoundOutputDeviceDialog(
             window?.setDimAmount(0f)
             onDispose { }
         }
-        CompositionLocalProvider(
-            LocalAppColors provides appColors
-        ) {
+        PlayerPopupTheme(appColors) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -268,24 +266,9 @@ fun SoundOutputDeviceDialog(
                 contentAlignment = Alignment.Center
             ) {
                 val dialogShape = RoundedCornerShape(28.dp)
-                val dialogBaseColor = if (appColors.isAmoled) Color(0xFF000000) else appColors.cardBackground
-
-                val dialogBorderStroke = if (appColors.isAmoled) {
-                    BorderStroke(1.dp, Color(0xFF222222))
-                } else {
-                    BorderStroke(
-                        1.dp,
-                        Brush.linearGradient(listOf(
-                            appColors.primaryAccent.copy(alpha = if (isDark) 0.55f else 0.35f),
-                            appColors.cardBorder,
-                            appColors.textPrimary.copy(alpha = 0.12f)))
-                    )
-                }
-
                 Surface(
                     shape = dialogShape,
-                    color = dialogBaseColor,
-                    border = dialogBorderStroke,
+                    color = appColors.cardBackground,
                     modifier = Modifier
                         .fillMaxWidth(0.90f)
                         .widthIn(max = 380.dp)
@@ -310,24 +293,6 @@ fun SoundOutputDeviceDialog(
                         .testTag("sound_output_devices_dialog")
                 ) {
                     Box(modifier = Modifier.fillMaxWidth()) {
-                        // Ambient chromatic soft glow
-                        if (!appColors.isAmoled && appColors.dynamicGlassEnabled) {
-                            Box(
-                                modifier = Modifier
-                                    .matchParentSize()
-                                    .background(
-                                        Brush.radialGradient(
-                                            colors = listOf(
-                                                appColors.primaryAccent.copy(alpha = if (isDark) 0.12f else 0.08f),
-                                                Color.Transparent
-                                            ),
-                                            radius = 500f
-                                        )
-                                    )
-                                    .blur(20.dp)
-                            )
-                        }
-
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()

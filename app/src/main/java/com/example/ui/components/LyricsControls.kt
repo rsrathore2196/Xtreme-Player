@@ -193,102 +193,105 @@ fun LyricsTextSizePopup(
     onDismissRequest: () -> Unit,
     appColors: AppThemeColors = LocalAppColors.current
 ) {
-    Dialog(
-        onDismissRequest = onDismissRequest,
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            decorFitsSystemWindows = false
-        )
-    ) {
-        val window = (LocalView.current.parent as? DialogWindowProvider)?.window
-        DisposableEffect(window) {
-            window?.setBackgroundDrawable(ColorDrawable(android.graphics.Color.TRANSPARENT))
-            window?.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-            window?.setDimAmount(0f)
-            onDispose { }
-        }
-
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onDismissRequest
-                ),
-            contentAlignment = Alignment.Center
+    @Suppress("NAME_SHADOWING") val appColors = rememberPlayerPopupColors(appColors)
+    PlayerPopupTheme(appColors) {
+        Dialog(
+            onDismissRequest = onDismissRequest,
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                decorFitsSystemWindows = false
+            )
         ) {
-            Surface(
+            val window = (LocalView.current.parent as? DialogWindowProvider)?.window
+            DisposableEffect(window) {
+                window?.setBackgroundDrawable(ColorDrawable(android.graphics.Color.TRANSPARENT))
+                window?.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+                window?.setDimAmount(0f)
+                onDispose { }
+            }
+
+            Box(
                 modifier = Modifier
-                    .widthIn(min = 280.dp, max = 340.dp)
-                    .padding(20.dp)
+                    .fillMaxSize()
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
-                        indication = null
-                    ) { /* Consume taps inside card */ },
-                shape = RoundedCornerShape(26.dp),
-                color = if (appColors.isAmoled) Color(0xFF141414) else appColors.cardBackground,
-                border = BorderStroke(1.2.dp, appColors.cardBorder.copy(alpha = if (appColors.isDark) 0.5f else 0.7f)),
-                shadowElevation = 20.dp
+                        indication = null,
+                        onClick = onDismissRequest
+                    ),
+                contentAlignment = Alignment.Center
             ) {
-                Column(
-                    modifier = Modifier.padding(horizontal = 22.dp, vertical = 20.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
+                Surface(
+                    modifier = Modifier
+                        .widthIn(min = 280.dp, max = 340.dp)
+                        .padding(20.dp)
+                        .testTag("lyrics_text_size_popup")
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) { /* Consume taps inside card */ },
+                    shape = RoundedCornerShape(26.dp),
+                    color = appColors.cardBackground,
+                    shadowElevation = 20.dp
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                    Column(
+                        modifier = Modifier.padding(horizontal = 22.dp, vertical = 20.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Text(
-                            text = "Lyrics Text Size",
-                            style = MaterialTheme.typography.titleMedium.copy(
-                                fontWeight = FontWeight.Bold,
-                                color = appColors.textPrimary
-                            )
-                        )
-                        Surface(
-                            color = appColors.primaryAccent.copy(alpha = 0.15f),
-                            shape = RoundedCornerShape(8.dp)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = "$currentSizeSp sp",
-                                style = MaterialTheme.typography.labelMedium.copy(
+                                text = "Lyrics Text Size",
+                                style = MaterialTheme.typography.titleMedium.copy(
                                     fontWeight = FontWeight.Bold,
-                                    color = appColors.primaryAccent
-                                ),
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                    color = appColors.textPrimary
+                                )
                             )
+                            Surface(
+                                color = appColors.primaryAccent.copy(alpha = 0.15f),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text(
+                                    text = "$currentSizeSp sp",
+                                    style = MaterialTheme.typography.labelMedium.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        color = appColors.primaryAccent
+                                    ),
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
                         }
-                    }
 
-                    Spacer(Modifier.height(18.dp))
+                        Spacer(Modifier.height(18.dp))
 
-                    var sliderValue by remember(currentSizeSp) { mutableFloatStateOf(currentSizeSp.toFloat()) }
-                    Slider(
-                        value = sliderValue,
-                        onValueChange = { newValue ->
-                            sliderValue = newValue
-                            onSizeChange(newValue.roundToInt())
-                        },
-                        valueRange = 18f..44f,
-                        colors = SliderDefaults.colors(
-                            thumbColor = appColors.primaryAccent,
-                            activeTrackColor = appColors.primaryAccent,
-                            inactiveTrackColor = appColors.textSecondary.copy(alpha = 0.25f)
-                        ),
-                        modifier = Modifier.fillMaxWidth().testTag("lyrics_size_slider")
-                    )
+                        var sliderValue by remember(currentSizeSp) { mutableFloatStateOf(currentSizeSp.toFloat()) }
+                        Slider(
+                            value = sliderValue,
+                            onValueChange = { newValue ->
+                                sliderValue = newValue
+                                onSizeChange(newValue.roundToInt())
+                            },
+                            valueRange = 18f..44f,
+                            colors = SliderDefaults.colors(
+                                thumbColor = appColors.primaryAccent,
+                                activeTrackColor = appColors.primaryAccent,
+                                inactiveTrackColor = appColors.textSecondary.copy(alpha = 0.25f)
+                            ),
+                            modifier = Modifier.fillMaxWidth().testTag("lyrics_size_slider")
+                        )
 
-                    Spacer(Modifier.height(4.dp))
+                        Spacer(Modifier.height(4.dp))
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("18 sp", style = MaterialTheme.typography.bodySmall.copy(color = appColors.textMuted, fontSize = 11.sp))
-                        Text("Default (32 sp)", style = MaterialTheme.typography.bodySmall.copy(color = appColors.textMuted, fontSize = 11.sp))
-                        Text("44 sp", style = MaterialTheme.typography.bodySmall.copy(color = appColors.textMuted, fontSize = 11.sp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("18 sp", style = MaterialTheme.typography.bodySmall.copy(color = appColors.textMuted, fontSize = 11.sp))
+                            Text("Default (32 sp)", style = MaterialTheme.typography.bodySmall.copy(color = appColors.textMuted, fontSize = 11.sp))
+                            Text("44 sp", style = MaterialTheme.typography.bodySmall.copy(color = appColors.textMuted, fontSize = 11.sp))
+                        }
                     }
                 }
             }
@@ -313,169 +316,176 @@ fun LyricsProviderSelectionPopup(
     onImportLyrics: () -> Unit = {},
     onSelectCustomLyrics: () -> Unit = {}
 ) {
-    Dialog(
-        onDismissRequest = onDismissRequest,
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            decorFitsSystemWindows = false
-        )
-    ) {
-        val window = (LocalView.current.parent as? DialogWindowProvider)?.window
-        DisposableEffect(window) {
-            window?.setBackgroundDrawable(ColorDrawable(android.graphics.Color.TRANSPARENT))
-            window?.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-            window?.setDimAmount(0f)
-            onDispose { }
-        }
-
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onDismissRequest
-                ),
-            contentAlignment = Alignment.Center
+    // The shared Settings selector keeps its existing presentation.
+    val usePlayerTheme = LocalPlayerPopupColors.current != null || allowImport
+    val popupColors = rememberPlayerPopupColors(appColors)
+    @Suppress("NAME_SHADOWING") val appColors = if (usePlayerTheme) popupColors else appColors
+    PlayerPopupTheme(appColors) {
+        Dialog(
+            onDismissRequest = onDismissRequest,
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                decorFitsSystemWindows = false
+            )
         ) {
-            Surface(
+            val window = (LocalView.current.parent as? DialogWindowProvider)?.window
+            DisposableEffect(window) {
+                window?.setBackgroundDrawable(ColorDrawable(android.graphics.Color.TRANSPARENT))
+                window?.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+                window?.setDimAmount(0f)
+                onDispose { }
+            }
+
+            Box(
                 modifier = Modifier
-                    .widthIn(min = 300.dp, max = 380.dp)
-                    .fillMaxWidth(0.88f)
-                    .padding(20.dp)
+                    .fillMaxSize()
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
-                        indication = null
-                    ) { /* Consume taps */ },
-                shape = RoundedCornerShape(26.dp),
-                color = if (appColors.isAmoled) Color(0xFF141414) else appColors.cardBackground,
-                border = BorderStroke(1.2.dp, appColors.cardBorder.copy(alpha = if (appColors.isDark) 0.5f else 0.7f)),
-                shadowElevation = 20.dp
+                        indication = null,
+                        onClick = onDismissRequest
+                    ),
+                contentAlignment = Alignment.Center
             ) {
-                Column(
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 20.dp)
+                Surface(
+                    modifier = Modifier
+                        .widthIn(min = 300.dp, max = 380.dp)
+                        .fillMaxWidth(0.88f)
+                        .padding(20.dp)
+                        .testTag("lyrics_provider_popup")
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) { /* Consume taps */ },
+                    shape = RoundedCornerShape(26.dp),
+                    color = if (usePlayerTheme) appColors.cardBackground else if (appColors.isAmoled) Color(0xFF141414) else appColors.cardBackground,
+                    border = if (usePlayerTheme) null else BorderStroke(1.2.dp, appColors.cardBorder.copy(alpha = if (appColors.isDark) 0.5f else 0.7f)),
+                    shadowElevation = 20.dp
                 ) {
-                    Text(
-                        text = "Lyrics Provider",
-                        style = MaterialTheme.typography.titleMedium.copy(
-                            fontWeight = FontWeight.Bold,
-                            color = appColors.textPrimary
-                        ),
-                        modifier = Modifier.padding(bottom = 2.dp)
-                    )
-                    Text(
-                        text = "Tap a provider to apply immediately",
-                        style = MaterialTheme.typography.bodySmall.copy(
-                            color = appColors.textMuted,
-                            fontSize = 11.5.sp
-                        ),
-                        modifier = Modifier.padding(bottom = 14.dp)
-                    )
-
                     Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 380.dp)
-                            .verticalScroll(rememberScrollState())
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 20.dp)
                     ) {
-                        if (allowImport) {
-                            Surface(
-                                onClick = {
-                                    if (hasCustomLyrics && !isCustomSelected) {
-                                        onSelectCustomLyrics()
-                                        onDismissRequest()
-                                    } else {
-                                        onImportLyrics()
-                                    }
-                                },
-                                shape = RoundedCornerShape(16.dp),
-                                color = if (isCustomSelected) appColors.primaryAccent.copy(alpha = 0.12f) else Color.Transparent,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 3.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    RadioButton(
-                                        selected = isCustomSelected,
-                                        onClick = null,
-                                        colors = RadioButtonDefaults.colors(
-                                            selectedColor = appColors.primaryAccent,
-                                            unselectedColor = appColors.textMuted
-                                        )
-                                    )
-                                    Spacer(Modifier.width(12.dp))
-                                    Column(Modifier.weight(1f)) {
-                                        Text(
-                                            text = "Import Lyrics",
-                                            style = MaterialTheme.typography.bodyMedium.copy(
-                                                fontWeight = if (isCustomSelected) FontWeight.Bold else FontWeight.Medium,
-                                                color = if (isCustomSelected) appColors.primaryAccent else appColors.textPrimary,
-                                                fontSize = 14.sp
-                                            )
-                                        )
-                                        Text(
-                                            text = "Import Custom Lyrics .lrc file",
-                                            style = MaterialTheme.typography.bodySmall.copy(
-                                                color = appColors.textMuted,
-                                                fontSize = 11.sp
-                                            )
-                                        )
-                                    }
-                                }
-                            }
-                        }
+                        Text(
+                            text = "Lyrics Provider",
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = appColors.textPrimary
+                            ),
+                            modifier = Modifier.padding(bottom = 2.dp)
+                        )
+                        Text(
+                            text = "Tap a provider to apply immediately",
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                color = appColors.textMuted,
+                                fontSize = 11.5.sp
+                            ),
+                            modifier = Modifier.padding(bottom = 14.dp)
+                        )
 
-                        OtherSettingsPreferences.LYRICS_PROVIDERS.forEach { provider ->
-                            val isSelected = !isCustomSelected && currentProvider.equals(provider, ignoreCase = true)
-                            Surface(
-                                onClick = {
-                                    onSelectProvider(provider)
-                                    onDismissRequest()
-                                },
-                                shape = RoundedCornerShape(16.dp),
-                                color = if (isSelected) appColors.primaryAccent.copy(alpha = 0.12f) else Color.Transparent,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 3.dp)
-                            ) {
-                                Row(
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 380.dp)
+                                .verticalScroll(rememberScrollState())
+                        ) {
+                            if (allowImport) {
+                                Surface(
+                                    onClick = {
+                                        if (hasCustomLyrics && !isCustomSelected) {
+                                            onSelectCustomLyrics()
+                                            onDismissRequest()
+                                        } else {
+                                            onImportLyrics()
+                                        }
+                                    },
+                                    shape = RoundedCornerShape(16.dp),
+                                    color = if (isCustomSelected) appColors.primaryAccent.copy(alpha = 0.12f) else Color.Transparent,
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                                    verticalAlignment = Alignment.CenterVertically
+                                        .padding(vertical = 3.dp)
                                 ) {
-                                    RadioButton(
-                                        selected = isSelected,
-                                        onClick = null,
-                                        colors = RadioButtonDefaults.colors(
-                                            selectedColor = appColors.primaryAccent,
-                                            unselectedColor = appColors.textMuted
-                                        )
-                                    )
-                                    Spacer(Modifier.width(12.dp))
-                                    Column(Modifier.weight(1f)) {
-                                        Text(
-                                            text = provider,
-                                            style = MaterialTheme.typography.bodyMedium.copy(
-                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                                color = if (isSelected) appColors.primaryAccent else appColors.textPrimary,
-                                                fontSize = 14.sp
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        RadioButton(
+                                            selected = isCustomSelected,
+                                            onClick = null,
+                                            colors = RadioButtonDefaults.colors(
+                                                selectedColor = appColors.primaryAccent,
+                                                unselectedColor = appColors.textMuted
                                             )
                                         )
-                                        val description = OtherSettingsPreferences.getProviderDescription(provider)
-                                        if (description.isNotBlank()) {
+                                        Spacer(Modifier.width(12.dp))
+                                        Column(Modifier.weight(1f)) {
                                             Text(
-                                                text = description,
+                                                text = "Import Lyrics",
+                                                style = MaterialTheme.typography.bodyMedium.copy(
+                                                    fontWeight = if (isCustomSelected) FontWeight.Bold else FontWeight.Medium,
+                                                    color = if (isCustomSelected) appColors.primaryAccent else appColors.textPrimary,
+                                                    fontSize = 14.sp
+                                                )
+                                            )
+                                            Text(
+                                                text = "Import Custom Lyrics .lrc file",
                                                 style = MaterialTheme.typography.bodySmall.copy(
                                                     color = appColors.textMuted,
                                                     fontSize = 11.sp
                                                 )
                                             )
+                                        }
+                                    }
+                                }
+                            }
+
+                            OtherSettingsPreferences.LYRICS_PROVIDERS.forEach { provider ->
+                                val isSelected = !isCustomSelected && currentProvider.equals(provider, ignoreCase = true)
+                                Surface(
+                                    onClick = {
+                                        onSelectProvider(provider)
+                                        onDismissRequest()
+                                    },
+                                    shape = RoundedCornerShape(16.dp),
+                                    color = if (isSelected) appColors.primaryAccent.copy(alpha = 0.12f) else Color.Transparent,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 3.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        RadioButton(
+                                            selected = isSelected,
+                                            onClick = null,
+                                            colors = RadioButtonDefaults.colors(
+                                                selectedColor = appColors.primaryAccent,
+                                                unselectedColor = appColors.textMuted
+                                            )
+                                        )
+                                        Spacer(Modifier.width(12.dp))
+                                        Column(Modifier.weight(1f)) {
+                                            Text(
+                                                text = provider,
+                                                style = MaterialTheme.typography.bodyMedium.copy(
+                                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                                    color = if (isSelected) appColors.primaryAccent else appColors.textPrimary,
+                                                    fontSize = 14.sp
+                                                )
+                                            )
+                                            val description = OtherSettingsPreferences.getProviderDescription(provider)
+                                            if (description.isNotBlank()) {
+                                                Text(
+                                                    text = description,
+                                                    style = MaterialTheme.typography.bodySmall.copy(
+                                                        color = appColors.textMuted,
+                                                        fontSize = 11.sp
+                                                    )
+                                                )
+                                            }
                                         }
                                     }
                                 }

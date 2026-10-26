@@ -96,7 +96,7 @@ class FeedNavigationIsolationTest {
     }
 
     @OptIn(com.github.takahirom.roborazzi.ExperimentalRoborazziApi::class)
-    @Test fun settingsDoesNotDrawAPreviewBeforeItsEntranceStarts() {
+    @Test fun settingsOpensDirectlyAsOneOpaquePageWithoutHomeBleed() {
         var destination by mutableIntStateOf(0)
         var settingsDraws = 0
         compose.mainClock.autoAdvance = false
@@ -104,15 +104,20 @@ class FeedNavigationIsolationTest {
             val transition = androidx.compose.animation.core.updateTransition(destination, label = "first_settings_frame")
             Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color.Blue)) {
                 Text("Home")
+                CompositionLocalProvider(com.example.ui.theme.LocalAppColors provides
+                    com.example.ui.theme.LightAppColors.copy(scaffoldBackground = androidx.compose.ui.graphics.Color.Red)) {
                 SettingsNavigationOverlay(transition) {
                     Box(Modifier.fillMaxSize().drawWithContent { settingsDraws++; drawContent() }
                         .background(androidx.compose.ui.graphics.Color.Red))
+                }
                 }
             }
         } }
         compose.waitForIdle()
         compose.mainClock.advanceTimeBy(500)
         compose.runOnIdle { destination = 3 }
+        compose.mainClock.advanceTimeByFrame()
+        compose.waitForIdle()
         compose.mainClock.advanceTimeByFrame()
         compose.waitForIdle()
         fun capturePixel(x: Float = 0.5f): Int {
@@ -125,10 +130,11 @@ class FeedNavigationIsolationTest {
                 pixels.getRGB((pixels.width * x).toInt(), pixels.height / 2)
             } finally { file.delete() }
         }
-        assertEquals(android.graphics.Color.BLUE, capturePixel())
-        compose.runOnIdle { assertEquals("The initial invisible/offscreen Settings layer must not draw", 0, settingsDraws) }
+        assertEquals("Settings must open directly, without a Home preview", android.graphics.Color.RED, capturePixel())
+        assertEquals("The revealed margins must be opaque too", android.graphics.Color.RED, capturePixel(.01f))
+        compose.runOnIdle { assertTrue("There must be only one real Settings presentation", settingsDraws > 0) }
         compose.mainClock.advanceTimeBy(60)
-        assertEquals("The entering page must be opaque, not a translucent preview", android.graphics.Color.RED, capturePixel(.95f))
+        assertEquals("The entering page must remain opaque", android.graphics.Color.RED, capturePixel(.95f))
         compose.mainClock.advanceTimeBy(340)
         assertEquals(android.graphics.Color.RED, capturePixel())
         compose.runOnIdle { assertTrue(settingsDraws > 0) }

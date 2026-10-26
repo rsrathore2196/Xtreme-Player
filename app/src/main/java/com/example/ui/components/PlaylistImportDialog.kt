@@ -355,7 +355,7 @@ fun PlaylistImportDialog(
 }
 
 @Composable
-private fun ImportSetupContent(
+internal fun ImportSetupContent(
     state: PlaylistImportUiState,
     showAdvancedAuth: Boolean,
     onToggleAdvanced: () -> Unit,
@@ -399,7 +399,8 @@ private fun ImportSetupContent(
                 ) {
                     Text(
                         text = platform,
-                        color = if (isSelected) appColors.onPrimaryAccent else (if (isDark) Color.White else appColors.textPrimary),
+                        // Glass pills use a translucent tint, rather than a solid accent fill.
+                        color = LiquidGlass.lightContentColor(appColors, appColors.textPrimary),
                         fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
                         fontSize = 13.sp
                     )

@@ -31,7 +31,6 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -53,7 +52,6 @@ import com.example.ui.theme.LocalAppColors
 import com.example.ui.theme.LiquidGlass
 import com.example.ui.theme.bouncyClickable
 import com.example.ui.theme.liquidGlass
-import com.example.ui.theme.liquidGlassSwitchColors
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
@@ -71,16 +69,14 @@ fun EqualizerDialog(
     onDismiss: () -> Unit
 ) {
     val scrollState = rememberScrollState()
-    val appColors = LocalAppColors.current
+    val appColors = rememberPlayerPopupColors()
     val isDark = appColors.isDark
 
     Dialog(onDismissRequest = onDismiss) {
-        androidx.compose.runtime.CompositionLocalProvider(LocalAppColors provides appColors) {
-            val dialogBaseColor = if (appColors.isAmoled) Color(0xFF000000) else appColors.cardBackground
+        PlayerPopupTheme(appColors) {
             Surface(
                 shape = RoundedCornerShape(24.dp),
-                color = dialogBaseColor,
-                border = BorderStroke(1.2.dp, appColors.cardBorder),
+                color = appColors.cardBackground,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(vertical = 12.dp)
@@ -143,7 +139,7 @@ fun EqualizerDialog(
                     Switch(
                         checked = effectsState.isEnabled,
                         onCheckedChange = onEnableChanged,
-                        colors = liquidGlassSwitchColors(appColors),
+                        colors = playerPopupSwitchColors(appColors),
                         modifier = Modifier.testTag("equalizer_master_switch")
                     )
                 }

@@ -175,7 +175,7 @@ fun MainNavigationScaffold(
             if (selectedTabIndex in 0..2 &&
                 (tabPagerState.currentPage != selectedTabIndex || tabPagerState.currentPageOffsetFraction != 0f)) {
                 if (returningFromSettings) {
-                    // Settings keeps its existing zoom; reveal the destination
+                    // Settings owns its page reveal; prepare the destination
                     // behind it without adding an unrelated horizontal animation.
                     tabPagerState.scrollToPage(selectedTabIndex)
                 } else {
@@ -414,7 +414,8 @@ fun MainNavigationScaffold(
                       }
                     }
                     val primaryCovered = !preparingStartup && (playerCoversContent || catalogDetail != null ||
-                        currentPlaylist != null || selectedTabIndex == 3 && !tabTransition.isRunning)
+                        currentPlaylist != null || tabTransition.currentState == 3 || tabTransition.targetState == 3 ||
+                        tabTransition.isRunning)
                     RetainedPrimaryTabHost(state = tabPagerState, transition = tabTransition,
                         covered = primaryCovered, inputBlocked = primaryCovered || selectedTabIndex == 3,
                         prepareStartup = preparingStartup) { tabIndex -> tabContent(tabIndex) }

@@ -95,372 +95,375 @@ fun QueueBottomSheet(
         if (queue.isEmpty() && currentTrack != null) listOf(currentTrack) else queue
     }
     val currentIdx = remember(displayQueue, currentTrack?.queueIdentity) { displayQueue.indexOfFirst { it.queueIdentity == currentTrack?.queueIdentity } }
-    val appColors = LocalAppColors.current
+    val appColors = rememberPlayerPopupColors()
     val isDark = appColors.isDark
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = if (appColors.isAmoled) Color(0xFF000000) else appColors.cardBackground,
-        dragHandle = {
-            Box(
-                modifier = Modifier
-                    .padding(vertical = 12.dp)
-                    .width(40.dp)
-                    .height(4.dp)
-                    .clip(RoundedCornerShape(2.dp))
-                    .background(appColors.cardBorder)
-            )
-        },
-        modifier = Modifier.testTag("queue_bottom_sheet")
-    ) {
-        BackHandler { dismissSheet() }
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .graphicsLayer()
-                .padding(horizontal = 20.dp, vertical = 8.dp)
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.QueueMusic,
-                        contentDescription = null,
-                        tint = appColors.primaryAccent,
-                        modifier = Modifier.size(24.dp)
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Column {
-                        Text(
-                            text = "Now Playing & Queue",
-                            style = MaterialTheme.typography.titleMedium.copy(
-                                fontWeight = FontWeight.Bold,
-                                color = appColors.textPrimary
-                            )
-                        )
-                        Text(
-                            text = "${displayQueue.size} tracks in queue",
-                            style = MaterialTheme.typography.bodySmall.copy(
-                                color = appColors.textMuted
-                            )
-                        )
-                    }
-                }
-
-                IconButton(
-                    onClick = { dismissSheet() },
-                    modifier = Modifier.size(36.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Close,
-                        contentDescription = "Close Queue",
-                        tint = appColors.textSecondary,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            // Infinity Autoplay Banner
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(14.dp))
-                    .clickable { onToggleAutoplay() },
-                color = if (isAutoplayEnabled) {
-                    appColors.primaryAccent.copy(alpha = if (isDark) 0.16f else 0.10f)
-                } else {
-                    appColors.cardBackgroundElevated
-                },
-                border = BorderStroke(
-                    1.dp,
-                    if (isAutoplayEnabled) appColors.primaryAccent.copy(alpha = 0.5f)
-                    else appColors.cardBorder
-                ),
-                shape = RoundedCornerShape(14.dp)
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(
-                        modifier = Modifier.weight(1f),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(34.dp)
-                                .clip(CircleShape)
-                                .background(
-                                    if (isAutoplayEnabled) appColors.primaryAccent.copy(alpha = 0.22f)
-                                    else appColors.chipBackground
-                                ),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.AllInclusive,
-                                contentDescription = null,
-                                tint = if (isAutoplayEnabled) appColors.primaryAccent else appColors.textMuted,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column {
-                            Text(
-                                text = "Infinite Autoplay",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp,
-                                color = appColors.textPrimary
-                            )
-                            Text(
-                                text = if (isAutoplayEnabled && nextRecommendedTrack != null) {
-                                    "Next: ${nextRecommendedTrack.title} • ${nextRecommendedTrack.artist}"
-                                } else if (isAutoplayEnabled) {
-                                    "Continuous play using recommendation engine"
-                                } else {
-                                    "Queue stops when tracks finish"
-                                },
-                                fontSize = 11.sp,
-                                color = appColors.textSecondary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
-
-                    Switch(
-                        checked = isAutoplayEnabled,
-                        onCheckedChange = { onToggleAutoplay() },
-                        colors = com.example.ui.theme.liquidGlassSwitchColors(appColors)
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            if (displayQueue.isEmpty()) {
+    PlayerPopupTheme(appColors) {
+        ModalBottomSheet(
+            onDismissRequest = onDismiss,
+            sheetState = sheetState,
+            containerColor = appColors.cardBackground,
+            tonalElevation = 0.dp,
+            dragHandle = {
                 Box(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .height(200.dp),
-                    contentAlignment = Alignment.Center
+                        .padding(vertical = 12.dp)
+                        .width(40.dp)
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(appColors.cardBorder)
+                )
+            },
+            modifier = Modifier.testTag("queue_bottom_sheet")
+        ) {
+            BackHandler { dismissSheet() }
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .graphicsLayer()
+                    .padding(horizontal = 20.dp, vertical = 8.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.weight(1f)
                     ) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.QueueMusic,
                             contentDescription = null,
-                            tint = appColors.textMuted,
-                            modifier = Modifier.size(40.dp)
+                            tint = appColors.primaryAccent,
+                            modifier = Modifier.size(24.dp)
                         )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = "Queue is empty",
-                            style = MaterialTheme.typography.titleSmall.copy(
-                                fontWeight = FontWeight.Bold,
-                                color = appColors.textPrimary
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = "Now Playing & Queue",
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = appColors.textPrimary
+                                )
                             )
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = "Play songs or tap 'Add to Queue' to build your list",
-                            style = MaterialTheme.typography.bodySmall.copy(
-                                color = appColors.textSecondary
+                            Text(
+                                text = "${displayQueue.size} tracks in queue",
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    color = appColors.textMuted
+                                )
                             )
+                        }
+                    }
+
+                    IconButton(
+                        onClick = { dismissSheet() },
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Close Queue",
+                            tint = appColors.textSecondary,
+                            modifier = Modifier.size(20.dp)
                         )
                     }
                 }
-            } else {
-                LazyColumn(
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Infinity Autoplay Banner
+                Surface(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(360.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .clickable { onToggleAutoplay() },
+                    color = if (isAutoplayEnabled) {
+                        appColors.primaryAccent.copy(alpha = if (isDark) 0.16f else 0.10f)
+                    } else {
+                        appColors.cardBackgroundElevated
+                    },
+                    border = BorderStroke(
+                        1.dp,
+                        if (isAutoplayEnabled) appColors.primaryAccent.copy(alpha = 0.5f)
+                        else appColors.cardBorder
+                    ),
+                    shape = RoundedCornerShape(14.dp)
                 ) {
-                    itemsIndexed(
-                        items = displayQueue,
-                        key = { index, track -> "${track.id}_$index" },
-                        contentType = { _, _ -> "queue_item" }
-                    ) { index, track ->
-                    val isCurrentlyPlaying = index == currentIdx
-                    val isUpNext = !isCurrentlyPlaying && (index == currentIdx + 1 || (currentIdx == -1 && index == 0))
-                    val isUpcomingAutoplay = !isCurrentlyPlaying && !isUpNext && index > currentIdx
-
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .graphicsLayer { }
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(
-                                if (isCurrentlyPlaying) {
-                                    appColors.primaryAccent.copy(alpha = if (isDark) 0.18f else 0.12f)
-                                } else if (isUpNext) {
-                                    appColors.primaryAccent.copy(alpha = if (isDark) 0.08f else 0.05f)
-                                } else {
-                                    appColors.cardBackgroundElevated
-                                }
-                            )
-                            .border(
-                                1.dp,
-                                if (isCurrentlyPlaying) appColors.primaryAccent.copy(alpha = 0.55f)
-                                else if (isUpNext) appColors.primaryAccent.copy(alpha = 0.30f)
-                                else appColors.cardBorder,
-                                RoundedCornerShape(12.dp)
-                            )
-                            .clickable { onTrackClick(track) }
-                            .padding(horizontal = 10.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        // Artwork
-                        AsyncImage(
-                            model = rememberOptimizedImageRequest(track = track, targetSize = ImageConfig.LIST_ITEM_SIZE),
-                            contentDescription = null,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier
-                                .size(44.dp)
-                                .clip(RoundedCornerShape(8.dp))
-                        )
-
-                        Spacer(modifier = Modifier.width(12.dp))
-
-                        Column(modifier = Modifier.weight(1f)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    text = track.cleanTitle,
-                                    color = if (isCurrentlyPlaying) {
-                                        appColors.primaryAccent
-                                    } else {
-                                        appColors.textPrimary
-                                    },
-                                    fontWeight = if (isCurrentlyPlaying) FontWeight.Bold else FontWeight.Medium,
-                                    fontSize = 14.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f, fill = false)
+                        Row(
+                            modifier = Modifier.weight(1f),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (isAutoplayEnabled) appColors.primaryAccent.copy(alpha = 0.22f)
+                                        else appColors.chipBackground
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.AllInclusive,
+                                    contentDescription = null,
+                                    tint = if (isAutoplayEnabled) appColors.primaryAccent else appColors.textMuted,
+                                    modifier = Modifier.size(18.dp)
                                 )
-
-                                if (isCurrentlyPlaying) {
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Surface(
-                                        color = appColors.primaryAccent.copy(alpha = 0.2f),
-                                        shape = RoundedCornerShape(4.dp)
-                                    ) {
-                                        Text(
-                                            text = "PLAYING",
-                                            fontSize = 9.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = appColors.primaryAccent,
-                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                                        )
-                                    }
-                                } else if (isUpNext && isAutoplayEnabled) {
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Surface(
-                                        color = appColors.primaryAccent.copy(alpha = 0.15f),
-                                        shape = RoundedCornerShape(4.dp)
-                                    ) {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.AutoAwesome,
-                                                contentDescription = null,
-                                                tint = appColors.primaryAccent,
-                                                modifier = Modifier.size(9.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(2.dp))
-                                            Text(
-                                                text = "RECOMMENDED NEXT",
-                                                fontSize = 8.5.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = appColors.primaryAccent
-                                            )
-                                        }
-                                    }
-                                } else if (isUpcomingAutoplay && isAutoplayEnabled) {
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Surface(
-                                        color = appColors.cardBorder.copy(alpha = 0.5f),
-                                        shape = RoundedCornerShape(4.dp)
-                                    ) {
-                                        Text(
-                                            text = "INFINITE AUTOPLAY",
-                                            fontSize = 8.5.sp,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = appColors.textMuted,
-                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                                        )
-                                    }
-                                }
                             }
-
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                if (isCurrentlyPlaying) {
-                                    Icon(
-                                        imageVector = Icons.Default.Equalizer,
-                                        contentDescription = null,
-                                        tint = appColors.primaryAccent,
-                                        modifier = Modifier.size(14.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column {
                                 Text(
-                                    text = track.artist,
+                                    text = "Infinite Autoplay",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                    color = appColors.textPrimary
+                                )
+                                Text(
+                                    text = if (isAutoplayEnabled && nextRecommendedTrack != null) {
+                                        "Next: ${nextRecommendedTrack.title} • ${nextRecommendedTrack.artist}"
+                                    } else if (isAutoplayEnabled) {
+                                        "Continuous play using recommendation engine"
+                                    } else {
+                                        "Queue stops when tracks finish"
+                                    },
+                                    fontSize = 11.sp,
                                     color = appColors.textSecondary,
-                                    fontSize = 12.sp,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
                             }
                         }
 
-                        // Reorder buttons (Move Up / Move Down)
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (index > 0) {
-                                IconButton(
-                                    onClick = { onMoveTrack(index, index - 1) },
-                                    modifier = Modifier.size(32.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.ArrowUpward,
-                                        contentDescription = "Move Up",
-                                        tint = appColors.textMuted,
-                                        modifier = Modifier.size(16.dp)
+                        Switch(
+                            checked = isAutoplayEnabled,
+                            onCheckedChange = { onToggleAutoplay() },
+                            colors = playerPopupSwitchColors(appColors)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                if (displayQueue.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(200.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                                contentDescription = null,
+                                tint = appColors.textMuted,
+                                modifier = Modifier.size(40.dp)
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "Queue is empty",
+                                style = MaterialTheme.typography.titleSmall.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = appColors.textPrimary
+                                )
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "Play songs or tap 'Add to Queue' to build your list",
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    color = appColors.textSecondary
+                                )
+                            )
+                        }
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(360.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        itemsIndexed(
+                            items = displayQueue,
+                            key = { index, track -> "${track.id}_$index" },
+                            contentType = { _, _ -> "queue_item" }
+                        ) { index, track ->
+                        val isCurrentlyPlaying = index == currentIdx
+                        val isUpNext = !isCurrentlyPlaying && (index == currentIdx + 1 || (currentIdx == -1 && index == 0))
+                        val isUpcomingAutoplay = !isCurrentlyPlaying && !isUpNext && index > currentIdx
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .graphicsLayer { }
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(
+                                    if (isCurrentlyPlaying) {
+                                        appColors.primaryAccent.copy(alpha = if (isDark) 0.18f else 0.12f)
+                                    } else if (isUpNext) {
+                                        appColors.primaryAccent.copy(alpha = if (isDark) 0.08f else 0.05f)
+                                    } else {
+                                        appColors.cardBackgroundElevated
+                                    }
+                                )
+                                .border(
+                                    1.dp,
+                                    if (isCurrentlyPlaying) appColors.primaryAccent.copy(alpha = 0.55f)
+                                    else if (isUpNext) appColors.primaryAccent.copy(alpha = 0.30f)
+                                    else appColors.cardBorder,
+                                    RoundedCornerShape(12.dp)
+                                )
+                                .clickable { onTrackClick(track) }
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // Artwork
+                            AsyncImage(
+                                model = rememberOptimizedImageRequest(track = track, targetSize = ImageConfig.LIST_ITEM_SIZE),
+                                contentDescription = null,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                            )
+
+                            Spacer(modifier = Modifier.width(12.dp))
+
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = track.cleanTitle,
+                                        color = if (isCurrentlyPlaying) {
+                                            appColors.primaryAccent
+                                        } else {
+                                            appColors.textPrimary
+                                        },
+                                        fontWeight = if (isCurrentlyPlaying) FontWeight.Bold else FontWeight.Medium,
+                                        fontSize = 14.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false)
+                                    )
+
+                                    if (isCurrentlyPlaying) {
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Surface(
+                                            color = appColors.primaryAccent.copy(alpha = 0.2f),
+                                            shape = RoundedCornerShape(4.dp)
+                                        ) {
+                                            Text(
+                                                text = "PLAYING",
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = appColors.primaryAccent,
+                                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                            )
+                                        }
+                                    } else if (isUpNext && isAutoplayEnabled) {
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Surface(
+                                            color = appColors.primaryAccent.copy(alpha = 0.15f),
+                                            shape = RoundedCornerShape(4.dp)
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.AutoAwesome,
+                                                    contentDescription = null,
+                                                    tint = appColors.primaryAccent,
+                                                    modifier = Modifier.size(9.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(2.dp))
+                                                Text(
+                                                    text = "RECOMMENDED NEXT",
+                                                    fontSize = 8.5.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = appColors.primaryAccent
+                                                )
+                                            }
+                                        }
+                                    } else if (isUpcomingAutoplay && isAutoplayEnabled) {
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Surface(
+                                            color = appColors.cardBorder.copy(alpha = 0.5f),
+                                            shape = RoundedCornerShape(4.dp)
+                                        ) {
+                                            Text(
+                                                text = "INFINITE AUTOPLAY",
+                                                fontSize = 8.5.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = appColors.textMuted,
+                                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                            )
+                                        }
+                                    }
+                                }
+
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (isCurrentlyPlaying) {
+                                        Icon(
+                                            imageVector = Icons.Default.Equalizer,
+                                            contentDescription = null,
+                                            tint = appColors.primaryAccent,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                    }
+                                    Text(
+                                        text = track.artist,
+                                        color = appColors.textSecondary,
+                                        fontSize = 12.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 }
                             }
-                            if (index < displayQueue.lastIndex) {
-                                IconButton(
-                                    onClick = { onMoveTrack(index, index + 1) },
-                                    modifier = Modifier.size(32.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.ArrowDownward,
-                                        contentDescription = "Move Down",
-                                        tint = appColors.textMuted,
-                                        modifier = Modifier.size(16.dp)
-                                    )
+
+                            // Reorder buttons (Move Up / Move Down)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (index > 0) {
+                                    IconButton(
+                                        onClick = { onMoveTrack(index, index - 1) },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.ArrowUpward,
+                                            contentDescription = "Move Up",
+                                            tint = appColors.textMuted,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                }
+                                if (index < displayQueue.lastIndex) {
+                                    IconButton(
+                                        onClick = { onMoveTrack(index, index + 1) },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.ArrowDownward,
+                                            contentDescription = "Move Down",
+                                            tint = appColors.textMuted,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
-            }
+                }
 
-            Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(16.dp))
+            }
         }
     }
 }

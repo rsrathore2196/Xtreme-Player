@@ -37,6 +37,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
@@ -231,34 +232,17 @@ fun AddToPlaylistDialog(
     onCreateNewPlaylist: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    val appColors = LocalAppColors.current
+    val appColors = rememberPlayerPopupColors()
     val isDark = appColors.isDark
     val dialogShape = RoundedCornerShape(22.dp)
 
     Dialog(onDismissRequest = onDismiss) {
-        androidx.compose.runtime.CompositionLocalProvider(LocalAppColors provides appColors) {
-            val opaqueDialogBaseColor = if (appColors.isAmoled) Color(0xFF000000) else appColors.cardBackground
-            val opaqueDialogBrush = Brush.verticalGradient(
-                if (appColors.isAmoled) {
-                    listOf(Color(0xFF000000), Color(0xFF000000))
-                } else {
-                    listOf(appColors.cardBackground, appColors.cardBackground)
-                }
-            )
-            val dialogBorderStroke = if (appColors.isAmoled) {
-                BorderStroke(1.2.dp, Color(0xFF222222))
-            } else {
-                BorderStroke(
-                    1.2.dp,
-                    appColors.cardBorder.copy(alpha = if (isDark) 0.60f else 0.75f)
-                )
-            }
-
+        PlayerPopupTheme(appColors) {
         Surface(
             shape = dialogShape,
-            color = opaqueDialogBaseColor,
-            border = dialogBorderStroke,
+            color = appColors.cardBackground,
                 modifier = Modifier
+                    .testTag("add_to_playlist_popup")
                     .fillMaxWidth()
                     .shadow(
                         elevation = 18.dp,
@@ -271,42 +255,7 @@ fun AddToPlaylistDialog(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(opaqueDialogBrush)
                 ) {
-                    // Frosted diffusion blur layer
-                    if (appColors.dynamicGlassEnabled) Box(
-                        modifier = Modifier
-                            .matchParentSize()
-                            .background(
-                                if (isDark) {
-                                    Brush.verticalGradient(
-                                        listOf(Color.White.copy(alpha = 0.10f), Color.White.copy(alpha = 0.02f))
-                                    )
-                                } else {
-                                    Brush.verticalGradient(
-                                        listOf(Color.White.copy(alpha = 0.40f), Color.White.copy(alpha = 0.12f))
-                                    )
-                                }
-                            )
-                            .blur(20.dp)
-                    )
-
-                    // Top specular highlight sheen
-                    if (appColors.dynamicGlassEnabled) Box(
-                        modifier = Modifier
-                            .matchParentSize()
-                            .background(
-                                Brush.verticalGradient(
-                                    listOf(
-                                        Color.White.copy(alpha = if (isDark) 0.16f else 0.28f),
-                                        Color.Transparent
-                                    ),
-                                    startY = 0f,
-                                    endY = 40f
-                                )
-                            )
-                    )
-
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
