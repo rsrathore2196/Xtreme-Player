@@ -262,6 +262,43 @@ internal object YouTubeExploreParser {
         return matches.values.toList()
     }
 
+    internal fun encodeArtistIdentity(artist: CatalogArtist): String = JSONObject()
+        .put("id", artist.id).put("name", artist.name).put("image", artist.image).toString()
+
+    internal fun decodeArtistIdentity(body: String, selected: CatalogArtist): CatalogArtist {
+        val row = JSONObject(body)
+        val id = string(row, "id"); val name = string(row, "name")
+        if (!id.startsWith("UC") || selected.id.startsWith("UC") && id != selected.id ||
+            (listOf(selected.name) + selected.aliases).none { CatalogNames.same(it, name) })
+            throw IOException("Cached artist identity mismatch")
+        return selected.copy(id = id, name = name, image = string(row, "image"))
+    }
+
+    internal fun encodeArtistProfile(profile: CatalogArtistProfile): String = JSONObject()
+        .put("artist", JSONObject(encodeArtistIdentity(profile.artist)))
+        .put("description", profile.description).put("subscribers", profile.subscriberCount)
+        .put("listeners", profile.monthlyListeners).put("songs", JSONArray(RecommendationTrackCodec.encode(profile.songs)))
+        .put("moreSongs", profile.moreSongsBrowseId)
+        .put("releases", JSONArray(profile.releases.map { section -> JSONObject()
+            .put("title", section.title).put("moreId", section.moreBrowseId).put("moreParams", section.moreParams)
+            .put("page", JSONObject(encodePage(CatalogPage(albums = section.albums)))) }))
+        .put("related", JSONArray(profile.relatedArtists.map { JSONObject(encodeArtistIdentity(it)) })).toString()
+
+    internal fun decodeArtistProfile(body: String, selected: CatalogArtist): CatalogArtistProfile {
+        val row = JSONObject(body)
+        val artist = decodeArtistIdentity(row.getJSONObject("artist").toString(), selected)
+        val releases = row.optJSONArray("releases")
+        val related = row.optJSONArray("related")
+        return CatalogArtistProfile(artist, string(row, "description"), string(row, "subscribers"), string(row, "listeners"),
+            RecommendationTrackCodec.decode(row.optJSONArray("songs")?.toString() ?: "[]", maxTracks = 100), nullable(row, "moreSongs"),
+            (0 until minOf(releases?.length() ?: 0, 40)).mapNotNull { i -> releases?.optJSONObject(i)?.let {
+                ArtistReleaseSection(string(it, "title"), decodePage(it.getJSONObject("page").toString(), "US", "en").albums,
+                    nullable(it, "moreId"), nullable(it, "moreParams")) } },
+            (0 until minOf(related?.length() ?: 0, 40)).mapNotNull { i -> related?.optJSONObject(i)?.let {
+                val id = string(it, "id"); val name = string(it, "name")
+                if (id.startsWith("UC") && name.isNotBlank()) CatalogArtist(id, name, image = string(it, "image")) else null } })
+    }
+
     fun encodeCategories(categories: List<ExploreCategory>): String = JSONArray(categories.map { category -> JSONObject()
         .put("title", category.title).put("browseId", category.browseId).put("params", category.params)
         .put("kind", category.kind.name).put("section", category.sectionTitle) }).toString()

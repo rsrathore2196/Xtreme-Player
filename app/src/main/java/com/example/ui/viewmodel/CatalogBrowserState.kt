@@ -486,6 +486,12 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
                             withTimeoutOrNull(6_000L) { repository.artistProfile(selected.artist) }
                         } catch (cancelled: CancellationException) { throw cancelled }
                         catch (_: Exception) { null }
+                        // Portrait/bio/counts are independently usable. A slow or
+                        // failed songs page must not withhold an already verified profile.
+                        if (profile != null) _detail.update { current ->
+                            if (current?.requestId != generation) current else current.copy(
+                                destination = CatalogDestination.Artist(profile.artist), artistProfile = profile)
+                        }
                         val artist = if (state.artistContinuation != null) selected.artist
                             else profile?.artist ?: repository.resolveArtist(selected.artist)
                         repository.artistSongs(artist, state.nextPage ?: 0, state.artistContinuation, state.tracks,

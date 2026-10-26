@@ -100,6 +100,8 @@ fun AnimatedBottomBar(
 ) {
     val textMeasurer = androidx.compose.ui.text.rememberTextMeasurer()
     val density = LocalDensity.current
+    val foregroundBackdrop = if (!appColors.isDark && appColors.dynamicGlassEnabled && LocalDynamicGlassEnabled.current)
+        com.example.ui.components.backdrop.backdrops.rememberLayerBackdrop() else null
     val direction = LocalLayoutDirection.current
     val labelStyle = androidx.compose.material3.LocalTextStyle.current.copy(
         fontWeight = FontWeight.Bold, fontSize = 14.5.sp, letterSpacing = 0.2.sp)
@@ -170,7 +172,8 @@ fun AnimatedBottomBar(
             baseFillAlpha = XtremeLiquidGlassDefaults.FloatingDockDarkFillAlpha,
             neutralFinish = true,
             stableCaptureWidthPx = geometry.reservedWidth + with(density) { 12.dp.toPx() },
-            interaction = glassInteraction
+            interaction = glassInteraction,
+            foregroundBackdrop = foregroundBackdrop
         ))
         Layout(
             modifier = Modifier.graphicsLayer {
@@ -229,8 +232,8 @@ fun AnimatedBottomBar(
                             BottomBarTabContent(motion.expansion, motion.labelAlpha, item, selected,
                                 if (appColors.isDark) appColors.onPrimaryAccent else com.example.ui.theme.LiquidGlass.contrastColor(
                                     appColors.onPrimaryAccent, listOf(appColors.primaryAccent), 4.5f),
-                                if (appColors.isDark) Color.White.copy(alpha = 0.65f) else Color(0xFF142136),
-                                lightGlassContrast = !appColors.isDark && appColors.dynamicGlassEnabled && LocalDynamicGlassEnabled.current,
+                                if (appColors.isDark) Color.White.copy(alpha = 0.65f) else Color.Black,
+                                foregroundBackdrop = foregroundBackdrop,
                                 modifier = Modifier.align(Alignment.Center))
                         }
                     }
@@ -313,7 +316,7 @@ private fun BottomBarTabContent(
     isSelected: Boolean,
     selectedContentColor: Color,
     unselectedContentColor: Color,
-    lightGlassContrast: Boolean = false,
+    foregroundBackdrop: com.example.ui.components.backdrop.backdrops.LayerBackdrop? = null,
     modifier: Modifier = Modifier
 ) {
     val gapPx = with(LocalDensity.current) { 6.dp.toPx() }
@@ -328,7 +331,7 @@ private fun BottomBarTabContent(
                 tint = if (isSelected) selectedContentColor else unselectedContentColor,
                 modifier = Modifier
                     .size(24.dp)
-                    .lightGlassForegroundContrast(lightGlassContrast && !isSelected)
+                    .lightGlassContentContrast(foregroundBackdrop.takeUnless { isSelected })
                     .graphicsLayer {
                         // Preserve the selected icon's 1.12x size, coordinated with
                         // the pill instead of running an independent competing spring.

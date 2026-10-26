@@ -13,6 +13,7 @@ import com.example.ui.components.ExpandedPlayerScreen
 import com.example.ui.components.LocalDynamicGlassEnabled
 import com.example.ui.theme.DarkAppColors
 import com.example.ui.theme.LocalAppColors
+import com.github.takahirom.roborazzi.*
 import org.junit.Before
 import org.junit.After
 import com.example.playback.AudioSignalPath
@@ -29,6 +30,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
+@OptIn(ExperimentalRoborazziApi::class)
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = Application::class, qualifiers = "w411dp-h891dp-port")
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -92,6 +94,17 @@ class PlayerCreditsUiTest {
         // Full credits and album details remain available behind the artwork.
         compose.onNodeWithText("Lead, Guest, Third Singer").assertExists()
         compose.onNodeWithText("Album Name").assertExists()
+        val file = java.io.File.createTempFile("player-credits-", ".png")
+        try {
+            compose.onNodeWithTag("flip_album_art_card").captureRoboImage(file.absolutePath,
+                roborazziOptions = RoborazziOptions(taskType = RoborazziTaskType.Record))
+            val image = javax.imageio.ImageIO.read(file)
+            for ((x, y) in listOf(2 to image.height / 2, image.width - 3 to image.height / 2,
+                image.width / 2 to 1, image.width / 2 to image.height - 2)) {
+                org.junit.Assert.assertEquals("Credits must share the player backdrop without a separate card edge",
+                    0xff101010.toInt(), image.getRGB(x, y))
+            }
+        } finally { file.delete() }
         assertFont(if (landscape) "Album" else "Album / Movie", if (landscape) 13f else 11f)
         assertFont("Album Name", if (landscape) 14f else 12f)
         compose.onAllNodesWithText("AAC • 320 kbps").assertCountEquals(1)

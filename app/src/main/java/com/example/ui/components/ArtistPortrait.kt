@@ -37,14 +37,14 @@ fun ArtistPortrait(artist: CatalogArtist, modifier: Modifier = Modifier,
             // An enriched detail identity can improve a Home portrait while Home
             // remains composed underneath the destination. Observe that same cache.
             launch { ArtistPhotoRepository.observePhoto(artist).collect { resolved ->
-                value = resolved
+                value = resolved ?: ArtistPhotoRepository.initialPhoto(artist)
             } }
             // The repository serves saved portraits first, resolves visible misses
             // with bounded IO, and schedules stale-image upgrades independently.
             val resolved = try { ArtistPhotoRepository.photo(context, artist) }
                 catch (e: kotlinx.coroutines.CancellationException) { throw e }
                 catch (_: Exception) { ArtistPhotoRepository.cachedPhoto(artist) }
-            value = ArtistPhotoRepository.cachedPhoto(artist) ?: resolved
+            value = ArtistPhotoRepository.initialPhoto(artist) ?: resolved
             awaitCancellation()
         }
     }

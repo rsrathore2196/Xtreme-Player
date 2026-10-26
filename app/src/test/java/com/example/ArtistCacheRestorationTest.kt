@@ -94,4 +94,21 @@ class ArtistCacheRestorationTest {
             withTimeout(2000) { ArtistPhotoRepository.photo(context, CatalogArtist("", "Artist 1099")) })
         assertTrue(automatic.isCompleted)
     }
+    @Test fun obsoleteNegativeArtistLookupsAreRetriedButVerifiedPortraitsAndCurrentCooldownsSurvive() = runBlocking {
+        val prefs = app.getSharedPreferences("artist_images_v2", Context.MODE_PRIVATE)
+        fun row(version: Int, url: String = "", id: String = "") = JSONObject().put("version", version)
+            .put("source", "youtube").put("image", url).put("catalogId", id)
+            .put("expires", System.currentTimeMillis() + 86400000L).toString()
+        prefs.edit().clear()
+            .putString("portrait:old miss", row(5))
+            .putString("portrait:current miss", row(6))
+            .putString("portrait:verified artist", row(5, "https://lh3.googleusercontent.com/portrait=w600-h600", "UCverified"))
+            .commit()
+        ArtistPhotoRepository.prewarm(app).await()
+        assertNull(memory().get("portrait:old miss"))
+        assertNotNull(memory().get("portrait:current miss"))
+        assertEquals("https://lh3.googleusercontent.com/portrait=w600-h600",
+            ArtistPhotoRepository.cachedPhoto(CatalogArtist("UCverified", "Verified Artist")))
+    }
+
 }

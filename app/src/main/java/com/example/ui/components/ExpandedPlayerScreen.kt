@@ -652,7 +652,7 @@ fun ExpandedPlayerScreen(
                                                 rotationY = flipRotation
                                                 cameraDistance = 14f * density
                                             }
-                                            .animatedArtworkShadow(animatedAccentColor, RoundedCornerShape(22.dp), appColors.dynamicAlbumGlow)
+                                            .animatedArtworkShadow(animatedAccentColor, RoundedCornerShape(22.dp), appColors.dynamicAlbumGlow, showArtworkFront)
                                             .clip(RoundedCornerShape(22.dp))
                                             .clickable {
                                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -674,8 +674,6 @@ fun ExpandedPlayerScreen(
                                                 modifier = Modifier
                                                     .fillMaxSize()
                                                     .graphicsLayer { rotationY = 180f }
-                                                    .background(if (isDark) Color(0xFF000000) else Color(0xFFFFFFFF))
-                                                    .border(BorderStroke(1.dp, if (isDark) Color(0x33FFFFFF) else Color(0x1F000000)), RoundedCornerShape(22.dp))
                                                     .padding(14.dp),
                                                 contentAlignment = Alignment.Center
                                             ) {
@@ -1566,7 +1564,7 @@ fun ExpandedPlayerScreen(
                                                 rotationY = flipRotation
                                                 cameraDistance = 14f * density
                                             }
-                                            .animatedArtworkShadow(animatedAccentColor, RoundedCornerShape(24.dp), appColors.dynamicAlbumGlow)
+                                            .animatedArtworkShadow(animatedAccentColor, RoundedCornerShape(24.dp), appColors.dynamicAlbumGlow, showArtworkFront)
                                             .clip(RoundedCornerShape(24.dp))
                                             .clickable {
                                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -1592,8 +1590,6 @@ fun ExpandedPlayerScreen(
                                             modifier = Modifier
                                             .fillMaxSize()
                                             .graphicsLayer { rotationY = 180f }
-                                            .background(if (isDark) Color(0xFF000000) else Color(0xFFFFFFFF))
-                                            .border(BorderStroke(1.dp, if (isDark) Color(0x33FFFFFF) else Color(0x1F000000)), if (isFullScreenArt) RoundedCornerShape(0.dp) else RoundedCornerShape(24.dp))
                                             .padding(if (isFullScreenArt) 24.dp else 20.dp),
                                             contentAlignment = Alignment.Center
                                         ) {
@@ -2387,9 +2383,9 @@ private fun Modifier.animatedArtworkBorder(accent: State<Color>, dark: Boolean, 
 }
 
 private fun Modifier.animatedArtworkShadow(accent: State<Color>, shape: androidx.compose.ui.graphics.Shape,
-    albumGlow: Boolean): Modifier =
+    albumGlow: Boolean, artworkFrontVisible: Boolean = true): Modifier =
     graphicsLayer {
-        shadowElevation = 28.dp.toPx()
+        shadowElevation = if (artworkFrontVisible) 28.dp.toPx() else 0f
         this.shape = shape
         clip = true
         spotShadowColor = Color.Black

@@ -147,6 +147,18 @@ class PlayerAppearanceUiTest {
             assertTrue("The edge blend must be gradual, not a cropped boundary",
                 pixel.green in (backdrop.green + 20) until (android.graphics.Color.green(coverColor) - 20))
         }
+        compose.onNodeWithTag("flip_album_art_card").performClick()
+        compose.mainClock.advanceTimeBy(1200)
+        compose.waitForIdle()
+        compose.onNodeWithText("TRACK CREDITS & DETAILS").assertIsDisplayed()
+        val credits = capture("flip_album_art_card")
+        for ((x, y) in listOf(credits.width / 2 to 1, credits.width / 2 to credits.height - 2,
+            2 to credits.height / 2, credits.width - 3 to credits.height / 2)) {
+            val pixel = java.awt.Color(credits.getRGB(x, y))
+            assertTrue("Full-screen credits must reveal the same backdrop without a fill or border",
+                kotlin.math.abs(pixel.red - backdrop.red) <= 2 && kotlin.math.abs(pixel.green - backdrop.green) <= 2 &&
+                    kotlin.math.abs(pixel.blue - backdrop.blue) <= 2)
+        }
     }
 
     private fun assertClearPlayerControls() {

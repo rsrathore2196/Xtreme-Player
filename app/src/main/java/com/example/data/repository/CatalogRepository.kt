@@ -461,7 +461,7 @@ class CatalogRepository(context: Context? = null,
             nextPage = page.coerceAtLeast(0) + 1,
             artistContinuation = continuation?.let { ArtistCatalogContinuation(query, it) })
     }
-    suspend fun artistProfile(artist: CatalogArtist): CatalogArtistProfile? = YouTubeMusicApiService.artistProfile(artist)
+    suspend fun artistProfile(artist: CatalogArtist): CatalogArtistProfile? = YouTubeMusicApiService.artistProfile(artist, application)
 
     suspend fun artistSongs(selected: CatalogArtist, page: Int,
         continuation: ArtistCatalogContinuation? = null, existing: List<MusicTrack> = emptyList(),

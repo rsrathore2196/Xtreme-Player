@@ -22,6 +22,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
@@ -93,7 +94,13 @@ fun CatalogDetailScreen(state: CatalogDetailState, player: PlayerUiState, onBack
             }
             Column(Modifier.fillMaxWidth().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 when (val target = state.destination) {
-                    is CatalogDestination.Artist -> ArtistPortrait(state.artistProfile?.artist ?: target.artist, Modifier.size(if (landscape) 112.dp else 180.dp).clip(CircleShape))
+                    is CatalogDestination.Artist -> {
+                        val artist = state.artistProfile?.artist ?: target.artist
+                        ArtistPortrait(artist, Modifier.size(if (landscape) 112.dp else 180.dp).clip(CircleShape))
+                        Spacer(Modifier.height(12.dp))
+                        Text(artist.name, color = colors.textPrimary, style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold, modifier = Modifier.testTag("artist_profile_name"))
+                    }
                     is CatalogDestination.Album -> {
                         AsyncImage(target.album.image, target.album.title, contentScale = ContentScale.Crop,
                             modifier = Modifier.size(if (landscape) 112.dp else 180.dp).clip(RoundedCornerShape(18.dp)))

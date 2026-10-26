@@ -162,8 +162,10 @@ object YouTubeMusicApiService {
     private val profileCache = android.util.LruCache<String, ProfileLookup>(64)
     private val profileLocks = Array(8) { Mutex() }
 
-    /** Shared artist-filtered search and channel browse, independent of song artwork. */
-    suspend fun artistProfile(selected: com.example.data.repository.CatalogArtist): com.example.data.repository.CatalogArtistProfile? =
+    /** Shared artist-filtered search and channel browse, independent of song artwork.
+     * Public profiles and verified channel IDs reuse the existing persistent metadata cache. */
+    suspend fun artistProfile(selected: com.example.data.repository.CatalogArtist,
+        context: android.content.Context? = null): com.example.data.repository.CatalogArtistProfile? =
         withContext(AppDispatchers.Io) {
             val name = com.example.data.repository.CatalogNames.normalize(selected.name)
             if (name.isBlank()) return@withContext null
@@ -171,37 +173,71 @@ object YouTubeMusicApiService {
                 val key = selected.id.takeIf { it.startsWith("UC") } ?: name
                 val cached = profileCache.get(key) ?: profileCache.get(name)?.takeIf {
                     !selected.id.startsWith("UC") || it.profile?.artist?.id == selected.id }
-                if (cached != null && cached.expires > System.currentTimeMillis()) {
+                val now = System.currentTimeMillis()
+                if (cached != null && cached.expires > now) {
                     if (cached.temporaryFailure) throw IOException("Artist profile temporarily unavailable")
                     return@withLock cached.profile
                 }
+                val metadata = context?.let(com.example.data.cache.RecommendationCache::get)
+                val profileKey = "artist-profile-v1:$name"
+                val channelKey = "artist-channel-v1:$name"
+                var fallback = cached?.profile
+                suspend fun <T> restored(cacheKey: String, decode: (String) -> T): Pair<Long, T>? {
+                    val entry = metadata?.get(cacheKey)?.takeIf {
+                        now >= it.fetchedAt && now - it.fetchedAt < TimeUnit.DAYS.toMillis(7)
+                    } ?: return null
+                    return try { entry.expiresAt to withContext(AppDispatchers.CpuBounded) { decode(entry.body) } }
+                    catch (cancelled: CancellationException) { throw cancelled }
+                    catch (_: Exception) { null }
+                }
+                val saved = restored(profileKey) { YouTubeExploreParser.decodeArtistProfile(it, selected) }
+                if (saved != null) {
+                    fallback = saved.second
+                    if (saved.first > now) {
+                        val entry = ProfileLookup(saved.first, saved.second)
+                        profileCache.put(key, entry); profileCache.put(saved.second.artist.id, entry)
+                        profileCache.put(name, entry)
+                        return@withLock saved.second
+                    }
+                }
                 try {
-                    val artist = if (selected.id.startsWith("UC")) selected else {
+                    val savedArtist = fallback?.artist ?: restored(channelKey) {
+                        YouTubeExploreParser.decodeArtistIdentity(it, selected)
+                    }?.takeIf { it.first > now }?.second
+                    val artist = if (selected.id.startsWith("UC")) selected else savedArtist ?: run {
                         val body = com.example.recommendation.DiscoveryRequestCoordinator.network(essential = true) {
                             YouTubeAudioStreamService.discoveryResponse("search", selected.name, "US", "EgWKAQIgAWoKEAkQChAFEAMQBA==")
                         }
-                        withContext(AppDispatchers.CpuBounded) {
+                        val match = withContext(AppDispatchers.CpuBounded) {
                             YouTubeExploreParser.artistMatches(JSONObject(body), selected.name).singleOrNull()
-                        } ?: return@withLock null.also { profileCache.put(key, ProfileLookup(System.currentTimeMillis() + 60_000L, null)) }
+                        } ?: return@withLock fallback.also {
+                            profileCache.put(key, ProfileLookup(now + 60_000L, it))
+                        }
+                        // Save the verified channel even if the subsequent browse times out.
+                        metadata?.putBody(channelKey, withContext(AppDispatchers.CpuBounded) {
+                            YouTubeExploreParser.encodeArtistIdentity(match)
+                        }, TimeUnit.DAYS.toMillis(7), checkpoint = true)
+                        match
                     }
                     val body = com.example.recommendation.DiscoveryRequestCoordinator.network(essential = true) {
                         YouTubeAudioStreamService.discoveryResponse("browse", artist.id, "US")
                     }
                     val profile = withContext(AppDispatchers.CpuBounded) { YouTubeExploreParser.artistProfile(JSONObject(body), artist) }
                     val entry = ProfileLookup(System.currentTimeMillis() + 3_600_000L, profile)
-                    profileCache.put(key, entry)
-                    profileCache.put(artist.id, entry)
-                    profileCache.put(name, entry)
+                    profileCache.put(key, entry); profileCache.put(artist.id, entry); profileCache.put(name, entry)
+                    val encoded = withContext(AppDispatchers.CpuBounded) { YouTubeExploreParser.encodeArtistProfile(profile) }
+                    if (encoded.length <= 512 * 1024) metadata?.putBody(profileKey, encoded, 3_600_000L, checkpoint = true)
                     profile
                 } catch (timeout: kotlinx.coroutines.TimeoutCancellationException) {
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                    profileCache.put(key, ProfileLookup(System.currentTimeMillis() + 30_000L, null, true))
-                    throw IOException("Artist profile timed out", timeout)
+                    profileCache.put(key, ProfileLookup(System.currentTimeMillis() + 30_000L, fallback, fallback == null))
+                    fallback ?: throw IOException("Artist profile timed out", timeout)
                 } catch (cancelled: CancellationException) { throw cancelled }
                 catch (error: Exception) {
-                    // Failed requests have a short retry window, not an artist-not-found cache.
-                    profileCache.put(key, ProfileLookup(System.currentTimeMillis() + 30_000L, null, true))
-                    throw error
+                    // A stale verified profile remains useful offline. Failures never
+                    // become a permanent artist-not-found result or erase the browse ID.
+                    profileCache.put(key, ProfileLookup(System.currentTimeMillis() + 30_000L, fallback, fallback == null))
+                    fallback ?: throw error
                 }
             }
         }

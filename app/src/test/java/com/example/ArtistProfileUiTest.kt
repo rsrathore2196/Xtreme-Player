@@ -37,6 +37,7 @@ class ArtistProfileUiTest {
                     PlayerUiState(), {}, {}, { _, _ -> }, {}, { _, _ -> }, onOpenAlbum = { opened = it })
             }
         } }
+        compose.onNodeWithTag("artist_profile_name").assertTextEquals("Main Artist").assertIsDisplayed()
         compose.onNodeWithText("1.2M subscribers").assertIsDisplayed()
         compose.onNodeWithText("3.4M monthly listeners").assertIsDisplayed()
         compose.onNodeWithText("Official biography").assertIsDisplayed()

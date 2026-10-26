@@ -97,10 +97,8 @@ fun MiniPlayer(
     val appColors = LocalAppColors.current
     val context = LocalContext.current
     val lightGlass = !appColors.isDark && appColors.dynamicGlassEnabled && LocalDynamicGlassEnabled.current
-    val labelColor = remember(appColors, lightGlass) {
-        if (lightGlass) com.example.ui.theme.LiquidGlass.contrastColor(appColors.textPrimary.copy(alpha = 1f), listOf(Color.White), 7f)
-        else appColors.textPrimary
-    }
+    val foregroundBackdrop = if (lightGlass) com.example.ui.components.backdrop.backdrops.rememberLayerBackdrop() else null
+    val labelColor = if (lightGlass) Color.Black else appColors.textPrimary
     val imageRequest = rememberOptimizedImageRequest(track = track, targetSize = ImageConfig.MINI_PLAYER_SIZE)
 
     val cachedColors = remember(track.id) {
@@ -148,7 +146,8 @@ fun MiniPlayer(
                     elevation = 14.dp,
                     appColors = appColors,
                     baseFillAlpha = XtremeLiquidGlassDefaults.FloatingDockDarkFillAlpha,
-                    neutralFinish = true
+                    neutralFinish = true,
+                    foregroundBackdrop = foregroundBackdrop
                 )
         )
 
@@ -197,7 +196,7 @@ fun MiniPlayer(
                             ),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f, fill = false).lightGlassForegroundContrast(lightGlass)
+                            modifier = Modifier.weight(1f, fill = false).lightGlassContentContrast(foregroundBackdrop)
                         )
                         if (uiState.isPlaying) {
                             Spacer(modifier = Modifier.width(6.dp))
@@ -212,11 +211,11 @@ fun MiniPlayer(
                         style = MaterialTheme.typography.bodySmall.copy(
                             color = if (lightGlass) labelColor else appColors.textSecondary,
                             fontSize = 12.sp,
-                            fontWeight = FontWeight.Medium
+                            fontWeight = if (lightGlass) FontWeight.Bold else FontWeight.Medium
                         ),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.lightGlassForegroundContrast(lightGlass)
+                        modifier = Modifier.lightGlassContentContrast(foregroundBackdrop)
                     )
                 }
 

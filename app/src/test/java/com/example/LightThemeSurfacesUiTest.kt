@@ -181,7 +181,8 @@ class LightThemeSurfacesUiTest {
         }
     }
 
-    @Test fun lightFloatingControlsStayTranslucentAndWorkAcrossTabsAndGlassModes() {
+    @Test @Config(sdk = [31])
+    fun lightFloatingControlsStayTranslucentAndWorkAcrossTabsAndGlassModes() {
         var colors by mutableStateOf(LightAppColors)
         var background by mutableStateOf(Color.Black)
         var selected by mutableIntStateOf(0)
@@ -190,12 +191,16 @@ class LightThemeSurfacesUiTest {
         var nextTaps = 0
         compose.mainClock.autoAdvance = false
         compose.setContent { MaterialTheme {
+            val backdrop = rememberLiquidGlassBackdrop()
             CompositionLocalProvider(LocalAppColors provides colors, LocalDynamicGlassEnabled provides colors.dynamicGlassEnabled,
-                LocalArtworkRequestsActive provides false, LocalVisualEffectsActive provides false) {
-                Column(Modifier.fillMaxSize().background(background)) {
-                    MiniPlayer(PlayerUiState(currentTrack = song, isPlaying = playing), { playTaps++; playing = !playing },
-                        { nextTaps++ }, {}, {}, modifier = Modifier.padding(16.dp))
-                    FloatingPillBottomBar(selected, { selected = it })
+                LocalLiquidGlassBackdrop provides backdrop, LocalArtworkRequestsActive provides false, LocalVisualEffectsActive provides false) {
+                Box(Modifier.fillMaxSize()) {
+                    Box(Modifier.fillMaxSize().xtremeSharedBackdropSource().background(background))
+                    Column(Modifier.fillMaxSize()) {
+                        MiniPlayer(PlayerUiState(currentTrack = song, isPlaying = playing), { playTaps++; playing = !playing },
+                            { nextTaps++ }, {}, {}, modifier = Modifier.padding(16.dp))
+                        FloatingPillBottomBar(selected, { selected = it })
+                    }
                 }
             }
         } }
@@ -227,7 +232,12 @@ class LightThemeSurfacesUiTest {
                             val ratio = (maxOf(luminance, behind) + .05f) / (minOf(luminance, behind) + .05f)
                             if (ratio >= 3f) readable++
                         }
-                        assertTrue("$label needs contrasting glyph edges over $canvas; found $readable", readable >= 12)
+                        assertTrue("$label needs plain contrasting ink over $canvas; found $readable", readable >= 12)
+                        val layouts = mutableListOf<TextLayoutResult>()
+                        compose.onNodeWithText(label, useUnmergedTree = true)
+                            .performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
+                        assertEquals(androidx.compose.ui.text.font.FontWeight.Bold, layouts.single().layoutInput.style.fontWeight)
+                        assertNull("Labels must not have a glow or text shadow", layouts.single().layoutInput.style.shadow)
                     }
                 }
 
