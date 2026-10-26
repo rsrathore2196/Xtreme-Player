@@ -96,6 +96,11 @@ fun MiniPlayer(
 
     val appColors = LocalAppColors.current
     val context = LocalContext.current
+    val lightGlass = !appColors.isDark && appColors.dynamicGlassEnabled && LocalDynamicGlassEnabled.current
+    val labelColor = remember(appColors, lightGlass) {
+        if (lightGlass) com.example.ui.theme.LiquidGlass.contrastColor(appColors.textPrimary.copy(alpha = 1f), listOf(Color.White), 7f)
+        else appColors.textPrimary
+    }
     val imageRequest = rememberOptimizedImageRequest(track = track, targetSize = ImageConfig.MINI_PLAYER_SIZE)
 
     val cachedColors = remember(track.id) {
@@ -188,11 +193,11 @@ fun MiniPlayer(
                             style = MaterialTheme.typography.titleMedium.copy(
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 14.5.sp,
-                                color = appColors.textPrimary
+                                color = labelColor
                             ),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f, fill = false)
+                            modifier = Modifier.weight(1f, fill = false).lightGlassForegroundContrast(lightGlass)
                         )
                         if (uiState.isPlaying) {
                             Spacer(modifier = Modifier.width(6.dp))
@@ -205,12 +210,13 @@ fun MiniPlayer(
                     Text(
                         text = track.artist,
                         style = MaterialTheme.typography.bodySmall.copy(
-                            color = appColors.textSecondary,
+                            color = if (lightGlass) labelColor else appColors.textSecondary,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Medium
                         ),
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.lightGlassForegroundContrast(lightGlass)
                     )
                 }
 

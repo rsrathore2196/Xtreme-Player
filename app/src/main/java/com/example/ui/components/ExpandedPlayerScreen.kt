@@ -661,7 +661,7 @@ fun ExpandedPlayerScreen(
                                             .testTag("flip_album_art_card")
                                     ) {
                                         if (showArtworkFront) {
-                                            // One untinted iTunes cover; never substitute a provider image or video.
+                                            // One untinted provider cover; never substitute unrelated artwork or video.
                                             AsyncImage(
                                                 model = highResImageRequest,
                                                 contentScale = ContentScale.Crop,

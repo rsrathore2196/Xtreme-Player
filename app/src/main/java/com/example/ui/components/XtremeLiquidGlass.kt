@@ -21,6 +21,8 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.isSpecified
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.asComposeRenderEffect
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
@@ -344,4 +346,22 @@ fun XtremeLiquidGlassSurface(
     ) {
         content()
     }
+}
+
+/** Glyph-only contrast for light floating chrome. No surface tint, readback or
+ * layout change; dark-mode callers keep their original drawing path. */
+@Composable
+internal fun Modifier.lightGlassForegroundContrast(enabled: Boolean): Modifier {
+    if (!enabled || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return this
+    val radius = with(LocalDensity.current) { 0.8.dp.toPx() }
+    val effect = remember(radius) {
+        val white = android.graphics.RenderEffect.createColorFilterEffect(android.graphics.BlendModeColorFilter(
+            android.graphics.Color.WHITE, android.graphics.BlendMode.SRC_IN))
+        val halo = android.graphics.RenderEffect.createBlurEffect(radius, radius, white, android.graphics.Shader.TileMode.DECAL)
+        val stronger = android.graphics.RenderEffect.createColorFilterEffect(android.graphics.ColorMatrixColorFilter(
+            android.graphics.ColorMatrix().apply { setScale(1f, 1f, 1f, 3f) }), halo)
+        android.graphics.RenderEffect.createBlendModeEffect(stronger,
+            android.graphics.RenderEffect.createOffsetEffect(0f, 0f), android.graphics.BlendMode.SRC_OVER).asComposeRenderEffect()
+    }
+    return graphicsLayer { renderEffect = effect; clip = false }
 }

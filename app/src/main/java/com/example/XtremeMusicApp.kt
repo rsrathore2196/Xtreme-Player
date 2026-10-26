@@ -139,8 +139,6 @@ class XtremeMusicApp : Application(), ImageLoaderFactory, androidx.work.Configur
             val coordinator = BackgroundWorkCoordinator
             coordinator.startup(StartupPriority.DEFERRED, label = "Palette prewarm") { runCatching { com.example.ui.util.TrackPaletteCache.initialize(this@XtremeMusicApp) }
                 .onFailure { android.util.Log.w("XtremeMusicApp", "Palette prewarm unavailable", it) } }
-            coordinator.startup(StartupPriority.DEFERRED, label = "Artwork metadata prewarm") { runCatching { com.example.data.repository.iTunesArtworkRepository.getInstance(this@XtremeMusicApp) }
-                .onFailure { android.util.Log.w("XtremeMusicApp", "Artwork prewarm unavailable", it) } }
             coordinator.startup(StartupPriority.DEFERRED, label = "Playback key prewarm") { runCatching { SecurityConfig.getDESKey(this@XtremeMusicApp) } }
             // Reuse the small shared portrait cache restore. Visible portraits can
             // request it independently, without waiting for optional prewarming.

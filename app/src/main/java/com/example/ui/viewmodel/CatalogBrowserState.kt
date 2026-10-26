@@ -44,7 +44,8 @@ data class CatalogDetailState(
     val artistContinuation: ArtistCatalogContinuation? = null,
     val browseContinuation: CatalogBrowseContinuation? = null,
     internal val requestId: Int = 0,
-    val playlistContent: com.example.data.local.PlaylistWithTracks? = null
+    val playlistContent: com.example.data.local.PlaylistWithTracks? = null,
+    val artistProfile: com.example.data.repository.CatalogArtistProfile? = null
 )
 private fun CatalogDetailState.withTracks(tracks: List<MusicTrack>, pending: List<MusicTrack> = this.pending): CatalogDetailState {
     val playlist = (destination as? CatalogDestination.Playlist)?.playlist
@@ -481,8 +482,14 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
                     browseContinuation = state.browseContinuation)
                 else when (val selected = destination) {
                     is CatalogDestination.Artist -> {
-                        val artist = if (state.artistContinuation != null) selected.artist else repository.resolveArtist(selected.artist)
-                        repository.artistSongs(artist, state.nextPage ?: 0, state.artistContinuation, state.tracks).also {
+                        val profile = state.artistProfile ?: try {
+                            withTimeoutOrNull(6_000L) { repository.artistProfile(selected.artist) }
+                        } catch (cancelled: CancellationException) { throw cancelled }
+                        catch (_: Exception) { null }
+                        val artist = if (state.artistContinuation != null) selected.artist
+                            else profile?.artist ?: repository.resolveArtist(selected.artist)
+                        repository.artistSongs(artist, state.nextPage ?: 0, state.artistContinuation, state.tracks,
+                            state.browseContinuation).let { it.copy(artistProfile = profile ?: it.artistProfile) }.also {
                             // Retain verified fallback aliases/IDs for subsequent pages and reopening.
                             destination = CatalogDestination.Artist(it.resolvedArtist ?: artist)
                         }
@@ -508,7 +515,8 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
                 _detail.update { current -> if (current?.requestId != generation) current else current.copy(destination = destination,
                     nextPage = if (repeated) null else page.nextPage, loading = false,
                     initialized = true, error = null, warning = page.warning,
-                    artistContinuation = page.artistContinuation, browseContinuation = page.browseContinuation)
+                    artistContinuation = page.artistContinuation, browseContinuation = page.browseContinuation,
+                    artistProfile = page.artistProfile ?: current.artistProfile)
                     .withTracks(liked(state.tracks + added), liked(pending)) }
                 // Store both name-only Home routes and provider-ID routes against the same loaded data.
                 synchronized(details) {

@@ -178,6 +178,90 @@ internal object YouTubeExploreParser {
             browseContinuation = continuation?.let { CatalogBrowseContinuation("", null, it, country, language) })
     }
 
+    /** Artist identity is verified before this response is parsed. Only its own
+     * header supplies the portrait/counts; album and song thumbnails cannot win. */
+    fun artistProfile(root: JSONObject, selected: CatalogArtist): CatalogArtistProfile {
+        validate(root)
+        val headers = root.optJSONObject("header") ?: throw IOException("Missing artist header")
+        val header = headers.optJSONObject("musicImmersiveHeaderRenderer")
+            ?: headers.optJSONObject("musicVisualHeaderRenderer") ?: throw IOException("Unsupported artist header")
+        val name = text(header.optJSONObject("title")).ifBlank { selected.name }
+        if ((listOf(selected.name) + selected.aliases).none { CatalogNames.same(it, name) })
+            throw IOException("Artist header identity mismatch")
+        val portrait = header.optJSONObject("foregroundThumbnail") ?: header.optJSONObject("thumbnail")
+        val image = portrait?.let { thumbnail(JSONObject().put("thumbnail", it)) }.orEmpty().ifBlank { selected.image }
+        val artist = selected.copy(name = name, image = image)
+        val buttons = listOfNotNull(header.optJSONObject("subscriptionButton2")?.optJSONObject("subscribeButtonRenderer"),
+            header.optJSONObject("subscriptionButton")?.optJSONObject("subscribeButtonRenderer"))
+        val subscribers = buttons.firstNotNullOfOrNull { button ->
+            listOf("subscriberCountWithSubscribeText", "longSubscriberCountText", "shortSubscriberCountText")
+                .firstNotNullOfOrNull { field -> text(button.optJSONObject(field)).takeIf(String::isNotBlank) }
+        }.orEmpty()
+        var description = text(header.optJSONObject("description"))
+        val songs = linkedMapOf<String, MusicTrack>()
+        val releases = mutableListOf<ArtistReleaseSection>()
+        val related = linkedMapOf<String, CatalogArtist>()
+        var moreSongs: String? = null
+        walk(root.opt("contents"), {}) { node ->
+            node.optJSONObject("musicDescriptionShelfRenderer")?.let {
+                text(it.optJSONObject("description")).takeIf(String::isNotBlank)?.let { body -> description = body }
+            }
+            node.optJSONObject("musicShelfRenderer")?.let { shelf ->
+                if (moreSongs == null) moreSongs = runs(shelf.optJSONObject("title")).firstNotNullOfOrNull {
+                    endpoint(it.optJSONObject("navigationEndpoint"))?.let { e -> nullable(e, "browseId") }
+                }
+                val rows = shelf.optJSONArray("contents")
+                for (index in 0 until (rows?.length() ?: 0)) rows?.optJSONObject(index)?.let { row ->
+                    YouTubeMusicApiService.parseAnyRenderer(row)?.let { song ->
+                        val credits = row.optJSONObject("musicResponsiveListItemRenderer")?.let(::artists).orEmpty()
+                        val names = credits.map { it.name }.ifEmpty { listOf(artist.name) }
+                        songs.putIfAbsent(song.id, song.copy(artist = names.joinToString(", "), primaryArtists = names))
+                    }
+                }
+            }
+            node.optJSONObject("musicCarouselShelfRenderer")?.let { shelf ->
+                val heading = shelf.optJSONObject("header")?.optJSONObject("musicCarouselShelfBasicHeaderRenderer")
+                val label = text(heading?.optJSONObject("title"))
+                val target = runs(heading?.optJSONObject("title")).firstNotNullOfOrNull { endpoint(it.optJSONObject("navigationEndpoint")) }
+                    ?: heading?.optJSONObject("moreContentButton")?.optJSONObject("buttonRenderer")?.optJSONObject("navigationEndpoint")?.let(::endpoint)
+                val contents = shelf.optJSONArray("contents")
+                val albums = (0 until (contents?.length() ?: 0)).mapNotNull { i ->
+                    val item = contents?.optJSONObject(i)?.optJSONObject("musicTwoRowItemRenderer") ?: return@mapNotNull null
+                    val destination = browseEndpoint(item) ?: return@mapNotNull null
+                    val id = string(destination, "browseId")
+                    if (id.startsWith("UC") || pageType(destination) == "MUSIC_PAGE_TYPE_ARTIST") {
+                        related.putIfAbsent(id, CatalogArtist(id, text(title(item)), image = thumbnail(item)))
+                        return@mapNotNull null
+                    }
+                    if (pageType(destination) != "MUSIC_PAGE_TYPE_ALBUM" && !id.startsWith("MPRE") && !id.startsWith("OLAK5uy_")) return@mapNotNull null
+                    CatalogAlbum(id, text(title(item)), listOf(artist), thumbnail(item), text(item.optJSONObject("subtitle")),
+                        CatalogProvider.YOUTUBE_MUSIC, nullable(destination, "params"))
+                }.distinctBy { it.id }
+                if (label.isNotBlank() && albums.isNotEmpty()) releases.add(ArtistReleaseSection(label, albums,
+                    target?.let { nullable(it, "browseId") }, target?.let { nullable(it, "params") }))
+            }
+            true
+        }
+        return CatalogArtistProfile(artist, description, subscribers, text(header.optJSONObject("monthlyListenerCount")),
+            songs.values.toList(), moreSongs, releases, related.values.filter { it.id != artist.id })
+    }
+
+    fun artistMatches(root: JSONObject, name: String): List<CatalogArtist> {
+        val matches = linkedMapOf<String, CatalogArtist>()
+        walk(root, {}) { node ->
+            val item = node.optJSONObject("musicResponsiveListItemRenderer") ?: node.optJSONObject("musicTwoRowItemRenderer")
+            if (item != null) {
+                val target = browseEndpoint(item)
+                val id = target?.let { string(it, "browseId") }.orEmpty()
+                val label = text(title(item))
+                if (id.startsWith("UC") && (target?.let(::pageType).isNullOrBlank() || target?.let(::pageType) == "MUSIC_PAGE_TYPE_ARTIST") &&
+                    CatalogNames.same(name, label)) matches.putIfAbsent(id, CatalogArtist(id, label, image = thumbnail(item)))
+                false
+            } else true
+        }
+        return matches.values.toList()
+    }
+
     fun encodeCategories(categories: List<ExploreCategory>): String = JSONArray(categories.map { category -> JSONObject()
         .put("title", category.title).put("browseId", category.browseId).put("params", category.params)
         .put("kind", category.kind.name).put("section", category.sectionTitle) }).toString()

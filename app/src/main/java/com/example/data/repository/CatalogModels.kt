@@ -5,8 +5,14 @@ import java.text.Normalizer
 import java.util.Locale
 import com.example.data.model.MusicTrack
 
-/** Provider IDs are kept separate from display names and from TheAudioDB IDs. */
+/** Provider IDs are kept separate from display names. */
 data class CatalogArtist(val id: String, val name: String, val musicBrainzId: String = "", val aliases: List<String> = emptyList(), val image: String = "")
+data class ArtistReleaseSection(val title: String, val albums: List<CatalogAlbum>, val moreBrowseId: String? = null,
+    val moreParams: String? = null)
+data class CatalogArtistProfile(val artist: CatalogArtist, val description: String = "",
+    val subscriberCount: String = "", val monthlyListeners: String = "", val songs: List<MusicTrack> = emptyList(),
+    val moreSongsBrowseId: String? = null, val releases: List<ArtistReleaseSection> = emptyList(),
+    val relatedArtists: List<CatalogArtist> = emptyList())
 enum class CatalogProvider { JIOSAAVN, YOUTUBE_MUSIC }
 enum class ExploreCategoryKind { MOOD, GENRE, OTHER }
 
@@ -44,7 +50,8 @@ data class CatalogPage(
     val trackSearchContinuation: TrackSearchContinuation? = null,
     val artistContinuation: ArtistCatalogContinuation? = null,
     val resolvedArtist: CatalogArtist? = null,
-    val browseContinuation: CatalogBrowseContinuation? = null
+    val browseContinuation: CatalogBrowseContinuation? = null,
+    val artistProfile: CatalogArtistProfile? = null
 )
 sealed interface CatalogDestination {
     val key: String

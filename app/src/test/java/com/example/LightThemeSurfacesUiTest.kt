@@ -145,7 +145,7 @@ class LightThemeSurfacesUiTest {
                 SuccessResult(BitmapDrawable(context.resources, bitmap), chain.request, DataSource.MEMORY_CACHE)
             })
         }.build().also(Coil::setImageLoader)
-        var track by mutableStateOf<MusicTrack?>(song.copy(id = "bright", coverUrl = "https://is1-ssl.mzstatic.com/bright/100x100bb.jpg"))
+        var track by mutableStateOf<MusicTrack?>(song.copy(id = "bright", coverUrl = "https://lh3.googleusercontent.com/bright=w120-h120"))
         var glass by mutableStateOf(true)
         compose.mainClock.autoAdvance = false
         compose.setContent { MaterialTheme {
@@ -160,7 +160,7 @@ class LightThemeSurfacesUiTest {
         for (state in listOf("bright", "dark", "missing", "matte")) {
             compose.runOnIdle {
                 track = if (state == "missing" || state == "matte") null
-                    else song.copy(id = state, coverUrl = "https://is1-ssl.mzstatic.com/$state/100x100bb.jpg")
+                    else song.copy(id = state, coverUrl = "https://lh3.googleusercontent.com/$state=w120-h120")
                 glass = state != "matte"
             }
             compose.mainClock.advanceTimeBy(600)
@@ -212,6 +212,25 @@ class LightThemeSurfacesUiTest {
                 compose.waitForIdle()
                 val mini = capture("mini_player_container", "light-mini-$glass-${canvas.toArgb()}")
                 val fill = java.awt.Color(mini.getRGB(mini.width / 2, mini.height - 5))
+                if (glass) {
+                    val shell = compose.onNodeWithTag("mini_player_container").fetchSemanticsNode().boundsInRoot
+                    for (label in listOf("Song title", "Artist")) {
+                        val bounds = compose.onNodeWithText(label, useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+                        val left = ((bounds.left - shell.left) * mini.width / shell.width).toInt()
+                        val top = ((bounds.top - shell.top) * mini.height / shell.height).toInt()
+                        val right = ((bounds.right - shell.left) * mini.width / shell.width).toInt().coerceAtMost(mini.width - 1)
+                        val bottom = ((bounds.bottom - shell.top) * mini.height / shell.height).toInt().coerceAtMost(mini.height - 1)
+                        val behind = Color(mini.getRGB((left - 3).coerceAtLeast(0), (top + bottom) / 2)).luminance()
+                        var readable = 0
+                        for (y in top.coerceAtLeast(0)..bottom) for (x in left.coerceAtLeast(0)..right) {
+                            val luminance = Color(mini.getRGB(x, y)).luminance()
+                            val ratio = (maxOf(luminance, behind) + .05f) / (minOf(luminance, behind) + .05f)
+                            if (ratio >= 3f) readable++
+                        }
+                        assertTrue("$label needs contrasting glyph edges over $canvas; found $readable", readable >= 12)
+                    }
+                }
+
                 val dock = capture("floating_bottom_navigation_bar", "light-dock-$glass-${canvas.toArgb()}")
                 val dockFill = java.awt.Color(dock.getRGB(dock.width / 2, dock.height - 5))
                 for (sample in listOf(fill, dockFill)) {

@@ -1,6 +1,5 @@
 package com.example.ui.util
 
-import android.content.Context
 import android.graphics.drawable.BitmapDrawable
 import coil.intercept.Interceptor
 import coil.request.CachePolicy
@@ -10,8 +9,6 @@ import coil.request.ErrorResult
 import java.io.IOException
 import coil.size.Dimension
 import coil.size.Size
-import com.example.data.repository.MediaItem
-import com.example.data.repository.iTunesArtworkRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.ensureActive
@@ -35,19 +32,17 @@ class ArtworkVisibility internal constructor(active: Boolean) {
     internal val active = MutableStateFlow(active)
 }
 
-/** Raw metadata affects request identity, while the resolved URL remains Coil's cache key. */
+/** Provider identity and viewport ownership; no metadata search or cross-provider matching. */
 data class ArtworkRequestMetadata(
-    val item: MediaItem?,
     val providerUrl: String,
     val sourceDimension: Int,
     val trackId: String? = null,
-    val album: String? = null,
     val preferStableArtwork: Boolean = false,
     val targetSize: Int = sourceDimension,
-    val providerArtworkOnly: Boolean = false,
     val visibleContent: Boolean = true,
     val startupPreparation: Boolean = false,
-    val visibility: ArtworkVisibility? = null
+    val visibility: ArtworkVisibility? = null,
+    val currentTrack: Boolean = false
 )
 
 /** Request a larger rendition of the same provider image, never a different recording. */
@@ -71,11 +66,11 @@ internal fun providerArtworkUrl(url: String, minimumDimension: Int): String {
     if (host.endsWith(".ytimg.com") || host == "img.youtube.com") {
         return youtubeArtworkSize.replace(url) { "/maxresdefault.${it.groupValues[1]}" }
     }
-    if (host.endsWith(".mzstatic.com")) {
-        return appleArtworkSize.replace(url) { match ->
-            val width = maxOf(match.groupValues[1].toIntOrNull() ?: dimension, dimension)
-            val height = maxOf(match.groupValues[2].toIntOrNull() ?: dimension, dimension)
-            "${width}x${height}${match.groupValues[3]}"
+    if (host == "saavncdn.com" || host.endsWith(".saavncdn.com")) {
+        // This provider supplies covers up to 500px; never invent a larger tier.
+        return providerCoverSize.replace(url) { match ->
+            val requested = dimension.coerceAtMost(500)
+            "${maxOf(match.groupValues[1].toInt(), requested)}x${maxOf(match.groupValues[2].toInt(), requested)}"
         }
     }
     return url
@@ -89,7 +84,6 @@ private fun isYouTubeArtworkUrl(url: String): Boolean {
 
 private val googleArtworkSize = Regex("(^|-)([whs])(\\d+)(?=-|$)")
 private val youtubeArtworkSize = Regex("/(?:default|mqdefault|hqdefault|sddefault)\\.(jpg|webp)(?=[?#]|$)")
-private val appleArtworkSize = Regex("(?<=/)(\\d+)x(\\d+)(bb)?(?=\\.(?:jpg|png|webp))", RegexOption.IGNORE_CASE)
 
 /** Known catalog identity supplies safe alternatives when a thumbnail URL is absent or expires. */
 internal fun youtubeArtworkAlternatives(trackId: String?, urls: List<String>): List<String> {
@@ -101,14 +95,12 @@ internal fun youtubeArtworkAlternatives(trackId: String?, urls: List<String>): L
         "https://i.ytimg.com/vi/$videoId/$it.jpg"
     }
 }
+private val providerCoverSize = Regex("(\\d+)x(\\d+)(?=\\.(?:jpg|png|webp)(?:[?#]|$))", RegexOption.IGNORE_CASE)
 private val artworkVideoId = Regex("[A-Za-z0-9_-]{11}")
 private val youtubeArtworkId = Regex("/(?:vi|vi_webp)/([A-Za-z0-9_-]{11})/")
 
-/** Song covers use verified iTunes artwork, then the same recording's YouTube image. */
-class ArtworkResolutionInterceptor internal constructor(
-    private val repositoryFor: (Context) -> iTunesArtworkRepository
-) : Interceptor {
-    constructor() : this({ iTunesArtworkRepository.getInstance(it) })
+/** Resolve only larger renditions of the supplied provider image and same-video fallbacks. */
+class ArtworkResolutionInterceptor : Interceptor {
     override suspend fun intercept(chain: Interceptor.Chain): ImageResult {
         val playlist = chain.request.parameters.value<Boolean>(PLAYLIST_COVER_PARAMETER) == true
         val metadata = chain.request.parameters.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER)
@@ -180,37 +172,26 @@ class ArtworkResolutionInterceptor internal constructor(
             originalChain.withSize(Size(metadata.sourceDimension, metadata.sourceDimension))
         } else originalChain
         val request = chain.request
-        val coordinator = com.example.performance.BackgroundWorkCoordinator
-        val startupRequest = coordinator.initialPresentationInProgress && !coordinator.startupReadiness.value.complete
         val sourceDimension = maxOf(metadata.sourceDimension,
             (chain.size.width as? Dimension.Pixels)?.px ?: 0,
             (chain.size.height as? Dimension.Pixels)?.px ?: 0)
-        val item = metadata.item?.takeUnless { metadata.providerArtworkOnly }
-        val originals = listOfNotNull(metadata.providerUrl, item?.sourceArtworkUrl).filter(String::isNotBlank).distinct()
-        val appleSources = originals.filter(iTunesArtworkRepository::isITunesArtworkUrl)
-        // A song's fallback is its own YouTube thumbnail, not unrelated artwork
-        // or a small JioSaavn image. Artist/URL-only requests keep their providers.
-        val fallbackSources = originals.filter { item == null || isYouTubeArtworkUrl(it) }
-        val fallbackUrls = (fallbackSources.map { providerArtworkUrl(it, sourceDimension) } + fallbackSources +
-            youtubeArtworkAlternatives(metadata.trackId, fallbackSources)).distinct()
-        val explicitAppleUrls = (appleSources.map { providerArtworkUrl(it, sourceDimension) } + appleSources).distinct()
-        var repository: iTunesArtworkRepository? = null
-        fun repository(): iTunesArtworkRepository? = item?.let {
-            repository ?: repositoryFor(request.context).also { repository = it }
-        }
-        suspend fun preferredUrl(): String? {
-            if (item == null) return null
-            val repo = repository() ?: return null
-            return withContext(com.example.performance.AppDispatchers.CpuBounded) {
-                repo.getMemoryCachedResolvedUrl(item, sourceDimension)
-            }
-        }
+        val originals = listOf(metadata.providerUrl).filter(String::isNotBlank)
+        val urls = (originals.map { providerArtworkUrl(it, sourceDimension) } +
+            youtubeArtworkAlternatives(metadata.trackId, originals) + originals).distinct()
+        // A smaller view can reuse a larger rendition already fetched by Home or
+        // the player. These alternatives are cache probes, never extra downloads.
+        val cacheUrls = (urls.take(1) + originals.flatMap { source ->
+            listOf(600, 1200, 2000, 200).map { providerArtworkUrl(source, it) }
+        } + urls.drop(1)).distinct()
         val attempted = mutableSetOf<String>()
         val cachedImages = mutableMapOf<String, SuccessResult?>()
         var lastError: ImageResult? = null
-        var primaryNetworkBudgetMs = if (metadata.startupPreparation) 750L else 2_000L
-        var fallbackNetworkBudgetMs = if (metadata.startupPreparation) 1_000L else 3_000L
-        fun sufficient(result: SuccessResult) = sufficientSize(result, chain.size)
+        var networkBudgetMs = if (metadata.startupPreparation) 1_000L else 3_000L
+        fun sufficient(result: SuccessResult) = sufficientSize(result, chain.size) ||
+            // The provider can cap a requested 2000px rendition at its real source
+            // resolution. A full, unsampled decode cannot improve by downloading
+            // that same URL again. Sampled thumbnail decodes still need upgrading.
+            result.request.data == urls.firstOrNull() && !result.isSampled
         fun better(first: SuccessResult?, second: SuccessResult?): SuccessResult? = when {
             first == null -> second
             second == null -> first
@@ -224,12 +205,11 @@ class ArtworkResolutionInterceptor internal constructor(
                 if (cacheOnly || memoryOnly) networkCachePolicy(CachePolicy.DISABLED)
                 if (memoryOnly) diskCachePolicy(CachePolicy.DISABLED)
             }.build()
-            val result = if (memoryOnly) chain.proceed(candidate) else admittedArtwork(url, metadata.startupPreparation) {
+            val result = if (memoryOnly) chain.proceed(candidate) else admittedArtwork(url, metadata.startupPreparation || metadata.currentTrack) {
                 if (cacheOnly) chain.proceed(candidate) else {
                     // Recheck after resource waits so duplicate cards share Coil's file.
                     val hit = chain.proceed(candidate.newBuilder().networkCachePolicy(CachePolicy.DISABLED).build())
-                    val fallbackRequest = url in fallbackUrls
-                    val budgetMs = if (fallbackRequest) fallbackNetworkBudgetMs else primaryNetworkBudgetMs
+                    val budgetMs = networkBudgetMs
                     if (hit is SuccessResult && sufficient(hit)) hit
                     else if (!attempted.add(url) || budgetMs <= 0L) hit
                     else {
@@ -237,7 +217,7 @@ class ArtworkResolutionInterceptor internal constructor(
                         try { withTimeoutOrNull(budgetMs) { chain.proceed(candidate) } ?: hit }
                         finally {
                             val elapsed = (android.os.SystemClock.elapsedRealtime() - started).coerceAtLeast(0L)
-                            if (fallbackRequest) fallbackNetworkBudgetMs -= elapsed else primaryNetworkBudgetMs -= elapsed
+                            networkBudgetMs -= elapsed
                         }
                     }
                 }
@@ -267,69 +247,16 @@ class ArtworkResolutionInterceptor internal constructor(
                 request.target?.onStart(result.drawable)
             }
         }
-        // An already selected iTunes image can paint immediately, including
-        // during a fling, without constructing the metadata repository.
-        val selectedApple = (request.data as? String)?.takeIf(iTunesArtworkRepository::isITunesArtworkUrl)
-        val appleMemory = best(listOfNotNull(selectedApple) + explicitAppleUrls, memoryOnly = true)
-        if (appleMemory != null && sufficient(appleMemory)) return appleMemory
-        val fallbackMemory = best(fallbackUrls, memoryOnly = true)
-        if (item == null && fallbackMemory != null && sufficient(fallbackMemory)) return fallbackMemory
-        present(appleMemory ?: fallbackMemory)
-        if (!metadata.startupPreparation) coordinator.awaitNavigationIdle()
-        val persistedPreferred = preferredUrl() ?: item?.let { repository()?.cachedArtwork(it, sourceDimension) }
-        var preferred = best(listOfNotNull(persistedPreferred) + explicitAppleUrls, cacheOnly = true)
-        if (preferred != null && sufficient(preferred)) return preferred
-        var fallback = best(fallbackUrls, cacheOnly = true)
-        present(preferred ?: fallback)
-        if (metadata.preferStableArtwork && fallback != null && sufficient(fallback) &&
-            persistedPreferred == null && explicitAppleUrls.isEmpty()) {
-            // Home rows must finish on their already-cached, full-size image.
-            // Otherwise each scroll disposes a painter still waiting for the
-            // optional fifteen-second iTunes gate and recreates all of its work.
-            item?.let { repository()?.prewarmOptionalArtwork(it, sourceDimension) }
-            return fallback
-        }
-        if (!metadata.startupPreparation && startupRequest) {
-            // Join the bounded first-viewport batch instead of racing its downloads.
-            coordinator.startupReadiness.first {
-                it.tasks.getValue(com.example.performance.StartupTask.INITIAL_ARTWORK).terminal
-            }
-            cachedImages.clear()
-            preferred = best(listOfNotNull(preferredUrl()) + explicitAppleUrls, cacheOnly = true)
-            if (preferred != null && sufficient(preferred)) return preferred
-            fallback = better(fallback, best(fallbackUrls, cacheOnly = true))
-        }
-        // Explicit Apple artwork already belongs to this recording and needs no
-        // repeat search. Otherwise iTunes remains the primary lookup, even when
-        // a provider thumbnail is cached. Shared flights/negative TTLs avoid storms.
-        preferred = better(preferred, best(explicitAppleUrls))
-        if (preferred != null && sufficient(preferred)) return preferred
-        if (item != null) {
-            if (!metadata.startupPreparation) coordinator.yieldToInteraction(awaitFrameQuiet = false)
-            val hasUsableFallback = fallback?.let(::sufficient) == true
-            // Startup can finish on a crisp cached fallback. The visible request
-            // owns its later iTunes upgrade and cancels it when the row hides.
-            if (metadata.startupPreparation && hasUsableFallback) return checkNotNull(fallback)
-            val resolved = if (hasUsableFallback) {
-                // Admission time is not a network timeout. Do not repeatedly cancel
-                // an optional lookup before the fifteen-second idle gate can open.
-                repository()?.resolveArtwork(item, sourceDimension, optionalUpgrade = true)
-            } else withTimeoutOrNull(if (metadata.startupPreparation) 750L else 5_000L) {
-                repository()?.resolveArtwork(item, sourceDimension)
-            }
-            if (!resolved.isNullOrBlank()) preferred = better(preferred, load(resolved))
-            if (preferred != null && sufficient(preferred)) return preferred
-            present(preferred ?: fallback)
-        }
-        // Fix undersized YouTube fallbacks in the visible-image lane, not behind
-        // optional enrichment's fifteen-second gate. Higher renditions go first.
-        fallback = better(fallback, best(fallbackUrls))
-        return when {
-            preferred != null && sufficient(preferred) -> preferred
-            fallback != null && sufficient(fallback) -> fallback
-            else -> better(preferred, fallback) ?: lastError ?:
-                ErrorResult(null, request, IOException("No matching album artwork available"))
-        }
+        // Memory is usable during gestures. Completed requests keep their painter
+        // and identity across retained-tab visibility changes.
+        val memory = best(cacheUrls, memoryOnly = true)
+        if (memory != null && sufficient(memory)) return memory
+        present(memory)
+        val persisted = better(memory, best(cacheUrls, cacheOnly = true))
+        if (persisted != null && sufficient(persisted)) return persisted
+        present(persisted)
+        val loaded = better(persisted, best(urls))
+        return loaded ?: lastError ?: ErrorResult(null, request, IOException("Provider artwork unavailable"))
     }
 
     private fun sufficientSize(result: SuccessResult, size: Size): Boolean {

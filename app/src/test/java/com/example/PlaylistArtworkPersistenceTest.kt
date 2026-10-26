@@ -68,7 +68,7 @@ class PlaylistArtworkPersistenceTest {
         }.build()
         val directory = File(context.cacheDir, "playlist-persistence-check").apply { deleteRecursively(); mkdirs() }
         fun loader() = ImageLoader.Builder(context).components {
-            add(ArtworkResolutionInterceptor { error("A playlist cover must never perform song matching") })
+            add(ArtworkResolutionInterceptor())
         }.okHttpClient(client).networkObserverEnabled(false).respectCacheHeaders(false)
             .memoryCache { MemoryCache.Builder(context).maxSizeBytes(4 * 1024 * 1024).build() }
             .diskCache { DiskCache.Builder().directory(directory).maxSizeBytes(4L * 1024 * 1024).build() }.build()

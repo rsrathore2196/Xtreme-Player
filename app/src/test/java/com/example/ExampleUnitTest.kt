@@ -820,43 +820,4 @@ class ExampleUnitTest {
         assertNotNull(profileSongs)
     }
 
-    @Test
-    fun testiTunesArtworkMetadataNormalizationAndResolution() {
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        val repo = com.example.data.repository.iTunesArtworkRepository.getInstance(context)
-
-        // 1. YouTube Music normalization
-        val ytTitle1 = repo.sanitizeTitle("Alan Walker - Faded (Official Video)", com.example.data.repository.AudioSource.YOUTUBE_MUSIC, artist = "Alan Walker")
-        assertEquals("Faded", ytTitle1)
-        // Missing or conflicting artist metadata cannot justify deleting a title prefix.
-        assertEquals("Alan Walker - Faded", repo.sanitizeTitle(
-            "Alan Walker - Faded (Official Video)", com.example.data.repository.AudioSource.YOUTUBE_MUSIC))
-        assertEquals("Alan Walker - Faded", repo.sanitizeTitle(
-            "Alan Walker - Faded (Official Video)", artist = "Someone Else"))
-        assertEquals("Love - Part II", repo.sanitizeTitle("Love - Part II", artist = "Actual Artist"))
-        for (version in listOf("Live", "Remix", "Acoustic", "Radio Edit", "Remastered")) {
-            assertEquals("Song ($version)", repo.sanitizeTitle("Artist - Song ($version)", artist = "Artist"))
-        }
-        val ytTitle2 = repo.sanitizeTitle("Chandelier [Official Audio] [4K]", com.example.data.repository.AudioSource.YOUTUBE_MUSIC)
-        assertEquals("Chandelier", ytTitle2)
-
-        // 2. JioSaavn normalization
-        val jioTitle = repo.sanitizeTitle("Tum Hi Ho &quot;Official&quot;", com.example.data.repository.AudioSource.JIOSAAVN)
-        assertEquals("Tum Hi Ho \"Official\"", jioTitle.replace(Regex("(?i)\\(.*?\\)|\\[.*?\\]"), ""))
-        val jioArtist = repo.sanitizeArtist("Arijit Singh feat. Badshah, Shreya Ghoshal", com.example.data.repository.AudioSource.JIOSAAVN)
-        assertEquals("Arijit Singh", jioArtist)
-
-        // 3. Internet Archive normalization
-        val iaTitle = repo.sanitizeTitle("beethoven_symphony_no_5", com.example.data.repository.AudioSource.INTERNET_ARCHIVE)
-        assertEquals("beethoven symphony no 5", iaTitle)
-        val iaArtist = repo.sanitizeArtist("Unknown", com.example.data.repository.AudioSource.INTERNET_ARCHIVE)
-        assertEquals("", iaArtist)
-
-        // 4. iTunes Dynamic Resolution substitution
-        val sampleUrl = "https://is1-ssl.mzstatic.com/image/thumb/Music/100x100bb.jpg"
-        assertEquals("https://is1-ssl.mzstatic.com/image/thumb/Music/800x800bb.jpg", repo.formatUrl(sampleUrl, 800))
-        assertEquals("https://is1-ssl.mzstatic.com/image/thumb/Music/200x200bb.jpg", repo.formatUrl(sampleUrl, 200))
-        assertEquals("https://is1-ssl.mzstatic.com/image/thumb/Music/400x400bb.jpg", repo.formatUrl(sampleUrl, 400))
-        assertEquals("https://is1-ssl.mzstatic.com/image/thumb/Music/600x600bb.jpg", repo.formatUrl(sampleUrl, 600))
-    }
 }

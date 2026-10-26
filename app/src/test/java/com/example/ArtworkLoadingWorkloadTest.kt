@@ -4,26 +4,15 @@ import android.app.Application
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.drawable.BitmapDrawable
-import android.graphics.drawable.Drawable
-import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
 import coil.decode.DataSource
 import coil.intercept.Interceptor
-import coil.request.CachePolicy
 import coil.request.ErrorResult
 import coil.request.ImageRequest
 import coil.request.ImageResult
 import coil.request.SuccessResult
 import coil.size.Size
 import coil.target.Target
-import com.example.data.local.ArtworkCacheDao
-import com.example.data.local.ArtworkCacheEntity
-import com.example.data.remote.iTunesApiService
-import com.example.data.remote.iTunesSearchResponse
-import com.example.data.remote.iTunesSongResult
-import com.example.data.repository.AudioSource
-import com.example.data.repository.MediaItem
-import com.example.data.repository.iTunesArtworkRepository
 import com.example.ui.util.*
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
@@ -46,47 +35,20 @@ import org.robolectric.annotation.Config
 @Config(sdk = [33], application = Application::class)
 class ArtworkLoadingWorkloadTest {
     private val context get() = ApplicationProvider.getApplicationContext<Context>()
-    private val provider = "https://is1-ssl.mzstatic.com/image/thumb/Music/provider/600x600bb.jpg"
-    private val apple = "https://is1-ssl.mzstatic.com/image/thumb/Music/matched/600x600bb.jpg"
-    private val item get() = MediaItem("Test Song", "Test Artist", AudioSource.JIOSAAVN, provider, 180_000)
-    private lateinit var lookupScope: CoroutineScope
+    private val provider = "https://covers.example/album.jpg"
     @Before fun setup() {
         Dispatchers.setMain(UnconfinedTestDispatcher())
-        lookupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-        // Robolectric's Android clock does not advance with real coroutine delays.
-        // Robolectric resets uptime between tests but retains process admission samples.
-        (com.example.performance.BackgroundWorkCoordinator::class.java.getDeclaredField("lastOptionalCompleted")
-            .apply { isAccessible = true }.get(null) as java.util.concurrent.atomic.AtomicLong).set(0L)
-        com.example.performance.BackgroundWorkCoordinator.interaction()
+        val coordinator = com.example.performance.BackgroundWorkCoordinator
+        coordinator.foreground(false)
+        (coordinator::class.java.getDeclaredField("navigationUntil").apply { isAccessible = true }
+            .get(null) as java.util.concurrent.atomic.AtomicLong).set(0L)
+        coordinator.interaction()
         org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(300))
     }
-    @After fun teardown() {
-        runBlocking { lookupScope.coroutineContext[Job]!!.cancelAndJoin() }
-        Dispatchers.resetMain()
-    }
-
-    private class Dao : ArtworkCacheDao {
-        val rows = ConcurrentHashMap<String, ArtworkCacheEntity>()
-        val reads = AtomicInteger()
-        override suspend fun getUrl(key: String): String? { reads.incrementAndGet(); return rows[key]?.rawArtworkUrl }
-        override suspend fun getNewest(limit: Int) = rows.values.take(limit)
-        override suspend fun insert(entity: ArtworkCacheEntity) { rows[entity.cacheKey] = entity }
-        override suspend fun deleteExpired(expiryTime: Long) = Unit
-        override suspend fun getCacheCount() = rows.size
-    }
-    private fun repository(search: suspend () -> iTunesSearchResponse) = iTunesArtworkRepository(
-        object : iTunesApiService {
-            override suspend fun searchSong(term: String, media: String, limit: Int): iTunesSearchResponse {
-                assertNotEquals("Metadata lookup must stay off Main", Looper.getMainLooper(), Looper.myLooper())
-                return search()
-            }
-        }, Dao(), lookupScope)
-    private fun match() = iTunesSearchResponse(1, listOf(iTunesSongResult(
-        "https://is1-ssl.mzstatic.com/image/thumb/Music/matched/100x100bb.jpg", "Test Song", "Test Artist", durationMs = 180_000)))
-    private fun request(target: Target? = object : Target {}, targetSize: Int = 600) = ImageRequest.Builder(context)
+    @After fun teardown() { Dispatchers.resetMain() }
+    private fun request(target: Target? = object : Target {}) = ImageRequest.Builder(context)
         .data(provider).size(300, 300).target(target)
-        .setParameter(ARTWORK_METADATA_PARAMETER, ArtworkRequestMetadata(item, provider, 600, targetSize = targetSize), null)
-        .build()
+        .setParameter(ARTWORK_METADATA_PARAMETER, ArtworkRequestMetadata(provider, 600), null).build()
 
     private inner class Chain(
         override val request: ImageRequest,
@@ -115,289 +77,51 @@ class ArtworkLoadingWorkloadTest {
                 drawable.bitmap.density = 160
                 drawable.setTargetDensity(480)
             }
-            return SuccessResult(drawable, request, if (remote) DataSource.NETWORK else DataSource.DISK)
+            return SuccessResult(drawable, request, if (remote) DataSource.NETWORK else DataSource.DISK,
+                isSampled = !remote && dimension < 300)
         }
     }
 
-    @Test fun persistedItunesMappingIsAvailableBeforeAnyNetworkSearch() = runBlocking {
-        val dao = Dao()
-        dao.insert(ArtworkCacheEntity("test song_test artist", apple))
-        val repo = iTunesArtworkRepository(object : iTunesApiService {
-            override suspend fun searchSong(term: String, media: String, limit: Int): iTunesSearchResponse {
-                error("A persisted mapping must never need network discovery")
-            }
-        }, dao, lookupScope)
-        assertEquals(apple, repo.cachedArtwork(item, 600))
-        assertEquals(apple, repo.resolveArtwork(item, 600))
-    }
-
-    @Test fun cacheOnlyArtworkMissNeverStartsRemoteDiscovery() = runBlocking {
-        val repo = repository { error("Cache-only lookup started a remote request") }
-        assertNull(repo.cachedArtwork(item, 600))
-    }
-
-    @Test fun repeatedCacheMissesDoNotRepeatRoomQueriesOrBlockLaterVerifiedMetadata() = runBlocking {
-        val dao = Dao()
-        val repo = iTunesArtworkRepository(object : iTunesApiService {
-            override suspend fun searchSong(term: String, media: String, limit: Int) = match()
-        }, dao, lookupScope)
-        repeat(6) { assertNull(repo.cachedArtwork(item, 600)) }
-        assertEquals("A confirmed local miss is reusable while discovery is pending", 1, dao.reads.get())
-        assertEquals(apple, repo.resolveArtwork(item, 600))
-        assertEquals(apple, repo.cachedArtwork(item, 600))
-        assertEquals(1, dao.reads.get())
-    }
-
-    @Test fun stableCachedHomeFallbackFinishesBeforeIdleAndEnrichesOnlyOnce() = runBlocking {
-        val coordinator = com.example.performance.BackgroundWorkCoordinator
-        coordinator.foreground(false)
-        val cover = "https://lh3.googleusercontent.com/recording=w120-h120-l90-rj"
-        val high = "https://lh3.googleusercontent.com/recording=w600-h600-l90-rj"
-        val searches = AtomicInteger()
-        val repo = repository { searches.incrementAndGet(); match() }
-        val original = youtubeRequest(cover)
-        val metadata = original.parameters.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER)!!
-        val stable = original.newBuilder().setParameter(ARTWORK_METADATA_PARAMETER,
-            metadata.copy(preferStableArtwork = true), null).build()
-        try {
-            repeat(6) {
-                val chain = Chain(stable, cached = setOf(high))
-                val result = withTimeout(1_000) { ArtworkResolutionInterceptor { repo }.intercept(chain) } as SuccessResult
-                assertEquals(high, result.request.data)
-                assertTrue(chain.calls.none { it.second })
-            }
-            assertEquals("A finished cached image must not wait for or bypass optional admission", 0, searches.get())
-            coordinator.foreground(true)
-            coordinator.firstFrameRendered(); coordinator.nonHomeContentReady()
-            withTimeout(5_000) {
-                while (repo.getMemoryCachedResolvedUrl(metadata.item!!, 600) == null) {
-                    org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(16))
-                    delay(60)
-                }
-            }
-            assertEquals("Scroll re-entry shares one optional lookup", 1, searches.get())
-            val next = Chain(stable, cached = setOf(high, apple))
-            assertEquals(apple, (ArtworkResolutionInterceptor { repo }.intercept(next) as SuccessResult).request.data)
-        } finally { coordinator.foreground(false) }
-    }
-
-    @Test fun aColdCardShowsItsExistingItunesArtworkWithoutRepeatingMetadata() = runBlocking {
-        val repo = repository { fail("A sufficient provider cover needs no remote lookup"); match() }
+    @Test fun providerArtworkLoadsDirectlyWithoutAnyMetadataSearch() = runBlocking {
         val chain = Chain(request())
-        val result = ArtworkResolutionInterceptor { repo }.intercept(chain) as SuccessResult
+        val result = ArtworkResolutionInterceptor().intercept(chain) as SuccessResult
         assertEquals(provider, result.request.data)
-        assertEquals(listOf(provider to true), chain.calls.filter { it.second })
-        assertEquals(Size(300, 300), chain.size)
+        assertEquals(listOf(provider), chain.calls.filter { it.second }.map { it.first })
     }
 
-    @Test fun sufficientCachedItunesArtworkAvoidsRemoteArtworkAndMetadataRequests() = runBlocking {
-        val searches = AtomicInteger()
-        val repo = repository { searches.incrementAndGet(); match() }
-        val chain = Chain(request(), cached = setOf(provider))
-        val result = ArtworkResolutionInterceptor { repo }.intercept(chain) as SuccessResult
-        assertEquals(provider, result.request.data)
-        assertEquals(DataSource.DISK, result.dataSource)
-        assertEquals(0, searches.get())
-        assertTrue(chain.calls.none { it.second })
+    @Test fun cachedSmallArtworkDoesNotPreventARealResolutionImprovement() = runBlocking {
+        val small = "https://lh3.googleusercontent.com/album=w60-h60-l90-rj"
+        val large = providerArtworkUrl(small, 600)
+        val req = request().newBuilder().data(small).setParameter(ARTWORK_METADATA_PARAMETER,
+            ArtworkRequestMetadata(small, 600), null).build()
+        val chain = Chain(req, cached = setOf(small), cachedDimension = 60)
+        val result = ArtworkResolutionInterceptor().intercept(chain) as SuccessResult
+        assertEquals(large, result.request.data)
+        assertEquals(listOf(large), chain.calls.filter { it.second }.map { it.first })
     }
 
-    @Test fun providerArtworkDoesNotDependOnTheMetadataApiBeingAvailable() = runBlocking {
-        val searches = AtomicInteger()
-        val repo = repository { searches.incrementAndGet(); iTunesSearchResponse() }
-        val chain = Chain(request())
-        val result = ArtworkResolutionInterceptor { repo }.intercept(chain) as SuccessResult
-        assertEquals(0, searches.get())
-        assertEquals(provider, result.request.data)
-        assertEquals(listOf(provider to true), chain.calls.filter { it.second })
+    @Test fun missingMaxResolutionUsesTheSameVideosAvailableStandardCover() = runBlocking {
+        val urls = youtubeArtworkAlternatives("yt_abcdefghijk", emptyList())
+        val req = request().newBuilder().data("").setParameter(ARTWORK_METADATA_PARAMETER,
+            ArtworkRequestMetadata("", 600, trackId = "yt_abcdefghijk"), null).build()
+        val chain = Chain(req, failures = setOf(urls.first()))
+        assertEquals(urls[1], (ArtworkResolutionInterceptor().intercept(chain) as SuccessResult).request.data)
+        assertTrue(chain.calls.all { it.first in urls })
     }
 
-    @Test fun unavailableProviderArtworkFallsBackToVerifiedItunesArtwork() = runBlocking {
-        val repo = repository { match() }
-        val chain = Chain(request(), failures = setOf(provider))
-        val result = ArtworkResolutionInterceptor { repo }.intercept(chain) as SuccessResult
-        assertEquals(apple, result.request.data)
-        assertEquals(listOf(provider to true, apple to true), chain.calls.filter { it.second })
-    }
-
-    @Test fun reenteringACardReusesResolvedIdentityAndDoesNotRepeatMetadataSearch() = runBlocking {
-        val searches = AtomicInteger()
-        val repo = repository { searches.incrementAndGet(); match() }
-        assertEquals(apple, repo.resolveArtwork(item, 600))
-        val chain = Chain(request(), cached = setOf(apple))
-        val result = ArtworkResolutionInterceptor { repo }.intercept(chain) as SuccessResult
-        assertEquals(apple, result.request.data)
-        assertEquals(1, searches.get())
-        assertTrue(chain.calls.none { it.second })
-    }
-
-    @Test fun blurryCachedProviderDoesNotPreventARealResolutionImprovement() = runBlocking {
-        val repo = repository { iTunesSearchResponse() }
-        val chain = Chain(request(targetSize = -1), cached = setOf(provider), cachedDimension = 20)
-        val result = ArtworkResolutionInterceptor { repo }.intercept(chain) as SuccessResult
-        assertEquals(DataSource.NETWORK, result.dataSource)
-        assertEquals(600, result.drawable.intrinsicWidth)
-        assertEquals(listOf(provider to true), chain.calls.filter { it.second })
-    }
-
-    private fun youtubeRequest(cover: String) = request().newBuilder().data(cover)
-        .setParameter(ARTWORK_METADATA_PARAMETER, ArtworkRequestMetadata(
-            item.copy(source = AudioSource.YOUTUBE_MUSIC, sourceArtworkUrl = cover), cover, 600), null).build()
-
-    @Test fun stalledItunesImageCannotSpendTheYouTubeFallbackNetworkBudget() = runBlocking {
-        val cover = "https://lh3.googleusercontent.com/recording=w60-h60-l90-rj"
-        val high = "https://lh3.googleusercontent.com/recording=w600-h600-l90-rj"
-        val chain = Chain(youtubeRequest(cover), onNetwork = { url ->
-            if (url == apple) {
-                org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(3_000))
-                awaitCancellation()
-            }
-        })
-        val result = withTimeout(4_000) { ArtworkResolutionInterceptor { repository { match() } }.intercept(chain) } as SuccessResult
-        assertEquals(high, result.request.data)
-        assertEquals(listOf(apple to true, high to true), chain.calls.filter { it.second })
-    }
-
-    @Test fun itunesTakesPriorityEvenWhenAYouTubeCoverIsAlreadyCached() = runBlocking {
-        val cover = "https://lh3.googleusercontent.com/recording=w120-h120-l90-rj"
-        val chain = Chain(youtubeRequest(cover), cached = setOf(cover))
-        val searches = AtomicInteger()
-        val repo = repository { searches.incrementAndGet(); match() }
-        val result = ArtworkResolutionInterceptor { repo }.intercept(chain) as SuccessResult
-        assertEquals(apple, result.request.data)
-        assertEquals(1, searches.get())
-        assertEquals(listOf(apple to true), chain.calls.filter { it.second })
-    }
-
-    @Test fun noItunesMatchUsesTheLargeYouTubeRenditionWithoutDownloadingTheSmallThumbnail() = runBlocking {
-        val cover = "https://lh3.googleusercontent.com/recording=w60-h60-l90-rj"
-        val high = "https://lh3.googleusercontent.com/recording=w600-h600-l90-rj"
-        val chain = Chain(youtubeRequest(cover), cached = setOf(cover), dimensions = mapOf(cover to 60))
-        val repo = repository { iTunesSearchResponse() }
-        val result = ArtworkResolutionInterceptor { repo }.intercept(chain) as SuccessResult
-        assertEquals(high, result.request.data)
-        assertEquals(600, (result.drawable as BitmapDrawable).bitmap.width)
-        assertEquals(listOf(high to true), chain.calls.filter { it.second })
-    }
-
-    @Test fun savedYouTubeFallbackAndNegativeItunesLookupAreReusedWithoutRemoteRequests() = runBlocking {
-        val cover = "https://lh3.googleusercontent.com/recording=w120-h120-l90-rj"
-        val high = "https://lh3.googleusercontent.com/recording=w600-h600-l90-rj"
-        val searches = AtomicInteger()
-        val repo = repository { searches.incrementAndGet(); iTunesSearchResponse() }
-        val request = youtubeRequest(cover)
-        assertNull(repo.resolveArtwork(request.parameters.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER)!!.item!!, 600))
-        val before = searches.get()
-        repeat(2) {
-            val chain = Chain(request, cached = setOf(high))
-            val result = ArtworkResolutionInterceptor { repo }.intercept(chain) as SuccessResult
-            assertEquals(high, result.request.data)
-            assertTrue(chain.calls.none { it.second })
-        }
-        assertEquals(before, searches.get())
-    }
-
-    @Test fun cachedSmallItunesArtworkIsReplacedByTheSizedAppleRendition() = runBlocking {
-        val small = provider.replace("600x600bb", "100x100bb")
-        val original = request().newBuilder().data(small).setParameter(ARTWORK_METADATA_PARAMETER,
-            ArtworkRequestMetadata(item.copy(sourceArtworkUrl = small), small, 600), null).build()
-        val chain = Chain(original, cached = setOf(small), dimensions = mapOf(small to 100))
-        val result = ArtworkResolutionInterceptor { repository { error("An existing iTunes URL needs no new search") } }
-            .intercept(chain) as SuccessResult
-        assertEquals(provider, result.request.data)
-        assertEquals(listOf(provider to true), chain.calls.filter { it.second })
-    }
-
-    @Test fun densityScaledDrawableCannotMakeATinyCachedBitmapPassThePixelCheck() = runBlocking {
+    @Test fun densityScalingCannotMakeATinyCachedBitmapPassThePixelCheck() = runBlocking {
         val chain = Chain(request(), cached = setOf(provider), cachedDimension = 120, densityScaled = true)
-        val result = ArtworkResolutionInterceptor { repository { iTunesSearchResponse() } }.intercept(chain) as SuccessResult
-        assertEquals(600, (result.drawable as BitmapDrawable).bitmap.width)
-        assertEquals(listOf(provider to true), chain.calls.filter { it.second })
+        ArtworkResolutionInterceptor().intercept(chain)
+        assertTrue(chain.calls.any { it.second })
     }
 
-    @Test fun missingYouTubeMaxResolutionFallsBackToTheLargerOriginalRatherThanThePlaceholder() = runBlocking {
-        val cover = "https://i.ytimg.com/vi/abcdefghijk/hqdefault.jpg"
-        val max = "https://i.ytimg.com/vi/abcdefghijk/maxresdefault.jpg"
-        val chain = Chain(youtubeRequest(cover), dimensions = mapOf(max to 120, cover to 480))
-        val result = ArtworkResolutionInterceptor { repository { iTunesSearchResponse() } }.intercept(chain) as SuccessResult
-        assertEquals(cover, result.request.data)
-        assertEquals(listOf(max to true, cover to true), chain.calls.filter { it.second })
-    }
-
-    @Test fun missingArtworkUsesTheTracksOwnYoutubeIdentityAfterAnItunesMiss() = runBlocking {
-        val original = request().newBuilder().data("").setParameter(ARTWORK_METADATA_PARAMETER,
-            ArtworkRequestMetadata(item.copy(source = AudioSource.YOUTUBE_MUSIC, sourceArtworkUrl = ""),
-                "", 600, trackId = "yt_abcdefghijk"), null).build()
-        val chain = Chain(original)
-        val result = ArtworkResolutionInterceptor { repository { iTunesSearchResponse() } }.intercept(chain) as SuccessResult
-        assertEquals("https://i.ytimg.com/vi/abcdefghijk/maxresdefault.jpg", result.request.data)
-        assertEquals(1, chain.calls.count { it.second })
-    }
-
-    @Test fun absentMaximumRenditionTriesTheSameVideosAvailableStandardCover() = runBlocking {
-        val max = "https://i.ytimg.com/vi/abcdefghijk/maxresdefault.jpg"
-        val standard = "https://i.ytimg.com/vi/abcdefghijk/sddefault.jpg"
-        val chain = Chain(youtubeRequest(max), failures = setOf(max))
-        val result = ArtworkResolutionInterceptor { repository { iTunesSearchResponse() } }.intercept(chain) as SuccessResult
-        assertEquals(standard, result.request.data)
-        assertEquals(listOf(max to true, standard to true), chain.calls.filter { it.second })
-    }
-
-    @Test fun anUnavailableItunesMatchDoesNotReturnOrFetchJioSaavnArtworkAsItsFallback() = runBlocking {
-        val cover = "https://c.saavncdn.com/123/album-150x150.jpg"
-        val original = request().newBuilder().data(cover).setParameter(ARTWORK_METADATA_PARAMETER,
-            ArtworkRequestMetadata(item.copy(sourceArtworkUrl = cover), cover, 600), null).build()
-        val repo = repository { iTunesSearchResponse() }
-        val chain = Chain(original, cached = setOf(cover))
-        assertTrue(ArtworkResolutionInterceptor { repo }.intercept(chain) is ErrorResult)
-        assertNull(repo.getMemoryCachedUrl(item.copy(sourceArtworkUrl = cover), 600))
-        assertTrue(chain.calls.none { it.second })
-    }
-
-    @Test fun cancellingTheCardCancelsItsUnneededLookupAndPublishesNoLateImage() = runBlocking {
-        val entered = CompletableDeferred<Unit>()
-        val cancelled = CompletableDeferred<Unit>()
-        val repo = repository {
-            entered.complete(Unit)
-            try { awaitCancellation() } finally { cancelled.complete(Unit) }
-        }
-        val starts = AtomicInteger()
-        val chain = Chain(request(object : Target {
-            override fun onStart(placeholder: Drawable?) { starts.incrementAndGet() }
-        }), failures = setOf(provider))
-        val job = async { ArtworkResolutionInterceptor { repo }.intercept(chain) }
-        withTimeout(5_000) { entered.await() }
-        job.cancelAndJoin()
-        withTimeout(5_000) { cancelled.await() }
-        assertEquals(0, starts.get())
-        assertEquals(listOf(provider to true), chain.calls.filter { it.second })
-    }
-
-    @Test fun oneCancelledConsumerDoesNotCancelAnotherCardsSharedMetadataLookup() = runBlocking {
-        val entered = CompletableDeferred<Unit>()
-        val finish = CompletableDeferred<Unit>()
-        val searches = AtomicInteger()
-        val repo = repository { searches.incrementAndGet(); entered.complete(Unit); finish.await(); match() }
-        val first = async { repo.resolveArtwork(item, 200) }
-        withTimeout(5_000) { entered.await() }
-        // Start undispatched so the second reader joins before the first departs.
-        val second = async(start = CoroutineStart.UNDISPATCHED) { repo.resolveArtwork(item, 600) }
-        // Both metadata entry points suspend onto the shared dispatcher. Wait for
-        // the actual two-reader state rather than relying on a timer.
-        withTimeout(5_000) {
-            while (true) {
-                val field = iTunesArtworkRepository::class.java.getDeclaredField("inFlight").apply { isAccessible = true }
-                val flights = field.get(repo) as MutableMap<*, *>
-                val readers = synchronized(flights) { flights.values.firstOrNull()?.let {
-                    it.javaClass.getDeclaredField("readers").apply { isAccessible = true }.getInt(it)
-                } ?: 0 }
-                if (readers == 2) break
-                yield()
-            }
-        }
-        first.cancelAndJoin()
-        finish.complete(Unit)
-        assertEquals(apple, withTimeout(5_000) { second.await() })
-        assertEquals(1, searches.get())
+    @Test fun currentTrackFetchDoesNotWaitForThePlayerOpeningTransition() = runBlocking {
+        val lease = com.example.performance.BackgroundWorkCoordinator.navigationBusy()
+        try {
+            val req = request().newBuilder().setParameter(ARTWORK_METADATA_PARAMETER,
+                ArtworkRequestMetadata(provider, 2000, currentTrack = true), null).build()
+            assertTrue(withTimeout(1000) { ArtworkResolutionInterceptor().intercept(Chain(req)) } is SuccessResult)
+        } finally { lease.close() }
     }
 
     @Test fun identicalColdArtworkSharesDownloadAndRechecksCoilAfterTheFirstCommit() = runBlocking {
@@ -410,8 +134,7 @@ class ArtworkLoadingWorkloadTest {
         }
         val first = Chain(request(), cached = cached, onNetwork = hook)
         val second = Chain(request(), cached = cached, onNetwork = hook)
-        val repo = repository { fail("Sufficient artwork needs no remote lookup"); match() }
-        val interceptor = ArtworkResolutionInterceptor { repo }
+        val interceptor = ArtworkResolutionInterceptor()
         val one = async { interceptor.intercept(first) }
         withTimeout(3_000) { entered.await() }
         val two = async { interceptor.intercept(second) }
@@ -427,15 +150,14 @@ class ArtworkLoadingWorkloadTest {
         val downloads = AtomicInteger()
         val visibility = ArtworkVisibility(true)
         val visibleRequest = request().newBuilder().setParameter(ARTWORK_METADATA_PARAMETER,
-            ArtworkRequestMetadata(item, provider, 600, visibility = visibility), null).build()
+            ArtworkRequestMetadata(provider, 600, visibility = visibility), null).build()
         val chain = Chain(visibleRequest, onNetwork = {
             if (downloads.incrementAndGet() == 1) {
                 entered.complete(Unit)
                 try { awaitCancellation() } finally { cancelled.complete(Unit) }
             }
         })
-        val repo = repository { fail("No remote metadata lookup needed"); match() }
-        val result = async { ArtworkResolutionInterceptor { repo }.intercept(chain) }
+        val result = async { ArtworkResolutionInterceptor().intercept(chain) }
         withTimeout(3_000) { entered.await() }
         visibility.active.value = false
         withTimeout(3_000) { cancelled.await() }
@@ -458,7 +180,7 @@ class ArtworkLoadingWorkloadTest {
                 try { awaitCancellation() } finally { cancelled.complete(Unit) }
             }
         })
-        val result = async { ArtworkResolutionInterceptor { error("Playlist has no song metadata") }.intercept(chain) }
+        val result = async { ArtworkResolutionInterceptor().intercept(chain) }
         try {
             withTimeout(3_000) { entered.await() }
             visibility.active.value = false
@@ -474,7 +196,7 @@ class ArtworkLoadingWorkloadTest {
         val coordinator = com.example.performance.BackgroundWorkCoordinator
         val lease = coordinator.navigationBusy()
         val chain = Chain(request())
-        val result = async { ArtworkResolutionInterceptor { repository { match() } }.intercept(chain) }
+        val result = async { ArtworkResolutionInterceptor().intercept(chain) }
         try {
             delay(100)
             assertFalse(result.isCompleted)
@@ -489,7 +211,7 @@ class ArtworkLoadingWorkloadTest {
             .apply { isAccessible = true }.get(null) as kotlinx.coroutines.sync.Semaphore
         slots.acquire(); slots.acquire()
         val chain = Chain(request())
-        val result = async { ArtworkResolutionInterceptor { repository { match() } }.intercept(chain) }
+        val result = async { ArtworkResolutionInterceptor().intercept(chain) }
         var lease: AutoCloseable? = null
         try {
             delay(100) // Let the request reach the occupied resource, not a fake UI delay.
@@ -509,7 +231,7 @@ class ArtworkLoadingWorkloadTest {
         coordinator.scrolling(scrollOwner, true)
         val networkStarted = CompletableDeferred<Unit>()
         val chain = Chain(request(), onNetwork = { networkStarted.complete(Unit) })
-        val result = async { ArtworkResolutionInterceptor { repository { match() } }.intercept(chain) }
+        val result = async { ArtworkResolutionInterceptor().intercept(chain) }
         try {
             assertNull("A fling must not admit cold artwork", withTimeoutOrNull(2_000) { networkStarted.await() })
             assertFalse(result.isCompleted)
@@ -527,7 +249,7 @@ class ArtworkLoadingWorkloadTest {
         try {
             val chain = Chain(request(), cached = setOf(provider))
             val result = withTimeout(1_000) {
-                ArtworkResolutionInterceptor { error("Memory hit needs no repository") }.intercept(chain)
+                ArtworkResolutionInterceptor().intercept(chain)
             }
             assertTrue(result is SuccessResult)
             assertEquals(1, chain.calls.size)
@@ -543,7 +265,7 @@ class ArtworkLoadingWorkloadTest {
         slots.acquire(); slots.acquire()
         var holdingSlots = true
         val chain = Chain(request())
-        val result = async { ArtworkResolutionInterceptor { repository { match() } }.intercept(chain) }
+        val result = async { ArtworkResolutionInterceptor().intercept(chain) }
         try {
             delay(100)
             coordinator.scrolling(scrollOwner, true)
@@ -568,10 +290,10 @@ class ArtworkLoadingWorkloadTest {
         coordinator.scrolling(scrollOwner, true)
         try {
             val initial = request().newBuilder().setParameter(ARTWORK_METADATA_PARAMETER,
-                ArtworkRequestMetadata(item, provider, 600, startupPreparation = true), null).build()
+                ArtworkRequestMetadata(provider, 600, startupPreparation = true), null).build()
             val chain = Chain(initial)
             assertTrue(withTimeout(3_000) {
-                ArtworkResolutionInterceptor { repository { match() } }.intercept(chain)
+                ArtworkResolutionInterceptor().intercept(chain)
             } is SuccessResult)
             assertTrue(chain.calls.any { it.second })
         } finally { coordinator.scrolling(scrollOwner, false) }

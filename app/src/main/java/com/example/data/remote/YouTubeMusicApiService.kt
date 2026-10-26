@@ -7,6 +7,7 @@ import com.example.data.model.MusicTrack
 import com.metrolist.innertubex.models.YouTubeClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -156,55 +157,57 @@ object YouTubeMusicApiService {
             isLossless = false)
     }
 
-    /** Only an exact, unique artist entity can supply a portrait; song thumbnails are not portraits. */
-    suspend fun artistPhoto(name: String): String? = withContext(Dispatchers.IO) {
-        val normalizedName = com.example.data.repository.CatalogNames.normalize(name).replace(" ", "")
-        if (normalizedName.isBlank()) return@withContext null
-        val profile = YouTubeClient.WEB_REMIX
-        val payload = JSONObject().apply {
-            put("context", JSONObject().put("client", JSONObject().put("clientName", profile.clientName)
-                .put("clientVersion", profile.clientVersion).put("hl", "en").put("gl", "US")))
-            put("query", name)
-            put("params", "EgWKAQIgAWoKEAkQChAFEAMQBA==")
-        }
-        val request = Request.Builder().url("https://music.youtube.com/youtubei/v1/search")
-            .post(payload.toString().toRequestBody(jsonMediaType))
-            .header("User-Agent", "Mozilla/5.0").header("Referer", "https://music.youtube.com/").build()
-        val matches = mutableMapOf<String, String>()
-        fun visit(node: Any?) {
-            when (node) {
-                is JSONObject -> {
-                    (node.optJSONObject("musicResponsiveListItemRenderer") ?: node.optJSONObject("musicTwoRowItemRenderer"))?.let { item ->
-                        val runs = item.optJSONObject("title")?.optJSONArray("runs") ?: item.optJSONArray("flexColumns")?.optJSONObject(0)
-                            ?.optJSONObject("musicResponsiveListItemFlexColumnRenderer")?.optJSONObject("text")?.optJSONArray("runs")
-                        val browse = item.optJSONObject("navigationEndpoint")?.optJSONObject("browseEndpoint")
-                            ?: runs?.optJSONObject(0)?.optJSONObject("navigationEndpoint")?.optJSONObject("browseEndpoint")
-                        val id = browse?.optString("browseId").orEmpty()
-                        val type = browse?.optJSONObject("browseEndpointContextSupportedConfigs")
-                            ?.optJSONObject("browseEndpointContextMusicConfig")?.optString("pageType")
-                        val title = (0 until (runs?.length() ?: 0)).joinToString("") { runs?.optJSONObject(it)?.optString("text").orEmpty() }
-                        // In an artists-filtered response, some valid UC artist
-                        // endpoints omit pageType. Reject explicit non-artist types.
-                        if (id.startsWith("UC") && (type.isNullOrBlank() || type == "MUSIC_PAGE_TYPE_ARTIST") &&
-                            normalizedName ==
-                            com.example.data.repository.CatalogNames.normalize(title).replace(" ", "")) {
-                            val thumbs = item.optJSONObject("thumbnail")?.optJSONObject("musicThumbnailRenderer")
-                                ?.optJSONObject("thumbnail")?.optJSONArray("thumbnails")
-                                ?: item.optJSONObject("thumbnailRenderer")?.optJSONObject("musicThumbnailRenderer")
-                                    ?.optJSONObject("thumbnail")?.optJSONArray("thumbnails")
-                            (0 until (thumbs?.length() ?: 0)).mapNotNull { thumbs?.optJSONObject(it) }
-                                .filter { it.optString("url").startsWith("https://") }
-                                .maxByOrNull { it.optInt("width") }?.optString("url")?.let { matches[id] = it }
-                        }
-                    }
-                    node.keys().forEach { visit(node.opt(it)) }
+    private data class ProfileLookup(val expires: Long, val profile: com.example.data.repository.CatalogArtistProfile?,
+        val temporaryFailure: Boolean = false)
+    private val profileCache = android.util.LruCache<String, ProfileLookup>(64)
+    private val profileLocks = Array(8) { Mutex() }
+
+    /** Shared artist-filtered search and channel browse, independent of song artwork. */
+    suspend fun artistProfile(selected: com.example.data.repository.CatalogArtist): com.example.data.repository.CatalogArtistProfile? =
+        withContext(AppDispatchers.Io) {
+            val name = com.example.data.repository.CatalogNames.normalize(selected.name)
+            if (name.isBlank()) return@withContext null
+            profileLocks[(name.hashCode() and Int.MAX_VALUE) % profileLocks.size].withLock {
+                val key = selected.id.takeIf { it.startsWith("UC") } ?: name
+                val cached = profileCache.get(key) ?: profileCache.get(name)?.takeIf {
+                    !selected.id.startsWith("UC") || it.profile?.artist?.id == selected.id }
+                if (cached != null && cached.expires > System.currentTimeMillis()) {
+                    if (cached.temporaryFailure) throw IOException("Artist profile temporarily unavailable")
+                    return@withLock cached.profile
                 }
-                is JSONArray -> for (i in 0 until node.length()) visit(node.opt(i))
+                try {
+                    val artist = if (selected.id.startsWith("UC")) selected else {
+                        val body = com.example.recommendation.DiscoveryRequestCoordinator.network(essential = true) {
+                            YouTubeAudioStreamService.discoveryResponse("search", selected.name, "US", "EgWKAQIgAWoKEAkQChAFEAMQBA==")
+                        }
+                        withContext(AppDispatchers.CpuBounded) {
+                            YouTubeExploreParser.artistMatches(JSONObject(body), selected.name).singleOrNull()
+                        } ?: return@withLock null.also { profileCache.put(key, ProfileLookup(System.currentTimeMillis() + 60_000L, null)) }
+                    }
+                    val body = com.example.recommendation.DiscoveryRequestCoordinator.network(essential = true) {
+                        YouTubeAudioStreamService.discoveryResponse("browse", artist.id, "US")
+                    }
+                    val profile = withContext(AppDispatchers.CpuBounded) { YouTubeExploreParser.artistProfile(JSONObject(body), artist) }
+                    val entry = ProfileLookup(System.currentTimeMillis() + 3_600_000L, profile)
+                    profileCache.put(key, entry)
+                    profileCache.put(artist.id, entry)
+                    profileCache.put(name, entry)
+                    profile
+                } catch (timeout: kotlinx.coroutines.TimeoutCancellationException) {
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    profileCache.put(key, ProfileLookup(System.currentTimeMillis() + 30_000L, null, true))
+                    throw IOException("Artist profile timed out", timeout)
+                } catch (cancelled: CancellationException) { throw cancelled }
+                catch (error: Exception) {
+                    // Failed requests have a short retry window, not an artist-not-found cache.
+                    profileCache.put(key, ProfileLookup(System.currentTimeMillis() + 30_000L, null, true))
+                    throw error
+                }
             }
         }
-        visit(JSONObject(httpClient.catalogRequest(request)))
-        matches.values.singleOrNull()
-    }
+
+    suspend fun artistPhoto(name: String): String? = artistProfile(com.example.data.repository.CatalogArtist("", name))?.artist?.image
+
 
     /**
      * Searches YouTube Music using the official Innertube WEB_REMIX API.
@@ -754,7 +757,7 @@ object YouTubeMusicApiService {
                     artist = cleanArtist,
                     album = if (item.has("playlistPanelVideoRenderer")) "Unknown" else "YouTube Playlist",
                     durationMs = if (durSec > 0) durSec * 1000L else parseDurationText(pvr.optJSONObject("lengthText")?.optString("simpleText").orEmpty()),
-                    coverUrl = thumbUrl.ifBlank { "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=800&q=80" },
+                    coverUrl = thumbUrl.ifBlank { "https://i.ytimg.com/vi/$vid/maxresdefault.jpg" },
                     audioUrl = YouTubeAudioStreamService.playbackUri("yt_$vid", ""),
                     bitrateKbps = 0,
                     qualityBadge = "HQ Stream",
@@ -781,7 +784,7 @@ object YouTubeMusicApiService {
                     artist = cleanArtist,
                     album = "YouTube Playlist",
                     durationMs = 0L,
-                    coverUrl = "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=800&q=80",
+                    coverUrl = "https://i.ytimg.com/vi/$vid/maxresdefault.jpg",
                     audioUrl = YouTubeAudioStreamService.playbackUri("yt_$vid", ""),
                     bitrateKbps = 0,
                     qualityBadge = "HQ Stream",

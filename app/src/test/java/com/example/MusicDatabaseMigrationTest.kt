@@ -128,7 +128,7 @@ class MusicDatabaseMigrationTest {
                 1700000000000, 'old-session', 125000, 210000, 0.595, 0, 0, 1, 'JIOSAAVN', 'ACTUAL_PLAY')
             """.trimIndent())
         }
-        if (version >= 7) {
+        if (version in 7..11) {
             db.execSQL("INSERT INTO artwork_cache VALUES ('artist-original', 'https://example.com/artist.jpg', 1700000000000)")
         }
     }
@@ -167,7 +167,7 @@ class MusicDatabaseMigrationTest {
         before: Map<String, List<Map<String, Any?>>>,
         after: Map<String, List<Map<String, Any?>>>
     ) {
-        before.forEach { (table, originalRows) ->
+        before.filterKeys { it != "artwork_cache" || after.containsKey(it) }.forEach { (table, originalRows) ->
             val migratedRows = requireNotNull(after[table])
             assertEquals("$table record count", originalRows.size, migratedRows.size)
             originalRows.zip(migratedRows).forEach { (original, migrated) ->
@@ -188,12 +188,15 @@ class MusicDatabaseMigrationTest {
 
     @Test
     fun everySupportedVersionPreservesAllExistingRecordsAndOrder() = runBlocking {
-        for (version in 1..11) {
+        for (version in 1..12) {
             context.deleteDatabase(testDbName)
             val before = createOldDatabase(version)
             openCurrentDatabase().withClose { db ->
                 val sqlite = db.openHelper.writableDatabase // Force the real Room migration and validation.
-                assertEquals(11, sqlite.version)
+                assertEquals(12, sqlite.version)
+                sqlite.query("SELECT COUNT(*) FROM sqlite_master WHERE name = 'artwork_cache'").use {
+                    assertTrue(it.moveToFirst()); assertEquals(0, it.getInt(0))
+                }
                 assertPreserved(before, snapshot(sqlite))
                 val oldTrack = requireNotNull(db.musicDao().getTrackById("old_favorite"))
                 assertTrue(oldTrack.isLiked)
@@ -248,7 +251,7 @@ class MusicDatabaseMigrationTest {
 
     @Test
     fun unsupportedFutureDowngradeFailsWithoutDeletingAnyRecords() {
-        val before = createOldDatabase(version = 12, schemaVersion = 11)
+        val before = createOldDatabase(version = 13, schemaVersion = 12)
         val room = openCurrentDatabase()
         try {
             room.openHelper.writableDatabase
@@ -258,8 +261,8 @@ class MusicDatabaseMigrationTest {
         } finally {
             room.close()
         }
-        helper(12).use { original ->
-            assertEquals(12, original.writableDatabase.version)
+        helper(13).use { original ->
+            assertEquals(13, original.writableDatabase.version)
             assertPreserved(before, snapshot(original.writableDatabase))
         }
     }

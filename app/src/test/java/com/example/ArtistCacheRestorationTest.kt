@@ -51,7 +51,7 @@ class ArtistCacheRestorationTest {
         val prefs = app.getSharedPreferences("artist_images_v2", Context.MODE_PRIVATE)
         val edit = prefs.edit().clear()
         repeat(1100) { index ->
-            edit.putString("portrait:artist $index", JSONObject().put("version", 4).put("source", "audiodb")
+            edit.putString("portrait:artist $index", JSONObject().put("version", 4).put("source", "youtube")
                 .put("image", "https://portraits.example/$index.jpg")
                 .put("expires", System.currentTimeMillis() + 86400000L).toString())
         }

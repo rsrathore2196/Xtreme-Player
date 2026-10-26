@@ -227,8 +227,10 @@ fun AnimatedBottomBar(
                                 }
                             })
                             BottomBarTabContent(motion.expansion, motion.labelAlpha, item, selected,
-                                appColors.onPrimaryAccent,
-                                if (appColors.isDark) Color.White.copy(alpha = 0.65f) else Color(0xFF64748B),
+                                if (appColors.isDark) appColors.onPrimaryAccent else com.example.ui.theme.LiquidGlass.contrastColor(
+                                    appColors.onPrimaryAccent, listOf(appColors.primaryAccent), 4.5f),
+                                if (appColors.isDark) Color.White.copy(alpha = 0.65f) else Color(0xFF142136),
+                                lightGlassContrast = !appColors.isDark && appColors.dynamicGlassEnabled && LocalDynamicGlassEnabled.current,
                                 modifier = Modifier.align(Alignment.Center))
                         }
                     }
@@ -311,6 +313,7 @@ private fun BottomBarTabContent(
     isSelected: Boolean,
     selectedContentColor: Color,
     unselectedContentColor: Color,
+    lightGlassContrast: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val gapPx = with(LocalDensity.current) { 6.dp.toPx() }
@@ -325,6 +328,7 @@ private fun BottomBarTabContent(
                 tint = if (isSelected) selectedContentColor else unselectedContentColor,
                 modifier = Modifier
                     .size(24.dp)
+                    .lightGlassForegroundContrast(lightGlassContrast && !isSelected)
                     .graphicsLayer {
                         // Preserve the selected icon's 1.12x size, coordinated with
                         // the pill instead of running an independent competing spring.

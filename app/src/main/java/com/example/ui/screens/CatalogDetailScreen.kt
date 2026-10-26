@@ -8,6 +8,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -26,6 +27,10 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.example.data.model.MusicTrack
 import com.example.data.repository.CatalogDestination
+import com.example.data.repository.CatalogAlbum
+import com.example.data.repository.CatalogArtist
+import com.example.ui.util.rememberOptimizedImageRequest
+import androidx.compose.ui.text.style.TextOverflow
 import com.example.playback.PlayerUiState
 import com.example.ui.components.ArtistPortrait
 import com.example.ui.components.TrackListItem
@@ -40,7 +45,8 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 @Composable
 fun CatalogDetailScreen(state: CatalogDetailState, player: PlayerUiState, onBack: () -> Unit,
     onMore: () -> Unit, onPlay: (MusicTrack, List<MusicTrack>) -> Unit, onFavorite: (MusicTrack) -> Unit,
-    onScroll: (Int, Int) -> Unit, handleBack: Boolean = true) {
+    onScroll: (Int, Int) -> Unit, handleBack: Boolean = true,
+    onOpenAlbum: (CatalogAlbum) -> Unit = {}, onOpenArtist: (CatalogArtist) -> Unit = {}) {
     val colors = LocalAppColors.current
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val list = rememberLazyListState(state.scrollIndex, state.scrollOffset)
@@ -87,7 +93,7 @@ fun CatalogDetailScreen(state: CatalogDetailState, player: PlayerUiState, onBack
             }
             Column(Modifier.fillMaxWidth().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 when (val target = state.destination) {
-                    is CatalogDestination.Artist -> ArtistPortrait(target.artist, Modifier.size(if (landscape) 112.dp else 180.dp).clip(CircleShape))
+                    is CatalogDestination.Artist -> ArtistPortrait(state.artistProfile?.artist ?: target.artist, Modifier.size(if (landscape) 112.dp else 180.dp).clip(CircleShape))
                     is CatalogDestination.Album -> {
                         AsyncImage(target.album.image, target.album.title, contentScale = ContentScale.Crop,
                             modifier = Modifier.size(if (landscape) 112.dp else 180.dp).clip(RoundedCornerShape(18.dp)))
@@ -97,6 +103,53 @@ fun CatalogDetailScreen(state: CatalogDetailState, player: PlayerUiState, onBack
                     }
                     is CatalogDestination.Playlist -> AsyncImage(target.playlist.image, target.playlist.title,
                         contentScale = ContentScale.Crop, modifier = Modifier.size(180.dp).clip(RoundedCornerShape(18.dp)))
+                }
+            }
+        }
+        state.artistProfile?.let { profile ->
+            if (profile.subscriberCount.isNotBlank() || profile.monthlyListeners.isNotBlank()) item("artist_stats") {
+                Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (profile.subscriberCount.isNotBlank()) Text(profile.subscriberCount, color = colors.textSecondary)
+                    if (profile.monthlyListeners.isNotBlank()) Text(profile.monthlyListeners, color = colors.textSecondary)
+                }
+            }
+            if (profile.description.isNotBlank()) item("artist_about") {
+                var expanded by remember(profile.artist.id) { mutableStateOf(false) }
+                Column(Modifier.fillMaxWidth().padding(20.dp)) {
+                    Text("About", color = colors.textPrimary, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(8.dp))
+                    Text(profile.description, color = colors.textSecondary, maxLines = if (expanded) Int.MAX_VALUE else 5,
+                        overflow = TextOverflow.Ellipsis)
+                    Text(if (expanded) "Show less" else "Read more", color = colors.primaryAccent,
+                        modifier = Modifier.clickable { expanded = !expanded }.padding(vertical = 8.dp))
+                }
+            }
+            profile.releases.forEachIndexed { index, section -> item("artist_releases_$index") {
+                Text(section.title, color = colors.textPrimary, style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp))
+                LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    items(section.albums, key = { it.id }, contentType = { "artist_release" }) { album ->
+                        Column(Modifier.width(136.dp).clickable { onOpenAlbum(album) }) {
+                            AsyncImage(rememberOptimizedImageRequest(album.image, targetSize = 600), album.title,
+                                contentScale = ContentScale.Crop, modifier = Modifier.size(136.dp).clip(RoundedCornerShape(18.dp)))
+                            Text(album.title, color = colors.textPrimary, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(top = 8.dp))
+                        }
+                    }
+                }
+            } }
+            if (profile.relatedArtists.isNotEmpty()) item("related_artists") {
+                Text("Related Artists", color = colors.textPrimary, style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp))
+                LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    items(profile.relatedArtists, key = { it.id }, contentType = { "related_artist" }) { artist ->
+                        Column(Modifier.width(112.dp).clickable { onOpenArtist(artist) }, horizontalAlignment = Alignment.CenterHorizontally) {
+                            ArtistPortrait(artist, Modifier.size(112.dp).clip(CircleShape))
+                            Text(artist.name, color = colors.textPrimary, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(top = 8.dp))
+                        }
+                    }
                 }
             }
         }

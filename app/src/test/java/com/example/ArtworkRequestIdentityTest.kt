@@ -51,7 +51,6 @@ class ArtworkRequestIdentityTest {
         compose.runOnIdle {
             assertNotSame(first, request)
             val metadata = request.parameters.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER)!!
-            assertEquals("Updated title", metadata.item!!.rawTitle)
             assertEquals("https://covers.example/new.jpg", metadata.providerUrl)
         }
         val updated = request
@@ -61,8 +60,8 @@ class ArtworkRequestIdentityTest {
         val sized = request
         compose.runOnIdle { track = track.copy(durationMs = 190_000L) }
         compose.runOnIdle {
-            assertNotSame("Corrected recording duration must refresh matching metadata", sized, request)
-            assertEquals(190_000L, request.parameters.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER)!!.item!!.durationMs)
+            assertNotSame("Corrected metadata keeps its provider image", sized, request)
+            assertEquals("https://covers.example/new.jpg", request.parameters.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER)!!.providerUrl)
         }
     }
 

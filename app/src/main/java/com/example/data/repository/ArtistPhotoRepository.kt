@@ -1,9 +1,7 @@
 package com.example.data.repository
 
 import android.content.Context
-import com.example.data.remote.CatalogHttpException
 import com.example.data.remote.YouTubeMusicApiService
-import com.example.data.remote.catalogGet
 import com.example.performance.AppDispatchers
 import com.example.performance.BackgroundWorkCoordinator
 import kotlinx.coroutines.*
@@ -12,33 +10,22 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
-import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.OkHttpClient
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.TimeUnit
 
 /** Only verified artist entities supply portraits. Track artwork is never a portrait fallback. */
 object ArtistPhotoRepository {
-    private val client by lazy { OkHttpClient.Builder().connectTimeout(8, TimeUnit.SECONDS)
-        .readTimeout(10, TimeUnit.SECONDS).callTimeout(15, TimeUnit.SECONDS).build() }
     private val locks = Array(8) { Mutex() }
-    private val identityLocks = Array(8) { Mutex() }
-    private val rateLock = Mutex()
     private val persistenceLock = Mutex()
-    private var nextRequestAt = 0L
-    @Volatile private var audioDbBackoffUntil = 0L
-    private const val PHOTO_VERSION = 4
+    private const val PHOTO_VERSION = 5
     private const val PHOTO_TTL = 7 * 86_400_000L
-    private const val PREFERRED_RECHECK = 86_400_000L
     internal const val MAX_RESTORED_PORTRAITS = 512
     internal const val HOT_PORTRAIT_KEYS = "portrait_hot_keys_v1"
     @Volatile private var restoreDemanded = false
     private data class Photo(val expires: Long, val url: String?, val source: String,
-        val musicBrainzId: String = "", val catalogId: String = "", val preferredAfter: Long = 0L,
+        val musicBrainzId: String = "", val catalogId: String = "",
         val canonicalName: String = "")
     private val memory = android.util.LruCache<String, Photo>(512)
-    private val identityMemory = android.util.LruCache<String, Pair<Long, JSONObject?>>(100)
     private val rejectedImages = ConcurrentHashMap<String, Long>()
     private val upgrades = ConcurrentHashMap<String, Job>()
     private val photoRevision = MutableStateFlow(0L)
@@ -52,7 +39,8 @@ object ArtistPhotoRepository {
     private fun mbid(value: String): String = value.trim().takeIf {
         it.matches(mbidPattern) && it != "00000000-0000-0000-0000-000000000000"
     }.orEmpty()
-    private fun key(artist: CatalogArtist) = mbid(artist.musicBrainzId).lowercase(java.util.Locale.ROOT)
+    private fun key(artist: CatalogArtist) = artist.id.takeIf { it.startsWith("UC") }?.let { "portrait:channel:$it" }
+        ?: mbid(artist.musicBrainzId).lowercase(java.util.Locale.ROOT)
         .takeIf(String::isNotBlank)?.let { "portrait:mbid:$it" } ?: "portrait:${CatalogNames.normalize(artist.name)}"
     private fun cachedEntry(artist: CatalogArtist): Photo? = memory.get(key(artist))?.takeIf { compatible(it, artist) }
         ?: memory.get("portrait:${CatalogNames.normalize(artist.name)}")?.takeIf { compatible(it, artist) }
@@ -70,11 +58,12 @@ object ArtistPhotoRepository {
     }?.replaceFirst("http://", "https://")?.takeIf { (rejectedImages[it] ?: 0L) <= System.currentTimeMillis() }
 
     fun cachedPhoto(artist: CatalogArtist): String? = cachedEntry(artist)
-        ?.takeIf { it.source in setOf("audiodb", "youtube") }?.url?.let(::image)
+        ?.takeIf { it.source == "youtube" }?.url?.let(::image)
     fun initialPhoto(artist: CatalogArtist): String? = cachedPhoto(artist)
+        ?: image(artist.image).takeIf { artist.id.startsWith("UC") }
     /** Memory-only, provider-verified aliases; never fuzzy-merge unrelated performers. */
     fun canonicalName(name: String): String = memory.get("portrait:${CatalogNames.normalize(name)}")
-        ?.canonicalName?.takeIf(String::isNotBlank) ?: name
+        ?.takeIf { it.source == "youtube" }?.canonicalName?.takeIf(String::isNotBlank) ?: name
     fun observePhoto(artist: CatalogArtist): Flow<String?> = photoRevision.map { cachedPhoto(artist) }
         .distinctUntilChanged().flowOn(AppDispatchers.Io)
 
@@ -118,7 +107,7 @@ object ArtistPhotoRepository {
                 val version = row.optInt("version")
                 val source = row.optString("source")
                 // v3 verified photographs remain usable; its catalog/album fallbacks do not.
-                if (version !in 3..PHOTO_VERSION || source !in setOf("audiodb", "youtube")) continue
+                if (version !in 3..PHOTO_VERSION || source != "youtube") continue
                 val url = image(row.optString("image"))
                 val expires = row.optLong("expires")
                 val canonical = row.optString("canonicalName")
@@ -126,7 +115,7 @@ object ArtistPhotoRepository {
                     // Disk restoration cannot overwrite a newer in-flight provider result.
                     if (memory.get(entry.first) == null) {
                         memory.put(entry.first, Photo(expires, url, source, mbid(row.optString("mbid")),
-                            row.optString("catalogId"), row.optLong("preferredAfter"), canonical))
+                            row.optString("catalogId"), canonical))
                         changed = true
                         if (canonical.isNotBlank() && !entry.first.startsWith("portrait:mbid:") &&
                             entry.first.removePrefix("portrait:") != CatalogNames.normalize(canonical)) identitiesChanged = true
@@ -146,8 +135,7 @@ object ArtistPhotoRepository {
         restoreEntries(entries)
     }
 
-    private fun needsRefresh(photo: Photo, now: Long) = photo.expires <= now ||
-        photo.source == "youtube" && photo.preferredAfter <= now
+    private fun needsRefresh(photo: Photo, now: Long) = photo.expires <= now
     private fun improvedIdentity(photo: Photo, artist: CatalogArtist) =
         photo.musicBrainzId.isBlank() && mbid(artist.musicBrainzId).isNotBlank() ||
             photo.catalogId.isBlank() && artist.id.isNotBlank()
@@ -209,36 +197,23 @@ object ArtistPhotoRepository {
                 } catch (_: TimeoutCancellationException) { failed = true; null }
                   catch (e: CancellationException) { throw e }
                   catch (_: Exception) { failed = true; null }
-                var source = "audiodb"
+                val source = "youtube"
                 var verifiedIdentity = artist
                 var identityVerified = false
-                var result = attempt { audioDbIdentity(artist)?.let { row ->
-                    identityVerified = true
-                    verifiedIdentity = artist.copy(name = row.optString("strArtist").let(CatalogNames::clean)
-                        .takeIf { it.isNotBlank() && !it.equals("null", true) } ?: artist.name,
-                        musicBrainzId = mbid(row.optString("strMusicBrainzID")).ifBlank { mbid(artist.musicBrainzId) },
-                        aliases = (artist.aliases + identityNames(row)).distinctBy(CatalogNames::normalize))
-                    image(row.optString("strArtistThumb")) ?: image(row.optString("strArtistWideThumb"))
-                } }
-                if (result == null && cached?.source == "audiodb") result = image(cached.url)
-                if (result == null) {
-                    source = "youtube"
-                    // A cached verified YouTube profile remains visible and avoids
-                    // another YouTube search while only checking preferred TheAudioDB.
-                    result = image(cached?.url)?.takeIf { cached?.source == "youtube" && cached.expires > now }
-                    if (result == null) for (query in (listOf(artist.name, verifiedIdentity.name) + verifiedIdentity.aliases)
-                        .filter(String::isNotBlank).distinctBy(CatalogNames::normalize).take(2)) {
-                        result = attempt { YouTubeMusicApiService.artistPhoto(query) }
-                        if (result != null) break
+                val result = attempt {
+                    YouTubeMusicApiService.artistProfile(artist)?.let { profile ->
+                        verifiedIdentity = profile.artist.copy(musicBrainzId = artist.musicBrainzId,
+                            aliases = artist.aliases)
+                        identityVerified = true
+                        profile.artist.image
                     }
-                }
-                if (result == null) image(cached?.url)?.let { result = it; source = cached!!.source }
+                } ?: image(cached?.url)?.takeIf { cached?.source == "youtube" }
                 val completed = System.currentTimeMillis()
                 val retry = if (failed) 60_000L else if (result == null) 3_600_000L else PHOTO_TTL
                 val canonical = if (identityVerified || result != null) verifiedIdentity.name else cached?.canonicalName.orEmpty()
                 val photo = Photo(completed + retry, result, source,
-                    mbid(verifiedIdentity.musicBrainzId).ifBlank { cached?.musicBrainzId.orEmpty() }, artist.id,
-                    completed + if (failed) 60_000L else PREFERRED_RECHECK, canonical)
+                    mbid(verifiedIdentity.musicBrainzId).ifBlank { cached?.musicBrainzId.orEmpty() }, verifiedIdentity.id,
+                    canonical)
                 val aliases = (if (identityVerified || result != null)
                     listOf(artist.name, verifiedIdentity.name) + verifiedIdentity.aliases else listOf(artist.name))
                     .map(CatalogNames::normalize).filter(String::isNotBlank).distinct()
@@ -246,8 +221,7 @@ object ArtistPhotoRepository {
                     .put("image", result.orEmpty()).put("source", source).put("expires", photo.expires)
                     .put("mbid", photo.musicBrainzId).put("catalogId", photo.catalogId)
                     .put("canonicalName", photo.canonicalName)
-                    .put("preferredAfter", photo.preferredAfter).toString() }
-                fun priority(value: Photo) = when (value.source) { "audiodb" -> 2; "youtube" -> 1; else -> 0 }
+                    .toString() }
                 val edits = linkedMapOf<String, String>()
                 var identitiesChanged = false
                 for (alias in aliases) {
@@ -255,7 +229,7 @@ object ArtistPhotoRepository {
                     synchronized(memory) {
                         val previous = memory.get(aliasKey)
                         if (!(previous != null && previous.expires > completed && image(previous.url) != null &&
-                                priority(previous) > priority(photo)) && (previous == null || compatible(previous, verifiedIdentity))) {
+                                previous.expires > photo.expires) && (previous == null || compatible(previous, verifiedIdentity))) {
                             if (photo.canonicalName.isNotBlank() &&
                                 CatalogNames.normalize(previous?.canonicalName?.takeIf(String::isNotBlank) ?: alias) != CatalogNames.normalize(photo.canonicalName))
                                 identitiesChanged = true
@@ -265,12 +239,13 @@ object ArtistPhotoRepository {
                 }
                 // Homonymous performers with known MBIDs keep independent entries;
                 // they must not overwrite or repeatedly miss the name-only cache.
-                if (photo.musicBrainzId.isNotBlank()) {
-                    val verifiedKey = "portrait:mbid:${photo.musicBrainzId.lowercase(java.util.Locale.ROOT)}"
+                if (photo.catalogId.startsWith("UC") || photo.musicBrainzId.isNotBlank()) {
+                    val verifiedKey = if (photo.catalogId.startsWith("UC")) "portrait:channel:${photo.catalogId}"
+                        else "portrait:mbid:${photo.musicBrainzId.lowercase(java.util.Locale.ROOT)}"
                     synchronized(memory) {
                         val previous = memory.get(verifiedKey)
                         if (previous == null || previous.expires <= completed || image(previous.url) == null ||
-                            priority(previous) <= priority(photo)) {
+                            previous.expires <= photo.expires) {
                             memory.put(verifiedKey, photo); edits[verifiedKey] = body
                         }
                     }
@@ -295,65 +270,4 @@ object ArtistPhotoRepository {
         }
     }
 
-    private fun identityNames(row: JSONObject) = (listOf(row.optString("strArtist")) +
-        listOf("strArtistAlternate", "strAlternate").flatMap { row.optString(it).split(';', '|', ',') })
-        .map(CatalogNames::clean).filter { it.isNotBlank() && !it.equals("null", true) }.distinctBy(CatalogNames::normalize)
-
-    internal fun matchesIdentity(row: JSONObject, artist: CatalogArtist): Boolean {
-        if (row.optString("idArtist").toLongOrNull()?.let { it > 0 } != true) return false
-        val requested = mbid(artist.musicBrainzId)
-        val returned = mbid(row.optString("strMusicBrainzID"))
-        return if (requested.isNotBlank() && returned.isNotBlank()) requested.equals(returned, true)
-        else (listOf(artist.name) + artist.aliases).any { name -> identityNames(row).any { CatalogNames.same(name, it) } }
-    }
-
-    /** Only aliases from a uniquely verified artist may broaden catalogue credit matching. */
-    internal suspend fun enrichIdentity(artist: CatalogArtist): CatalogArtist = withContext(AppDispatchers.Io) {
-        val row = audioDbIdentity(artist) ?: return@withContext artist
-        artist.copy(musicBrainzId = mbid(artist.musicBrainzId).ifBlank { mbid(row.optString("strMusicBrainzID")) },
-            aliases = (artist.aliases + identityNames(row)).filter { it != artist.name }.distinct())
-    }
-    private suspend fun audioDbIdentity(artist: CatalogArtist): JSONObject? {
-        val key = "${CatalogNames.normalize(artist.name)}:${mbid(artist.musicBrainzId)}:${artist.aliases.sorted()}"
-        return identityLocks[(key.hashCode() and Int.MAX_VALUE) % identityLocks.size].withLock {
-            val now = System.currentTimeMillis()
-            val cached = identityMemory.get(key)
-            if (cached != null && cached.first > now) return@withLock cached.second
-            if (now < audioDbBackoffUntil) throw CatalogHttpException(429, (audioDbBackoffUntil - now) / 1000L)
-            try {
-                val queries = (listOf(artist.name) + artist.aliases).filter(String::isNotBlank)
-                    .distinctBy(CatalogNames::normalize).take(3)
-                for (query in queries) {
-                    rateLock.withLock {
-                        delay((nextRequestAt - System.currentTimeMillis()).coerceAtLeast(0))
-                        nextRequestAt = System.currentTimeMillis() + 500L
-                    }
-                    if (System.currentTimeMillis() < audioDbBackoffUntil)
-                        throw CatalogHttpException(429, (audioDbBackoffUntil - System.currentTimeMillis()) / 1000L)
-                    val body = client.catalogGet("https://www.theaudiodb.com/api/v1/json/123/search.php".toHttpUrl()
-                        .newBuilder().addQueryParameter("s", query).build().toString())
-                    val row = withContext(AppDispatchers.CpuBounded) {
-                        val array = JSONObject(body).optJSONArray("artists")
-                        val matches = (0 until (array?.length() ?: 0)).mapNotNull { array?.optJSONObject(it) }
-                            .filter { matchesIdentity(it, artist) }.distinctBy { it.optString("idArtist") }
-                        // A same-name ambiguity is not identity verification.
-                        if (matches.size > 1) return@withContext null
-                        matches.singleOrNull()
-                    }
-                    if (row != null) {
-                        identityMemory.put(key, System.currentTimeMillis() + PHOTO_TTL to row)
-                        return@withLock row
-                    }
-                }
-                identityMemory.put(key, System.currentTimeMillis() + 3_600_000L to null)
-                null
-            } catch (e: CancellationException) { throw e }
-              catch (e: Exception) {
-                val retry = if (e is CatalogHttpException && e.status == 429)
-                    (e.retryAfter ?: 60L).coerceIn(30L, 3600L) * 1000L else 30_000L
-                audioDbBackoffUntil = System.currentTimeMillis() + retry
-                throw e
-            }
-        }
-    }
 }

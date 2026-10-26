@@ -116,6 +116,9 @@ class PlayerViewModel(
     private val derivedStateDispatcher = AppDispatchers.CpuBounded
     private val derivedStateScope = viewModelScope + derivedStateDispatcher
     val playerUiState: StateFlow<PlayerUiState> = playbackManager.uiState
+    private val playerArtworkPrefetch = com.example.ui.util.prepareCurrentPlayerArtwork(
+        application, playerUiState.map { it.currentTrack },
+        com.example.performance.BackgroundWorkCoordinator.uiForeground, viewModelScope)
     // Progress has dedicated flows/providers. It must not invalidate the entire navigation tree.
     // Paused positions remain observable so external seeks still update the stationary player.
     val playbackPresentationState = playerUiState.map { state ->

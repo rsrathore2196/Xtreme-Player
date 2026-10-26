@@ -12,12 +12,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import coil.request.CachePolicy
+import coil.imageLoader
+import coil.memory.MemoryCache
 import coil.request.ImageRequest
 import coil.size.Scale
 import com.example.data.model.MusicTrack
-import com.example.data.repository.ArtworkDimensions
-import com.example.data.repository.iTunesArtworkRepository
-import com.example.data.repository.toMediaItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
@@ -28,7 +27,7 @@ internal const val ARTWORK_VISIBILITY_PARAMETER = "com.example.artwork.visibilit
 
 internal const val PLAYLIST_COVER_PARAMETER = "com.example.artwork.playlist_cover"
 
-/** Playlist-owned artwork has no song/iTunes identity. Only URL/size change the request. */
+/** Playlist artwork uses its supplied provider URL. Only URL/size change the request. */
 @Composable
 fun rememberPlaylistCoverRequest(
     url: String,
@@ -52,15 +51,16 @@ fun rememberPlaylistCoverRequest(
 
 internal fun buildPlaylistCoverRequest(context: android.content.Context, url: String,
     dimension: Int, visibility: ArtworkVisibility): ImageRequest {
-        val memoryKey = "playlist-cover:$dimension:$url"
+        val source = providerArtworkUrl(url, maxOf(600, dimension))
+    val memoryKey = "playlist-cover:$dimension:$source"
         return ImageRequest.Builder(context)
-            .data(url)
+            .data(source)
             .setParameter(PLAYLIST_COVER_PARAMETER, true, null)
             .setParameter(ARTWORK_VISIBILITY_PARAMETER, visibility, null)
             .memoryCacheKey(memoryKey)
             .placeholderMemoryCacheKey(memoryKey)
             // Grid/detail decode identities may differ, but share the original file.
-            .diskCacheKey(url)
+            .diskCacheKey(source)
             .size(dimension, dimension)
             .interceptorDispatcher(AppDispatchers.Io)
             .fetcherDispatcher(AppDispatchers.Io)
@@ -77,7 +77,7 @@ internal fun buildPlaylistCoverRequest(context: android.content.Context, url: St
                 // Memory hits also keep this source recent in the persistent LRU
                 // index. This only touches RAM; maintenance owns disk persistence.
                 ((context.applicationContext as? com.example.XtremeMusicApp)?.initializedImageDiskCache
-                    as? com.example.data.cache.ManagedImageDiskCache)?.recordAccess(url)
+                    as? com.example.data.cache.ManagedImageDiskCache)?.recordAccess(source)
                 if (com.example.BuildConfig.DEBUG) android.util.Log.d("PlaylistArtwork",
                     "cover=${Integer.toHexString(url.hashCode())} size=$dimension source=${result.dataSource}")
             })
@@ -174,11 +174,12 @@ object TrackPaletteCache {
 
 fun mapTargetSizeToArtworkDimension(targetSize: Int): Int {
     return when {
-        targetSize >= 900 -> ArtworkDimensions.HERO_CARD // 1200
-        targetSize >= 500 || targetSize < 0 -> ArtworkDimensions.EXPANDED_PLAYER // 1200
-        targetSize in 250..899 -> ArtworkDimensions.HOME_CARD // 600
-        targetSize in 150..249 -> ArtworkDimensions.MINI_PLAYER // 200
-        else -> ArtworkDimensions.SEARCH_AND_LIST // 200
+        targetSize >= 2000 -> targetSize.coerceAtMost(3000)
+        targetSize >= 900 -> 1200 // 1200
+        targetSize >= 500 || targetSize < 0 -> 1200 // 1200
+        targetSize in 250..899 -> 600 // 600
+        targetSize in 150..249 -> 200 // 200
+        else -> 200 // 200
     }
 }
 
@@ -238,34 +239,38 @@ internal fun buildOptimizedImageRequest(
     decodeSize: IntSize? = null,
     visibleContent: Boolean = true,
     startupPreparation: Boolean = false,
-    visibility: ArtworkVisibility? = null
+    visibility: ArtworkVisibility? = null,
+    currentTrack: Boolean = false
 ): ImageRequest {
     val metadata = ArtworkRequestMetadata(
-        item = track?.toMediaItem(),
         trackId = track?.id,
-        album = track?.album,
         providerUrl = url,
         sourceDimension = mapTargetSizeToArtworkDimension(targetSize),
         preferStableArtwork = preferStableArtwork,
         targetSize = targetSize,
-        providerArtworkOnly = false,
         visibleContent = visibleContent,
         startupPreparation = startupPreparation,
-        visibility = visibility
+        visibility = visibility,
+        currentTrack = currentTrack
     )
-    // Re-entering cards can start on a prepared resolved URL without constructing the
-    // repository or sanitizing metadata on Main. The interceptor retains raw fallbacks.
-    val initialUrl = metadata.item?.takeUnless { metadata.providerArtworkOnly }?.let {
-        iTunesArtworkRepository.peekInstance()?.peekMemoryCachedUrl(it, metadata.sourceDimension)
-    }?.takeIf { it.isNotBlank() } ?: url
+    // Direct provider URL: no Room lookup or search before the image can load.
+    val initialUrl = providerArtworkUrl(url, metadata.sourceDimension).ifBlank {
+        youtubeArtworkAlternatives(track?.id, emptyList()).firstOrNull().orEmpty()
+    }
+    val placeholder = if (currentTrack) {
+        // Reuse the same catalog cover already shown on Home/Search while its
+        // full-player rendition downloads. These are RAM peeks, never image lookups.
+        val candidates = listOf(initialUrl, providerArtworkUrl(url, 1200), providerArtworkUrl(url, 600),
+            providerArtworkUrl(url, 200), url).filter(String::isNotBlank).distinct()
+        val memory = context.imageLoader.memoryCache
+        candidates.firstOrNull { memory?.get(MemoryCache.Key(it)) != null } ?: initialUrl
+    } else initialUrl
     return ImageRequest.Builder(context)
         .data(initialUrl)
         .setParameter(ARTWORK_METADATA_PARAMETER, metadata, null)
-        // A cached provider thumbnail is not the final album cover. The
-        // interceptor presents a verified iTunes image or a crisp YouTube fallback.
-        .placeholderMemoryCacheKey(initialUrl.takeIf { it.isNotBlank() &&
-            (metadata.item == null || iTunesArtworkRepository.isITunesArtworkUrl(it)) })
-        .interceptorDispatcher(Dispatchers.IO)
+        .placeholderMemoryCacheKey(placeholder.takeIf(String::isNotBlank))
+        .interceptorDispatcher(AppDispatchers.Io)
+        .fetcherDispatcher(AppDispatchers.Io)
         // One process-wide CPU budget, including explicitly opened player covers.
         .decoderDispatcher(AppDispatchers.CpuBounded)
         .scale(Scale.FILL)

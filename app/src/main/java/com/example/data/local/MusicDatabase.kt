@@ -10,14 +10,13 @@ import com.example.performance.AppDispatchers
 import kotlinx.coroutines.asExecutor
 
 @Database(
-    entities = [TrackEntity::class, PlaylistEntity::class, PlaylistTrackCrossRef::class, ListeningEventEntity::class, ArtworkCacheEntity::class],
-    version = 11,
+    entities = [TrackEntity::class, PlaylistEntity::class, PlaylistTrackCrossRef::class, ListeningEventEntity::class],
+    version = 12,
     exportSchema = true
 )
 abstract class MusicDatabase : RoomDatabase() {
     abstract fun musicDao(): MusicDao
     abstract fun listeningEventDao(): ListeningEventDao
-    abstract fun artworkCacheDao(): ArtworkCacheDao
 
     companion object {
         @Volatile
@@ -183,6 +182,13 @@ abstract class MusicDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Only obsolete image-lookup mappings are removed; the library and history remain intact.
+                db.execSQL("DROP TABLE IF EXISTS `artwork_cache`")
+            }
+        }
+
         val ALL_MIGRATIONS = arrayOf(
             MIGRATION_1_2,
             MIGRATION_2_3,
@@ -194,7 +200,8 @@ abstract class MusicDatabase : RoomDatabase() {
             MIGRATION_8_7,
             MIGRATION_8_9,
             MIGRATION_9_10,
-            MIGRATION_10_11
+            MIGRATION_10_11,
+            MIGRATION_11_12
         )
 
         fun getDatabase(context: Context): MusicDatabase {

@@ -1,122 +1,83 @@
 package com.example
 
 import android.app.Application
+import android.content.Context
+import android.graphics.Bitmap
+import androidx.test.core.app.ApplicationProvider
+import coil.Coil
+import coil.ImageLoader
+import coil.imageLoader
+import coil.memory.MemoryCache
+import org.junit.After
 import androidx.compose.runtime.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import coil.request.ImageRequest
-import coil.transition.Transition
-import com.example.data.local.ArtworkCacheDao
-import com.example.data.local.ArtworkCacheEntity
 import com.example.data.model.MusicTrack
-import com.example.data.remote.iTunesApiService
-import com.example.data.remote.iTunesSearchResponse
-import com.example.data.repository.iTunesArtworkRepository
 import com.example.ui.util.*
-import kotlinx.coroutines.*
-import org.junit.Before
-import com.example.performance.BackgroundWorkCoordinator
-import org.junit.After
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
-import java.util.concurrent.atomic.AtomicInteger
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = Application::class)
 class PlayerArtworkSourceTest {
     @get:Rule val compose = createComposeRule()
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val searches = AtomicInteger()
-    private val reads = AtomicInteger()
-    private val lookupKeys = java.util.concurrent.CopyOnWriteArrayList<String>()
-    private val apple = "https://is1-ssl.mzstatic.com/image/thumb/Music/album/100x100bb.jpg"
-    private val track = MusicTrack("yt_recording", "Title", "Artist", "Album", 180_000,
-        "https://i.ytimg.com/vi/recording/hqdefault.jpg", "signed-audio", source = "YOUTUBE_MUSIC")
+    private var previousLoader: ImageLoader? = null
+    private var loader: ImageLoader? = null
+    @After fun cleanup() { previousLoader?.let(Coil::setImageLoader); loader?.shutdown() }
+    private val original = "https://lh3.googleusercontent.com/recording=w120-h120-l90-rj"
+    private val track = MusicTrack("yt_abcdefghijk", "Title", "Artist", "Album", 180_000,
+        original, "signed-audio", source = "YOUTUBE_MUSIC")
 
-    @Before fun foreground() {
-        BackgroundWorkCoordinator.foreground(true)
-        BackgroundWorkCoordinator.firstFrameRendered()
-        (BackgroundWorkCoordinator::class.java.getDeclaredField("navigationUntil")
-            .apply { isAccessible = true }.get(null) as java.util.concurrent.atomic.AtomicLong).set(0)
-    }
-    @After fun stop() { scope.cancel(); BackgroundWorkCoordinator.foreground(false) }
-    private fun repository(read: suspend (String) -> String?) = iTunesArtworkRepository(object : iTunesApiService {
-        override suspend fun searchSong(term: String, media: String, limit: Int): iTunesSearchResponse {
-            searches.incrementAndGet()
-            return iTunesSearchResponse()
-        }
-    }, object : ArtworkCacheDao {
-        override suspend fun getUrl(key: String): String? { reads.incrementAndGet(); lookupKeys.add(key); return read(key) }
-        override suspend fun getNewest(limit: Int) = emptyList<ArtworkCacheEntity>()
-        override suspend fun insert(entity: ArtworkCacheEntity) = Unit
-        override suspend fun deleteExpired(expiryTime: Long) = Unit
-        override suspend fun getCacheCount() = 0
-    }, scope)
-
-    @Test fun coverUsesOneHighQualityItunesUrlAndSurvivesAudioSourceChanges() {
-        val repo = repository { apple }
-        var song by mutableStateOf(track)
+    @Test fun originalProviderCoverIsReadyAtFirstCompositionWithoutLookupOrNavigationWait() {
         lateinit var request: ImageRequest
-        compose.setContent {
-            val prepared = rememberPlayerArtworkRequest(song, true) { repo }
-            SideEffect { request = prepared }
-        }
-        compose.waitUntil(3_000) { request.data is String }
-        val first = request
-        assertEquals(iTunesArtworkRepository.formatArtworkUrl(apple, 2000), request.data)
-        assertEquals(request.data, request.placeholderMemoryCacheKey?.key)
-        assertNull(request.parameters.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER))
-        assertSame(Transition.Factory.NONE, request.transitionFactory)
-        compose.runOnIdle { song = song.copy(audioUrl = "another-provider", source = "JIOSAAVN", bitrateKbps = 320) }
-        compose.runOnIdle { assertSame(first, request) }
-        assertEquals(1, reads.get())
-        assertEquals(0, searches.get())
-    }
-
-    @Test fun unavailableOrLegacyProviderArtworkNeverBecomesAPlayerFallback() {
-        val repo = repository { track.coverUrl }
-        lateinit var request: ImageRequest
-        compose.setContent {
-            val prepared = rememberPlayerArtworkRequest(track, true) { repo }
-            SideEffect { request = prepared }
-        }
-        compose.waitUntil(3_000) { reads.get() > 0 }
+        compose.setContent { val prepared = rememberPlayerArtworkRequest(track, true); SideEffect { request = prepared } }
         compose.runOnIdle {
-            assertFalse(request.data is String)
-            assertNull(request.placeholderMemoryCacheKey)
+            assertEquals(providerArtworkUrl(original, 2000), request.data)
+            assertEquals(request.data, request.placeholderMemoryCacheKey?.key)
+            assertTrue(request.parameters.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER)!!.currentTrack)
         }
-        assertEquals(0, searches.get())
     }
 
-    @Test fun latePreviousTrackLookupCannotReplaceTheNewCover() {
-        val gate = CompletableDeferred<Unit>()
-        val entered = CompletableDeferred<Unit>()
-        val newer = apple.replace("/album/", "/new-album/")
-        val repo = repository { key ->
-            if (key.startsWith("title_")) {
-                entered.complete(Unit)
-                withContext(NonCancellable) { gate.await() }
-                apple
-            } else newer
-        }
+    @Test fun actualAudioProviderAndSignedUrlChangesDoNotRestartCatalogArtwork() {
         var song by mutableStateOf(track)
         lateinit var request: ImageRequest
-        compose.setContent {
-            val prepared = rememberPlayerArtworkRequest(song, true) { repo }
-            SideEffect { request = prepared }
-        }
-        try {
-            compose.waitUntil(3_000) { entered.isCompleted }
-            compose.runOnIdle { song = song.copy(id = "new-song", title = "New recording") }
-            compose.mainClock.advanceTimeByFrame()
-            compose.waitForIdle()
-            compose.waitUntil(3_000) { request.data.toString().contains("/new-album/") }
-            gate.complete(Unit)
-            compose.waitForIdle()
-            assertEquals(iTunesArtworkRepository.formatArtworkUrl(newer, 2000), request.data)
-        } finally { gate.complete(Unit) }
+        compose.setContent { val prepared = rememberPlayerArtworkRequest(song, true); SideEffect { request = prepared } }
+        compose.waitForIdle()
+        val first = request
+        compose.runOnIdle { song = song.copy(audioUrl = "new-stream", source = "JIOSAAVN", bitrateKbps = 320) }
+        compose.runOnIdle { assertSame(first, request) }
     }
+
+    @Test fun switchingTracksImmediatelyUsesTheNewCatalogCover() {
+        var song by mutableStateOf(track)
+        lateinit var request: ImageRequest
+        compose.setContent { val prepared = rememberPlayerArtworkRequest(song, true); SideEffect { request = prepared } }
+        compose.runOnIdle { song = song.copy(id = "yt_zyxwvutsrqp", coverUrl = original.replace("recording", "new-recording")) }
+        compose.runOnIdle { assertTrue(request.data.toString().contains("new-recording")) }
+    }
+
+    @Test fun absentThumbnailUsesOnlyTheSameVideosKnownIdentity() {
+        lateinit var request: ImageRequest
+        compose.setContent { val prepared = rememberPlayerArtworkRequest(track.copy(coverUrl = ""), true); SideEffect { request = prepared } }
+        compose.runOnIdle { assertEquals("https://i.ytimg.com/vi/abcdefghijk/maxresdefault.jpg", request.data) }
+    }
+    @Test fun playerCanImmediatelyShowTheSameCoverAlreadyCachedByHome() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        previousLoader = context.imageLoader
+        loader = ImageLoader.Builder(context).memoryCache { MemoryCache.Builder(context).maxSizeBytes(4 * 1024 * 1024).build() }
+            .build().also(Coil::setImageLoader)
+        val homeUrl = providerArtworkUrl(original, 600)
+        loader!!.memoryCache!![MemoryCache.Key(homeUrl)] = MemoryCache.Value(Bitmap.createBitmap(600, 600, Bitmap.Config.ARGB_8888))
+        lateinit var request: ImageRequest
+        compose.setContent { val prepared = rememberPlayerArtworkRequest(track, true); SideEffect { request = prepared } }
+        compose.runOnIdle {
+            assertEquals(providerArtworkUrl(original, 2000), request.data)
+            assertEquals("Use the already visible provider image while the larger one loads", homeUrl, request.placeholderMemoryCacheKey?.key)
+        }
+    }
+
 }

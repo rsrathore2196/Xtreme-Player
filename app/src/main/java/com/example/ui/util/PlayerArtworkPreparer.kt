@@ -1,6 +1,8 @@
 package com.example.ui.util
 
 import android.graphics.Bitmap
+import android.content.Context
+import android.graphics.drawable.BitmapDrawable
 import androidx.compose.runtime.*
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.Brush
@@ -8,18 +10,63 @@ import androidx.compose.ui.graphics.Color
 import androidx.palette.graphics.Palette
 import coil.request.CachePolicy
 import coil.request.ImageRequest
+import coil.request.SuccessResult
+import coil.ImageLoader
+import coil.imageLoader
 import coil.size.Precision
 import com.example.data.model.MusicTrack
 import com.example.performance.AppDispatchers
 import com.example.performance.BackgroundWorkCoordinator
-import com.example.data.repository.iTunesArtworkRepository
-import com.example.data.repository.toMediaItem
 import com.example.ui.theme.AppThemeColors
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.collectLatest
+import androidx.compose.ui.unit.IntSize
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 
-/** The player always uses one high-quality iTunes rendition, including full-screen art. */
+/** Use the original provider's highest suitable cover, including full-screen art. */
 internal const val PLAYER_ARTWORK_DIMENSION = 2000
 private val neutralPlayerBackground = Brush.verticalGradient(listOf(Color(0xff101010), Color(0xff101010)))
+
+/** Only the selected recording is prefetched; no catalog-wide lookups or extra cache. */
+internal fun prepareCurrentPlayerArtwork(context: Context, tracks: Flow<MusicTrack?>, foreground: Flow<Boolean>,
+    scope: CoroutineScope, loaderFor: (Context) -> ImageLoader = { it.imageLoader }
+): Job = scope.launch(AppDispatchers.Io) {
+    combine(tracks.distinctUntilChanged { a, b -> a?.id == b?.id && a?.coverUrl == b?.coverUrl },
+        foreground.distinctUntilChanged()) { track, visible -> track to visible }
+        .collectLatest { (track, visible) ->
+            if (track == null || !visible) return@collectLatest
+            try {
+                val pixels = maxOf(context.resources.displayMetrics.widthPixels,
+                    context.resources.displayMetrics.heightPixels).coerceIn(1, PLAYER_ARTWORK_DIMENSION)
+                val request = buildOptimizedImageRequest(context, track.coverUrl, PLAYER_ARTWORK_DIMENSION,
+                    track, decodeSize = IntSize(pixels, pixels), currentTrack = true)
+                val loader = loaderFor(context)
+                val result = loader.execute(request) as? SuccessResult ?: return@collectLatest
+                val key = playerPaletteKey(track, true, Color.White, Color.Black, request.data.toString())
+                if (TrackPaletteCache.get(key) == null) {
+                    // Network and decoding started at selection; optional color analysis
+                    // still yields during navigation and shares the existing CPU budget.
+                    BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
+                    val sample = loader.execute(playerPaletteRequest(result.request)) as? SuccessResult
+                        ?: return@collectLatest
+                    val bitmap = (sample.drawable as? BitmapDrawable)?.bitmap ?: return@collectLatest
+                    val colors = withContext(AppDispatchers.CpuBounded) { extractPlayerArtworkColors(bitmap, true) }
+                        ?: return@collectLatest
+                    TrackPaletteCache.put(key, colors)
+                    TrackPaletteCache.put(playerPaletteKey(track, true, Color.White, Color.Black,
+                        result.request.data.toString()), colors)
+                    TrackPaletteCache.put(track.id, colors)
+                }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { /* A failed prefetch never prevents normal on-demand image loading. */ }
+        }
+}
 
 /** Neutral player controls are independent of app accents, album colors, and color mode. */
 internal fun playerAppearanceColors(source: AppThemeColors): AppThemeColors = source.copy(
@@ -39,39 +86,19 @@ fun playerPaletteKey(track: MusicTrack, dark: Boolean, accent: Color, base: Colo
     artworkIdentity: String = track.coverUrl): String =
     "album-colors-v3|${track.id}|${track.title}|${track.artist}|${track.album}|$artworkIdentity"
 
-/** No provider thumbnails, motion artwork, or cross-provider placeholders in the full player. */
+/** The URL is ready on the first composition; no metadata API or navigation wait. */
 @Composable
-internal fun rememberPlayerArtworkRequest(track: MusicTrack, active: Boolean,
-    repositoryFor: (android.content.Context) -> iTunesArtworkRepository = { iTunesArtworkRepository.getInstance(it) }
-): ImageRequest {
+internal fun rememberPlayerArtworkRequest(track: MusicTrack, active: Boolean): ImageRequest {
     val context = LocalContext.current
-    val direct = track.coverUrl.takeIf(iTunesArtworkRepository::isITunesArtworkUrl)
-    val item = remember(track.id, track.title, track.artist, track.album, track.durationMs) { track.toMediaItem() }
-    val url by key(track.id, item.rawTitle, item.rawArtist, item.album, item.durationMs, direct) {
-        val initial = direct?.let { iTunesArtworkRepository.formatArtworkUrl(it, PLAYER_ARTWORK_DIMENSION) }
-            ?: iTunesArtworkRepository.peekInstance()?.peekMemoryCachedUrl(item, PLAYER_ARTWORK_DIMENSION)
-                ?.takeIf(iTunesArtworkRepository::isITunesArtworkUrl)
-        produceState<String?>(initial, active) {
-            if (initial != null || !active) return@produceState
-            value = withContext(AppDispatchers.Io) {
-                initial ?: repositoryFor(context).let { repo ->
-                    repo.cachedArtwork(item, PLAYER_ARTWORK_DIMENSION)?.takeIf(iTunesArtworkRepository::isITunesArtworkUrl) ?: if (active) {
-                        BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
-                        repo.resolveArtwork(item, PLAYER_ARTWORK_DIMENSION)?.takeIf(iTunesArtworkRepository::isITunesArtworkUrl)
-                    } else null
-                }
-            }
-        }
-    }
-    return remember(context, url) {
-        ImageRequest.Builder(context).data(url).allowHardware(true).crossfade(false)
-            .placeholderMemoryCacheKey(url).memoryCachePolicy(CachePolicy.ENABLED)
-            .diskCachePolicy(CachePolicy.ENABLED).interceptorDispatcher(AppDispatchers.Io)
-            .fetcherDispatcher(AppDispatchers.Io).decoderDispatcher(AppDispatchers.CpuBounded).build()
+    val visibility = remember(context, track.id, track.coverUrl) { ArtworkVisibility(active) }
+    SideEffect { visibility.active.value = active }
+    return remember(context, track.id, track.coverUrl, visibility) {
+        buildOptimizedImageRequest(context, track.coverUrl, PLAYER_ARTWORK_DIMENSION, track,
+            visibility = visibility, currentTrack = true)
     }
 }
 
-/** Reuse the selected iTunes source at the actual header's bounded pixel size. */
+/** Reuse the selected provider source at the actual header's bounded pixel size. */
 internal fun playerHeaderArtworkRequest(artwork: ImageRequest, targetPixels: Int = 192): ImageRequest = artwork.newBuilder()
     .size(targetPixels.coerceAtLeast(1))
     // Small shared-transition targets must never evict the full-size decoded cover.
@@ -79,7 +106,7 @@ internal fun playerHeaderArtworkRequest(artwork: ImageRequest, targetPixels: Int
     .crossfade(false)
     .build()
 
-/** Sample the exact selected iTunes URL without another metadata lookup or provider fallback. */
+/** Sample the exact selected provider URL without another metadata lookup or provider fallback. */
 internal fun playerPaletteRequest(artwork: ImageRequest): ImageRequest = artwork.newBuilder()
     .size(ImageConfig.PALETTE_THUMBNAIL_SIZE)
     .precision(Precision.EXACT)

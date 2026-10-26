@@ -472,7 +472,9 @@ fun MainNavigationScaffold(
                             },
                             onFavorite = { viewModel.toggleLike(it) },
                             onScroll = viewModel.catalogBrowser::rememberScroll,
-                            handleBack = !isPlayerExpanded
+                            handleBack = !isPlayerExpanded,
+                            onOpenAlbum = { viewModel.catalogBrowser.open(com.example.data.repository.CatalogDestination.Album(it)) },
+                            onOpenArtist = { viewModel.catalogBrowser.open(com.example.data.repository.CatalogDestination.Artist(it)) }
                         )
                     }
                 }

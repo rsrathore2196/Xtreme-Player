@@ -71,8 +71,8 @@ class PlayerArtworkColorsTest {
 
     @Test fun samplingPreservesResolvedCoverMetadataWithoutReplacingTheFullSizeMemoryEntry() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val metadata = ArtworkRequestMetadata(null, "https://i.ytimg.com/vi/catalog/hqdefault.jpg", 1200)
-        val cover = ImageRequest.Builder(context).data("https://art.example/resolved-itunes.jpg")
+        val metadata = ArtworkRequestMetadata("https://i.ytimg.com/vi/catalog/hqdefault.jpg", 1200)
+        val cover = ImageRequest.Builder(context).data("https://art.example/resolved-provider.jpg")
             .setParameter(ARTWORK_METADATA_PARAMETER, metadata, null).size(1080).allowHardware(true).build()
         val sample = playerPaletteRequest(cover)
         assertEquals(cover.data, sample.data)

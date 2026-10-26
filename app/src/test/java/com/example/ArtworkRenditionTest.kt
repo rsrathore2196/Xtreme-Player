@@ -24,13 +24,11 @@ class ArtworkRenditionTest {
     @Test fun largerArtworkIsNotDowngraded() {
         val url = "https://lh3.googleusercontent.com/recording=w1200-h1200-l90-rj"
         assertEquals(url, providerArtworkUrl(url, 600))
-        val apple = "https://is1-ssl.mzstatic.com/image/thumb/Music/1200x1200bb.jpg"
-        assertEquals(apple, providerArtworkUrl(apple, 600))
     }
 
-    @Test fun appleAndVideoThumbnailsUseTheirLargerRendition() {
-        assertEquals("https://is1-ssl.mzstatic.com/image/thumb/Music/600x600bb.jpg",
-            providerArtworkUrl("https://is1-ssl.mzstatic.com/image/thumb/Music/100x100bb.jpg", 600))
+    @Test fun providerAndVideoThumbnailsUseTheirLargerRendition() {
+        assertEquals("https://c.saavncdn.com/recording_500x500.jpg",
+            providerArtworkUrl("https://c.saavncdn.com/recording_150x150.jpg", 2000))
         assertEquals("https://i.ytimg.com/vi/abcdefghijk/maxresdefault.jpg?token=same",
             providerArtworkUrl("https://i.ytimg.com/vi/abcdefghijk/hqdefault.jpg?token=same", 600))
     }

@@ -461,10 +461,29 @@ class CatalogRepository(context: Context? = null,
             nextPage = page.coerceAtLeast(0) + 1,
             artistContinuation = continuation?.let { ArtistCatalogContinuation(query, it) })
     }
+    suspend fun artistProfile(artist: CatalogArtist): CatalogArtistProfile? = YouTubeMusicApiService.artistProfile(artist)
+
     suspend fun artistSongs(selected: CatalogArtist, page: Int,
-        continuation: ArtistCatalogContinuation? = null, existing: List<MusicTrack> = emptyList()
+        continuation: ArtistCatalogContinuation? = null, existing: List<MusicTrack> = emptyList(),
+        browseContinuation: CatalogBrowseContinuation? = null
     ): CatalogPage = withContext(AppDispatchers.CpuBounded) {
         if (selected.name.isBlank()) return@withContext CatalogPage()
+        if (selected.id.startsWith("UC") && continuation == null) {
+            val profile = try { artistProfile(selected) }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { null }
+            if (profile != null) {
+                val top = profile.moreSongsBrowseId?.let { id ->
+                    try { youtubeBrowse(id, null, "US", "en", browseContinuation, true) }
+                    catch (cancelled: CancellationException) { throw cancelled }
+                    catch (_: Exception) { null }
+                }
+                if (top != null && top.tracks.isNotEmpty()) return@withContext top.copy(
+                    resolvedArtist = profile.artist, artistProfile = profile)
+                if (existing.isEmpty() && profile.songs.isNotEmpty()) return@withContext CatalogPage(
+                    tracks = profile.songs, resolvedArtist = profile.artist, artistProfile = profile)
+            }
+        }
         var failure: Exception? = null
         var available: CatalogPage? = null
         val attemptedQueries = mutableSetOf<String>()
@@ -511,13 +530,10 @@ class CatalogRepository(context: Context? = null,
         youtubeSongs(selected)?.let { return@withContext it }
         // Recover stage-name/spelling variants from verified metadata, never by
         // accepting a similarly named performer or relaxing track-credit checks.
-        val enriched = try { withTimeoutOrNull(4_000L) { ArtistPhotoRepository.enrichIdentity(selected) } ?: selected }
-            catch (e: CancellationException) { throw e }
-            catch (_: Exception) { selected }
-        val resolved = try { withTimeoutOrNull(6_000L) { resolveJioArtist(enriched) } }
+        val resolved = try { withTimeoutOrNull(6_000L) { resolveJioArtist(selected) } }
             catch (e: CancellationException) { throw e }
             catch (_: Exception) { null }
-        val recovered = resolved ?: enriched
+        val recovered = resolved ?: selected
         if (recovered != selected) {
             catalogSongs(recovered)?.let { return@withContext it }
             // An earlier empty search page can now pass credit verification using

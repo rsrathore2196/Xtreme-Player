@@ -51,7 +51,7 @@ class PlayerAppearanceUiTest {
     private var testLoader: ImageLoader? = null
     private val coverColor = android.graphics.Color.rgb(24, 176, 96)
     private val track = MusicTrack("appearance", "Title", "Artist", "Album", 180_000,
-        "https://is1-ssl.mzstatic.com/image/thumb/Music/cover/100x100bb.jpg", "audio")
+        "https://lh3.googleusercontent.com/cover=w120-h120", "audio")
 
     @Before fun prepare() { OtherSettingsPreferences.setFullScreenAlbumArt(context, false) }
     @After fun cleanup() {
@@ -104,7 +104,7 @@ class PlayerAppearanceUiTest {
         assertEquals(playerAppearanceColors(DarkAppColors).textPrimary, playerAppearanceColors(LightAppColors).textPrimary)
     }
 
-    @Test fun fullScreenItunesArtworkBlendsItsEdgesWithoutTintingItsCenter() {
+    @Test fun fullScreenProviderArtworkBlendsItsEdgesWithoutTintingItsCenter() {
         previousLoader = context.imageLoader
         val bitmap = Bitmap.createBitmap(300, 300, Bitmap.Config.ARGB_8888).apply { eraseColor(coverColor) }
         testLoader = ImageLoader.Builder(context).components {
@@ -121,7 +121,7 @@ class PlayerAppearanceUiTest {
         } }
         compose.mainClock.advanceTimeBy(800)
         compose.waitForIdle()
-        // Allow the remembered direct iTunes request's small IO producer to publish.
+        // Allow the direct provider image request to publish.
         compose.mainClock.advanceTimeBy(800)
         // The manually advanced animation clock does not await Coil's real IO
         // dispatcher. Wait for the cover to draw before checking its edge pixels.
