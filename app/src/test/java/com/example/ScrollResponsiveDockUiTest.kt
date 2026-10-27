@@ -76,7 +76,6 @@ class ScrollResponsiveDockUiTest {
                     }
                     AdaptiveBottomControls(landscape, Modifier.align(Alignment.BottomCenter).fillMaxWidth(),
                         collapseProgress = progress,
-                        compactSearch = { CompactSearchDockButton(dock.isCompact, tab == 1) { navigate(1) } },
                         miniPlayer = {
                             if (miniVisible) Box(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp)) {
                                 SideEffect { playerCompositions++ }
@@ -84,8 +83,7 @@ class ScrollResponsiveDockUiTest {
                                     compactProgress = progress, compact = dock.isCompact)
                             }
                         }, dock = {
-                            FloatingPillBottomBar(tab, navigate, compactProgress = progress, compact = dock.isCompact,
-                                onExpand = dock::expand)
+                            FloatingPillBottomBar(tab, navigate, compactProgress = progress, compact = dock.isCompact)
                         })
                 }
             }
@@ -107,17 +105,23 @@ class ScrollResponsiveDockUiTest {
         compose.runOnIdle { assertTrue(dock.isCompact) }
         val mini = bounds("mini_player_container")
         val bar = bounds("floating_bottom_navigation_bar")
-        val search = bounds("compact_dock_search")
-        assertEquals(with(compose.density) { 64.dp.toPx() }, bar.width, 1f)
+        compose.onNodeWithTag("compact_dock_search").assertDoesNotExist()
+        assertEquals(with(compose.density) { 108.dp.toPx() }, bar.width, 1f)
         assertEquals(bar.center.y, mini.center.y, 2f)
-        assertEquals(bar.center.y, search.center.y, 2f)
         if (rtl) {
-            assertTrue(search.right <= mini.left)
-            assertTrue(mini.right <= bar.left)
+            assertEquals(with(compose.density) { 8.dp.toPx() }, bar.left - mini.right, 1f)
         } else {
-            assertTrue(bar.right <= mini.left)
-            assertTrue(mini.right <= search.left)
+            assertEquals(with(compose.density) { 8.dp.toPx() }, mini.left - bar.right, 1f)
         }
+        for (title in listOf("Home", "Search")) {
+            val icon = compose.onNodeWithContentDescription(title, useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+            assertTrue("$title remains inside the connected navigation pill", icon.left >= bar.left && icon.right <= bar.right)
+            assertEquals(icon.width, icon.height, 0.6f)
+        }
+        val libraryTag = "nav_tab_library_${if (selected == 2) "active" else "inactive"}"
+        compose.onNodeWithTag(libraryTag).assertDoesNotExist()
+        val viewport = bounds("dock_review")
+        assertEquals(viewport.center.x, (minOf(bar.left, mini.left) + maxOf(bar.right, mini.right)) / 2f, 1f)
         val play = bounds("mini_player_play_pause")
         assertTrue(play.left >= mini.left && play.right <= mini.right)
     }
@@ -146,19 +150,25 @@ class ScrollResponsiveDockUiTest {
         assertEquals(1, skips)
     }
 
-    @Test fun compactControlsKeepSearchAndEveryTabReachable() {
+    @Test fun compactControlsShowOnlyHomeAndSearchAndRestoreLibraryWhenExpanded() {
         show()
         down()
         assertCompact()
-        compose.onNodeWithTag("nav_tab_home_active").performClick()
-        compose.runOnIdle { assertFalse(dock.isCompact) }
-        compose.onNodeWithTag("nav_tab_library_inactive").performClick()
-        assertEquals(2, selected)
-        down()
-        assertCompact()
-        compose.onNodeWithTag("compact_dock_search").performClick()
+        compose.onNodeWithTag("nav_tab_search_inactive").performClick()
         assertEquals(1, selected)
         compose.runOnIdle { assertFalse(dock.isCompact) }
+        up()
+        down()
+        assertCompact()
+        compose.onNodeWithTag("nav_tab_home_inactive").performClick()
+        assertEquals(0, selected)
+        compose.onNodeWithTag("nav_tab_library_inactive").assertIsDisplayed().performClick()
+        assertEquals(2, selected)
+        up()
+        down()
+        assertCompact()
+        compose.onNodeWithTag("nav_tab_home_inactive").performClick()
+        assertEquals(0, selected)
     }
 
     @Test @Config(sdk = [31]) fun ordinarySettingsStyleScrollAlsoDrivesDockOnAndroid12() {
@@ -192,12 +202,14 @@ class ScrollResponsiveDockUiTest {
         assertCompact(rtl = true)
     }
 
-    @Test fun noPlaybackSessionStillHasExpandableNavigationAndSearch() {
+    @Test fun noPlaybackSessionCentersOnlyConnectedNavigationWithoutEmptyPlayerSpace() {
         show(miniVisible = false)
         down()
         compose.runOnIdle { assertTrue(dock.isCompact) }
         compose.onNodeWithTag("mini_player_container").assertDoesNotExist()
-        assertTrue(bounds("floating_bottom_navigation_bar").right < bounds("compact_dock_search").left)
+        compose.onNodeWithTag("compact_dock_search").assertDoesNotExist()
+        assertEquals(bounds("dock_review").center.x, bounds("floating_bottom_navigation_bar").center.x, 1f)
+        compose.onNodeWithTag("nav_tab_library_inactive").assertDoesNotExist()
         compose.onNodeWithTag("nav_tab_home_active").performClick()
         compose.onNodeWithTag("nav_tab_library_inactive").performClick()
         assertEquals(2, selected)

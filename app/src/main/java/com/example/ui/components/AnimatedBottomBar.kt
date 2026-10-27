@@ -8,15 +8,11 @@ import androidx.compose.animation.core.updateTransition
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.wrapContentWidth
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.CornerBasedShape
 import androidx.compose.foundation.shape.CornerSize
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -68,6 +64,10 @@ import com.example.performance.BackgroundWorkCoordinator
 import kotlin.math.max
 import kotlin.math.roundToInt
 
+internal val CompactDockTabWidth = 48.dp
+internal val DockHorizontalPadding = 6.dp
+internal val CompactPrimaryDockWidth = CompactDockTabWidth * 2 + DockHorizontalPadding * 2
+
 /**
  * Data model for AnimatedBottomBar tabs.
  */
@@ -105,7 +105,7 @@ fun AnimatedBottomBar(
     compactProgress: State<Float>? = null,
     compact: Boolean = false,
     compactTabIndex: Int = selectedTabIndex,
-    onExpand: () -> Unit = {}
+    compactCompanionTabIndex: Int? = null
 ) {
     val textMeasurer = androidx.compose.ui.text.rememberTextMeasurer()
     val density = LocalDensity.current
@@ -133,10 +133,12 @@ fun AnimatedBottomBar(
         remember(expansion, labelAlpha) { DockTabMotion(expansion, labelAlpha) }
     }
     val selectedPosition = rememberUpdatedState(items.indexOfFirst { it.index == compactTabIndex }.coerceAtLeast(0))
-    val geometry = remember(expandedWidths, motions, density, compactProgress, selectedPosition) {
+    val companionPosition = items.indexOfFirst { it.index == compactCompanionTabIndex }
+    val geometry = remember(expandedWidths, motions, density, compactProgress, selectedPosition, companionPosition) {
         with(density) {
             DockGeometry(expandedWidths, motions, (24.dp.roundToPx() + 14.dp.roundToPx() * 2).toFloat(),
-                4.dp.toPx(), 6.dp.toPx(), compactProgress, selectedPosition)
+                4.dp.toPx(), DockHorizontalPadding.toPx(), compactProgress, CompactDockTabWidth.toPx(),
+                selectedPosition, companionPosition)
         }
     }
     val viewportShape = remember(geometry) { DockViewportShape(horizontalScale = { geometry.width / geometry.reservedWidth }) }
@@ -193,7 +195,7 @@ fun AnimatedBottomBar(
                 items.forEachIndexed { position, item -> key(item.index) {
                     val motion = motions[position]
                     val selected = selectedTabIndex == item.index
-                    val hidden = compact && position != selectedPosition.value
+                    val hidden = compact && !geometry.retained(position)
                     val expansion = remember(motion, compactProgress) {
                         derivedStateOf { motion.expansion.value * (1f - (compactProgress?.value ?: 0f).coerceIn(0f, 1f)) }
                     }
@@ -202,14 +204,14 @@ fun AnimatedBottomBar(
                     }
                     val onClick = {
                         BackgroundWorkCoordinator.cancelNonEssentialWork()
-                        if (compact) onExpand() else onTabSelected(item.index)
+                        onTabSelected(item.index)
                     }
                     Box(
                         modifier = Modifier
                             .then(if (glassInteraction != null) Modifier.clickable(
                                 interactionSource = remember { MutableInteractionSource() }, indication = null,
                                 role = Role.Tab, enabled = !hidden, onClick = onClick
-                            ) else if (hidden) Modifier else Modifier.bouncyClickable(onClick = onClick))
+                            ) else Modifier.bouncyClickable(enabled = !hidden, onClick = onClick))
                             .then(if (hidden) Modifier.clearAndSetSemantics { } else Modifier.semantics { this.selected = selected })
                             .testTag("nav_tab_${item.title.lowercase()}_${if (selected) "active" else "inactive"}"),
                         contentAlignment = Alignment.Center
@@ -246,7 +248,8 @@ fun AnimatedBottomBar(
                                 if (appColors.isDark) appColors.onPrimaryAccent else com.example.ui.theme.LiquidGlass.contrastColor(
                                     appColors.onPrimaryAccent, listOf(appColors.primaryAccent), 4.5f),
                                 if (appColors.isDark) Color.White.copy(alpha = 0.65f) else Color.Black,
-                                modifier = Modifier.align(Alignment.Center))
+                                modifier = Modifier.align(Alignment.Center), hideLabel = compact,
+                                compactProgress = compactProgress)
                         }
                     }
                 } }
@@ -266,37 +269,13 @@ fun AnimatedBottomBar(
                         val tabWidth = geometry.tabWidth(index)
                         val left = geometry.left(index, width.toFloat(), direction)
                         scaleX = tabWidth / tab.width
-                        alpha = if (index == selectedPosition.value) 1f else 1f - geometry.progress
+                        alpha = if (geometry.retained(index)) 1f else 1f - geometry.progress
                         transformOrigin = origin
                         translationX = if (direction == LayoutDirection.Ltr) left else left + tabWidth - tab.width
                         translationY = -1.5f * motions[index].expansion.value * (1f - geometry.progress)
                     }
                 }
             }
-        }
-    }
-}
-
-/** The compact row keeps Search reachable while the selected tab expands navigation. */
-@Composable
-internal fun CompactSearchDockButton(enabled: Boolean, selected: Boolean, onClick: () -> Unit) {
-    val colors = LocalAppColors.current
-    val interaction = if (colors.dynamicGlassEnabled && LocalDynamicGlassEnabled.current) rememberDockGlassInteraction() else null
-    Box(Modifier.size(64.dp).observeDockGlassTouches(interaction)
-        .then(if (enabled) Modifier.clickable(role = Role.Tab, onClick = onClick)
-            .semantics { this.selected = selected } else Modifier.clearAndSetSemantics { })
-        .testTag("compact_dock_search"), contentAlignment = Alignment.Center) {
-        Box(Modifier.matchParentSize().xtremeLiquidGlassBackground(
-            shape = CircleShape, blurRadius = XtremeLiquidGlassDefaults.FloatingDockBlurRadius,
-            surfaceTintAlpha = XtremeLiquidGlassDefaults.FloatingDockTintAlpha,
-            tintColor = colors.primaryAccent, borderWidth = 0.8.dp, elevation = 16.dp, appColors = colors,
-            baseFillAlpha = XtremeLiquidGlassDefaults.FloatingDockDarkFillAlpha, neutralFinish = true,
-            interaction = interaction, innerWhiteTintAlpha = if (colors.isDark) 0f else 0.07f))
-        Box(Modifier.size(52.dp).then(if (selected) Modifier.background(colors.primaryAccent, CircleShape) else Modifier),
-            contentAlignment = Alignment.Center) {
-            Icon(Icons.Default.Search, contentDescription = "Search",
-                tint = if (selected) colors.onPrimaryAccent else if (colors.isDark) Color.White.copy(alpha = 0.65f) else Color.Black,
-                modifier = Modifier.size(24.dp))
         }
     }
 }
@@ -308,15 +287,19 @@ private class DockTabMotion(val expansion: State<Float>, val labelAlpha: State<F
 private class DockGeometry(
     private val expanded: List<Float>, private val motions: List<DockTabMotion>,
     private val collapsed: Float, private val gap: Float, private val padding: Float,
-    private val compactProgress: State<Float>?, private val selectedPosition: State<Int>
+    private val compactProgress: State<Float>?, private val compactTabWidth: Float,
+    private val selectedPosition: State<Int>, private val companionPosition: Int
 ) {
     val reservedWidth = (collapsed * expanded.size + (expanded.maxOrNull()?.minus(collapsed) ?: 0f) +
         gap * (expanded.size - 1).coerceAtLeast(0) + padding * 2).coerceAtLeast(1f)
     val progress: Float get() = (compactProgress?.value ?: 0f).coerceIn(0f, 1f)
+    fun retained(index: Int): Boolean = index == selectedPosition.value || index == companionPosition
+    private fun fullTabWidth(index: Int): Float =
+        (collapsed + (expanded[index] - collapsed) * motions[index].expansion.value).coerceAtLeast(1f)
     fun tabWidth(index: Int): Float {
-        val full = collapsed + (expanded[index] - collapsed) * motions[index].expansion.value
-        val compact = if (index == selectedPosition.value) collapsed else 0f
-        return (full + (compact - full) * progress).coerceAtLeast(0.01f)
+        val full = fullTabWidth(index)
+        val target = if (retained(index)) compactTabWidth else 0f
+        return (full + (target - full) * progress).coerceAtLeast(0.01f)
     }
     val width: Float get() = (expanded.indices.sumOf { tabWidth(it).toDouble() }.toFloat() +
         gap * (1f - progress) * (expanded.size - 1).coerceAtLeast(0) + padding * 2).coerceAtLeast(1f)
@@ -359,11 +342,14 @@ private fun BottomBarTabContent(
     isSelected: Boolean,
     selectedContentColor: Color,
     unselectedContentColor: Color,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    hideLabel: Boolean = false,
+    compactProgress: State<Float>? = null
 ) {
     val gapPx = with(LocalDensity.current) { 6.dp.toPx() }
     val labelDirection = LocalLayoutDirection.current
     val insetDelta = with(LocalDensity.current) { (16.dp.roundToPx() - 14.dp.roundToPx()).toFloat() }
+    val compactInsetDelta = with(LocalDensity.current) { (52.dp.toPx() - CompactDockTabWidth.toPx()) / 2f }
     Layout(
         modifier = modifier,
         content = {
@@ -376,7 +362,8 @@ private fun BottomBarTabContent(
                     .graphicsLayer {
                         // Preserve the selected icon's 1.12x size, coordinated with
                         // the pill instead of running an independent competing spring.
-                        translationX = insetDelta * expansion.value * if (labelDirection == LayoutDirection.Ltr) 1f else -1f
+                        translationX = (insetDelta * expansion.value - compactInsetDelta * (compactProgress?.value ?: 0f)) *
+                            if (labelDirection == LayoutDirection.Ltr) 1f else -1f
                         scaleX = 1f + 0.12f * expansion.value
                         scaleY = scaleX
                     }
@@ -385,7 +372,7 @@ private fun BottomBarTabContent(
             // The label stays composed and measured even when its reveal is fully closed.
             Text(
                 text = item.title,
-                modifier = (if (isSelected) Modifier else Modifier.clearAndSetSemantics { })
+                modifier = (if (isSelected && !hideLabel) Modifier else Modifier.clearAndSetSemantics { })
                     .graphicsLayer {
                         alpha = labelAlpha.value.coerceIn(0f, 1f)
                         translationX = insetDelta * expansion.value * if (labelDirection == LayoutDirection.Ltr) 1f else -1f

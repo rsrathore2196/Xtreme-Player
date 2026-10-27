@@ -506,12 +506,6 @@ fun MainNavigationScaffold(
                 AdaptiveBottomControls(
                     landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE,
                     collapseProgress = dockProgress,
-                    compactSearch = {
-                        if (!isSettingsSubpageOpen && !isPlayerExpanded) {
-                            CompactSearchDockButton(enabled = scrollDock.isCompact, selected = selectedTabIndex == 1,
-                                onClick = { onDockTabSelected(1) })
-                        }
-                    },
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
@@ -556,8 +550,7 @@ fun MainNavigationScaffold(
                             selectedTabIndex = selectedTabIndex,
                             onTabSelected = onDockTabSelected,
                             compactProgress = dockProgress,
-                            compact = scrollDock.isCompact,
-                            onExpand = { scrollDock.expand() }
+                            compact = scrollDock.isCompact
                         )
                     } }
                 )
@@ -714,8 +707,7 @@ fun FloatingPillBottomBar(
     modifier: Modifier = Modifier,
     ambientGlowColor: Color = LocalAppColors.current.primaryAccent,
     compactProgress: State<Float>? = null,
-    compact: Boolean = false,
-    onExpand: () -> Unit = {}
+    compact: Boolean = false
 ) {
     val items = remember {
         listOf(
@@ -733,8 +725,8 @@ fun FloatingPillBottomBar(
         ambientGlowColor = ambientGlowColor,
         compactProgress = compactProgress,
         compact = compact,
-        compactTabIndex = if (selectedTabIndex == 1) 0 else selectedTabIndex,
-        onExpand = onExpand
+        compactTabIndex = 0,
+        compactCompanionTabIndex = 1
     )
 }
 
