@@ -3,6 +3,9 @@ package com.example
 import android.app.Application
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import com.example.data.local.UserProfile
@@ -22,6 +25,21 @@ import org.robolectric.annotation.GraphicsMode
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class EditProfileSheetUiTest {
     @get:Rule val compose = createComposeRule()
+
+    @Test fun closeDiscardsUnsavedEditsEvenWhenTheFormIsInvalid() {
+        var shown by mutableStateOf(true)
+        var dismissed = 0
+        var saved: UserProfile? = null
+        compose.setContent { MaterialTheme {
+            if (shown) EditProfileSheet(UserProfile(name = "Listener", languages = listOf("English")),
+                onDismiss = { dismissed++; shown = false }, onSave = { saved = it })
+        } }
+        compose.onNodeWithTag("edit_profile_name_input").performTextReplacement("")
+        compose.onNodeWithTag("save_profile_button").assertIsNotEnabled()
+        compose.onNodeWithTag("edit_profile_close").assertHasClickAction().performClick()
+        compose.onNodeWithTag("edit_profile_sheet").assertDoesNotExist()
+        compose.runOnIdle { assertNull(saved); assertEquals(1, dismissed) }
+    }
 
     @Test fun backKeepsUnsavedEditsAndOnlySaveSubmits() {
         var dismissed = 0

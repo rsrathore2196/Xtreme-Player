@@ -146,10 +146,14 @@ fun EditProfileSheet(
                             color = textMuted
                         )
                     }
-                    IconButton(onClick = hideKeyboard) {
+                    IconButton(onClick = {
+                        hideKeyboard()
+                        focusManager.clearFocus(force = true)
+                        onDismiss()
+                    }, modifier = Modifier.testTag("edit_profile_close")) {
                         Icon(
                             imageVector = Icons.Default.Clear,
-                            contentDescription = "Hide keyboard",
+                            contentDescription = "Close profile editor",
                             tint = textMuted
                         )
                     }

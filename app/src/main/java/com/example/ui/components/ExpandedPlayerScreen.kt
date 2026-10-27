@@ -217,19 +217,33 @@ internal fun playerSingerLabel(track: MusicTrack): String {
 
 internal data class PlayerCreditsTextColors(val primary: Color, val muted: Color, val heading: Color)
 
+private fun playerArtworkBackground(dominant: Color, vibrant: Color, dynamicBackground: Boolean): Color =
+    if (dynamicBackground) androidx.compose.ui.graphics.lerp(dominant, vibrant, 0.25f).copy(alpha = 1f)
+    else Color(0xff101010)
+
+private fun blackOrWhiteOn(surface: Color): Color {
+    val luminance = surface.luminance()
+    return if ((luminance + 0.05f) / 0.05f >= 1.05f / (luminance + 0.05f)) Color.Black else Color.White
+}
+
+@Composable
+private fun rememberPlayerContentColor(dominant: State<Color>, vibrant: State<Color>, enabled: Boolean): Color {
+    // Only a change between black and white recomposes the content; animated
+    // palette frames stay in the existing backdrop/draw paths.
+    val foreground by remember(dominant, vibrant, enabled) {
+        derivedStateOf { blackOrWhiteOn(playerArtworkBackground(dominant.value, vibrant.value, enabled)) }
+    }
+    return foreground
+}
+
 /** Reuse the backdrop's palette; never recolor the rest of the player or request another image. */
 internal fun playerCreditsTextColors(dominant: Color, vibrant: Color, dynamicBackground: Boolean): PlayerCreditsTextColors {
-    val background = if (dynamicBackground) androidx.compose.ui.graphics.lerp(dominant, vibrant, 0.25f)
-        .copy(alpha = 1f) else Color(0xff101010)
-    fun foreground(surface: Color): Color {
-        val luminance = surface.luminance()
-        return if ((luminance + 0.05f) / 0.05f >= 1.05f / (luminance + 0.05f)) Color.Black else Color.White
-    }
-    val primary = foreground(background)
+    val background = playerArtworkBackground(dominant, vibrant, dynamicBackground)
+    val primary = blackOrWhiteOn(background)
     val muted = com.example.ui.theme.LiquidGlass.contrastColor(
         if (primary == Color.Black) Color(0xff737373) else Color(0xff949494), listOf(background), 4.5f)
     // The existing heading pill adds a white reflection; only its text changes.
-    val heading = foreground(Color.White.copy(alpha = 0.12f).compositeOver(background))
+    val heading = blackOrWhiteOn(Color.White.copy(alpha = 0.12f).compositeOver(background))
     return PlayerCreditsTextColors(primary, muted, heading)
 }
 
@@ -623,7 +637,8 @@ fun ExpandedPlayerScreen(
                                         IconButton(onClick = { onToggleFavorite(track) }) {
                                             Icon(if (uiState.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                                                 contentDescription = "Favorite",
-                                                tint = appColors.textPrimary)
+                                                tint = rememberPlayerContentColor(animatedDominantColor, animatedVibrantColor,
+                                                    appColors.dynamicAlbumGlow && LocalDynamicGlassEnabled.current))
                                         }
                                     }
                                 PlayerSyncedLyrics(
@@ -635,7 +650,7 @@ fun ExpandedPlayerScreen(
                                     onSeekTo = onSeekTo,
                                     dominantColor = animatedDominantColor,
                                     accentColor = animatedAccentColor,
-                                    isDark = isDark,
+                                    vibrantColor = animatedVibrantColor,
                                     onRetry = onRetryLyrics,
                                     showRomanization = lyricsTextState.active == com.example.data.remote.LyricsTextTransformer.Mode.ROMANIZE,
                                     showTranslation = lyricsTextState.active == com.example.data.remote.LyricsTextTransformer.Mode.TRANSLATE,
@@ -929,7 +944,8 @@ fun ExpandedPlayerScreen(
                                 Icon(
                                     imageVector = if (uiState.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                                     contentDescription = "Favorite",
-                                    tint = appColors.textPrimary,
+                                    tint = rememberPlayerContentColor(animatedDominantColor, animatedVibrantColor,
+                                        appColors.dynamicAlbumGlow && LocalDynamicGlassEnabled.current),
                                     modifier = Modifier.size(20.dp)
                                 )
                             }
@@ -1158,6 +1174,7 @@ fun ExpandedPlayerScreen(
 
                             Surface(
                                 onClick = {
+                                    com.example.performance.BackgroundWorkCoordinator.navigationInteraction()
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                     if (!showLyrics) isFlipped = false
                                     showLyrics = !showLyrics
@@ -1509,7 +1526,8 @@ fun ExpandedPlayerScreen(
                                     Icon(
                                         imageVector = if (uiState.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                                         contentDescription = "Favorite",
-                                        tint = appColors.textPrimary,
+                                        tint = rememberPlayerContentColor(animatedDominantColor, animatedVibrantColor,
+                                            appColors.dynamicAlbumGlow && LocalDynamicGlassEnabled.current),
                                         modifier = Modifier.size(24.dp)
                                     )
                                 }
@@ -1524,7 +1542,7 @@ fun ExpandedPlayerScreen(
                                 onSeekTo = onSeekTo,
                                 dominantColor = animatedDominantColor,
                                 accentColor = animatedAccentColor,
-                                isDark = isDark,
+                                vibrantColor = animatedVibrantColor,
                                 onRetry = onRetryLyrics,
                                 showRomanization = lyricsTextState.active == com.example.data.remote.LyricsTextTransformer.Mode.ROMANIZE,
                                 showTranslation = lyricsTextState.active == com.example.data.remote.LyricsTextTransformer.Mode.TRANSLATE,
@@ -1776,7 +1794,8 @@ fun ExpandedPlayerScreen(
                                     Icon(
                                         imageVector = if (uiState.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                                         contentDescription = "Favorite",
-                                        tint = appColors.textPrimary,
+                                        tint = rememberPlayerContentColor(animatedDominantColor, animatedVibrantColor,
+                                            appColors.dynamicAlbumGlow && LocalDynamicGlassEnabled.current),
                                         modifier = Modifier.size(24.dp)
                                     )
                                 }
@@ -2033,6 +2052,7 @@ fun ExpandedPlayerScreen(
 
                 Surface(
                     onClick = {
+                        com.example.performance.BackgroundWorkCoordinator.navigationInteraction()
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         if (!showLyrics) isFlipped = false
                         showLyrics = !showLyrics
@@ -2378,7 +2398,7 @@ private fun PlayerSyncedLyrics(
     onSeekTo: (Long) -> Unit,
     dominantColor: State<Color>,
     accentColor: State<Color>,
-    isDark: Boolean,
+    vibrantColor: State<Color>,
     onRetry: () -> Unit,
     showRomanization: Boolean,
     showTranslation: Boolean,
@@ -2386,8 +2406,8 @@ private fun PlayerSyncedLyrics(
     lyricsOffsetMs: Int = 0,
     modifier: Modifier
 ) {
-    // Read palette animation in the lyric draw cache, not in the entire lyrics
-    // composition: a 650ms background fade must not rebuild every visible row.
+    val contentColor = rememberPlayerContentColor(dominantColor, vibrantColor,
+        LocalAppColors.current.dynamicAlbumGlow && LocalDynamicGlassEnabled.current)
     SyncedLyricsView(
         lyrics = lyrics,
         currentPositionMs = currentPositionMs,
@@ -2396,7 +2416,7 @@ private fun PlayerSyncedLyrics(
         currentPositionProvider = currentPositionProvider,
         onSeekTo = onSeekTo,
         accentColorState = accentColor,
-        isDark = isDark,
+        isDark = contentColor == Color.White,
         onRetry = onRetry,
         showRomanization = showRomanization,
         showTranslation = showTranslation,

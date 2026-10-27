@@ -198,10 +198,13 @@ fun SyncedLyricsView(
         }
     }
 
-    val timeline by androidx.compose.runtime.key(lines, isSynced) {
-        androidx.compose.runtime.produceState<LyricLineTimeline?>(null) {
-            if (isSynced) value = withContext(AppDispatchers.CpuBounded) { LyricLineTimeline.from(lines) }
-        }
+    // A movable key hashes the entire document (including every word/syllable)
+    // on Main. A remembered state keeps the same reset/cancellation behavior
+    // without that recursive work during the incoming composition.
+    val timelineState = remember(lines, isSynced) { mutableStateOf<LyricLineTimeline?>(null) }
+    val timeline by timelineState
+    LaunchedEffect(timelineState) {
+        if (isSynced) timelineState.value = withContext(AppDispatchers.CpuBounded) { LyricLineTimeline.from(lines) }
     }
     val activeLineIndex by remember(lyrics?.trackId, lines, isSynced, lyricsOffsetMs, timeline) {
         derivedStateOf {
@@ -517,6 +520,9 @@ private fun KaraokeLineItem(
         animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing),
         label = "lyric_glow_focus"
     )
+    val needsRevealGeometry by remember(isActive, glowFocus) {
+        derivedStateOf { isActive || glowFocus.value > 0f }
+    }
 
     if (!isSynced) {
         Text(
@@ -550,13 +556,16 @@ private fun KaraokeLineItem(
     val density = LocalDensity.current
     val broadRadius = with(density) { 3.dp.toPx() }
     val coreRadius = with(density) { 1.dp.toPx() }
-    val wordRuns = remember(textLayoutResult, measuredWords) {
-        textLayoutResult?.let { buildWordRuns(it, measuredWords) } ?: emptyList()
+    // Upcoming/inactive rows draw plain text. Preparing their glyph bounds and
+    // shaders during entrance/reflow cannot affect any visible reveal.
+    val wordRuns = remember(textLayoutResult, measuredWords, needsRevealGeometry) {
+        if (needsRevealGeometry) textLayoutResult?.let { buildWordRuns(it, measuredWords) } ?: emptyList()
+        else emptyList()
     }
     val revealUnits = remember(wordRuns) { wordRuns.flatMap { it.reveals } }
-    val fallbackRegions = remember(textLayoutResult, revealUnits) {
+    val fallbackRegions = remember(textLayoutResult, revealUnits, needsRevealGeometry) {
         val layout = textLayoutResult
-        if (layout == null || revealUnits.isNotEmpty()) emptyList() else
+        if (!needsRevealGeometry || layout == null || revealUnits.isNotEmpty()) emptyList() else
             (0 until layout.lineCount).map { index ->
                 RevealRegion(Rect(layout.getLineLeft(index), layout.getLineTop(index), layout.getLineRight(index), layout.getLineBottom(index)),
                     layout.getParagraphDirection(layout.getLineStart(index)) == ResolvedTextDirection.Rtl)
@@ -600,11 +609,12 @@ private fun KaraokeLineItem(
             val feather = 8.dp.toPx()
             val accent = accentColorState?.value ?: accentColor
             val glowColor = lerp(activeTextColor, accent.takeIf { it.alpha > 0f } ?: activeTextColor, 0.25f)
-            val revealPaint = RevealPaint(activeTextColor, glowColor, broadRadius, glyphGlows?.takeIf { layout != null && it.matches(layout) })
+            val revealPaint = if (needsRevealGeometry) RevealPaint(activeTextColor, glowColor, broadRadius,
+                glyphGlows?.takeIf { layout != null && it.matches(layout) }) else null
             onDrawWithContent {
                 // Read focus only while drawing, so the outgoing line's halo fades without relaying out text.
                 val focus = glowFocus.value
-                if ((!isActive && focus <= 0f) || layout == null) {
+                if ((!isActive && focus <= 0f) || layout == null || revealPaint == null) {
                     drawContent()
                     return@onDrawWithContent
                 }
