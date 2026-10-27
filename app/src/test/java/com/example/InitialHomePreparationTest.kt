@@ -3,6 +3,7 @@ package com.example
 import android.app.Application
 import android.os.Looper
 import androidx.lifecycle.ViewModelStore
+import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.cache.HomeCardCache
 import com.example.data.cache.SavedHomeCards
@@ -11,6 +12,7 @@ import com.example.data.local.UserProfilePreferences
 import com.example.data.model.MusicTrack
 import com.example.data.repository.MusicRepository
 import com.example.performance.BackgroundWorkCoordinator
+import com.example.performance.AppDispatchers
 import com.example.performance.StartupGroup
 import com.example.performance.StartupStatus
 import com.example.performance.StartupTask
@@ -19,6 +21,9 @@ import com.example.recommendation.UnifiedRecommendationEngine
 import com.example.ui.viewmodel.HomeViewModel
 import com.example.ui.viewmodel.SectionState
 import java.time.Duration
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.Executor
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
@@ -27,6 +32,8 @@ import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.asExecutor
+import kotlinx.coroutines.flow.first
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -46,6 +53,28 @@ class InitialHomePreparationTest {
         Dispatchers.setMain(UnconfinedTestDispatcher())
         val app = ApplicationProvider.getApplicationContext<Application>()
         val store = ViewModelStore()
+        val historyQueries = CopyOnWriteArrayList<String>()
+        val historyReadOnMain = AtomicBoolean()
+        val database = Room.inMemoryDatabaseBuilder(app, com.example.data.local.MusicDatabase::class.java)
+            .setQueryExecutor(AppDispatchers.Database.asExecutor())
+            .setTransactionExecutor(AppDispatchers.Io.asExecutor())
+            .setQueryCallback({ sql, _ ->
+                if (sql.trimStart().startsWith("SELECT", true) && sql.contains("listening_events", true)) {
+                    historyQueries += sql
+                    if (Looper.myLooper() == Looper.getMainLooper()) historyReadOnMain.set(true)
+                }
+            }, Executor { it.run() }).build()
+        val databaseField = com.example.data.local.MusicDatabase::class.java.getDeclaredField("INSTANCE").apply { isAccessible = true }
+        val previousDatabase = databaseField.get(null)
+        databaseField.set(null, database)
+        fun assertNoDuplicateHistoryReads() {
+            val queries = historyQueries.map { it.replace(Regex("\\s+"), " ").trim().lowercase() }
+            assertTrue("Home must restore the coherent snapshot", queries.any { it.startsWith("select totals.total, recent.*") })
+            assertTrue("Home must reuse snapshot metadata instead of fetching the same events again: $queries",
+                queries.none { it.startsWith("select * from listening_events where eventtype = 'actual_play' order by") ||
+                    it.startsWith("select * from listening_events where id in") })
+            assertFalse("History reads must remain off Main", historyReadOnMain.get())
+        }
         var player: PlaybackManager? = null
         val cache = HomeCardCache(app)
         val coordinator = BackgroundWorkCoordinator
@@ -92,6 +121,7 @@ class InitialHomePreparationTest {
                         played, "saved-session-$index", 30_000L, played.durationMs, "ACTUAL_PLAY"))
                 }
             }
+            historyQueries.clear()
             val repository = MusicRepository(app)
             player = PlaybackManager(app, repository)
             val home = HomeViewModel(repository, player, app)
@@ -135,16 +165,17 @@ class InitialHomePreparationTest {
             assertFalse(home.eraCard.value.isLoading)
             assertFalse(home.recommendationCards.value.quick.isLoading)
             assertNotNull(home.heroSeedTrack.value)
+            assertNoDuplicateHistoryReads()
             coordinator.initialContentDrawn()
             repeat(3) { coordinator.frame(5, 10) }
             withTimeout(2_000L) { coordinator.awaitInitialPresentationSettled() }
             assertTrue(coordinator.startupReadiness.value.complete)
             val completedPresentation = coordinator.startupReadiness.value
             val played = track("first-real-play")
-            val database = com.example.data.local.MusicDatabase.getDatabase(app)
             database.musicDao().insertOrUpdateTrack(com.example.data.local.TrackEntity.fromMusicTrack(played))
-            database.listeningEventDao().insertListeningEvent(com.example.data.local.ListeningEventEntity.fromTrack(
-                played, "real-session", 30_000L, played.durationMs, "ACTUAL_PLAY"))
+            val playedEvent = com.example.data.local.ListeningEventEntity.fromTrack(
+                played, "real-session", 30_000L, played.durationMs, "ACTUAL_PLAY")
+            val eventId = database.listeningEventDao().insertListeningEvent(playedEvent)
             withTimeout(3_000L) {
                 while (home.userMode.value != com.example.recommendation.HomeUserMode.EXISTING_USER) {
                     shadowOf(Looper.getMainLooper()).idle()
@@ -153,6 +184,17 @@ class InitialHomePreparationTest {
             }
             assertSame("New history must not restart startup or the modal", completedPresentation,
                 coordinator.startupReadiness.value)
+            @Suppress("UNCHECKED_CAST")
+            val liveEvents = HomeViewModel::class.java.getDeclaredField("actualPlays").apply { isAccessible = true }
+                .get(home) as kotlinx.coroutines.flow.StateFlow<List<com.example.data.local.ListeningEventEntity>>
+            withTimeout(3_000L) { liveEvents.first { events -> events.any { it.id == eventId } } }
+            val milestone = playedEvent.copy(id = eventId, playedDurationMs = 60_000, completionRatio = 1f / 3f)
+            database.listeningEventDao().insertListeningEvent(milestone)
+            val updated = withTimeout(3_000L) {
+                liveEvents.first { events -> events.any { it.id == eventId && it.playedDurationMs == 60_000L } }
+            }
+            assertEquals(milestone, updated.first { it.id == eventId })
+            assertNoDuplicateHistoryReads()
         } finally {
             coordinator.foreground(false)
             store.clear(); player?.release(); cache.close()
@@ -161,6 +203,8 @@ class InitialHomePreparationTest {
             (BackgroundWorkCoordinator::class.java.getDeclaredField("initialPresentationPending")
                 .apply { isAccessible = true }.get(null) as java.util.concurrent.atomic.AtomicBoolean).set(false)
             Dispatchers.resetMain()
+            database.close()
+            databaseField.set(null, previousDatabase)
         }
     }
 }

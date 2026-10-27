@@ -141,7 +141,6 @@ class HomeViewModel(
     private var savedSignal: String? = initialCards?.signal
     private var savedGeneration = initialCards?.generation ?: -1L
     private var restoredCatalogTracks = initialCards?.catalog
-    private val lastEventStamps = mutableMapOf<Long, com.example.data.local.ActualPlayStamp>()
     private val retainedEvents = mutableMapOf<Long, ListeningEventEntity>()
     private fun profileKey(profile: UserProfile = _userProfile.value) = "${profile.countryCode}|${profile.languages.joinToString(",")}"
     private val cachedHero = MutableStateFlow(initialCards?.history?.tracks?.firstOrNull() ?: initialCards?.catalog?.firstOrNull())
@@ -187,11 +186,11 @@ class HomeViewModel(
             var previousIds: Set<Long>? = null
             listeningEventDao.observeActualPlaySnapshot().distinctUntilChanged()
                 .flowOn(dataDispatcher).collect { snapshot ->
-                val allStamps = snapshot.mapNotNull { it.stamp }
-                val recentLimit = initialRecentEventCount(allStamps.map { it.trackId })
-                val stamps = allStamps.take(recentLimit)
+                val allEvents = snapshot.mapNotNull { it.event }
+                val recentLimit = initialRecentEventCount(allEvents.map { it.trackId })
+                val events = allEvents.take(recentLimit)
                 val count = snapshot.first().total
-                val ids = stamps.mapTo(mutableSetOf()) { it.id }
+                val ids = events.mapTo(mutableSetOf()) { it.id }
                 val rebuildOlder = previousCount >= 0 && (count < previousCount || count > previousCount + 1 ||
                     count == previousCount && previousIds != ids || count != previousCount && previousIds == ids ||
                     historicalLoadFailed && count != previousCount)
@@ -200,33 +199,23 @@ class HomeViewModel(
                 // Older events remain available to the independent historical reader.
                 // Only the visible recent window is reactive. Older personalization
                 // data is loaded separately, in cancellable keyset batches.
-                if (reloadHistory) {
-                    val history = withContext(dataDispatcher) {
-                        BackgroundWorkCoordinator.traceWork("Home recent restore") {
-                            listeningEventDao.getActualPlays(recentLimit)
-                        }
-                    }
-                    retainedEvents.clear()
-                    history.forEach { retainedEvents[it.id] = it }
-                    lastEventStamps.clear()
-                }
-                val changed = if (reloadHistory) emptyList() else stamps.filter { lastEventStamps[it.id] != it }.map { it.id }
+                // The coherent snapshot already contains every field. Reuse its
+                // rows for restores and milestones instead of reading them again.
+                val changed = if (reloadHistory) events else events.filter { retainedEvents[it.id] != it }
                 // Unrelated Room invalidations do not change listening evidence.
                 if (!reloadHistory && changed.isEmpty()) return@collect
-                val pages = changed.chunked(900)
-                val rows = withContext(dataDispatcher) { pages.flatMap { listeningEventDao.getEventsByIds(it) } }
-                rows.forEach { retainedEvents[it.id] = it }
+                if (reloadHistory) retainedEvents.clear()
+                changed.forEach { retainedEvents[it.id] = it }
                 retainedEvents.keys.retainAll(ids)
                 previousIds = ids
                 previousCount = count
-                lastEventStamps.clear(); stamps.forEach { lastEventStamps[it.id] = it }
                 emit(withContext(workerDispatcher) { retainedEvents.values.sortedWith(compareByDescending<ListeningEventEntity> { it.timestamp }.thenByDescending { it.id }).take(300) })
                 // Count covers the whole database, not just the recent window.
                 // Never infer a new user from a default/failed empty StateFlow.
-                _userMode.value = HomeUserMode.confirmed(count, retainedEvents.isNotEmpty() || stamps.isNotEmpty())
+                _userMode.value = HomeUserMode.confirmed(count, retainedEvents.isNotEmpty() || events.isNotEmpty())
                 // Visible history is ready independently of long-term preparation.
                 historyReadyForRanking.value = true
-                if (stamps.isEmpty()) { cachedHero.value = null; cachedHistory.value = null }
+                if (events.isEmpty()) { cachedHero.value = null; cachedHistory.value = null }
                 eventsLoaded.complete(Unit)
                 if (rebuildOlder) historicalReload.update { it + 1L }
             }

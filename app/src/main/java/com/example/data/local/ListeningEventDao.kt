@@ -36,8 +36,8 @@ data class ActualPlayStamp(val id: Long, val trackId: String, val timestamp: Lon
     val playedDurationMs: Long, val trackDurationMs: Long, val completionRatio: Float,
     val completed: Boolean, val skipped: Boolean, val liked: Boolean, val metadata: String)
 
-/** Count and recent identities come from one SQLite read, including an empty database. */
-data class ActualPlaySnapshotRow(val total: Int, @Embedded val stamp: ActualPlayStamp?)
+/** Count and complete recent events come from one SQLite read, including an empty database. */
+data class ActualPlaySnapshotRow(val total: Int, @Embedded val event: ListeningEventEntity?)
 
 @Dao
 interface ListeningEventDao {
@@ -66,10 +66,7 @@ interface ListeningEventDao {
     @Query("""
         SELECT totals.total, recent.* FROM
         (SELECT COUNT(*) AS total FROM listening_events WHERE eventType = 'ACTUAL_PLAY') AS totals
-        LEFT JOIN (SELECT id, trackId, timestamp, playedDurationMs, trackDurationMs,
-            completionRatio, completed, skipped, liked,
-            artistId || '|' || artistName || '|' || album || '|' || genre || '|' || language || '|' || sessionId || '|' || source AS metadata
-            FROM listening_events WHERE eventType = 'ACTUAL_PLAY'
+        LEFT JOIN (SELECT * FROM listening_events WHERE eventType = 'ACTUAL_PLAY'
             ORDER BY timestamp DESC, id DESC LIMIT 300) AS recent ON 1 = 1
         ORDER BY recent.timestamp DESC, recent.id DESC
     """)
