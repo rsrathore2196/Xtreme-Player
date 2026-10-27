@@ -33,7 +33,9 @@ data class AppThemeColors(
     val dividerColor: Color,
     val dynamicGlassEnabled: Boolean = true,
     val dynamicAlbumGlow: Boolean = true,
-    val highContrastTypography: Boolean = false
+    val highContrastTypography: Boolean = false,
+    val neutralSurfaces: Boolean = false,
+    val settingsSurface: Boolean = false
 ) {
     val heroGradient: Brush
         get() = Brush.linearGradient(listOf(primaryAccent, secondaryAccent))
@@ -60,77 +62,9 @@ fun contrastingContentColor(background: Color): Color {
     return if (darkContrast >= lightContrast) dark else Color.White
 }
 
-// Night / Dark Theme: Neutral Studio Night - Deep Obsidian Charcoal & Eye-Catching Electric Azure Blue
-val DarkAppColors = AppThemeColors(
-    isDark = true,
-    screenBackground = Brush.verticalGradient(
-        colors = listOf(
-            Color(0xFF0D0E12),
-            Color(0xFF08090C),
-            Color(0xFF040406)
-        )
-    ),
-    scaffoldBackground = Color(0xFF0D0E12),
-    cardBackground = Color(0xFF15161C),
-    cardBackgroundElevated = Color(0xFF1C1D24),
-    cardBorder = Color(0xFF282932),
-    textPrimary = Color(0xFFF8FAFC),
-    textSecondary = Color(0xFF94A3B8),
-    textMuted = Color(0xFF64748B),
-    primaryAccent = Color(0xFF00D4FF),
-    secondaryAccent = Color(0xFF38BDF8),
-    bottomBarBackground = Color(0xFF0D0E12),
-    bottomBarIndicator = Color(0xFF22242D),
-    bottomBarSelectedIcon = Color(0xFF00D4FF),
-    bottomBarUnselectedIcon = Color(0xFF64748B),
-    miniPlayerBackground = Brush.horizontalGradient(
-        colors = listOf(
-            Color(0xFF181920),
-            Color(0xFF121318)
-        )
-    ),
-    miniPlayerBorder = Color(0xFF282932),
-    inputBackground = Color(0xFF121318),
-    chipBackground = Color(0xFF181920),
-    chipBorder = Color(0xFF282932),
-    dividerColor = Color(0xFF20222A)
-)
-
-// Light Theme: Beautiful White Background with Blue Color Combination
-val LightAppColors = AppThemeColors(
-    isDark = false,
-    screenBackground = Brush.verticalGradient(
-        colors = listOf(
-            Color(0xFFFFFFFF), // Pure Crisp White
-            Color(0xFFF1F6FD), // Soft Frosted Blue
-            Color(0xFFE2EDFB)  // Sky Pastel Blue
-        )
-    ),
-    scaffoldBackground = Color(0xFFF8FAFD),
-    cardBackground = Color(0xFFFFFFFF),
-    cardBackgroundElevated = Color(0xFFF0F6FF),
-    cardBorder = Color(0xFFCBD5E1), // Visible, crisp border for light mode shapes
-    textPrimary = Color(0xFF0F172A), // Deep slate / navy high-contrast
-    textSecondary = Color(0xFF1E40AF), // Rich royal blue
-    textMuted = Color(0xFF64748B), // Slate muted
-    primaryAccent = Color(0xFF0284C7), // Vibrant Ocean Blue
-    secondaryAccent = Color(0xFF2563EB), // Deep Royal Blue
-    bottomBarBackground = Color(0xFFFFFFFF),
-    bottomBarIndicator = Color(0xFFDBEAFE),
-    bottomBarSelectedIcon = Color(0xFF0284C7),
-    bottomBarUnselectedIcon = Color(0xFF64748B),
-    miniPlayerBackground = Brush.horizontalGradient(
-        colors = listOf(
-            Color(0xFFFFFFFF),
-            Color(0xFFEFF6FF)
-        )
-    ),
-    miniPlayerBorder = Color(0xFF94A3B8),
-    inputBackground = Color(0xFFF1F5F9),
-    chipBackground = Color(0xFFF0F6FF),
-    chipBorder = Color(0xFFCBD5E1),
-    dividerColor = Color(0xFFE2E8F0)
-)
+// Defaults use exactly the same resolver as saved presets and their previews.
+val DarkAppColors = resolveAppThemeColors(true, com.example.data.local.ThemePresets.StudioNight.toCustomThemeState())
+val LightAppColors = resolveAppThemeColors(false, com.example.data.local.ThemePresets.CleanDay.toCustomThemeState())
 
 val LocalAppColors = compositionLocalOf { DarkAppColors }
 

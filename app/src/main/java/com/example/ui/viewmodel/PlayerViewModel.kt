@@ -270,8 +270,8 @@ class PlayerViewModel(
     private val _settingsReady = MutableStateFlow(preparedSettings != null)
     val settingsReady: StateFlow<Boolean> = _settingsReady.asStateFlow()
     private val initialThemeMode = initialSettings.themeMode
-    private val _themeMode = MutableStateFlow(initialThemeMode)
-    val themeMode: StateFlow<com.example.data.local.AppThemeMode> = _themeMode.asStateFlow()
+    private val _themeSelection = MutableStateFlow(com.example.data.local.ThemeSelection(initialThemeMode, initialSettings.customTheme))
+    val themeSelection: StateFlow<com.example.data.local.ThemeSelection> = _themeSelection.asStateFlow()
 
     private val _textScale = MutableStateFlow(initialSettings.textScale)
     val textScale: StateFlow<Float> = _textScale.asStateFlow()
@@ -406,29 +406,17 @@ class PlayerViewModel(
     val isDarkMode: StateFlow<Boolean> = _isDarkMode.asStateFlow()
 
     fun setThemeMode(mode: com.example.data.local.AppThemeMode) {
-        _themeMode.value = mode
-        com.example.data.local.ThemePreferences.setThemeMode(application, mode)
-        val isDark = when (mode) {
-            com.example.data.local.AppThemeMode.DARK -> true
-            com.example.data.local.AppThemeMode.LIGHT -> false
-            com.example.data.local.AppThemeMode.SYSTEM -> {
-                val nightModeFlags = application.resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK
-                nightModeFlags == android.content.res.Configuration.UI_MODE_NIGHT_YES
-            }
-        }
-        _isDarkMode.value = isDark
-        val defaultPreset = if (isDark) {
-            com.example.data.local.ThemePresets.StudioNight
-        } else {
-            com.example.data.local.ThemePresets.CleanDay
-        }
-        val updatedState = defaultPreset.toCustomThemeState()
-        _customThemeState.value = updatedState
-        com.example.data.local.ThemePreferences.saveCustomThemeState(application, updatedState)
+        val palette = com.example.data.local.ThemePreferences.setThemeMode(application, mode)
+        _isDarkMode.value = com.example.data.local.ThemePreferences.isDark(application, mode)
+        _themeSelection.value = com.example.data.local.ThemeSelection(mode, palette)
     }
 
     fun setResolvedDarkMode(isDark: Boolean) {
         _isDarkMode.value = isDark
+        if (_themeSelection.value.mode == com.example.data.local.AppThemeMode.SYSTEM) {
+            val palette = com.example.data.local.ThemePreferences.getThemeForDarkMode(application, isDark)
+            _themeSelection.value = _themeSelection.value.copy(palette = palette)
+        }
     }
 
     fun setDarkMode(enabled: Boolean) {
@@ -436,7 +424,7 @@ class PlayerViewModel(
     }
 
     fun toggleDarkMode() {
-        when (_themeMode.value) {
+        when (_themeSelection.value.mode) {
             com.example.data.local.AppThemeMode.SYSTEM -> {
                 setThemeMode(if (_isDarkMode.value) com.example.data.local.AppThemeMode.LIGHT else com.example.data.local.AppThemeMode.DARK)
             }
@@ -445,22 +433,17 @@ class PlayerViewModel(
         }
     }
 
-    private val _customThemeState = MutableStateFlow(initialSettings.customTheme)
-    val customThemeState: StateFlow<com.example.data.local.CustomThemeState> = _customThemeState.asStateFlow()
-
     fun updateCustomThemeState(newState: com.example.data.local.CustomThemeState) {
-        _customThemeState.value = newState
         com.example.data.local.ThemePreferences.saveCustomThemeState(application, newState)
+        _themeSelection.value = _themeSelection.value.copy(palette = newState)
     }
 
     fun applyThemePreset(preset: com.example.data.local.AppThemePreset) {
-        val targetMode = if (preset.isDark) com.example.data.local.AppThemeMode.DARK else com.example.data.local.AppThemeMode.LIGHT
-        _themeMode.value = targetMode
-        com.example.data.local.ThemePreferences.setThemeMode(application, targetMode)
+        val mode = if (preset.isDark) com.example.data.local.AppThemeMode.DARK else com.example.data.local.AppThemeMode.LIGHT
+        val palette = preset.toCustomThemeState()
+        com.example.data.local.ThemePreferences.saveThemeSelection(application, mode, palette)
         _isDarkMode.value = preset.isDark
-        val state = preset.toCustomThemeState()
-        _customThemeState.value = state
-        com.example.data.local.ThemePreferences.saveCustomThemeState(application, state)
+        _themeSelection.value = com.example.data.local.ThemeSelection(mode, palette)
     }
 
     private val currentPlayingTrackFlow = playbackManager.uiState
@@ -544,14 +527,13 @@ class PlayerViewModel(
             try {
                 val settings = (application as? com.example.XtremeMusicApp)?.loadStartupSettings()
                     ?: com.example.data.local.StartupSettings.read(application)
-                _themeMode.value = settings.themeMode
+                _themeSelection.value = com.example.data.local.ThemeSelection(settings.themeMode, settings.customTheme)
                 _isDarkMode.value = when (settings.themeMode) {
                     com.example.data.local.AppThemeMode.DARK -> true
                     com.example.data.local.AppThemeMode.LIGHT -> false
                     com.example.data.local.AppThemeMode.SYSTEM -> application.resources.configuration.uiMode and
                         android.content.res.Configuration.UI_MODE_NIGHT_MASK == android.content.res.Configuration.UI_MODE_NIGHT_YES
                 }
-                _customThemeState.value = settings.customTheme
                 _textScaleIndex.value = settings.textSizeIndex
                 _textScale.value = settings.textScale
                 _uiScaleIndex.value = settings.uiSizeIndex

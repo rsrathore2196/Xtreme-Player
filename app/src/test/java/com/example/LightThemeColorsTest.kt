@@ -52,10 +52,10 @@ class LightThemeColorsTest {
         assertTrue(LiquidGlass.lightSurfaceColors(prepared, false).all { it.red > it.blue })
     }
 
-    @Test fun darkAndAmoledPalettesRemainTheSameObjects() {
+    @Test fun settingsFinishDoesNotChangeDarkAndAmoledPaletteValues() {
         ThemePresets.darkPresets.forEach { preset ->
             val colors = resolveAppThemeColors(true, preset.toCustomThemeState())
-            assertSame(colors, LiquidGlass.settingsColors(colors))
+            assertEquals(colors.copy(settingsSurface = true), LiquidGlass.settingsColors(colors))
             assertEquals(colors.primaryAccent, LiquidGlass.lightContentColor(colors, colors.primaryAccent))
         }
     }

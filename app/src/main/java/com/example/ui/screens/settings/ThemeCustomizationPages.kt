@@ -28,6 +28,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
@@ -55,6 +56,7 @@ import com.example.ui.theme.AppThemeColors
 import com.example.ui.theme.LocalAppColors
 import com.example.ui.theme.liquidGlassCard
 import com.example.ui.theme.liquidGlassPill
+import com.example.ui.theme.resolveAppThemeColors
 import java.util.Locale
 import kotlin.math.roundToInt
 import kotlin.math.atan2
@@ -95,14 +97,16 @@ fun ThemePresetsPage(state: CustomThemeState, onApplyPreset: (AppThemePreset) ->
             verticalArrangement = Arrangement.spacedBy(12.dp)) {
             items(presets, key = { it.id }, contentType = { "theme_preset" }) { preset ->
                 val selected = state.presetId == preset.id && state.currentThemeName == preset.name
-                val accent = remember(preset) { color(preset.accentColorHex) }
-                val canvas = remember(preset) { color(preset.canvasColorHex) }
-                val card = remember(preset) { color(preset.cardColorHex) }
-                val foreground = remember(preset) { color(preset.textPrimaryHex) }
+                val preview = remember(preset) { resolveAppThemeColors(preset.isDark, preset.toCustomThemeState()) }
+                val accent = preview.primaryAccent
+                val canvas = preview.scaffoldBackground
+                val card = preview.cardBackground
+                val foreground = preview.textPrimary
                 Column(Modifier.fillMaxWidth().liquidGlassCard(colors, shape = RoundedCornerShape(20.dp))
                     .border(if (selected) 2.dp else 1.dp, if (selected) colors.primaryAccent else colors.cardBorder,
                         RoundedCornerShape(20.dp)).clickable { onApplyPreset(preset) }.padding(12.dp)) {
-                    Box(Modifier.fillMaxWidth().height(138.dp).clip(RoundedCornerShape(14.dp)).background(canvas)) {
+                    Box(Modifier.fillMaxWidth().height(138.dp).clip(RoundedCornerShape(14.dp)).background(canvas)
+                        .testTag("theme_preview_${preset.id}")) {
                         Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                 Box(Modifier.size(20.dp).clip(CircleShape).background(accent))
@@ -111,7 +115,7 @@ fun ThemePresetsPage(state: CustomThemeState, onApplyPreset: (AppThemePreset) ->
                             Row(Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(12.dp)).background(card).padding(10.dp),
                                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                 Box(Modifier.size(38.dp).clip(RoundedCornerShape(10.dp))
-                                    .background(Brush.linearGradient(listOf(accent, color(preset.secondaryAccentHex)))))
+                                    .background(Brush.linearGradient(listOf(accent, preview.secondaryAccent))))
                                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                     Box(Modifier.fillMaxWidth(0.9f).height(5.dp).clip(CircleShape).background(foreground.copy(alpha = 0.8f)))
                                     Box(Modifier.fillMaxWidth(0.6f).height(4.dp).clip(CircleShape).background(foreground.copy(alpha = 0.3f)))

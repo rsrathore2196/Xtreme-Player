@@ -144,15 +144,7 @@ private fun ThemesAppUiOverview(
     val appColors = LocalAppColors.current
     val cardBg = appColors.cardBackground
     val cardBorder = appColors.cardBorder
-    val accentColor = remember(customThemeState, appColors.primaryAccent, appColors.isDark) {
-        if (!appColors.isDark) appColors.primaryAccent else customThemeState?.accentColorHex?.let { hex ->
-            try {
-                Color(android.graphics.Color.parseColor(hex.trim()))
-            } catch (_: Exception) {
-                appColors.primaryAccent
-            }
-        } ?: appColors.primaryAccent
-    }
+    val accentColor = appColors.primaryAccent
     val dividerColor = appColors.dividerColor
 
     var showMiniHeart by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(true) }
@@ -174,7 +166,7 @@ private fun ThemesAppUiOverview(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = true)
+                .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = false)
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -182,13 +174,13 @@ private fun ThemesAppUiOverview(
                         modifier = Modifier
                             .size(30.dp)
                             .clip(CircleShape)
-                            .background(accentColor.copy(alpha = 0.12f)),
+                            .background(appColors.cardBackgroundElevated),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             imageVector = Icons.Default.Palette,
                             contentDescription = null,
-                            tint = LiquidGlass.lightContentColor(appColors, accentColor),
+                            tint = appColors.textSecondary,
                             modifier = Modifier.size(16.dp)
                         )
                     }
@@ -269,7 +261,7 @@ private fun ThemesAppUiOverview(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = true)
+                .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = false)
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -277,13 +269,13 @@ private fun ThemesAppUiOverview(
                         modifier = Modifier
                             .size(30.dp)
                             .clip(CircleShape)
-                            .background(accentColor.copy(alpha = 0.12f)),
+                            .background(appColors.cardBackgroundElevated),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             imageVector = Icons.Default.Tv,
                             contentDescription = null,
-                            tint = LiquidGlass.lightContentColor(appColors, accentColor),
+                            tint = appColors.textSecondary,
                             modifier = Modifier.size(16.dp)
                         )
                     }
@@ -319,7 +311,7 @@ private fun ThemesAppUiOverview(
                         Icon(
                             imageVector = Icons.Default.Favorite,
                             contentDescription = null,
-                            tint = LiquidGlass.lightContentColor(appColors, accentColor),
+                            tint = appColors.textSecondary,
                             modifier = Modifier.size(18.dp)
                         )
                         Spacer(modifier = Modifier.width(10.dp))
@@ -361,7 +353,7 @@ private fun ThemesAppUiOverview(
                         Icon(
                             imageVector = Icons.Default.SkipNext,
                             contentDescription = null,
-                            tint = LiquidGlass.lightContentColor(appColors, accentColor),
+                            tint = appColors.textSecondary,
                             modifier = Modifier.size(18.dp)
                         )
                         Spacer(modifier = Modifier.width(10.dp))
@@ -395,7 +387,7 @@ private fun ThemesAppUiOverview(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = true)
+                .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = false)
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -403,13 +395,13 @@ private fun ThemesAppUiOverview(
                         modifier = Modifier
                             .size(30.dp)
                             .clip(CircleShape)
-                            .background(accentColor.copy(alpha = 0.12f)),
+                            .background(appColors.cardBackgroundElevated),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             imageVector = Icons.Default.ViewCarousel,
                             contentDescription = null,
-                            tint = LiquidGlass.lightContentColor(appColors, accentColor),
+                            tint = appColors.textSecondary,
                             modifier = Modifier.size(16.dp)
                         )
                     }
@@ -589,51 +581,17 @@ private fun ThemeModeOptionCard(
         if (isDarkMode) Color.White.copy(alpha = 0.08f) else appColors.cardBackground.copy(alpha = 0.96f)
     }
 
-    // Specular border: Crisp top specular edge highlight
-    val borderBrush = if (!appColors.isDark) {
-        val outline = LiquidGlass.contrastColor(if (isSelected) accentColor else appColors.cardBorder,
-            listOf(glassBackground.compositeOver(appColors.cardBackground), appColors.cardBackground),
-            if (isSelected) 3f else 1.5f)
-        Brush.linearGradient(listOf(outline, outline))
-    } else if (isSelected) {
-        Brush.linearGradient(
-            colors = listOf(
-                Color.White.copy(alpha = 0.85f),
-                accentColor.copy(alpha = 0.70f),
-                Color.White.copy(alpha = 0.30f)
-            ),
-            start = Offset(0f, 0f),
-            end = Offset(300f, 300f)
-        )
-    } else {
-        if (isDarkMode) {
-            Brush.linearGradient(
-                colors = listOf(
-                    Color.White.copy(alpha = 0.25f),
-                    Color.White.copy(alpha = 0.08f)
-                ),
-                start = Offset(0f, 0f),
-                end = Offset(300f, 300f)
-            )
-        } else {
-            Brush.linearGradient(
-                colors = listOf(
-                    Color.White.copy(alpha = 0.80f),
-                    accentColor.copy(alpha = 0.18f),
-                    accentColor.copy(alpha = 0.28f)
-                ),
-                start = Offset(0f, 0f),
-                end = Offset(300f, 300f)
-            )
-        }
-    }
+    val outline = LiquidGlass.contrastColor(if (isSelected) accentColor else appColors.cardBorder,
+        listOf(glassBackground.compositeOver(appColors.cardBackground), appColors.cardBackground),
+        if (isSelected) 3f else 1.5f)
+    val borderBrush = remember(outline) { Brush.linearGradient(listOf(outline, outline)) }
 
     Box(
         modifier = modifier
             .shadow(
-                elevation = if (isSelected) 5.dp else 2.dp,
+                elevation = 2.dp,
                 shape = cardShape,
-                spotColor = if (isDarkMode) Color.Black.copy(alpha = 0.40f) else accentColor.copy(alpha = if (isSelected) 0.18f else 0.08f),
+                spotColor = Color.Black.copy(alpha = if (isDarkMode) 0.24f else 0.08f),
                 ambientColor = if (isDarkMode) Color.Black.copy(alpha = 0.20f) else Color.Black.copy(alpha = 0.04f)
             )
             .clip(cardShape)

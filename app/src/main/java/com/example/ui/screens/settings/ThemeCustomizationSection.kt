@@ -588,7 +588,7 @@ fun ThemeCustomizationSection(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = true)
+                .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = false)
                 .bouncyClickable {
                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                     onOpenPresets()
@@ -661,7 +661,7 @@ fun ThemeCustomizationSection(
         Spacer(modifier = Modifier.height(16.dp))
 
         Box(Modifier.fillMaxWidth().liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp),
-            elevation = 6.dp, translucency = 0.82f, tintAccent = true).bouncyClickable(onClick = onOpenCustomTheming)) {
+            elevation = 6.dp, translucency = 0.82f, tintAccent = false).bouncyClickable(onClick = onOpenCustomTheming)) {
             Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Icon(Icons.Default.Palette, contentDescription = null, tint = LiquidGlass.lightContentColor(appColors, accentColor), modifier = Modifier.size(24.dp))
@@ -682,7 +682,7 @@ fun ThemeCustomizationSection(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = true)
+                .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = false)
         ) {
             Column(modifier = Modifier.fillMaxWidth()) {
                 // Item 1: Current Theme

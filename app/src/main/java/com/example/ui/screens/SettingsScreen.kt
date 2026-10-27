@@ -499,7 +499,7 @@ private fun MainProfilePreviewBar(
                     Text(
                         text = "${currentCountry.name} • First Priority Hits",
                         fontSize = 12.sp,
-                        color = accentColor,
+                        color = appColors.textSecondary,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis

@@ -142,8 +142,8 @@ class MainActivity : ComponentActivity() {
             val settingsReady by playerViewModel.settingsReady.collectAsStateWithLifecycle()
             if (!settingsReady) return@setContent
             androidx.compose.runtime.SideEffect { initialContentReady = true }
-            val themeMode by playerViewModel.themeMode.collectAsStateWithLifecycle()
-            val customThemeState by playerViewModel.customThemeState.collectAsStateWithLifecycle()
+            val themeSelection by playerViewModel.themeSelection.collectAsStateWithLifecycle()
+            val themeMode = themeSelection.mode
             val textScale by playerViewModel.textScale.collectAsStateWithLifecycle()
             val uiScale by playerViewModel.uiScale.collectAsStateWithLifecycle()
             val isOnboardingCompleted by playerViewModel.isOnboardingCompleted.collectAsStateWithLifecycle()
@@ -160,7 +160,10 @@ class MainActivity : ComponentActivity() {
 
             MyApplicationTheme(
                 darkTheme = effectiveDark,
-                customThemeState = customThemeState,
+                customThemeState = androidx.compose.runtime.remember(themeSelection, effectiveDark) {
+                    themeSelection.palette.takeIf { it.isPresetDark == effectiveDark }
+                        ?: com.example.data.local.ThemePreferences.getThemeForDarkMode(this@MainActivity, effectiveDark)
+                },
                 textScale = textScale,
                 uiScale = uiScale
             ) {

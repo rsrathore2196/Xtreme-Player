@@ -73,7 +73,7 @@ internal fun prepareCurrentPlayerArtwork(context: Context, tracks: Flow<MusicTra
 
 /** Neutral player controls are independent of app accents, album colors, and color mode. */
 internal fun playerAppearanceColors(source: AppThemeColors): AppThemeColors = source.copy(
-    isDark = true, isAmoled = false,
+    isDark = true, isAmoled = false, neutralSurfaces = false, settingsSurface = false,
     screenBackground = neutralPlayerBackground,
     scaffoldBackground = Color(0xff101010), cardBackground = Color(0xff181818),
     cardBackgroundElevated = Color(0xff202020), cardBorder = Color.White.copy(alpha = 0.22f),

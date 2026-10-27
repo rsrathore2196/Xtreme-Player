@@ -135,7 +135,7 @@ fun MainNavigationScaffold(
     val currentPlayingTrackId = playerUiState.currentTrack?.id
     val catalogDetail by viewModel.catalogBrowser.detail.collectAsStateWithLifecycle()
     val selectedPlaylistWithTracks by viewModel.selectedPlaylistTracks.collectAsStateWithLifecycle()
-    val isDarkMode by viewModel.isDarkMode.collectAsStateWithLifecycle()
+    val isDarkMode = LocalAppColors.current.isDark
     val importDialogOpen by viewModel.isImportDialogOpen.collectAsStateWithLifecycle()
     val isDynamicGlassEnabled by viewModel.isDynamicGlassEnabled.collectAsStateWithLifecycle()
 
@@ -385,13 +385,12 @@ fun MainNavigationScaffold(
                             }
                             3 -> {
                                 val effectsState by viewModel.effectsState.collectAsStateWithLifecycle()
-                                val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
-                                val customThemeState by viewModel.customThemeState.collectAsStateWithLifecycle()
+                                val themeSelection by viewModel.themeSelection.collectAsStateWithLifecycle()
                                 val userProfile by viewModel.userProfile.collectAsStateWithLifecycle()
                                 SettingsScreen(
                                     effectsState = effectsState,
                                     isDarkMode = isDarkMode,
-                                    themeMode = themeMode,
+                                    themeMode = themeSelection.mode,
                                     userProfile = userProfile,
                                     isDynamicGlassEnabled = isDynamicGlassEnabled,
                                     onToggleDynamicGlass = { viewModel.setDynamicGlassEnabled(it) },
@@ -404,7 +403,7 @@ fun MainNavigationScaffold(
                                     onToggleEqualizer = { enabled -> viewModel.setEqualizerEnabled(enabled) },
                                     onOpenEqualizer = { isEqualizerOpen = true },
                                     onSelectPreset = { preset -> viewModel.setEqualizerPreset(preset) },
-                                    customThemeState = customThemeState,
+                                    customThemeState = themeSelection.palette,
                                     onUpdateCustomThemeState = { updatedState -> viewModel.updateCustomThemeState(updatedState) },
                                     onApplyPreset = { preset -> viewModel.applyThemePreset(preset) },
                                     onTextScaleChanged = { index -> viewModel.setTextScaleIndex(index) },

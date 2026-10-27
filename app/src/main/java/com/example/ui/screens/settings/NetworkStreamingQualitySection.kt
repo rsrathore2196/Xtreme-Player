@@ -70,7 +70,7 @@ internal fun NetworkStreamingQualitySection() {
         Text("Network & Streaming Quality", color = colors.textPrimary,
             fontSize = 15.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(12.dp))
-        Surface(color = colors.primaryAccent.copy(alpha = 0.08f), shape = RoundedCornerShape(16.dp),
+        Surface(color = colors.cardBackgroundElevated, shape = RoundedCornerShape(16.dp),
             border = BorderStroke(1.dp, colors.cardBorder)) {
             Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -78,7 +78,7 @@ internal fun NetworkStreamingQualitySection() {
                     NetworkConnectionType.UNMETERED_WIFI_OR_ETHERNET, NetworkConnectionType.METERED_WIFI -> Icons.Default.Wifi
                     NetworkConnectionType.CELLULAR -> Icons.Default.SignalCellularAlt
                     NetworkConnectionType.OFFLINE -> Icons.Default.WifiOff
-                }, contentDescription = null, tint = colors.primaryAccent, modifier = Modifier.size(22.dp))
+                }, contentDescription = null, tint = colors.textSecondary, modifier = Modifier.size(22.dp))
                 Column(Modifier.weight(1f)) {
                     val profile = when (active.connectionType) {
                         NetworkConnectionType.UNMETERED_WIFI_OR_ETHERNET -> "Wi-Fi / Ethernet (Unmetered)"

@@ -81,7 +81,7 @@ data class AppThemePreset(
  * Curated list of 10 Dark and 10 Light modern, aesthetic, eye-catching presets.
  * Each preset has distinct visual identities, colors, contrasts, and atmosphere.
  */
-object ThemePresets {
+private object LegacyThemePresets {
 
     // ==========================================
     // 10 DISTINCT DARK MODE PRESETS
@@ -645,6 +645,83 @@ object ThemePresets {
     }
 }
 
+/** Built-in accents share neutral surfaces; legacy palettes are retained solely for safe migration. */
+object ThemePresets {
+    const val PALETTE_VERSION = 2
+
+    private fun modernize(preset: AppThemePreset): AppThemePreset {
+        val canvas = if (preset.isDark) { if (preset.isAmoled) "#000000" else "#0B0B0B" } else "#FFFFFF"
+        val card = if (preset.isDark) { if (preset.isAmoled) "#000000" else "#171717" } else "#F5F5F5"
+        val foreground = if (preset.isDark) "#F5F5F5" else "#161616"
+        // Keep the primary hue. A quieter shade of that hue replaces competing secondary colors.
+        val accent = preset.accentColorHex.removePrefix("#").toInt(16)
+        val neutral = foreground.removePrefix("#").toInt(16)
+        val secondary = (listOf(16, 8, 0).fold(0) { result, shift ->
+            val channel = (((accent shr shift) and 255) * .82f + ((neutral shr shift) and 255) * .18f).toInt()
+            result or (channel shl shift)
+        }).toString(16).padStart(6, '0').uppercase(java.util.Locale.ROOT)
+        return preset.copy(
+            subtitle = "${preset.accentName} accents on ${if (preset.isDark) "neutral dark glass" else "clean white glass"}",
+            secondaryAccentHex = "#$secondary",
+            canvasColorName = if (preset.isDark) { if (preset.isAmoled) "AMOLED Black" else "Neutral Black" } else "Pure White",
+            canvasColorHex = canvas,
+            cardColorName = if (preset.isDark) "Neutral Charcoal" else "Soft Gray",
+            cardColorHex = card,
+            cardBorderHex = if (preset.isDark) "#3A3A3A" else "#D6D6D6",
+            textPrimaryHex = foreground,
+            textSecondaryHex = if (preset.isDark) "#CBCBCB" else "#4A4A4A",
+            textMutedHex = if (preset.isDark) "#A8A8A8" else "#626262",
+            bgGradientColorsHex = listOf(canvas, canvas),
+            cardGradientColorsHex = listOf(card, card),
+            bottomSheetGradientColorsHex = listOf(canvas, canvas),
+            bgGradientName = "Neutral Solid", cardGradientName = "Neutral Surface",
+            bottomSheetGradientName = "Neutral Solid"
+        )
+    }
+
+    val allPresets = LegacyThemePresets.allPresets.map(::modernize)
+    val darkPresets = allPresets.filter { it.isDark }
+    val lightPresets = allPresets.filterNot { it.isDark }
+    private fun modern(legacy: AppThemePreset) = allPresets.first { it.id == legacy.id }
+    val StudioNight = modern(LegacyThemePresets.StudioNight)
+    val AmoledPureBlack = modern(LegacyThemePresets.AmoledPureBlack)
+    val CyberpunkNeon = modern(LegacyThemePresets.CyberpunkNeon)
+    val EmeraldNebula = modern(LegacyThemePresets.EmeraldNebula)
+    val SunsetHorizon = modern(LegacyThemePresets.SunsetHorizon)
+    val OceanicGlass = modern(LegacyThemePresets.OceanicGlass)
+    val NebulaGlass = modern(LegacyThemePresets.NebulaGlass)
+    val MatrixGlass = modern(LegacyThemePresets.MatrixGlass)
+    val SolarGlass = modern(LegacyThemePresets.SolarGlass)
+    val VelvetNoir = modern(LegacyThemePresets.VelvetNoir)
+    val CleanDay = modern(LegacyThemePresets.CleanDay)
+    val MinimalIvory = modern(LegacyThemePresets.MinimalIvory)
+    val CherryBlossom = modern(LegacyThemePresets.CherryBlossom)
+    val ElectricMint = modern(LegacyThemePresets.ElectricMint)
+    val SunsetPeach = modern(LegacyThemePresets.SunsetPeach)
+    val GlacierGlass = modern(LegacyThemePresets.GlacierGlass)
+    val SakuraGlass = modern(LegacyThemePresets.SakuraGlass)
+    val PorcelainBlue = modern(LegacyThemePresets.PorcelainBlue)
+    val LavenderLinen = modern(LegacyThemePresets.LavenderLinen)
+    val SageMist = modern(LegacyThemePresets.SageMist)
+    val CleanFrost = CleanDay
+
+    fun findById(id: String): AppThemePreset? = LegacyThemePresets.findById(id)?.let(::modern)
+    fun findByName(name: String): AppThemePreset? = name.takeIf { it.isNotBlank() }
+        ?.let(LegacyThemePresets::findByName)?.let(::modern)
+
+    internal fun legacyPreset(id: String, name: String): AppThemePreset? =
+        LegacyThemePresets.findById(id) ?: name.takeIf { it.isNotBlank() }?.let(LegacyThemePresets::findByName)
+
+    internal fun upgradeLegacy(state: CustomThemeState): CustomThemeState {
+        val legacy = legacyPreset(state.presetId, state.currentThemeName) ?: return state
+        // A known ID alone is not proof that a saved/imported palette was never edited.
+        return if (state == legacy.toCustomThemeState()) modern(legacy).toCustomThemeState() else state
+    }
+
+    internal fun isBuiltIn(state: CustomThemeState): Boolean =
+        findById(state.presetId)?.toCustomThemeState() == state
+}
+
 /**
  * Full state representing user-customized colors, gradients, and theme settings.
  */
@@ -656,23 +733,26 @@ data class CustomThemeState(
     val isAmoled: Boolean = false,
     val accentName: String = "Electric Azure",
     val accentShade: String = "400",
-    val accentColorHex: String = "#00D2FF",
-    val secondaryAccentHex: String = "#1D4ED8",
-    val canvasColorName: String = "Studio Void",
-    val canvasColorHex: String = "#020610",
-    val cardColorName: String = "Deep Studio Glass",
-    val cardColorHex: String = "#050C1B",
-    val cardBorderHex: String = "#0F2A4F",
-    val textPrimaryHex: String = "#F8FAFC",
-    val textSecondaryHex: String = "#7DD3FC",
-    val textMutedHex: String = "#64748B",
-    val bgGradientColorsHex: List<String> = listOf("#020610", "#010308", "#000103"),
-    val cardGradientColorsHex: List<String> = listOf("#0B1E3B", "#040A17"),
-    val bottomSheetGradientColorsHex: List<String> = listOf("#07152B", "#020610"),
-    val bgGradientName: String = "Studio Void",
-    val cardGradientName: String = "Studio Glass",
-    val bottomSheetGradientName: String = "Deep Obsidian"
+    val accentColorHex: String = "#66D5FF",
+    val secondaryAccentHex: String = "#7FDAFD",
+    val canvasColorName: String = "Neutral Black",
+    val canvasColorHex: String = "#0B0B0B",
+    val cardColorName: String = "Neutral Charcoal",
+    val cardColorHex: String = "#171717",
+    val cardBorderHex: String = "#3A3A3A",
+    val textPrimaryHex: String = "#F5F5F5",
+    val textSecondaryHex: String = "#CBCBCB",
+    val textMutedHex: String = "#A8A8A8",
+    val bgGradientColorsHex: List<String> = listOf("#0B0B0B", "#0B0B0B"),
+    val cardGradientColorsHex: List<String> = listOf("#171717", "#171717"),
+    val bottomSheetGradientColorsHex: List<String> = listOf("#0B0B0B", "#0B0B0B"),
+    val bgGradientName: String = "Neutral Solid",
+    val cardGradientName: String = "Neutral Surface",
+    val bottomSheetGradientName: String = "Neutral Solid"
 )
+
+@Immutable
+data class ThemeSelection(val mode: AppThemeMode, val palette: CustomThemeState)
 
 object ThemePreferences {
     private const val PREFS_NAME = "xtreme_theme_prefs"
@@ -700,6 +780,7 @@ object ThemePreferences {
     private const val KEY_CARD_GRADIENT = "custom_card_gradient"
     private const val KEY_BS_GRADIENT = "custom_bs_gradient"
     private const val KEY_CURRENT_THEME = "custom_theme_name"
+    private const val KEY_PALETTE_VERSION = "palette_version"
 
     private fun getPrefs(context: Context): SharedPreferences {
         return ReactiveSettingsRepository.preferences(context, PREFS_NAME)
@@ -711,100 +792,107 @@ object ThemePreferences {
         return AppThemeMode.fromKey(key)
     }
 
-    fun setThemeMode(context: Context, mode: AppThemeMode) {
-        val prefs = getPrefs(context)
-        prefs.edit().putString(KEY_THEME_MODE, mode.storageKey).apply()
+    fun isDark(context: Context, mode: AppThemeMode): Boolean = when (mode) {
+        AppThemeMode.DARK -> true
+        AppThemeMode.LIGHT -> false
+        AppThemeMode.SYSTEM -> context.resources.configuration.uiMode and
+            android.content.res.Configuration.UI_MODE_NIGHT_MASK == android.content.res.Configuration.UI_MODE_NIGHT_YES
     }
 
-    fun getCustomThemeState(context: Context): CustomThemeState {
+    private fun modePrefix(dark: Boolean) = if (dark) "saved_dark_" else "saved_light_"
+    private fun defaultPreset(dark: Boolean) = if (dark) ThemePresets.StudioNight else ThemePresets.CleanDay
+
+    fun setThemeMode(context: Context, mode: AppThemeMode): CustomThemeState {
+        val state = getThemeForDarkMode(context, isDark(context, mode))
+        saveThemeSelection(context, mode, state)
+        return state
+    }
+
+    fun getCustomThemeState(context: Context): CustomThemeState =
+        getThemeForDarkMode(context, isDark(context, getThemeMode(context)))
+
+    /** Reads the already-loaded preference snapshot, including when System changes brightness. */
+    fun getThemeForDarkMode(context: Context, dark: Boolean): CustomThemeState {
         val prefs = getPrefs(context)
-        val currentThemeName = prefs.getString(KEY_CURRENT_THEME, null)
-        val presetId = prefs.getString(KEY_PRESET_ID, null)
+        val fallback = defaultPreset(dark)
+        val active = readTheme(prefs, "", fallback)
+        return if (active.isPresetDark == dark) active else readTheme(prefs, modePrefix(dark), fallback)
+    }
 
-        // A new installation follows the effective mode before onboarding is composed.
-        // Existing saved presets/custom colors remain authoritative.
-        val dark = when (getThemeMode(context)) {
-            AppThemeMode.DARK -> true
-            AppThemeMode.LIGHT -> false
-            AppThemeMode.SYSTEM -> context.resources.configuration.uiMode and
-                android.content.res.Configuration.UI_MODE_NIGHT_MASK == android.content.res.Configuration.UI_MODE_NIGHT_YES
-        }
-        val defaultPreset = ThemePresets.findById(presetId.orEmpty())
-            ?: ThemePresets.findByName(currentThemeName.orEmpty())
-            ?: if (dark) ThemePresets.StudioNight else ThemePresets.CleanDay
-
-        val bgGradientColorsRaw = prefs.getString(KEY_BG_GRADIENT_COLORS, null)
-        val bgGradientColors = if (!bgGradientColorsRaw.isNullOrBlank()) {
-            bgGradientColorsRaw.split(",").filter { it.isNotBlank() }
-        } else {
-            defaultPreset.bgGradientColorsHex
-        }
-
-        val cardGradientColorsRaw = prefs.getString(KEY_CARD_GRADIENT_COLORS, null)
-        val cardGradientColors = if (!cardGradientColorsRaw.isNullOrBlank()) {
-            cardGradientColorsRaw.split(",").filter { it.isNotBlank() }
-        } else {
-            defaultPreset.cardGradientColorsHex
-        }
-
-        val bsGradientColorsRaw = prefs.getString(KEY_BS_GRADIENT_COLORS, null)
-        val bsGradientColors = if (!bsGradientColorsRaw.isNullOrBlank()) {
-            bsGradientColorsRaw.split(",").filter { it.isNotBlank() }
-        } else {
-            defaultPreset.bottomSheetGradientColorsHex
-        }
-
-        return CustomThemeState(
-            presetId = presetId ?: defaultPreset.id,
-            currentThemeName = currentThemeName ?: defaultPreset.name,
-            isPresetDark = prefs.getBoolean(KEY_PRESET_DARK, defaultPreset.isDark),
-            isAmoled = prefs.getBoolean(KEY_AMOLED, defaultPreset.isAmoled),
-            accentName = prefs.getString(KEY_ACCENT_NAME, defaultPreset.accentName) ?: defaultPreset.accentName,
-            accentShade = prefs.getString(KEY_ACCENT_SHADE, defaultPreset.accentShade) ?: defaultPreset.accentShade,
-            accentColorHex = prefs.getString(KEY_ACCENT_HEX, defaultPreset.accentColorHex) ?: defaultPreset.accentColorHex,
-            secondaryAccentHex = prefs.getString(KEY_SECONDARY_ACCENT_HEX, defaultPreset.secondaryAccentHex) ?: defaultPreset.secondaryAccentHex,
-            canvasColorName = prefs.getString(KEY_CANVAS_NAME, defaultPreset.canvasColorName) ?: defaultPreset.canvasColorName,
-            canvasColorHex = prefs.getString(KEY_CANVAS_HEX, defaultPreset.canvasColorHex) ?: defaultPreset.canvasColorHex,
-            cardColorName = prefs.getString(KEY_CARD_NAME, defaultPreset.cardColorName) ?: defaultPreset.cardColorName,
-            cardColorHex = prefs.getString(KEY_CARD_HEX, defaultPreset.cardColorHex) ?: defaultPreset.cardColorHex,
-            cardBorderHex = prefs.getString(KEY_CARD_BORDER_HEX, defaultPreset.cardBorderHex) ?: defaultPreset.cardBorderHex,
-            textPrimaryHex = prefs.getString(KEY_TEXT_PRIMARY_HEX, defaultPreset.textPrimaryHex) ?: defaultPreset.textPrimaryHex,
-            textSecondaryHex = prefs.getString(KEY_TEXT_SECONDARY_HEX, defaultPreset.textSecondaryHex) ?: defaultPreset.textSecondaryHex,
-            textMutedHex = prefs.getString(KEY_TEXT_MUTED_HEX, defaultPreset.textMutedHex) ?: defaultPreset.textMutedHex,
-            bgGradientColorsHex = bgGradientColors,
-            cardGradientColorsHex = cardGradientColors,
-            bottomSheetGradientColorsHex = bsGradientColors,
-            bgGradientName = prefs.getString(KEY_BG_GRADIENT, defaultPreset.bgGradientName) ?: defaultPreset.bgGradientName,
-            cardGradientName = prefs.getString(KEY_CARD_GRADIENT, defaultPreset.cardGradientName) ?: defaultPreset.cardGradientName,
-            bottomSheetGradientName = prefs.getString(KEY_BS_GRADIENT, defaultPreset.bottomSheetGradientName) ?: defaultPreset.bottomSheetGradientName
+    private fun readTheme(prefs: SharedPreferences, prefix: String, fallback: AppThemePreset): CustomThemeState {
+        val name = prefs.getString(prefix + KEY_CURRENT_THEME, null)
+        val id = prefs.getString(prefix + KEY_PRESET_ID, null)
+        val original = if (prefs.getInt(prefix + KEY_PALETTE_VERSION, 1) < ThemePresets.PALETTE_VERSION)
+            ThemePresets.legacyPreset(id.orEmpty(), name.orEmpty()) else null
+        val preset = original ?: ThemePresets.findById(id.orEmpty()) ?: fallback
+        fun text(key: String, default: String) = prefs.getString(prefix + key, default) ?: default
+        fun gradient(key: String, default: List<String>): List<String> =
+            prefs.getString(prefix + key, null)?.split(",")?.filter { it.isNotBlank() }?.takeIf { it.isNotEmpty() } ?: default
+        val state = CustomThemeState(
+            presetId = id ?: preset.id,
+            currentThemeName = name ?: preset.name,
+            isPresetDark = prefs.getBoolean(prefix + KEY_PRESET_DARK, preset.isDark),
+            isAmoled = prefs.getBoolean(prefix + KEY_AMOLED, preset.isAmoled),
+            accentName = text(KEY_ACCENT_NAME, preset.accentName),
+            accentShade = text(KEY_ACCENT_SHADE, preset.accentShade),
+            accentColorHex = text(KEY_ACCENT_HEX, preset.accentColorHex),
+            secondaryAccentHex = text(KEY_SECONDARY_ACCENT_HEX, preset.secondaryAccentHex),
+            canvasColorName = text(KEY_CANVAS_NAME, preset.canvasColorName),
+            canvasColorHex = text(KEY_CANVAS_HEX, preset.canvasColorHex),
+            cardColorName = text(KEY_CARD_NAME, preset.cardColorName),
+            cardColorHex = text(KEY_CARD_HEX, preset.cardColorHex),
+            cardBorderHex = text(KEY_CARD_BORDER_HEX, preset.cardBorderHex),
+            textPrimaryHex = text(KEY_TEXT_PRIMARY_HEX, preset.textPrimaryHex),
+            textSecondaryHex = text(KEY_TEXT_SECONDARY_HEX, preset.textSecondaryHex),
+            textMutedHex = text(KEY_TEXT_MUTED_HEX, preset.textMutedHex),
+            bgGradientColorsHex = gradient(KEY_BG_GRADIENT_COLORS, preset.bgGradientColorsHex),
+            cardGradientColorsHex = gradient(KEY_CARD_GRADIENT_COLORS, preset.cardGradientColorsHex),
+            bottomSheetGradientColorsHex = gradient(KEY_BS_GRADIENT_COLORS, preset.bottomSheetGradientColorsHex),
+            bgGradientName = text(KEY_BG_GRADIENT, preset.bgGradientName),
+            cardGradientName = text(KEY_CARD_GRADIENT, preset.cardGradientName),
+            bottomSheetGradientName = text(KEY_BS_GRADIENT, preset.bottomSheetGradientName)
         )
+        return ThemePresets.upgradeLegacy(state)
     }
 
-    fun saveCustomThemeState(context: Context, state: CustomThemeState) {
+    /** One optimistic update and one serialized disk write for mode, palette, and per-mode history. */
+    fun saveThemeSelection(context: Context, mode: AppThemeMode, state: CustomThemeState) {
         val prefs = getPrefs(context)
-        prefs.edit()
-            .putString(KEY_PRESET_ID, state.presetId)
-            .putString(KEY_CURRENT_THEME, state.currentThemeName)
-            .putBoolean(KEY_PRESET_DARK, state.isPresetDark)
-            .putBoolean(KEY_AMOLED, state.isAmoled)
-            .putString(KEY_ACCENT_NAME, state.accentName)
-            .putString(KEY_ACCENT_SHADE, state.accentShade)
-            .putString(KEY_ACCENT_HEX, state.accentColorHex)
-            .putString(KEY_SECONDARY_ACCENT_HEX, state.secondaryAccentHex)
-            .putString(KEY_CANVAS_NAME, state.canvasColorName)
-            .putString(KEY_CANVAS_HEX, state.canvasColorHex)
-            .putString(KEY_CARD_NAME, state.cardColorName)
-            .putString(KEY_CARD_HEX, state.cardColorHex)
-            .putString(KEY_CARD_BORDER_HEX, state.cardBorderHex)
-            .putString(KEY_TEXT_PRIMARY_HEX, state.textPrimaryHex)
-            .putString(KEY_TEXT_SECONDARY_HEX, state.textSecondaryHex)
-            .putString(KEY_TEXT_MUTED_HEX, state.textMutedHex)
-            .putString(KEY_BG_GRADIENT_COLORS, state.bgGradientColorsHex.joinToString(","))
-            .putString(KEY_CARD_GRADIENT_COLORS, state.cardGradientColorsHex.joinToString(","))
-            .putString(KEY_BS_GRADIENT_COLORS, state.bottomSheetGradientColorsHex.joinToString(","))
-            .putString(KEY_BG_GRADIENT, state.bgGradientName)
-            .putString(KEY_CARD_GRADIENT, state.cardGradientName)
-            .putString(KEY_BS_GRADIENT, state.bottomSheetGradientName)
-            .apply()
+        val previous = readTheme(prefs, "", defaultPreset(isDark(context, getThemeMode(context))))
+        val editor = prefs.edit().putString(KEY_THEME_MODE, mode.storageKey)
+        writeTheme(editor, previous, modePrefix(previous.isPresetDark))
+        writeTheme(editor, state, "")
+        writeTheme(editor, state, modePrefix(state.isPresetDark))
+        editor.apply()
+    }
+
+    fun saveCustomThemeState(context: Context, state: CustomThemeState) =
+        saveThemeSelection(context, getThemeMode(context), state)
+
+    private fun writeTheme(editor: SharedPreferences.Editor, state: CustomThemeState, prefix: String) {
+        editor
+            .putInt(prefix + KEY_PALETTE_VERSION, ThemePresets.PALETTE_VERSION)
+            .putString(prefix + KEY_PRESET_ID, state.presetId)
+            .putString(prefix + KEY_CURRENT_THEME, state.currentThemeName)
+            .putBoolean(prefix + KEY_PRESET_DARK, state.isPresetDark)
+            .putBoolean(prefix + KEY_AMOLED, state.isAmoled)
+            .putString(prefix + KEY_ACCENT_NAME, state.accentName)
+            .putString(prefix + KEY_ACCENT_SHADE, state.accentShade)
+            .putString(prefix + KEY_ACCENT_HEX, state.accentColorHex)
+            .putString(prefix + KEY_SECONDARY_ACCENT_HEX, state.secondaryAccentHex)
+            .putString(prefix + KEY_CANVAS_NAME, state.canvasColorName)
+            .putString(prefix + KEY_CANVAS_HEX, state.canvasColorHex)
+            .putString(prefix + KEY_CARD_NAME, state.cardColorName)
+            .putString(prefix + KEY_CARD_HEX, state.cardColorHex)
+            .putString(prefix + KEY_CARD_BORDER_HEX, state.cardBorderHex)
+            .putString(prefix + KEY_TEXT_PRIMARY_HEX, state.textPrimaryHex)
+            .putString(prefix + KEY_TEXT_SECONDARY_HEX, state.textSecondaryHex)
+            .putString(prefix + KEY_TEXT_MUTED_HEX, state.textMutedHex)
+            .putString(prefix + KEY_BG_GRADIENT_COLORS, state.bgGradientColorsHex.joinToString(","))
+            .putString(prefix + KEY_CARD_GRADIENT_COLORS, state.cardGradientColorsHex.joinToString(","))
+            .putString(prefix + KEY_BS_GRADIENT_COLORS, state.bottomSheetGradientColorsHex.joinToString(","))
+            .putString(prefix + KEY_BG_GRADIENT, state.bgGradientName)
+            .putString(prefix + KEY_CARD_GRADIENT, state.cardGradientName)
+            .putString(prefix + KEY_BS_GRADIENT, state.bottomSheetGradientName)
     }
 }
