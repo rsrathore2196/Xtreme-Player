@@ -627,53 +627,57 @@ fun SearchScreen(
                         )
                     }
 
-                    FlowRow(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        recentSearches.forEach { queryItem ->
-                            Box(
-                                modifier = Modifier
-                                    .rememberLiquidGlassPill(
-                                        colors = appColors,
-                                        shape = RoundedCornerShape(20.dp),
-                                        isActive = false,
-                                        elevation = 3.dp
-                                    )
-                                    .testTag("recent_search_chip_$queryItem")
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        recentSearches.chunked((recentSearches.size + 1) / 2).forEachIndexed { rowIndex, queries ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                                    .testTag("recent_search_row_$rowIndex"),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier
-                                        .bouncyClickable { triggerSearch(queryItem) }
-                                        .padding(start = 14.dp, end = 7.dp, top = 6.dp, bottom = 6.dp)
-                                ) {
-                                    Text(
-                                        text = queryItem,
-                                        color = if (appColors.isDark) Color.White else appColors.textPrimary,
-                                        fontSize = 13.8.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    Spacer(modifier = Modifier.width(5.dp))
+                                queries.forEach { queryItem ->
                                     Box(
                                         modifier = Modifier
-                                            .size(22.dp)
-                                            .clip(CircleShape)
-                                            .clickable {
-                                                onRemoveRecentSearch(queryItem)
-                                            }
-                                            .testTag("remove_recent_search_$queryItem"),
-                                        contentAlignment = Alignment.Center
+                                            .rememberLiquidGlassPill(
+                                                colors = appColors,
+                                                shape = RoundedCornerShape(20.dp),
+                                                isActive = false,
+                                                elevation = 3.dp
+                                            )
+                                            .testTag("recent_search_chip_$queryItem")
                                     ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Clear,
-                                            contentDescription = "Remove $queryItem",
-                                            tint = if (appColors.isDark) Color.White.copy(alpha = 0.70f) else appColors.textMuted,
-                                            modifier = Modifier.size(13.dp)
-                                        )
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier
+                                                .bouncyClickable { triggerSearch(queryItem) }
+                                                .padding(start = 14.dp, end = 7.dp, top = 6.dp, bottom = 6.dp)
+                                        ) {
+                                            Text(
+                                                text = queryItem,
+                                                color = if (appColors.isDark) Color.White else appColors.textPrimary,
+                                                fontSize = 13.8.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Spacer(modifier = Modifier.width(5.dp))
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(22.dp)
+                                                    .clip(CircleShape)
+                                                    .clickable {
+                                                        onRemoveRecentSearch(queryItem)
+                                                    }
+                                                    .testTag("remove_recent_search_$queryItem"),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Clear,
+                                                    contentDescription = "Remove $queryItem",
+                                                    tint = if (appColors.isDark) Color.White.copy(alpha = 0.70f) else appColors.textMuted,
+                                                    modifier = Modifier.size(13.dp)
+                                                )
+                                            }
+                                        }
                                     }
                                 }
                             }

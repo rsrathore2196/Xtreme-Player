@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.unit.dp
@@ -16,6 +17,7 @@ import com.example.ui.components.LocalVisualEffectsActive
 import com.example.ui.screens.*
 import com.example.ui.theme.*
 import com.example.ui.util.LocalArtworkRequestsActive
+import com.github.takahirom.roborazzi.*
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -82,6 +84,62 @@ class ListeningStatsUiTest {
         compose.onNodeWithTag("create_playlist_button").assertIsDisplayed()
         compose.onNodeWithText("Listening Stats").performClick()
         compose.onNodeWithText("Yearly").assertIsSelected()
+    }
+
+    @Test @OptIn(ExperimentalRoborazziApi::class)
+    fun libraryTabsUseASolidAccentAndKeepTheIndicatorMovingAcrossContentChanges() {
+        var colors by mutableStateOf(DarkAppColors.copy(primaryAccent = Color(0xFF7651D0)))
+        compose.mainClock.autoAdvance = false
+        compose.setContent { MaterialTheme {
+            CompositionLocalProvider(LocalAppColors provides colors, LocalDynamicGlassEnabled provides false,
+                LocalArtworkRequestsActive provides false, LocalVisualEffectsActive provides false) {
+                Box(Modifier.width(400.dp).fillMaxHeight()) {
+                    LibraryScreen(emptyList(), emptyList(), onTrackClick = { _, _ -> },
+                        onToggleFavorite = {}, onOpenPlaylist = {}, onCreatePlaylistClick = {})
+                }
+            }
+        } }
+        fun indicatorCenter(): Float {
+            val file = java.io.File.createTempFile("library-selection-", ".png")
+            try {
+                compose.onNodeWithTag("library_tabs").captureRoboImage(file.absolutePath,
+                    roborazziOptions = RoborazziOptions(taskType = RoborazziTaskType.Record))
+                val image = javax.imageio.ImageIO.read(file)
+                var left = image.width; var right = -1; var count = 0
+                for (y in 0 until image.height) for (x in 0 until image.width) {
+                    val pixel = java.awt.Color(image.getRGB(x, y), true)
+                    if (pixel.alpha > 240 && kotlin.math.abs(pixel.red - colors.primaryAccent.red * 255) < 3 &&
+                        kotlin.math.abs(pixel.green - colors.primaryAccent.green * 255) < 3 &&
+                        kotlin.math.abs(pixel.blue - colors.primaryAccent.blue * 255) < 3) {
+                        left = minOf(left, x); right = maxOf(right, x); count++
+                    }
+                }
+                assertTrue("The active tab has an opaque accent fill, including when glass is enabled", count > image.width * image.height / 4)
+                return (left + right) / 2f
+            } finally { file.delete() }
+        }
+        compose.mainClock.advanceTimeBy(800)
+        val start = indicatorCenter()
+        compose.onNodeWithText("Listening Stats").performClick()
+        compose.onNodeWithText("Listening Stats").assertIsSelected()
+        compose.mainClock.advanceTimeByFrame()
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeBy(96)
+        val middle = indicatorCenter()
+        compose.mainClock.advanceTimeBy(800)
+        val end = indicatorCenter()
+        assertTrue("The shared indicator slides instead of snapping when the header is recreated", middle > start + 2 && middle < end - 2)
+        compose.runOnIdle { colors = LightAppColors.copy(primaryAccent = Color(0xFFB8E9E7)) }
+        compose.mainClock.advanceTimeByFrame()
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeBy(800)
+        indicatorCenter()
+        compose.onNodeWithText("Playlists").performClick()
+        compose.mainClock.advanceTimeByFrame()
+        compose.waitForIdle()
+        compose.onNodeWithText("Playlists").assertIsSelected()
+        compose.mainClock.advanceTimeBy(800)
+        assertTrue(indicatorCenter() < end - 2)
     }
     @Test fun fourSquareCardsAndOnlyTheTwoRequestedSectionsWorkInLightTheme() {
         var period by mutableStateOf(ListeningPeriod.WEEKLY)

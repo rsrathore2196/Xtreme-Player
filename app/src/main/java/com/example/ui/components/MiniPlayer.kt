@@ -11,6 +11,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -104,6 +105,7 @@ fun MiniPlayer(
     val context = LocalContext.current
     val lightTheme = !appColors.isDark
     val labelColor = if (lightTheme) Color.Black else appColors.textPrimary
+    val neutralButtonColor = if (appColors.isDark) Color.White else Color.Black
     val imageRequest = rememberOptimizedImageRequest(track = track, targetSize = ImageConfig.MINI_PLAYER_SIZE)
 
     val cachedColors = remember(track.id) {
@@ -211,8 +213,11 @@ fun MiniPlayer(
                                 color = labelColor
                             ),
                             maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
+                            softWrap = false,
+                            overflow = TextOverflow.Clip,
                             modifier = Modifier.weight(1f, fill = false)
+                                .basicMarquee(iterations = Int.MAX_VALUE, initialDelayMillis = 1000)
+                                .testTag("mini_player_track_title")
                         )
                         if (uiState.isPlaying) {
                             Spacer(modifier = Modifier.width(6.dp))
@@ -240,7 +245,7 @@ fun MiniPlayer(
 
                 Spacer(modifier = Modifier.width(8.dp))
 
-                // Play / Pause Button - Theme tint, blurry liquid glass UI style & matte finish to the accent colour
+                // Play / Pause Button - neutral liquid glass and matte finish
                 Box(
                     contentAlignment = Alignment.Center,
                     modifier = Modifier.size(44.dp)
@@ -249,7 +254,7 @@ fun MiniPlayer(
                         CircularProgressIndicator(
                             modifier = Modifier.size(28.dp),
                             strokeWidth = 2.5.dp,
-                            color = appColors.primaryAccent
+                            color = neutralButtonColor
                         )
                     } else {
                         val isPlaying = uiState.isPlaying
@@ -258,13 +263,13 @@ fun MiniPlayer(
                             Brush.verticalGradient(
                                 listOf(
                                     Color.White.copy(alpha = if (appColors.isDark) 0.50f else 0.60f),
-                                    appColors.primaryAccent.copy(alpha = if (isPlaying) 0.65f else 0.35f)
+                                    neutralButtonColor.copy(alpha = if (isPlaying) 0.65f else 0.35f)
                                 )
                             )
                         )
                         val playPauseMatteBg = if (!appColors.dynamicGlassEnabled) Brush.verticalGradient(listOf(appColors.cardBackground, appColors.cardBackground)) else if (isPlaying) {
-                            // Active playing state: rich dynamic matte accent gradient
-                            if (appColors.isAmoled && appColors.primaryAccent == Color.White) {
+                            // Active playing state: neutral matte gradient
+                            if (appColors.isAmoled && neutralButtonColor == Color.White) {
                                 Brush.verticalGradient(
                                     listOf(
                                         Color(0xFFFFFFFF),
@@ -274,8 +279,8 @@ fun MiniPlayer(
                             } else {
                                 Brush.verticalGradient(
                                     listOf(
-                                        appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.95f else 0.92f),
-                                        appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.80f else 0.82f)
+                                        neutralButtonColor.copy(alpha = if (appColors.isDark) 0.95f else 0.92f),
+                                        neutralButtonColor.copy(alpha = if (appColors.isDark) 0.80f else 0.82f)
                                     )
                                 )
                             }
@@ -293,18 +298,18 @@ fun MiniPlayer(
                                 } else {
                                     Brush.verticalGradient(
                                         listOf(
-                                            appColors.primaryAccent.copy(alpha = 0.28f),
+                                            neutralButtonColor.copy(alpha = 0.28f),
                                             appColors.cardBackgroundElevated.copy(alpha = 0.88f),
-                                            appColors.primaryAccent.copy(alpha = 0.16f)
+                                            neutralButtonColor.copy(alpha = 0.16f)
                                         )
                                     )
                                 }
                             } else {
                                 Brush.verticalGradient(
                                     listOf(
-                                        appColors.primaryAccent.copy(alpha = 0.20f),
+                                        neutralButtonColor.copy(alpha = 0.20f),
                                         Color.White.copy(alpha = 0.92f),
-                                        appColors.primaryAccent.copy(alpha = 0.12f)
+                                        neutralButtonColor.copy(alpha = 0.12f)
                                     )
                                 )
                             }
@@ -312,27 +317,27 @@ fun MiniPlayer(
 
                         // Icon tint strictly calculated for high dynamic contrast against playPauseMatteBg
                         val playPauseIconTint = if (!appColors.dynamicGlassEnabled) contrastingContentColor(appColors.cardBackground) else if (isPlaying) {
-                            val accentLum = (0.299 * appColors.primaryAccent.red + 0.587 * appColors.primaryAccent.green + 0.114 * appColors.primaryAccent.blue)
-                            if (appColors.isAmoled && (appColors.primaryAccent == Color.White || accentLum > 0.70f)) {
+                            val accentLum = (0.299 * neutralButtonColor.red + 0.587 * neutralButtonColor.green + 0.114 * neutralButtonColor.blue)
+                            if (appColors.isAmoled && (neutralButtonColor == Color.White || accentLum > 0.70f)) {
                                 Color(0xFF0A0A0A)
                             } else {
-                                contrastingContentColor(appColors.primaryAccent)
+                                contrastingContentColor(neutralButtonColor)
                             }
                         } else {
                             // When paused on dark/frosted surface:
                             if (appColors.isDark) {
                                 if (appColors.isAmoled) {
-                                    val lum = (0.299 * appColors.primaryAccent.red + 0.587 * appColors.primaryAccent.green + 0.114 * appColors.primaryAccent.blue)
-                                    if (appColors.primaryAccent != Color.White && lum > 0.35f) {
-                                        appColors.primaryAccent
+                                    val lum = (0.299 * neutralButtonColor.red + 0.587 * neutralButtonColor.green + 0.114 * neutralButtonColor.blue)
+                                    if (neutralButtonColor != Color.White && lum > 0.35f) {
+                                        neutralButtonColor
                                     } else {
                                         Color.White
                                     }
                                 } else {
-                                    appColors.primaryAccent
+                                    neutralButtonColor
                                 }
                             } else {
-                                appColors.primaryAccent
+                                neutralButtonColor
                             }
                         }
 
@@ -353,7 +358,7 @@ fun MiniPlayer(
                                 .shadow(
                                     elevation = if (isPlaying) 8.dp else 4.dp,
                                     shape = CircleShape,
-                                    spotColor = if (!appColors.dynamicGlassEnabled) Color.Black.copy(alpha = 0.15f) else appColors.primaryAccent.copy(alpha = if (isPlaying) 0.55f else 0.25f),
+                                    spotColor = if (!appColors.dynamicGlassEnabled) Color.Black.copy(alpha = 0.15f) else neutralButtonColor.copy(alpha = if (isPlaying) 0.55f else 0.25f),
                                     ambientColor = Color.Transparent
                                 )
                                 .clip(CircleShape)
@@ -396,13 +401,13 @@ fun MiniPlayer(
 
                 Spacer(modifier = Modifier.compactWidth(compactProgress).width(6.dp))
 
-                // Skip Next Button - Theme tint with blurry liquid glass UI style & matte finish
+                // Skip Next Button - neutral liquid glass and matte finish
                 val nextMatteBorder = if (!appColors.dynamicGlassEnabled) BorderStroke(1.2.dp, appColors.cardBorder) else BorderStroke(
                     1.2.dp,
                     Brush.verticalGradient(
                         listOf(
                             Color.White.copy(alpha = if (appColors.isDark) 0.45f else 0.55f),
-                            appColors.primaryAccent.copy(alpha = 0.35f)
+                            neutralButtonColor.copy(alpha = 0.35f)
                         )
                     )
                 )
@@ -418,18 +423,18 @@ fun MiniPlayer(
                     } else {
                         Brush.verticalGradient(
                             listOf(
-                                appColors.primaryAccent.copy(alpha = 0.28f),
+                                neutralButtonColor.copy(alpha = 0.28f),
                                 Color(0xFF222B3D).copy(alpha = 0.85f),
-                                appColors.primaryAccent.copy(alpha = 0.16f)
+                                neutralButtonColor.copy(alpha = 0.16f)
                             )
                         )
                     }
                 } else {
                     Brush.verticalGradient(
                         listOf(
-                            appColors.primaryAccent.copy(alpha = 0.18f),
+                            neutralButtonColor.copy(alpha = 0.18f),
                             Color.White.copy(alpha = 0.90f),
-                            appColors.primaryAccent.copy(alpha = 0.12f)
+                            neutralButtonColor.copy(alpha = 0.12f)
                         )
                     )
                 }
@@ -481,7 +486,7 @@ fun MiniPlayer(
                         Icon(
                             imageVector = Icons.Default.SkipNext,
                             contentDescription = "Skip Next",
-                            tint = if (appColors.isDark) appColors.textPrimary else appColors.primaryAccent,
+                            tint = if (appColors.isDark) appColors.textPrimary else neutralButtonColor,
                             modifier = Modifier.size(20.dp)
                         )
                     }

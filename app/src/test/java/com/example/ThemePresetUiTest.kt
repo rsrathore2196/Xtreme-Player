@@ -75,8 +75,7 @@ class ThemePresetUiTest {
                 CompositionLocalProvider(LocalAppColors provides colors) {
                     Column(Modifier.fillMaxWidth().background(colors.scaffoldBackground)
                         .padding(16.dp).testTag("settings_theme_surface")) {
-                        SettingsCategoryCardGroup(listOf(SettingsCategory.THEMES_APP_UI,
-                            SettingsCategory.MUSIC_PLAYBACK), colors.isDark, { opens++ })
+                        SettingsCategoryCardGroup(SettingsCategory.entries, colors.isDark, { opens++ })
                         Row(Modifier.fillMaxWidth().padding(top = 16.dp)
                             .liquidGlassCard(colors, tintAccent = true).padding(16.dp)) {
                             Text("Example control", color = colors.textPrimary, modifier = Modifier.weight(1f))
@@ -97,6 +96,22 @@ class ThemePresetUiTest {
             // Sample an unoccupied section of the category card: its glass must not pick up the accent hue.
             val pixel = java.awt.Color(image.getRGB(image.width / 2, 12))
             assertTrue(maxOf(pixel.red, pixel.green, pixel.blue) - minOf(pixel.red, pixel.green, pixel.blue) <= 2)
+            SettingsCategory.entries.forEach { category ->
+                val file = File.createTempFile("category-icon-", ".png")
+                try {
+                    compose.onNodeWithContentDescription(category.title, useUnmergedTree = true)
+                        .captureRoboImage(file.absolutePath, roborazziOptions = RoborazziOptions(taskType = RoborazziTaskType.Record))
+                    val icon = ImageIO.read(file)
+                    var accentPixels = 0
+                    for (y in 0 until icon.height) for (x in 0 until icon.width) {
+                        val value = java.awt.Color(icon.getRGB(x, y), true)
+                        if (value.alpha > 240 && kotlin.math.abs(value.red - colors.primaryAccent.red * 255) < 4 &&
+                            kotlin.math.abs(value.green - colors.primaryAccent.green * 255) < 4 &&
+                            kotlin.math.abs(value.blue - colors.primaryAccent.blue * 255) < 4) accentPixels++
+                    }
+                    assertTrue("${category.title} uses the current accent without tinting its container", accentPixels > 10)
+                } finally { file.delete() }
+            }
         }
         compose.onNodeWithText("Appearance").performClick()
         assertEquals(1, opens)

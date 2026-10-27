@@ -1,6 +1,10 @@
 package com.example.ui.screens
 
 import android.content.res.Configuration
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import com.example.ui.util.landscapeContentBounds
@@ -69,12 +73,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import com.example.ui.components.TrackListItem
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.role
@@ -144,6 +154,14 @@ fun LibraryScreen(
     }
     val isDark = isDarkMode
     val appColors = LocalAppColors.current
+    // Retain the selection motion when the two tab bodies replace their headers.
+    val tabPosition = animateFloatAsState(selectedTab.toFloat(),
+        animationSpec = spring(dampingRatio = 1f, stiffness = 220f), label = "library_tab_position")
+    val tabLabelColors = tabs.indices.map { index ->
+        animateColorAsState(if (selectedTab == index) com.example.ui.theme.contrastingContentColor(appColors.primaryAccent)
+            else appColors.textMuted, animationSpec = tween(220), label = "library_tab_label_$index")
+    }
+    val layoutDirection = LocalLayoutDirection.current
 
     val currentPlayingId = currentPlayingTrackId ?: playerUiState?.currentTrack?.id
     val configuration = LocalConfiguration.current
@@ -219,85 +237,40 @@ fun LibraryScreen(
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                // 3D Liquid Glass Segmented Tabs Row
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .liquidGlassCard(appColors, shape = RoundedCornerShape(16.dp), elevation = 4.dp, translucency = 0.95f)
-                        .padding(4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    tabs.forEachIndexed { index, title ->
-                        val isSelected = selectedTab == index
-                        val selectedTabBg = if (!appColors.dynamicGlassEnabled) {
-                            Brush.verticalGradient(listOf(appColors.primaryAccent, appColors.primaryAccent))
-                        } else if (appColors.isDark) {
-                            if (appColors.isAmoled) {
-                                Brush.verticalGradient(
-                                    listOf(
-                                        Color(0xFF282828),
-                                        Color(0xFF181818),
-                                        Color(0xFF0E0E0E)
-                                    )
-                                )
-                            } else {
-                                Brush.verticalGradient(
-                                    listOf(
-                                        appColors.primaryAccent.copy(alpha = 0.40f),
-                                        Color(0xFF1E2838).copy(alpha = 0.85f),
-                                        appColors.primaryAccent.copy(alpha = 0.22f)
-                                    )
-                                )
+                Box(Modifier.fillMaxWidth().testTag("library_tabs")) {
+                    Box(Modifier.matchParentSize().liquidGlassCard(appColors,
+                        shape = RoundedCornerShape(16.dp), elevation = 4.dp, translucency = 0.95f))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(4.dp)
+                            .drawBehind {
+                                val gap = 4.dp.toPx()
+                                val tabWidth = (size.width - gap) / 2f
+                                val progress = tabPosition.value.coerceIn(0f, 1f)
+                                val position = if (layoutDirection == LayoutDirection.Rtl) 1f - progress else progress
+                                drawRoundRect(appColors.primaryAccent,
+                                    topLeft = Offset((tabWidth + gap) * position, 0f),
+                                    size = Size(tabWidth, size.height), cornerRadius = CornerRadius(12.dp.toPx()))
+                            },
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        tabs.forEachIndexed { index, title ->
+                            val isSelected = selectedTab == index
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .bouncyClickable { selectedTab = index }
+                                    .semantics { selected = isSelected; role = androidx.compose.ui.semantics.Role.Tab }
+                                    .testTag("library_tab_$index")
+                                    .padding(vertical = 10.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(text = title,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                    color = tabLabelColors[index].value, fontSize = 14.sp)
                             }
-                        } else {
-                            Brush.verticalGradient(
-                                listOf(
-                                    appColors.primaryAccent.copy(alpha = 0.92f),
-                                    appColors.secondaryAccent.copy(alpha = 0.85f)
-                                )
-                            )
-                        }
-                        val selectedTabBorder = BorderStroke(
-                            1.3.dp,
-                            if (!appColors.dynamicGlassEnabled) {
-                                Brush.verticalGradient(listOf(appColors.primaryAccent, appColors.primaryAccent))
-                            } else if (appColors.isDark) {
-                                LiquidGlass.specularBorderBrush(appColors, highlightAlpha = 0.75f)
-                            } else {
-                                Brush.verticalGradient(
-                                    listOf(
-                                        Color.White.copy(alpha = 0.85f),
-                                        appColors.primaryAccent.copy(alpha = 0.50f)
-                                    )
-                                )
-                            }
-                        )
-
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(12.dp))
-                                .then(
-                                    if (isSelected) {
-                                        Modifier
-                                            .background(selectedTabBg)
-                                            .border(selectedTabBorder, RoundedCornerShape(12.dp))
-                                    } else {
-                                        Modifier
-                                    }
-                                )
-                                .bouncyClickable { selectedTab = index }
-                                .semantics { selected = isSelected; role = androidx.compose.ui.semantics.Role.Tab }
-                                .padding(vertical = 10.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = title,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                color = if (!appColors.dynamicGlassEnabled && isSelected) com.example.ui.theme.contrastingContentColor(appColors.primaryAccent)
-                                    else if (appColors.isAmoled) Color.White else if (isSelected) Color.White else (if (appColors.isDark) Color.White.copy(alpha = 0.70f) else appColors.textMuted),
-                                fontSize = 14.sp
-                            )
                         }
                     }
                 }

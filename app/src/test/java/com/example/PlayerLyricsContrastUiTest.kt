@@ -45,6 +45,36 @@ class PlayerLyricsContrastUiTest {
     @Test @Config(qualifiers = "w891dp-h411dp-land")
     fun landscapeLyricsAndHeartAdaptToTheActualBackdropInEitherTheme() = checkContrast()
 
+    @Test fun portraitLongTitleScrollsAutomatically() = checkTitleMarquee()
+    @Test @Config(qualifiers = "w891dp-h411dp-land")
+    fun landscapeLongTitleScrollsAutomatically() = checkTitleMarquee()
+
+    private fun checkTitleMarquee() {
+        val song = MusicTrack("marquee-player", "Northern lights across the ocean with a very long unforgettable song title", "Artist", "Album", 180_000, "", "")
+        compose.mainClock.autoAdvance = false
+        compose.setContent { MaterialTheme {
+            CompositionLocalProvider(LocalAppColors provides DarkAppColors,
+                com.example.ui.util.LocalArtworkRequestsActive provides false,
+                LocalVisualEffectsActive provides false) {
+                ExpandedPlayerScreen(PlayerUiState(currentTrack = song), {}, {}, {}, {}, {}, {}, {}, {}, {},
+                    onAddToPlaylist = {}, isScreenVisible = false)
+            }
+        } }
+        fun pixels(): IntArray {
+            val file = java.io.File.createTempFile("player-title-", ".png")
+            try {
+                compose.onNodeWithTag("player_track_title", useUnmergedTree = true).captureRoboImage(file.absolutePath,
+                    roborazziOptions = RoborazziOptions(taskType = RoborazziTaskType.Record))
+                val image = javax.imageio.ImageIO.read(file)
+                return image.getRGB(0, 0, image.width, image.height, null, 0, image.width)
+            } finally { file.delete() }
+        }
+        compose.mainClock.advanceTimeBy(500)
+        val initial = pixels()
+        compose.mainClock.advanceTimeBy(1_500)
+        assertFalse("The expanded player's overflowing title moves without needing focus", initial.contentEquals(pixels()))
+    }
+
     private fun checkContrast() {
         val song = MusicTrack("bright-player", "Song", "Artist", "Album", 180_000, "", "")
         val lyrics = TrackLyrics(song.id, song.title, song.artist, true,

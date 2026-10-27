@@ -31,15 +31,29 @@ class SearchGenreNavigationTest {
             LocalDynamicGlassEnabled provides false, content = block) }
     }
 
-    @Test fun recentPillsShowAtMostSixEvenWhenAnOlderSnapshotContainsEight() {
+    @Test fun twentyRecentPillsUseTwoScrollableRowsAndKeepSearchAndRemovalWorking() {
+        var searched: String? = null
+        var removed: String? = null
         content {
-            SearchScreen(SearchUiState(recentSearches = (1..8).map { "Query $it" }),
-                onQueryChange = {}, onSelectGenre = {}, onTrackClick = { _, _ -> }, onToggleFavorite = {})
+            SearchScreen(SearchUiState(recentSearches = (1..25).map { "Query $it" }),
+                onQueryChange = { searched = it }, onSelectGenre = {}, onTrackClick = { _, _ -> },
+                onToggleFavorite = {}, onRemoveRecentSearch = { removed = it })
         }
-        compose.onNodeWithTag("search_screen").performScrollToNode(hasTestTag("recent_search_chip_Query 6"))
-        compose.onNodeWithTag("recent_search_chip_Query 6").assertIsDisplayed()
-        compose.onNodeWithTag("recent_search_chip_Query 7").assertDoesNotExist()
-        compose.onNodeWithTag("recent_search_chip_Query 8").assertDoesNotExist()
+        compose.onNodeWithTag("search_screen").performScrollToNode(hasTestTag("recent_search_row_0"))
+        for (index in 1..20) {
+            compose.onNode(hasTestTag("recent_search_chip_Query $index") and
+                hasAnyAncestor(hasTestTag("recent_search_row_${if (index <= 10) 0 else 1}"))).assertExists()
+        }
+        compose.onNodeWithTag("recent_search_row_2").assertDoesNotExist()
+        compose.onNodeWithTag("recent_search_chip_Query 21").assertDoesNotExist()
+        val first = compose.onNodeWithTag("recent_search_row_0").fetchSemanticsNode().boundsInRoot
+        val second = compose.onNodeWithTag("recent_search_row_1").fetchSemanticsNode().boundsInRoot
+        assertTrue(second.top >= first.bottom)
+        compose.onNodeWithTag("recent_search_chip_Query 10").performScrollTo().assertIsDisplayed().performClick()
+        compose.runOnIdle { assertEquals("Query 10", searched) }
+        compose.onNodeWithTag("recent_search_chip_Query 20").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("remove_recent_search_Query 20").performClick()
+        compose.runOnIdle { assertEquals("Query 20", removed); assertEquals("Query 10", searched) }
     }
 
     @Test fun genreOpensItsOwnPageWithPlayableSongsAlbumsAndBackNavigation() {

@@ -109,12 +109,13 @@ fun AboutPage(
                 // Dynamic App Logo (Matching HomeScreen top-left and Onboarding)
                 AppDynamicLogo(
                     modifier = Modifier
-                        .size(72.dp)
+                        .size(88.dp)
                         .testTag("about_app_dynamic_logo"),
                     primaryAccent = accentColor,
                     secondaryAccent = appColors.secondaryAccent,
                     cutoutColor = appColors.cardBackground,
-                    contentDescriptionText = "Xtreme Player Logo"
+                    contentDescriptionText = "Xtreme Player Logo",
+                    showGlow = false
                 )
 
                 Spacer(modifier = Modifier.height(14.dp))

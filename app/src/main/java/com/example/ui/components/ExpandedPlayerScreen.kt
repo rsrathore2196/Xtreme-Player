@@ -630,7 +630,7 @@ fun ExpandedPlayerScreen(
                                         Column(Modifier.weight(1f)) {
                                             Text(track.cleanTitle, color = appColors.textPrimary, fontWeight = FontWeight.Bold,
                                                 fontSize = 18.sp,
-                                                maxLines = 1, modifier = Modifier.basicMarquee(), softWrap = false)
+                                                maxLines = 1, modifier = Modifier.basicMarquee(iterations = Int.MAX_VALUE, initialDelayMillis = 1000), softWrap = false)
                                             Text(singerLabel, color = appColors.textSecondary, fontSize = 14.sp,
                                                 maxLines = 1, modifier = Modifier.basicMarquee(), softWrap = false)
                                         }
@@ -856,7 +856,9 @@ fun ExpandedPlayerScreen(
                                         color = appColors.textPrimary
                                     ),
                                     maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                                    softWrap = false,
+                                    overflow = TextOverflow.Clip,
+                                    modifier = Modifier.basicMarquee(iterations = Int.MAX_VALUE, initialDelayMillis = 1000)
                                 )
                             }
 
@@ -908,7 +910,11 @@ fun ExpandedPlayerScreen(
                                         color = appColors.textPrimary
                                     ),
                                     maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                                    softWrap = false,
+                                    overflow = TextOverflow.Clip,
+                                    modifier = Modifier.fillMaxWidth()
+                                        .basicMarquee(iterations = Int.MAX_VALUE, initialDelayMillis = 1000)
+                                        .testTag("player_track_title")
                                 )
                                 Spacer(modifier = Modifier.height(2.dp))
                                 Text(
@@ -1417,7 +1423,9 @@ fun ExpandedPlayerScreen(
                             color = if (isFullScreenArt) (if (isDark) Color.White else appColors.textPrimary) else appColors.textPrimary
                         ),
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        softWrap = false,
+                        overflow = TextOverflow.Clip,
+                        modifier = Modifier.basicMarquee(iterations = Int.MAX_VALUE, initialDelayMillis = 1000)
                     )
                 }
 
@@ -1494,7 +1502,7 @@ fun ExpandedPlayerScreen(
                                 )) {
                                     Text(track.cleanTitle, color = appColors.textPrimary,
                                         fontWeight = FontWeight.Bold, fontSize = 16.sp, maxLines = 1,
-                                        modifier = Modifier.fillMaxWidth().basicMarquee(), softWrap = false)
+                                        modifier = Modifier.fillMaxWidth().basicMarquee(iterations = Int.MAX_VALUE, initialDelayMillis = 1000), softWrap = false)
                                     Spacer(Modifier.height(2.dp))
                                     Text(singerLabel, color = appColors.textSecondary,
                                         fontWeight = FontWeight.Medium, fontSize = 13.sp, maxLines = 1,
@@ -1754,7 +1762,11 @@ fun ExpandedPlayerScreen(
                                             color = appColors.textPrimary
                                         ),
                                         maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
+                                        softWrap = false,
+                                        overflow = TextOverflow.Clip,
+                                        modifier = Modifier.fillMaxWidth()
+                                            .basicMarquee(iterations = Int.MAX_VALUE, initialDelayMillis = 1000)
+                                            .testTag("player_track_title")
                                     )
                                     Spacer(modifier = Modifier.height(2.dp))
                                     Text(

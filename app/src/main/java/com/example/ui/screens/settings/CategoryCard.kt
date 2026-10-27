@@ -118,7 +118,7 @@ fun SettingsCategoryItemRow(
                 Icon(
                     imageVector = category.icon,
                     contentDescription = category.title,
-                    tint = appColors.textSecondary,
+                    tint = appColors.primaryAccent,
                     modifier = Modifier.size(22.dp)
                 )
             }
