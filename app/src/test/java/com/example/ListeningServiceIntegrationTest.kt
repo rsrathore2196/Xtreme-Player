@@ -35,6 +35,7 @@ class ListeningServiceIntegrationTest {
                 "getDuration" -> 60_000L
                 "getCurrentMediaItemIndex" -> 0
                 "isPlaying" -> playing
+                "getPlaybackParameters" -> PlaybackParameters.DEFAULT
                 else -> error("Unexpected player call ${method.name}")
             }
         } as ExoPlayer
@@ -66,5 +67,9 @@ class ListeningServiceIntegrationTest {
         tick(0, 65_000)
         tick(15_000, 80_000)
         assertEquals(50_000, snapshots.last().listenedMs)
+        tick(60_000, 140_000) // A genuinely advancing minute must not be capped at 30 seconds.
+        assertEquals(110_000, snapshots.last().listenedMs)
+        tick(60_000, 145_000) // Only five seconds advanced during a delayed/stalled interval.
+        assertEquals(115_000, snapshots.last().listenedMs)
     }
 }

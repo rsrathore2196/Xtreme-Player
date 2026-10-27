@@ -60,15 +60,21 @@ class ListeningStatsTest {
         assertNotEquals(id, out.last().occurrence)
         assertEquals(1, out.last().days.values.sumOf { it.plays })
     }
-    @Test fun delayedCallbacksAreBoundedAndEarlySkipsStillRetainMinutes() {
+    @Test fun delayedPlaybackIsNotTruncatedAndEarlySkipsStillRetainMinutes() {
         val out = mutableListOf<ListeningSnapshot>()
         val clock = ListeningClock(out::add)
         clock.update(song, true, 0, start, utc)
         clock.update(song, true, 300_000, start + 300_000, utc)
-        assertEquals(30_000, out.last().listenedMs)
+        assertEquals(300_000, out.last().listenedMs)
         clock.update(null, false, 305_000, start + 305_000, utc)
-        assertEquals(35_000, out.last().listenedMs)
-        assertEquals(0, out.last().days.values.sumOf { it.plays })
+        assertEquals(305_000, out.last().listenedMs)
+        assertEquals(1, out.last().days.values.sumOf { it.plays })
+        val skipped = mutableListOf<ListeningSnapshot>()
+        val skipClock = ListeningClock(skipped::add)
+        skipClock.update(song, true, 0, start, utc)
+        skipClock.update(null, false, 15_000, start + 15_000, utc)
+        assertEquals(15_000, skipped.single().listenedMs)
+        assertEquals(0, skipped.single().days.values.sumOf { it.plays })
     }
     @Test fun midnightMonthAndDstBoundariesSplitDurationWithoutDuplicatingPlays() {
         val out = mutableListOf<ListeningSnapshot>()

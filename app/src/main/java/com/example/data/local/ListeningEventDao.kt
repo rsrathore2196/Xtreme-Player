@@ -81,6 +81,8 @@ interface ListeningEventDao {
 
     @Query("SELECT * FROM listening_events WHERE id IN (:ids)")
     suspend fun getEventsByIds(ids: List<Long>): List<ListeningEventEntity>
+    @Query("SELECT * FROM listening_events WHERE sessionId=:occurrence AND eventType='ACTUAL_PLAY' LIMIT 1")
+    suspend fun getActualPlayForOccurrence(occurrence: String): ListeningEventEntity?
 
     /**
      * Cold-Start Query: Checks how many tracks have been played meaningfully

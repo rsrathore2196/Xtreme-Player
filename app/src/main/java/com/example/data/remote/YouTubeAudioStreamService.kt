@@ -316,6 +316,28 @@ object YouTubeAudioStreamService {
     }
     fun cachedForUrl(url: String): AudioStream? = synchronized(cache) { cache.snapshot().values.lastOrNull { it.url == url } }
 
+    /** A virtual URI is reusable only while its exact playable transport is still fresh in memory. */
+    internal fun canReuseStream(reference: String, cap: Int): Boolean {
+        val uri = Uri.parse(reference)
+        val video = videoIdFromUri(uri)
+        val candidates = if (video != null) cachedStreams(video) else listOfNotNull(cachedForUrl(reference))
+        return candidates.any { stream ->
+            stream.expiresAt > System.currentTimeMillis() + 15_000L && stream.clientId !in rejectedClients(stream.videoId) &&
+                YouTubeAudioFormatPolicy.acceptsBitrate(stream.bitrateKbps.takeIf { it > 0 }?.times(1000), cap) &&
+                (uri.getQueryParameter("codec") != "opus" || stream.codec.equals("Opus", true)) &&
+                (bitrateCapFromUri(uri)?.let { it == stream.selectionCapBps } != false) && when {
+                    video == null -> stream.url == reference
+                    uri.scheme == "xtreme-sabr" -> stream.isSabr && stream.url == reference
+                    stream.isHls -> uri.lastPathSegment?.endsWith(".m3u8") == true &&
+                        uri.getQueryParameter("session") != null && uri.getQueryParameter("session") ==
+                        Uri.parse(playbackUri("yt_$video", stream.url)).getQueryParameter("session")
+                    else -> !stream.isSabr && uri.lastPathSegment?.endsWith(".m3u8") != true &&
+                        uri.getQueryParameter("itag")?.toIntOrNull() == stream.itag &&
+                        (uri.getQueryParameter("length")?.toLongOrNull()?.let { it == stream.contentLength } != false)
+                }
+        }
+    }
+
     /** Representation-declared average rate, not an itag estimate or another source's extras. */
     fun bitrateForPlaybackUri(uri: Uri, decodedCodec: String): Int = synchronized(cache) {
         val address = uri.toString()

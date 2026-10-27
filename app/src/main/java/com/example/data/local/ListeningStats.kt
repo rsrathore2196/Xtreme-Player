@@ -93,12 +93,13 @@ class ListeningClock(private val emit: (ListeningSnapshot) -> Unit,
     private var savedPlaying = false
 
     fun update(next: MusicTrack?, playing: Boolean, elapsed: Long, wall: Long,
-        zone: ZoneId = ZoneId.systemDefault(), newOccurrence: Boolean = false, advancing: Boolean = true) {
+        zone: ZoneId = ZoneId.systemDefault(), newOccurrence: Boolean = false, advancing: Boolean = true,
+        advancingLimitMs: Long = Long.MAX_VALUE) {
         val previous = track
         if (running && previous != null && advancing) {
-            // The existing service checkpoints every 15s. A delayed/stalled callback
-            // cannot attribute an unbounded interval to audio that might have stopped.
-            val delta = (elapsed - lastElapsed).coerceIn(0, 30_000)
+            // Monotonic time owns duration. Service-provided media-clock evidence
+            // limits stalled intervals/seeks without discarding genuine delayed playback.
+            val delta = minOf((elapsed - lastElapsed).coerceAtLeast(0), advancingLimitMs.coerceAtLeast(0))
             val threshold = threshold(previous.durationMs)
             val crossing = if (!qualified && listened + delta >= threshold) (threshold - listened).coerceAtLeast(0) else null
             var start = lastWall

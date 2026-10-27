@@ -227,6 +227,7 @@ class MusicService : MediaLibraryService() {
         emit = { snapshot -> com.example.data.repository.ListeningStatsRepository.get(this).record(snapshot) },
         onOccurrence = com.example.data.local.ListeningSessions::publish)
     private var listeningPosition = 0L
+    private var listeningSpeed = 1f
     private var listeningTrackId: String? = null
     private var listeningIndex = C.INDEX_UNSET
     private var listeningRestart = false
@@ -236,11 +237,15 @@ class MusicService : MediaLibraryService() {
         val track = player.currentMediaItem?.let { currentPolicyTrack(player, it) }
         val position = player.currentPosition
         val changed = track?.id != listeningTrackId || newOccurrence
+        val advanced = if (before != null && before.mediaItem?.mediaId == listeningTrackId)
+            (before.positionMs - listeningPosition).coerceAtLeast(0L)
+            else if (!changed) (position - listeningPosition).coerceAtLeast(0L) else null
+        val advancingLimit = advanced?.let { kotlin.math.ceil(it.toDouble() / listeningSpeed).toLong() } ?: Long.MAX_VALUE
         listeningClock.update(track, player.isPlaying, android.os.SystemClock.elapsedRealtime(),
             System.currentTimeMillis(), newOccurrence = newOccurrence,
-            advancing = if (before != null && before.mediaItem?.mediaId == listeningTrackId) before.positionMs != listeningPosition
-                else changed || position != listeningPosition)
+            advancing = advanced == null || advanced > 0L, advancingLimitMs = advancingLimit)
         listeningPosition = position
+        listeningSpeed = player.playbackParameters.speed.takeIf { it.isFinite() && it > 0f } ?: 1f
         listeningTrackId = track?.id
         listeningIndex = player.currentMediaItemIndex
     }
@@ -1049,7 +1054,12 @@ class MusicService : MediaLibraryService() {
                 checkpointJob?.cancel()
                 checkpoint(sampleListeningTime = false)
                 if (isPlaying) checkpointJob = serviceScope.launch {
-                    while (isActive) { delay(15_000L); checkpoint() }
+                    while (isActive) {
+                        delay(15_000L); checkpoint()
+                        try { com.example.data.repository.ListeningStatsRepository.flushJournalExisting() }
+                        catch (cancelled: CancellationException) { throw cancelled }
+                        catch (_: java.io.IOException) { /* The next existing checkpoint retries pending data. */ }
+                    }
                 }
                 if (isPlaying) scheduleHeadlessLossless(networkQuality.sourcePolicy.value)
             }
@@ -1058,7 +1068,8 @@ class MusicService : MediaLibraryService() {
                 // Measure once per Media3 event batch, using the position BEFORE
                 // a seek as liveness evidence. A jump cannot turn stalled time into listening.
                 if (events.contains(Player.EVENT_IS_PLAYING_CHANGED) || events.contains(Player.EVENT_PLAYBACK_STATE_CHANGED) ||
-                    events.contains(Player.EVENT_MEDIA_ITEM_TRANSITION) || events.contains(Player.EVENT_POSITION_DISCONTINUITY)) {
+                    events.contains(Player.EVENT_MEDIA_ITEM_TRANSITION) || events.contains(Player.EVENT_POSITION_DISCONTINUITY) ||
+                    events.contains(Player.EVENT_PLAYBACK_PARAMETERS_CHANGED)) {
                     sampleListening(listeningRestart, listeningBeforeDiscontinuity)
                     listeningRestart = false
                     listeningBeforeDiscontinuity = null
@@ -1235,6 +1246,16 @@ class MusicService : MediaLibraryService() {
         val format = verifiedSignalFormat ?: return
         if (player.playbackState != Player.STATE_READY || item.mediaId != verifiedSignalId || uri != verifiedSignalUri) return
         publishSignalSource(item, uri, format, verifiedSignalBitrate)
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        checkpoint()
+        serviceScope.launch {
+            try { com.example.data.repository.ListeningStatsRepository.flushJournalExisting() }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: java.io.IOException) { android.util.Log.w("MusicService", "Listening checkpoint could not be made durable", error) }
+            finally { super@MusicService.onTaskRemoved(rootIntent) }
+        }
     }
 
     override fun onDestroy() {

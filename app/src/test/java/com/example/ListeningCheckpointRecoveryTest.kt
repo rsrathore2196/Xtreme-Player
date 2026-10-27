@@ -3,6 +3,7 @@ package com.example
 import android.app.Application
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import androidx.room.withTransaction
 import com.example.data.local.*
 import com.example.data.model.MusicTrack
 import com.example.data.repository.ListeningCheckpointJournal
@@ -10,6 +11,9 @@ import com.example.data.repository.ListeningStatsRepository
 import java.io.File
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -72,5 +76,52 @@ class ListeningCheckpointRecoveryTest {
             assertEquals(60_000L, restarted.summary(ListeningPeriod.LIFETIME).millis)
             assertEquals(1L, restarted.summary(ListeningPeriod.LIFETIME).plays)
         } finally { restarted.close(); db.close() }
+    }
+
+    @Test fun slowRoomAggregationCannotBlockNewSnapshotsFromReachingTheJournal() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = MusicDatabase.createInMemoryDatabase(context)
+        val file = File(context.cacheDir, "slow-room-journal.json")
+        val locked = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val blocker = launch(Dispatchers.IO) { db.withTransaction { locked.complete(Unit); release.await() } }
+        withTimeout(5_000) { locked.await() }
+        val repository = ListeningStatsRepository(context, db, file)
+        try {
+            repository.record(snapshot("first"))
+            withTimeout(5_000) { repository.flushJournal() }
+            repository.record(snapshot("second"))
+            withTimeout(5_000) { repository.flushJournal() }
+            assertEquals(setOf("first", "second"), ListeningCheckpointJournal(file).read().map { it.occurrence }.toSet())
+        } finally {
+            repository.close() // Simulate process termination with aggregation still outstanding.
+            release.complete(Unit); blocker.join()
+        }
+        val restarted = ListeningStatsRepository(context, db, file)
+        try {
+            withTimeout(5_000) { restarted.flush() }
+            assertEquals(120_000L, restarted.summary(ListeningPeriod.LIFETIME).millis)
+            assertEquals(2L, restarted.summary(ListeningPeriod.LIFETIME).plays)
+        } finally { restarted.close(); db.close() }
+    }
+
+    @Test fun replayingARetiredOccurrenceAfterWatermarkPruningDoesNotDuplicateTotalsOrHistory() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = MusicDatabase.createInMemoryDatabase(context)
+        val file = File(context.cacheDir, "retired-occurrences.json")
+        val repository = ListeningStatsRepository(context, db, file)
+        val first = snapshot("retired-first")
+        try {
+            repository.record(first); withTimeout(5_000) { repository.flush() }
+            repeat(40) { index ->
+                repository.record(snapshot("later-$index")); withTimeout(5_000) { repository.flush() }
+            }
+            assertNull(db.listeningStatsDao().checkpoint(first.occurrence))
+            // Exercise the suspected stale-journal replay through the actual repository entry point.
+            repository.record(first); withTimeout(5_000) { repository.flush() }
+            assertEquals(41 * 60_000L, repository.summary(ListeningPeriod.LIFETIME).millis)
+            assertEquals(41L, repository.summary(ListeningPeriod.LIFETIME).plays)
+            assertEquals(41, db.listeningEventDao().getActualPlays().size)
+        } finally { repository.close(); db.close() }
     }
 }

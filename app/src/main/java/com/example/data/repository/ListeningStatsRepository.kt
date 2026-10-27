@@ -1,13 +1,19 @@
 package com.example.data.repository
 
 import android.content.Context
+import android.content.BroadcastReceiver
+import android.content.Intent
+import android.content.IntentFilter
 import androidx.room.withTransaction
 import com.example.data.local.*
 import com.example.performance.AppDispatchers
 import com.example.recommendation.HomeRecommendationPolicy
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
 import org.json.JSONArray
 import java.time.LocalDate
@@ -16,18 +22,39 @@ import java.util.UUID
 /** One application-owned serialized writer; no service-owned job can cancel an enqueued flush. */
 @OptIn(ExperimentalCoroutinesApi::class)
 class ListeningStatsRepository internal constructor(context: Context, suppliedDatabase: MusicDatabase? = null,
-    pendingFile: java.io.File? = null) {
+    pendingFile: java.io.File? = null, private val dateProvider: () -> LocalDate = { LocalDate.now() }) {
     private val app = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + AppDispatchers.Io)
     private val database by lazy { suppliedDatabase ?: MusicDatabase.getDatabase(app) }
-    private val pending = Channel<Unit>(Channel.CONFLATED)
+    private data class Pending(val snapshot: ListeningSnapshot, val revision: Long)
+    private data class Flush(val target: Long, val completion: CompletableDeferred<Unit>)
+    private val journalWakeup = Channel<Unit>(Channel.CONFLATED)
+    private val aggregateWakeup = Channel<Unit>(Channel.CONFLATED)
     private val inputLock = Any()
-    private val incoming = linkedMapOf<String, ListeningSnapshot>()
-    private val barriers = mutableListOf<CompletableDeferred<Unit>>()
+    private val latest = linkedMapOf<String, Pending>()
+    private val pendingSince = linkedMapOf<String, Long>()
+    private var inputRevision = 0L
+    private val journalBarriers = mutableListOf<CompletableDeferred<Unit>>()
+    private val barriers = mutableListOf<Flush>()
+    private val journalLock = Mutex()
+    private val durable = linkedMapOf<String, Pending>()
+    private var journalLoaded = false
     private val journal by lazy {
         ListeningCheckpointJournal(pendingFile ?: java.io.File(app.noBackupFilesDir, "listening_pending_v1.json"))
     }
     private val revisions = MutableStateFlow(0L)
+    private val calendarDates = callbackFlow {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) { trySend(dateProvider()) }
+        }
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_DATE_CHANGED); addAction(Intent.ACTION_TIME_CHANGED); addAction(Intent.ACTION_TIMEZONE_CHANGED)
+        }
+        if (android.os.Build.VERSION.SDK_INT >= 33) app.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        else app.registerReceiver(receiver, filter) // Protected system date/time broadcasts only; no app-defined permission.
+        trySend(dateProvider())
+        awaitClose { app.unregisterReceiver(receiver) }
+    }.distinctUntilChanged()
     private val _progress = MutableStateFlow<ListeningSnapshot?>(null)
     val progress = _progress.asStateFlow()
     private val summaries = android.util.LruCache<String, ListeningSummary>(8)
@@ -39,52 +66,102 @@ class ListeningStatsRepository internal constructor(context: Context, suppliedDa
         }
     }
     init {
+        // Journaling must never wait for metadata queries or a Room transaction.
+        // Both consumers reuse the existing IO pool; neither owns a timer or thread.
         scope.launch {
-            val retry = linkedMapOf<String, ListeningSnapshot>()
-            var loaded = false
-            for (signal in pending) {
-                val completions = synchronized(inputLock) {
-                    incoming.values.forEach { retry[it.occurrence] = merge(retry[it.occurrence], it) }
-                    incoming.clear()
-                    barriers.toList().also { barriers.clear() }
-                }
+            for (signal in journalWakeup) {
+                var completions = emptyList<CompletableDeferred<Unit>>()
                 try {
-                    if (!loaded) {
-                        val restored = journal.read().associateByTo(linkedMapOf()) { it.occurrence }
-                        retry.values.forEach { restored[it.occurrence] = merge(restored[it.occurrence], it) }
-                        retry.clear(); retry.putAll(restored)
-                        loaded = true
-                    }
-                    if (retry.isNotEmpty()) {
-                        // Durable intent precedes aggregation. A crash between commit and
-                        // acknowledgement can replay safely using occurrence watermarks.
-                        journal.write(retry.values)
-                        var failure: Exception? = null
-                        for (next in retry.values.toList()) {
-                            try {
-                                val changed = persist(next)
-                                retry.remove(next.occurrence)
-                                if (changed.totals) invalidateAffected(next, changed.identity)
-                            } catch (cancelled: CancellationException) { throw cancelled }
-                            catch (error: Exception) { failure = error; break }
+                    journalLock.withLock {
+                        if (!journalLoaded) {
+                            val restored = journal.read()
+                            synchronized(inputLock) {
+                                restored.forEach { snapshot ->
+                                    val current = latest[snapshot.occurrence]
+                                    latest[snapshot.occurrence] = Pending(merge(snapshot, current?.snapshot ?: snapshot), current?.revision ?: 0L)
+                                    pendingSince[snapshot.occurrence] = 0L
+                                }
+                            }
+                            journalLoaded = true
                         }
-                        journal.write(retry.values)
-                        // Never prune a watermark before removing its journal entry durably.
-                        database.listeningStatsDao().pruneCheckpoints(retry.keys.toList().ifEmpty { listOf("") })
-                        failure?.let { throw it }
+                        val updates = synchronized(inputLock) {
+                            completions = journalBarriers.toList(); journalBarriers.clear()
+                            latest.values.toList()
+                        }
+                        val next = LinkedHashMap(durable)
+                        updates.forEach { update -> next[update.snapshot.occurrence] = Pending(
+                            merge(next[update.snapshot.occurrence]?.snapshot, update.snapshot), update.revision) }
+                        if (next != durable) journal.write(next.values.map { it.snapshot })
+                        durable.clear(); durable.putAll(next)
                     }
                     completions.forEach { it.complete(Unit) }
+                    aggregateWakeup.trySend(Unit)
                 } catch (cancelled: CancellationException) {
-                    completions.forEach { it.completeExceptionally(cancelled) }
-                    throw cancelled
-                }
-                catch (error: Exception) {
-                    android.util.Log.w("ListeningStats", "Listening checkpoint pending; will retry on the next checkpoint", error)
-                    completions.forEach { it.completeExceptionally(java.io.IOException("Listening checkpoint is pending", error)) }
+                    completions.forEach { it.completeExceptionally(cancelled) }; throw cancelled
+                } catch (error: Exception) {
+                    // Includes barriers queued before a failed initial journal read.
+                    synchronized(inputLock) { completions = completions + journalBarriers; journalBarriers.clear() }
+                    completions.forEach { it.completeExceptionally(java.io.IOException("Listening journal is pending", error)) }
+                    android.util.Log.w("ListeningStats", "Journal checkpoint pending; will retry on the next checkpoint", error)
                 }
             }
         }
-        pending.trySend(Unit) // Replay a previous process's journal only on this lazy repository's IO lane.
+        scope.launch {
+            for (signal in aggregateWakeup) {
+                val committed = mutableListOf<Pending>()
+                var failure: Exception? = null
+                try {
+                    val batch = journalLock.withLock { durable.values.toList() }
+                    for (entry in batch) {
+                        try {
+                            val changed = persist(entry.snapshot)
+                            committed += entry
+                            if (changed.totals) invalidateAffected(entry.snapshot, changed.identity)
+                        } catch (cancelled: CancellationException) { throw cancelled }
+                        catch (error: Exception) { failure = error; break }
+                    }
+                    if (committed.isNotEmpty()) {
+                        val protected = journalLock.withLock {
+                            val next = LinkedHashMap(durable)
+                            committed.forEach { entry ->
+                                if (next[entry.snapshot.occurrence]?.revision == entry.revision) next.remove(entry.snapshot.occurrence)
+                            }
+                            // Commit acknowledgement before retiring a replay watermark.
+                            journal.write(next.values.map { it.snapshot })
+                            durable.clear(); durable.putAll(next)
+                            synchronized(inputLock) {
+                                committed.forEach { entry ->
+                                    val id = entry.snapshot.occurrence
+                                    if (latest[id]?.revision == entry.revision) {
+                                        latest.remove(id); pendingSince.remove(id)
+                                    } else pendingSince[id]?.let { pendingSince[id] = maxOf(it, entry.revision + 1) }
+                                }
+                                (durable.keys + pendingSince.keys).toList().ifEmpty { listOf("") }
+                            }
+                        }
+                        // A large failed backlog must not exceed SQLite's bind limit.
+                        // Defer optional pruning rather than losing replay protection.
+                        if (protected.size <= 512) database.listeningStatsDao().pruneCheckpoints(protected)
+                    }
+                } catch (cancelled: CancellationException) {
+                    completeBarriers(cancelled); throw cancelled
+                } catch (error: Exception) { failure = error }
+                completeBarriers(failure)
+                if (failure != null) android.util.Log.w("ListeningStats", "Durable listening checkpoint awaiting aggregation", failure)
+            }
+        }
+        journalWakeup.trySend(Unit) // Replay only when this repository is first used.
+    }
+    private fun completeBarriers(failure: Throwable? = null) = synchronized(inputLock) {
+        val iterator = barriers.iterator()
+        while (iterator.hasNext()) {
+            val barrier = iterator.next()
+            if (pendingSince.values.none { it <= barrier.target }) {
+                barrier.completion.complete(Unit); iterator.remove()
+            } else if (failure != null) {
+                barrier.completion.completeExceptionally(java.io.IOException("Listening checkpoint is pending", failure)); iterator.remove()
+            }
+        }
     }
     private fun invalidateAffected(snapshot: ListeningSnapshot, identityChanged: Boolean) = synchronized(summaries) {
         if (identityChanged) summaries.evictAll()
@@ -109,16 +186,34 @@ class ListeningStatsRepository internal constructor(context: Context, suppliedDa
     }
     fun record(snapshot: ListeningSnapshot) {
         _progress.value = snapshot
-        synchronized(inputLock) { incoming[snapshot.occurrence] = merge(incoming[snapshot.occurrence], snapshot) }
-        pending.trySend(Unit)
+        synchronized(inputLock) {
+            val revision = ++inputRevision
+            latest[snapshot.occurrence] = Pending(merge(latest[snapshot.occurrence]?.snapshot, snapshot), revision)
+            pendingSince.putIfAbsent(snapshot.occurrence, revision)
+        }
+        journalWakeup.trySend(Unit)
     }
-    suspend fun flush() {
+    /** Acknowledges durable intent independently of potentially slow Room aggregation. */
+    suspend fun flushJournal() {
         val completion = CompletableDeferred<Unit>()
-        synchronized(inputLock) { barriers += completion }
-        pending.send(Unit)
+        synchronized(inputLock) { journalBarriers += completion }
+        journalWakeup.send(Unit)
         completion.await()
     }
-    internal fun close() { scope.cancel() }
+    suspend fun flush() {
+        val target = synchronized(inputLock) { inputRevision }
+        flushJournal()
+        val completion = CompletableDeferred<Unit>()
+        synchronized(inputLock) { barriers += Flush(target, completion) }
+        aggregateWakeup.send(Unit)
+        completion.await()
+    }
+    internal fun close() {
+        val cancelled = CancellationException("Listening repository closed")
+        scope.cancel()
+        synchronized(inputLock) { journalBarriers.forEach { it.completeExceptionally(cancelled) }; journalBarriers.clear() }
+        completeBarriers(cancelled)
+    }
     private data class Persisted(val totals: Boolean, val identity: Boolean)
     private suspend fun persist(snapshot: ListeningSnapshot): Persisted {
         // Reuse rich catalog metadata already owned by the library. The service's
@@ -150,6 +245,11 @@ class ListeningStatsRepository internal constructor(context: Context, suppliedDa
                 }
             }
             val checkpoint = dao.checkpoint(snapshot.occurrence)
+            // The journal acknowledges committed entries before pruning their
+            // watermarks. An existing history occurrence without a watermark is
+            // retired, never a new play, even if an old cumulative snapshot reappears.
+            if (checkpoint == null && database.listeningEventDao().getActualPlayForOccurrence(snapshot.occurrence) != null)
+                return@withTransaction
             val previous = checkpoint?.takeIf { it.occurrence == snapshot.occurrence }?.let { decodeDays(it.days) }.orEmpty()
             val cumulative = (previous.keys + snapshot.days.keys).associateWith { day ->
                 val old = previous[day] ?: ListeningDay()
@@ -197,11 +297,11 @@ class ListeningStatsRepository internal constructor(context: Context, suppliedDa
         lastHistoryRecord = historyRecord
         return Persisted(changed || rekeyed, rekeyed)
     }
-    fun peek(period: ListeningPeriod, today: LocalDate = LocalDate.now()): ListeningSummary? = summaries[key(period, today)]
-    fun observe(period: ListeningPeriod): Flow<ListeningSummary> = revisions.mapLatest {
-        summary(period)
+    fun peek(period: ListeningPeriod, today: LocalDate = dateProvider()): ListeningSummary? = summaries[key(period, today)]
+    fun observe(period: ListeningPeriod): Flow<ListeningSummary> = combine(revisions, calendarDates) { _, day -> day }.mapLatest { day ->
+        summary(period, day)
     }.distinctUntilChanged().flowOn(AppDispatchers.Io)
-    suspend fun summary(period: ListeningPeriod, today: LocalDate = LocalDate.now()): ListeningSummary {
+    suspend fun summary(period: ListeningPeriod, today: LocalDate = dateProvider()): ListeningSummary {
         val cacheKey = key(period, today)
         summaries[cacheKey]?.let { return it }
         val revision = revisions.value
@@ -231,6 +331,7 @@ class ListeningStatsRepository internal constructor(context: Context, suppliedDa
             instance ?: ListeningStatsRepository(context).also { instance = it }
         }
         suspend fun flushExisting() { instance?.flush() }
+        suspend fun flushJournalExisting() { instance?.flushJournal() }
         fun invalidateExisting() { instance?.invalidate() }
         fun encodeDays(days: Map<String, ListeningDay>) = JSONObject().apply {
             days.forEach { (day, value) -> put(day, JSONArray().put(value.millis).put(value.plays)) }

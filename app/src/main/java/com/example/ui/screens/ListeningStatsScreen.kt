@@ -1,6 +1,5 @@
 package com.example.ui.screens
 
-import android.content.*
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.*
@@ -51,17 +50,9 @@ fun ListeningStatsScreen(period: ListeningPeriod, onPeriod: (ListeningPeriod) ->
     val context = LocalContext.current.applicationContext
     val repository = remember(context) { ListeningStatsRepository.get(context) }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
-    var calendarRevision by remember { mutableIntStateOf(0) }
-    DisposableEffect(context) {
-        val receiver = object : BroadcastReceiver() {
-            override fun onReceive(context: Context?, intent: Intent?) { calendarRevision++ }
-        }
-        val filter = IntentFilter().apply { addAction(Intent.ACTION_DATE_CHANGED); addAction(Intent.ACTION_TIMEZONE_CHANGED); addAction(Intent.ACTION_TIME_CHANGED) }
-        androidx.core.content.ContextCompat.registerReceiver(context, receiver, filter, androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED)
-        onDispose { context.unregisterReceiver(receiver) }
-    }
-    var failure by remember(period, calendarRevision) { mutableStateOf<String?>(null) }
-    val summary by key(period, calendarRevision, lifecycle) {
+    var reloadRevision by remember { mutableIntStateOf(0) }
+    var failure by remember(period, reloadRevision) { mutableStateOf<String?>(null) }
+    val summary by key(period, reloadRevision, lifecycle) {
         produceState(repository.peek(period)) {
             lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 failure = null
@@ -78,7 +69,7 @@ fun ListeningStatsScreen(period: ListeningPeriod, onPeriod: (ListeningPeriod) ->
             val resolved = repository.playbackTracks(queue)
             onTrack(resolved.firstOrNull { it.id == track.id } ?: track, resolved)
         }
-    }, onArtist, listState, failure, { calendarRevision++ })
+    }, onArtist, listState, failure, { reloadRevision++ })
 }
 
 @Composable

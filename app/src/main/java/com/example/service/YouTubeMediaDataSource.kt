@@ -15,7 +15,8 @@ import java.io.IOException
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 internal class YouTubeMediaDataSource(private val context: Context, private val upstream: DataSource.Factory,
     private val audioHttp: DataSource.Factory = upstream) : DataSource {
-    private companion object { val CONTENT_RANGE = Regex("bytes ([0-9]+)-([0-9]+)/([0-9]+)") }
+    private companion object { val CONTENT_RANGE = Regex("bytes ([0-9]+)-([0-9]+)/([0-9]+|\\*)") }
+    private class RangeResponseException(message: String) : IOException(message)
     private var delegate: DataSource? = null
     private val listeners = mutableListOf<TransferListener>()
     private var original: DataSpec? = null
@@ -39,8 +40,12 @@ internal class YouTubeMediaDataSource(private val context: Context, private val 
         original = dataSpec
         audio = YouTubeAudioStreamService.cachedForUrl(dataSpec.uri.toString())?.takeUnless { it.isHls }
         position = dataSpec.position
-        remaining = if (dataSpec.length != C.LENGTH_UNSET.toLong()) dataSpec.length
-            else audio?.contentLength?.let { (it - position).coerceAtLeast(0L) } ?: C.LENGTH_UNSET.toLong()
+        val knownLength = audio?.contentLength?.takeIf { it >= 0L }
+        if (knownLength != null && position > knownLength) throw androidx.media3.datasource.DataSourceException(
+            androidx.media3.common.PlaybackException.ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE)
+        val available = knownLength?.let { it - position }
+        remaining = if (dataSpec.length != C.LENGTH_UNSET.toLong()) minOf(dataSpec.length, available ?: Long.MAX_VALUE)
+            else available ?: C.LENGTH_UNSET.toLong()
         if (remaining == 0L) return 0L
         openChecked()
         return remaining
@@ -51,6 +56,7 @@ internal class YouTubeMediaDataSource(private val context: Context, private val 
         var size = if (stream?.useRangeChunks == true) {
             if (remaining < 0) stream.rangeChunkSize else minOf(remaining, stream.rangeChunkSize)
         } else remaining
+        if (stream?.useRangeChunks == true && size <= 0L) throw RangeResponseException("Invalid audio chunk length")
         val spec = if (stream == null) base else base.buildUpon().setUri(stream.url)
             .setPosition(position).setLength(size).setHttpRequestHeaders(base.httpRequestHeaders + stream.headers +
                 mapOf("Accept-Encoding" to "identity")).build()
@@ -59,24 +65,28 @@ internal class YouTubeMediaDataSource(private val context: Context, private val 
         delegate = source
         val available = source.open(spec)
         if (stream != null && !YouTubeAudioStreamService.isMediaUrl(source.uri?.toString().orEmpty()))
-            throw IOException("Invalid audio CDN redirect")
+            throw RangeResponseException("Invalid audio CDN redirect")
         if (stream?.useRangeChunks == true) {
             val value = source.responseHeaders.entries.firstOrNull { it.key.equals("Content-Range", true) }
                 ?.value?.firstOrNull()
-            val range = value?.let { CONTENT_RANGE.matchEntire(it) }
+            val range = value?.let { CONTENT_RANGE.matchEntire(it.trim()) }
             if (range != null) {
                 if ((source as? HttpDataSource)?.responseCode != 206)
-                    throw IOException("Audio CDN returned an inconsistent range status")
+                    throw RangeResponseException("Audio CDN returned an inconsistent range status")
                 val end = range.groupValues[2].toLongOrNull()
-                    ?: throw IOException("Invalid audio range end")
-                val total = range.groupValues[3].toLongOrNull()
-                    ?: throw IOException("Invalid audio content length")
+                    ?: throw RangeResponseException("Invalid audio range end")
+                val total = (if (range.groupValues[3] == "*") stream.contentLength else range.groupValues[3].toLongOrNull())
+                    ?: throw RangeResponseException("Unknown audio content length")
                 if (range.groupValues[1].toLongOrNull() != position || end < position || total <= end ||
                     end > position + size - 1 || stream.contentLength?.let { it != total } == true)
-                    throw IOException("Audio CDN returned an inconsistent byte range")
+                    throw RangeResponseException("Audio CDN returned an inconsistent byte range")
                 // HTTP permits a server to cap a valid range below our requested
                 // chunk size. Read exactly those bytes, then request the next range.
                 size = end - position + 1
+                val declaredLength = source.responseHeaders.entries.firstOrNull { it.key.equals("Content-Length", true) }
+                    ?.value?.firstOrNull()?.toLongOrNull()
+                if (declaredLength != null && declaredLength != size || available >= 0L && available < size)
+                    throw RangeResponseException("Audio CDN returned an inconsistent range length")
                 if (remaining < 0) remaining = total - position
             } else {
                 val declaredLength = source.responseHeaders.entries.firstOrNull {
@@ -87,7 +97,7 @@ internal class YouTubeMediaDataSource(private val context: Context, private val 
                 // known complete representation; never assume partial bytes start at zero.
                 if ((source as? HttpDataSource)?.responseCode != 200 || stream.contentLength == null ||
                     declaredLength != stream.contentLength || available < size)
-                    throw IOException("Audio CDN did not honor the requested range")
+                    throw RangeResponseException("Audio CDN did not honor the requested range")
                 // Reopen at most once with the remaining known length after this
                 // chunk; repeatedly skipping a full body would waste data and CPU.
                 audio = stream.copy(useRangeChunks = false)
@@ -101,9 +111,16 @@ internal class YouTubeMediaDataSource(private val context: Context, private val 
     }
     private fun recoveryFailure(error: IOException): IOException {
         val stream = audio ?: return error // Other providers keep their existing Media3 behavior.
+        if (error is YouTubeStreamRefreshRequiredException || Thread.currentThread().isInterrupted) return error
         val status = generateSequence<Throwable>(error) { it.cause }.take(8)
             .filterIsInstance<HttpDataSource.InvalidResponseCodeException>().firstOrNull()?.responseCode
-        if (status !in setOf(401, 403, 410) || Thread.currentThread().isInterrupted) return error
+        if (error is RangeResponseException) {
+            // Byte offsets from this response cannot be trusted. Renew the same
+            // recording by playback time instead of reopening identical bad bytes.
+            YouTubeAudioStreamService.invalidate(stream.videoId)
+            return YouTubeStreamRefreshRequiredException(error)
+        }
+        if (status !in setOf(401, 403, 410)) return error
         // Extraction belongs to the controller/service's cancellable coroutine.
         // Never block this synchronous loader callback on WebView/network recovery.
         YouTubeAudioStreamService.reject(stream.videoId, stream.url, stream.clientId)

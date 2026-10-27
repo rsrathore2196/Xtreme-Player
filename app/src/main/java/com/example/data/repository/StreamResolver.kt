@@ -154,15 +154,26 @@ internal class StreamResolver(
         }
         synchronized(cache) { cache.entries.removeAll { it.key.policy != policy.key && !providerAllowed(it.value.track) } }
         if (forceRefresh || preferYouTube) synchronized(cache) { cache.keys.removeAll { it.id == track.id } }
-        else {
-            val cached = synchronized(cache) { cache[key]?.takeIf { it.expiresAt > System.currentTimeMillis() }?.track }
-            if (cached != null && providerAllowed(cached) && cached.audioUrl != failedUrl &&
-                cached.audioUrl !in rejectedUrls && (!selectedArchive ||
-                    cached.audioUrl == track.audioUrl && cached.isLossless)) {
-                if (currentSourceOnly && !YouTubeAudioStreamService.isYouTubeAudio(cached.id, cached.audioUrl))
-                    return@withContext withStream(track, capped(cached))
-
-            }
+        val cached = if (forceRefresh || preferYouTube) null else synchronized(cache) { cache[key] }
+        val cachedSourceId = cached?.track?.let {
+            com.example.playback.SourceTransitionOrigin.sourceId(it.id, Uri.parse(it.audioUrl), policy)
+        }
+        fun cachedFor(sourceId: String?): MusicTrack? {
+            if (sourceId == null || sourceId != cachedSourceId || cached == null || cached.expiresAt <= System.currentTimeMillis()) return null
+            val candidate = capped(cached.track)
+            val addon = candidate.source.startsWith("Streaming Addon:") &&
+                com.example.data.remote.StreamingAddons.isVerified(candidate.audioUrl, policy)
+            if ((!providerAllowed(candidate) && !addon) || !policy.acceptsRemoteTrack(candidate) ||
+                candidate.audioUrl == failedUrl || candidate.audioUrl in rejectedUrls || isLosslessUrlRejected(candidate.audioUrl) ||
+                selectedArchive && (candidate.audioUrl != archiveUrl || !candidate.isLossless)) return null
+            if (YouTubeAudioStreamService.isYouTubeAudio(candidate.id, candidate.audioUrl) &&
+                !YouTubeAudioStreamService.canReuseStream(candidate.audioUrl, ceilingBps)) return null
+            return candidate
+        }
+        if (!manualUpgrade) {
+            val target = if (currentSourceOnly) com.example.playback.SourceTransitionOrigin.sourceId(track.id, Uri.parse(track.audioUrl), policy)
+                else preferredSourceId ?: policy.resolutionSourcesFor(track.id).firstOrNull()?.id
+            cachedFor(target)?.let { return@withContext withStream(track, it) }
         }
         val rejected = failedUrl ?: track.audioUrl.takeIf { forceRefresh }
         if (forceRefresh && failedUrl != null && youtubeSelection) selectedVideoId(track)?.let {
@@ -340,12 +351,7 @@ internal class StreamResolver(
         val resolved = withTimeoutOrNull(PLAYBACK_RESOLUTION_TIMEOUT_MS) {
             suspend fun boundedJio(): MusicTrack? {
                 if (preferYouTube && sourcePolicy == null) return null
-                if (!forceRefresh) {
-                    val saved = synchronized(cache) { cache[key]
-                        ?.takeIf { it.expiresAt > System.currentTimeMillis() }?.track }
-                    if (saved != null && !YouTubeAudioStreamService.isYouTubeAudio(saved.id, saved.audioUrl) &&
-                        !archiveTransport(saved.audioUrl) && usable(saved)) return saved
-                }
+                cachedFor(policy.sourceId(PlaybackSourceKind.JIOSAAVN))?.let { return it }
                 // Each provider owns its bounded budget. Earlier Archive/YouTube
                 // work cannot spend the fallback provider's resolution window.
                 return attempt(6_000L) { jioExact() ?: standardFallback() }
@@ -372,7 +378,7 @@ internal class StreamResolver(
                     coroutineContext.ensureActive()
                     failureReason = null
                     failureStage = PlaybackDiagnostics.Stage.RESOLUTION
-                    val answer = try { when (provider.kind) {
+                    val answer = cachedFor(provider.id) ?: try { when (provider.kind) {
                         PlaybackSourceKind.YOUTUBE -> if (selectedVideoId(track) != null) youtubeExact(track) else youtubeFallback()
                         PlaybackSourceKind.JIOSAAVN -> boundedJio()
                         PlaybackSourceKind.INTERNET_ARCHIVE -> if (selectedArchive) {
