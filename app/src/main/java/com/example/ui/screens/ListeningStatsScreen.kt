@@ -15,6 +15,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -32,6 +33,7 @@ import com.example.data.repository.*
 import com.example.ui.components.ArtistPortrait
 import com.example.ui.components.AppDynamicLogo
 import com.example.ui.theme.LocalAppColors
+import com.example.ui.theme.LiquidGlass
 import com.example.ui.util.rememberOptimizedImageRequest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.catch
@@ -139,8 +141,19 @@ private fun statsArtist(row: ListeningTotal): CatalogArtist = ArtistPhotoReposit
 @Composable
 private fun StatCard(label: String, value: String, modifier: Modifier, song: ListeningTotal? = null, artist: ListeningTotal? = null) {
     val colors = LocalAppColors.current
+    // Built-in presets get a raised surface; custom cards retain their exact saved color.
+    val cardColor = if (colors.neutralSurfaces) colors.cardBackgroundElevated else colors.cardBackground
+    val minimumContrast = if (colors.highContrastTypography) 7f else 4.5f
+    val textColor = remember(colors.textPrimary, cardColor, minimumContrast) {
+        LiquidGlass.contrastColor(colors.textPrimary, listOf(cardColor), minimumContrast)
+    }
+    val labelColor = remember(colors.textSecondary, cardColor, minimumContrast) {
+        LiquidGlass.contrastColor(colors.textSecondary, listOf(cardColor), minimumContrast)
+    }
+    val logoSurface = colors.primaryAccent.copy(alpha = 0.08f).compositeOver(cardColor)
     Surface(modifier.aspectRatio(1f).testTag("stats_card_$label"), shape = RoundedCornerShape(24.dp),
-        color = colors.cardBackground, shadowElevation = 3.dp) {
+        color = cardColor, tonalElevation = 0.dp, shadowElevation = 6.dp,
+        border = BorderStroke(1.dp, textColor.copy(alpha = 0.10f))) {
         BoxWithConstraints {
             val compact = maxWidth < 176.dp
             val media = song != null || artist != null
@@ -148,14 +161,15 @@ private fun StatCard(label: String, value: String, modifier: Modifier, song: Lis
                 verticalArrangement = Arrangement.SpaceBetween) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(label, Modifier.weight(1f), color = colors.textSecondary,
+                    Text(label, Modifier.weight(1f), color = labelColor,
                         style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold,
                         maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    AppDynamicLogo(Modifier.size(if (compact) 24.dp else 28.dp).testTag("stats_logo_$label"),
-                        cutoutColor = colors.cardBackground, showGlow = false)
+                    AppDynamicLogo(Modifier.size(if (compact) 24.dp else 28.dp)
+                        .clip(RoundedCornerShape(8.dp)).background(logoSurface).testTag("stats_logo_$label"),
+                        cutoutColor = logoSurface, showGlow = false)
                 }
                 if (media) StatsImage(song ?: artist!!, artist != null, Modifier.size(if (compact) 40.dp else 52.dp))
-                Text(value, color = colors.textPrimary,
+                Text(value, color = textColor,
                     style = if (media) MaterialTheme.typography.titleMedium else MaterialTheme.typography.headlineLarge,
                     fontSize = if (media) { if (compact) 16.sp else 18.sp } else if (compact) 32.sp else 40.sp,
                     lineHeight = if (media) { if (compact) 20.sp else 24.sp } else if (compact) 38.sp else 48.sp,

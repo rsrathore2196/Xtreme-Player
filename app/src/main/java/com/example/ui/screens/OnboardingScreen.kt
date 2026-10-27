@@ -88,6 +88,7 @@ import androidx.compose.ui.zIndex
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
@@ -225,6 +226,9 @@ private fun OnboardingContent(
     val textPrimary = appColors.textPrimary
     val textMuted = appColors.textMuted
     val primaryAccent = appColors.primaryAccent
+    val detailsCardColor = MaterialTheme.colorScheme.surfaceContainerHigh
+    val detailsInputColor = MaterialTheme.colorScheme.surface
+    val detailsOutline = MaterialTheme.colorScheme.outlineVariant
 
     val isFormValid = nameInput.trim().isNotBlank() && selectedLanguages.isNotEmpty()
 
@@ -318,17 +322,17 @@ private fun OnboardingContent(
 
                         }
 
-                        // 2. DISPLAY NAME CARD (Solid modern card, zero glass effect)
+                        // 2. DISPLAY NAME CARD
                         Card(
                             shape = RoundedCornerShape(20.dp),
                             colors = CardDefaults.cardColors(
-                                containerColor = if (isDark) Color(0xFF101824) else appColors.cardBackground
+                                containerColor = detailsCardColor
                             ),
                             border = BorderStroke(
                                 1.dp,
-                                if (isDark) Color(0xFF1E2D40) else appColors.cardBorder
+                                detailsOutline
                             ),
-                            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                            elevation = CardDefaults.cardElevation(defaultElevation = 3.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .testTag("onboarding_name_card")
@@ -380,7 +384,7 @@ private fun OnboardingContent(
                                     placeholder = {
                                         Text(
                                             "Enter your name (e.g. Alex)",
-                                            color = textMuted.copy(alpha = if (isDark) 0.65f else 0.9f),
+                                            color = textMuted,
                                             fontSize = 14.sp
                                         )
                                     },
@@ -405,11 +409,11 @@ private fun OnboardingContent(
                                     shape = RoundedCornerShape(14.dp),
                                     colors = OutlinedTextFieldDefaults.colors(
                                         focusedBorderColor = primaryAccent,
-                                        unfocusedBorderColor = if (isDark) Color(0xFF223247) else cardBorder.copy(alpha = 0.7f),
+                                        unfocusedBorderColor = detailsOutline,
                                         focusedTextColor = textPrimary,
                                         unfocusedTextColor = textPrimary,
-                                        focusedContainerColor = if (isDark) Color(0xFF162232) else appColors.scaffoldBackground.copy(alpha = 0.5f),
-                                        unfocusedContainerColor = if (isDark) Color(0xFF162232) else appColors.scaffoldBackground.copy(alpha = 0.35f)
+                                        focusedContainerColor = primaryAccent.copy(alpha = 0.04f).compositeOver(detailsInputColor),
+                                        unfocusedContainerColor = detailsInputColor
                                     ),
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -419,17 +423,17 @@ private fun OnboardingContent(
                             }
                         }
 
-                        // 3. COUNTRY & CHARTS CARD (Solid modern card, zero glass effect)
+                        // 3. COUNTRY & CHARTS CARD
                         Card(
                             shape = RoundedCornerShape(20.dp),
                             colors = CardDefaults.cardColors(
-                                containerColor = if (isDark) Color(0xFF101824) else appColors.cardBackground
+                                containerColor = detailsCardColor
                             ),
                             border = BorderStroke(
                                 1.dp,
-                                if (isDark) Color(0xFF1E2D40) else appColors.cardBorder
+                                detailsOutline
                             ),
-                            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                            elevation = CardDefaults.cardElevation(defaultElevation = 3.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .testTag("onboarding_country_card")
@@ -517,17 +521,17 @@ private fun OnboardingContent(
                             }
                         }
 
-                        // 4. MUSIC LANGUAGES CARD (Solid modern card, zero glass effect)
+                        // 4. MUSIC LANGUAGES CARD
                         Card(
                             shape = RoundedCornerShape(20.dp),
                             colors = CardDefaults.cardColors(
-                                containerColor = if (isDark) Color(0xFF101824) else appColors.cardBackground
+                                containerColor = detailsCardColor
                             ),
                             border = BorderStroke(
                                 1.dp,
-                                if (isDark) Color(0xFF1E2D40) else appColors.cardBorder
+                                detailsOutline
                             ),
-                            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                            elevation = CardDefaults.cardElevation(defaultElevation = 3.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .testTag("onboarding_languages_card")
@@ -606,11 +610,11 @@ private fun OnboardingContent(
                                             color = if (isSelected) {
                                                 primaryAccent
                                             } else {
-                                                if (isDark) Color(0xFF162232) else appColors.cardBackgroundElevated
+                                                detailsInputColor
                                             },
                                             border = BorderStroke(
                                                 1.dp,
-                                                if (isSelected) primaryAccent else (if (isDark) Color(0xFF26374D) else cardBorder)
+                                                if (isSelected) primaryAccent else detailsOutline
                                             ),
                                             shadowElevation = if (isSelected && isDark) 3.dp else 0.dp,
                                             modifier = Modifier
