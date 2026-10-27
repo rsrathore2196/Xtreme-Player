@@ -13,6 +13,8 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -20,8 +22,6 @@ import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
@@ -96,6 +96,9 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -293,6 +296,8 @@ fun MainNavigationScaffold(
         androidx.compose.animation.core.MutableTransitionState(isPlayerExpanded && playerUiState.currentTrack != null)
     }
     playerVisibility.targetState = isPlayerExpanded && playerUiState.currentTrack != null
+    val playerMotion = remember { PlayerExpansionMotion() }
+    var miniPlayerBounds by remember { mutableStateOf<Rect?>(null) }
     val playerCoversContent = playerVisibility.isIdle && playerVisibility.currentState && playerVisibility.targetState
     val transitionRunning = !playerVisibility.isIdle || tabTransition.isRunning || tabPagerState.isScrollInProgress
     DisposableEffect(transitionRunning) {
@@ -512,24 +517,33 @@ fun MainNavigationScaffold(
                         .navigationBarsPadding()
                         .padding(bottom = 12.dp),
                     miniPlayer = {
-                    // Floating MiniPlayer: Sleek, attractive, non-bouncy transition
-                    val isMiniPlayerVisible = playerUiState.currentTrack != null && !isPlayerExpanded && !isSettingsSubpageOpen && !isEqualizerOpen
+                    // Retain the mini surface through the handoff, then stop its
+                    // hidden marquee/effects while the expanded player is idle.
+                    val isMiniPlayerVisible = playerUiState.currentTrack != null && !isSettingsSubpageOpen && !isEqualizerOpen &&
+                        (!isPlayerExpanded || !playerVisibility.isIdle)
+                    val playerHandoff = isPlayerExpanded || playerVisibility.currentState || !playerVisibility.isIdle
 
                     AnimatedVisibility(
                         visible = isMiniPlayerVisible,
-                        enter = slideInVertically(
+                        enter = if (playerHandoff) EnterTransition.None else slideInVertically(
                             animationSpec = tween(170, easing = FastOutSlowInEasing),
                             initialOffsetY = { it }
                         ) + fadeIn(animationSpec = tween(140, easing = LinearOutSlowInEasing)),
-                        exit = slideOutVertically(
+                        exit = if (playerHandoff) ExitTransition.None else slideOutVertically(
                             animationSpec = tween(140, easing = FastOutSlowInEasing),
                             targetOffsetY = { it }
                         ) + fadeOut(animationSpec = tween(100, easing = FastOutLinearInEasing)),
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 20.dp, vertical = 6.dp)
+                            .onGloballyPositioned { coordinates ->
+                                if (coordinates.size.width > 0 && coordinates.size.height > 0)
+                                    miniPlayerBounds = coordinates.boundsInRoot()
+                            }
+                            .then(if (isPlayerExpanded) Modifier.clearAndSetSemantics { } else Modifier)
                     ) {
                         MiniPlayer(
+                            modifier = Modifier.playerMiniTransition(playerMotion),
                             uiState = playerUiState,
                             onPlayPauseClick = { viewModel.togglePlayPause() },
                             onSkipNext = { viewModel.skipNext() },
@@ -567,23 +581,11 @@ fun MainNavigationScaffold(
             }
         }
 
-        // FULL SCREEN EXPANDED PLAYER (Smooth, responsive push/pop spring transitions)
-        AnimatedVisibility(
+        // Both directions follow the real mini-player viewport on one layer clock.
+        PlayerExpansionOverlay(
             visibleState = playerVisibility,
-            enter = slideInVertically(
-                initialOffsetY = { it },
-                animationSpec = tween(280, easing = FastOutSlowInEasing)
-            ) + scaleIn(
-                initialScale = 0.92f,
-                animationSpec = tween(280, easing = FastOutSlowInEasing)
-            ) + fadeIn(animationSpec = tween(150, easing = LinearOutSlowInEasing)),
-            exit = slideOutVertically(
-                targetOffsetY = { it },
-                animationSpec = tween(220, easing = FastOutSlowInEasing)
-            ) + scaleOut(
-                targetScale = 0.92f,
-                animationSpec = tween(220, easing = FastOutSlowInEasing)
-            ) + fadeOut(animationSpec = tween(120, easing = FastOutLinearInEasing)),
+            motion = playerMotion,
+            miniPlayerBounds = { miniPlayerBounds },
             modifier = Modifier.fillMaxSize()
         ) {
             val currentLyrics by viewModel.currentLyrics.collectAsStateWithLifecycle()

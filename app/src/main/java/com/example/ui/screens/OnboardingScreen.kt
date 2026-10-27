@@ -115,7 +115,6 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import com.example.ui.theme.LocalAppColors
 import com.example.ui.theme.AppThemeColors
-import com.example.ui.theme.LightAppColors
 import com.example.ui.theme.LiquidGlass
 import com.example.ui.theme.liquidGlass
 import com.example.ui.theme.resolveColorScheme
@@ -132,42 +131,22 @@ private val FEATURED_LANGUAGE_NAMES = listOf(
     "English", "Hindi", "Punjabi", "Spanish", "Korean", "Tamil", "Telugu"
 )
 
-/** Repair a dark saved palette in light mode only for the first-run flow. */
-private fun onboardingColors(colors: AppThemeColors): AppThemeColors {
-    if (colors.isDark) return colors
-    fun lightSurface(color: Color, fallback: Color): Color =
-        if (color.luminance() >= 0.5f) color.copy(alpha = 1f) else fallback
-    val canvas = lightSurface(colors.scaffoldBackground, LightAppColors.scaffoldBackground)
-    val card = lightSurface(colors.cardBackground, LightAppColors.cardBackground)
-    val elevated = lightSurface(colors.cardBackgroundElevated, LightAppColors.cardBackgroundElevated)
-    val surfaces = listOf(canvas, card, elevated)
-    fun readable(color: Color): Boolean = surfaces.all {
-        androidx.core.graphics.ColorUtils.calculateContrast(color.toArgb(), it.toArgb()) >= 4.5
-    }
-    fun accent(color: Color): Color {
-        if (readable(color)) return color
-        // Retain the selected hue, adjusting only the light-mode shade for text/icons.
-        for (step in 1..20) {
-            val candidate = Color(androidx.core.graphics.ColorUtils.blendARGB(
-                color.toArgb(), android.graphics.Color.BLACK, step / 20f
-            ))
-            if (readable(candidate)) return candidate
-        }
-        return LightAppColors.textPrimary
-    }
-    return colors.copy(
-        scaffoldBackground = canvas,
-        cardBackground = card,
-        cardBackgroundElevated = elevated,
-        cardBorder = if (colors.cardBackground.luminance() < 0.5f) LightAppColors.cardBorder else colors.cardBorder,
-        dividerColor = if (colors.cardBackground.luminance() < 0.5f) LightAppColors.dividerColor else colors.dividerColor,
-        textPrimary = colors.textPrimary.takeIf(::readable) ?: LightAppColors.textPrimary,
-        textSecondary = colors.textSecondary.takeIf(::readable) ?: LightAppColors.textSecondary,
-        textMuted = colors.textMuted.takeIf(::readable) ?: Color(0xFF475569),
-        primaryAccent = accent(colors.primaryAccent),
-        secondaryAccent = accent(colors.secondaryAccent)
-    )
-}
+/** First-run surfaces are always black; retain the app's exact theme accents. */
+private fun onboardingColors(colors: AppThemeColors): AppThemeColors = colors.copy(
+    isDark = true,
+    isAmoled = true,
+    screenBackground = Brush.verticalGradient(listOf(Color.Black, Color.Black)),
+    scaffoldBackground = Color.Black,
+    cardBackground = Color(0xFF15171C),
+    cardBackgroundElevated = Color(0xFF1D2027),
+    inputBackground = Color(0xFF090B0F),
+    chipBackground = Color(0xFF20232B),
+    cardBorder = Color(0xFF30343D),
+    dividerColor = Color(0xFF292D35),
+    textPrimary = Color(0xFFF8F9FC),
+    textSecondary = Color(0xFFD5D9E2),
+    textMuted = Color(0xFFAAB1BF)
+)
 
 @Composable
 fun OnboardingScreen(
@@ -210,37 +189,26 @@ private fun OnboardingContent(
         currentStep = OnboardingStep.STARTUP
     }
 
-    // Dynamic gradient adapting cleanly to current theme colors
-    val backgroundBrush = remember(appColors) {
-        Brush.verticalGradient(
-            colors = listOf(
-                appColors.scaffoldBackground,
-                appColors.cardBackgroundElevated.copy(alpha = if (isDark) 0.6f else 0.4f),
-                appColors.scaffoldBackground
-            )
-        )
-    }
-
     val cardBg = appColors.cardBackground
     val cardBorder = appColors.cardBorder
     val textPrimary = appColors.textPrimary
     val textMuted = appColors.textMuted
     val primaryAccent = appColors.primaryAccent
-    val detailsCardColor = MaterialTheme.colorScheme.surfaceContainerHigh
-    val detailsInputColor = MaterialTheme.colorScheme.surface
-    val detailsOutline = MaterialTheme.colorScheme.outlineVariant
+    val detailsCardColor = appColors.cardBackground
+    val detailsInputColor = appColors.inputBackground
+    val detailsOutline = appColors.cardBorder
 
     val isFormValid = nameInput.trim().isNotBlank() && selectedLanguages.isNotEmpty()
 
-    // Exactly 7 quick-pick languages on screen; remaining languages in "+ More"
+    // Five quick-pick languages; the full selection remains available in More.
     val visibleLanguages = remember {
-        FEATURED_LANGUAGE_NAMES.take(7)
+        FEATURED_LANGUAGE_NAMES.take(5)
     }
 
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(backgroundBrush)
+            .background(Color.Black)
             .statusBarsPadding()
             .navigationBarsPadding()
             .imePadding()
@@ -277,7 +245,7 @@ private fun OnboardingContent(
                             Box(contentAlignment = Alignment.Center, modifier = Modifier.size(76.dp)) {
                                 Image(painterResource(R.drawable.ic_onboarding_logo),
                                     contentDescription = "Xtreme Player Logo",
-                                    modifier = Modifier.size(56.dp).testTag("onboarding_details_logo"))
+                                    modifier = Modifier.size(64.dp).testTag("onboarding_details_logo"))
                             }
 
                             Spacer(modifier = Modifier.height(8.dp))
@@ -310,6 +278,10 @@ private fun OnboardingContent(
 
                             Spacer(modifier = Modifier.height(4.dp))
 
+                            Text("Make it yours.", color = textPrimary, fontSize = 28.sp,
+                                fontWeight = FontWeight.Bold, letterSpacing = (-.5).sp,
+                                modifier = Modifier.padding(top = 12.dp, bottom = 6.dp))
+
                             Text(
                                 text = "Personalize your recommendations",
                                 style = MaterialTheme.typography.bodyMedium.copy(
@@ -324,7 +296,7 @@ private fun OnboardingContent(
 
                         // 2. DISPLAY NAME CARD
                         Card(
-                            shape = RoundedCornerShape(20.dp),
+                            shape = RoundedCornerShape(24.dp),
                             colors = CardDefaults.cardColors(
                                 containerColor = detailsCardColor
                             ),
@@ -417,7 +389,7 @@ private fun OnboardingContent(
                                     ),
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .height(52.dp)
+                                        .height(56.dp)
                                         .testTag("onboarding_name_input")
                                 )
                             }
@@ -425,7 +397,7 @@ private fun OnboardingContent(
 
                         // 3. COUNTRY & CHARTS CARD
                         Card(
-                            shape = RoundedCornerShape(20.dp),
+                            shape = RoundedCornerShape(24.dp),
                             colors = CardDefaults.cardColors(
                                 containerColor = detailsCardColor
                             ),
@@ -523,7 +495,7 @@ private fun OnboardingContent(
 
                         // 4. MUSIC LANGUAGES CARD
                         Card(
-                            shape = RoundedCornerShape(20.dp),
+                            shape = RoundedCornerShape(24.dp),
                             colors = CardDefaults.cardColors(
                                 containerColor = detailsCardColor
                             ),
@@ -637,7 +609,7 @@ private fun OnboardingContent(
                                                     Icon(
                                                         imageVector = Icons.Default.Check,
                                                         contentDescription = null,
-                                                        tint = Color.White,
+                                                        tint = appColors.onPrimaryAccent,
                                                         modifier = Modifier.size(13.dp)
                                                     )
                                                     Spacer(modifier = Modifier.width(5.dp))
@@ -646,7 +618,7 @@ private fun OnboardingContent(
                                                     text = langName,
                                                     fontSize = 12.5.sp,
                                                     fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
-                                                    color = if (isSelected) Color.White else (if (isDark) Color(0xFFE2E8F0) else textPrimary)
+                                                    color = if (isSelected) appColors.onPrimaryAccent else appColors.textSecondary
                                                 )
                                             }
                                         }
@@ -714,16 +686,16 @@ private fun OnboardingContent(
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = primaryAccent,
                                     disabledContainerColor = primaryAccent.copy(alpha = if (isDark) 0.18f else 0.12f),
-                                    contentColor = Color.White,
+                                    contentColor = appColors.onPrimaryAccent,
                                     disabledContentColor = textMuted.copy(alpha = 0.7f)
                                 ),
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(54.dp)
                                     .shadow(
-                                        elevation = if (isFormValid) 16.dp else 0.dp,
+                                        elevation = if (isFormValid) 3.dp else 0.dp,
                                         shape = RoundedCornerShape(18.dp),
-                                        spotColor = primaryAccent.copy(alpha = 0.55f)
+                                        spotColor = Color.Black
                                     )
                                     .testTag("onboarding_submit_button")
                             ) {
@@ -879,7 +851,6 @@ fun OnboardingStartupPage(
 ) {
     val context = LocalContext.current
     val appColors = LocalAppColors.current
-    val isDark = appColors.isDark
     val primaryAccent = appColors.primaryAccent
     val textPrimary = appColors.textPrimary
     val textMuted = appColors.textMuted
@@ -889,7 +860,7 @@ fun OnboardingStartupPage(
             .fillMaxSize()
             .widthIn(max = 560.dp)
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 24.dp, vertical = 16.dp),
+            .padding(horizontal = 24.dp, vertical = 20.dp),
         verticalArrangement = Arrangement.SpaceBetween,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
@@ -904,10 +875,10 @@ fun OnboardingStartupPage(
             Image(
                 painter = painterResource(R.drawable.ic_onboarding_logo),
                 contentDescription = "Xtreme Player Logo",
-                modifier = Modifier.size(144.dp).testTag("onboarding_brand_logo")
+                modifier = Modifier.size(136.dp).testTag("onboarding_brand_logo")
             )
 
-            Spacer(modifier = Modifier.height(26.dp))
+            Spacer(modifier = Modifier.height(20.dp))
 
             // App name "Xtreme Player" directly under the logo
             Row(
@@ -938,7 +909,7 @@ fun OnboardingStartupPage(
             Spacer(modifier = Modifier.height(8.dp))
 
             Text(
-                text = "Redefining High-Fidelity",
+                text = "Redefining High Fidelity",
                 style = MaterialTheme.typography.titleMedium.copy(
                     color = primaryAccent.copy(alpha = 0.9f),
                     fontWeight = FontWeight.Bold,
@@ -955,7 +926,7 @@ fun OnboardingStartupPage(
             Spacer(modifier = Modifier.height(8.dp))
 
             Text(
-                text = "Studio master sound quality, zero buffering, and intelligent regional recommendations tailored just for you.",
+                text = "High-quality sound, lyrics that move with every word, and music picked for your world.",
                 style = MaterialTheme.typography.bodyMedium.copy(
                     color = textMuted,
                     textAlign = TextAlign.Center,
@@ -974,8 +945,8 @@ fun OnboardingStartupPage(
             ) {
                 StartupFeaturePill(
                     icon = Icons.Default.GraphicEq,
-                    title = "Hi-Res Lossless and 320 kbps high quality audio",
-                    description = "Crystal-clear high-definition sound and lossless FLAC"
+                    title = "Hi-Res Lossless Audio",
+                    description = "Lossless FLAC and high-quality 320 kbps audio"
                 )
                 StartupFeaturePill(
                     icon = Icons.Default.Lyrics,
@@ -985,7 +956,7 @@ fun OnboardingStartupPage(
                 StartupFeaturePill(
                     icon = Icons.Default.Star,
                     title = "Personalized Just For You",
-                    description = "Regional chart hits and customized curated mixes"
+                    description = "Your languages, regional hits, and curated mixes"
                 )
             }
         }
@@ -1001,16 +972,16 @@ fun OnboardingStartupPage(
             shape = RoundedCornerShape(22.dp),
             colors = ButtonDefaults.buttonColors(
                 containerColor = primaryAccent,
-                contentColor = if (isDark) Color.White else appColors.onPrimaryAccent
+                contentColor = appColors.onPrimaryAccent
             ),
-            elevation = ButtonDefaults.buttonElevation(defaultElevation = 8.dp),
+            elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp),
             modifier = Modifier
                 .fillMaxWidth()
-                .height(54.dp)
+                .height(56.dp)
                 .shadow(
-                    elevation = 16.dp,
+                    elevation = 3.dp,
                     shape = RoundedCornerShape(22.dp),
-                    spotColor = primaryAccent.copy(alpha = 0.65f)
+                    spotColor = Color.Black
                 )
                 .testTag("start_listening_button")
         ) {
@@ -1032,6 +1003,9 @@ fun OnboardingStartupPage(
                 )
             }
         }
+        Text("Open source · Ad-free · Free to use", color = textMuted,
+            fontSize = 11.sp, fontWeight = FontWeight.Medium,
+            modifier = Modifier.padding(top = 16.dp, bottom = 4.dp))
     }
 }
 
@@ -1045,19 +1019,19 @@ private fun StartupFeaturePill(
     val isDark = appColors.isDark
 
     Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = appColors.cardBackground.copy(alpha = if (isDark) 0.65f else 0.85f),
-        border = BorderStroke(1.dp, LiquidGlass.specularBorderBrush(appColors, highlightAlpha = 0.35f)),
+        shape = RoundedCornerShape(20.dp),
+        color = appColors.cardBackground,
+        shadowElevation = 1.dp,
         modifier = Modifier.fillMaxWidth()
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)
         ) {
             Box(
                 modifier = Modifier
-                    .size(36.dp)
-                    .clip(CircleShape)
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(12.dp))
                     .background(appColors.primaryAccent.copy(alpha = 0.14f)),
                 contentAlignment = Alignment.Center
             ) {
@@ -1073,12 +1047,13 @@ private fun StartupFeaturePill(
                 Text(
                     text = title,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 13.5.sp,
+                    fontSize = 14.sp,
                     color = appColors.textPrimary
                 )
                 Text(
                     text = description,
-                    fontSize = 11.5.sp,
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp,
                     color = appColors.textMuted
                 )
             }

@@ -1,0 +1,139 @@
+package com.example.ui.components
+
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterExitState
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExperimentalAnimationApi
+import androidx.compose.animation.core.MutableTransitionState
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.State
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.unit.dp
+
+/** Both surfaces read the very same spring on their graphics layers. Binding a
+ * newly mounted overlay changes the reference once, not Compose state per frame. */
+internal class PlayerExpansionMotion {
+    private var animation by mutableStateOf<State<Float>>(mutableStateOf(1f))
+    val fraction: Float get() = animation.value
+    fun bind(value: State<Float>) { animation = value }
+}
+
+private fun collapsedViewport(value: Float): Float {
+    val unit = value.coerceIn(0f, 1f)
+    return unit * unit * (3f - 2f * unit)
+}
+
+private fun miniReveal(viewport: Float): Float {
+    val unit = ((viewport - .25f) / .7f).coerceIn(0f, 1f)
+    return unit * unit * (3f - 2f * unit)
+}
+
+internal fun Modifier.playerMiniTransition(motion: PlayerExpansionMotion): Modifier = graphicsLayer {
+    val raw = motion.fraction
+    val reveal = miniReveal(collapsedViewport(raw))
+    val landing = (raw - 1f).coerceIn(0f, .08f)
+    alpha = reveal
+    transformOrigin = TransformOrigin(.5f, 1f)
+    scaleX = .98f + .02f * reveal + landing * .38f
+    scaleY = scaleX
+    translationY = -(1f - reveal) * 8.dp.toPx() - landing * 48.dp.toPx()
+}
+
+/** Animate the existing player layer into the real mini-player viewport. Its
+ * content scales uniformly; only its rounded viewport contracts vertically.
+ * No screen snapshots, bitmap work or per-frame layout/recomposition are needed. */
+@OptIn(ExperimentalAnimationApi::class)
+@Composable
+internal fun PlayerExpansionOverlay(
+    visibleState: MutableTransitionState<Boolean>,
+    motion: PlayerExpansionMotion,
+    miniPlayerBounds: () -> Rect?,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit
+) {
+    var origin by remember { mutableStateOf(Offset.Zero) }
+    // Dock layout may start expanding after its compact player is tapped. Keep
+    // the opening origin fixed at the actual tapped card, not its fading layout.
+    val openingBounds = remember(visibleState.targetState) { miniPlayerBounds() }
+    AnimatedVisibility(
+        visibleState = visibleState,
+        enter = EnterTransition.None,
+        exit = ExitTransition.None,
+        modifier = modifier.onGloballyPositioned { origin = it.positionInRoot() }
+    ) {
+        // One visibility transition owns both directions, including reversals.
+        // It cannot dispose the surface before the minimize motion finishes.
+        val collapse = transition.animateFloat(
+            transitionSpec = { spring(dampingRatio = .74f, stiffness = 200f, visibilityThreshold = .0005f) },
+            label = "player_expansion_bounds"
+        ) { if (it == EnterExitState.Visible) 0f else 1f }
+        SideEffect { motion.bind(collapse) }
+        val keepExpandedContent by remember(visibleState, collapse) {
+            derivedStateOf {
+                visibleState.targetState || miniReveal(collapsedViewport(collapse.value)) < 1f
+            }
+        }
+        Box(Modifier.fillMaxSize().graphicsLayer {
+            val raw = collapse.value
+            // Flatten the viewport's endpoint velocity so spring overshoot is a
+            // small elastic landing, never a gap beyond the full-screen edges.
+            val progress = collapsedViewport(raw)
+            if (size.width > 0f && size.height > 0f) {
+                val measured = (if (visibleState.targetState) openingBounds else miniPlayerBounds())?.translate(-origin)?.takeIf {
+                    it.width > 0f && it.height > 0f && it.left >= 0f && it.top >= 0f &&
+                        it.right <= size.width + 1f && it.bottom <= size.height + 1f
+                }
+                // A restored expanded player can close before the mini player's
+                // first placement. The measured destination takes over on layout.
+                val target = measured ?: Rect(size.width * .08f, size.height - minOf(152.dp.toPx(), size.height * .4f),
+                    size.width * .92f, size.height - minOf(80.dp.toPx(), size.height * .2f))
+                val width = size.width + (target.width - size.width) * progress
+                val height = size.height + (target.height - size.height) * progress
+                val baseScale = width / size.width
+                val scale = baseScale * (1f + (-raw).coerceIn(0f, .08f) * .14f)
+                transformOrigin = TransformOrigin(0f, 0f)
+                scaleX = scale
+                scaleY = scale
+                translationX = target.left * progress - size.width * (scale - baseScale) * .5f
+                translationY = target.top * progress
+                clip = progress > 0f
+                shape = PlayerMinimizeClip(height / scale, target.height * .5f * progress / scale)
+                alpha = 1f - miniReveal(progress)
+            }
+        }.testTag("expanded_player_transition")) {
+            // Once it is fully transparent, release the expanded screen's touch
+            // handlers. The shared spring still drives the mini player's settle.
+            if (keepExpandedContent) content()
+        }
+    }
+}
+
+private class PlayerMinimizeClip(private val height: Float, private val radius: Float) : Shape {
+    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline =
+        Outline.Rounded(RoundRect(0f, 0f, size.width, height.coerceAtMost(size.height), CornerRadius(radius)))
+}
