@@ -20,8 +20,45 @@ internal object PlaybackDiagnostics {
         IOException(reason.description, cause)
     data class Attempt(val quality: AudioQualityCeiling, val policyKey: String, val source: PlaybackSourceKind?,
         val enabledSources: List<PlaybackSourceKind>, val stage: Stage, val reason: Reason, val atMs: Long,
-        val sourceId: String = "")
+        val sourceId: String = "", val elapsedMs: Long? = null)
     private val history = linkedMapOf<String, List<Attempt>>()
+    const val STARTUP_TRACE_EXTRA = "playback_startup_trace"
+    enum class StartupStage {
+        SELECTED, RESOLUTION_STARTED, CONTROLLER_READY, RESOLVED, PREPARE_REQUESTED, STREAM_LOADING,
+        FORMAT_READY, DECODER_READY, FIRST_AUDIO, CANCELLED, FAILED
+    }
+    data class Startup(val trackId: String, val entry: String, val startedAtMs: Long,
+        val stages: Map<StartupStage, Long>) {
+        val pending: Boolean get() = stages.keys.none {
+            it == StartupStage.FIRST_AUDIO || it == StartupStage.CANCELLED || it == StartupStage.FAILED
+        }
+    }
+    private val startups = linkedMapOf<Long, Startup>()
+    private var nextStartup = 0L
+
+    fun beginStartup(trackId: String, entry: String = "selection"): Long = synchronized(startups) {
+        val id = ++nextStartup
+        startups[id] = Startup(trackId, entry, SystemClock.elapsedRealtime(), mapOf(StartupStage.SELECTED to 0L))
+        while (startups.size > 64) startups.remove(startups.keys.first())
+        id
+    }
+    fun startupPending(id: Long, trackId: String): Boolean = synchronized(startups) {
+        startups[id]?.let { it.trackId == trackId && it.pending } == true
+    }
+    fun markStartup(id: Long, stage: StartupStage, trackId: String? = null) {
+        val completed = synchronized(startups) {
+            val old = startups[id] ?: return
+            if (!old.pending || trackId != null && old.trackId != trackId || stage in old.stages) return
+            val updated = old.copy(stages = old.stages + (stage to (SystemClock.elapsedRealtime() - old.startedAtMs).coerceAtLeast(0L)))
+            startups[id] = updated
+            updated.takeIf { stage == StartupStage.FIRST_AUDIO || stage == StartupStage.FAILED }
+        }
+        // The sink's first advancing-audio callback measures actual Media3 output,
+        // rather than treating isPlaying or a discovered URL as audible playback.
+        if (completed != null) Log.d("PlaybackStartup", "trace=$id, entry=${completed.entry}, elapsedMs=${completed.stages}")
+    }
+    fun startup(id: Long): Startup? = synchronized(startups) { startups[id] }
+
     data class YouTubeEvent(val code: String, val client: String, val transport: String,
         val httpStatus: Int?, val reason: Reason?, val atMs: Long)
     private val youtubeHistory = linkedMapOf<String, List<YouTubeEvent>>()
@@ -37,9 +74,10 @@ internal object PlaybackDiagnostics {
     }
     fun recentYouTube(videoId: String): List<YouTubeEvent> = synchronized(youtubeHistory) { youtubeHistory[videoId].orEmpty() }
 
-    fun record(trackId: String, policy: PlaybackSourcePolicy, source: PlaybackSourceKind?, stage: Stage, reason: Reason, sourceId: String = "") {
+    fun record(trackId: String, policy: PlaybackSourcePolicy, source: PlaybackSourceKind?, stage: Stage, reason: Reason,
+        sourceId: String = "", elapsedMs: Long? = null) {
         val attempt = Attempt(policy.ceiling, policy.key, source, policy.playbackSources.map { it.kind }, stage, reason,
-            SystemClock.elapsedRealtime(), sourceId)
+            SystemClock.elapsedRealtime(), sourceId, elapsedMs)
         val changed = synchronized(history) {
             val old = history[trackId].orEmpty()
             history[trackId] = (old + attempt).takeLast(16)
@@ -47,7 +85,7 @@ internal object PlaybackDiagnostics {
             old.lastOrNull()?.let { it.policyKey != attempt.policyKey || it.source != source || it.reason != reason ||
                 it.stage != stage || attempt.atMs - it.atMs > 5_000 } ?: true
         }
-        if (changed) Log.d("PlaybackRouting", "quality=${attempt.quality}, enabled=${attempt.enabledSources}, source=$source, stage=$stage, result=$reason")
+        if (changed) Log.d("PlaybackRouting", "quality=${attempt.quality}, enabled=${attempt.enabledSources}, source=$source, stage=$stage, result=$reason, elapsedMs=$elapsedMs")
     }
     fun recent(trackId: String, policy: PlaybackSourcePolicy): List<Attempt> = synchronized(history) {
         history[trackId].orEmpty().filter { it.policyKey == policy.key }

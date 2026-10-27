@@ -449,6 +449,7 @@ object YouTubeAudioStreamService {
         val hints = ContentHints(wantVideo = false, sabrFirst = sabrOnly).withStreamCapabilities(
             allowHls = !sabrOnly, allowSabr = hlsOnly != true, allowBoundedRange = true)
         var failure: Exception? = null
+        val rejectedRepresentations = mutableSetOf<Triple<String, Int, String>>()
         repeat(3) { attempt ->
             currentCoroutineContext().ensureActive()
             val extracted = try {
@@ -462,6 +463,12 @@ object YouTubeAudioStreamService {
             }
             val transport = if (extracted.sabrBootstrap != null) "SABR" else
                 if (isHls(extracted.audioUrl, extracted.mimeType)) "HLS" else "DIRECT"
+            // Some responses repeat an excluded client/URL. Re-probing the same
+            // rejected bytes cannot produce a different validation result.
+            if (!rejectedRepresentations.add(Triple(extracted.profileId, extracted.itag, extracted.audioUrl))) {
+                throw PlaybackDiagnostics.Failure(failure?.let(PlaybackDiagnostics::reason) ?: PlaybackDiagnostics.Reason.NO_FORMAT,
+                    PlaybackDiagnostics.Stage.VALIDATION, failure)
+            }
             try {
                 val stream = prepareExtracted(videoId, quality, cap, hlsOnly, requireOpus, sabrOnly, extracted, probe)
                 PlaybackDiagnostics.youtubeEvent(videoId, "STREAM_READY", extracted.profileId, transport,
@@ -530,9 +537,17 @@ object YouTubeAudioStreamService {
         val cap = selectionCap(quality, maxBitrateBps)
         val key = "$videoId:$cap:sabr" + if (requireOpus) ":opus" else ""
         locks[(("$videoId:$cap").hashCode() and Int.MAX_VALUE) % locks.size].withLock {
-            cache.get(key)?.takeIf { YouTubeAudioFormatPolicy.acceptsBitrate(it.bitrateKbps.takeIf { rate -> rate > 0 }?.times(1000), cap) &&
-                it.clientId !in (excludedClients + rejectedClients(videoId)) &&
-                it.expiresAt > System.currentTimeMillis() + 45_000L }?.let { return@withLock it }
+            val rejected = excludedClients + rejectedClients(videoId)
+            fun reusable(stream: AudioStream) = stream.videoId == videoId && stream.sabrBootstrap != null &&
+                stream.selectionCapBps == cap && stream.opusOnly == requireOpus &&
+                YouTubeAudioFormatPolicy.acceptsBitrate(stream.bitrateKbps.takeIf { it > 0 }?.times(1000), cap) &&
+                stream.clientId !in rejected && stream.expiresAt > System.currentTimeMillis() + 45_000L
+            // AUTO extraction may already have selected SABR. Its verified
+            // bootstrap is the loader's input, not a reason to extract it again.
+            (cache.get(key)?.takeIf(::reusable) ?: cachedStreams(videoId).firstOrNull(::reusable))?.let {
+                cache.put(key, it)
+                return@withLock it
+            }
             slots.withPermit {
                 val stream = withTimeoutOrNull(RESOLUTION_TIMEOUT_MS) {
                     extractPlayable(videoId, quality, cap, false, requireOpus, excludedClients + rejectedClients(videoId),

@@ -110,7 +110,7 @@ class StreamResolverRegressionTest {
         assertEquals(0, resolver.cacheSize)
     }
 
-    @Test fun cancellationDoesNotInvokeFallbackOrPopulateCache() = runBlocking {
+    @Test fun cancellationStopsConcurrentResolutionWithoutPopulatingCache() = runBlocking {
         val standardCalls = AtomicInteger()
         val archiveCalls = AtomicInteger()
         val started = CompletableDeferred<Unit>()
@@ -126,11 +126,12 @@ class StreamResolverRegressionTest {
         val selection = async { resolver.resolve(youtube, AudioQuality.HI_RES_LOSSLESS) }
         try {
             withTimeout(5_000) { started.await() }
-            val completedJioCalls = standardCalls.get()
-            val completedArchiveCalls = archiveCalls.get()
             selection.cancelAndJoin()
             assertTrue(selection.isCancelled)
             assertTrue(stopped.isCompleted)
+            val completedJioCalls = standardCalls.get()
+            val completedArchiveCalls = archiveCalls.get()
+            kotlinx.coroutines.yield()
             assertEquals(completedJioCalls, standardCalls.get())
             assertEquals(completedArchiveCalls, archiveCalls.get())
             assertEquals(0, resolver.cacheSize)
@@ -181,7 +182,7 @@ class StreamResolverRegressionTest {
             sourcePolicy = PlaybackSourcePolicy(AudioQualityCeiling.MAX, sources = sources))
         assertEquals(youtube.id, result.id)
         assertEquals(1, extractions)
-        assertEquals(StreamResolver.ADDON_STARTUP_TIMEOUT_MS + 30_000, testScheduler.currentTime)
+        assertEquals(30_250, testScheduler.currentTime)
     }
 
     @Test fun exhaustedProvidersTerminateWithinTheOverallBudgetWithoutCachingAFailure() = runTest {

@@ -147,7 +147,7 @@ class YouTubeNativeExtractionTest {
             assertEquals(PlaybackDiagnostics.Reason.UNSUPPORTED_TRANSPORT, error.reason)
             assertNotNull(error.cause)
         }
-        assertEquals(3, calls)
+        assertEquals("The extractor must not probe the identical rejected representation again", 2, calls)
     }
 
     @Test fun hlsAndSabrUseTheirExistingAudioOnlyMedia3Handoff() = runTest {
@@ -165,6 +165,22 @@ class YouTubeNativeExtractionTest {
                 emptySet(), extractor { _, _ -> extracted().copy(sabrBootstrap = bootstrap) }, probe = { _, _, _, _, _ -> error("SABR has its own loader") })
             assertTrue(sabr.isSabr)
             assertTrue(sabr.url.startsWith("xtreme-sabr://audio/$video/"))
+            // Mirror the AUTO resolver's cache key before Media3 pins SABR.
+            // The loader must adopt this bootstrap without invoking a second extractor.
+            @Suppress("UNCHECKED_CAST")
+            val cache = YouTubeAudioStreamService::class.java.getDeclaredField("cache").apply { isAccessible = true }
+                .get(null) as android.util.LruCache<String, YouTubeAudioStreamService.AudioStream>
+            cache.evictAll()
+            try {
+                cache.put("$video:96000:null", sabr)
+                val loaded = withContext(Dispatchers.IO) { withTimeout(1_000) {
+                    YouTubeAudioStreamService.resolveSabr(video, AudioQuality.MEDIUM_96, maxBitrateBps = 96_000)
+                } }
+                assertSame(sabr, loaded)
+                assertSame(sabr, cache.get("$video:96000:sabr"))
+                cache.put("$video:96000:sabr", sabr.copy(expiresAt = 0L))
+                assertSame(sabr, YouTubeAudioStreamService.resolveSabr(video, AudioQuality.MEDIUM_96, maxBitrateBps = 96_000))
+            } finally { cache.evictAll() }
         } finally { SabrSessionRegistry.releaseAll() }
     }
 

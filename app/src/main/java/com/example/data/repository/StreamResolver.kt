@@ -21,6 +21,14 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.selects.select
+import kotlin.coroutines.AbstractCoroutineContextElement
+import kotlin.coroutines.CoroutineContext
 import java.io.IOException
 import kotlin.coroutines.coroutineContext
 
@@ -64,6 +72,11 @@ internal class StreamResolver(
     private val findLossless: suspend (MusicTrack, Set<String>, () -> Boolean) -> InternetArchiveApiService.LosslessSearchPage =
         { request, excluded, allowed -> InternetArchiveApiService.findLosslessRecording(request, excluded, allowed) }
 ) {
+    private class AttemptState : AbstractCoroutineContextElement(Key) {
+        companion object Key : CoroutineContext.Key<AttemptState>
+        var reason: PlaybackDiagnostics.Reason? = null
+        var stage = PlaybackDiagnostics.Stage.RESOLUTION
+    }
     private data class CachedStream(val track: MusicTrack, val expiresAt: Long)
     private data class StreamKey(val id: String, val quality: AudioQuality, val recommendation: Boolean, val cap: Int,
         val recording: String, val policy: String?, val selectedArchiveUrl: String? = null,
@@ -99,9 +112,9 @@ internal class StreamResolver(
     ): MusicTrack = withContext(ioDispatcher) {
         val ceilingBps = minOf(maxBitrateBps, if (quality == AudioQuality.HI_RES_LOSSLESS) Int.MAX_VALUE else quality.kbps * 1000)
         val policy = sourcePolicy ?: PlaybackSourcePolicy(AudioQualityCeiling.entries.lastOrNull { it.maxBitrateBps <= ceilingBps } ?: AudioQualityCeiling.DATA_SAVER)
-        var failureReason: PlaybackDiagnostics.Reason? = null
-        var failureStage = PlaybackDiagnostics.Stage.RESOLUTION
-        val attemptFailures = mutableListOf<PlaybackDiagnostics.Reason>()
+        val defaultAttempt = AttemptState()
+        suspend fun failure() = coroutineContext[AttemptState] ?: defaultAttempt
+        val attemptFailures = java.util.Collections.synchronizedList(mutableListOf<PlaybackDiagnostics.Reason>())
         fun unavailable() = TrackUnavailableException(track.title, PlaybackDiagnostics.unavailable(track.id, track.title, policy),
             temporary = attemptFailures.isEmpty() || attemptFailures.any { it in setOf(PlaybackDiagnostics.Reason.NETWORK,
                 PlaybackDiagnostics.Reason.TIMEOUT, PlaybackDiagnostics.Reason.INVALID_URL, PlaybackDiagnostics.Reason.POLICY,
@@ -183,12 +196,12 @@ internal class StreamResolver(
         }
         suspend fun <T> attempt(timeoutMs: Long, block: suspend () -> T): T? = try {
             val completed = withTimeoutOrNull(timeoutMs) { Result.success(block()) }
-            if (completed == null) { failureReason = PlaybackDiagnostics.Reason.TIMEOUT; null } else completed.getOrThrow()
-        } catch (e: TimeoutCancellationException) { coroutineContext.ensureActive(); failureReason = PlaybackDiagnostics.Reason.TIMEOUT; null }
+            if (completed == null) { failure().reason = PlaybackDiagnostics.Reason.TIMEOUT; null } else completed.getOrThrow()
+        } catch (e: TimeoutCancellationException) { coroutineContext.ensureActive(); failure().reason = PlaybackDiagnostics.Reason.TIMEOUT; null }
         catch (e: CancellationException) { throw e }
         catch (e: Exception) {
-            failureReason = PlaybackDiagnostics.reason(e)
-            failureStage = (e as? PlaybackDiagnostics.Failure)?.stage ?: failureStage
+            failure().reason = PlaybackDiagnostics.reason(e)
+            failure().stage = (e as? PlaybackDiagnostics.Failure)?.stage ?: failure().stage
             null
         }
         fun usable(candidate: MusicTrack): Boolean = providerAllowed(candidate) && isValidStreamUrl(candidate.audioUrl) &&
@@ -210,16 +223,16 @@ internal class StreamResolver(
             if (!triedVideos.add(id)) return null
             // Native AUTO already prefers WebM/Opus. A separate forced-Opus
             // extraction used to consume the fallback's entire time budget.
-            failureStage = PlaybackDiagnostics.Stage.EXTRACTION
-            failureReason = PlaybackDiagnostics.Reason.NO_FORMAT
+            failure().stage = PlaybackDiagnostics.Stage.EXTRACTION
+            failure().reason = PlaybackDiagnostics.Reason.NO_FORMAT
             val resolved = attempt(YouTubeAudioStreamService.RESOLUTION_TIMEOUT_MS + 5_000L) {
                 resolveYouTube(request, quality, forceRefresh, ceilingBps)
             } ?: return null
             if (resolved.id != request.id || safeVideoIdFromUri(resolved.audioUrl) != id) {
-                failureReason = PlaybackDiagnostics.Reason.NO_MATCH; failureStage = PlaybackDiagnostics.Stage.VALIDATION; return null
+                failure().reason = PlaybackDiagnostics.Reason.NO_MATCH; failure().stage = PlaybackDiagnostics.Stage.VALIDATION; return null
             }
             if (!isValidStreamUrl(resolved.audioUrl)) {
-                failureReason = PlaybackDiagnostics.Reason.INVALID_URL; failureStage = PlaybackDiagnostics.Stage.VALIDATION; return null
+                failure().reason = PlaybackDiagnostics.Reason.INVALID_URL; failure().stage = PlaybackDiagnostics.Stage.VALIDATION; return null
             }
             // A virtual reference can stay stable after client/signed-URL refresh.
             // Literal failed HTTP URLs must never be replayed as a fresh candidate.
@@ -227,7 +240,7 @@ internal class StreamResolver(
             // The stable reference can stay identical after its underlying signed URL is refreshed.
             return resolved.copy(isLossless = false, source = "YouTube Music").takeIf {
                 providerAllowed(it).also { allowed -> if (!allowed) {
-                    failureReason = PlaybackDiagnostics.Reason.POLICY; failureStage = PlaybackDiagnostics.Stage.VALIDATION
+                    failure().reason = PlaybackDiagnostics.Reason.POLICY; failure().stage = PlaybackDiagnostics.Stage.VALIDATION
                 } }
             }
                 ?.also { retainProvider("youtube", request) }
@@ -246,8 +259,8 @@ internal class StreamResolver(
                 ?: matchedProvider("jio")?.id?.takeIf { it.startsWith("online_") } ?: return null
             val detailed = detail(catalogId.removePrefix("online_"), 8_000L) ?: return null
             if (!isValidStreamUrl(detailed.audioUrl) && detailed.audioUrl.isNotBlank()) {
-                failureReason = PlaybackDiagnostics.Reason.INVALID_URL
-                failureStage = PlaybackDiagnostics.Stage.VALIDATION
+                failure().reason = PlaybackDiagnostics.Reason.INVALID_URL
+                failure().stage = PlaybackDiagnostics.Stage.VALIDATION
             }
             return detailed.takeIf { it.id == catalogId && usable(it) && withContext(AppDispatchers.CpuBounded) { matches(track, it) } }
         }
@@ -309,7 +322,7 @@ internal class StreamResolver(
             if (synchronized(archiveMisses) { (archiveMisses[identity] ?: 0L) > android.os.SystemClock.elapsedRealtime() }) return null
             var completed = false
             var page: InternetArchiveApiService.LosslessSearchPage? = null
-            failureStage = PlaybackDiagnostics.Stage.DISCOVERY
+            failure().stage = PlaybackDiagnostics.Stage.DISCOVERY
             // Initial playback keeps its short deadline. An explicit enhancement
             // can finish the same bounded lookup while the existing stream plays.
             val found = attempt(if (manualUpgrade) MANUAL_LOSSLESS_LOOKUP_TIMEOUT_MS else LOSSLESS_LOOKUP_TIMEOUT_MS) {
@@ -321,7 +334,7 @@ internal class StreamResolver(
             }
             if (found == null) page?.failure?.let { reason ->
                 com.example.playback.LosslessDiagnostics.record(track.id, reason, "initial-discovery")
-                failureReason = when (reason) {
+                failure().reason = when (reason) {
                     com.example.playback.LosslessDiagnostics.Reason.NETWORK_TIMEOUT,
                     com.example.playback.LosslessDiagnostics.Reason.LOOKUP_TIMEOUT -> PlaybackDiagnostics.Reason.TIMEOUT
                     com.example.playback.LosslessDiagnostics.Reason.METADATA_INCOMPLETE -> PlaybackDiagnostics.Reason.INCOMPLETE_METADATA
@@ -372,47 +385,66 @@ internal class StreamResolver(
                 val providers = if (preferredSourceId != null) policy.playbackSources.filter { it.id == preferredSourceId }
                     else if (manualUpgrade && currentProvider != null)
                         policy.upgradeSources.takeWhile { it.id != currentProvider }
-                    else policy.resolutionSourcesFor(track.id)
-                suspend fun walk(ordered: List<PlaybackSource>): MusicTrack? {
-                  for (provider in ordered) {
-                    coroutineContext.ensureActive()
-                    failureReason = null
-                    failureStage = PlaybackDiagnostics.Stage.RESOLUTION
-                    val answer = cachedFor(provider.id) ?: try { when (provider.kind) {
-                        PlaybackSourceKind.YOUTUBE -> if (selectedVideoId(track) != null) youtubeExact(track) else youtubeFallback()
-                        PlaybackSourceKind.JIOSAAVN -> boundedJio()
-                        PlaybackSourceKind.INTERNET_ARCHIVE -> if (selectedArchive) {
-                            val direct = attempt(if (manualUpgrade) 12_000L else 6_000L) { verifyArchive(track.copy(audioUrl = archiveUrl,
-                                isLossless = true, source = "INTERNET_ARCHIVE")) }
-                            direct?.takeIf { it.audioUrl == archiveUrl && usable(it) && supportsLossless(it) }
-                        } else archive()
-                        PlaybackSourceKind.ADDON -> attempt(16_000L) {
-                            resolveAddon(provider, track, policy, rejectedUrls + listOfNotNull(failedUrl))
+                    else policy.resolutionSourcesFor(track.id).let { ordered ->
+                        if (selectedArchive) ordered.filter { it.kind == PlaybackSourceKind.INTERNET_ARCHIVE } +
+                            ordered.filterNot { it.kind == PlaybackSourceKind.INTERNET_ARCHIVE } else ordered
+                    }
+                val pinned = preferredSourceId != null || manualUpgrade || selectedArchive ||
+                    track.isLossless && track.audioUrl.isNotBlank()
+                suspend fun resolveProvider(provider: PlaybackSource): MusicTrack? = withContext(AttemptState()) {
+                    val started = android.os.SystemClock.elapsedRealtime()
+                    val state = failure()
+                    val answer = try {
+                        cachedFor(provider.id) ?: when (provider.kind) {
+                            PlaybackSourceKind.YOUTUBE -> if (selectedVideoId(track) != null) youtubeExact(track) else youtubeFallback()
+                            PlaybackSourceKind.JIOSAAVN -> boundedJio()
+                            PlaybackSourceKind.INTERNET_ARCHIVE -> if (selectedArchive) {
+                                val direct = attempt(if (manualUpgrade) 12_000L else 6_000L) {
+                                    verifyArchive(track.copy(audioUrl = archiveUrl, isLossless = true, source = "INTERNET_ARCHIVE"))
+                                }
+                                direct?.takeIf { it.audioUrl == archiveUrl && usable(it) && supportsLossless(it) }
+                            } else archive()
+                            PlaybackSourceKind.ADDON -> attempt(16_000L) {
+                                resolveAddon(provider, track, policy, rejectedUrls + listOfNotNull(failedUrl))
+                            }
                         }
-                    } } catch (cancelled: CancellationException) { throw cancelled }
-                    catch (error: Exception) { failureReason = PlaybackDiagnostics.reason(error); null }
-                    PlaybackDiagnostics.record(track.id, policy, provider.kind, failureStage,
-                        if (answer != null) PlaybackDiagnostics.Reason.SUCCESS else failureReason ?: PlaybackDiagnostics.Reason.NO_MATCH, provider.id)
-                    if (answer == null) attemptFailures.add(failureReason ?: PlaybackDiagnostics.Reason.NO_MATCH)
-                    if (answer != null) return answer
-                  }
-                  return null
+                    } catch (cancelled: CancellationException) { throw cancelled }
+                    catch (error: Exception) {
+                        state.reason = PlaybackDiagnostics.reason(error)
+                        state.stage = (error as? PlaybackDiagnostics.Failure)?.stage ?: state.stage
+                        null
+                    }
+                    PlaybackDiagnostics.record(track.id, policy, provider.kind, state.stage,
+                        if (answer != null) PlaybackDiagnostics.Reason.SUCCESS else state.reason ?: PlaybackDiagnostics.Reason.NO_MATCH,
+                        provider.id, android.os.SystemClock.elapsedRealtime() - started)
+                    if (answer == null) attemptFailures.add(state.reason ?: PlaybackDiagnostics.Reason.NO_MATCH)
+                    answer
                 }
-                // Reserve a real fallback budget: several unavailable custom
-                // servers must not consume YouTube's entire extraction window.
-                val custom = providers.takeWhile { it.kind == PlaybackSourceKind.ADDON }
-                // One full add-on lookup (15s internally), not 30s of serial
-                // failed servers before native extraction even starts. Explicit
-                // upgrades retain a larger window while existing audio plays.
-                val answer = withTimeoutOrNull(if (manualUpgrade) 30_000L else ADDON_STARTUP_TIMEOUT_MS) { walk(custom) }
-                // Native extraction owns its full deadline even when YouTube is
-                // first. A timed-out provider must not cancel the later fallbacks.
-                answer ?: walk(providers.drop(custom.size))
+                if (pinned) {
+                    // An explicit source/file or manual upgrade keeps its exact order.
+                    suspend fun walk(ordered: List<PlaybackSource>): MusicTrack? {
+                        for (provider in ordered) resolveProvider(provider)?.let { return it }
+                        return null
+                    }
+                    val custom = providers.takeWhile { it.kind == PlaybackSourceKind.ADDON }
+                    withTimeoutOrNull(if (manualUpgrade) 30_000L else ADDON_STARTUP_TIMEOUT_MS) { walk(custom) }
+                        ?: walk(providers.drop(custom.size))
+                } else {
+                    // Only Archive has an existing guarded background upgrade path.
+                    // User add-on order and Jio/YouTube fallback order stay strict.
+                    resolveProviderCandidates(providers, defer = {
+                        policy.allowsArchive && it.kind == PlaybackSourceKind.INTERNET_ARCHIVE
+                    }, priorityGraceMs = {
+                        if (!policy.maximum && providers.size > 1 && it.kind == PlaybackSourceKind.YOUTUBE)
+                            PROVIDER_PRIORITY_GRACE_MS else null
+                    }, resolve = ::resolveProvider)
+                }
+
             }
         } ?: track.takeIf { manualUpgrade && preferredSourceId == null && providerAllowed(it) &&
             policy.acceptsRemoteTrack(it) } ?: run {
                 if (currentSourceOnly || preferredSourceId != null && policy.playbackSources.none { it.id == preferredSourceId })
-                    PlaybackDiagnostics.record(track.id, policy, null, failureStage, failureReason ?: PlaybackDiagnostics.Reason.POLICY)
+                    PlaybackDiagnostics.record(track.id, policy, null, failure().stage, failure().reason ?: PlaybackDiagnostics.Reason.POLICY)
                 throw unavailable()
             }
         coroutineContext.ensureActive()
@@ -479,10 +511,11 @@ internal class StreamResolver(
         primaryArtists = track.primaryArtists.ifEmpty { stream.primaryArtists })
 
     companion object {
-        // 16s add-on group + 2.5s Archive + 6s Jio + the native 40s
-        // extraction deadline, with handoff slack; never the former 105s.
+        // Final safety net, including explicit source requests and cold native
+        // extraction. Ordinary candidates use overlapping provider budgets.
         const val PLAYBACK_RESOLUTION_TIMEOUT_MS = 70_000L
         const val ADDON_STARTUP_TIMEOUT_MS = 16_000L
+        const val PROVIDER_PRIORITY_GRACE_MS = 6_000L
         const val LOSSLESS_LOOKUP_TIMEOUT_MS = 2_500L
         private const val MANUAL_LOSSLESS_LOOKUP_TIMEOUT_MS = 20_000L
         private val verifiedLosslessCache = LinkedHashMap<String, Pair<MusicTrack, Long>>(128, 0.75f, true)
@@ -629,5 +662,62 @@ internal class StreamResolver(
             .replace(unknownArtists, "").trim()
         internal fun matches(requested: MusicTrack, candidate: MusicTrack): Boolean =
             RecordingIdentity.providerConfidence(requested, candidate) != null
+    }
+}
+
+/** Prepare at most four eligible providers. Priority wins whenever ordering is strict. */
+internal suspend fun <T : Any> resolveProviderCandidates(sources: List<PlaybackSource>,
+    defer: (PlaybackSource) -> Boolean = { false },
+    priorityGraceMs: (PlaybackSource) -> Long? = { null },
+    resolve: suspend (PlaybackSource) -> T?): T? = coroutineScope {
+    if (sources.isEmpty()) return@coroutineScope null
+    val slots = Semaphore(4)
+    val addonSlots = Semaphore(2)
+    suspend fun limited(source: PlaybackSource): T? = if (source.kind == PlaybackSourceKind.ADDON)
+        addonSlots.withPermit { slots.withPermit { resolve(source) } }
+    else slots.withPermit { resolve(source) }
+    val primary = async { limited(sources.first()) }
+    val requests = listOf(primary) + sources.drop(1).map { source -> async(start = CoroutineStart.LAZY) {
+        suspend fun lookup(): T? {
+            // A fast primary needs no speculative network work. Failure releases
+            // fallbacks immediately; a slow primary gets only a short head start.
+            if (withTimeoutOrNull(250L) { primary.await() != null } == true) return null
+            return limited(source)
+        }
+        // Queueing behind other custom servers cannot multiply the group's
+        // existing startup budget. Native fallbacks keep their own deadlines.
+        if (source.kind == PlaybackSourceKind.ADDON)
+            withTimeoutOrNull(StreamResolver.ADDON_STARTUP_TIMEOUT_MS) { lookup() }
+        else lookup()
+    } }
+    val priorityWindows = sources.map { source -> priorityGraceMs(source)?.let { duration ->
+        async { kotlinx.coroutines.delay(duration) }
+    } }
+    // Reserve admission for the native fallbacks instead of parking all of
+    // them behind slow custom servers. Result selection still uses source order.
+    val startOrder = (sources.indices.take(1) + sources.indices.filter {
+        sources[it].kind != PlaybackSourceKind.ADDON
+    } + sources.indices).distinct()
+    startOrder.forEach { requests[it].start() }
+    try {
+        while (true) {
+            // A completed fallback can win only after all mandatory predecessors
+            // fail. Pending optional discovery may continue via the existing upgrade path.
+            for (index in requests.indices) {
+                val request = requests[index]
+                if (request.isCompleted) request.await()?.let { return@coroutineScope it }
+                else if (!defer(sources[index]) && priorityWindows[index]?.isCompleted != true) break
+            }
+            val pending = requests.filterNot { it.isCompleted }
+            if (pending.isEmpty()) break
+            select<Unit> {
+                pending.forEach { request -> request.onAwait { } }
+                priorityWindows.filterNotNull().filterNot { it.isCompleted }.forEach { it.onAwait { } }
+            }
+        }
+        null
+    } finally {
+        requests.forEach { it.cancel() }
+        priorityWindows.filterNotNull().forEach { it.cancel() }
     }
 }

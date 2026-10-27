@@ -235,6 +235,7 @@ class PlaybackManager(
     private var lastPlayRequestTimeMs: Long = 0L
     private var lastRequestedTrackId: String? = null
     private var selectionGeneration = 0L
+    private var selectionStartupTrace = 0L
     /** Read only on the player/application looper, alongside selection commands. */
     internal val currentSelectionRevision: Long get() = selectionGeneration
     private var pendingSelectionId: String? = null
@@ -1620,6 +1621,8 @@ class PlaybackManager(
 
     /** Own the requested identity before native callbacks or asynchronous lookup can run. */
     private fun beginSelection(track: MusicTrack): Long {
+        PlaybackDiagnostics.markStartup(selectionStartupTrace, PlaybackDiagnostics.StartupStage.CANCELLED)
+        selectionStartupTrace = PlaybackDiagnostics.beginStartup(track.id)
         losslessDiscoveryKey = null
         youtubeQualityJob?.cancel()
         pendingRestoredSession = null
@@ -1727,6 +1730,7 @@ class PlaybackManager(
         cancelQueueRefill()
         rememberQueueCandidates(queue)
         val generation = beginSelection(track)
+        val startupTrace = selectionStartupTrace
         pendingPolicyRestart = { playTrack(track, queue, isExplicitPlaylist, isInfiniteRadio, collectionLoader) }
         val jioDeadline = initialJioDeadlineMs
 
@@ -1739,8 +1743,12 @@ class PlaybackManager(
                 ownedQueue = withContext(AppDispatchers.CpuBounded) { queue.toList() }
                 if (!ownsSelection(track.id, generation)) return@launch
                 selectionContext = ownedQueue
-                val resolved = resolveWhileConnecting(connect = { awaitController() }) {
-                    if (needsResolution) withContext(AppDispatchers.Io) {
+                val resolved = resolveWhileConnecting(connect = {
+                    awaitController()
+                    PlaybackDiagnostics.markStartup(startupTrace, PlaybackDiagnostics.StartupStage.CONTROLLER_READY)
+                }) {
+                    PlaybackDiagnostics.markStartup(startupTrace, PlaybackDiagnostics.StartupStage.RESOLUTION_STARTED)
+                    val stream = if (needsResolution) withContext(AppDispatchers.Io) {
                         (repo ?: throw IllegalStateException("Music catalogue is unavailable. Please try again."))
                             .resolvePlayableTrack(track, jioDeadlineMs = jioDeadline, onAddonLookupFinished = { elapsed ->
                                 withContext(Dispatchers.Main.immediate) {
@@ -1748,6 +1756,8 @@ class PlaybackManager(
                                 }
                             })
                     } else track
+                    PlaybackDiagnostics.markStartup(startupTrace, PlaybackDiagnostics.StartupStage.RESOLVED)
+                    stream
                 }
                 if (isActive && ownsSelection(track.id, generation)) {
                     val host = Uri.parse(resolved.audioUrl).host.orEmpty()
@@ -1760,6 +1770,7 @@ class PlaybackManager(
             catch (e: Exception) {
                 Log.e(TAG, "Track resolution failed: ${e.javaClass.simpleName}")
                 if (ownsSelection(track.id, generation)) {
+                    PlaybackDiagnostics.markStartup(startupTrace, PlaybackDiagnostics.StartupStage.FAILED)
                     continueAfterUnavailableSelection(track, ownedQueue, isExplicitPlaylist, e.message)
                 }
             }
@@ -1780,6 +1791,7 @@ class PlaybackManager(
         }
 
         val generation = selectionGeneration
+        val startupTrace = selectionStartupTrace
         val preparedPolicy = withContext(AppDispatchers.Io) { NetworkQualityMonitor.getInstance(context).sourcePolicySnapshot() }
         if (!ownsSelection(track.id, generation)) return
         if (!preparedPolicy.acceptsRemoteTrack(track)) {
@@ -1801,7 +1813,8 @@ class PlaybackManager(
                     (queue.map { if (it.queueIdentity == track.queueIdentity) track else it } + track)
                         .filter { it.hasQueueSource() }.distinctBy { it.queueIdentity }.toMutableStateList()
                 }
-                Triple(tracks, tracks.map { queued -> queued.toMediaItem(targetQuality, preparedPolicy.takeIf { queued.id == track.id }) },
+                Triple(tracks, tracks.map { queued -> queued.toMediaItem(targetQuality,
+                    preparedPolicy.takeIf { queued.id == track.id }, startupTrace.takeIf { queued.id == track.id } ?: 0L) },
                     tracks.indexOfFirst { it.queueIdentity == track.queueIdentity }.coerceAtLeast(0))
             }
             if (!ownsSelection(track.id, generation)) return
@@ -1815,6 +1828,7 @@ class PlaybackManager(
             }
 
             recommendationEngine.recordTrackPlayed(track)
+            PlaybackDiagnostics.markStartup(startupTrace, PlaybackDiagnostics.StartupStage.PREPARE_REQUESTED)
 
             if (autoplayEnabled && !isExplicitPlaylist) {
                 // Autoplay Session:
@@ -2506,6 +2520,7 @@ class PlaybackManager(
     }
 
     fun release() {
+        PlaybackDiagnostics.markStartup(selectionStartupTrace, PlaybackDiagnostics.StartupStage.CANCELLED)
         cancelLosslessUpgrade()
         selectionGeneration++
         pendingSelectionId = null
@@ -2548,7 +2563,7 @@ class PlaybackManager(
         }).build()).build()
 
     private fun MusicTrack.toMediaItem(targetQuality: AudioQuality = _uiState.value.selectedQuality,
-        preparedPolicy: PlaybackSourcePolicy? = null): MediaItem {
+        preparedPolicy: PlaybackSourcePolicy? = null, startupTrace: Long = 0L): MediaItem {
         val availableBitrate = saavnBitrateFor(targetQuality)
         val effectiveUrl = if (audioUrl.contains("saavncdn.com")) {
             com.example.data.remote.OnlineMusicApiService.formatUrlForQuality(audioUrl, availableBitrate.toString())
@@ -2579,6 +2594,7 @@ class PlaybackManager(
                     .setAlbumTitle(album)
                     .setArtworkUri(Uri.parse(coverUrl))
                     .setExtras(Bundle().apply {
+                        if (startupTrace != 0L) putLong(PlaybackDiagnostics.STARTUP_TRACE_EXTRA, startupTrace)
                         putInt("bitrate", effectiveBitrate)
                         putInt("requested_audio_kbps", targetQuality.kbps)
                         putString("qualityBadge", effectiveBadge)

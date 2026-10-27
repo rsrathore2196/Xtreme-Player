@@ -5,6 +5,7 @@ import com.example.data.model.MusicTrack
 import com.example.data.repository.StreamResolver
 import com.example.playback.*
 import kotlinx.coroutines.runBlocking
+import java.util.concurrent.CopyOnWriteArrayList
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Test
@@ -26,7 +27,7 @@ class YouTubePrimaryRoutingTest {
 
     @Test fun optionalSourcesOffUsesYoutubeAtEveryTierAndKeepsPlaylistMetadata() = runBlocking {
         for (ceiling in AudioQualityCeiling.entries) for (enhancer in listOf(false)) {
-            val calls = mutableListOf<String>()
+            val calls = CopyOnWriteArrayList<String>()
             val resolver = StreamResolver(searchStandard = { _, _ -> calls += "jio"; listOf(original) },
                 searchLossless = { error("Lossy profiles must skip Archive") }, fetchById = { _, _ -> error("YouTube is available") },
                 searchYouTube = { calls += "youtube-search"; listOf(video) },
@@ -55,7 +56,7 @@ class YouTubePrimaryRoutingTest {
 
     @Test fun maximumOrdersArchiveThenJioThenYoutubeAndDoesNotLabelFallbacksLossless() = runBlocking {
         for (enhancer in listOf(false, true)) for (jioAvailable in listOf(false, true)) {
-            val calls = mutableListOf<String>()
+            val calls = CopyOnWriteArrayList<String>()
             val resolver = StreamResolver(searchLossless = { calls += "archive"; emptyList() },
                 searchStandard = { _, _ -> calls += "jio"; if (jioAvailable) listOf(original) else emptyList() },
                 fetchById = { _, _ -> calls += "jio-details"; if (jioAvailable) original else null },
@@ -65,15 +66,17 @@ class YouTubePrimaryRoutingTest {
                 sourcePolicy = PlaybackSourcePolicy(AudioQualityCeiling.MAX, enhancer, sources = listOf(PlaybackSource.archive, PlaybackSource.jio, PlaybackSource.youtube)))
             assertEquals("archive", calls.first())
             assertTrue(calls.indexOf("jio") > 0)
-            if (jioAvailable) { assertEquals("JIOSAAVN", result.source); assertFalse(calls.contains("youtube-audio")) }
-            else { assertEquals("YouTube Music", result.source); assertTrue(calls.indexOf("youtube-audio") > calls.indexOf("jio")) }
+            // Resolution may overlap, but a prepared lower-priority answer cannot
+            // bypass the enabled Jio fallback when that exact recording is usable.
+            if (jioAvailable) assertEquals("JIOSAAVN", result.source)
+            else { assertEquals("YouTube Music", result.source); assertTrue(calls.contains("youtube-audio")) }
             assertFalse(result.isLossless); assertFalse(result.qualityBadge.contains("FLAC"))
             assertEquals(video.id, result.id)
         }
     }
 
     @Test fun highTriesYoutubeThenJioWithoutChangingCatalogOrArtwork() = runBlocking {
-        val calls = mutableListOf<String>()
+        val calls = CopyOnWriteArrayList<String>()
         val resolver = StreamResolver(searchYouTube = { error("Known video ID") },
             resolveYouTube = { _, _, _, _ -> calls += "youtube"; null },
             searchStandard = { _, _ -> calls += "jio"; listOf(original) })
@@ -84,7 +87,7 @@ class YouTubePrimaryRoutingTest {
     }
 
     @Test fun workingHighYoutubeDoesNotContactFallbackCatalogs() = runBlocking {
-        val calls = mutableListOf<String>()
+        val calls = CopyOnWriteArrayList<String>()
         val resolver = StreamResolver(searchStandard = { _, _ -> calls += "jio"; emptyList() },
             resolveYouTube = { track, _, _, cap -> calls += "youtube"; resolved(track, cap) })
         val result = resolver.resolve(video, AudioQuality.ULTRA_HD_320)

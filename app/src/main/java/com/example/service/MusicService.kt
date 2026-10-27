@@ -5,6 +5,8 @@ import com.example.playback.canRetryAudioOutput
 import com.example.playback.restartAudioOutput
 import com.example.playback.PlaybackRecoveryGuard
 import com.example.playback.keepResolvedSource
+import com.example.playback.PlaybackDiagnostics
+import com.example.playback.PlaybackDiagnostics.StartupStage
 
 import com.example.performance.AppDispatchers
 
@@ -84,6 +86,7 @@ class MusicService : MediaLibraryService() {
     private var verifiedDecoderId: String? = null
     private var verifiedDecoderUri: Uri? = null
     private var verifiedDecoderName: String? = null
+    private var audioStartupTrace = 0L
     private val app: XtremeMusicApp get() = application as XtremeMusicApp
 
     private fun applyAudioCeiling(selector: DefaultTrackSelector, player: Player) {
@@ -116,13 +119,10 @@ class MusicService : MediaLibraryService() {
                 val address = before.localConfiguration?.uri ?: Uri.EMPTY
                 val extras = before.mediaMetadata.extras
                 val checked = NetworkAudioQualityPolicy.preparedFor(before, policy)
-                val archive = address.host.orEmpty().let { it == "archive.org" || it.endsWith(".archive.org") }
-                // Only the next item gets Archive prefetch; never resolve an entire playlist.
-                // New quality settings apply ahead of playback, never to the audible item.
-                val needsProvider = !checked && address.scheme !in setOf("file", "content") &&
-                    (index == start ||
-                        YouTubeAudioStreamService.isYouTubeAudio(before.mediaId, address.toString()) ||
-                        (archive && ceiling != Int.MAX_VALUE))
+                // Resolve just the next item after sound starts. The other entries
+                // receive cheap ceiling updates without competing for extraction slots.
+                val needsProvider = player.isPlaying && index == start && !checked &&
+                    address.scheme !in setOf("file", "content")
                 if (needsProvider && networkQuality.activeQualityCeiling.value.connectionType != com.example.playback.NetworkConnectionType.OFFLINE) {
                     val metadata = before.mediaMetadata
                     val selected = MusicTrack(before.mediaId, metadata.title?.toString().orEmpty(),
@@ -307,6 +307,10 @@ class MusicService : MediaLibraryService() {
             if (current != null && period.windowSequenceNumber != current.windowSequenceNumber) return null
         }
         return item
+    }
+
+    private fun markAudioStartup(item: MediaItem, stage: StartupStage) {
+        PlaybackDiagnostics.markStartup(audioStartupTrace, stage, item.mediaId)
     }
 
     private fun audioInputQuality(item: MediaItem, format: Format): com.example.playback.StreamQualityBadge {
@@ -920,12 +924,21 @@ class MusicService : MediaLibraryService() {
 
         // 4. Audio Effects & Equalizer real-time pipeline (attached on active playback session)
         player.addAnalyticsListener(object : androidx.media3.exoplayer.analytics.AnalyticsListener {
+            override fun onLoadStarted(
+                eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
+                loadEventInfo: androidx.media3.exoplayer.source.LoadEventInfo,
+                mediaLoadData: androidx.media3.exoplayer.source.MediaLoadData
+            ) {
+                val item = currentAudioEventItem(player, eventTime) ?: return
+                markAudioStartup(item, StartupStage.STREAM_LOADING)
+            }
             override fun onAudioInputFormatChanged(
                 eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
                 format: Format,
                 decoderReuseEvaluation: DecoderReuseEvaluation?
             ) {
                 val item = currentAudioEventItem(player, eventTime) ?: return
+                markAudioStartup(item, StartupStage.FORMAT_READY)
                 com.example.playback.PsychoacousticAudioProcessor.spatialEnabled = spatialRequested &&
                     !com.example.playback.DolbyAtmosSupport.isAtmosMime(format.sampleMimeType)
                 val uri = item.localConfiguration?.uri ?: return
@@ -988,6 +1001,7 @@ class MusicService : MediaLibraryService() {
                 decoderName: String, initializedTimestampMs: Long, initializationDurationMs: Long
             ) {
                 val item = currentAudioEventItem(player, eventTime) ?: return
+                markAudioStartup(item, StartupStage.DECODER_READY)
                 verifiedDecoderId = item.mediaId
                 verifiedDecoderUri = item.localConfiguration?.uri
                 verifiedDecoderName = decoderName
@@ -1002,6 +1016,13 @@ class MusicService : MediaLibraryService() {
                 if (audioSessionId != C.AUDIO_SESSION_ID_UNSET && audioSessionId > 0) {
                     com.example.playback.AudioEffectsManager.attachAudioSession(audioSessionId)
                 }
+            }
+            override fun onAudioPositionAdvancing(
+                eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
+                playoutStartSystemTimeMs: Long
+            ) {
+                val item = currentAudioEventItem(player, eventTime) ?: return
+                markAudioStartup(item, StartupStage.FIRST_AUDIO)
             }
         })
 
@@ -1021,6 +1042,12 @@ class MusicService : MediaLibraryService() {
                 }
             }
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                val taggedTrace = mediaItem?.mediaMetadata?.extras?.getLong(PlaybackDiagnostics.STARTUP_TRACE_EXTRA) ?: 0L
+                if (audioStartupTrace != taggedTrace)
+                    PlaybackDiagnostics.markStartup(audioStartupTrace, StartupStage.CANCELLED)
+                audioStartupTrace = if (mediaItem == null) 0L
+                    else if (PlaybackDiagnostics.startupPending(taggedTrace, mediaItem.mediaId)) taggedTrace
+                    else PlaybackDiagnostics.beginStartup(mediaItem.mediaId, "transition")
                 listeningRestart = listeningRestart || reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT ||
                     reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO ||
                     reason == Player.MEDIA_ITEM_TRANSITION_REASON_SEEK && player.currentMediaItemIndex != listeningIndex
@@ -1051,6 +1078,7 @@ class MusicService : MediaLibraryService() {
                 applyAudioCeiling(trackSelector, player)
             }
             override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (isPlaying) scheduleUpcomingCeilings() else networkQueueJob?.cancel()
                 checkpointJob?.cancel()
                 checkpoint(sampleListeningTime = false)
                 if (isPlaying) checkpointJob = serviceScope.launch {
@@ -1259,6 +1287,7 @@ class MusicService : MediaLibraryService() {
     }
 
     override fun onDestroy() {
+        PlaybackDiagnostics.markStartup(audioStartupTrace, StartupStage.CANCELLED)
         volumeObserver?.let(contentResolver::unregisterContentObserver)
         volumeObserver = null
         _liveSession.value = false
