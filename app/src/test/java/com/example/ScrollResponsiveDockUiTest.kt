@@ -46,6 +46,7 @@ import org.robolectric.annotation.GraphicsMode
 class ScrollResponsiveDockUiTest {
     @get:Rule val compose = createComposeRule()
     private lateinit var dock: ScrollDockState
+    private lateinit var dockProgress: State<Float>
     private var plays = 0
     private var expanded = 0
     private var skips = 0
@@ -63,6 +64,7 @@ class ScrollResponsiveDockUiTest {
                 LocalDensity provides Density(LocalDensity.current.density, fontScale)) {
                 dock = rememberScrollDockState()
                 val progress = rememberScrollDockProgress(dock)
+                dockProgress = progress
                 var tab by remember { mutableIntStateOf(0) }
                 val navigate: (Int) -> Unit = { tab = it; selected = it; dock.expand() }
                 val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
@@ -136,6 +138,26 @@ class ScrollResponsiveDockUiTest {
         assertEquals(with(compose.density) { 227.8.dp.toPx() }, compact.width, 1f)
         assertTrue(compact.center.y > original.center.y)
         assertTrue(compact.width < original.width)
+        val indicator = java.io.File.createTempFile("compact-selected-pill-", ".png")
+        try {
+            compose.onNodeWithTag("nav_tab_home_active").captureRoboImage(indicator.absolutePath,
+                roborazziOptions = RoborazziOptions(taskType = RoborazziTaskType.Record))
+            val image = javax.imageio.ImageIO.read(indicator)
+            val accent = DarkAppColors.primaryAccent
+            var left = image.width; var top = image.height; var right = -1; var bottom = -1
+            for (y in 0 until image.height) for (x in 0 until image.width) {
+                val pixel = java.awt.Color(image.getRGB(x, y), true)
+                if (kotlin.math.abs(pixel.red - accent.red * 255) < 8 &&
+                    kotlin.math.abs(pixel.green - accent.green * 255) < 8 &&
+                    kotlin.math.abs(pixel.blue - accent.blue * 255) < 8) {
+                    left = minOf(left, x); right = maxOf(right, x)
+                    top = minOf(top, y); bottom = maxOf(bottom, y)
+                }
+            }
+            assertTrue("The selected fill must be visible", right > left && bottom > top)
+            assertTrue("The compact selected fill must be circular", kotlin.math.abs((right - left) - (bottom - top)) <= 2)
+            assertTrue("The circle is centered inside the unchanged touch height", top > 0 && bottom < image.height - 1)
+        } finally { indicator.delete() }
         compose.onNodeWithTag("mini_player_play_pause").performClick()
         assertEquals(1, plays)
         assertEquals(0, expanded)
@@ -221,18 +243,32 @@ class ScrollResponsiveDockUiTest {
     @Test fun animationFramesDoNotRecomposePlayerAndReversalDoesNotSnap() {
         show()
         compose.mainClock.autoAdvance = false
-        down()
+        // Inject the consumed-scroll event without gesture-dispatch clock advancement.
+        compose.runOnIdle {
+            dock.onPostScroll(androidx.compose.ui.geometry.Offset(0f, -100f),
+                androidx.compose.ui.geometry.Offset.Zero, androidx.compose.ui.input.nestedscroll.NestedScrollSource.UserInput)
+        }
+        compose.mainClock.advanceTimeByFrame()
         compose.mainClock.advanceTimeBy(64)
         val middle = bounds("mini_player_container")
-        val compositions = playerCompositions
         compose.mainClock.advanceTimeBy(64)
-        assertEquals(compositions, playerCompositions)
         val later = bounds("mini_player_container")
         assertTrue(later.center.y > middle.center.y)
+        compose.mainClock.advanceTimeBy(80)
+        assertTrue("The shared dock motion should still be visibly progressing after 200 ms: ${dockProgress.value}",
+            dockProgress.value in 0.1f..0.85f)
+        bounds("mini_player_container")
+        val compositions = playerCompositions
+        repeat(4) {
+            compose.mainClock.advanceTimeByFrame()
+            bounds("mini_player_container")
+            assertEquals(compositions, playerCompositions)
+        }
+        val beforeReverse = bounds("mini_player_container")
         compose.runOnIdle { dock.expand() }
         compose.mainClock.advanceTimeByFrame()
         val reversed = bounds("mini_player_container")
-        assertTrue(kotlin.math.abs(reversed.center.y - later.center.y) < 20f)
+        assertTrue(kotlin.math.abs(reversed.center.y - beforeReverse.center.y) < 20f)
         compose.mainClock.autoAdvance = true
         compose.waitForIdle()
         assertTrue(bounds("mini_player_container").bottom < bounds("floating_bottom_navigation_bar").top)

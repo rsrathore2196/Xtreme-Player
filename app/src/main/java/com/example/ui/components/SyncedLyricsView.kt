@@ -50,6 +50,8 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -168,7 +170,6 @@ fun SyncedLyricsView(
     val lyricsTextSize = lyricsSettings.textSizeSp
     val lyricsTextScale = lyricsTextSize / 28f
     val haptic = LocalHapticFeedback.current
-    val listState = rememberLazyListState()
 
     val lines = lyrics?.lines ?: emptyList()
     val isSynced = lyrics?.isSynced == true
@@ -216,6 +217,11 @@ fun SyncedLyricsView(
             }
         }
     }
+    // Seed the incoming viewport from the live playhead, including lyrics that
+    // arrive after opening. Never reveal line zero while waiting for the transition.
+    val listState = key(lyrics?.trackId, isSynced) {
+        rememberLazyListState(initialFirstVisibleItemIndex = activeLineIndex.coerceAtLeast(0))
+    }
 
     // A gesture temporarily suspends following; the fling can finish before we resume.
     // Programmatic scrolling does not count as a user gesture and never drops a line change.
@@ -241,13 +247,15 @@ fun SyncedLyricsView(
     val rowHeights = remember(lyrics?.trackId, lines, viewportSize.width, density, lyricStyle, romanizationStyle,
         showRomanization, showTranslation) { mutableMapOf<Int, Int>() }
     var hasInitialScrolled by remember(lyrics?.trackId) { mutableStateOf(false) }
+    var centeredLineIndex by remember(lyrics?.trackId) { mutableIntStateOf(-1) }
     LaunchedEffect(lyrics?.trackId, lines, activeLineIndex, isSynced, followPlayback, isDragged, viewportSize, rowHeights, viewportAnimating) {
-        // Expansion changes viewport bounds every frame. Follow once after it
-        // settles instead of canceling/restarting a 350ms scroll on every resize.
-        if (viewportAnimating) return@LaunchedEffect
+        // Center the incoming vocal before revealing it, even if a quick reopen
+        // retains this view. Later resizes wait for stable bounds instead of restarting a scroll.
+        val targetIndex = activeLineIndex.coerceAtLeast(0)
+        if (viewportAnimating && hasInitialScrolled && centeredLineIndex == targetIndex) return@LaunchedEffect
         if (!isSynced || lines.isEmpty() || !followPlayback || isDragged) return@LaunchedEffect
         // Before the first vocal, show the first line without marking it active.
-        val targetIndex = activeLineIndex.coerceAtLeast(0)
+        val animateFollow = hasInitialScrolled && !viewportAnimating
         snapshotFlow { listState.layoutInfo }.first {
             it.viewportSize.height > 0 && it.totalItemsCount == lines.size
         }
@@ -273,12 +281,12 @@ fun SyncedLyricsView(
                 mainHeight + romanizationHeight + translationHeight + with(density) { 6.dp.roundToPx() * 2 }
             }
             val scrollOffset = (targetHeight / 2f - viewportCenter).roundToInt()
-            if (hasInitialScrolled) listState.animateScrollToItem(targetIndex, scrollOffset)
+            if (animateFollow) listState.animateScrollToItem(targetIndex, scrollOffset)
             else listState.scrollToItem(targetIndex, scrollOffset)
         } else {
             val distanceToCenter = item.offset + item.size / 2f - viewportCenter
             if (kotlin.math.abs(distanceToCenter) > 1f) {
-                if (hasInitialScrolled) {
+                if (animateFollow) {
                     listState.animateScrollBy(
                         distanceToCenter,
                         animationSpec = tween(durationMillis = 350, easing = FastOutSlowInEasing)
@@ -289,6 +297,7 @@ fun SyncedLyricsView(
             }
         }
         hasInitialScrolled = true
+        centeredLineIndex = targetIndex
     }
 
     val activeTextColor = if (isDark) Color(0xFFFFFFFF) else Color(0xFF000000)
@@ -392,6 +401,7 @@ fun SyncedLyricsView(
                     val distance = if (activeLineIndex >= 0 && isSynced) kotlin.math.abs(index - activeLineIndex) else 0
                     val isActive = isSynced && index == activeLineIndex
                     val isPast = isSynced && (index < activeLineIndex)
+                    val unfocusedTextColor = if (isDark) Color.White.copy(alpha = 0.40f) else Color.Black.copy(alpha = 0.38f)
 
                     val targetAlpha = if (!isSynced) {
                         1.0f
@@ -466,8 +476,8 @@ fun SyncedLyricsView(
                             trackLanguage = lyrics.language,
                             trackArtist = lyrics.artist,
                             activeTextColor = activeTextColor,
-                            inactiveTextColor = if (isActive) inactiveTextColor else
-                                if (isDark) Color.White.copy(alpha = 0.40f) else Color.Black.copy(alpha = 0.38f),
+                            inactiveTextColor = if (isActive) inactiveTextColor else unfocusedTextColor,
+                            timedInactiveTextColor = unfocusedTextColor,
                             accentColor = accentColor,
                             accentColorState = accentColorState,
                             currentPositionProvider = {
@@ -506,6 +516,7 @@ private fun KaraokeLineItem(
     trackArtist: String?,
     activeTextColor: Color,
     inactiveTextColor: Color,
+    timedInactiveTextColor: Color,
     accentColor: Color,
     accentColorState: State<Color>?,
     currentPositionProvider: () -> Long
@@ -551,6 +562,8 @@ private fun KaraokeLineItem(
         }
         result
     }
+    // Focusing a timed line must not brighten words whose vocals have not arrived.
+    val baseTextColor = if (measuredWords.isNotEmpty()) timedInactiveTextColor else inactiveTextColor
     var textLayoutResult by remember(line.text) { mutableStateOf<TextLayoutResult?>(null) }
     val latestPosition by rememberUpdatedState(currentPositionProvider)
     val density = LocalDensity.current
@@ -593,7 +606,7 @@ private fun KaraokeLineItem(
         fontFamily = FontFamily.SansSerif,
         lineHeight = lineHeight,
         // Sung and upcoming inactive lines share a fainter color; the live reveal stays unchanged.
-        color = inactiveTextColor,
+        color = baseTextColor,
         textAlign = TextAlign.Start,
         onTextLayout = { textLayoutResult = it },
         modifier = Modifier.fillMaxWidth().drawWithCache {
@@ -614,13 +627,19 @@ private fun KaraokeLineItem(
             onDrawWithContent {
                 // Read focus only while drawing, so the outgoing line's halo fades without relaying out text.
                 val focus = glowFocus.value
-                if ((!isActive && focus <= 0f) || layout == null || revealPaint == null) {
+                if (layout == null) {
                     drawContent()
+                    return@onDrawWithContent
+                }
+                // Overlay/glow painting shares the paragraph's mutable native paint.
+                // Always reset its base color, including after seeking backward.
+                if ((!isActive && focus <= 0f) || revealPaint == null) {
+                    drawText(layout, color = baseTextColor)
                     return@onDrawWithContent
                 }
                 val position = latestPosition()
                 if (position < line.timestampMs) {
-                    drawContent()
+                    drawText(layout, color = baseTextColor)
                     return@onDrawWithContent
                 }
                 completed.reset()
@@ -633,7 +652,7 @@ private fun KaraokeLineItem(
                     val progress = ((position - line.timestampMs).toFloat() / (end - line.timestampMs).coerceAtLeast(1)).coerceIn(0f, 1f)
                     // A line-only document moves as one unit; no invented word timings.
                     translate(top = -liftHeight * vocalLift(position, line.timestampMs, end)) {
-                        this@onDrawWithContent.drawContent()
+                        drawText(layout, color = baseTextColor)
                         drawReveal(layout, fallbackRows, progress, activeTextColor, feather, completed, revealPaint,
                             glow = vocalGlow(position, line.timestampMs, end) * focus)
                         clipPath(completed) { drawText(layout, color = activeTextColor) }
@@ -648,7 +667,7 @@ private fun KaraokeLineItem(
                             for (region in run.regions) moving.addRect(region.bounds)
                         }
                     }
-                    clipPath(moving, clipOp = ClipOp.Difference) { this@onDrawWithContent.drawContent() }
+                    clipPath(moving, clipOp = ClipOp.Difference) { drawText(layout, color = baseTextColor) }
                     for (run in runs) {
                         if (position < run.start) continue
                         val lift = if (run.canLift) vocalLift(position, run.start, run.end) else 0f
@@ -658,7 +677,7 @@ private fun KaraokeLineItem(
                                 for (region in run.regions) {
                                     val bounds = region.bounds
                                     clipRect(bounds.left, bounds.top, bounds.right, bounds.bottom) {
-                                        drawText(layout, color = inactiveTextColor)
+                                        drawText(layout, color = baseTextColor)
                                     }
                                 }
                                 for (unit in run.reveals) {
@@ -693,13 +712,13 @@ private data class WordRun(
 
 /** Bounded rise and overlapping settle: short vocals never force a two-frame bounce. */
 private fun vocalLift(position: Long, start: Long, end: Long): Float {
-    if (position <= start || position >= end + 280L) return 0f
+    if (position <= start || position >= end + 360L) return 0f
     val riseMs = (end - start).coerceIn(180L, 360L).toFloat()
     val rise = ((position - start) / riseMs).coerceIn(0f, 1f)
-    // Zero velocity at both ends keeps the larger lift smooth at vocal boundaries.
-    val easedRise = rise * rise * (3f - 2f * rise)
-    val settle = (1f - (position - end).coerceAtLeast(0L) / 280f).coerceIn(0f, 1f)
-    return easedRise * settle * settle * (3f - 2f * settle)
+    // Zero velocity and acceleration at the boundaries avoid a hard start/stop.
+    fun ease(amount: Float): Float = amount * amount * amount * (amount * (amount * 6f - 15f) + 10f)
+    val settle = (1f - (position - end).coerceAtLeast(0L) / 360f).coerceIn(0f, 1f)
+    return ease(rise) * ease(settle)
 }
 
 /** Animate illumination only: the reveal edge still follows the provider's exact vocal clock. */

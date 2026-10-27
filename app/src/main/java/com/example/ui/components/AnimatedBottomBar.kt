@@ -226,7 +226,7 @@ fun AnimatedBottomBar(
                             Box(Modifier.matchParentSize().graphicsLayer {
                                 alpha = if (selected) 1f else expansion.value.coerceIn(0f, 1f)
                                 val width = geometry.tabWidth(position)
-                                shape = DockPillShape(width, direction == LayoutDirection.Rtl)
+                                shape = DockPillShape(width, direction == LayoutDirection.Rtl, geometry.pillHeight(size.height))
                                 clip = true
                                 shadowElevation = 6.dp.toPx()
                                 spotShadowColor = if (!appColors.dynamicGlassEnabled) Color.Black.copy(alpha = 0.15f)
@@ -237,12 +237,14 @@ fun AnimatedBottomBar(
                                 val borderStyle = Stroke(stroke)
                                 onDrawBehind {
                                     val width = geometry.tabWidth(position)
+                                    val pillHeight = geometry.pillHeight(size.height)
+                                    val top = (size.height - pillHeight) / 2f
                                     val left = if (direction == LayoutDirection.Ltr) 0f else size.width - width
                                     drawRect(activePillBrush)
                                     if (appColors.dynamicGlassEnabled) drawRect(specularSheen)
-                                    drawRoundRect(activeBorder, Offset(left + stroke / 2f, stroke / 2f),
-                                        Size((width - stroke).coerceAtLeast(0f), (size.height - stroke).coerceAtLeast(0f)),
-                                        CornerRadius((size.height - stroke).coerceAtLeast(0f) / 2f), style = borderStyle)
+                                    drawRoundRect(activeBorder, Offset(left + stroke / 2f, top + stroke / 2f),
+                                        Size((width - stroke).coerceAtLeast(0f), (pillHeight - stroke).coerceAtLeast(0f)),
+                                        CornerRadius((pillHeight - stroke).coerceAtLeast(0f) / 2f), style = borderStyle)
                                 }
                             })
                             BottomBarTabContent(expansion, labelAlpha, item, selected,
@@ -295,6 +297,7 @@ private class DockGeometry(
     val reservedWidth = (collapsed * expanded.size + (expanded.maxOrNull()?.minus(collapsed) ?: 0f) +
         gap * (expanded.size - 1).coerceAtLeast(0) + padding * 2).coerceAtLeast(1f)
     val progress: Float get() = (compactProgress?.value ?: 0f).coerceIn(0f, 1f)
+    fun pillHeight(fullHeight: Float): Float = fullHeight + (minOf(fullHeight, compactTabWidth) - fullHeight) * progress
     private val edgePadding: Float get() = padding + (compactPadding - padding) * progress
     fun retained(index: Int): Boolean = index == selectedPosition.value || index == companionPosition
     private fun fullTabWidth(index: Int): Float =
@@ -314,10 +317,12 @@ private class DockGeometry(
     }
 }
 
-private data class DockPillShape(val width: Float, val fromRight: Boolean) : Shape {
+internal data class DockPillShape(val width: Float, val fromRight: Boolean, val height: Float? = null) : Shape {
     override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
         val left = if (fromRight) size.width - width else 0f
-        return Outline.Rounded(RoundRect(left, 0f, left + width, size.height, CornerRadius(size.height / 2f)))
+        val pillHeight = (height ?: size.height).coerceIn(0f, size.height)
+        val top = (size.height - pillHeight) / 2f
+        return Outline.Rounded(RoundRect(left, top, left + width, top + pillHeight, CornerRadius(pillHeight / 2f)))
     }
 }
 

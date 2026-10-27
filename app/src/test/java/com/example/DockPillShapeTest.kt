@@ -5,12 +5,25 @@ import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
 import com.example.ui.components.DockViewportShape
+import com.example.ui.components.DockPillShape
 import com.example.ui.components.backdrop.internal.ShapeProvider
 import androidx.compose.runtime.mutableFloatStateOf
 import org.junit.Assert.*
 import org.junit.Test
 
 class DockPillShapeTest {
+    @Test fun compactSelectedPillIsCircularAndCenteredInsideItsUnchangedTouchTarget() {
+        for (direction in LayoutDirection.entries) {
+            val shape = DockPillShape(48f, direction == LayoutDirection.Rtl, 48f)
+            val round = (shape.createOutline(Size(140f, 52f), direction, Density(1f)) as Outline.Rounded).roundRect
+            assertEquals(48f, round.width, 0f)
+            assertEquals(round.width, round.height, 0f)
+            assertEquals(2f, round.top, 0f)
+            assertEquals(24f, round.topLeftCornerRadius.x, 0f)
+            assertEquals(24f, round.topLeftCornerRadius.y, 0f)
+        }
+    }
+
     @Test fun cachedBackdropOutlineFollowsTheLiveDockWidthInsteadOfKeepingTheFirstTabShape() {
         val scale = mutableFloatStateOf(.75f)
         // Production retains one shape instance across every tab and spring frame.
