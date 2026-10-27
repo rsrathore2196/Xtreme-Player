@@ -851,32 +851,23 @@ fun SupportDonationCard(
 
                 Spacer(modifier = Modifier.height(14.dp))
 
-                // Primary CTA Button: Donate via UPI with 3D Liquid Glass styling
+                // Primary CTA Button: Donate via UPI with 3D Liquid Glass styling adapting the theme accent
                 val donateShape = RoundedCornerShape(14.dp)
-                val accentLum = (0.299 * accentColor.red + 0.587 * accentColor.green + 0.114 * accentColor.blue)
-                val isAccentWhite = accentColor == Color.White || (appColors.isAmoled && accentColor == Color.White) || accentLum > 0.70f
-                val donateBrush = if (isAccentWhite) {
+                val donateBrush = remember(accentColor, appColors.cardBackground) {
                     Brush.verticalGradient(
                         listOf(
-                            Color(0xFFFFFFFF),
-                            Color(0xFFE4E4E7)
-                        )
-                    )
-                } else {
-                    Brush.verticalGradient(
-                        listOf(
-                            accentColor.copy(alpha = 0.94f),
-                            accentColor.copy(alpha = 0.78f)
+                            accentColor,
+                            androidx.compose.ui.graphics.lerp(accentColor, appColors.cardBackground, 0.12f)
                         )
                     )
                 }
-                val donateTextColor = if (isAccentWhite) Color(0xFF0A0A0A) else contrastingContentColor(accentColor)
+                val donateTextColor = contrastingContentColor(accentColor)
                 val donateBorder = BorderStroke(
                     1.2.dp,
                     Brush.verticalGradient(
                         listOf(
-                            if (isAccentWhite) Color(0xFFCCCCCC) else Color.White.copy(alpha = 0.50f),
-                            accentColor.copy(alpha = 0.40f)
+                            Color.White.copy(alpha = 0.40f),
+                            accentColor.copy(alpha = 0.50f)
                         )
                     )
                 )
@@ -888,25 +879,23 @@ fun SupportDonationCard(
                         .shadow(
                             elevation = 8.dp,
                             shape = donateShape,
-                            spotColor = if (isAccentWhite) Color.White.copy(alpha = 0.25f) else accentColor.copy(alpha = 0.45f),
+                            spotColor = accentColor.copy(alpha = 0.45f),
                             ambientColor = Color.Transparent
                         )
                         .clip(donateShape)
                         .background(donateBrush)
                         .border(donateBorder, donateShape)
                         .drawWithContent {
-                            if (!isAccentWhite) {
-                                // Top specular highlight sheen drawn behind text
-                                val sheen = Brush.verticalGradient(
-                                    listOf(
-                                        Color.White.copy(alpha = 0.25f),
-                                        Color.Transparent
-                                    ),
-                                    startY = 0f,
-                                    endY = size.height * 0.48f
-                                )
-                                drawRect(sheen)
-                            }
+                            // Top specular highlight sheen drawn behind text
+                            val sheen = Brush.verticalGradient(
+                                listOf(
+                                    Color.White.copy(alpha = 0.25f),
+                                    Color.Transparent
+                                ),
+                                startY = 0f,
+                                endY = size.height * 0.48f
+                            )
+                            drawRect(sheen)
                             drawContent()
                         }
                         .bouncyClickable {
