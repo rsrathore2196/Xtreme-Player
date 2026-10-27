@@ -174,10 +174,12 @@ class UnifiedRecommendationEngine private constructor(context: Context?,
 
     suspend fun radio(seed: MusicTrack, profile: UserProfile, taste: UserTasteProfile,
         queued: List<MusicTrack>, limit: Int): List<MusicTrack> = withContext(urgentRanking) {
+        val radioProfile = radioProfile(seed, profile)
+        val moods = HomeRecommendationPolicy.moodForTrack(seed)?.let { mapOf(it to 1f) }.orEmpty()
         val excluded = HomeRecommendationPolicy.Recordings().apply { add(seed); queued.forEach { add(it) } }
         val found = mutableListOf<MusicTrack>()
         suspend fun collectMatches(pool: List<Candidate>, shelf: Shelf) {
-            resolveBatches(pool, shelf, profile, taste, queued, true).transformWhile { tracks ->
+            resolveBatches(pool, shelf, radioProfile, taste, queued, true, recent = excluded).transformWhile { tracks ->
                 tracks.filter { !excluded.contains(it) }.forEach { if (excluded.add(it)) found.add(it) }
                 emit(Unit)
                 found.size < limit
@@ -186,14 +188,31 @@ class UnifiedRecommendationEngine private constructor(context: Context?,
         // Keep partial successes if the lookup budget expires; a slow later match
         // must not discard songs already verified for an almost-empty queue.
         withTimeoutOrNull(13_000L) {
-            val related = discover(Shelf.INSPIRED, profile, profile.country, taste, seed, listOf(seed), emptyList(), false, 0, true)
+            val related = discover(Shelf.INSPIRED, radioProfile, profile.country, taste, seed, listOf(seed), emptyList(), false, 0, true,
+                contextMoods = moods)
             collectMatches(related, Shelf.INSPIRED)
             if (found.size < limit) {
-                val extra = discover(Shelf.QUICK, profile, profile.country, taste, seed, listOf(seed), emptyList(), false, 0, true)
+                val extra = discover(Shelf.QUICK, radioProfile, profile.country, taste, seed, listOf(seed), emptyList(), false, 0, true,
+                    contextMoods = moods)
                 collectMatches(extra, Shelf.QUICK)
             }
         }
         found.take(limit.coerceAtMost(limits.shelfSize))
+    }
+
+    private fun radioProfile(seed: MusicTrack, profile: UserProfile): UserProfile =
+        language(seed.language).takeIf(HomeRecommendationPolicy::known)?.let { profile.copy(languages = listOf(it)) } ?: profile
+
+    /** Cached candidates use the same context and recency gates as network radio. */
+    suspend fun radioCandidates(seed: MusicTrack, profile: UserProfile, taste: UserTasteProfile,
+        queued: List<MusicTrack>, tracks: List<MusicTrack>, limit: Int): List<MusicTrack> = withContext(urgentRanking) {
+        val effective = radioProfile(seed, profile)
+        val moods = HomeRecommendationPolicy.moodForTrack(seed)?.let { mapOf(it to 1f) }.orEmpty()
+        val excluded = HomeRecommendationPolicy.Recordings().apply { add(seed); queued.forEach { add(it) } }
+        val ranked = rank(tracks.mapIndexed { index, track -> Candidate(track, ordinal = index) },
+            Shelf.INSPIRED, effective, taste, moods, 0, true)
+        resolveBatches(ranked, Shelf.INSPIRED, effective, taste, queued, true, recent = excluded,
+            maxResults = limit).lastOrNull().orEmpty().take(limit)
     }
 
     private fun recentMoods(history: List<MusicTrack>, taste: UserTasteProfile): Map<String, Float> {
@@ -213,14 +232,15 @@ class UnifiedRecommendationEngine private constructor(context: Context?,
     private suspend fun discover(shelf: Shelf, profile: UserProfile, country: String, taste: UserTasteProfile,
         seed: MusicTrack?, history: List<MusicTrack>, favorites: List<MusicTrack>, force: Boolean,
         variation: Long, essential: Boolean, initialBatch: Boolean = false,
-        targetSize: Int = INITIAL_SHELF_SIZE, recent: HomeRecommendationPolicy.Recordings? = null): List<Candidate> {
+        targetSize: Int = INITIAL_SHELF_SIZE, recent: HomeRecommendationPolicy.Recordings? = null,
+        contextMoods: Map<String, Float>? = null): List<Candidate> {
         val languages = profile.languages.map(::language).filter(HomeRecommendationPolicy::known).distinct()
         val gl = profile.countryCode.trim().uppercase(java.util.Locale.ROOT)
         val ttl = if (shelf == Shelf.ERA) 24 * 60 * 60_000L else if (shelf in setOf(Shelf.QUICK, Shelf.CHART)) CHART_TTL else CONTEXT_TTL
         val found = mutableListOf<Candidate>()
         var ranked: List<Candidate>? = null
         var initialReady: Boolean? = null
-        val moods = recentMoods(history, taste)
+        val moods = contextMoods ?: recentMoods(history, taste)
         val mood = moods.maxByOrNull { it.value }?.key.orEmpty()
         suspend fun rankedCandidates(): List<Candidate> = ranked ?: rank(found, shelf, profile, taste, moods, variation, essential)
             .also { ranked = it }

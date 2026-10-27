@@ -92,6 +92,8 @@ fun InfiniteRadioHeroCard(
             )
             val fullQualityArtwork = remember(artworkRequest, artworkSize) {
                 artworkRequest.newBuilder().size(artworkSize.width, artworkSize.height)
+                    .transformations(com.example.ui.util.HeroArtworkCropTransformation)
+                    .allowHardware(false)
                     .precision(Precision.INEXACT).allowRgb565(false).build()
             }
             AsyncImage(

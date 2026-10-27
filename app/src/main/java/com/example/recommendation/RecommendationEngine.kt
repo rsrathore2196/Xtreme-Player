@@ -2,6 +2,7 @@ package com.example.recommendation
 
 import android.util.Log
 import com.example.data.model.MusicTrack
+import com.example.data.model.queueIdentity
 import java.util.ArrayDeque
 import kotlin.math.abs
 
@@ -23,8 +24,9 @@ import kotlin.math.abs
 class RecommendationEngine {
     private val TAG = "InfinityAutoplay"
 
-    // Session Memory: In-memory sliding buffer of the last 10 played tracks
-    private val sessionBuffer = ArrayDeque<MusicTrack>(10)
+    // Keep recent selections across queue restarts; persisted listening history
+    // supplies the longer exclusion window when radio is rebuilt.
+    private val sessionBuffer = ArrayDeque<MusicTrack>(128)
 
     // Collaborative Filtering: Co-listening transition frequency matrix [TrackA -> Map<TrackB, Count>]
     private val coListeningMatrix = mutableMapOf<String, MutableMap<String, Int>>()
@@ -44,19 +46,20 @@ class RecommendationEngine {
     )
 
     /**
-     * Records a track played by the user into the sliding session memory (last 10 tracks),
+     * Records a track played by the user into the bounded session memory,
      * and updates the collaborative co-listening transition matrix.
      */
     @Synchronized
     fun recordTrackPlayed(track: MusicTrack) {
         val lastTrack = sessionBuffer.peekLast()
+        if (lastTrack?.queueIdentity == track.queueIdentity) return
         if (lastTrack != null && lastTrack.id != track.id) {
             // Update co-listening transition frequency
             val row = coListeningMatrix.getOrPut(lastTrack.id) { mutableMapOf() }
             row[track.id] = (row[track.id] ?: 0) + 1
         }
 
-        if (sessionBuffer.size >= 10) {
+        if (sessionBuffer.size >= 128) {
             sessionBuffer.removeFirst()
         }
         sessionBuffer.addLast(track)
@@ -64,7 +67,7 @@ class RecommendationEngine {
     }
 
     /**
-     * Gets the snapshot of the last 10 songs in session memory.
+     * Gets the snapshot of recent selections in session memory.
      */
     @Synchronized
     fun getSessionTracks(): List<MusicTrack> = sessionBuffer.toList()
@@ -432,6 +435,7 @@ class RecommendationEngine {
         return candidatePool.asSequence().filter { track ->
             track.recommendationOnly && UnifiedRecommendationEngine.verified(track) &&
                 track.id !in alreadyQueuedIds &&
+                tasteProfile.keyFor(track) !in tasteProfile.recentRecordings &&
                 ((tasteProfile.skipCounts[tasteProfile.keyFor(track)] ?: 0) < 2 ||
                     tasteProfile.keyFor(track) in tasteProfile.favoriteRecordings) && seen.add(track)
         }.take(limit).toList()

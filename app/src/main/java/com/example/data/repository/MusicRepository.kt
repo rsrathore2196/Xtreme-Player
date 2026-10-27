@@ -293,6 +293,10 @@ class MusicRepository private constructor(
         recommendations.radio(seed, profile, actualTaste, alreadyQueued, limit)
     }
 
+    suspend fun cachedRadioCandidates(seed: MusicTrack, queued: List<MusicTrack>, tracks: List<MusicTrack>,
+        taste: UserTasteProfile, limit: Int): List<MusicTrack> =
+        recommendations.radioCandidates(seed, homeProfile(), taste, queued, tracks, limit)
+
     fun observeFavoriteTrackIds(): Flow<Set<String>> = flow { emitAll(musicDao.observeFavoriteTrackIds()) }
         .flowOn(AppDispatchers.Database).map { it.toSet() }.distinctUntilChanged().flowOn(homeDispatcher)
 

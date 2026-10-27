@@ -336,6 +336,7 @@ class PlaybackManager(
                 if (saved != null && tracks.isNotEmpty() && selectionGeneration == 0L &&
                     (controller == null || controller?.mediaItemCount == 0)) {
                     pendingRestoredSession = saved
+                    isCurrentSessionExplicitPlaylist = saved.items[saved.index].mediaMetadata.extras?.getBoolean("queue_collection") == true
                     activeQueue = tracks
                     val current = tracks[saved.index]
                     positionClock.sample(saved.positionMs, false)
@@ -853,6 +854,7 @@ class PlaybackManager(
 
         synchronizeControllerQueue(player)
         player.currentMediaItem?.let { item ->
+            isCurrentSessionExplicitPlaylist = item.mediaMetadata.extras?.getBoolean("queue_collection") == true
             val track = activeQueue.getOrNull(player.currentMediaItemIndex) ?: controllerTrack(item)
             recoveryGuard.select(track.id)
             _uiState.update { it.copy(currentTrack = track, queue = queueSnapshot(), currentIndex = player.currentMediaItemIndex,
@@ -1301,7 +1303,7 @@ class PlaybackManager(
                     if (!retryCurrent && !com.example.data.remote.YouTubeAudioStreamService.isPlaybackUri(address) &&
                         address in blocked) throw TrackUnavailableException(current.title)
                     val index = player.currentMediaItemIndex
-                    val position = player.currentPosition.coerceAtLeast(0L)
+                    val position = nativeProgress(player)?.positionMs ?: player.currentPosition.coerceAtLeast(0L)
                     val resume = player.playWhenReady
                     replaceQueueTrack(index, resolved)
                     player.replaceMediaItem(index, replacement)
@@ -1368,6 +1370,11 @@ class PlaybackManager(
     }
 
     private fun MediaItem.playbackUri(): Uri? = localConfiguration?.uri ?: requestMetadata.mediaUri
+
+    private fun nativeProgress(player: MediaController): PlaybackPositionClock.ServiceSample? =
+        MusicService.nativePlaybackProgress?.invoke()?.takeIf {
+            it.trackId == player.currentMediaItem?.mediaId && it.uri == player.currentMediaItem?.playbackUri()?.toString()
+        }
 
     private fun applyActualAudioProperties(player: MediaController, audio: Bundle?) {
         val extras = audio ?: return
@@ -1499,7 +1506,8 @@ class PlaybackManager(
         }
 
         try {
-            val pos = player.currentPosition.coerceAtLeast(0L)
+            val native = nativeProgress(player)
+            val pos = native?.positionMs ?: player.currentPosition.coerceAtLeast(0L)
             rememberLosslessPosition(player, pos)
             val upgrade = losslessFallback
             if (upgrade != null && !upgrade.activated &&
@@ -1508,7 +1516,7 @@ class PlaybackManager(
             val dur = if (player.duration > 0) player.duration else _uiState.value.durationMs
             val buf = player.bufferedPosition.coerceAtLeast(0L)
 
-            positionClock.sample(pos, player.isPlaying, player.playbackParameters.speed)
+            positionClock.sample(pos, native?.running ?: player.isPlaying, player.playbackParameters.speed)
             // Update isolated position StateFlows for high-performance lambda reads
             if (_playbackPosition.value != pos) _playbackPosition.value = pos
             if (_bufferedPosition.value != buf) _bufferedPosition.value = buf
@@ -1691,9 +1699,10 @@ class PlaybackManager(
     }
 
     fun playTrack(track: MusicTrack, queue: List<MusicTrack> = listOf(track), isExplicitPlaylist: Boolean = false,
-        isInfiniteRadio: Boolean = false, collectionLoader: CollectionPlaybackContinuation? = null) {
+        isInfiniteRadio: Boolean = false, collectionLoader: CollectionPlaybackContinuation? = null,
+        preserveQueue: Boolean = false) {
         if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
-            scope.launch { playTrack(track, queue, isExplicitPlaylist, isInfiniteRadio, collectionLoader) }
+            scope.launch { playTrack(track, queue, isExplicitPlaylist, isInfiniteRadio, collectionLoader, preserveQueue) }
             return
         }
         val now = System.currentTimeMillis()
@@ -1746,7 +1755,7 @@ class PlaybackManager(
         rememberQueueCandidates(queue)
         val generation = beginSelection(track)
         val startupTrace = selectionStartupTrace
-        pendingPolicyRestart = { playTrack(track, queue, isExplicitPlaylist, isInfiniteRadio, collectionLoader) }
+        pendingPolicyRestart = { playTrack(track, queue, isExplicitPlaylist, isInfiniteRadio, collectionLoader, preserveQueue) }
         val jioDeadline = initialJioDeadlineMs
 
         val repo = repository
@@ -1778,7 +1787,7 @@ class PlaybackManager(
                     val host = Uri.parse(resolved.audioUrl).host.orEmpty()
                     initialJioDeadlineMs = if (host == "saavncdn.com" || host.endsWith(".saavncdn.com"))
                         android.os.SystemClock.elapsedRealtime() + 6_000L else 0L
-                    playTrackInternal(resolved, ownedQueue, isExplicitPlaylist)
+                    playTrackInternal(resolved, ownedQueue, isExplicitPlaylist, preserveQueue)
                     if (ownsSelection(track.id, generation)) pendingPolicyRestart = null
                 }
             } catch (e: CancellationException) { throw e }
@@ -1792,7 +1801,8 @@ class PlaybackManager(
         }
     }
 
-    private suspend fun playTrackInternal(track: MusicTrack, queue: List<MusicTrack>, isExplicitPlaylist: Boolean = false) {
+    private suspend fun playTrackInternal(track: MusicTrack, queue: List<MusicTrack>, isExplicitPlaylist: Boolean = false,
+        preserveQueue: Boolean = false) {
         if (track.audioUrl.isBlank() || (Uri.parse(track.audioUrl).scheme !in setOf("http", "https", "file", "content", "xtreme-youtube", "xtreme-sabr") &&
             com.example.data.remote.StreamingAddons.mime(track.audioUrl) != androidx.media3.common.MimeTypes.APPLICATION_MPD)) {
             showPlaybackFailure("No playable stream is available for '${track.title}'.")
@@ -1821,9 +1831,10 @@ class PlaybackManager(
             autoplayEnabled = _uiState.value.isAutoplayEnabled
             targetQuality = _uiState.value.selectedQuality
             prepared = withContext(AppDispatchers.CpuBounded) {
-                val tracks = if (autoplayEnabled && !isExplicitPlaylist) {
-                    val contextTracks = queue.filter { it.queueIdentity != track.queueIdentity && it.hasQueueSource() }.distinctBy { it.queueIdentity }
-                    (listOf(track) + contextTracks).toMutableStateList()
+                val tracks = if (autoplayEnabled && !isExplicitPlaylist && !preserveQueue) {
+                    // A discovery screen is candidate context, not a collection
+                    // chosen by the listener. Radio supplies the next recordings.
+                    mutableStateListOf(track)
                 } else {
                     (queue.map { if (it.queueIdentity == track.queueIdentity) track else it } + track)
                         .filter { it.hasQueueSource() }.distinctBy { it.queueIdentity }.toMutableStateList()
@@ -1845,7 +1856,7 @@ class PlaybackManager(
             recommendationEngine.recordTrackPlayed(track)
             PlaybackDiagnostics.markStartup(startupTrace, PlaybackDiagnostics.StartupStage.PREPARE_REQUESTED)
 
-            if (autoplayEnabled && !isExplicitPlaylist) {
+            if (autoplayEnabled && !isExplicitPlaylist && !preserveQueue) {
                 // Autoplay Session:
                 // Start playing immediately with playable candidates only
                 activeQueue = prepared.first
@@ -2066,9 +2077,10 @@ class PlaybackManager(
                 val catalog = candidateCatalogPool
                 val nativeSnapshot = queueSnapshot()
                 val radioSnapshot = pendingCollectionRadio
-                val (local, queued) = withContext(AppDispatchers.CpuBounded) {
+                val (localPool, queued) = withContext(AppDispatchers.CpuBounded) {
                     catalog.filter { it.recommendationOnly &&
-                        com.example.recommendation.UnifiedRecommendationEngine.verified(it) } to (nativeSnapshot + radioSnapshot)
+                        com.example.recommendation.UnifiedRecommendationEngine.verified(it) } to
+                        (nativeSnapshot + radioSnapshot + recommendationEngine.getSessionTracks())
                 }
                 if (!isActive || queueGeneration != generation) return@launch
                 val needed = (upcomingQueueTarget - remaining).coerceAtLeast(1)
@@ -2077,6 +2089,7 @@ class PlaybackManager(
                         repository?.recommendationRadio(seed, alreadyQueued = queued, limit = needed, taste = taste).orEmpty()
                     }.orEmpty()
                 }
+                val local = repository?.cachedRadioCandidates(seed, queued, localPool, taste, 40).orEmpty()
                 // Keep an exhausted queue moving while discovery runs; do not fill all slots with generic catalog tracks.
                 if (availableUpcoming() == 0) appendCandidates(local, targetSize = 1)
                 val targeted = discovery.await()
@@ -2110,7 +2123,7 @@ class PlaybackManager(
      */
     fun playQueuedTrack(track: MusicTrack) {
         playTrack(track, _uiState.value.queue.ifEmpty { listOf(track) }, isExplicitPlaylist = isCurrentSessionExplicitPlaylist,
-            isInfiniteRadio = _uiState.value.isInfiniteRadio)
+            isInfiniteRadio = _uiState.value.isInfiniteRadio, collectionLoader = collectionContinuation, preserveQueue = true)
     }
 
     fun playFromSearch(track: MusicTrack, @Suppress("UNUSED_PARAMETER") searchContextPool: List<MusicTrack>) {
@@ -2123,7 +2136,7 @@ class PlaybackManager(
         val current = _uiState.value.currentTrack ?: return
         recoveryGuard.select(current.id, newRequest = true)
         playTrack(current, activeQueue.ifEmpty { selectionContext }, isCurrentSessionExplicitPlaylist,
-            _uiState.value.isInfiniteRadio, collectionContinuation)
+            _uiState.value.isInfiniteRadio, collectionContinuation, preserveQueue = true)
     }
 
     fun setCandidatePool(pool: List<MusicTrack>) {
@@ -2178,7 +2191,7 @@ class PlaybackManager(
         val selected = _uiState.value.currentTrack
         if (selected != null && player.currentMediaItem?.mediaId != selected.id) {
             playTrack(selected, _uiState.value.queue.ifEmpty { selectionContext.ifEmpty { listOf(selected) } },
-                isCurrentSessionExplicitPlaylist, _uiState.value.isInfiniteRadio, collectionContinuation)
+                isCurrentSessionExplicitPlaylist, _uiState.value.isInfiniteRadio, collectionContinuation, preserveQueue = true)
             return
         }
 
@@ -2278,7 +2291,7 @@ class PlaybackManager(
         isCurrentSessionExplicitPlaylist = false
         scope.launch {
             if (selectionGeneration == selection)
-                playTrack(next.first(), next, isExplicitPlaylist = false, isInfiniteRadio = infinite)
+                playTrack(next.first(), next, isExplicitPlaylist = false, isInfiniteRadio = infinite, preserveQueue = true)
         }
         return true
     }
@@ -2349,10 +2362,11 @@ class PlaybackManager(
                     player.seekToPreviousMediaItem()
                     player.play()
                     Log.d(TAG, "Second press: skipped to previous media item in queue")
-                } else if (playbackHistory.isNotEmpty()) {
+                } else if (playbackHistory.isNotEmpty() && !isCurrentSessionExplicitPlaylist) {
                     val prevTrack = playbackHistory.removeAt(playbackHistory.lastIndex)
                     Log.d(TAG, "Second press: playing previous song from history: ${prevTrack.title}")
-                    playTrack(prevTrack, activeQueue.ifEmpty { listOf(prevTrack) }, isInfiniteRadio = _uiState.value.isInfiniteRadio)
+                    playTrack(prevTrack, activeQueue.ifEmpty { listOf(prevTrack) }, isExplicitPlaylist = isCurrentSessionExplicitPlaylist,
+                        isInfiniteRadio = _uiState.value.isInfiniteRadio, collectionLoader = collectionContinuation, preserveQueue = true)
                 } else if (activeQueue.size > 1 && player.currentMediaItemIndex > 0) {
                     player.seekTo(player.currentMediaItemIndex - 1, 0L)
                     player.play()
@@ -2616,6 +2630,7 @@ class PlaybackManager(
                         putString("genre", genre)
                         putString("media_source", source)
                         putBoolean("recommendation_only", recommendationOnly)
+                        putBoolean("queue_collection", isCurrentSessionExplicitPlaylist)
                         putLong("jio_start_deadline", if (id == _uiState.value.currentTrack?.id) initialJioDeadlineMs else 0L)
                         putLong("duration", durationMs)
                         putBoolean("isLiked", isLiked)

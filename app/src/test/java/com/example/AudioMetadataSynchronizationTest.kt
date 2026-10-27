@@ -204,4 +204,47 @@ class AudioMetadataSynchronizationTest {
             session.release(); real.release()
         }
     }
+
+    @Test fun readySelectedAudioCanPublishQualityWhenAnEarlierFormatCallbackWasNotCurrent() {
+        val owner = service
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val real = ExoPlayer.Builder(app).build()
+        val selected = item()
+        real.setMediaItem(selected, 12_000L)
+        val format = aac()
+        var selectedAudio = false
+        var transportCommands = 0
+        val player = Proxy.newProxyInstance(ExoPlayer::class.java.classLoader, arrayOf(ExoPlayer::class.java)) { _, method, args ->
+            when (method.name) {
+                "getPlaybackState" -> Player.STATE_READY
+                "getAudioFormat" -> format
+                "getCurrentTracks" -> Tracks(com.google.common.collect.ImmutableList.of(Tracks.Group(TrackGroup("audio", format), false,
+                    intArrayOf(C.FORMAT_HANDLED), booleanArrayOf(selectedAudio))))
+                else -> {
+                    if (method.name in setOf("replaceMediaItem", "prepare", "seekTo", "play", "pause", "setMediaItems")) transportCommands++
+                    method.invoke(real, *(args ?: emptyArray()))
+                }
+            }
+        } as ExoPlayer
+        val session = MediaLibrarySession.Builder(owner, player, object : MediaLibrarySession.Callback {}).build()
+        fun set(name: String, value: Any?) = MusicService::class.java.getDeclaredField(name).apply { isAccessible = true }.set(owner, value)
+        fun publish() = MusicService::class.java.getDeclaredMethod("publishVerifiedSignal").apply { isAccessible = true }.invoke(owner)
+        try {
+            set("exoPlayer", player); set("mediaLibrarySession", session)
+            com.example.playback.AudioSignalPath.reset()
+            publish()
+            assertFalse("An unselected/stale format must remain unverified", com.example.playback.AudioSignalPath.state.value.quality.verified)
+            selectedAudio = true
+            publish()
+            assertEquals("AAC • 320 kbps", com.example.playback.AudioSignalPath.state.value.quality.badgeLabel)
+            assertEquals("JioSaavn", com.example.playback.AudioSignalPath.state.value.source)
+            assertTrue(session.sessionExtras.getBundle("active_audio")!!.getBoolean("audio_actual"))
+            assertEquals(12_000L, real.currentPosition)
+            assertEquals(1, real.mediaItemCount)
+            assertEquals("Quality publication must never restart playback", 0, transportCommands)
+        } finally {
+            set("exoPlayer", null); set("mediaLibrarySession", null)
+            session.release(); real.release(); com.example.playback.AudioSignalPath.reset()
+        }
+    }
 }

@@ -844,15 +844,37 @@ class PlayerViewModel(
         if (state.isInfiniteRadio && (state.isPlaying || state.isLoading)) return
         activePlaybackLaunchJob?.cancel()
         activePlaybackLaunchJob = viewModelScope.launch(AppDispatchers.CpuBounded) {
+            val recent = (recentlyPlayed.value + playbackManager.recommendationEngine.getSessionTracks() +
+                state.queue.take((state.currentIndex + 1).coerceAtLeast(0)) + listOfNotNull(state.currentTrack))
+            val excluded = com.example.recommendation.HomeRecommendationPolicy.Recordings().apply { recent.forEach { add(it) } }
+            val profile = _userProfile.value
+            val taste = com.example.recommendation.UserTasteProfileStore.peek("${profile.countryCode}|${profile.languages.joinToString(",")}")
+                ?: com.example.recommendation.UserTasteProfile.COLD_START_PROFILE
+            fun eligible(track: MusicTrack) = !excluded.contains(track) &&
+                taste.keyFor(track) !in taste.recentRecordings
             val candidates = (_catalogTracks.value + recentlyPlayed.value + favoriteTracks.value + listOfNotNull(seedTrack))
                 .distinctBy { it.id }
-                .filter { com.example.recommendation.UnifiedRecommendationEngine.verified(it) }
+                .filter { com.example.recommendation.UnifiedRecommendationEngine.verified(it) && eligible(it) }
                 .map { it.copy(recommendationOnly = true) }
-            // Seed Infinite Radio only from the same verified recommendation catalog.
-            val pool = candidates.ifEmpty { repository.getYtmQuickPicks(limit = 30) }
-            val alternatives = pool.filter { it.id != state.currentTrack?.id }
-            val randomized = alternatives.ifEmpty { pool }.shuffled()
-            val chosen = randomized.firstOrNull() ?: return@launch
+            val pivot = seedTrack ?: state.currentTrack ?: recent.firstOrNull()
+            val pool = try {
+                if (pivot != null) {
+                    repository.cachedRadioCandidates(pivot, recent, candidates, taste, 30).ifEmpty {
+                        repository.recommendationRadio(pivot, recent, 12, taste)
+                    }
+                } else candidates.ifEmpty { repository.getYtmQuickPicks(limit = 30) }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) {
+                android.util.Log.w("Autoplay", "Radio discovery failed: ${error.javaClass.simpleName}")
+                emptyList()
+            }
+            val randomized = pool.filter(::eligible).take(12).shuffled()
+            val chosen = randomized.firstOrNull() ?: run {
+                withContext(Dispatchers.Main.immediate) {
+                    playbackManager.reportPlaybackLookupFailure("No new recommendations are available. Please try again.")
+                }
+                return@launch
+            }
             withContext(Dispatchers.Main.immediate) {
                 playbackManager.setAutoplayEnabled(true)
                 playbackManager.playTrack(chosen, randomized, isExplicitPlaylist = false, isInfiniteRadio = true)

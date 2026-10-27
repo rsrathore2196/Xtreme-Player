@@ -13,7 +13,8 @@ internal class JioSaavnPlaybackFallback(
     private val player: Player,
     private val scope: CoroutineScope,
     private val requestRecovery: (String, String) -> Unit,
-    private val status: (Bundle) -> Unit
+    private val status: (Bundle) -> Unit,
+    private val requestOutputRecovery: (String, String) -> Boolean = { _, _ -> false }
 ) {
     private var key = ""
     private var generation = 0L
@@ -24,6 +25,8 @@ internal class JioSaavnPlaybackFallback(
     private var hasPlayed = false
     private var selectionDeadline = 0L
     private var watchdog: Job? = null
+    private var audioConfirmed = false
+    val audioStarted: Boolean get() = audioConfirmed && currentKey() == key
 
     companion object {
         fun handles(item: MediaItem?): Boolean {
@@ -58,7 +61,7 @@ internal class JioSaavnPlaybackFallback(
         val item = player.currentMediaItem
         val nextKey = currentKey()
         if (key != nextKey) {
-            cancel(); key = nextKey; attempted = false
+            cancel(); key = nextKey; attempted = false; audioConfirmed = false
             val requestedDeadline = item?.mediaMetadata?.extras?.getLong("jio_start_deadline", 0L) ?: 0L
             if (recordingId != item?.mediaId || requestedDeadline > 0L && requestedDeadline != selectionDeadline) hasPlayed = false
             recordingId = item?.mediaId.orEmpty()
@@ -69,7 +72,8 @@ internal class JioSaavnPlaybackFallback(
             if (handles(item)) notifyStatus(Bundle().apply { putString("track_id", item?.mediaId); putString("state", "idle") })
         }
         if (!handles(item)) { watchdog?.cancel(); watchdog = null; return }
-        if (player.isPlaying) {
+        if (player.playbackState == Player.STATE_IDLE) audioConfirmed = false
+        if (player.isPlaying && audioConfirmed) {
             hasPlayed = true
             watchdog?.cancel(); watchdog = null
             deadline = 0L
@@ -81,7 +85,8 @@ internal class JioSaavnPlaybackFallback(
             if (attempted) deadline = 0L
             return
         }
-        if (attempted || watchdog?.isActive == true || player.playbackState != Player.STATE_BUFFERING) return
+        if (attempted || watchdog?.isActive == true ||
+            player.playbackState !in setOf(Player.STATE_BUFFERING, Player.STATE_READY)) return
         val token = generation
         val originalKey = key
         val timeout = 6_000L
@@ -89,14 +94,30 @@ internal class JioSaavnPlaybackFallback(
         watchdog = scope.launch {
             delay((deadline - SystemClock.elapsedRealtime()).coerceIn(0L, timeout))
             watchdog = null
-            if (generation != token || currentKey() != originalKey || player.isPlaying || !player.playWhenReady ||
+            if (generation != token || currentKey() != originalKey || player.isPlaying && audioConfirmed || !player.playWhenReady ||
                 player.playerError?.isAudioPipelineFailure() == true) return@launch
+            // READY/isPlaying can precede the first advancing AudioTrack sample.
+            // Repair a stalled output before re-extracting an otherwise valid source.
+            if (player.playbackState == Player.STATE_READY && !audioConfirmed &&
+                requestOutputRecovery(recordingId, player.currentMediaItem?.localConfiguration?.uri.toString())) {
+                deadline = 0L
+                return@launch
+            }
             recover()
         }
     }
 
+    fun onAudioPositionAdvancing() {
+        if (!handles(player.currentMediaItem)) return
+        update()
+        audioConfirmed = true
+        hasPlayed = true
+        update()
+    }
+
     fun onError(): Boolean {
         if (!handles(player.currentMediaItem)) return false
+        audioConfirmed = false
         recover()
         return true
     }

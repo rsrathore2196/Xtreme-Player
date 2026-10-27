@@ -55,6 +55,7 @@ class LosslessArchivePolicyTest {
 
     @Suppress("DEPRECATION")
     @Before fun ready() = runBlocking {
+        clearMonitor()
         Dispatchers.setMain(dispatcher)
         val app = ApplicationProvider.getApplicationContext<Application>()
         com.example.data.local.AudioQualityPreferences.setWifiQualityCeiling(app, AudioQualityCeiling.MAX)
@@ -93,6 +94,11 @@ class LosslessArchivePolicyTest {
         manager.release()
         dispatcher.scheduler.runCurrent()
         Dispatchers.resetMain()
+        clearMonitor()
+        AudioEffectsManager.resetAll(false)
+    }
+
+    private fun clearMonitor() {
         // This fixture can create the process monitor through the policy guard.
         // Do not retain its old Application/preferences in the next Robolectric test.
         val instance = NetworkQualityMonitor::class.java.getDeclaredField("instance").apply { isAccessible = true }
@@ -102,7 +108,6 @@ class LosslessArchivePolicyTest {
             runBlocking { scope.coroutineContext[Job]?.cancelAndJoin() }
             instance.set(null, null)
         }
-        AudioEffectsManager.resetAll(false)
     }
 
     private fun field(name: String) = PlaybackManager::class.java.getDeclaredField(name).apply { isAccessible = true }
@@ -124,6 +129,25 @@ class LosslessArchivePolicyTest {
         private fun entry(index: Int, item: MediaItem) = MediaItemData.Builder(index)
             .setMediaItem(item).setDurationUs(180_000_000L).setIsSeekable(true).build()
         override fun getState(): State = snapshot
+        override fun handleSetMediaItems(mediaItems: List<MediaItem>, startIndex: Int, startPositionMs: Long): ListenableFuture<*> {
+            snapshot = snapshot.buildUpon().setPlaylist(mediaItems.mapIndexed { index, item -> entry(index, item) })
+                .setCurrentMediaItemIndex(startIndex).setContentPositionMs(startPositionMs.coerceAtLeast(0L)).build()
+            return Futures.immediateVoidFuture()
+        }
+        override fun handleRemoveMediaItems(fromIndex: Int, toIndex: Int): ListenableFuture<*> {
+            val items = snapshot.playlist.map { it.mediaItem }.toMutableList()
+            items.subList(fromIndex, toIndex).clear()
+            snapshot = snapshot.buildUpon().setPlaylist(items.mapIndexed { index, item -> entry(index, item) })
+                .setCurrentMediaItemIndex(if (items.isEmpty()) 0 else snapshot.currentMediaItemIndex.coerceAtMost(items.lastIndex))
+                .setPlaybackState(if (items.isEmpty()) Player.STATE_IDLE else snapshot.playbackState).build()
+            return Futures.immediateVoidFuture()
+        }
+        override fun handleAddMediaItems(index: Int, mediaItems: List<MediaItem>): ListenableFuture<*> {
+            val items = snapshot.playlist.map { it.mediaItem }.toMutableList()
+            items.addAll(index, mediaItems)
+            snapshot = snapshot.buildUpon().setPlaylist(items.mapIndexed { i, item -> entry(i, item) }).build()
+            return Futures.immediateVoidFuture()
+        }
         override fun handleReplaceMediaItems(fromIndex: Int, toIndex: Int, mediaItems: List<MediaItem>): ListenableFuture<*> {
             val items = snapshot.playlist.map { it.mediaItem }.toMutableList()
             items.subList(fromIndex, toIndex).clear()
@@ -148,6 +172,52 @@ class LosslessArchivePolicyTest {
             return Futures.immediateVoidFuture()
         }
         override fun handleRelease(): ListenableFuture<*> = Futures.immediateVoidFuture()
+    }
+
+    private suspend fun withConnectedQueue(check: suspend (BufferingSessionPlayer, MediaController) -> Unit) {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val native = BufferingSessionPlayer(listOf(MediaItem.fromUri("file:///old.mp3")))
+        val session = MediaSession.Builder(app, native).build()
+        val future = MediaController.Builder(app, session.token).buildAsync()
+        var connected: MediaController? = null
+        try {
+            awaitCondition { future.isDone }
+            connected = future.get()
+            PlaybackManager::class.java.getDeclaredMethod("setController", MediaController::class.java)
+                .apply { isAccessible = true }.invoke(manager, connected)
+            @Suppress("UNCHECKED_CAST")
+            (field("controllerReady").get(manager) as kotlinx.coroutines.CompletableDeferred<MediaController>).complete(connected)
+            check(native, connected)
+        } finally { connected?.release(); set("controller", null); session.release(); native.release() }
+    }
+
+    @Test fun discoverySelectionDoesNotQueueAnUnrankedHomeOrArtistShelf() = runBlocking {
+        withConnectedQueue { native, _ ->
+            val tracks = (1..8).map { track.copy(id = "local_$it", title = "Song $it", audioUrl = "file:///song$it.mp3") }
+            manager.playTrack(tracks[3], tracks)
+            awaitCondition { native.currentMediaItem?.mediaId == tracks[3].id && field("playResolutionJob").get(manager).let { it !is Job || !it.isActive } }
+            assertEquals(listOf(tracks[3].id), manager.uiState.value.queue.map { it.id })
+            assertEquals(1, native.mediaItemCount)
+        }
+    }
+
+    @Test fun collectionSelectionAndQueueClicksRetainCollectionOrderAndItsRemainingPages() = runBlocking {
+        withConnectedQueue { native, _ ->
+            val tracks = (1..4).map { track.copy(id = "local_$it", title = "Song $it", audioUrl = "file:///song$it.mp3") }
+            val pages = CollectionPlaybackContinuation(page = 2, fetch = { error("Paging must not run before the collection ends") })
+            manager.playTrack(tracks[1], tracks, isExplicitPlaylist = true, collectionLoader = pages)
+            awaitCondition { native.currentMediaItem?.mediaId == tracks[1].id && field("playResolutionJob").get(manager).let { it !is Job || !it.isActive } }
+            assertEquals(tracks.map { it.id }, manager.uiState.value.queue.map { it.id })
+            assertEquals(1, native.currentMediaItemIndex)
+            assertTrue(native.currentMediaItem!!.mediaMetadata.extras!!.getBoolean("queue_collection"))
+            manager.refreshAutoplayRecommendation(tracks[1])
+            assertNull("Radio must not run ahead of remaining album/playlist songs", field("recommendationFetchJob").get(manager))
+            manager.playQueuedTrack(tracks[2])
+            awaitCondition { native.currentMediaItem?.mediaId == tracks[2].id && field("playResolutionJob").get(manager).let { it !is Job || !it.isActive } }
+            assertEquals(tracks.map { it.id }, manager.uiState.value.queue.map { it.id })
+            assertEquals(2, native.currentMediaItemIndex)
+            assertSame(pages, field("collectionContinuation").get(manager))
+        }
     }
 
     @Test fun jioWatchdogUsesTheControllerBudgetAndCannotKeepRestartingSilentPreparations() = runBlocking {
@@ -380,7 +450,7 @@ class LosslessArchivePolicyTest {
                     "getPlayerError" -> null
                     "getPlayWhenReady" -> true
                     "isPlaying" -> playing
-                    "getPlaybackState" -> androidx.media3.common.Player.STATE_BUFFERING
+                    "getPlaybackState" -> if (playing) androidx.media3.common.Player.STATE_READY else androidx.media3.common.Player.STATE_BUFFERING
                     else -> error("Unexpected player command: ${method.name}")
                 }
             } as androidx.media3.common.Player
@@ -393,7 +463,7 @@ class LosslessArchivePolicyTest {
             testScheduler.runCurrent()
             assertEquals(0, recoveryCalls)
             playing = true
-            watchdog.update()
+            watchdog.onAudioPositionAdvancing()
             testScheduler.advanceUntilIdle()
             assertEquals(0, recoveryCalls)
             watchdog.cancel()

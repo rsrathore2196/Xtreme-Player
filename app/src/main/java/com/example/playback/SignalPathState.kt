@@ -143,9 +143,13 @@ object AudioSignalPath {
     internal fun update(block: (SignalPathState) -> SignalPathState) { mutable.update(block) }
     internal fun reset() { mutable.value = SignalPathState() }
     internal fun source(id: String, provider: String, sourceId: String = "", originalSourceId: String = "", uri: String = "", originalUri: String = "", originalPolicyKey: String = "") = update { old ->
-        if (old.trackId == id && old.source == provider && old.sourceId == sourceId && old.streamUri == uri) {
-            if (old.enhancerOriginalSourceId == originalSourceId && old.enhancerOriginalUri == originalUri && old.enhancerPolicyKey == originalPolicyKey) old
-            else old.copy(enhancerOriginalSourceId = originalSourceId, enhancerOriginalUri = originalUri, enhancerPolicyKey = originalPolicyKey)
+        if (old.trackId == id && old.streamUri == uri) {
+            // A late provider-ID/label update is metadata, not a new transport.
+            // Keep the decoder measurements already verified for these exact bytes.
+            if (old.source == provider && old.sourceId == sourceId && old.enhancerOriginalSourceId == originalSourceId &&
+                old.enhancerOriginalUri == originalUri && old.enhancerPolicyKey == originalPolicyKey) old
+            else old.copy(source = provider, sourceId = sourceId, enhancerOriginalSourceId = originalSourceId,
+                enhancerOriginalUri = originalUri, enhancerPolicyKey = originalPolicyKey)
         } else old.copy(trackId = id, source = provider, sourceId = sourceId, enhancerOriginalSourceId = originalSourceId,
             enhancerOriginalUri = originalUri, sourceTransitionInProgress = old.trackId == id && old.sourceTransitionInProgress,
             sourceTransitionOwner = old.sourceTransitionOwner.takeIf { old.trackId == id }.orEmpty(),

@@ -61,7 +61,8 @@ class PlaybackPersistenceLaneTest {
 
     @Test fun sessionCheckpointRestoresTheLatestQueuePositionAndExactIds() = runBlocking {
         fun item(id: String) = MediaItem.Builder().setMediaId(id).setUri("https://audio.example/$id.m4a")
-            .setMediaMetadata(MediaMetadata.Builder().setTitle(id).setArtist("Artist").build()).build()
+            .setMediaMetadata(MediaMetadata.Builder().setTitle(id).setArtist("Artist")
+                .setExtras(android.os.Bundle().apply { putBoolean("queue_collection", true) }).build()).build()
         val items = listOf(item("online_first"), item("online_selected"), item("online_next"))
         PlaybackSessionStore.checkpoint(context, PlaybackSessionStore.Snapshot(items, 0, 500))
         PlaybackSessionStore.checkpoint(context, PlaybackSessionStore.Snapshot(items, 1, 42_000))
@@ -76,5 +77,6 @@ class PlaybackPersistenceLaneTest {
         assertEquals(1, restored.index)
         assertEquals(42_000L, restored.positionMs)
         assertEquals(items.map { it.mediaId }, restored.items.map { it.mediaId })
+        assertTrue(restored.items.all { it.mediaMetadata.extras!!.getBoolean("queue_collection") })
     }
 }

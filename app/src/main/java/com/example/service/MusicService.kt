@@ -654,6 +654,7 @@ class MusicService : MediaLibraryService() {
         sourceRecoveryGuard.select(item.mediaId)
         val token = sourceRecoveryGuard.claim(item.mediaId) ?: run {
             android.util.Log.w("MusicService", "Recording recovery budget exhausted")
+            player.pause(); player.stop()
             return
         }
         val selected = currentPolicyTrack(player, item)
@@ -1023,6 +1024,7 @@ class MusicService : MediaLibraryService() {
             ) {
                 val item = currentAudioEventItem(player, eventTime) ?: return
                 markAudioStartup(item, StartupStage.FIRST_AUDIO)
+                jioFallback?.onAudioPositionAdvancing()
             }
         })
 
@@ -1033,7 +1035,19 @@ class MusicService : MediaLibraryService() {
             },
             status = { status -> mediaLibrarySession?.let { session ->
                 session.setSessionExtras(Bundle(session.sessionExtras).apply { putBundle("jio_fallback_status", status) })
-            } })
+            } }, requestOutputRecovery = { id, uri ->
+                player.currentMediaItem?.takeIf { it.mediaId == id && it.localConfiguration?.uri.toString() == uri }
+                    ?.let { recoverAudioOutput(player, androidx.media3.common.PlaybackException("Audio output did not start", null,
+                        androidx.media3.common.PlaybackException.ERROR_CODE_AUDIO_TRACK_WRITE_FAILED)) } ?: false
+            })
+        nativePlaybackProgress = {
+            if (android.os.Looper.myLooper() != player.applicationLooper) null
+            else player.currentMediaItem?.let { item ->
+                com.example.playback.PlaybackPositionClock.ServiceSample(item.mediaId,
+                    item.localConfiguration?.uri.toString(), player.currentPosition.coerceAtLeast(0L),
+                    player.isPlaying && (!JioSaavnPlaybackFallback.handles(item) || jioFallback?.audioStarted == true))
+            }
+        }
         player.addListener(object : Player.Listener {
             override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
                 if (reason == Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED) {
@@ -1127,6 +1141,10 @@ class MusicService : MediaLibraryService() {
                         com.example.playback.AudioEffectsManager.attachAudioSession(sessionId)
                     }
                 }
+            }
+
+            override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
+                publishVerifiedSignal()
             }
 
             override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
@@ -1271,9 +1289,23 @@ class MusicService : MediaLibraryService() {
         val player = exoPlayer ?: return
         val item = player.currentMediaItem ?: return
         val uri = item.localConfiguration?.uri ?: return
+        if (player.playbackState != Player.STATE_READY) return
+        // The early input-format event may belong to a read-ahead period and
+        // correctly be rejected. READY/current selected audio is a second, native
+        // confirmation point, including decoder reuse and lazily resolved queues.
+        val recovered = verifiedSignalFormat == null || item.mediaId != verifiedSignalId || uri != verifiedSignalUri
+        if (recovered) {
+            val active = player.audioFormat?.takeIf { it.sampleMimeType?.startsWith("audio/") == true } ?: return
+            if (!player.currentTracks.isTypeSelected(C.TRACK_TYPE_AUDIO)) return
+            verifiedSignalId = item.mediaId; verifiedSignalUri = uri; verifiedSignalFormat = active
+            verifiedSignalBitrate = audioInputQuality(item, active).bitrateKbps
+        }
         val format = verifiedSignalFormat ?: return
-        if (player.playbackState != Player.STATE_READY || item.mediaId != verifiedSignalId || uri != verifiedSignalUri) return
         publishSignalSource(item, uri, format, verifiedSignalBitrate)
+        if (recovered) updateActualAudioProperties(player, item,
+            actualAudioProperties(item, format, audioInputQuality(item, format), com.example.playback.AudioSignalPath.state.value.source,
+                invalidLossless = item.mediaMetadata.extras?.getBoolean("isLossless") == true &&
+                    com.example.playback.StreamQualityBadge.from(format).let { it.codec.isNotBlank() && !it.lossless }), replaceItem = false)
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
@@ -1291,6 +1323,7 @@ class MusicService : MediaLibraryService() {
         volumeObserver?.let(contentResolver::unregisterContentObserver)
         volumeObserver = null
         _liveSession.value = false
+        nativePlaybackProgress = null
         recoveringAudioTrackId = null
         checkpoint()
         listeningClock.update(null, false, android.os.SystemClock.elapsedRealtime(), System.currentTimeMillis(), advancing = false)
@@ -1676,6 +1709,10 @@ class MusicService : MediaLibraryService() {
             private set
         private val _liveSession = kotlinx.coroutines.flow.MutableStateFlow(false)
         internal val liveSession: kotlinx.coroutines.flow.StateFlow<Boolean> = _liveSession
+        // Read only on the player's application looper by the existing foreground
+        // ticker. MediaController extrapolates up to three seconds between IPC samples.
+        @Volatile internal var nativePlaybackProgress: (() -> com.example.playback.PlaybackPositionClock.ServiceSample?)? = null
+            private set
         const val COMMAND_SET_EQUALIZER = "com.example.COMMAND_SET_EQUALIZER"
         const val COMMAND_SET_OUTPUT_DEVICE = "com.example.COMMAND_SET_OUTPUT_DEVICE"
         const val ROOT_MEDIA_ID = "xtreme_media_root"

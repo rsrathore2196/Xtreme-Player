@@ -110,6 +110,7 @@ internal object PlaybackSessionStore {
                     put("isLiked", extras?.getBoolean("isLiked", false) ?: false)
                     put("isLossless", extras?.getBoolean("isLossless", false) ?: false)
                     put("recommendationOnly", extras?.getBoolean("recommendation_only", false) ?: false)
+                    put("queueCollection", extras?.getBoolean("queue_collection", false) ?: false)
                 })
         }
         return queue.toString().toByteArray(Charsets.UTF_8).also {
@@ -186,6 +187,7 @@ internal object PlaybackSessionStore {
                             putBoolean("isLiked", known[id]?.isLiked ?: entry.optBoolean("isLiked"))
                             putBoolean("isLossless", entry.optBoolean("isLossless"))
                             putBoolean("recommendation_only", entry.optBoolean("recommendationOnly"))
+                            putBoolean("queue_collection", entry.optBoolean("queueCollection"))
                             entry.optJSONObject("enhancerOrigin")?.let { origin ->
                                 com.example.playback.SourceTransitionOrigin.keys.forEach { key -> when (val value = origin.opt(key)) {
                                     is Boolean -> putBoolean(key, value)

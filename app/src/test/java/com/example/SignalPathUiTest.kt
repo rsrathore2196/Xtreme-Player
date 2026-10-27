@@ -28,6 +28,18 @@ class SignalPathUiTest {
             AudioQualityBadge("playing", "Lossless", Color.DarkGray, Color.White, Color.White)
         } }
     }
+
+    @Test fun actualQualityStaysVisibleWhenOnlyTheProviderIdChanges() {
+        val uri = "xtreme-youtube://audio/abcdefghijk/stream.audio?cap=320000"
+        val format = androidx.media3.common.Format.Builder().setSampleMimeType(androidx.media3.common.MimeTypes.AUDIO_AAC)
+            .setAverageBitrate(128_000).setSampleRate(44100).build()
+        AudioSignalPath.verifiedSource("playing", "YouTube Music", format, 128, uri = uri)
+        showBadge()
+        compose.onNodeWithText("AAC • 128 kbps").assertExists()
+        compose.runOnIdle { AudioSignalPath.source("playing", "YouTube Music", sourceId = "youtube", uri = uri) }
+        compose.onNodeWithText("AAC • 128 kbps").assertExists()
+        compose.onNodeWithText("Resolving audio").assertDoesNotExist()
+    }
     private fun playing() = SignalPathState(trackId = "playing", source = "YouTube Music",
         quality = StreamQualityBadge("OPUS", 160, 48000, verified = true), sourceChannels = 2,
         decoderName = "c2.android.opus.decoder", decoderEncoding = C.ENCODING_PCM_16BIT,
