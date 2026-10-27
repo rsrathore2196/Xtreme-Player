@@ -154,6 +154,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.drawscope.scale
@@ -212,6 +213,32 @@ internal fun playerSingerLabel(track: MusicTrack): String {
         .distinctBy { it.lowercase(java.util.Locale.ROOT) }
         .take(2).joinToString(", ")
     return firstTwo(track.singers).ifBlank { firstTwo(track.artist) }
+}
+
+internal data class PlayerCreditsTextColors(val primary: Color, val muted: Color, val heading: Color)
+
+/** Reuse the backdrop's palette; never recolor the rest of the player or request another image. */
+internal fun playerCreditsTextColors(dominant: Color, vibrant: Color, dynamicBackground: Boolean): PlayerCreditsTextColors {
+    val background = if (dynamicBackground) androidx.compose.ui.graphics.lerp(dominant, vibrant, 0.25f)
+        .copy(alpha = 1f) else Color(0xff101010)
+    fun foreground(surface: Color): Color {
+        val luminance = surface.luminance()
+        return if ((luminance + 0.05f) / 0.05f >= 1.05f / (luminance + 0.05f)) Color.Black else Color.White
+    }
+    val primary = foreground(background)
+    val muted = com.example.ui.theme.LiquidGlass.contrastColor(
+        if (primary == Color.Black) Color(0xff737373) else Color(0xff949494), listOf(background), 4.5f)
+    // The existing heading pill adds a white reflection; only its text changes.
+    val heading = foreground(Color.White.copy(alpha = 0.12f).compositeOver(background))
+    return PlayerCreditsTextColors(primary, muted, heading)
+}
+
+@Composable
+private fun rememberCreditsTextColors(dominant: State<Color>, vibrant: State<Color>, enabled: Boolean): PlayerCreditsTextColors {
+    val colors by remember(dominant, vibrant, enabled) {
+        derivedStateOf { playerCreditsTextColors(dominant.value, vibrant.value, enabled) }
+    }
+    return colors
 }
 
 @OptIn(ExperimentalSharedTransitionApi::class)
@@ -670,6 +697,8 @@ fun ExpandedPlayerScreen(
                                             )
                                         } else {
                                             // BACK SIDE: Song credits
+                                            val creditsText = rememberCreditsTextColors(animatedDominantColor, animatedVibrantColor,
+                                                appColors.dynamicAlbumGlow && LocalDynamicGlassEnabled.current)
                                             Box(
                                                 modifier = Modifier
                                                     .fillMaxSize()
@@ -701,7 +730,7 @@ fun ExpandedPlayerScreen(
                                                                 text = "TRACK CREDITS & DETAILS",
                                                                 fontSize = 8.sp,
                                                                 fontWeight = FontWeight.ExtraBold,
-                                                                color = if (isDark) Color.White else Color.Black,
+                                                                color = creditsText.heading,
                                                                 letterSpacing = 0.8.sp
                                                             )
                                                         }
@@ -711,7 +740,7 @@ fun ExpandedPlayerScreen(
                                                         text = track.cleanTitle,
                                                         fontWeight = FontWeight.ExtraBold,
                                                         fontSize = 16.sp,
-                                                        color = appColors.textPrimary,
+                                                        color = creditsText.primary,
                                                         textAlign = TextAlign.Center,
                                                         maxLines = 1,
                                                         softWrap = false,
@@ -723,18 +752,18 @@ fun ExpandedPlayerScreen(
                                                     CreditDetailRow(
                                                         label = "Album",
                                                         value = track.album.ifBlank { "Original Single" },
-                                                        isDark = isDark
+                                                        colors = creditsText
                                                     )
                                                     CreditDetailRow(
                                                         label = "Artist",
                                                         value = if (track.singers.isNotBlank()) track.singers else track.artist,
-                                                        isDark = isDark
+                                                        colors = creditsText
                                                     )
                                                     Spacer(modifier = Modifier.height(4.dp))
                                                     Text(
                                                         text = "🔄 Tap to flip",
                                                         fontSize = 11.sp,
-                                                        color = appColors.textMuted
+                                                        color = creditsText.muted
                                                     )
                                                 }
                                             }
@@ -1586,6 +1615,8 @@ fun ExpandedPlayerScreen(
                                         )
                                     } else {
                                         // BACK SIDE: Song credits and information
+                                        val creditsText = rememberCreditsTextColors(animatedDominantColor, animatedVibrantColor,
+                                            appColors.dynamicAlbumGlow && LocalDynamicGlassEnabled.current)
                                         Box(
                                             modifier = Modifier
                                             .fillMaxSize()
@@ -1617,7 +1648,7 @@ fun ExpandedPlayerScreen(
                                                             text = "TRACK CREDITS & DETAILS",
                                                             fontSize = 9.sp,
                                                             fontWeight = FontWeight.ExtraBold,
-                                                            color = if (isDark) Color.White else Color.Black,
+                                                            color = creditsText.heading,
                                                             letterSpacing = 1.sp
                                                         )
                                                     }
@@ -1629,7 +1660,7 @@ fun ExpandedPlayerScreen(
                                                     text = track.cleanTitle,
                                                     fontWeight = FontWeight.ExtraBold,
                                                     fontSize = 17.sp,
-                                                    color = appColors.textPrimary,
+                                                    color = creditsText.primary,
                                                     textAlign = TextAlign.Center,
                                                     maxLines = 1,
                                                     softWrap = false,
@@ -1646,28 +1677,28 @@ fun ExpandedPlayerScreen(
                                                 CreditDetailRow(
                                                     label = "Album / Movie",
                                                     value = track.album.ifBlank { "Original Single" },
-                                                    isDark = isDark
+                                                    colors = creditsText
                                                 )
                                                 CreditDetailRow(
                                                     label = "Singers / Artists",
                                                     value = if (track.singers.isNotBlank()) track.singers else track.artist,
-                                                    isDark = isDark
+                                                    colors = creditsText
                                                 )
                                                 CreditDetailRow(
                                                     label = "Composer / Writer",
                                                     value = if (track.writer.isNotBlank()) track.writer else "Original Composer",
-                                                    isDark = isDark
+                                                    colors = creditsText
                                                 )
                                                 CreditDetailRow(
                                                     label = "Genre & Language",
                                                     value = "${track.genre} • ${if (track.language.isNotBlank()) track.language else "Hindi"}${if (track.year.isNotBlank()) " (${track.year})" else ""}",
-                                                    isDark = isDark
+                                                    colors = creditsText
                                                 )
                                                 if (track.isrc.isNotBlank()) {
                                                     CreditDetailRow(
                                                         label = "ISRC Code",
                                                         value = track.isrc,
-                                                        isDark = isDark
+                                                        colors = creditsText
                                                     )
                                                 }
 
@@ -1676,7 +1707,7 @@ fun ExpandedPlayerScreen(
                                                 Text(
                                                     text = "🔄 Tap anywhere to flip back",
                                                     fontSize = 10.sp,
-                                                    color = appColors.textMuted,
+                                                    color = creditsText.muted,
                                                     fontWeight = FontWeight.Medium
                                                 )
                                             }
@@ -2298,8 +2329,7 @@ private fun formatTime(timeMs: Long): String {
 }
 
 @Composable
-private fun CreditDetailRow(label: String, value: String, isDark: Boolean = true) {
-    val appColors = LocalAppColors.current
+private fun CreditDetailRow(label: String, value: String, colors: PlayerCreditsTextColors) {
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     Row(
         modifier = Modifier
@@ -2311,7 +2341,7 @@ private fun CreditDetailRow(label: String, value: String, isDark: Boolean = true
         Text(
             text = label,
             fontSize = if (landscape) 13.sp else 11.sp,
-            color = appColors.textMuted,
+            color = colors.muted,
             fontWeight = FontWeight.Medium,
             modifier = Modifier.padding(end = 8.dp)
         )
@@ -2324,7 +2354,7 @@ private fun CreditDetailRow(label: String, value: String, isDark: Boolean = true
             Text(
                 text = value,
                 fontSize = if (landscape) 14.sp else 12.sp,
-                color = appColors.textPrimary,
+                color = colors.primary,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 softWrap = false,
