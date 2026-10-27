@@ -66,7 +66,8 @@ import kotlin.math.roundToInt
 
 internal val CompactDockTabWidth = 48.dp
 internal val DockHorizontalPadding = 6.dp
-internal val CompactPrimaryDockWidth = CompactDockTabWidth * 2 + DockHorizontalPadding * 2
+internal val CompactDockHorizontalPadding = 12.dp
+internal val CompactPrimaryDockWidth = CompactDockTabWidth * 2 + CompactDockHorizontalPadding * 2
 
 /**
  * Data model for AnimatedBottomBar tabs.
@@ -138,7 +139,7 @@ fun AnimatedBottomBar(
         with(density) {
             DockGeometry(expandedWidths, motions, (24.dp.roundToPx() + 14.dp.roundToPx() * 2).toFloat(),
                 4.dp.toPx(), DockHorizontalPadding.toPx(), compactProgress, CompactDockTabWidth.toPx(),
-                selectedPosition, companionPosition)
+                selectedPosition, companionPosition, CompactDockHorizontalPadding.toPx())
         }
     }
     val viewportShape = remember(geometry) { DockViewportShape(horizontalScale = { geometry.width / geometry.reservedWidth }) }
@@ -288,11 +289,13 @@ private class DockGeometry(
     private val expanded: List<Float>, private val motions: List<DockTabMotion>,
     private val collapsed: Float, private val gap: Float, private val padding: Float,
     private val compactProgress: State<Float>?, private val compactTabWidth: Float,
-    private val selectedPosition: State<Int>, private val companionPosition: Int
+    private val selectedPosition: State<Int>, private val companionPosition: Int,
+    private val compactPadding: Float
 ) {
     val reservedWidth = (collapsed * expanded.size + (expanded.maxOrNull()?.minus(collapsed) ?: 0f) +
         gap * (expanded.size - 1).coerceAtLeast(0) + padding * 2).coerceAtLeast(1f)
     val progress: Float get() = (compactProgress?.value ?: 0f).coerceIn(0f, 1f)
+    private val edgePadding: Float get() = padding + (compactPadding - padding) * progress
     fun retained(index: Int): Boolean = index == selectedPosition.value || index == companionPosition
     private fun fullTabWidth(index: Int): Float =
         (collapsed + (expanded[index] - collapsed) * motions[index].expansion.value).coerceAtLeast(1f)
@@ -302,9 +305,9 @@ private class DockGeometry(
         return (full + (target - full) * progress).coerceAtLeast(0.01f)
     }
     val width: Float get() = (expanded.indices.sumOf { tabWidth(it).toDouble() }.toFloat() +
-        gap * (1f - progress) * (expanded.size - 1).coerceAtLeast(0) + padding * 2).coerceAtLeast(1f)
+        gap * (1f - progress) * (expanded.size - 1).coerceAtLeast(0) + edgePadding * 2).coerceAtLeast(1f)
     fun left(index: Int, viewport: Float, direction: LayoutDirection): Float {
-        var preceding = padding
+        var preceding = edgePadding
         for (i in 0 until index) preceding += tabWidth(i) + gap * (1f - progress)
         return if (direction == LayoutDirection.Ltr) (viewport - width) / 2f + preceding
             else (viewport + width) / 2f - preceding - tabWidth(index)

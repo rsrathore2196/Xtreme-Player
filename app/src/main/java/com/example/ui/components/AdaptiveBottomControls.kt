@@ -39,7 +39,11 @@ internal fun AdaptiveBottomControls(landscape: Boolean, modifier: Modifier = Mod
             // Preserve readable metadata and full-size touch controls in narrow windows.
             .coerceAtLeast(220.dp.roundToPx()).plus(playerPadding)
             .coerceAtMost(contentWidth)
-        val compactMiniWidth = minOf((fullMiniWidth - playerPadding).coerceAtLeast(0),
+        // Reduce the player independently of the compact dock's added inset.
+        val baselineBarWidth = (CompactDockTabWidth * 2 + DockHorizontalPadding * 2).roundToPx()
+        val baselineMiniWidth = minOf((fullMiniWidth - playerPadding).coerceAtLeast(0),
+            (contentWidth - gutter * 2 - baselineBarWidth - compactGap).coerceAtLeast(0))
+        val compactMiniWidth = (baselineMiniWidth * 0.85f).roundToInt().coerceAtMost(
             (contentWidth - gutter * 2 - compactBarWidth - compactGap).coerceAtLeast(0))
         val miniWidth = interpolate(fullMiniWidth, compactMiniWidth + playerPadding, progress)
         val mini = measurables[0].measure(child.copy(maxWidth = miniWidth))

@@ -106,7 +106,7 @@ class ScrollResponsiveDockUiTest {
         val mini = bounds("mini_player_container")
         val bar = bounds("floating_bottom_navigation_bar")
         compose.onNodeWithTag("compact_dock_search").assertDoesNotExist()
-        assertEquals(with(compose.density) { 108.dp.toPx() }, bar.width, 1f)
+        assertEquals(with(compose.density) { 120.dp.toPx() }, bar.width, 1f)
         assertEquals(bar.center.y, mini.center.y, 2f)
         if (rtl) {
             assertEquals(with(compose.density) { 8.dp.toPx() }, bar.left - mini.right, 1f)
@@ -133,6 +133,7 @@ class ScrollResponsiveDockUiTest {
         down()
         assertCompact()
         val compact = bounds("mini_player_container")
+        assertEquals(with(compose.density) { 227.8.dp.toPx() }, compact.width, 1f)
         assertTrue(compact.center.y > original.center.y)
         assertTrue(compact.width < original.width)
         compose.onNodeWithTag("mini_player_play_pause").performClick()
@@ -184,6 +185,7 @@ class ScrollResponsiveDockUiTest {
         val original = bounds("mini_player_container")
         down()
         assertCompact()
+        assertEquals(original.width * 0.85f, bounds("mini_player_container").width, 1f)
         up()
         assertEquals(original.width, bounds("mini_player_container").width, 1f)
     }
@@ -192,6 +194,7 @@ class ScrollResponsiveDockUiTest {
         show(light = true, fontScale = 1.5f)
         down()
         assertCompact()
+        assertEquals(with(compose.density) { 159.8.dp.toPx() }, bounds("mini_player_container").width, 1f)
         compose.onNodeWithTag("mini_player_play_pause").performClick()
         assertEquals(1, plays)
     }
