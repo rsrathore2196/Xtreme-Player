@@ -107,7 +107,6 @@ import com.example.data.model.CountryData
 import com.example.data.model.CountryItem
 import com.example.data.model.LanguageData
 import com.example.data.model.LanguageOption
-import com.example.ui.components.AppDynamicLogo
 import com.example.ui.components.awaitStartupContentDraw
 import com.example.performance.BackgroundWorkCoordinator
 import androidx.lifecycle.Lifecycle
@@ -264,36 +263,17 @@ private fun OnboardingContent(
                         verticalArrangement = Arrangement.spacedBy(16.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        // 1. TOP HERO HEADER: Centered Logo with Ambient Halo, App Title & Step Badge
+                        // 1. TOP HERO HEADER: Centered Original Logo, App Title & Step Badge
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(top = 4.dp, bottom = 4.dp)
                         ) {
-                            // Logo with ambient aura
-                            Box(
-                                contentAlignment = Alignment.Center,
-                                modifier = Modifier
-                                    .size(76.dp)
-                                    .drawBehind {
-                                        drawCircle(
-                                            brush = Brush.radialGradient(
-                                                colors = listOf(
-                                                    primaryAccent.copy(alpha = if (isDark) 0.28f else 0.16f),
-                                                    Color.Transparent
-                                                )
-                                            ),
-                                            radius = size.width * 0.75f
-                                        )
-                                    }
-                            ) {
-                                AppDynamicLogo(
-                                    modifier = Modifier.size(56.dp),
-                                    primaryAccent = primaryAccent,
-                                    secondaryAccent = appColors.secondaryAccent,
-                                    cutoutColor = appColors.scaffoldBackground
-                                )
+                            Box(contentAlignment = Alignment.Center, modifier = Modifier.size(76.dp)) {
+                                Image(painterResource(R.drawable.ic_onboarding_logo),
+                                    contentDescription = "Xtreme Player Logo",
+                                    modifier = Modifier.size(56.dp).testTag("onboarding_details_logo"))
                             }
 
                             Spacer(modifier = Modifier.height(8.dp))
@@ -918,7 +898,7 @@ fun OnboardingStartupPage(
         ) {
             // Use the actual launcher foreground, without an enclosing ring or badge.
             Image(
-                painter = painterResource(R.drawable.ic_launcher_foreground),
+                painter = painterResource(R.drawable.ic_onboarding_logo),
                 contentDescription = "Xtreme Player Logo",
                 modifier = Modifier.size(144.dp).testTag("onboarding_brand_logo")
             )

@@ -193,32 +193,32 @@ class ArtworkResolutionInterceptor : Interceptor {
             originalChain.withSize(Size(metadata.sourceDimension, metadata.sourceDimension))
         } else originalChain
         val request = chain.request
-        val sourceDimension = maxOf(metadata.sourceDimension,
-            (chain.size.width as? Dimension.Pixels)?.px ?: 0,
-            (chain.size.height as? Dimension.Pixels)?.px ?: 0)
+        val width = (chain.size.width as? Dimension.Pixels)?.px ?: 0
+        val height = (chain.size.height as? Dimension.Pixels)?.px ?: 0
+        val sourceDimension = if (metadata.targetSize == ImageConfig.HERO_BANNER_SIZE ||
+            metadata.targetSize == ImageConfig.PLAYER_SCREEN_SIZE) {
+            mapTargetSizeToArtworkDimension(metadata.targetSize, androidx.compose.ui.unit.IntSize(width, height))
+        } else maxOf(metadata.sourceDimension, width, height)
         val originals = listOf(metadata.providerUrl).filter(String::isNotBlank)
         val urls = (originals.map { providerArtworkUrl(it, sourceDimension) } +
             youtubeArtworkAlternatives(metadata.trackId, originals) + originals).distinct()
         // A smaller view can reuse a larger rendition already fetched by Home or
         // the player. These alternatives are cache probes, never extra downloads.
         val cacheUrls = (urls.take(1) + originals.flatMap { source ->
-            listOf(600, 1200, 2000, 200).map { providerArtworkUrl(source, it) }
+            listOf(600, 1200, 2000, 3000, 200).map { providerArtworkUrl(source, it) }
         } + urls.drop(1)).distinct()
         val attempted = mutableSetOf<String>()
         val cachedImages = mutableMapOf<String, SuccessResult?>()
         var lastError: ImageResult? = null
         var networkBudgetMs = if (metadata.startupPreparation) 1_000L else if (metadata.currentTrack) 6_000L else 3_000L
-        fun sufficient(result: SuccessResult) = sufficientSize(result, chain.size) ||
-            // The provider can cap a requested 2000px rendition at its real source
-            // resolution. A full, unsampled decode cannot improve by downloading
-            // that same URL again. Sampled thumbnail decodes still need upgrading.
-            result.request.data == urls.firstOrNull() && !result.isSampled &&
-                minOf((result.drawable as? BitmapDrawable)?.bitmap?.width ?: result.drawable.intrinsicWidth,
-                    (result.drawable as? BitmapDrawable)?.bitmap?.height ?: result.drawable.intrinsicHeight) >= 480
+        // A native, unsampled image can still be much smaller than this viewport.
+        // Only actual bitmap pixels can finish resolution; provider caps are fallbacks.
+        fun sufficient(result: SuccessResult) = sufficientSize(result, chain.size)
         fun better(first: SuccessResult?, second: SuccessResult?): SuccessResult? = when {
             first == null -> second
             second == null -> first
-            pixelArea(second) > pixelArea(first) -> second
+            coverage(second, chain.size) > coverage(first, chain.size) -> second
+            coverage(second, chain.size) == coverage(first, chain.size) && pixelArea(second) > pixelArea(first) -> second
             else -> first
         }
         suspend fun load(url: String, cacheOnly: Boolean = false, memoryOnly: Boolean = false): SuccessResult? {
@@ -233,7 +233,9 @@ class ArtworkResolutionInterceptor : Interceptor {
                     // Recheck after resource waits so duplicate cards share Coil's file.
                     val hit = chain.proceed(candidate.newBuilder().networkCachePolicy(CachePolicy.DISABLED).build())
                     val budgetMs = networkBudgetMs
-                    if (hit is SuccessResult && sufficient(hit)) hit
+                    // Re-fetching an already decoded native file cannot sharpen that
+                    // rendition. Return it to the candidate walk, which keeps looking.
+                    if (hit is SuccessResult && (sufficient(hit) || !hit.isSampled)) hit
                     else if (!attempted.add(url) || budgetMs <= 0L) hit
                     else {
                         val started = android.os.SystemClock.elapsedRealtime()
@@ -252,10 +254,13 @@ class ArtworkResolutionInterceptor : Interceptor {
         suspend fun best(urls: List<String>, cacheOnly: Boolean = false, memoryOnly: Boolean = false): SuccessResult? {
             var small: SuccessResult? = null
             for (url in urls.distinct()) {
+                if (!cacheOnly && !memoryOnly && small != null && url in originals &&
+                    providerArtworkUrl(url, sourceDimension) != url) continue
                 // Never redownload a cached low-resolution rendition: only the
                 // larger rendition can improve it. Keep the small file as fallback.
                 val cachedFallback = cachedImages[url]?.takeIf {
-                    !cacheOnly && !memoryOnly && providerArtworkUrl(url, sourceDimension) != url
+                    !cacheOnly && !memoryOnly &&
+                        (!it.isSampled || providerArtworkUrl(url, sourceDimension) != url)
                 }
                 val result = cachedFallback ?: load(url, cacheOnly, memoryOnly) ?: continue
                 if (sufficient(result)) return result
@@ -297,6 +302,16 @@ class ArtworkResolutionInterceptor : Interceptor {
         val bitmap = (result.drawable as? BitmapDrawable)?.bitmap
         return (bitmap?.width ?: result.drawable.intrinsicWidth).toLong() *
             (bitmap?.height ?: result.drawable.intrinsicHeight)
+    }
+
+    private fun coverage(result: SuccessResult, size: Size): Double {
+        val bitmap = (result.drawable as? BitmapDrawable)?.bitmap
+        val width = bitmap?.width ?: result.drawable.intrinsicWidth
+        val height = bitmap?.height ?: result.drawable.intrinsicHeight
+        val requiredWidth = (size.width as? Dimension.Pixels)?.px ?: 0
+        val requiredHeight = (size.height as? Dimension.Pixels)?.px ?: 0
+        return minOf(if (requiredWidth > 0) width.toDouble() / requiredWidth else Double.POSITIVE_INFINITY,
+            if (requiredHeight > 0) height.toDouble() / requiredHeight else Double.POSITIVE_INFINITY)
     }
 
     private companion object {

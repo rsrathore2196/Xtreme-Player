@@ -69,10 +69,17 @@ class ListeningStatsUiTest {
         }
         compose.onNodeWithText("Listening Stats").performClick()
         compose.onNodeWithTag("listening_stats_page").assertExists()
+        compose.onNodeWithTag("library_screen").assertExists()
+        compose.onNodeWithText("Your Library").assertIsDisplayed()
+        compose.onNodeWithText("Playlists").assertIsDisplayed()
+        compose.onNodeWithText("Listening Stats").assertIsSelected()
+        compose.onNodeWithTag("create_playlist_button").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Back").assertDoesNotExist()
         compose.onNodeWithText("Yearly").performClick()
         compose.onNodeWithText("Yearly").assertIsSelected()
-        compose.onNodeWithContentDescription("Back").performClick()
+        compose.onNodeWithText("Playlists").performClick()
         compose.onNodeWithTag("library_screen").assertExists()
+        compose.onNodeWithTag("create_playlist_button").assertIsDisplayed()
         compose.onNodeWithText("Listening Stats").performClick()
         compose.onNodeWithText("Yearly").assertIsSelected()
     }
@@ -88,6 +95,12 @@ class ListeningStatsUiTest {
         assertTrue(bounds.all { kotlin.math.abs(it.width - bounds[0].width) < 1 && kotlin.math.abs(it.height - bounds[0].height) < 1 })
         assertTrue(bounds[0].left < bounds[1].left && bounds[0].top == bounds[1].top)
         assertTrue(bounds[2].left < bounds[3].left && bounds[2].top == bounds[3].top)
+        tags.forEachIndexed { index, tag ->
+            val logo = compose.onNodeWithTag("stats_logo_${tag.removePrefix("stats_card_")}")
+                .assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+            assertTrue(logo.right <= bounds[index].right && logo.left > bounds[index].center.x)
+            assertTrue(logo.top >= bounds[index].top && logo.bottom < bounds[index].center.y)
+        }
         compose.onNodeWithText("Yearly").performClick()
         compose.runOnIdle { assertEquals(ListeningPeriod.YEARLY, period) }
         compose.onNodeWithText("No listening activity in this period yet.").assertExists()

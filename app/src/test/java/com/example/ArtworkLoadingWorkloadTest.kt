@@ -112,6 +112,33 @@ class ArtworkLoadingWorkloadTest {
         assertEquals(large, result.request.data)
         assertTrue(chain.calls.any { it.first == large && it.second })
     }
+
+    @Test fun nativePrimaryCacheBelowViewportDoesNotHideSharperSameRecordingArtwork() = runBlocking {
+        val small = "https://lh3.googleusercontent.com/album=w60-h60-l90-rj"
+        val primary = providerArtworkUrl(small, 2000)
+        val sharper = youtubeArtworkAlternatives("yt_abcdefghijk", emptyList()).first()
+        val req = request().newBuilder().data(primary).size(1600, 1600).setParameter(ARTWORK_METADATA_PARAMETER,
+            ArtworkRequestMetadata(small, 2000, trackId = "yt_abcdefghijk", currentTrack = true), null).build()
+        val chain = Chain(req, cached = setOf(primary), nativeCache = true,
+            size = Size(1600, 1600), dimensions = mapOf(primary to 480, sharper to 1600))
+        val result = ArtworkResolutionInterceptor().intercept(chain) as SuccessResult
+        assertEquals(sharper, result.request.data)
+        assertEquals(1600, (result.drawable as BitmapDrawable).bitmap.width)
+        assertEquals(listOf(sharper), chain.calls.filter { it.second }.map { it.first })
+    }
+
+    @Test fun undersizedNetworkPrimaryContinuesToTheSharperSameRecordingRendition() = runBlocking {
+        val small = "https://lh3.googleusercontent.com/album=w60-h60-l90-rj"
+        val primary = providerArtworkUrl(small, 2000)
+        val sharper = youtubeArtworkAlternatives("yt_abcdefghijk", emptyList()).first()
+        val req = request().newBuilder().data(primary).size(1600, 1600).setParameter(ARTWORK_METADATA_PARAMETER,
+            ArtworkRequestMetadata(small, 2000, trackId = "yt_abcdefghijk", currentTrack = true), null).build()
+        val chain = Chain(req, nativeCache = true, size = Size(1600, 1600),
+            dimensions = mapOf(primary to 480, sharper to 1600))
+        val result = ArtworkResolutionInterceptor().intercept(chain) as SuccessResult
+        assertEquals(sharper, result.request.data)
+        assertEquals(listOf(primary, sharper), chain.calls.filter { it.second }.map { it.first })
+    }
     @Test fun cachedSixHundredPixelCoverIsPreviewOnlyAndSlowFullCoverStillCompletes() = runBlocking {
         val small = "https://lh3.googleusercontent.com/album=w60-h60-l90-rj"
         val preview = providerArtworkUrl(small, 600)

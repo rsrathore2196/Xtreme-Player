@@ -76,7 +76,8 @@ class PlayerArtworkColorsTest {
             .setParameter(ARTWORK_METADATA_PARAMETER, metadata, null).size(1080).allowHardware(true).build()
         val sample = playerPaletteRequest(cover)
         assertEquals(cover.data, sample.data)
-        assertSame(metadata, sample.parameters.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER))
+        assertEquals(metadata.copy(providerUrl = cover.data.toString(), targetSize = 120),
+            sample.parameters.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER))
         assertEquals(Size(120, 120), sample.sizeResolver.size())
         assertFalse(sample.allowHardware)
         assertEquals(Bitmap.Config.ARGB_8888, sample.bitmapConfig)
@@ -84,6 +85,8 @@ class PlayerArtworkColorsTest {
         assertEquals(CachePolicy.READ_ONLY, sample.memoryCachePolicy)
         val header = playerHeaderArtworkRequest(cover)
         assertEquals(cover.data, header.data)
+        assertEquals(metadata.copy(providerUrl = cover.data.toString(), targetSize = 192),
+            header.parameters.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER))
         assertEquals(Size(192, 192), header.sizeResolver.size())
         assertEquals(CachePolicy.READ_ONLY, header.memoryCachePolicy)
         assertTrue(header.allowHardware)

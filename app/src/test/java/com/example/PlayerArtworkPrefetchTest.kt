@@ -85,9 +85,12 @@ class PlayerArtworkPrefetchTest {
             prepareCurrentPlayerArtwork(context, tracks, MutableStateFlow(true), scope) { loader }
             val ready = withTimeoutOrNull(5000) { while (TrackPaletteCache.get(track.id) == null) delay(10); true }
             assertTrue("Prefetch must finish: $events", ready == true)
-            val key = playerPaletteKey(track, true, Color.White, Color.Black, providerArtworkUrl(track.coverUrl, 2000))
+            val metrics = context.resources.displayMetrics
+            val pixels = minOf(metrics.widthPixels, metrics.heightPixels).coerceIn(1, 3000)
+            val source = mapTargetSizeToArtworkDimension(ImageConfig.PLAYER_SCREEN_SIZE, IntSize(pixels, pixels))
+            val key = playerPaletteKey(track, true, Color.White, Color.Black, providerArtworkUrl(track.coverUrl, source))
             assertNotNull("Opening can initialize the backdrop from its prepared palette", TrackPaletteCache.get(key))
-            val request = buildOptimizedImageRequest(context, track.coverUrl, 2000, track,
+            val request = buildOptimizedImageRequest(context, track.coverUrl, ImageConfig.PLAYER_SCREEN_SIZE, track,
                 decodeSize = IntSize(300, 300), currentTrack = true)
             val visible = loader.execute(request) as SuccessResult
             assertTrue(visible.dataSource == DataSource.MEMORY_CACHE || visible.dataSource == DataSource.DISK)

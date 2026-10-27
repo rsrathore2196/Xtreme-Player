@@ -5,6 +5,7 @@ import android.content.Context
 import android.graphics.drawable.BitmapDrawable
 import androidx.compose.runtime.*
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.palette.graphics.Palette
@@ -30,10 +31,9 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 
 /** Use the original provider's highest suitable cover, including full-screen art. */
-internal const val PLAYER_ARTWORK_DIMENSION = 2000
 private fun playerArtworkDecodeSize(context: Context): IntSize {
-    val pixels = maxOf(context.resources.displayMetrics.widthPixels, context.resources.displayMetrics.heightPixels)
-        .coerceIn(1, PLAYER_ARTWORK_DIMENSION)
+    val pixels = minOf(context.resources.displayMetrics.widthPixels, context.resources.displayMetrics.heightPixels)
+        .coerceIn(1, 3000)
     return IntSize(pixels, pixels)
 }
 private val neutralPlayerBackground = Brush.verticalGradient(listOf(Color(0xff101010), Color(0xff101010)))
@@ -47,7 +47,7 @@ internal fun prepareCurrentPlayerArtwork(context: Context, tracks: Flow<MusicTra
         .collectLatest { (track, visible) ->
             if (track == null || !visible) return@collectLatest
             try {
-                val request = buildOptimizedImageRequest(context, track.coverUrl, PLAYER_ARTWORK_DIMENSION,
+                val request = buildOptimizedImageRequest(context, track.coverUrl, ImageConfig.PLAYER_SCREEN_SIZE,
                     track, decodeSize = playerArtworkDecodeSize(context), currentTrack = true)
                 val loader = loaderFor(context)
                 val result = loader.execute(request) as? SuccessResult ?: return@collectLatest
@@ -93,16 +93,22 @@ fun playerPaletteKey(track: MusicTrack, dark: Boolean, accent: Color, base: Colo
 @Composable
 internal fun rememberPlayerArtworkRequest(track: MusicTrack, active: Boolean): ImageRequest {
     val context = LocalContext.current
+    val configuration = LocalConfiguration.current
+    val sourceSize = remember(context, configuration.screenWidthDp, configuration.screenHeightDp, configuration.densityDpi) {
+        playerArtworkDecodeSize(context)
+    }
     val visibility = remember(context, track.id, track.coverUrl) { ArtworkVisibility(active) }
     SideEffect { visibility.active.value = active }
-    return remember(context, track.id, track.coverUrl, visibility) {
-        buildOptimizedImageRequest(context, track.coverUrl, PLAYER_ARTWORK_DIMENSION, track,
-            decodeSize = playerArtworkDecodeSize(context), visibility = visibility, currentTrack = true)
+    return remember(context, track.id, track.coverUrl, visibility, sourceSize) {
+        // AsyncImage resolves the actual rendered bounds. Prefetch still has an
+        // explicit window-sized target; both use the same provider source file.
+        buildOptimizedImageRequest(context, track.coverUrl, ImageConfig.PLAYER_SCREEN_SIZE, track,
+            visibility = visibility, currentTrack = true, sourceSize = sourceSize)
     }
 }
 
 /** Reuse the selected provider source at the actual header's bounded pixel size. */
-internal fun playerHeaderArtworkRequest(artwork: ImageRequest, targetPixels: Int = 192): ImageRequest = artwork.newBuilder()
+internal fun playerHeaderArtworkRequest(artwork: ImageRequest, targetPixels: Int = 192): ImageRequest = playerArtworkDerivative(artwork, targetPixels)
     .size(targetPixels.coerceAtLeast(1))
     // Small shared-transition targets must never evict the full-size decoded cover.
     .memoryCachePolicy(CachePolicy.READ_ONLY)
@@ -110,7 +116,7 @@ internal fun playerHeaderArtworkRequest(artwork: ImageRequest, targetPixels: Int
     .build()
 
 /** Sample the exact selected provider URL without another metadata lookup or provider fallback. */
-internal fun playerPaletteRequest(artwork: ImageRequest): ImageRequest = artwork.newBuilder()
+internal fun playerPaletteRequest(artwork: ImageRequest): ImageRequest = playerArtworkDerivative(artwork, ImageConfig.PALETTE_THUMBNAIL_SIZE)
     .size(ImageConfig.PALETTE_THUMBNAIL_SIZE)
     .precision(Precision.EXACT)
     .allowHardware(false)
@@ -121,6 +127,16 @@ internal fun playerPaletteRequest(artwork: ImageRequest): ImageRequest = artwork
     .transformationDispatcher(AppDispatchers.CpuBounded)
     .crossfade(false)
     .build()
+
+private fun playerArtworkDerivative(artwork: ImageRequest, targetPixels: Int): ImageRequest.Builder = artwork.newBuilder().apply {
+    val metadata = artwork.parameters.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER)
+    val source = artwork.data as? String
+    if (metadata != null && !source.isNullOrBlank()) {
+        // A successful request may have selected a sharper same-recording fallback.
+        // Derivatives must reuse that source instead of resolving the original again.
+        setParameter(ARTWORK_METADATA_PARAMETER, metadata.copy(providerUrl = source, targetSize = targetPixels), null)
+    }
+}
 
 /** Called on CpuBounded with the small software sample, never with a full-size hardware bitmap. */
 @Suppress("UNUSED_PARAMETER")

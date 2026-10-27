@@ -16,6 +16,7 @@ import coil.imageLoader
 import coil.memory.MemoryCache
 import coil.request.ImageRequest
 import coil.size.Scale
+import coil.size.Precision
 import com.example.data.model.MusicTrack
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -90,7 +91,7 @@ object ImageConfig {
     const val MINI_PLAYER_SIZE = 240 // ~200-240dp for the mini player
     const val PLAYLIST_HEADER_SIZE = 400 // ~400dp for playlist header cover
     const val RECOMMENDATION_CARD_SIZE = 450 // Crisp 400-600px for recommendation cards on Home screen
-    const val HERO_BANNER_SIZE = 1200 // 1000-1200px ultra high-res for Now Playing hero banners
+    const val HERO_BANNER_SIZE = -2 // Source tier follows the measured Hero viewport, not a fixed 1200px.
     const val PLAYER_SCREEN_SIZE = -1 // High-quality source decoded to the expanded player's displayed bounds
     const val PLAYER_COVER_SIZE = -1 // alias
     const val PALETTE_THUMBNAIL_SIZE = 120 // for fast palette extraction
@@ -172,10 +173,15 @@ object TrackPaletteCache {
     }
 }
 
-fun mapTargetSizeToArtworkDimension(targetSize: Int): Int {
+fun mapTargetSizeToArtworkDimension(targetSize: Int, decodeSize: IntSize? = null): Int {
+    if ((targetSize == ImageConfig.HERO_BANNER_SIZE || targetSize == ImageConfig.PLAYER_SCREEN_SIZE) && decodeSize != null) {
+        val required = maxOf(decodeSize.width, decodeSize.height).coerceAtLeast(1)
+        // Shared source tiers let the player, Hero and startup prefetch reuse one file.
+        return listOf(200, 600, 1200, 2000, 3000).firstOrNull { it >= required } ?: 3000
+    }
     return when {
         targetSize >= 2000 -> targetSize.coerceAtMost(3000)
-        targetSize >= 900 -> 1200 // 1200
+        targetSize >= 900 -> maxOf(1200, targetSize).coerceAtMost(3000)
         targetSize >= 500 || targetSize < 0 -> 1200 // 1200
         targetSize in 250..899 -> 600 // 600
         targetSize in 150..249 -> 200 // 200
@@ -240,12 +246,13 @@ internal fun buildOptimizedImageRequest(
     visibleContent: Boolean = true,
     startupPreparation: Boolean = false,
     visibility: ArtworkVisibility? = null,
-    currentTrack: Boolean = false
+    currentTrack: Boolean = false,
+    sourceSize: IntSize? = decodeSize
 ): ImageRequest {
     val metadata = ArtworkRequestMetadata(
         trackId = track?.id,
         providerUrl = url,
-        sourceDimension = mapTargetSizeToArtworkDimension(targetSize),
+        sourceDimension = mapTargetSizeToArtworkDimension(targetSize, sourceSize),
         preferStableArtwork = preferStableArtwork,
         targetSize = targetSize,
         visibleContent = visibleContent,
@@ -260,7 +267,7 @@ internal fun buildOptimizedImageRequest(
     val placeholder = if (currentTrack) {
         // Reuse the same catalog cover already shown on Home/Search while its
         // full-player rendition downloads. These are RAM peeks, never image lookups.
-        val candidates = listOf(initialUrl, providerArtworkUrl(url, 1200), providerArtworkUrl(url, 600),
+        val candidates = listOf(initialUrl, providerArtworkUrl(url, 3000), providerArtworkUrl(url, 1200), providerArtworkUrl(url, 600),
             providerArtworkUrl(url, 200), url).filter(String::isNotBlank).distinct()
         val memory = context.imageLoader.memoryCache
         candidates.firstOrNull { memory?.get(MemoryCache.Key(it)) != null } ?: initialUrl
@@ -274,6 +281,9 @@ internal fun buildOptimizedImageRequest(
         // One process-wide CPU budget, including explicitly opened player covers.
         .decoderDispatcher(AppDispatchers.CpuBounded)
         .scale(Scale.FILL)
+        // Downsample to the destination, but never manufacture a larger bitmap
+        // from a native thumbnail and mistake its dimensions for genuine detail.
+        .precision(Precision.INEXACT)
         .crossfade(if (crossfadeEnabled) 200 else 0)
         .allowHardware(true)
         .bitmapConfig(if (android.os.Build.VERSION.SDK_INT >= 26) android.graphics.Bitmap.Config.HARDWARE else android.graphics.Bitmap.Config.ARGB_8888)

@@ -75,6 +75,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import com.example.ui.components.TrackListItem
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.role
 import com.example.ui.theme.LiquidGlass
 import com.example.ui.theme.bouncyClickable
 import com.example.ui.theme.liquidGlassButton
@@ -126,10 +129,6 @@ fun LibraryScreen(
     var period by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(com.example.data.local.ListeningPeriod.WEEKLY) }
     val statsScroll = rememberLazyListState()
     val likedScroll = rememberLazyListState()
-    if (selectedTab == 1) {
-        ListeningStatsScreen(period, { period = it }, { selectedTab = 0 }, onTrackClick, onOpenArtist, statsScroll)
-        return
-    }
     if (likedOpen) {
         androidx.activity.compose.BackHandler { likedOpen = false }
         val liked by androidx.compose.runtime.produceState<com.example.data.local.PlaylistWithTracks?>(null, favoriteTracks) {
@@ -155,25 +154,7 @@ fun LibraryScreen(
             .background(appColors.scaffoldBackground),
         contentAlignment = Alignment.TopCenter
     ) {
-        val columns = if (landscape) landscapePlaylistColumns(maxWidth.value) else 2
-        val tileWidth = if (landscape) landscapePlaylistTileWidth(maxWidth.value) else 0f
-        val playlistRows = remember(playlists, columns) { playlists.chunked(columns) }
-        val coverSize = if (landscape) with(LocalDensity.current) {
-            tileWidth.dp.roundToPx().coerceIn(120, 1000)
-        } else ImageConfig.PLAYLIST_HEADER_SIZE
-        LazyColumn(
-            state = listState,
-            modifier = Modifier
-                .fillMaxWidth()
-                .widthIn(max = 640.dp)
-                .landscapeContentBounds(landscape, maxWidthDp = null)
-                .bouncyOverscroll()
-                .statusBarsPadding()
-                .testTag("library_screen"),
-            contentPadding = PaddingValues(bottom = if (landscape) 192.dp else 150.dp)
-        ) {
-        // TOP BAR
-        item {
+        val libraryHeader: @Composable () -> Unit = {
             Column(modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 6.dp, bottom = 10.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -197,6 +178,7 @@ fun LibraryScreen(
                     }
 
                     // Add playlist button (liquid glass styled with theme-specific color)
+                    if (selectedTab == 0) {
                     IconButton(
                         onClick = {
                             onCreatePlaylistClick()
@@ -231,6 +213,7 @@ fun LibraryScreen(
                             tint = appColors.primaryAccent,
                             modifier = Modifier.size(26.dp)
                         )
+                    }
                     }
                 }
 
@@ -304,6 +287,7 @@ fun LibraryScreen(
                                     }
                                 )
                                 .bouncyClickable { selectedTab = index }
+                                .semantics { selected = isSelected; role = androidx.compose.ui.semantics.Role.Tab }
                                 .padding(vertical = 10.dp),
                             contentAlignment = Alignment.Center
                         ) {
@@ -318,7 +302,35 @@ fun LibraryScreen(
                     }
                 }
             }
+
         }
+        val columns = if (landscape) landscapePlaylistColumns(maxWidth.value) else 2
+        val tileWidth = if (landscape) landscapePlaylistTileWidth(maxWidth.value) else 0f
+        val playlistRows = remember(playlists, columns) { playlists.chunked(columns) }
+        val coverSize = if (landscape) with(LocalDensity.current) {
+            tileWidth.dp.roundToPx().coerceIn(120, 1000)
+        } else ImageConfig.PLAYLIST_HEADER_SIZE
+        if (selectedTab == 1) {
+            Column(Modifier.fillMaxWidth().widthIn(max = 640.dp)
+                .landscapeContentBounds(landscape, maxWidthDp = null).fillMaxSize()
+                .statusBarsPadding().testTag("library_screen")) {
+                libraryHeader()
+                ListeningStatsScreen(period, { period = it }, { selectedTab = 0 }, onTrackClick, onOpenArtist,
+                    statsScroll, embedded = true, modifier = Modifier.weight(1f))
+            }
+        } else {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
+                .fillMaxWidth()
+                .widthIn(max = 640.dp)
+                .landscapeContentBounds(landscape, maxWidthDp = null)
+                .bouncyOverscroll()
+                .statusBarsPadding()
+                .testTag("library_screen"),
+            contentPadding = PaddingValues(bottom = if (landscape) 192.dp else 150.dp)
+        ) {
+        item { libraryHeader() }
 
         when (selectedTab) {
             0 -> {
@@ -585,6 +597,7 @@ fun LibraryScreen(
             }
         }
     }
+}
 }
 }
 

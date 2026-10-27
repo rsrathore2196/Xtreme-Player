@@ -30,7 +30,8 @@ fun AppDynamicLogo(
     primaryAccent: Color = LocalAppColors.current.primaryAccent,
     secondaryAccent: Color = LocalAppColors.current.secondaryAccent,
     cutoutColor: Color = LocalAppColors.current.scaffoldBackground,
-    contentDescriptionText: String = "Xtreme Player Logo"
+    contentDescriptionText: String = "Xtreme Player Logo",
+    showGlow: Boolean = true
 ) {
     // Cache the parsed vector paths to ensure ultra-fast 60+ FPS recompositions
     val outerRibbon = remember {
@@ -194,7 +195,7 @@ fun AppDynamicLogo(
 
         scale(scaleX = scaleFactor, scaleY = scaleFactor, pivot = Offset.Zero) {
             // 1. Ambient Glow behind logo
-            drawCircle(
+            if (showGlow) drawCircle(
                 brush = glowBrush,
                 radius = 28f,
                 center = Offset(52f, 54f)

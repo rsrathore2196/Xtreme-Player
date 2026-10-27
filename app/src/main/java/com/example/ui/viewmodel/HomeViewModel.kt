@@ -1719,8 +1719,8 @@ class HomeViewModel(
                                 val size = if (isHero) androidx.compose.ui.unit.IntSize(
                                     (if (landscape) com.example.ui.util.landscapeHeroArtworkWidthDp(
                                         app.resources.configuration.screenWidthDp.toFloat()) * metrics.density
-                                        else metrics.widthPixels - 40 * metrics.density).toInt().coerceIn(1, if (landscape) 3_000 else 1_200),
-                                    (240 * metrics.density).toInt().coerceIn(1, 1_200))
+                                        else metrics.widthPixels - 40 * metrics.density).toInt().coerceIn(1, 3_000),
+                                    (240 * metrics.density).toInt().coerceIn(1, 3_000))
                                 else if (recents.isNotEmpty()) androidx.compose.ui.unit.IntSize(
                                     kotlin.math.round(52 * metrics.density).toInt().coerceAtLeast(1),
                                     kotlin.math.round(62.4f * metrics.density).toInt().coerceAtLeast(1))

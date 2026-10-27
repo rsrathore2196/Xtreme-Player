@@ -90,6 +90,7 @@ class OnboardingTransitionTest {
         compose.onNodeWithTag("start_listening_button").performClick()
         compose.mainClock.advanceTimeBy(300)
         compose.onNodeWithTag("start_listening_button").assertDoesNotExist()
+        compose.onNodeWithTag("onboarding_details_logo").assertIsDisplayed()
         // IME/inset animations use Android's clock; don't freeze them while
         // exercising text entry and Back on Robolectric's paused looper.
         compose.mainClock.autoAdvance = true

@@ -22,7 +22,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34], application = Application::class)
+@Config(sdk = [34], application = Application::class, qualifiers = "w411dp-h891dp-port-xhdpi")
 class PlayerArtworkSourceTest {
     @get:Rule val compose = createComposeRule()
     private var previousLoader: ImageLoader? = null
@@ -36,7 +36,7 @@ class PlayerArtworkSourceTest {
         lateinit var request: ImageRequest
         compose.setContent { val prepared = rememberPlayerArtworkRequest(track, true); SideEffect { request = prepared } }
         compose.runOnIdle {
-            assertEquals(providerArtworkUrl(original, 2000), request.data)
+            assertEquals(providerArtworkUrl(original, 1200), request.data)
             assertEquals(request.data, request.placeholderMemoryCacheKey?.key)
             assertTrue(request.parameters.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER)!!.currentTrack)
         }
@@ -75,7 +75,7 @@ class PlayerArtworkSourceTest {
         lateinit var request: ImageRequest
         compose.setContent { val prepared = rememberPlayerArtworkRequest(track, true); SideEffect { request = prepared } }
         compose.runOnIdle {
-            assertEquals(providerArtworkUrl(original, 2000), request.data)
+            assertEquals(providerArtworkUrl(original, 1200), request.data)
             assertEquals("Use the already visible provider image while the larger one loads", homeUrl, request.placeholderMemoryCacheKey?.key)
         }
     }

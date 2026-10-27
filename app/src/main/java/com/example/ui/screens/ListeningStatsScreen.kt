@@ -21,6 +21,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
@@ -29,6 +30,7 @@ import com.example.data.local.*
 import com.example.data.model.MusicTrack
 import com.example.data.repository.*
 import com.example.ui.components.ArtistPortrait
+import com.example.ui.components.AppDynamicLogo
 import com.example.ui.theme.LocalAppColors
 import com.example.ui.util.rememberOptimizedImageRequest
 import kotlinx.coroutines.launch
@@ -46,7 +48,7 @@ internal fun listeningTime(millis: Long): Pair<String, String> {
 @Composable
 fun ListeningStatsScreen(period: ListeningPeriod, onPeriod: (ListeningPeriod) -> Unit, onBack: () -> Unit,
     onTrack: (MusicTrack, List<MusicTrack>) -> Unit, onArtist: (CatalogArtist) -> Unit,
-    listState: LazyListState = rememberLazyListState()) {
+    listState: LazyListState = rememberLazyListState(), embedded: Boolean = false, modifier: Modifier = Modifier) {
     val context = LocalContext.current.applicationContext
     val repository = remember(context) { ListeningStatsRepository.get(context) }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
@@ -69,22 +71,24 @@ fun ListeningStatsScreen(period: ListeningPeriod, onPeriod: (ListeningPeriod) ->
             val resolved = repository.playbackTracks(queue)
             onTrack(resolved.firstOrNull { it.id == track.id } ?: track, resolved)
         }
-    }, onArtist, listState, failure, { reloadRevision++ })
+    }, onArtist, listState, failure, { reloadRevision++ }, embedded, modifier)
 }
 
 @Composable
 internal fun ListeningStatsContent(summary: ListeningSummary?, period: ListeningPeriod,
     onPeriod: (ListeningPeriod) -> Unit, onBack: () -> Unit,
     onTrack: (MusicTrack, List<MusicTrack>) -> Unit, onArtist: (CatalogArtist) -> Unit,
-    listState: LazyListState = rememberLazyListState(), failure: String? = null, onRetry: () -> Unit = {}) {
+    listState: LazyListState = rememberLazyListState(), failure: String? = null, onRetry: () -> Unit = {},
+    embedded: Boolean = false, modifier: Modifier = Modifier) {
     val colors = LocalAppColors.current
     BackHandler(onBack = onBack)
     val queue = remember(summary?.songs) { summary?.songs.orEmpty().map { it.track() } }
-    Box(Modifier.fillMaxSize().background(colors.scaffoldBackground), contentAlignment = Alignment.TopCenter) {
+    Box(modifier.fillMaxSize().background(colors.scaffoldBackground), contentAlignment = Alignment.TopCenter) {
     LazyColumn(state = listState, modifier = Modifier.widthIn(max = 720.dp).fillMaxSize()
-        .statusBarsPadding().testTag("listening_stats_page"), contentPadding = PaddingValues(20.dp, 12.dp, 20.dp, 180.dp),
+        .then(if (embedded) Modifier else Modifier.statusBarsPadding()).testTag("listening_stats_page"),
+        contentPadding = PaddingValues(20.dp, 12.dp, 20.dp, 180.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        item { Row(verticalAlignment = Alignment.CenterVertically) {
+        if (!embedded) item { Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = colors.textPrimary) }
             Text("Listening Stats", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = colors.textPrimary)
         } }
@@ -135,13 +139,28 @@ private fun statsArtist(row: ListeningTotal): CatalogArtist = ArtistPhotoReposit
 @Composable
 private fun StatCard(label: String, value: String, modifier: Modifier, song: ListeningTotal? = null, artist: ListeningTotal? = null) {
     val colors = LocalAppColors.current
-    Surface(modifier.aspectRatio(1f).testTag("stats_card_$label"), shape = RoundedCornerShape(22.dp),
-        color = colors.cardBackground, shadowElevation = 2.dp) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.SpaceBetween) {
-            Text(label, color = colors.textSecondary, style = MaterialTheme.typography.labelLarge)
-            if (song != null || artist != null) StatsImage(song ?: artist!!, artist != null, Modifier.size(48.dp))
-            Text(value, color = colors.textPrimary, style = if (song != null || artist != null) MaterialTheme.typography.titleMedium
-                else MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+    Surface(modifier.aspectRatio(1f).testTag("stats_card_$label"), shape = RoundedCornerShape(24.dp),
+        color = colors.cardBackground, shadowElevation = 3.dp) {
+        BoxWithConstraints {
+            val compact = maxWidth < 176.dp
+            val media = song != null || artist != null
+            Column(Modifier.fillMaxSize().padding(if (compact) 12.dp else 16.dp),
+                verticalArrangement = Arrangement.SpaceBetween) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(label, Modifier.weight(1f), color = colors.textSecondary,
+                        style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    AppDynamicLogo(Modifier.size(if (compact) 24.dp else 28.dp).testTag("stats_logo_$label"),
+                        cutoutColor = colors.cardBackground, showGlow = false)
+                }
+                if (media) StatsImage(song ?: artist!!, artist != null, Modifier.size(if (compact) 40.dp else 52.dp))
+                Text(value, color = colors.textPrimary,
+                    style = if (media) MaterialTheme.typography.titleMedium else MaterialTheme.typography.headlineLarge,
+                    fontSize = if (media) { if (compact) 16.sp else 18.sp } else if (compact) 32.sp else 40.sp,
+                    lineHeight = if (media) { if (compact) 20.sp else 24.sp } else if (compact) 38.sp else 48.sp,
+                    fontWeight = FontWeight.Bold, maxLines = if (media) 2 else 1, overflow = TextOverflow.Ellipsis)
+            }
         }
     }
 }
