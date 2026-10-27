@@ -38,6 +38,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
@@ -45,6 +46,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -54,6 +57,7 @@ import androidx.compose.ui.layout.layout
 import kotlin.math.roundToInt
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import com.example.util.AppHaptics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -82,7 +86,9 @@ fun MiniPlayer(
     onSkipPrevious: () -> Unit,
     onClick: () -> Unit,
     currentPositionProvider: () -> Long = { uiState.currentPositionMs },
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    compactProgress: State<Float>? = null,
+    compact: Boolean = false
 ) {
     val track = uiState.currentTrack ?: return
 
@@ -158,7 +164,8 @@ fun MiniPlayer(
                     // Grow the measured height only, including touch-target/font-scale
                     // minimums. Artwork, text, controls and horizontal spacing stay intact.
                     val content = measurable.measure(constraints)
-                    val height = (content.height * 1.15f).roundToInt()
+                    val progress = (compactProgress?.value ?: 0f).coerceIn(0f, 1f)
+                    val height = (content.height * (1.15f - 0.15f * progress)).roundToInt()
                         .coerceIn(constraints.minHeight, constraints.maxHeight)
                     layout(content.width, height) {
                         content.placeRelative(0, (height - content.height) / 2)
@@ -173,12 +180,22 @@ fun MiniPlayer(
                     contentDescription = "Track Artwork",
                     contentScale = ContentScale.Crop,
                     modifier = Modifier
+                        .layout { measurable, constraints ->
+                            val progress = (compactProgress?.value ?: 0f).coerceIn(0f, 1f)
+                            val side = (46.dp.toPx() - 10.dp.toPx() * progress).roundToInt()
+                            val image = measurable.measure(androidx.compose.ui.unit.Constraints.fixed(side, side))
+                            layout(image.width, image.height) { image.placeRelative(0, 0) }
+                        }
                         .size(46.dp)
-                        .clip(RoundedCornerShape(12.dp))
+                        .graphicsLayer {
+                            val progress = (compactProgress?.value ?: 0f).coerceIn(0f, 1f)
+                            shape = RoundedCornerShape((12f + 6f * progress).dp)
+                            clip = true
+                        }
                         .background(Color(0xFF262A34))
                 )
 
-                Spacer(modifier = Modifier.width(12.dp))
+                Spacer(modifier = Modifier.compactWidth(compactProgress, 2f / 3f).width(12.dp))
 
                 // Title & Artist (clean, bold, high contrast, non-overlapping)
                 Column(
@@ -203,7 +220,7 @@ fun MiniPlayer(
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(2.dp))
+                    Spacer(modifier = Modifier.compactHeight(compactProgress).height(2.dp))
 
                     Text(
                         text = track.artist,
@@ -213,7 +230,11 @@ fun MiniPlayer(
                             fontWeight = if (lightTheme) FontWeight.Bold else FontWeight.Medium
                         ),
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .then(if (compact) Modifier.clearAndSetSemantics { } else Modifier)
+                            .compactHeight(compactProgress)
+                            .graphicsLayer { alpha = 1f - (compactProgress?.value ?: 0f).coerceIn(0f, 1f) }
                     )
                 }
 
@@ -373,7 +394,7 @@ fun MiniPlayer(
                     }
                 }
 
-                Spacer(modifier = Modifier.width(6.dp))
+                Spacer(modifier = Modifier.compactWidth(compactProgress).width(6.dp))
 
                 // Skip Next Button - Theme tint with blurry liquid glass UI style & matte finish
                 val nextMatteBorder = if (!appColors.dynamicGlassEnabled) BorderStroke(1.2.dp, appColors.cardBorder) else BorderStroke(
@@ -418,10 +439,14 @@ fun MiniPlayer(
                         AppHaptics.performTap(context)
                         onSkipNext()
                     },
+                    enabled = !compact,
                     shape = CircleShape,
                     color = Color.Transparent,
                     border = nextMatteBorder,
                     modifier = Modifier
+                        .then(if (compact) Modifier.clearAndSetSemantics { } else Modifier)
+                        .compactWidth(compactProgress)
+                        .graphicsLayer { alpha = 1f - (compactProgress?.value ?: 0f).coerceIn(0f, 1f) }
                         .size(38.dp)
                         .shadow(
                             elevation = 4.dp,
@@ -462,6 +487,26 @@ fun MiniPlayer(
                     }
                 }
             }
+        }
+    }
+
+/** Only layout/layers observe the dock spring; artwork requests and text stay composed. */
+private fun Modifier.compactWidth(progress: State<Float>?, retainedFraction: Float = 0f): Modifier =
+    if (progress == null) this else drawWithContent {
+        if (progress.value > 0f) clipRect { this@drawWithContent.drawContent() } else drawContent()
+    }.layout { measurable, constraints ->
+        val child = measurable.measure(constraints)
+        val fraction = 1f - (1f - retainedFraction) * progress.value.coerceIn(0f, 1f)
+        layout((child.width * fraction).roundToInt(), child.height) { child.placeRelative(0, 0) }
+    }
+
+private fun Modifier.compactHeight(progress: State<Float>?): Modifier =
+    if (progress == null) this else drawWithContent {
+        if (progress.value > 0f) clipRect { this@drawWithContent.drawContent() } else drawContent()
+    }.layout { measurable, constraints ->
+        val child = measurable.measure(constraints)
+        layout(child.width, (child.height * (1f - progress.value.coerceIn(0f, 1f))).roundToInt()) {
+            child.placeRelative(0, 0)
         }
     }
 

@@ -8,12 +8,15 @@ import androidx.compose.animation.core.updateTransition
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.CornerBasedShape
 import androidx.compose.foundation.shape.CornerSize
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -23,6 +26,8 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
@@ -96,7 +101,11 @@ fun AnimatedBottomBar(
     items: List<AnimatedBottomBarItem>,
     modifier: Modifier = Modifier,
     appColors: AppThemeColors = LocalAppColors.current,
-    ambientGlowColor: Color = appColors.primaryAccent
+    ambientGlowColor: Color = appColors.primaryAccent,
+    compactProgress: State<Float>? = null,
+    compact: Boolean = false,
+    compactTabIndex: Int = selectedTabIndex,
+    onExpand: () -> Unit = {}
 ) {
     val textMeasurer = androidx.compose.ui.text.rememberTextMeasurer()
     val density = LocalDensity.current
@@ -123,10 +132,11 @@ fun AnimatedBottomBar(
         ) { selected -> if (selected == item.index) 1f else 0f }
         remember(expansion, labelAlpha) { DockTabMotion(expansion, labelAlpha) }
     }
-    val geometry = remember(expandedWidths, motions, density) {
+    val selectedPosition = rememberUpdatedState(items.indexOfFirst { it.index == compactTabIndex }.coerceAtLeast(0))
+    val geometry = remember(expandedWidths, motions, density, compactProgress, selectedPosition) {
         with(density) {
             DockGeometry(expandedWidths, motions, (24.dp.roundToPx() + 14.dp.roundToPx() * 2).toFloat(),
-                4.dp.toPx(), 6.dp.toPx())
+                4.dp.toPx(), 6.dp.toPx(), compactProgress, selectedPosition)
         }
     }
     val viewportShape = remember(geometry) { DockViewportShape(horizontalScale = { geometry.width / geometry.reservedWidth }) }
@@ -183,19 +193,24 @@ fun AnimatedBottomBar(
                 items.forEachIndexed { position, item -> key(item.index) {
                     val motion = motions[position]
                     val selected = selectedTabIndex == item.index
+                    val hidden = compact && position != selectedPosition.value
+                    val expansion = remember(motion, compactProgress) {
+                        derivedStateOf { motion.expansion.value * (1f - (compactProgress?.value ?: 0f).coerceIn(0f, 1f)) }
+                    }
+                    val labelAlpha = remember(motion, compactProgress) {
+                        derivedStateOf { motion.labelAlpha.value * (1f - (compactProgress?.value ?: 0f).coerceIn(0f, 1f)) }
+                    }
+                    val onClick = {
+                        BackgroundWorkCoordinator.cancelNonEssentialWork()
+                        if (compact) onExpand() else onTabSelected(item.index)
+                    }
                     Box(
                         modifier = Modifier
                             .then(if (glassInteraction != null) Modifier.clickable(
                                 interactionSource = remember { MutableInteractionSource() }, indication = null,
-                                role = Role.Tab, onClick = {
-                                    BackgroundWorkCoordinator.cancelNonEssentialWork()
-                                    onTabSelected(item.index)
-                                }
-                            ) else Modifier.bouncyClickable {
-                                BackgroundWorkCoordinator.cancelNonEssentialWork()
-                                onTabSelected(item.index)
-                            })
-                            .semantics { this.selected = selected }
+                                role = Role.Tab, enabled = !hidden, onClick = onClick
+                            ) else if (hidden) Modifier else Modifier.bouncyClickable(onClick = onClick))
+                            .then(if (hidden) Modifier.clearAndSetSemantics { } else Modifier.semantics { this.selected = selected })
                             .testTag("nav_tab_${item.title.lowercase()}_${if (selected) "active" else "inactive"}"),
                         contentAlignment = Alignment.Center
                     ) {
@@ -206,7 +221,7 @@ fun AnimatedBottomBar(
                             transformOrigin = origin
                         }) {
                             Box(Modifier.matchParentSize().graphicsLayer {
-                                alpha = if (selected) 1f else motion.expansion.value.coerceIn(0f, 1f)
+                                alpha = if (selected) 1f else expansion.value.coerceIn(0f, 1f)
                                 val width = geometry.tabWidth(position)
                                 shape = DockPillShape(width, direction == LayoutDirection.Rtl)
                                 clip = true
@@ -227,7 +242,7 @@ fun AnimatedBottomBar(
                                         CornerRadius((size.height - stroke).coerceAtLeast(0f) / 2f), style = borderStyle)
                                 }
                             })
-                            BottomBarTabContent(motion.expansion, motion.labelAlpha, item, selected,
+                            BottomBarTabContent(expansion, labelAlpha, item, selected,
                                 if (appColors.isDark) appColors.onPrimaryAccent else com.example.ui.theme.LiquidGlass.contrastColor(
                                     appColors.onPrimaryAccent, listOf(appColors.primaryAccent), 4.5f),
                                 if (appColors.isDark) Color.White.copy(alpha = 0.65f) else Color.Black,
@@ -251,12 +266,37 @@ fun AnimatedBottomBar(
                         val tabWidth = geometry.tabWidth(index)
                         val left = geometry.left(index, width.toFloat(), direction)
                         scaleX = tabWidth / tab.width
+                        alpha = if (index == selectedPosition.value) 1f else 1f - geometry.progress
                         transformOrigin = origin
                         translationX = if (direction == LayoutDirection.Ltr) left else left + tabWidth - tab.width
-                        translationY = -1.5f * motions[index].expansion.value
+                        translationY = -1.5f * motions[index].expansion.value * (1f - geometry.progress)
                     }
                 }
             }
+        }
+    }
+}
+
+/** The compact row keeps Search reachable while the selected tab expands navigation. */
+@Composable
+internal fun CompactSearchDockButton(enabled: Boolean, selected: Boolean, onClick: () -> Unit) {
+    val colors = LocalAppColors.current
+    val interaction = if (colors.dynamicGlassEnabled && LocalDynamicGlassEnabled.current) rememberDockGlassInteraction() else null
+    Box(Modifier.size(64.dp).observeDockGlassTouches(interaction)
+        .then(if (enabled) Modifier.clickable(role = Role.Tab, onClick = onClick)
+            .semantics { this.selected = selected } else Modifier.clearAndSetSemantics { })
+        .testTag("compact_dock_search"), contentAlignment = Alignment.Center) {
+        Box(Modifier.matchParentSize().xtremeLiquidGlassBackground(
+            shape = CircleShape, blurRadius = XtremeLiquidGlassDefaults.FloatingDockBlurRadius,
+            surfaceTintAlpha = XtremeLiquidGlassDefaults.FloatingDockTintAlpha,
+            tintColor = colors.primaryAccent, borderWidth = 0.8.dp, elevation = 16.dp, appColors = colors,
+            baseFillAlpha = XtremeLiquidGlassDefaults.FloatingDockDarkFillAlpha, neutralFinish = true,
+            interaction = interaction, innerWhiteTintAlpha = if (colors.isDark) 0f else 0.07f))
+        Box(Modifier.size(52.dp).then(if (selected) Modifier.background(colors.primaryAccent, CircleShape) else Modifier),
+            contentAlignment = Alignment.Center) {
+            Icon(Icons.Default.Search, contentDescription = "Search",
+                tint = if (selected) colors.onPrimaryAccent else if (colors.isDark) Color.White.copy(alpha = 0.65f) else Color.Black,
+                modifier = Modifier.size(24.dp))
         }
     }
 }
@@ -267,16 +307,22 @@ private class DockTabMotion(val expansion: State<Float>, val labelAlpha: State<F
 @Stable
 private class DockGeometry(
     private val expanded: List<Float>, private val motions: List<DockTabMotion>,
-    private val collapsed: Float, private val gap: Float, private val padding: Float
+    private val collapsed: Float, private val gap: Float, private val padding: Float,
+    private val compactProgress: State<Float>?, private val selectedPosition: State<Int>
 ) {
     val reservedWidth = (collapsed * expanded.size + (expanded.maxOrNull()?.minus(collapsed) ?: 0f) +
         gap * (expanded.size - 1).coerceAtLeast(0) + padding * 2).coerceAtLeast(1f)
-    fun tabWidth(index: Int): Float = (collapsed + (expanded[index] - collapsed) * motions[index].expansion.value).coerceAtLeast(1f)
+    val progress: Float get() = (compactProgress?.value ?: 0f).coerceIn(0f, 1f)
+    fun tabWidth(index: Int): Float {
+        val full = collapsed + (expanded[index] - collapsed) * motions[index].expansion.value
+        val compact = if (index == selectedPosition.value) collapsed else 0f
+        return (full + (compact - full) * progress).coerceAtLeast(0.01f)
+    }
     val width: Float get() = (expanded.indices.sumOf { tabWidth(it).toDouble() }.toFloat() +
-        gap * (expanded.size - 1).coerceAtLeast(0) + padding * 2).coerceAtLeast(1f)
+        gap * (1f - progress) * (expanded.size - 1).coerceAtLeast(0) + padding * 2).coerceAtLeast(1f)
     fun left(index: Int, viewport: Float, direction: LayoutDirection): Float {
         var preceding = padding
-        for (i in 0 until index) preceding += tabWidth(i) + gap
+        for (i in 0 until index) preceding += tabWidth(i) + gap * (1f - progress)
         return if (direction == LayoutDirection.Ltr) (viewport - width) / 2f + preceding
             else (viewport + width) / 2f - preceding - tabWidth(index)
     }

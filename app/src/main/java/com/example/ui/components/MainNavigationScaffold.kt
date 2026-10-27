@@ -66,6 +66,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
@@ -91,6 +93,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -211,6 +214,13 @@ fun MainNavigationScaffold(
     var isCreatePlaylistOpen by rememberSaveable { mutableStateOf(false) }
     var trackToAddToPlaylist by remember { mutableStateOf<MusicTrack?>(null) }
     var isSettingsSubpageOpen by rememberSaveable { mutableStateOf(false) }
+    val scrollDock = rememberScrollDockState()
+    val dockProgress = rememberScrollDockProgress(scrollDock)
+    SideEffect {
+        scrollDock.enabled = !preparingStartup && !isPlayerExpanded && !isSettingsSubpageOpen && !isEqualizerOpen
+    }
+    LaunchedEffect(selectedTabIndex, catalogDetail?.destination?.key, selectedPlaylistWithTracks?.playlist?.playlistId,
+        isPlayerExpanded, isSettingsSubpageOpen) { scrollDock.expand() }
 
     // Data admission follows real Search/Library drags and flings as well as
     // Home's nested rows. Observe here without reading scroll state in composition.
@@ -317,7 +327,7 @@ fun MainNavigationScaffold(
                 containerColor = appColors.scaffoldBackground
             ) { _ ->
             Box(modifier = Modifier.fillMaxSize()) {
-                Box(Modifier.fillMaxSize().drawWithContent { if (!playerCoversContent) drawContent() }
+                Box(Modifier.fillMaxSize().nestedScroll(scrollDock).drawWithContent { if (!playerCoversContent) drawContent() }
                     .xtremeSharedBackdropSource(enabled = isDynamicGlassEnabled && !playerCoversContent)) {
                 CompositionLocalProvider(LocalVisualEffectsActive provides (!playerCoversContent && catalogDetail == null)) {
                 // If playlist detail is open, show it with a smooth animated transition
@@ -485,8 +495,23 @@ fun MainNavigationScaffold(
 
                 // Floating Overlaid Container (MiniPlayer + Floating Pill Bottom Bar)
                 // Merges with the tab screen seamlessly and floats elevated above the content
+                val onDockTabSelected: (Int) -> Unit = { index ->
+                    AppHaptics.performTap(context)
+                    scrollDock.expand()
+                    isSettingsSubpageOpen = false
+                    selectTab(index)
+                    viewModel.catalogBrowser.close()
+                    viewModel.closePlaylist()
+                }
                 AdaptiveBottomControls(
                     landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE,
+                    collapseProgress = dockProgress,
+                    compactSearch = {
+                        if (!isSettingsSubpageOpen && !isPlayerExpanded) {
+                            CompactSearchDockButton(enabled = scrollDock.isCompact, selected = selectedTabIndex == 1,
+                                onClick = { onDockTabSelected(1) })
+                        }
+                    },
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
@@ -516,7 +541,9 @@ fun MainNavigationScaffold(
                             onSkipNext = { viewModel.skipNext() },
                             onSkipPrevious = { viewModel.skipPrevious() },
                             onClick = { isPlayerExpanded = true },
-                            currentPositionProvider = { viewModel.currentPosition }
+                            currentPositionProvider = { viewModel.currentPosition },
+                            compactProgress = dockProgress,
+                            compact = scrollDock.isCompact
                         )
                     }
 
@@ -527,15 +554,10 @@ fun MainNavigationScaffold(
                     ) {
                         FloatingPillBottomBar(
                             selectedTabIndex = selectedTabIndex,
-                            onTabSelected = { index ->
-                                AppHaptics.performTap(context)
-                                if (index != 3) {
-                                    isSettingsSubpageOpen = false
-                                }
-                                selectTab(index)
-                                viewModel.catalogBrowser.close()
-                                viewModel.closePlaylist()
-                            }
+                            onTabSelected = onDockTabSelected,
+                            compactProgress = dockProgress,
+                            compact = scrollDock.isCompact,
+                            onExpand = { scrollDock.expand() }
                         )
                     } }
                 )
@@ -690,7 +712,10 @@ fun FloatingPillBottomBar(
     selectedTabIndex: Int,
     onTabSelected: (Int) -> Unit,
     modifier: Modifier = Modifier,
-    ambientGlowColor: Color = LocalAppColors.current.primaryAccent
+    ambientGlowColor: Color = LocalAppColors.current.primaryAccent,
+    compactProgress: State<Float>? = null,
+    compact: Boolean = false,
+    onExpand: () -> Unit = {}
 ) {
     val items = remember {
         listOf(
@@ -705,7 +730,11 @@ fun FloatingPillBottomBar(
         onTabSelected = onTabSelected,
         items = items,
         modifier = modifier,
-        ambientGlowColor = ambientGlowColor
+        ambientGlowColor = ambientGlowColor,
+        compactProgress = compactProgress,
+        compact = compact,
+        compactTabIndex = if (selectedTabIndex == 1) 0 else selectedTabIndex,
+        onExpand = onExpand
     )
 }
 
