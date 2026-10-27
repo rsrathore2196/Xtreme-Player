@@ -65,10 +65,13 @@ class ListeningStatsUiTest {
         }
     }
     @Test fun statsNavigationKeepsTheSelectedPeriodWhenReopened() {
+        var creates = 0
         content {
             LibraryScreen(emptyList(), emptyList(), onTrackClick = { _, _ -> },
-                onToggleFavorite = {}, onOpenPlaylist = {}, onCreatePlaylistClick = {})
+                onToggleFavorite = {}, onOpenPlaylist = {}, onCreatePlaylistClick = { creates++ })
         }
+        compose.onNodeWithTag("create_playlist_button").performClick()
+        compose.runOnIdle { assertEquals(1, creates) }
         compose.onNodeWithText("Listening Stats").performClick()
         compose.onNodeWithTag("listening_stats_page").assertExists()
         compose.onNodeWithTag("library_screen").assertExists()

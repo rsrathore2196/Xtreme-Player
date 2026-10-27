@@ -157,8 +157,10 @@ class PlaybackManager(
                     if (connected.applicationLooper != android.os.Looper.myLooper() || !connected.isConnected ||
                         connected.currentMediaItem?.mediaId != id || connected.currentMediaItem?.playbackUri()?.toString() != uri) false
                     else {
-                        if (youtubeQualityJob?.isActive != true) reconcileSourcePolicy(
-                            NetworkQualityMonitor.getInstance(context).sourcePolicy.value, force = true, failedUrl = uri)
+                        if (youtubeQualityJob?.isActive != true) handlePlaybackFailure(
+                            androidx.media3.common.PlaybackException("Audio startup timed out", null,
+                                androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT),
+                            fromWatchdog = true)
                         true
                     }
                 }
@@ -930,6 +932,7 @@ class PlaybackManager(
                         bufferedPositionMs = player.bufferedPosition.coerceAtLeast(0L)
                     )
                 }
+                updateProgressValues()
                 Log.d(TAG, "Playback state changed: $playbackState, duration: $duration")
 
                 if (player.isPlaying || (player.playWhenReady && playbackState == Player.STATE_READY)) {
@@ -1139,157 +1142,7 @@ class PlaybackManager(
             }
 
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
-                losslessDiscoveryJob?.cancel()
-                losslessDiscoveryJob = null
-                losslessDiscoveryKey = null
-                val failedItem = player.currentMediaItem
-                val failedAddress = failedItem?.playbackUri()?.toString().orEmpty()
-                val failedPolicy = networkQualityMonitor?.sourcePolicy?.value
-                if (failedItem != null && failedPolicy != null) scope.launch(AppDispatchers.Io) {
-                    PlaybackDiagnostics.playerFailure(failedItem.mediaId, failedPolicy, failedAddress, error)
-                }
-                if (pendingSelectionId != null) return
-                val player = controller ?: run {
-                    showPlaybackFailure("Player not initialized")
-                    return
-                }
-                val current = _uiState.value.currentTrack ?: run {
-                    showPlaybackFailure("No active track to play")
-                    return
-                }
-                // An old player's error must not supersede a newer pending selection.
-                val curMediaId = player.currentMediaItem?.mediaId
-                if (!curMediaId.isNullOrBlank() && curMediaId != current.id) return
-                if (current.isLossless && losslessFallback == null && !error.isAudioPipelineFailure() &&
-                    Uri.parse(current.audioUrl).scheme !in setOf("file", "content")) {
-                    val reason = when (error.errorCode) {
-                        androidx.media3.common.PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED -> LosslessDiagnostics.Reason.DECODER_UNSUPPORTED
-                        androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT -> LosslessDiagnostics.Reason.NETWORK_TIMEOUT
-                        else -> LosslessDiagnostics.Reason.ACTIVATION_FAILED
-                    }
-                    scope.launch(AppDispatchers.Io) {
-                        LosslessDiagnostics.record(current.id, reason, "player-error")
-                        repository?.rejectLosslessUpgrade(current, current.audioUrl)
-                    }
-                }
-                if (error.isAudioPipelineFailure()) {
-                    // Re-extracting another provider cannot repair an AudioTrack
-                    // or DSP failure and would unnecessarily change this recording.
-                    recoveryJob?.cancel()
-                    recoveryJob = null
-                    if (error.canRetryAudioOutput() && MusicService.recoveringAudioTrackId == current.id) {
-                        _uiState.update { it.copy(isLoading = true, errorMessage = null) }
-                        return
-                    }
-                    showPlaybackFailure("Audio output failed. Please try playing again.")
-                    return
-                }
-                if (com.example.service.JioSaavnPlaybackFallback.handles(player.currentMediaItem)) {
-                    _uiState.update { it.copy(isLoading = true, errorMessage = null) }
-                    return
-                }
-                val failedFallback = losslessFallback
-                if (failedFallback != null && failedFallback.upgradedUrl == player.currentMediaItem?.playbackUri()?.toString()) {
-                    val reason = when (error.errorCode) {
-                        androidx.media3.common.PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED -> LosslessDiagnostics.Reason.DECODER_UNSUPPORTED
-                        androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT -> LosslessDiagnostics.Reason.NETWORK_TIMEOUT
-                        else -> LosslessDiagnostics.Reason.ACTIVATION_FAILED
-                    }
-                    LosslessDiagnostics.record(failedFallback.original.id, reason, "player-error")
-                    youtubeQualityJob?.cancel()
-                    restoreLosslessFallback(player, current)
-                    if (failedFallback.expectedLossless) scope.launch(AppDispatchers.Io) {
-                        repository?.rejectLosslessUpgrade(failedFallback.original, failedFallback.upgradedUrl)
-                    }
-                    return
-                }
-                if (restoreLosslessFallback(player, current)) return
-                val policy = NetworkQualityMonitor.getInstance(context).sourcePolicy.value
-                if (!policyAllows(current, policy)) {
-                    if (youtubeQualityJob?.isActive != true) reconcileSourcePolicy(policy, force = true)
-                    return
-                }
-                val repo = repository
-                // Duplicate error callbacks must join, not spend another stage or
-                // cancel an in-flight extraction for this same recording.
-                if (recoveryJob?.isActive == true) return
-                val failedUri = player.currentMediaItem?.playbackUri()
-                val youtubeUri = failedUri?.toString()?.let(com.example.data.remote.YouTubeAudioStreamService::isPlaybackUri) == true ||
-                    com.example.data.remote.YouTubeAudioStreamService.isYouTubeAudio(current.id, current.audioUrl)
-                val sabrReplacement = failedUri?.toString()?.let(com.example.service.SabrSessionRegistry::takeReplacement)
-                val initialTransportSelection = sabrReplacement != null && failedUri?.scheme == "xtreme-youtube" &&
-                    failedUri.getQueryParameter("itag") == null
-                val token = recoveryGuard.claim(current.id, initialSelection = initialTransportSelection)
-                if (repo == null || token == null) {
-                    showPlaybackFailure("Unable to play '${current.title}'. Please try again.")
-                    return
-                }
-                val failedUrl = failedUri?.toString() ?: current.audioUrl
-                if (!initialTransportSelection) recoveryGuard.reject(current.id, token, failedUrl)
-                val transientFailure = error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
-                    error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ||
-                    (error.cause as? androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException)
-                        ?.responseCode?.let { it in 500..599 } == true
-                _uiState.update { it.copy(isLoading = true, errorMessage = null) }
-                val recoveryToken: Long = token
-                recoveryJob = scope.launch {
-                    var activeToken: Long = recoveryToken
-                    var transport = sabrReplacement
-                    while (isActive && recoveryGuard.isCurrent(current.id, activeToken)) {
-                        val stage = recoveryGuard.stage(current.id, activeToken)
-                        try {
-                            val retryCurrent = stage == 1 && transientFailure && !youtubeUri && transport == null
-                            val blocked = recoveryGuard.rejectedUrls(current.id, activeToken)
-                            val next = transport
-                            val resolved = if (next != null) {
-                                current.copy(
-                                    audioUrl = com.example.data.remote.YouTubeAudioStreamService.playbackUri("yt_${next.videoId}", next.url),
-                                    bitrateKbps = next.bitrateKbps, qualityBadge = next.qualityBadge, isLossless = false, source = "YouTube Music")
-                            } else if (retryCurrent) {
-                                delay(300L)
-                                current
-                            } else withContext(AppDispatchers.Io) {
-                                repo.resolvePlayableTrack(current, forceRefresh = true, failedUrl = failedUrl,
-                                    currentSourceOnly = stage < 2, rejectedUrls = blocked)
-                            }
-                            if (!recoveryGuard.isCurrent(current.id, activeToken) ||
-                                _uiState.value.currentTrack?.id != current.id ||
-                                player.currentMediaItem?.mediaId != current.id) return@launch
-                            val currentPolicy = NetworkQualityMonitor.getInstance(context).sourcePolicy.value
-                            if (currentPolicy.key != policy.key || !policyAllows(resolved, currentPolicy)) return@launch
-                            val replacement = resolved.toMediaItem(preparedPolicy = currentPolicy)
-                            val address = replacement.localConfiguration?.uri?.toString().orEmpty()
-                            if (!retryCurrent && !com.example.data.remote.YouTubeAudioStreamService.isPlaybackUri(address) &&
-                                address in blocked) throw TrackUnavailableException(current.title)
-                            val index = player.currentMediaItemIndex
-                            val position = player.currentPosition.coerceAtLeast(0L)
-                            val resume = player.playWhenReady
-                            replaceQueueTrack(index, resolved)
-                            player.replaceMediaItem(index, replacement)
-                            player.seekTo(index, position)
-                            player.prepare()
-                            player.playWhenReady = resume
-                            _uiState.update { it.copy(currentTrack = resolved, queue = queueSnapshot(),
-                                isLoading = false, isPlaying = resume, errorMessage = null) }
-                            // A later native playback error claims the next stage.
-                            // Initial transport selection does not reset an exhausted budget.
-                            return@launch
-                        } catch (e: CancellationException) { throw e }
-                        catch (e: Exception) {
-                            if (!recoveryGuard.isCurrent(current.id, activeToken)) return@launch
-                            // Resolution itself can fail before Media3 emits another error.
-                            // Advance here so the alternate provider still gets one chance.
-                            val nextToken = recoveryGuard.claim(current.id)
-                            if (nextToken != null) {
-                                activeToken = nextToken
-                                transport = null
-                                continue
-                            }
-                            showPlaybackFailure(e.message ?: "Unable to resolve a playable stream.")
-                            return@launch
-                        }
-                    }
-                }
+                handlePlaybackFailure(error)
             }
             override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
                 val current = _uiState.value.currentTrack ?: return
@@ -1316,6 +1169,168 @@ class PlaybackManager(
                     queue = queueSnapshot()) }
             }
         })
+    }
+
+    /** Native errors and the service watchdog share one bounded, generation-owned recovery path. */
+    internal fun handlePlaybackFailure(error: androidx.media3.common.PlaybackException, fromWatchdog: Boolean = false) {
+        losslessDiscoveryJob?.cancel()
+        losslessDiscoveryJob = null
+        losslessDiscoveryKey = null
+        val failedItem = controller?.currentMediaItem
+        val failedAddress = failedItem?.playbackUri()?.toString().orEmpty()
+        val failedPolicy = networkQualityMonitor?.sourcePolicy?.value
+        if (failedItem != null && failedPolicy != null) scope.launch(AppDispatchers.Io) {
+            PlaybackDiagnostics.playerFailure(failedItem.mediaId, failedPolicy, failedAddress, error)
+        }
+        if (pendingSelectionId != null) return
+        val player = controller ?: run {
+            showPlaybackFailure("Player not initialized")
+            return
+        }
+        val current = _uiState.value.currentTrack ?: run {
+            showPlaybackFailure("No active track to play")
+            return
+        }
+        // An old player's error must not supersede a newer pending selection.
+        val curMediaId = player.currentMediaItem?.mediaId
+        if (!curMediaId.isNullOrBlank() && curMediaId != current.id) return
+        // A play request is not audible playback. Freeze the existing anchor while recovery prepares.
+        stopProgressTicker()
+        positionClock.sample(_playbackPosition.value, false)
+        _uiState.update { it.copy(isPlaying = false) }
+        if (current.isLossless && losslessFallback == null && !error.isAudioPipelineFailure() &&
+            Uri.parse(current.audioUrl).scheme !in setOf("file", "content")) {
+            val reason = when (error.errorCode) {
+                androidx.media3.common.PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED -> LosslessDiagnostics.Reason.DECODER_UNSUPPORTED
+                androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT -> LosslessDiagnostics.Reason.NETWORK_TIMEOUT
+                else -> LosslessDiagnostics.Reason.ACTIVATION_FAILED
+            }
+            scope.launch(AppDispatchers.Io) {
+                LosslessDiagnostics.record(current.id, reason, "player-error")
+                repository?.rejectLosslessUpgrade(current, current.audioUrl)
+            }
+        }
+        if (error.isAudioPipelineFailure()) {
+            // Re-extracting another provider cannot repair an AudioTrack
+            // or DSP failure and would unnecessarily change this recording.
+            recoveryJob?.cancel()
+            recoveryJob = null
+            if (error.canRetryAudioOutput() && MusicService.recoveringAudioTrackId == current.id) {
+                _uiState.update { it.copy(isLoading = true, errorMessage = null) }
+                return
+            }
+            showPlaybackFailure("Audio output failed. Please try playing again.")
+            return
+        }
+        if (!fromWatchdog && com.example.service.JioSaavnPlaybackFallback.handles(player.currentMediaItem)) {
+            _uiState.update { it.copy(isLoading = true, errorMessage = null) }
+            return
+        }
+        val failedFallback = losslessFallback
+        if (failedFallback != null && failedFallback.upgradedUrl == player.currentMediaItem?.playbackUri()?.toString()) {
+            val reason = when (error.errorCode) {
+                androidx.media3.common.PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED -> LosslessDiagnostics.Reason.DECODER_UNSUPPORTED
+                androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT -> LosslessDiagnostics.Reason.NETWORK_TIMEOUT
+                else -> LosslessDiagnostics.Reason.ACTIVATION_FAILED
+            }
+            LosslessDiagnostics.record(failedFallback.original.id, reason, "player-error")
+            youtubeQualityJob?.cancel()
+            restoreLosslessFallback(player, current)
+            if (failedFallback.expectedLossless) scope.launch(AppDispatchers.Io) {
+                repository?.rejectLosslessUpgrade(failedFallback.original, failedFallback.upgradedUrl)
+            }
+            return
+        }
+        if (restoreLosslessFallback(player, current)) return
+        val policy = NetworkQualityMonitor.getInstance(context).sourcePolicy.value
+        if (!policyAllows(current, policy)) {
+            if (youtubeQualityJob?.isActive != true) reconcileSourcePolicy(policy, force = true)
+            return
+        }
+        val repo = repository
+        // Duplicate error callbacks must join, not spend another stage or
+        // cancel an in-flight extraction for this same recording.
+        if (recoveryJob?.isActive == true) return
+        val failedUri = player.currentMediaItem?.playbackUri()
+        val youtubeUri = failedUri?.toString()?.let(com.example.data.remote.YouTubeAudioStreamService::isPlaybackUri) == true ||
+            com.example.data.remote.YouTubeAudioStreamService.isYouTubeAudio(current.id, current.audioUrl)
+        val sabrReplacement = failedUri?.toString()?.let(com.example.service.SabrSessionRegistry::takeReplacement)
+        val initialTransportSelection = sabrReplacement != null && failedUri?.scheme == "xtreme-youtube" &&
+            failedUri.getQueryParameter("itag") == null
+        val token = recoveryGuard.claim(current.id, initialSelection = initialTransportSelection)
+        if (repo == null || token == null) {
+            if (fromWatchdog) { player.pause(); player.stop() }
+            showPlaybackFailure("Unable to play '${current.title}'. Please try again.")
+            return
+        }
+        val failedUrl = failedUri?.toString() ?: current.audioUrl
+        if (!initialTransportSelection) recoveryGuard.reject(current.id, token, failedUrl)
+        val transientFailure = !fromWatchdog && (error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
+            error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ||
+            (error.cause as? androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException)
+                ?.responseCode?.let { it in 500..599 } == true)
+        _uiState.update { it.copy(isLoading = true, errorMessage = null) }
+        val recoveryToken: Long = token
+        recoveryJob = scope.launch {
+            var activeToken: Long = recoveryToken
+            var transport = sabrReplacement
+            while (isActive && recoveryGuard.isCurrent(current.id, activeToken)) {
+                val stage = recoveryGuard.stage(current.id, activeToken)
+                try {
+                    val retryCurrent = stage == 1 && transientFailure && !youtubeUri && transport == null
+                    val blocked = recoveryGuard.rejectedUrls(current.id, activeToken)
+                    val next = transport
+                    val resolved = if (next != null) {
+                        current.copy(
+                            audioUrl = com.example.data.remote.YouTubeAudioStreamService.playbackUri("yt_${next.videoId}", next.url),
+                            bitrateKbps = next.bitrateKbps, qualityBadge = next.qualityBadge, isLossless = false, source = "YouTube Music")
+                    } else if (retryCurrent) {
+                        delay(300L)
+                        current
+                    } else withContext(AppDispatchers.Io) {
+                        repo.resolvePlayableTrack(current, forceRefresh = true, failedUrl = failedUrl,
+                            currentSourceOnly = stage < 2, rejectedUrls = blocked)
+                    }
+                    if (!recoveryGuard.isCurrent(current.id, activeToken) ||
+                        _uiState.value.currentTrack?.id != current.id ||
+                        player.currentMediaItem?.mediaId != current.id) return@launch
+                    val currentPolicy = NetworkQualityMonitor.getInstance(context).sourcePolicy.value
+                    if (currentPolicy.key != policy.key || !policyAllows(resolved, currentPolicy)) return@launch
+                    val replacement = resolved.toMediaItem(preparedPolicy = currentPolicy).forSourceTransition()
+                    val address = replacement.localConfiguration?.uri?.toString().orEmpty()
+                    if (!retryCurrent && !com.example.data.remote.YouTubeAudioStreamService.isPlaybackUri(address) &&
+                        address in blocked) throw TrackUnavailableException(current.title)
+                    val index = player.currentMediaItemIndex
+                    val position = player.currentPosition.coerceAtLeast(0L)
+                    val resume = player.playWhenReady
+                    replaceQueueTrack(index, resolved)
+                    player.replaceMediaItem(index, replacement)
+                    player.seekTo(index, position)
+                    player.prepare()
+                    player.playWhenReady = resume
+                    _uiState.update { it.copy(currentTrack = resolved, queue = queueSnapshot(),
+                        isLoading = player.playbackState == Player.STATE_BUFFERING, isPlaying = player.isPlaying, errorMessage = null) }
+                    updateProgressValues()
+                    // A later native playback error claims the next stage.
+                    // Initial transport selection does not reset an exhausted budget.
+                    return@launch
+                } catch (e: CancellationException) { throw e }
+                catch (e: Exception) {
+                    if (!recoveryGuard.isCurrent(current.id, activeToken)) return@launch
+                    // Resolution itself can fail before Media3 emits another error.
+                    // Advance here so the alternate provider still gets one chance.
+                    val nextToken = recoveryGuard.claim(current.id)
+                    if (nextToken != null) {
+                        activeToken = nextToken
+                        transport = null
+                        continue
+                    }
+                    if (fromWatchdog) { player.pause(); player.stop() }
+                    showPlaybackFailure(e.message ?: "Unable to resolve a playable stream.")
+                    return@launch
+                }
+            }
+        }
     }
 
     private fun applyJioFallbackStatus(player: MediaController, status: Bundle?) {
@@ -1846,7 +1861,7 @@ class PlaybackManager(
                         currentTrack = track,
                         queue = queueSnapshot(),
                         currentIndex = 0,
-                        isPlaying = true,
+                        isPlaying = player.isPlaying,
                         isLoading = true,
                         durationMs = track.durationMs,
                         currentPositionMs = 0L,
@@ -1874,7 +1889,7 @@ class PlaybackManager(
                         currentTrack = track,
                         queue = queueSnapshot(),
                         currentIndex = startIndex,
-                        isPlaying = true,
+                        isPlaying = player.isPlaying,
                         isLoading = true,
                         durationMs = track.durationMs,
                         currentPositionMs = 0L,

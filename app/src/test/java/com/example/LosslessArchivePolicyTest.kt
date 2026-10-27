@@ -7,6 +7,17 @@ import android.net.NetworkInfo
 import android.os.Bundle
 import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
+import androidx.media3.common.Player
+import androidx.media3.common.SimpleBasePlayer
+import androidx.media3.session.MediaController
+import androidx.media3.session.MediaSession
+import com.example.data.repository.MusicRepository
+import com.example.data.repository.StreamResolver
+import com.google.common.util.concurrent.Futures
+import com.google.common.util.concurrent.ListenableFuture
+import androidx.compose.runtime.mutableStateListOf
 import com.example.data.model.MusicTrack
 import com.example.playback.*
 import kotlinx.coroutines.Dispatchers
@@ -101,6 +112,120 @@ class LosslessArchivePolicyTest {
             dispatcher.scheduler.runCurrent()
             shadowOf(Looper.getMainLooper()).idle()
             delay(10)
+        }
+    }
+
+    private class BufferingSessionPlayer(items: List<MediaItem>) : SimpleBasePlayer(Looper.getMainLooper()) {
+        private var snapshot = State.Builder().setAvailableCommands(Player.Commands.Builder().addAllCommands().build())
+            .setPlaylist(items.mapIndexed { index, item -> entry(index, item) })
+            .setCurrentMediaItemIndex(0).setContentPositionMs(3_000L)
+            .setPlayWhenReady(true, Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST)
+            .setPlaybackState(Player.STATE_BUFFERING).build()
+        private fun entry(index: Int, item: MediaItem) = MediaItemData.Builder(index)
+            .setMediaItem(item).setDurationUs(180_000_000L).setIsSeekable(true).build()
+        override fun getState(): State = snapshot
+        override fun handleReplaceMediaItems(fromIndex: Int, toIndex: Int, mediaItems: List<MediaItem>): ListenableFuture<*> {
+            val items = snapshot.playlist.map { it.mediaItem }.toMutableList()
+            items.subList(fromIndex, toIndex).clear()
+            items.addAll(fromIndex, mediaItems)
+            snapshot = snapshot.buildUpon().setPlaylist(items.mapIndexed { index, item -> entry(index, item) }).build()
+            return Futures.immediateVoidFuture()
+        }
+        override fun handleSeek(mediaItemIndex: Int, positionMs: Long, seekCommand: Int): ListenableFuture<*> {
+            snapshot = snapshot.buildUpon().setCurrentMediaItemIndex(mediaItemIndex).setContentPositionMs(positionMs).build()
+            return Futures.immediateVoidFuture()
+        }
+        override fun handlePrepare(): ListenableFuture<*> {
+            snapshot = snapshot.buildUpon().setPlaybackState(Player.STATE_BUFFERING).build()
+            return Futures.immediateVoidFuture()
+        }
+        override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
+            snapshot = snapshot.buildUpon().setPlayWhenReady(playWhenReady, Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST).build()
+            return Futures.immediateVoidFuture()
+        }
+        override fun handleStop(): ListenableFuture<*> {
+            snapshot = snapshot.buildUpon().setPlaybackState(Player.STATE_IDLE).build()
+            return Futures.immediateVoidFuture()
+        }
+        override fun handleRelease(): ListenableFuture<*> = Futures.immediateVoidFuture()
+    }
+
+    @Test fun jioWatchdogUsesTheControllerBudgetAndCannotKeepRestartingSilentPreparations() = runBlocking {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        com.example.data.local.PlaybackSourcesPreferences.save(app,
+            listOf(PlaybackSource.youtube, PlaybackSource.jio, PlaybackSource.archive.copy(enabled = false)))
+        val monitor = field("networkQualityMonitor").get(manager) as NetworkQualityMonitor
+        awaitCondition {
+            monitor.sourcePolicy.value.playbackSources.map { it.id } == listOf(PlaybackSource.jio.id, PlaybackSource.youtube.id) &&
+                field("appliedSourcePolicyKey").get(manager) == monitor.sourcePolicy.value.key
+        }
+        val policy = monitor.sourcePolicy.value
+        var resolutions = 0
+        val repo = MusicRepository(app)
+        MusicRepository::class.java.getDeclaredField("streamResolver").apply { isAccessible = true }.set(repo,
+            StreamResolver(fetchById = { _, _ -> track.copy(audioUrl = "https://aac.saavncdn.com/renewed-${++resolutions}_320.mp4") },
+                searchStandard = { _, _ -> emptyList() }, resolveYouTube = { _, _, _, _ -> null },
+                searchYouTube = { emptyList() }))
+        manager.repository = repo
+        fun media(value: MusicTrack) = MediaItem.Builder().setMediaId(value.id).setUri(value.audioUrl)
+            .setRequestMetadata(MediaItem.RequestMetadata.Builder().setMediaUri(android.net.Uri.parse(value.audioUrl)).build())
+            .setMediaMetadata(MediaMetadata.Builder().setTitle(value.title).setArtist(value.artist)
+                .setExtras(Bundle().apply {
+                    putInt("bitrate", 320); putLong("duration", value.durationMs); putString("media_source", "JIOSAAVN")
+                    putString("source_policy_key", policy.key)
+                    putLong("jio_start_deadline", 1L) // An expired original-selection timer must never carry into a retry.
+                }).build()).build()
+        val queue = listOf(track, track.copy(id = "online_next", title = "Next Song"))
+        val native = BufferingSessionPlayer(queue.map(::media))
+        val session = MediaSession.Builder(app, native).build()
+        val future = MediaController.Builder(app, session.token).setApplicationLooper(Looper.getMainLooper()).buildAsync()
+        var connected: MediaController? = null
+        var watchdog: com.example.service.JioSaavnPlaybackFallback? = null
+        try {
+            awaitCondition { future.isDone }
+            connected = future.get()
+            PlaybackManager::class.java.getDeclaredMethod("setController", MediaController::class.java)
+                .apply { isAccessible = true }.invoke(manager, connected)
+            set("activeQueue", mutableStateListOf(*queue.toTypedArray()))
+            val guard = field("recoveryGuard").get(manager) as PlaybackRecoveryGuard
+            guard.select(track.id, newRequest = true)
+            @Suppress("UNCHECKED_CAST")
+            val ui = field("_uiState").get(manager) as MutableStateFlow<PlayerUiState>
+            ui.value = ui.value.copy(currentTrack = track, queue = queue, isPlaying = true, currentPositionMs = 3_000L)
+            watchdog = com.example.service.JioSaavnPlaybackFallback(native, CoroutineScope(dispatcher),
+                requestRecovery = { id, uri -> assertTrue(com.example.service.SabrSessionRegistry.requestSourceRecovery!!.invoke(id, uri)) }, status = {})
+            for (attempt in 1..2) {
+                val before = native.currentMediaItem!!.localConfiguration!!.uri
+                watchdog.update()
+                assertTrue(watchdog.onError())
+                assertFalse("Recovery cannot advertise requested play as actual playback", manager.uiState.value.isPlaying)
+                // A timeout must enter the same budget as native playback errors.
+                val generation = PlaybackRecoveryGuard::class.java.getDeclaredField("generation")
+                    .apply { isAccessible = true }.getLong(guard)
+                assertEquals(attempt, guard.stage(track.id, generation))
+                try {
+                    awaitCondition { native.currentMediaItem!!.localConfiguration!!.uri != before && field("recoveryJob").get(manager).let { it !is Job || !it.isActive } }
+                } catch (timeout: kotlinx.coroutines.TimeoutCancellationException) {
+                    throw AssertionError("attempt=$attempt resolutions=$resolutions native=${native.currentMediaItem?.localConfiguration?.uri} " +
+                        "controller=${connected.currentMediaItem?.requestMetadata?.mediaUri} error=${manager.uiState.value.errorMessage} " +
+                        "job=${field("recoveryJob").get(manager)} policy=${monitor.sourcePolicy.value.key}", timeout)
+                }
+                assertFalse("A buffering replacement is still loading", manager.uiState.value.isPlaying)
+                assertTrue(manager.uiState.value.isLoading)
+                assertEquals(0L, native.currentMediaItem!!.mediaMetadata.extras!!.getLong("jio_start_deadline"))
+                assertEquals(queue.map { it.id }, manager.uiState.value.queue.map { it.id })
+                assertEquals(3_000L, connected.currentPosition)
+            }
+            watchdog.update()
+            assertTrue(watchdog.onError())
+            awaitCondition { manager.uiState.value.errorMessage != null && !native.playWhenReady }
+            assertEquals("No unbounded third extraction may start", 2, resolutions)
+            assertEquals(queue.map { it.id }, manager.uiState.value.queue.map { it.id })
+        } finally {
+            watchdog?.cancel()
+            connected?.release()
+            set("controller", null)
+            session.release(); native.release()
         }
     }
 

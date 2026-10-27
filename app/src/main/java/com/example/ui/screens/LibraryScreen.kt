@@ -36,6 +36,7 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import com.example.ui.components.bouncyOverscroll
+import com.example.ui.components.xtremeLiquidGlassBackground
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -195,7 +196,7 @@ fun LibraryScreen(
                         )
                     }
 
-                    // Add playlist button (liquid glass styled with theme-specific color)
+                    // Match the Home Settings button's glass finish.
                     if (selectedTab == 0) {
                     IconButton(
                         onClick = {
@@ -203,32 +204,13 @@ fun LibraryScreen(
                         },
                         modifier = Modifier
                             .size(46.dp)
-                            .shadow(
-                                elevation = 6.dp,
-                                shape = CircleShape,
-                                spotColor = appColors.primaryAccent.copy(alpha = 0.40f)
-                            )
-                            .clip(CircleShape)
-                            .background(
-                                LiquidGlass.glassBrush(
-                                    colors = appColors,
-                                    translucency = 0.85f,
-                                    tintAccent = true
-                                )
-                            )
-                            .border(
-                                BorderStroke(
-                                    1.2.dp,
-                                    LiquidGlass.specularBorderBrush(appColors, highlightAlpha = 0.65f)
-                                ),
-                                CircleShape
-                            )
+                            .xtremeLiquidGlassBackground(shape = CircleShape, elevation = 3.dp, backdrop = null)
                             .testTag("create_playlist_button")
                     ) {
                         Icon(
                             imageVector = Icons.Default.Add,
                             contentDescription = "Create Playlist",
-                            tint = appColors.primaryAccent,
+                            tint = appColors.textPrimary,
                             modifier = Modifier.size(26.dp)
                         )
                     }

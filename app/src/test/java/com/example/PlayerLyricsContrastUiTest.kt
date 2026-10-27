@@ -45,6 +45,16 @@ class PlayerLyricsContrastUiTest {
     @Test @Config(qualifiers = "w891dp-h411dp-land")
     fun landscapeLyricsAndHeartAdaptToTheActualBackdropInEitherTheme() = checkContrast()
 
+    @Test fun coloredBackdropsKeepLyricsAndHeartWhite() = checkContrast(Color(0xfff4d9ed), Color.White)
+    @Test fun greyBackdropsKeepLyricsAndHeartWhite() = checkContrast(Color(0xffe7e7e7), Color.White)
+
+    @Test fun onlyNearWhiteBackdropsNeedBlackLyricsAndHeart() {
+        assertEquals(Color.Black, playerLyricsAndHeartColor(Color.White, Color.White, true))
+        assertEquals(Color.Black, playerLyricsAndHeartColor(Color(0xfff8f8f8), Color(0xfff8f8f8), true))
+        assertEquals(Color.White, playerLyricsAndHeartColor(Color.Yellow, Color.Yellow, true))
+        assertEquals(Color.White, playerLyricsAndHeartColor(Color.White, Color.White, false))
+    }
+
     @Test fun portraitLongTitleScrollsAutomatically() = checkTitleMarquee()
     @Test @Config(qualifiers = "w891dp-h411dp-land")
     fun landscapeLongTitleScrollsAutomatically() = checkTitleMarquee()
@@ -75,12 +85,12 @@ class PlayerLyricsContrastUiTest {
         assertFalse("The expanded player's overflowing title moves without needing focus", initial.contentEquals(pixels()))
     }
 
-    private fun checkContrast() {
+    private fun checkContrast(backdrop: Color = Color.White, foreground: Color = Color.Black) {
         val song = MusicTrack("bright-player", "Song", "Artist", "Album", 180_000, "", "")
         val lyrics = TrackLyrics(song.id, song.title, song.artist, true,
             listOf(LyricLine(1_000, "Clearly readable lyrics", 4_000), LyricLine(8_000, "Upcoming lyrics", 4_000)))
         TrackPaletteCache.put(playerPaletteKey(song, true, Color.White, Color.Black),
-            ExtractedTrackColors(Color.White, Color.White, Color.White))
+            ExtractedTrackColors(backdrop, backdrop, backdrop))
         var theme by mutableStateOf(DarkAppColors.copy(dynamicGlassEnabled = true, dynamicAlbumGlow = true))
         var state by mutableStateOf(PlayerUiState(currentTrack = song, currentPositionMs = 1_500, isFavorite = true))
         compose.mainClock.autoAdvance = false
@@ -91,7 +101,7 @@ class PlayerLyricsContrastUiTest {
             }
         } }
         compose.mainClock.advanceTimeBy(800)
-        assertHeart(Color.Black)
+        assertHeart(foreground)
         compose.onNodeWithTag("player_favorite_toggle").performClick()
         compose.runOnIdle { assertFalse(state.isFavorite) }
         compose.onNodeWithTag("player_favorite_toggle").performClick()
@@ -103,12 +113,12 @@ class PlayerLyricsContrastUiTest {
         assertTrue("The tap must pause optional work before the transition's first frame",
             navigationUntil.get() > android.os.SystemClock.elapsedRealtime())
         compose.mainClock.advanceTimeBy(1_000)
-        assertLyric(Color.Black)
-        assertHeart(Color.Black)
+        assertLyric(foreground)
+        assertHeart(foreground)
         compose.runOnIdle { theme = LightAppColors.copy(dynamicGlassEnabled = true, dynamicAlbumGlow = true) }
         compose.mainClock.advanceTimeBy(800)
-        assertLyric(Color.Black)
-        assertHeart(Color.Black)
+        assertLyric(foreground)
+        assertHeart(foreground)
         compose.runOnIdle { theme = theme.copy(dynamicGlassEnabled = false) }
         compose.mainClock.advanceTimeBy(800)
         assertLyric(Color.White)

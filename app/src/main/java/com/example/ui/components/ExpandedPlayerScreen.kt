@@ -226,12 +226,20 @@ private fun blackOrWhiteOn(surface: Color): Color {
     return if ((luminance + 0.05f) / 0.05f >= 1.05f / (luminance + 0.05f)) Color.Black else Color.White
 }
 
+/** Preserve white lyrics/heart styling unless a near-white backdrop would hide it. */
+internal fun playerLyricsAndHeartColor(dominant: Color, vibrant: Color, dynamicBackground: Boolean): Color {
+    val surface = playerArtworkBackground(dominant, vibrant, dynamicBackground)
+    val nearlyWhite = minOf(surface.red, surface.green, surface.blue) >= 0.94f
+    val whiteContrast = 1.05f / (surface.luminance() + 0.05f)
+    return if (nearlyWhite && whiteContrast <= 1.15f) Color.Black else Color.White
+}
+
 @Composable
 private fun rememberPlayerContentColor(dominant: State<Color>, vibrant: State<Color>, enabled: Boolean): Color {
     // Only a change between black and white recomposes the content; animated
     // palette frames stay in the existing backdrop/draw paths.
     val foreground by remember(dominant, vibrant, enabled) {
-        derivedStateOf { blackOrWhiteOn(playerArtworkBackground(dominant.value, vibrant.value, enabled)) }
+        derivedStateOf { playerLyricsAndHeartColor(dominant.value, vibrant.value, enabled) }
     }
     return foreground
 }
@@ -314,6 +322,7 @@ fun ExpandedPlayerScreen(
     }
     var isFlipped by remember(track.id) { mutableStateOf(false) }
     var showLyrics by remember(track.id) { mutableStateOf(false) }
+    val lyricsArtworkDurationMs = if (showLyrics) LYRICS_ENTRANCE_MS else LYRICS_ARTWORK_TRANSITION_MS
     val lyricsContentTransition = rememberPlayerLyricsTransition(showLyrics, isScreenVisible)
     val lyricsContentAnimating = lyricsContentTransition.currentState != showLyrics ||
         lyricsContentTransition.isRunning
@@ -625,7 +634,7 @@ fun ExpandedPlayerScreen(
                                             modifier = Modifier.size(44.dp)
                                                 .sharedElement(rememberSharedContentState("lyrics_artwork_${track.id}"),
                                                     animatedVisibilityScope = this@AnimatedContent,
-                                                    boundsTransform = { _, _ -> tween(LYRICS_ARTWORK_TRANSITION_MS, easing = FastOutSlowInEasing) })
+                                                    boundsTransform = { _, _ -> tween(lyricsArtworkDurationMs, easing = FastOutSlowInEasing) })
                                                 .clip(RoundedCornerShape(10.dp)))
                                         Column(Modifier.weight(1f)) {
                                             Text(track.cleanTitle, color = appColors.textPrimary, fontWeight = FontWeight.Bold,
@@ -689,7 +698,7 @@ fun ExpandedPlayerScreen(
                                             .aspectRatio(1f)
                                             .sharedElement(rememberSharedContentState("lyrics_artwork_${track.id}"),
                                                 animatedVisibilityScope = this@AnimatedContent,
-                                                boundsTransform = { _, _ -> tween(LYRICS_ARTWORK_TRANSITION_MS, easing = FastOutSlowInEasing) })
+                                                boundsTransform = { _, _ -> tween(lyricsArtworkDurationMs, easing = FastOutSlowInEasing) })
                                             .graphicsLayer {
                                                 rotationY = flipRotation
                                                 cameraDistance = 14f * density
@@ -1492,13 +1501,13 @@ fun ExpandedPlayerScreen(
                                     .sharedElement(
                                         rememberSharedContentState("lyrics_artwork_${track.id}"),
                                         animatedVisibilityScope = this@AnimatedContent,
-                                        boundsTransform = { _, _ -> tween(LYRICS_ARTWORK_TRANSITION_MS, easing = FastOutSlowInEasing) }
+                                        boundsTransform = { _, _ -> tween(lyricsArtworkDurationMs, easing = FastOutSlowInEasing) }
                                     ).clip(RoundedCornerShape(12.dp))
                                 )
                                 Column(Modifier.weight(1f).sharedBounds(
                                         rememberSharedContentState("lyrics_metadata_${track.id}"),
                                         animatedVisibilityScope = this@AnimatedContent,
-                                        boundsTransform = { _, _ -> tween(LYRICS_ARTWORK_TRANSITION_MS, easing = FastOutSlowInEasing) }
+                                        boundsTransform = { _, _ -> tween(lyricsArtworkDurationMs, easing = FastOutSlowInEasing) }
                                 )) {
                                     Text(track.cleanTitle, color = appColors.textPrimary,
                                         fontWeight = FontWeight.Bold, fontSize = 16.sp, maxLines = 1,
@@ -1515,7 +1524,7 @@ fun ExpandedPlayerScreen(
                                     .sharedElement(
                                         rememberSharedContentState("lyrics_favorite_${track.id}"),
                                         animatedVisibilityScope = this@AnimatedContent,
-                                        boundsTransform = { _, _ -> tween(LYRICS_ARTWORK_TRANSITION_MS, easing = FastOutSlowInEasing) }
+                                        boundsTransform = { _, _ -> tween(lyricsArtworkDurationMs, easing = FastOutSlowInEasing) }
                                     )
                                     .liquidGlassButton(
                                         colors = appColors,
@@ -1590,7 +1599,7 @@ fun ExpandedPlayerScreen(
                                             .sharedElement(
                                                 rememberSharedContentState("lyrics_artwork_${track.id}"),
                                                 animatedVisibilityScope = this@AnimatedContent,
-                                                boundsTransform = { _, _ -> tween(LYRICS_ARTWORK_TRANSITION_MS, easing = FastOutSlowInEasing) }
+                                                boundsTransform = { _, _ -> tween(lyricsArtworkDurationMs, easing = FastOutSlowInEasing) }
                                             )
                                             .graphicsLayer {
                                                 rotationY = flipRotation
@@ -1613,7 +1622,7 @@ fun ExpandedPlayerScreen(
                                             .sharedElement(
                                                 rememberSharedContentState("lyrics_artwork_${track.id}"),
                                                 animatedVisibilityScope = this@AnimatedContent,
-                                                boundsTransform = { _, _ -> tween(LYRICS_ARTWORK_TRANSITION_MS, easing = FastOutSlowInEasing) }
+                                                boundsTransform = { _, _ -> tween(lyricsArtworkDurationMs, easing = FastOutSlowInEasing) }
                                             )
                                             .graphicsLayer {
                                                 rotationY = flipRotation
@@ -1753,7 +1762,7 @@ fun ExpandedPlayerScreen(
                                 Column(modifier = Modifier.weight(1f).sharedBounds(
                                         rememberSharedContentState("lyrics_metadata_${track.id}"),
                                         animatedVisibilityScope = this@AnimatedContent,
-                                        boundsTransform = { _, _ -> tween(LYRICS_ARTWORK_TRANSITION_MS, easing = FastOutSlowInEasing) }
+                                        boundsTransform = { _, _ -> tween(lyricsArtworkDurationMs, easing = FastOutSlowInEasing) }
                                 )) {
                                     Text(
                                         text = track.cleanTitle,
@@ -1787,7 +1796,7 @@ fun ExpandedPlayerScreen(
                                     .sharedElement(
                                         rememberSharedContentState("lyrics_favorite_${track.id}"),
                                         animatedVisibilityScope = this@AnimatedContent,
-                                        boundsTransform = { _, _ -> tween(LYRICS_ARTWORK_TRANSITION_MS, easing = FastOutSlowInEasing) }
+                                        boundsTransform = { _, _ -> tween(lyricsArtworkDurationMs, easing = FastOutSlowInEasing) }
                                     )
                                     .liquidGlassButton(
                                         colors = appColors,
@@ -1827,7 +1836,7 @@ fun ExpandedPlayerScreen(
 
             AnimatedVisibility(
                 visible = showLyrics,
-                enter = fadeIn(tween(220)) + expandVertically(tween(LYRICS_EXPANSION_MS)),
+                enter = fadeIn(tween(260, easing = FastOutSlowInEasing)) + expandVertically(tween(LYRICS_ENTRANCE_MS, easing = FastOutSlowInEasing)),
                 exit = fadeOut(tween(180)) + shrinkVertically(tween(LYRICS_EXPANSION_MS))
             ) {
                 Row(
@@ -2892,6 +2901,7 @@ private fun PlayerTimelineSection(
     }
 }
 
+private const val LYRICS_ENTRANCE_MS = 480
 private const val LYRICS_ARTWORK_TRANSITION_MS = 420
 private const val LYRICS_EXPANSION_MS = 420
 
@@ -2912,7 +2922,7 @@ internal fun rememberPlayerLyricsTransition(lyricsVisible: Boolean, active: Bool
 /** Keep the content fade alive for the entire shared artwork/header journey. */
 private fun AnimatedContentTransitionScope<Boolean>.lyricsArtworkTransition(): ContentTransform =
     (fadeIn(tween(
-        durationMillis = if (targetState) 260 else LYRICS_ARTWORK_TRANSITION_MS,
+        durationMillis = if (targetState) LYRICS_ENTRANCE_MS - 160 else LYRICS_ARTWORK_TRANSITION_MS,
         delayMillis = if (targetState) 160 else 0,
         easing = FastOutSlowInEasing
     )) togetherWith fadeOut(tween(220, easing = FastOutSlowInEasing))).using(null)

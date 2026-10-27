@@ -446,7 +446,7 @@ fun SearchScreen(
                             }
 
                             // Wide pill-shaped 3D clear water glass search action button (icon only)
-                            val searchPillShape = remember { RoundedCornerShape(17.dp) }
+                            val searchPillShape = CircleShape
                             val isSearchActive = hasQuery
 
                             val searchPillBrush = if (!appColors.dynamicGlassEnabled) {
@@ -480,7 +480,7 @@ fun SearchScreen(
 
                             Box(
                                 modifier = Modifier
-                                    .height(34.dp)
+                                    .size(width = 64.dp, height = 40.dp)
                                     .clip(searchPillShape)
                                     .background(searchPillBrush)
                                     .border(searchPillBorder, searchPillShape)
@@ -492,7 +492,6 @@ fun SearchScreen(
                                             focusManager.clearFocus()
                                         }
                                     }
-                                    .padding(horizontal = 14.dp, vertical = 6.dp)
                                     .testTag("finish_search_button"),
                                 contentAlignment = Alignment.Center
                             ) {
@@ -504,7 +503,7 @@ fun SearchScreen(
                                     } else {
                                         if (appColors.isDark) Color.White.copy(alpha = 0.75f) else appColors.textMuted
                                     },
-                                    modifier = Modifier.size(16.dp)
+                                    modifier = Modifier.size(20.dp)
                                 )
                             }
                         }
@@ -557,7 +556,7 @@ fun SearchScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
+                        .testTag("search_type_filters"),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     val filterCategories = listOf("All", "Tracks", "Artists", "Albums")
@@ -565,6 +564,7 @@ fun SearchScreen(
                         val isSelected = catalogState.type == filterName
                         Box(
                             modifier = Modifier
+                                .weight(1f)
                                 .rememberLiquidGlassPill(
                                     colors = appColors,
                                     shape = RoundedCornerShape(20.dp),
@@ -574,14 +574,18 @@ fun SearchScreen(
                                 .bouncyClickable {
                                     onSelectType(filterName)
                                 }
-                                .testTag("filter_pill_${filterName.lowercase()}")
+                                .testTag("filter_pill_${filterName.lowercase()}"),
+                            contentAlignment = Alignment.Center
                         ) {
                             Text(
                                 text = filterName,
                                 color = if (isSelected) selectedPillContentColor else (if (appColors.isDark) Color.White else appColors.textPrimary),
                                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
-                                fontSize = 13.sp,
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 7.dp)
+                                fontSize = 13.5.sp,
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 8.dp)
                             )
                         }
                     }
