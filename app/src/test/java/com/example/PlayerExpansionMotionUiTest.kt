@@ -98,7 +98,7 @@ class PlayerExpansionMotionUiTest {
         compose.waitForIdle()
     }
 
-    @Test fun portraitOpeningAndClosingShareAContinuousSpringAndLandAtTheMiniPlayer() = checkRoundTrip()
+    @Test fun portraitOpeningAndClosingShareOneBounceAndLandAtTheMiniPlayer() = checkRoundTrip()
     @Test fun lightThemeKeepsTheSameRoundTripAndWorkingMiniControls() = checkRoundTrip(light = true)
     @Test @Config(qualifiers = "w891dp-h411dp-land")
     fun landscapeTargetsTheActualNarrowMiniPlayer() = checkRoundTrip()
@@ -114,8 +114,14 @@ class PlayerExpansionMotionUiTest {
         repeat(15) { frame() }
         assertTrue("Opening must retain a visible journey instead of snapping to the full viewport", motion.fraction > .01f)
         var openingOvershoot = 0f
-        repeat(100) { frame(); openingOvershoot = minOf(openingOvershoot, motion.fraction) }
-        assertTrue("The expanded landing must have a perceptible damped bounce", openingOvershoot < -.04f)
+        val openingLanding = mutableListOf<Float>()
+        repeat(100) {
+            frame()
+            openingOvershoot = minOf(openingOvershoot, motion.fraction)
+            openingLanding += 1f - motion.fraction
+        }
+        assertTrue("The expanded landing must have a perceptible single bounce", openingOvershoot < -.04f)
+        assertSingleLanding(openingLanding)
         assertTrue(visible.isIdle && visible.currentState)
         assertEquals(0f, motion.fraction, .001f)
         val expanded = compose.onNodeWithTag("expanded_player_transition").fetchSemanticsNode().boundsInRoot
@@ -131,7 +137,9 @@ class PlayerExpansionMotionUiTest {
         var tappedAtLanding = false
         var closingFrames = 1
         var contactFrame = 0
+        val closingLanding = mutableListOf<Float>()
         fun checkLandingTouch() {
+            closingLanding += motion.fraction
             closingFrames++
             if (motion.fraction > 1f && !tappedAtLanding) {
                 contactFrame = closingFrames
@@ -157,9 +165,10 @@ class PlayerExpansionMotionUiTest {
             checkLandingTouch()
         }
         assertTrue("Dock contact should occur after a smooth, bounded journey: $contactFrame frames", contactFrame in 18..40)
-        assertTrue("Mini landing reads the same perceptible spring overshoot", closingOvershoot > 1.04f)
+        assertTrue("Mini landing reads the same perceptible single overshoot", closingOvershoot > 1.04f)
+        assertSingleLanding(closingLanding)
         assertTrue(tappedAtLanding)
-        assertTrue("The mini player visibly springs after reaching its dock", widestMini > miniBefore.width * 1.025f)
+        assertTrue("The mini player visibly bounces once after reaching its dock", widestMini > miniBefore.width * 1.025f)
         assertTrue(visible.isIdle && !visible.currentState)
         compose.onNodeWithTag("expanded_player_transition").assertDoesNotExist()
         val miniAfter = compose.onNodeWithTag("mini_player_container").fetchSemanticsNode().boundsInRoot
@@ -172,6 +181,17 @@ class PlayerExpansionMotionUiTest {
         compose.onNodeWithTag("mini_player_next").performClick()
         assertEquals(2, playTaps)
         assertEquals(1, nextTaps)
+    }
+
+    private fun assertSingleLanding(progress: List<Float>) {
+        val peak = progress.indices.maxBy { progress[it] }
+        assertTrue("The landing should visibly pass its destination once", progress[peak] > 1.04f)
+        progress.drop(peak).zipWithNext().forEach { (previous, current) ->
+            assertTrue("After its one bounce the surface must settle without reversing again: $previous -> $current",
+                current <= previous + .0001f)
+            assertTrue("The landing must not cross back past its destination and expose another bounce: $current",
+                current >= 1f - .0001f)
+        }
     }
 
     @Test fun rapidReversalsDoNotSnapDisposeThePlayerOrDuplicateItsContent() {
@@ -195,5 +215,40 @@ class PlayerExpansionMotionUiTest {
         assertTrue(visible.isIdle && !visible.currentState)
         compose.onNodeWithTag("expanded_player_transition").assertDoesNotExist()
         compose.onNodeWithTag("mini_player_container").assertIsDisplayed()
+    }
+
+    @Test fun reversingDuringTheLandingKeepsTheHandoffContinuousAndControlsUsable() {
+        show()
+        compose.onNodeWithTag("mini_player_container").performClick()
+        advanceUntil { motion.fraction < -.01f }
+        val openingLanding = motion.fraction
+        compose.onNodeWithContentDescription("Minimize Player").performClick()
+        frame()
+        assertTrue("Reversing the top landing must not jump to an endpoint", abs(motion.fraction - openingLanding) < .05f)
+        // An interrupted transition retains its current momentum instead of
+        // restarting the full bounce. Reopen as soon as the mini is landed.
+        advanceUntil { motion.fraction >= .99f }
+        val closingLanding = motion.fraction
+        compose.onNodeWithTag("mini_player_container").performTouchInput { click() }
+        frame()
+        assertTrue("The landed mini player can reopen without snapping", abs(motion.fraction - closingLanding) < .05f)
+        compose.onAllNodesWithTag("expanded_player_transition").assertCountEquals(1)
+        advanceUntil { visible.isIdle }
+        assertTrue(visible.currentState)
+        assertEquals(0f, motion.fraction, .001f)
+        compose.onNodeWithContentDescription("Minimize Player").performClick()
+        advanceUntil { visible.isIdle }
+        assertFalse(visible.currentState)
+        compose.onNodeWithTag("mini_player_next").performTouchInput { click() }
+        assertEquals(1, nextTaps)
+    }
+
+    private fun advanceUntil(condition: () -> Boolean) {
+        repeat(120) {
+            frame()
+            if (condition()) return
+        }
+        fail("Player transition did not reach the expected state within two seconds: " +
+            "fraction=${motion.fraction}, target=${visible.targetState}, current=${visible.currentState}, idle=${visible.isIdle}")
     }
 }

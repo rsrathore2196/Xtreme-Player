@@ -5,9 +5,11 @@ import androidx.compose.animation.EnterExitState
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExperimentalAnimationApi
+import androidx.compose.animation.core.Easing
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
@@ -35,7 +37,7 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 
-/** Both surfaces read the very same spring on their graphics layers. Binding a
+/** Both surfaces read the very same motion on their graphics layers. Binding a
  * newly mounted overlay changes the reference once, not Compose state per frame. */
 internal class PlayerExpansionMotion {
     private var animation by mutableStateOf<State<Float>>(mutableStateOf(1f))
@@ -44,9 +46,21 @@ internal class PlayerExpansionMotion {
 }
 
 private fun collapsedViewport(value: Float): Float {
-    // The spring already eases velocity. A second easing made most of the
-    // visible journey finish before the spring's landing was actually reached.
+    // Easing belongs to the shared clock, not each surface's viewport.
     return value.coerceIn(0f, 1f)
+}
+
+// One overshoot, then a monotonic return to rest. Both legs meet at zero
+// velocity and finish at zero velocity; an underdamped spring would cross the target
+// again, shrinking the expanded viewport and repeating the mini-player bounce.
+private val PlayerExpansionEasing = Easing { fraction ->
+    val peakTime = .65f
+    val peak = 1.055f
+    if (fraction <= peakTime) {
+        peak * FastOutSlowInEasing.transform(fraction / peakTime)
+    } else {
+        peak - (peak - 1f) * FastOutSlowInEasing.transform((fraction - peakTime) / (1f - peakTime))
+    }
 }
 
 private fun miniReveal(viewport: Float): Float {
@@ -96,9 +110,8 @@ internal fun PlayerExpansionOverlay(
         // It cannot dispose the surface before the minimize motion finishes.
         val collapse = transition.animateFloat(
             transitionSpec = {
-                spring(dampingRatio = .64f,
-                    stiffness = if (targetState == EnterExitState.Visible) 90f else 70f,
-                    visibilityThreshold = .0005f)
+                tween(durationMillis = if (targetState == EnterExitState.Visible) 820 else 880,
+                    easing = PlayerExpansionEasing)
             },
             label = "player_expansion_bounds"
         ) { if (it == EnterExitState.Visible) 0f else 1f }
@@ -137,7 +150,7 @@ internal fun PlayerExpansionOverlay(
             }
         }.testTag("expanded_player_transition")) {
             // Once it is fully transparent, release the expanded screen's touch
-            // handlers. The shared spring still drives the mini player's settle.
+            // handlers. The shared motion still drives the mini player's settle.
             if (keepExpandedContent) content()
         }
     }
