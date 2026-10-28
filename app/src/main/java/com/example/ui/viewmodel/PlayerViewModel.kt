@@ -97,6 +97,7 @@ data class SearchUiState(
     val matchingPlaylistGenres: List<String>? = null,
     internal val requestId: Long = 0L,
     val exploreCategories: List<ExploreCategory> = emptyList(),
+    val exploreIndexReady: Boolean = false,
     val selectedExploreCategory: ExploreCategory? = null,
     val isExploreLoading: Boolean = false,
     val genreError: String? = null
@@ -193,6 +194,7 @@ class PlayerViewModel(
 
     private var searchJob: Job? = null
     private var exploreIndexJob: Job? = null
+    @Volatile private var preparingExploreIndex = false
     @Volatile private var exploreVisible = false
     private val exploreIndexGeneration = AtomicLong()
     private var exploreIndexContext = ""
@@ -478,17 +480,29 @@ class PlayerViewModel(
     init {
         if (application is com.example.XtremeMusicApp &&
             !com.example.performance.BackgroundWorkCoordinator.startupReadiness.value.complete) {
+            preparingExploreIndex = true
             viewModelScope.launch(AppDispatchers.Io) {
                 val startup = com.example.performance.BackgroundWorkCoordinator
                 val task = com.example.performance.StartupTask.LOCAL_TABS
                 startup.startupTask(task, com.example.performance.StartupStatus.RUNNING)
                 try {
                     startup.startup(com.example.performance.BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI,
+                        boundToInitialPresentation = true,
                         label = "Local tab snapshots") {
                         kotlinx.coroutines.withTimeout(5_000L) {
                             kotlinx.coroutines.coroutineScope {
+                                // Restore the same cached category index used by Search,
+                                // before its first measured layout. Never extend the modal
+                                // deadline for an unavailable remote catalogue.
+                                val generation = exploreIndexGeneration.incrementAndGet()
+                                val explore = launch(AppDispatchers.Io) {
+                                    kotlinx.coroutines.withTimeoutOrNull(1_500L) {
+                                        loadExploreIndex(generation, initialPreparation = true)
+                                    }
+                                }
+                                exploreIndexJob = explore
                                 // Subscribe to the existing retained local flows;
-                                // do not compose hidden pages or fetch a catalog.
+                                // the category index above is metadata only.
                                 val consumers = listOf(
                                     launch { favoriteTracks.collect { } },
                                     launch { recentlyPlayed.collect { } },
@@ -508,6 +522,10 @@ class PlayerViewModel(
                                     withContext(AppDispatchers.Main) {
                                         prepareCatalogUi(searchVisible = true, detailVisible = false)
                                     }
+                                    explore.join()
+                                    if (_searchState.value.exploreIndexReady) searchState.first {
+                                        it.exploreIndexReady && it.exploreCategories == _searchState.value.exploreCategories
+                                    }
                                 } finally { consumers.forEach { it.cancel() } }
                             }
                         }
@@ -519,6 +537,13 @@ class PlayerViewModel(
                 catch (error: Exception) {
                     android.util.Log.w("PlayerViewModel", "Initial local tabs unavailable", error)
                     startup.startupTask(task, com.example.performance.StartupStatus.UNAVAILABLE)
+                } finally {
+                    preparingExploreIndex = false
+                    // A deadline may reveal Search before its startup owner
+                    // finishes cancelling. Hand an unfinished request to the
+                    // visible page instead of requiring another tab visit.
+                    if (exploreVisible && !_searchState.value.exploreIndexReady)
+                        viewModelScope.launch { setExploreVisible(true) }
                 }
             }
         }
@@ -934,9 +959,12 @@ class PlayerViewModel(
         if (newQuery.isBlank()) selectGenre(_searchState.value.selectedGenre)
     }
 
-    /** Hidden retained tabs and active text searches never start category discovery. */
+    /** Hidden tabs reuse initial preparation; subsequent requests belong to visible Explore. */
     fun setExploreVisible(visible: Boolean) {
         exploreVisible = visible
+        // The startup owner prepares hidden Search before its first draw. Its
+        // initial visibility callback must not cancel that shared preparation.
+        if (preparingExploreIndex) return
         if (!visible) {
             exploreIndexGeneration.incrementAndGet()
             exploreIndexJob?.cancel()
@@ -950,36 +978,51 @@ class PlayerViewModel(
             // Retained Search becomes visible at the start of its slide. Keep
             // optional category discovery out of that navigation interval.
             com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
-            val profile = com.example.data.local.UserProfilePreferences.getUserProfile(application)
-            val context = "${profile.countryCode}|${application.resources.configuration.locales.toLanguageTags()}"
-            val now = android.os.SystemClock.elapsedRealtime()
-            if (context != exploreIndexContext) {
-                exploreIndexContext = context
-                exploreIndexLoadedAt = 0L
-                exploreIndexFailedAt = 0L
-            }
-            if (exploreIndexLoadedAt > 0L && now - exploreIndexLoadedAt in 0 until 24 * 60 * 60_000L &&
-                _searchState.value.exploreCategories.isNotEmpty()) return@launch
-            if (exploreIndexFailedAt > 0L && now - exploreIndexFailedAt in 0 until 60_000L) return@launch
-            if (!exploreVisible || generation != exploreIndexGeneration.get()) return@launch
-            _searchState.update { it.copy(isExploreLoading = true) }
-            try {
-                val categories = repository.getExploreCategories(profile)
-                ensureActive()
-                // A response may arrive during a later navigation gesture.
+            loadExploreIndex(generation)
+        }
+    }
+
+    private suspend fun loadExploreIndex(generation: Long, initialPreparation: Boolean = false) {
+        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+        if (generation != exploreIndexGeneration.get()) return
+        val profile = com.example.data.local.UserProfilePreferences.getUserProfile(application)
+        val context = "${profile.countryCode}|${application.resources.configuration.locales.toLanguageTags()}"
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (context != exploreIndexContext) {
+            exploreIndexContext = context
+            exploreIndexLoadedAt = 0L
+            exploreIndexFailedAt = 0L
+        }
+        if (exploreIndexLoadedAt > 0L && now - exploreIndexLoadedAt in 0 until 24 * 60 * 60_000L &&
+            _searchState.value.exploreCategories.isNotEmpty()) return
+        if (exploreIndexFailedAt > 0L && now - exploreIndexFailedAt in 0 until 60_000L) return
+        if ((!initialPreparation && !exploreVisible) || generation != exploreIndexGeneration.get()) return
+        _searchState.update { it.copy(isExploreLoading = true) }
+        try {
+            val categories = repository.getExploreCategories(profile)
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            // A response may arrive during a later navigation gesture.
+            if (!initialPreparation)
                 com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
-                if (!exploreVisible || generation != exploreIndexGeneration.get()) return@launch
-                if (categories.isNotEmpty()) {
-                    exploreIndexLoadedAt = android.os.SystemClock.elapsedRealtime()
-                    exploreIndexFailedAt = 0L
-                    _searchState.update { it.copy(exploreCategories = categories, isExploreLoading = false) }
-                } else exploreIndexFailedAt = android.os.SystemClock.elapsedRealtime()
-            } catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) { exploreIndexFailedAt = android.os.SystemClock.elapsedRealtime() }
-            finally {
-                if (generation == exploreIndexGeneration.get())
-                    _searchState.update { if (it.isExploreLoading) it.copy(isExploreLoading = false) else it }
+            if ((!initialPreparation && !exploreVisible) || generation != exploreIndexGeneration.get()) return
+            if (categories.isNotEmpty()) {
+                exploreIndexLoadedAt = android.os.SystemClock.elapsedRealtime()
+                exploreIndexFailedAt = 0L
+                _searchState.update { it.copy(exploreCategories = categories, exploreIndexReady = true, isExploreLoading = false) }
+            } else {
+                exploreIndexFailedAt = android.os.SystemClock.elapsedRealtime()
+                _searchState.update { it.copy(exploreIndexReady = true) }
             }
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) {
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            if (generation == exploreIndexGeneration.get() && (initialPreparation || exploreVisible)) {
+                exploreIndexFailedAt = android.os.SystemClock.elapsedRealtime()
+                _searchState.update { it.copy(exploreIndexReady = true) }
+            }
+        } finally {
+            if (generation == exploreIndexGeneration.get())
+                _searchState.update { if (it.isExploreLoading) it.copy(isExploreLoading = false) else it }
         }
     }
 

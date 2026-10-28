@@ -65,12 +65,33 @@ class ExploreCategoriesUiTest {
     @Test fun offlineIndexFallbackKeepsExistingGenrePillsAndSelection() {
         var selected = ""
         content {
-            SearchScreen(SearchUiState(), onQueryChange = {}, onSelectGenre = { selected = it },
+            SearchScreen(SearchUiState(exploreIndexReady = true), onQueryChange = {}, onSelectGenre = { selected = it },
                 onTrackClick = { _, _ -> }, onToggleFavorite = {})
         }
         compose.onNodeWithTag("search_screen").performScrollToNode(hasTestTag("genre_chip_pop"))
         compose.onNodeWithTag("genre_chip_pop").performClick()
         assertEquals("Pop", selected)
+    }
+
+    @Test fun pendingIndexDoesNotFlashLegacyGenresBeforeTheCompleteCatalogueArrives() {
+        var state by mutableStateOf(SearchUiState(isExploreLoading = true))
+        val categories = listOf(mood, genre,
+            ExploreCategory("Jazz", "FEmusic_jazz", "jazz", ExploreCategoryKind.GENRE),
+            ExploreCategory("Rock", "FEmusic_rock", "rock", ExploreCategoryKind.GENRE))
+        content {
+            SearchScreen(state, onQueryChange = {}, onSelectGenre = {},
+                onTrackClick = { _, _ -> }, onToggleFavorite = {})
+        }
+        compose.onNodeWithTag("search_screen").performScrollToNode(hasText("Explore Genres"))
+        compose.onNodeWithTag("genre_chip_pop").assertDoesNotExist()
+        compose.runOnIdle {
+            state = state.copy(exploreCategories = categories, exploreIndexReady = true, isExploreLoading = false)
+        }
+        categories.forEach { category ->
+            compose.onNodeWithTag("search_screen").performScrollToNode(hasTestTag("explore_chip_${category.key}"))
+            compose.onNodeWithTag("explore_chip_${category.key}").assertIsDisplayed()
+        }
+        compose.onNodeWithTag("genre_chip_pop").assertDoesNotExist()
     }
 
     @Test fun realCollectionsOpenTheExactProviderEndpointWithoutFabricatedSongs() {

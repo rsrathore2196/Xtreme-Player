@@ -10,6 +10,8 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 
+internal const val RECENTLY_PLAYED_CARD_LIMIT = 4
+
 /** Inspect only emitted shelves and retain their lists when no failed recording is removed. */
 internal fun com.example.recommendation.UnifiedRecommendationEngine.Batch.availableShelfTracks(
     unavailable: Map<String, Long>, now: Long, sameSeed: Boolean

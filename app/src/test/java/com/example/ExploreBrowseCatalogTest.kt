@@ -206,6 +206,29 @@ class ExploreBrowseCatalogTest {
         assertEquals(2, calls.get())
     }
 
+    @Test fun aRecreatedBrowserRestoresTheCompleteCategoryIndexFromDiskWithoutAnotherRequest() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val body = categories(grid("Genres", button("Jazz", "FEmusic_jazz", "jazz"),
+            button("Rock", "FEmusic_rock", "rock"), button("Dance", "FEmusic_dance", "dance")))
+        val first = CatalogRepository(context, browseLoader = { _, _, _, _, _ ->
+            assertNotEquals(Looper.getMainLooper(), Looper.myLooper())
+            body
+        }).exploreCategories("NZ", "en")
+        assertEquals(listOf("Jazz", "Rock", "Dance"), first.map { it.title })
+        // The checkpoint is acknowledged, so clearing the shared memory cache
+        // forces the recreated browser through the persisted catalogue record.
+        val cache = RecommendationCache.get(context)
+        (RecommendationCache::class.java.getDeclaredField("memory").apply { isAccessible = true }
+            .get(cache) as android.util.LruCache<*, *>).evictAll()
+        var networkRequests = 0
+        val restored = CatalogRepository(context, browseLoader = { _, _, _, _, _ ->
+            networkRequests++
+            throw IOException("Offline")
+        }).exploreCategories("NZ", "en")
+        assertEquals(first, restored)
+        assertEquals(0, networkRequests)
+    }
+
     @Test fun metadataCheckpointUsesExistingPersistentCacheWithoutChangingTrackDecodingLimits() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Application>()
         val cache = RecommendationCache.get(context)

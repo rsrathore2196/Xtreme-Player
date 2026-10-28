@@ -107,7 +107,7 @@ class SearchGenreNavigationTest {
         val track = MusicTrack("yt_abcdefghijk", "Pop Song", "Artist", "Pop Album", 180000, "", "")
         val album = CatalogAlbum("pop_album", "Pop Album", listOf(CatalogArtist("artist", "Artist")), "", "2026")
         val results = SearchResultCategory(songs = listOf(track), catalogAlbums = listOf(album))
-        var state by mutableStateOf(SearchUiState())
+        var state by mutableStateOf(SearchUiState(exploreIndexReady = true))
         var played: MusicTrack? = null
         var queue: List<MusicTrack> = emptyList()
         var opened: CatalogDestination? = null

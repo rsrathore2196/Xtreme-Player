@@ -289,7 +289,7 @@ fun HomeScreen(
 
     HomeScreenContent(
         heroSeedTrack = recentlyPlayed.firstOrNull() ?: catalogTracks.firstOrNull(),
-        pillsCardTracks = recentlyPlayed.take(if (LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE) 9 else 6),
+        pillsCardTracks = recentlyPlayed.take(com.example.ui.viewmodel.RECENTLY_PLAYED_CARD_LIMIT),
         ytmCard = SectionState(title = "Quick Picks", tracks = com.example.recommendation.HomeRecommendationPolicy.diversify(catalogTracks, com.example.recommendation.HomeRecommendationPolicy.MAX_SHELF_TRACKS)),
         eraCard = SectionState(title = "Era-Specific Hits", tracks = shelves.firstOrNull { it.id == "shelf_era_classics" }?.tracks.orEmpty()),
         countryLanguageCard = SectionState(title = trendingTitle, tracks = shelves.firstOrNull { it.id == "shelf_country_trending" }?.tracks.orEmpty()),
@@ -545,7 +545,8 @@ fun HomeScreenContent(
                     LandscapeHomeOverview(
                         seed = currentTrack ?: seed, currentPlayingId = currentPlayingId, isPlaying = isPlaying,
                         isLoading = isRadioLoading, isRadioSession = isRadioSession,
-                        recentTracks = if (hasRecent) (history?.tracks ?: pillsCardTracks).take(9) else emptyList(),
+                        recentTracks = if (hasRecent) (history?.tracks ?: pillsCardTracks)
+                            .take(com.example.ui.viewmodel.RECENTLY_PLAYED_CARD_LIMIT) else emptyList(),
                         onPlayRadio = { onPlayInfiniteRadio?.invoke(it) }, onTrackClick = onTrackClick)
                 } else {
                 InfiniteRadioHeroCard(
@@ -561,13 +562,14 @@ fun HomeScreenContent(
                 }
             }
 
-            // CARD 1: Recently Played (2 Columns Grid Layout, up to 6 items from real listening history)
+            // CARD 1: Recently Played (2 Columns Grid Layout, four real history items)
             // Rendered only when pillsCardTracks contains genuine recently played tracks.
             // When history is empty, completely hide heading, card, placeholder message, and extra spacing.
             if (hasRecent && !landscape) {
                 artworkItem(state = listState, key = "card_1_recently_played_grid", contentType = "recent_grid") {
                     val history = homeViewModel?.listeningHistoryCard?.collectAsStateWithLifecycle()?.value
-                    val pillsTracks = history?.tracks?.take(6) ?: pillsCardTracks.take(6)
+                    val pillsTracks = (history?.tracks ?: pillsCardTracks)
+                        .take(com.example.ui.viewmodel.RECENTLY_PLAYED_CARD_LIMIT)
                     if (pillsTracks.isEmpty()) return@artworkItem
                     Column(
                         modifier = Modifier

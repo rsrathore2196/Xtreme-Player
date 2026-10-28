@@ -213,9 +213,14 @@ object BackgroundWorkCoordinator {
         companion object Key : CoroutineContext.Key<Admission>
     }
     private class Ticket(val priority: StartupPriority, val foregroundOnly: Boolean,
-        val cardWork: Boolean, val urgent: () -> Boolean) {
+        val cardWork: Boolean, val urgent: () -> Boolean, val initialPreparation: Boolean) {
         val queuedAt = SystemClock.elapsedRealtime()
-        fun essential() = priority == StartupPriority.ESSENTIAL_UI || cardWork &&
+        // Once Home is usable, queued startup enrichment loses its priority at
+        // reveal. Required local restoration must not wait on its own readiness
+        // signal; explicitly requested screen work also remains essential.
+        fun essential() = priority == StartupPriority.ESSENTIAL_UI &&
+            (!initialPreparation || !startupReadiness.value.complete ||
+                !homeReady.isCompleted || !cachedHomeReady.isCompleted) || cardWork &&
             (priority == StartupPriority.CRITICAL || urgent())
     }
     private val admissionLock = Any()
@@ -279,15 +284,19 @@ object BackgroundWorkCoordinator {
         if (currentCoroutineContext()[Admission] != null) return traceWork(label, block)
         if (!cardWork && (priority == StartupPriority.CRITICAL || urgent()))
             return withContext(Admission(StartupPriority.CRITICAL)) { work { traceWork(label, block) } }
+        // Capture before any suspension: the first frame/admission wait can
+        // outlive the modal budget. Disposable preparation must still time out.
+        val initialRequest = priority == StartupPriority.ESSENTIAL_UI &&
+            (boundToInitialPresentation || !startupReadiness.value.complete)
+        val initialWork = boundToInitialPresentation && initialRequest
         if (requireForeground || foreground.get()) awaitFirstFrame()
-        val initialWork = boundToInitialPresentation && initialPresentationPending.get() && priority == StartupPriority.ESSENTIAL_UI
-        val ticket = Ticket(priority, requireForeground, cardWork, urgent)
+        val ticket = Ticket(priority, requireForeground, cardWork, urgent, initialRequest)
         synchronized(admissionLock) { waiting.add(ticket) }
         var admitted = false
         var admittedEssential = false
         try {
             while (!admitted) {
-                if (initialWork && initialPreparationRemainingMillis == 0L)
+                if (initialWork && (startupReadiness.value.complete || initialPreparationRemainingMillis == 0L))
                     throw kotlinx.coroutines.CancellationException("Initial preparation deadline reached")
                 currentCoroutineContext().ensureActive()
                 if (!cardWork && urgent()) {
@@ -330,7 +339,9 @@ object BackgroundWorkCoordinator {
                 if (!admitted) delay(50L)
             }
             if (priority == StartupPriority.MAINTENANCE) maintenanceReady.complete(Unit)
-            val admission = Admission(if (admittedEssential) StartupPriority.ESSENTIAL_UI else priority, cardWork)
+            val effectivePriority = if (admittedEssential) StartupPriority.ESSENTIAL_UI
+                else if (initialRequest) StartupPriority.DEFERRED else priority
+            val admission = Admission(effectivePriority, cardWork)
             val context = if (admittedEssential) admission else admission + optionalContext(requireForeground, urgent)
             return withContext(context) {
                 if (initialWork) withTimeout(initialPreparationRemainingMillis.coerceAtLeast(1L)) {

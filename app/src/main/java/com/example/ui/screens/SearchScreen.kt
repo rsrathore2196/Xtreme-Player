@@ -284,9 +284,12 @@ fun SearchScreen(
     }
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
-    val explorePills = remember(searchState.exploreCategories) {
-        val raw = if (searchState.exploreCategories.isEmpty()) com.example.data.remote.MusicDataSource.genres.map { it to null }
-        else searchState.exploreCategories.map { it.title to it }
+    val explorePills = remember(searchState.exploreCategories, searchState.exploreIndexReady) {
+        // A pending restore is not an offline result. Publishing legacy pills
+        // here first would replace/reflow the whole list when its index arrives.
+        val raw = if (searchState.exploreCategories.isNotEmpty()) searchState.exploreCategories.map { it.title to it }
+        else if (searchState.exploreIndexReady) com.example.data.remote.MusicDataSource.genres.map { it to null }
+        else emptyList()
         raw.mapNotNull { (title, cat) ->
             if (com.example.data.remote.YouTubeExploreParser.isExcludedGenre(title)) null
             else {

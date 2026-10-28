@@ -405,7 +405,7 @@ class HomeViewModel(
     // Card 1: Recently Played (derived strictly from real listening history, never recommendations or filler)
     val pillsCardTracks: StateFlow<List<MusicTrack>> = recentlyPlayed
         .map { recent ->
-            recent.distinctBy { it.id }.take(6)
+            recent.distinctBy { it.id }.take(RECENTLY_PLAYED_CARD_LIMIT)
         }
         .flowOn(workerDispatcher)
         .stateIn(dataScope, SharingStarted.WhileSubscribed(5000L), emptyList())
@@ -1679,7 +1679,7 @@ class HomeViewModel(
         }
         val metrics = app.resources.displayMetrics
         val landscape = app.resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
-        val recents = _listeningHistoryCard.value.tracks.take(if (landscape) 3 else 6)
+        val recents = _listeningHistoryCard.value.tracks.take(RECENTLY_PLAYED_CARD_LIMIT)
         val visibleQuickCount = kotlin.math.ceil((metrics.widthPixels / metrics.density - 20f) / 177.2f)
             .toInt().coerceIn(1, 4)
         val firstRow = if (recents.isNotEmpty()) recents else cards.quick.tracks.take(visibleQuickCount)

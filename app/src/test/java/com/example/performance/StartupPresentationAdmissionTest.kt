@@ -3,6 +3,7 @@ package com.example.performance
 import android.app.Application
 import java.time.Duration
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
@@ -28,6 +29,12 @@ class StartupPresentationAdmissionTest {
         .apply { isAccessible = true }.get(null) as MutableStateFlow<StartupReadiness>
 
     @Before fun begin() {
+        (BackgroundWorkCoordinator::class.java.getDeclaredField("initialDeadlineJob")
+            .apply { isAccessible = true }.get(null) as? kotlinx.coroutines.Job)?.cancel()
+        listOf("initialStartedAt", "lastOptionalCompleted", "navigationUntil").forEach { name ->
+            (BackgroundWorkCoordinator::class.java.getDeclaredField(name).apply { isAccessible = true }
+                .get(null) as java.util.concurrent.atomic.AtomicLong).set(0L)
+        }
         state.value = StartupReadiness()
         BackgroundWorkCoordinator::class.java.getDeclaredField("preparedContentDrawn").apply { isAccessible = true }
             .get(null).let { (it as AtomicBoolean).set(false) }
@@ -56,6 +63,74 @@ class StartupPresentationAdmissionTest {
         assertTrue(played); assertTrue(prepared)
         assertFalse(optionalRan)
         optional.cancelAndJoin()
+    }
+
+    @Test fun unfinishedStartupFollowersLoseEssentialPriorityAfterThePopupDeadline() = runTest {
+        val release = CompletableDeferred<Unit>()
+        val owner = launch {
+            coordinator.startup(BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI) { release.await() }
+        }
+        runCurrent()
+        var restored = false
+        val follower = launch {
+            coordinator.startup(BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI) { restored = true }
+        }
+        runCurrent()
+        assertFalse(restored)
+        state.value = state.value.expirePreparation()
+        (BackgroundWorkCoordinator::class.java.getDeclaredField("initialPresentationPending")
+            .apply { isAccessible = true }.get(null) as AtomicBoolean).set(false)
+        coordinator.interaction()
+        release.complete(Unit)
+        runCurrent(); advanceTimeBy(100); runCurrent()
+        assertFalse("A timed-out restore must not run in the first interactive frames", restored)
+        // Work is retained, with the ordinary optional idle/admission policy.
+        ShadowSystemClock.advanceBy(Duration.ofSeconds(15))
+        advanceTimeBy(100); runCurrent()
+        assertTrue(restored)
+        owner.join(); follower.join()
+        // Explicit screen work created after startup is still essential.
+        coordinator.interaction()
+        var requested = false
+        coordinator.startup(BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI) { requested = true }
+        assertTrue(requested)
+    }
+
+    @Test fun disposablePreparationCannotStartAfterWaitingPastItsModalBudget() = runTest {
+        val release = CompletableDeferred<Unit>()
+        val owner = launch {
+            coordinator.startup(BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI) { release.await() }
+        }
+        runCurrent()
+        var ran = false
+        val preparation = launch {
+            coordinator.startup(BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI,
+                boundToInitialPresentation = true) { ran = true }
+        }
+        runCurrent()
+        ShadowSystemClock.advanceBy(Duration.ofSeconds(6))
+        advanceTimeBy(100); runCurrent()
+        assertTrue(preparation.isCancelled)
+        assertFalse(ran)
+        release.complete(Unit)
+        owner.join(); preparation.join()
+        assertTrue("Preparation plus the existing exit must remain within six seconds",
+            BackgroundWorkCoordinator.INITIAL_PREPARATION_MS + 200L <= 6_000L)
+    }
+
+    @Test fun aLateDisposableStartupRequestCannotBecomeNewEssentialWorkAfterReveal() = runTest {
+        state.value = state.value.expirePreparation()
+        (BackgroundWorkCoordinator::class.java.getDeclaredField("initialPresentationPending")
+            .apply { isAccessible = true }.get(null) as AtomicBoolean).set(false)
+        var ran = false
+        val late = launch {
+            coordinator.startup(BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI,
+                boundToInitialPresentation = true) { ran = true }
+        }
+        runCurrent()
+        assertTrue(late.isCancelled)
+        assertFalse(ran)
+        late.join()
     }
 
     @Test fun firstFrameAndReadyDataCannotDismissBeforeThePreparedTreeActuallyDraws() = runTest {

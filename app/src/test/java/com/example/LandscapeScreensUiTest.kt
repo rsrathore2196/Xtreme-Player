@@ -65,19 +65,19 @@ class LandscapeScreensUiTest {
         compose.onNodeWithTag("home_screen").performScrollToNode(hasTestTag("infinite_radio_hero_card"))
     }
 
-    @Test fun portraitKeepsFullWidthHeroAndOriginalSixRecents() {
+    @Test fun portraitKeepsFullWidthHeroAndShowsOnlyFourRecents() {
         showHome()
         assertEquals(px(360f), rect("infinite_radio_hero_card").width, 1f)
         assertEquals(px(240f), rect("infinite_radio_hero_card").height, 1f)
         compose.onNodeWithTag("landscape_home_overview").assertDoesNotExist()
         compose.onNodeWithTag("landscape_recent_grid").assertDoesNotExist()
-        compose.onNodeWithTag("home_screen").performScrollToNode(hasTestTag("habit_pill_recent-6"))
-        compose.onNodeWithTag("habit_pill_recent-6").assertIsDisplayed()
-        compose.onNodeWithTag("habit_pill_recent-7").assertDoesNotExist()
+        compose.onNodeWithTag("home_screen").performScrollToNode(hasTestTag("habit_pill_recent-4"))
+        compose.onNodeWithTag("habit_pill_recent-4").assertIsDisplayed()
+        compose.onNodeWithTag("habit_pill_recent-5").assertDoesNotExist()
     }
 
     @Test @Config(qualifiers = "w740dp-h360dp-land")
-    fun landscapePutsNineActualRecentsBesideOneThirdHeroWithoutOverlap() {
+    fun landscapePutsFourActualRecentsBesideOneThirdHeroWithoutOverlap() {
         showHome()
         val hero = rect("infinite_radio_hero_card")
         val grid = rect("landscape_recent_grid")
@@ -85,17 +85,17 @@ class LandscapeScreensUiTest {
         assertEquals(px((widthDp - 56f) / 3f), hero.width, 1f)
         assertTrue(hero.right + px(15f) <= grid.left)
         assertEquals(hero.top, grid.top, 1f)
-        for (row in 0..2) for (column in 0..2) {
-            val cell = rect("habit_pill_recent-${row * 3 + column + 1}")
+        for (index in 0..3) {
+            val cell = rect("habit_pill_recent-${index + 1}")
             assertTrue(cell.left >= grid.left && cell.right <= grid.right + 1f)
             assertTrue(cell.top >= grid.top && cell.bottom <= grid.bottom + 1f)
-            if (column > 0) assertTrue(rect("habit_pill_recent-${row * 3 + column}").right < cell.left)
+            if (index % 3 > 0) assertTrue(rect("habit_pill_recent-$index").right < cell.left)
         }
         compose.onAllNodesWithText("Recently Played").assertCountEquals(1)
-        compose.onNodeWithTag("habit_pill_recent-10").assertDoesNotExist()
-        compose.onNodeWithTag("habit_pill_recent-9").performClick()
-        assertEquals(tracks[8], played)
-        assertEquals(tracks.take(9), queue)
+        compose.onNodeWithTag("habit_pill_recent-5").assertDoesNotExist()
+        compose.onNodeWithTag("habit_pill_recent-4").performClick()
+        assertEquals(tracks[3], played)
+        assertEquals(tracks.take(4), queue)
         capture("home-landscape")
     }
 
@@ -120,14 +120,15 @@ class LandscapeScreensUiTest {
         assertEquals(px(240f), hero.height, 1f)
         assertTrue(hero.right < recents.left)
         assertEquals(px(widthDp - 20f), recents.right, 1f)
-        compose.onNodeWithTag("habit_pill_recent-9").assertIsDisplayed()
+        compose.onNodeWithTag("habit_pill_recent-4").assertIsDisplayed()
+        compose.onNodeWithTag("habit_pill_recent-5").assertDoesNotExist()
     }
 
     @Test @Config(qualifiers = "w600dp-h360dp-land")
-    fun narrowLandscapeUsesSixReadableRecentsBesideHero() {
+    fun narrowLandscapeUsesFourReadableRecentsBesideHero() {
         showHome()
-        compose.onNodeWithTag("habit_pill_recent-6").assertIsDisplayed()
-        compose.onNodeWithTag("habit_pill_recent-7").assertDoesNotExist()
+        compose.onNodeWithTag("habit_pill_recent-4").assertIsDisplayed()
+        compose.onNodeWithTag("habit_pill_recent-5").assertDoesNotExist()
         assertTrue(rect("habit_pill_recent-2").width >= px(120f))
         assertTrue(rect("habit_pill_recent-2").left > rect("habit_pill_recent-1").right)
         assertTrue(rect("habit_pill_recent-3").top > rect("habit_pill_recent-1").bottom)
@@ -242,7 +243,7 @@ class LandscapeScreensUiTest {
     }
 
     private fun checkFullWidthSearch() {
-        content { SearchScreen(SearchUiState(), onQueryChange = {}, onSelectGenre = {},
+        content { SearchScreen(SearchUiState(exploreIndexReady = true), onQueryChange = {}, onSelectGenre = {},
             onTrackClick = { _, _ -> }, onToggleFavorite = {}) }
         val screen = rect("search_screen")
         assertEquals(px(widthDp.toFloat()), screen.width, 1f)
@@ -266,8 +267,8 @@ class LandscapeScreensUiTest {
         showHome()
         assertEquals(px(760f), rect("infinite_radio_hero_card").width, 1f)
         compose.onNodeWithTag("landscape_recent_grid").assertDoesNotExist()
-        compose.onNodeWithTag("home_screen").performScrollToNode(hasTestTag("habit_pill_recent-6"))
-        compose.onNodeWithTag("habit_pill_recent-7").assertDoesNotExist()
+        compose.onNodeWithTag("home_screen").performScrollToNode(hasTestTag("habit_pill_recent-4"))
+        compose.onNodeWithTag("habit_pill_recent-5").assertDoesNotExist()
     }
 
     @Test @Config(qualifiers = "w1280dp-h800dp-land")
