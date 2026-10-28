@@ -146,6 +146,44 @@ class DockGlassMotionTest {
 
     @Test fun selectionUsesARestrainedFastSpringWithoutAnExtraOuterPulse() = checkSelectionMotion()
 
+    @Test fun aTabTapSpringScalesTheOuterCapsuleAndItsContentTogetherThenSettles() = checkTouchSpring()
+
+    @Test fun lightThemeKeepsTheSameTouchSpring() = checkTouchSpring(light = true)
+
+    @Test fun disablingGlassDoesNotDisableTheSpatialTouchSpring() = checkTouchSpring(glass = false)
+
+    private fun checkTouchSpring(light: Boolean = false, glass: Boolean = true) {
+        showDock(light = light, glass = glass)
+        val layout = dock.fetchSemanticsNode().size
+        val restingHeight = dock.fetchSemanticsNode().boundsInRoot.height
+        compose.onNodeWithTag("nav_tab_search_inactive").performTouchInput { down(center) }
+        compose.mainClock.advanceTimeByFrame()
+        val measureCount = measures
+        val compositionCount = compositions
+        val scales = mutableListOf<Float>()
+        fun sample() {
+            val bounds = dock.fetchSemanticsNode().boundsInRoot
+            val outer = outerGlass.fetchSemanticsNode().boundsInRoot
+            scales += bounds.height / restingHeight
+            assertEquals("The glass and foreground share the same spring", bounds.height, outer.height, .1f)
+            assertEquals("Touch feedback cannot remeasure ancestors", measureCount, measures)
+            assertEquals("Touch feedback cannot recompose the host", compositionCount, compositions)
+            assertEquals(layout, dock.fetchSemanticsNode().size)
+            val icon = compose.onNodeWithContentDescription("Search", useUnmergedTree = true)
+                .fetchSemanticsNode().boundsInRoot
+            assertEquals("Uniform spring scaling must not stretch icons", icon.width, icon.height, .6f)
+        }
+        repeat(5) { compose.mainClock.advanceTimeByFrame(); sample() }
+        compose.onRoot().performTouchInput { up() }
+        repeat(65) { compose.mainClock.advanceTimeByFrame(); sample() }
+        assertTrue("The capsule must visibly respond to a tab tap", scales.max() > 1.015f)
+        assertTrue("The touch spring must stay restrained", scales.max() < 1.05f)
+        assertTrue("Release must retain the small spring rebound", scales.min() < .9995f)
+        assertEquals("The original resting height is preserved", 1f, scales.last(), .0001f)
+        assertEquals(1, selected)
+        assertEquals("One pointer tap must select once", 1, clicks)
+    }
+
     @Test fun lightThemeAndGlassDisabledKeepTheSameSelectionMotion() = checkSelectionMotion(light = true, glass = false)
 
     private fun checkSelectionMotion(light: Boolean = false, glass: Boolean = true) {
@@ -231,7 +269,7 @@ class DockGlassMotionTest {
         assertEquals(0, selected)
     }
 
-    @Test fun holdingTheActiveTabKeepsTheOuterDockAndForegroundAtTheirOriginalSizes() {
+    @Test fun holdingTheActiveTabUsesOneSmallUniformSpringWithoutChangingTheLayout() {
         showDock()
         val initialLayoutSize = dock.fetchSemanticsNode().size
         val initialDock = dock.fetchSemanticsNode().boundsInRoot
@@ -242,8 +280,9 @@ class DockGlassMotionTest {
         assertEquals("Pressing must not remeasure the dock", initialLayoutSize, dock.fetchSemanticsNode().size)
         val heldDock = dock.fetchSemanticsNode().boundsInRoot
         val heldPill = compose.onNodeWithTag("nav_tab_home_active").fetchSemanticsNode().boundsInRoot
-        assertEquals("The outer capsule must not inflate on press", initialDock.width, heldDock.width, .5f)
-        assertEquals(initialDock.height, heldDock.height, .5f)
+        val scale = heldDock.height / initialDock.height
+        assertTrue("The outer capsule follows the restrained touch spring", scale in 1.02f..1.05f)
+        assertEquals("Touch feedback is uniform", scale, heldDock.width / initialDock.width, .001f)
         assertEquals("The foreground follows the outer capsule's hardware layer",
             heldDock.width / initialDock.width,
             heldPill.width / initialPill.width, 0.015f)
@@ -282,19 +321,22 @@ class DockGlassMotionTest {
         assertEquals(initial.width, dock.fetchSemanticsNode().boundsInRoot.width, 0.5f)
     }
 
-    @Test fun movingOutOfTabDoesNotStealClickAndGlassDisabledKeepsExistingOuterGeometry() {
+    @Test fun movingOutOfTabDoesNotStealClickAndGlassDisabledKeepsItsRestingGeometry() {
         showDock(glass = false)
         val initial = dock.fetchSemanticsNode().boundsInRoot
         compose.onNodeWithTag("nav_tab_home_active").performTouchInput { down(center) }
         compose.mainClock.advanceTimeBy(180)
-        assertEquals(initial.width, dock.fetchSemanticsNode().boundsInRoot.width, 0.5f)
-        assertEquals(initial.height, dock.fetchSemanticsNode().boundsInRoot.height, 0.5f)
+        val pressed = dock.fetchSemanticsNode().boundsInRoot
+        assertTrue(pressed.width / initial.width in 1.02f..1.05f)
+        assertEquals(pressed.width / initial.width, pressed.height / initial.height, .001f)
         compose.onNodeWithTag("nav_tab_home_active").performTouchInput {
             moveTo(Offset(center.x, -100f))
             up()
         }
         compose.mainClock.advanceTimeBy(1600)
         assertEquals(0, clicks)
+        assertEquals(initial.width, dock.fetchSemanticsNode().boundsInRoot.width, .1f)
+        assertEquals(initial.height, dock.fetchSemanticsNode().boundsInRoot.height, .1f)
         compose.onNodeWithTag("nav_tab_search_inactive").performClick()
         compose.mainClock.advanceTimeBy(1600)
         compose.onNodeWithTag("nav_tab_search_active").assertIsSelected()
@@ -362,8 +404,8 @@ class DockGlassMotionTest {
         val initial = dock.fetchSemanticsNode().boundsInRoot
         compose.onNodeWithTag("nav_tab_home_active").performTouchInput { down(center) }
         compose.mainClock.advanceTimeBy(200)
-        assertEquals("Glass feedback must not inflate the navigation capsule", initial.width,
-            dock.fetchSemanticsNode().boundsInRoot.width, .5f)
+        assertTrue("Live glass follows the same bounded touch spring",
+            dock.fetchSemanticsNode().boundsInRoot.width / initial.width in 1.02f..1.05f)
         compose.runOnUiThread { owner.registry.currentState = Lifecycle.State.STARTED }
         compose.mainClock.advanceTimeByFrame()
         assertEquals(initial.width, dock.fetchSemanticsNode().boundsInRoot.width, 0.5f)

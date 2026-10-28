@@ -27,8 +27,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 /**
- * Touch pressure drives the existing glass feedback. Navigation geometry is
- * driven separately by selection, without inflating the entire dock on press.
+ * Touch pressure drives the shared glass/foreground spring. Selection still
+ * owns tab widths, while the uniform touch response keeps the capsule in sync.
  * Read progress in layer/draw blocks, never in the Home or navigation composition.
  */
 @Stable
@@ -40,6 +40,9 @@ class DockGlassInteraction internal constructor(private val scope: CoroutineScop
     private var motionLease: AutoCloseable? = null
 
     val pressProgress: Float get() = progress.value
+    // One uniform spatial response, including the spring's small release rebound.
+    // Read only from the outer hardware layer, never from measurement/composition.
+    val scale: Float get() = 1f + 0.04f * progress.value
     var touchPosition: Offset by mutableStateOf(Offset.Unspecified)
         private set
 

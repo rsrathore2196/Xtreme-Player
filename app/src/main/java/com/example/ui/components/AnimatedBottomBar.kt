@@ -155,9 +155,10 @@ fun AnimatedBottomBar(
         }
     }
     val viewportShape = remember(geometry) { DockViewportShape(horizontalScale = { geometry.width / geometry.reservedWidth }) }
-    val glassInteraction = if (appColors.dynamicGlassEnabled && LocalDynamicGlassEnabled.current) {
-        rememberDockGlassInteraction()
-    } else null
+    // Spatial feedback remains available with either glass or the plain surface;
+    // the glass preference controls rendering, not the navigation spring.
+    val touchInteraction = rememberDockGlassInteraction()
+    val glassInteraction = touchInteraction.takeIf { appColors.dynamicGlassEnabled && LocalDynamicGlassEnabled.current }
     val pointerHandled = remember { mutableStateOf(false) }
     val pointerTab = remember { mutableIntStateOf(selectedTabIndex) }
     val pointerSelection = rememberUpdatedState<(Offset, IntSize, Boolean) -> Unit> { point, size, started ->
@@ -189,10 +190,13 @@ fun AnimatedBottomBar(
     Box(
         modifier = modifier
             .graphicsLayer {
-                // A fixed measured viewport; only its hardware layer changes width.
-                scaleX = geometry.width / geometry.reservedWidth
+                // Tab sizing and touch share this outer layer so the glass,
+                // pill and glyphs spring together without new measurements.
+                val touchScale = touchInteraction.scale
+                scaleX = touchScale * geometry.width / geometry.reservedWidth
+                scaleY = touchScale
             }
-            .observeDockGlassTouches(glassInteraction,
+            .observeDockGlassTouches(touchInteraction,
                 onPosition = { point, size, started -> pointerSelection.value(point, size, started) },
                 onFinish = { pointerHandled.value = false })
             .testTag("floating_bottom_navigation_bar")
