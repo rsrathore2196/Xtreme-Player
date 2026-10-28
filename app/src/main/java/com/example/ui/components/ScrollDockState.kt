@@ -28,8 +28,19 @@ internal class ScrollDockState(private val thresholdPx: Float) : NestedScrollCon
     var enabled = true
         set(value) {
             field = value
-            if (!value) expand()
+            if (!value && !preserveOnDisable) expand()
         }
+    /** The player returns to this exact dock. Pause gestures without changing its layout. */
+    fun suspendForPlayer() {
+        // The setter intentionally expands for ordinary navigation; the player
+        // handoff must preserve the current compact/full destination instead.
+        preserveOnDisable = true
+        enabled = false
+        preserveOnDisable = false
+        accumulated = 0f
+        userFling = false
+    }
+    private var preserveOnDisable = false
     private var accumulated = 0f
     private var userFling = false
 

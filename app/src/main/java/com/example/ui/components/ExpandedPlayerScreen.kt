@@ -293,6 +293,11 @@ fun ExpandedPlayerScreen(
     modifier: Modifier = Modifier
 ) {
     val track = uiState.currentTrack ?: return
+    val playerMorph = LocalPlayerExpansionMotion.current
+    var morphArtworkReady by remember(track.id, track.coverUrl) { mutableStateOf(false) }
+    val morphAnimating by remember(playerMorph) { derivedStateOf { playerMorph?.transitioning == true } }
+    val playerMarqueeMode = if (playerMorph?.covered != false) androidx.compose.foundation.MarqueeAnimationMode.Immediately
+        else androidx.compose.foundation.MarqueeAnimationMode.WhileFocused
     val singerLabel = remember(track.artist, track.singers) { playerSingerLabel(track) }
     // A preference is a ceiling, never evidence of the format actually playing.
     val displayedQuality = uiState.qualityBadge.ifBlank { track.qualityBadge }.ifBlank { "Resolving audio" }
@@ -354,7 +359,7 @@ fun ExpandedPlayerScreen(
     val lyricsViewportAnimating by remember(lyricsExpanded) {
         derivedStateOf { kotlin.math.abs(lyricsExpansion.value - if (lyricsExpanded) 1f else 0f) > 0.001f }
     }
-    val lyricsPresentationAnimating = lyricsViewportAnimating || lyricsContentAnimating
+    val lyricsPresentationAnimating = lyricsViewportAnimating || lyricsContentAnimating || morphAnimating
     DisposableEffect(lyricsViewportAnimating, isScreenVisible) {
         val lease = if (lyricsViewportAnimating && isScreenVisible)
             com.example.performance.BackgroundWorkCoordinator.navigationBusy() else null
@@ -615,7 +620,7 @@ fun ExpandedPlayerScreen(
                 ) {
                     // LEFT PANE: Album Art / Lyrics (Proper Square Shape Guarantee)
                     SharedTransitionLayout(
-                        modifier = Modifier.fillMaxHeight()
+                        modifier = Modifier.fillMaxHeight().playerMorphExpandedControls()
                     ) {
                         lyricsContentTransition.AnimatedContent(
                             transitionSpec = { lyricsArtworkTransition() },
@@ -630,18 +635,26 @@ fun ExpandedPlayerScreen(
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                         AsyncImage(model = headerArtworkRequest, contentDescription = "Cover Art",
+                                            onSuccess = { morphArtworkReady = true },
                                             contentScale = ContentScale.Crop,
                                             modifier = Modifier.size(44.dp)
                                                 .sharedElement(rememberSharedContentState("lyrics_artwork_${track.id}"),
                                                     animatedVisibilityScope = this@AnimatedContent,
                                                     boundsTransform = { _, _ -> tween(lyricsArtworkDurationMs, easing = FastOutSlowInEasing) })
+                                                .playerMorphElement(PlayerMorphSide.EXPANDED, PlayerMorphPart.ARTWORK,
+                                                    track.id, 10.dp, active = isLyricsActive == showLyrics, ready = morphArtworkReady)
                                                 .clip(RoundedCornerShape(10.dp)))
                                         Column(Modifier.weight(1f)) {
                                             Text(track.cleanTitle, color = appColors.textPrimary, fontWeight = FontWeight.Bold,
                                                 fontSize = 18.sp,
-                                                maxLines = 1, modifier = Modifier.basicMarquee(iterations = Int.MAX_VALUE, initialDelayMillis = 1000), softWrap = false)
+                                                maxLines = 1, modifier = Modifier.playerMorphElement(PlayerMorphSide.EXPANDED,
+                                                    PlayerMorphPart.TITLE, track.id, active = lyricsExpanded)
+                                                    .basicMarquee(iterations = Int.MAX_VALUE, initialDelayMillis = 1000,
+                                                        animationMode = playerMarqueeMode), softWrap = false)
                                             Text(singerLabel, color = appColors.textSecondary, fontSize = 14.sp,
-                                                maxLines = 1, modifier = Modifier.basicMarquee(), softWrap = false)
+                                                maxLines = 1, modifier = Modifier.playerMorphElement(PlayerMorphSide.EXPANDED,
+                                                    PlayerMorphPart.ARTIST, track.id, active = lyricsExpanded)
+                                                    .basicMarquee(animationMode = playerMarqueeMode), softWrap = false)
                                         }
                                         IconButton(onClick = { onToggleFavorite(track) }) {
                                             Icon(if (uiState.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
@@ -699,6 +712,10 @@ fun ExpandedPlayerScreen(
                                             .sharedElement(rememberSharedContentState("lyrics_artwork_${track.id}"),
                                                 animatedVisibilityScope = this@AnimatedContent,
                                                 boundsTransform = { _, _ -> tween(lyricsArtworkDurationMs, easing = FastOutSlowInEasing) })
+                                            .playerMorphElement(PlayerMorphSide.EXPANDED, PlayerMorphPart.ARTWORK, track.id,
+                                                22.dp, active = isLyricsActive == showLyrics,
+                                                presentation = if (showArtworkFront) 0 else 2,
+                                                ready = !showArtworkFront || morphArtworkReady)
                                             .graphicsLayer {
                                                 rotationY = flipRotation
                                                 cameraDistance = 14f * density
@@ -715,6 +732,7 @@ fun ExpandedPlayerScreen(
                                             // One untinted provider cover; never substitute unrelated artwork or video.
                                             AsyncImage(
                                                 model = highResImageRequest,
+                                                onSuccess = { morphArtworkReady = true },
                                                 contentScale = ContentScale.Crop,
                                                 contentDescription = "Cover Art - Tap to flip",
                                                 modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(22.dp))
@@ -770,7 +788,8 @@ fun ExpandedPlayerScreen(
                                                         softWrap = false,
                                                         modifier = Modifier
                                                             .fillMaxWidth()
-                                                            .basicMarquee(iterations = Int.MAX_VALUE, initialDelayMillis = 1000)
+                                                            .basicMarquee(iterations = Int.MAX_VALUE, initialDelayMillis = 1000,
+                                                                animationMode = playerMarqueeMode)
                                                     )
                                                     Spacer(modifier = Modifier.height(4.dp))
                                                     CreditDetailRow(
@@ -802,6 +821,7 @@ fun ExpandedPlayerScreen(
                     Column(
                         modifier = Modifier
                             .fillMaxHeight()
+                            .playerMorphExpandedControls()
                             .graphicsLayer {
                                 alpha = 1f - lyricsExpansion.value
                                 translationY = size.height * lyricsExpansion.value
@@ -867,7 +887,8 @@ fun ExpandedPlayerScreen(
                                     maxLines = 1,
                                     softWrap = false,
                                     overflow = TextOverflow.Clip,
-                                    modifier = Modifier.basicMarquee(iterations = Int.MAX_VALUE, initialDelayMillis = 1000)
+                                    modifier = Modifier.basicMarquee(iterations = Int.MAX_VALUE, initialDelayMillis = 1000,
+                                        animationMode = playerMarqueeMode)
                                 )
                             }
 
@@ -922,7 +943,10 @@ fun ExpandedPlayerScreen(
                                     softWrap = false,
                                     overflow = TextOverflow.Clip,
                                     modifier = Modifier.fillMaxWidth()
-                                        .basicMarquee(iterations = Int.MAX_VALUE, initialDelayMillis = 1000)
+                                        .playerMorphElement(PlayerMorphSide.EXPANDED, PlayerMorphPart.TITLE,
+                                            track.id, active = !lyricsExpanded)
+                                        .basicMarquee(iterations = Int.MAX_VALUE, initialDelayMillis = 1000,
+                                            animationMode = playerMarqueeMode)
                                         .testTag("player_track_title")
                                 )
                                 Spacer(modifier = Modifier.height(2.dp))
@@ -934,7 +958,9 @@ fun ExpandedPlayerScreen(
                                         fontWeight = FontWeight.Medium
                                     ),
                                     maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.playerMorphElement(PlayerMorphSide.EXPANDED,
+                                        PlayerMorphPart.ARTIST, track.id, active = !lyricsExpanded)
                                 )
                             }
 
@@ -1369,6 +1395,7 @@ fun ExpandedPlayerScreen(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .playerMorphExpandedControls()
                     .padding(horizontal = if (isFullScreenArt) 24.dp else 0.dp)
             ) {
             // TOP BAR
@@ -1434,7 +1461,8 @@ fun ExpandedPlayerScreen(
                         maxLines = 1,
                         softWrap = false,
                         overflow = TextOverflow.Clip,
-                        modifier = Modifier.basicMarquee(iterations = Int.MAX_VALUE, initialDelayMillis = 1000)
+                        modifier = Modifier.basicMarquee(iterations = Int.MAX_VALUE, initialDelayMillis = 1000,
+                            animationMode = playerMarqueeMode)
                     )
                 }
 
@@ -1481,7 +1509,7 @@ fun ExpandedPlayerScreen(
             }
 
             // Shared artwork and metadata travel between their original bounds and the lyrics header.
-            SharedTransitionLayout(Modifier.fillMaxSize()) {
+            SharedTransitionLayout(Modifier.fillMaxSize().playerMorphExpandedControls()) {
                 lyricsContentTransition.AnimatedContent(
                     transitionSpec = { lyricsArtworkTransition() },
                     modifier = Modifier.fillMaxSize(),
@@ -1495,6 +1523,7 @@ fun ExpandedPlayerScreen(
                             ) {
                                 AsyncImage(
                                     model = headerArtworkRequest,
+                                    onSuccess = { morphArtworkReady = true },
                                     contentDescription = "Cover Art",
                                     contentScale = ContentScale.Crop,
                                     modifier = Modifier.size(52.dp)
@@ -1502,7 +1531,9 @@ fun ExpandedPlayerScreen(
                                         rememberSharedContentState("lyrics_artwork_${track.id}"),
                                         animatedVisibilityScope = this@AnimatedContent,
                                         boundsTransform = { _, _ -> tween(lyricsArtworkDurationMs, easing = FastOutSlowInEasing) }
-                                    ).clip(RoundedCornerShape(12.dp))
+                                    ).playerMorphElement(PlayerMorphSide.EXPANDED, PlayerMorphPart.ARTWORK,
+                                        track.id, 12.dp, active = isLyricsActive == showLyrics, ready = morphArtworkReady)
+                                        .clip(RoundedCornerShape(12.dp))
                                 )
                                 Column(Modifier.weight(1f).sharedBounds(
                                         rememberSharedContentState("lyrics_metadata_${track.id}"),
@@ -1511,11 +1542,18 @@ fun ExpandedPlayerScreen(
                                 )) {
                                     Text(track.cleanTitle, color = appColors.textPrimary,
                                         fontWeight = FontWeight.Bold, fontSize = 16.sp, maxLines = 1,
-                                        modifier = Modifier.fillMaxWidth().basicMarquee(iterations = Int.MAX_VALUE, initialDelayMillis = 1000), softWrap = false)
+                                        modifier = Modifier.fillMaxWidth()
+                                            .playerMorphElement(PlayerMorphSide.EXPANDED, PlayerMorphPart.TITLE,
+                                                track.id, active = isLyricsActive == showLyrics)
+                                            .basicMarquee(iterations = Int.MAX_VALUE, initialDelayMillis = 1000,
+                                                animationMode = playerMarqueeMode), softWrap = false)
                                     Spacer(Modifier.height(2.dp))
                                     Text(singerLabel, color = appColors.textSecondary,
                                         fontWeight = FontWeight.Medium, fontSize = 13.sp, maxLines = 1,
-                                        modifier = Modifier.fillMaxWidth().basicMarquee(), softWrap = false)
+                                        modifier = Modifier.fillMaxWidth()
+                                            .playerMorphElement(PlayerMorphSide.EXPANDED, PlayerMorphPart.ARTIST,
+                                                track.id, active = isLyricsActive == showLyrics)
+                                            .basicMarquee(animationMode = playerMarqueeMode), softWrap = false)
                                 }
                                 // Favorite Heart Toggle - Liquid Glass Button
                                 Box(
@@ -1601,6 +1639,10 @@ fun ExpandedPlayerScreen(
                                                 animatedVisibilityScope = this@AnimatedContent,
                                                 boundsTransform = { _, _ -> tween(lyricsArtworkDurationMs, easing = FastOutSlowInEasing) }
                                             )
+                                            .playerMorphElement(PlayerMorphSide.EXPANDED, PlayerMorphPart.ARTWORK,
+                                                track.id, 0.dp, active = isLyricsActive == showLyrics,
+                                                presentation = if (showArtworkFront) 1 else 2,
+                                                ready = !showArtworkFront || morphArtworkReady)
                                             .graphicsLayer {
                                                 rotationY = flipRotation
                                                 cameraDistance = 14f * density
@@ -1624,6 +1666,10 @@ fun ExpandedPlayerScreen(
                                                 animatedVisibilityScope = this@AnimatedContent,
                                                 boundsTransform = { _, _ -> tween(lyricsArtworkDurationMs, easing = FastOutSlowInEasing) }
                                             )
+                                            .playerMorphElement(PlayerMorphSide.EXPANDED, PlayerMorphPart.ARTWORK,
+                                                track.id, 24.dp, active = isLyricsActive == showLyrics,
+                                                presentation = if (showArtworkFront) 0 else 2,
+                                                ready = !showArtworkFront || morphArtworkReady)
                                             .graphicsLayer {
                                                 rotationY = flipRotation
                                                 cameraDistance = 14f * density
@@ -1642,6 +1688,7 @@ fun ExpandedPlayerScreen(
                                         // the existing album backdrop instead of ending at a hard seam.
                                         AsyncImage(
                                             model = highResImageRequest,
+                                            onSuccess = { morphArtworkReady = true },
                                             contentScale = ContentScale.Crop,
                                             contentDescription = "Cover Art - Tap to flip",
                                             modifier = Modifier.fillMaxSize()
@@ -1703,7 +1750,8 @@ fun ExpandedPlayerScreen(
                                                     .fillMaxWidth()
                                                     .basicMarquee(
                                                         iterations = Int.MAX_VALUE,
-                                                        initialDelayMillis = 1000
+                                                        initialDelayMillis = 1000,
+                                                        animationMode = playerMarqueeMode
                                                     )
                                                 )
 
@@ -1774,7 +1822,10 @@ fun ExpandedPlayerScreen(
                                         softWrap = false,
                                         overflow = TextOverflow.Clip,
                                         modifier = Modifier.fillMaxWidth()
-                                            .basicMarquee(iterations = Int.MAX_VALUE, initialDelayMillis = 1000)
+                                            .playerMorphElement(PlayerMorphSide.EXPANDED, PlayerMorphPart.TITLE,
+                                                track.id, active = isLyricsActive == showLyrics)
+                                            .basicMarquee(iterations = Int.MAX_VALUE, initialDelayMillis = 1000,
+                                                animationMode = playerMarqueeMode)
                                             .testTag("player_track_title")
                                     )
                                     Spacer(modifier = Modifier.height(2.dp))
@@ -1785,7 +1836,9 @@ fun ExpandedPlayerScreen(
                                             fontWeight = FontWeight.Medium
                                         ),
                                         maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.playerMorphElement(PlayerMorphSide.EXPANDED,
+                                            PlayerMorphPart.ARTIST, track.id, active = isLyricsActive == showLyrics)
                                     )
                                 }
 
@@ -1830,6 +1883,7 @@ fun ExpandedPlayerScreen(
             Column(
                 Modifier
                     .fillMaxWidth()
+                    .playerMorphExpandedControls()
                     .padding(horizontal = if (isFullScreenArt) 24.dp else 0.dp)
             ) {
             Spacer(modifier = Modifier.height(if (isLandscape) 4.dp else 14.dp))
@@ -1893,6 +1947,7 @@ fun ExpandedPlayerScreen(
             Column(
                 Modifier
                     .fillMaxWidth()
+                    .playerMorphExpandedControls()
                     .padding(horizontal = if (isFullScreenArt) 24.dp else 0.dp)
                     .collapsingPlayerControls(lyricsExpansion)
                     .graphicsLayer { alpha = 1f - lyricsExpansion.value }
@@ -2401,7 +2456,9 @@ private fun CreditDetailRow(label: String, value: String, colors: PlayerCreditsT
                 softWrap = false,
                 modifier = Modifier.basicMarquee(
                     iterations = Int.MAX_VALUE,
-                    initialDelayMillis = 1000
+                    initialDelayMillis = 1000,
+                    animationMode = if (LocalPlayerExpansionMotion.current?.covered != false) androidx.compose.foundation.MarqueeAnimationMode.Immediately
+                        else androidx.compose.foundation.MarqueeAnimationMode.WhileFocused
                 ),
                 textAlign = TextAlign.End
             )

@@ -64,4 +64,20 @@ class ScrollDockStateTest {
         state.expand()
         assertFalse(state.isCompact)
     }
+
+    @Test fun playerSuspensionPreservesTheActualCompactDestinationWithoutAcceptingScrolls() = runBlocking {
+        scroll(-50f)
+        state.onPreFling(Velocity(0f, -900f))
+        state.suspendForPlayer()
+        assertTrue(state.isCompact)
+        assertFalse(state.enabled)
+        scroll(500f)
+        assertTrue(state.isCompact)
+        state.enabled = true
+        scroll(500f, source = NestedScrollSource.SideEffect)
+        scroll(49f)
+        assertTrue("Suspension must also clear the old fling and drag accumulation", state.isCompact)
+        scroll(1f)
+        assertFalse(state.isCompact)
+    }
 }

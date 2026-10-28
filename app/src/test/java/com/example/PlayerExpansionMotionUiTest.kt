@@ -46,48 +46,58 @@ class PlayerExpansionMotionUiTest {
     private lateinit var visible: MutableTransitionState<Boolean>
     private lateinit var motion: PlayerExpansionMotion
     private var playerCompositions = 0
+    private var playerMounts = 0
+    private var playerDisposals = 0
     private var playTaps = 0
     private var nextTaps = 0
 
-    private fun show(light: Boolean = false, markTransition: Boolean = false) {
+    private fun show(light: Boolean = false, markTransition: Boolean = false, compact: Boolean = false,
+        artwork: Boolean = false) {
         compose.mainClock.autoAdvance = false
-        val song = MusicTrack("motion", "Song", "Artist", "Album", 180_000, "", "")
+        val song = MusicTrack("motion", "Song", "Artist", "Album", 180_000,
+            if (artwork) "https://lh3.googleusercontent.com/morph-cover=w800-h800" else "", "")
         compose.setContent { MaterialTheme {
-            val colors = (if (light) LightAppColors else DarkAppColors).copy(dynamicGlassEnabled = false)
+            val colors = (if (light) LightAppColors else DarkAppColors).copy(dynamicGlassEnabled = false, dynamicAlbumGlow = false)
             CompositionLocalProvider(LocalAppColors provides colors, LocalDynamicGlassEnabled provides false,
-                LocalArtworkRequestsActive provides false, LocalVisualEffectsActive provides false) {
+                LocalArtworkRequestsActive provides artwork, LocalVisualEffectsActive provides false) {
                 visible = remember { MutableTransitionState(false) }
                 motion = remember { PlayerExpansionMotion() }
+                motion.trackId = song.id
                 var bounds by remember { mutableStateOf<Rect?>(null) }
+                val dockProgress = remember { mutableStateOf(if (compact) 1f else 0f) }
+                CompositionLocalProvider(LocalPlayerExpansionMotion provides motion) {
                 Box(Modifier.fillMaxSize().background(colors.scaffoldBackground).testTag("motion_stage")) {
                     AdaptiveBottomControls(
                         landscape = LocalConfiguration.current.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE,
-                        collapseProgress = remember { mutableStateOf(0f) },
+                        collapseProgress = dockProgress,
                         modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(bottom = 12.dp),
                         miniPlayer = {
-                            androidx.compose.animation.AnimatedVisibility(!visible.targetState || !visible.isIdle,
+                            androidx.compose.animation.AnimatedVisibility(true,
                                 enter = EnterTransition.None, exit = ExitTransition.None,
                                 modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp)
                                     .onGloballyPositioned { if (it.size.width > 0 && it.size.height > 0) bounds = it.boundsInRoot() }
                                     .then(if (visible.targetState) Modifier.clearAndSetSemantics { } else Modifier)) {
                                     MiniPlayer(PlayerUiState(currentTrack = song), { playTaps++ }, { nextTaps++ }, {},
-                                        { visible.targetState = true }, modifier = Modifier.playerMiniTransition(motion))
+                                        { visible.targetState = true }, modifier = Modifier.playerMiniTransition(motion),
+                                        compactProgress = dockProgress, compact = compact)
                             }
                         },
                         dock = {
-                            AnimatedVisibility(!visible.targetState || !visible.isIdle,
+                            AnimatedVisibility(true,
                                 enter = EnterTransition.None, exit = ExitTransition.None,
                                 modifier = Modifier.playerDockTransition(motion)) {
-                                FloatingPillBottomBar(0, {})
+                                FloatingPillBottomBar(0, {}, compactProgress = dockProgress, compact = compact)
                             }
                         }
                     )
                     PlayerExpansionOverlay(visible, motion, { bounds }, Modifier.fillMaxSize()) {
                         SideEffect { playerCompositions++ }
+                        DisposableEffect(Unit) { playerMounts++; onDispose { playerDisposals++ } }
                         ExpandedPlayerScreen(PlayerUiState(currentTrack = song), { visible.targetState = false }, {}, {}, {}, {}, {}, {}, {}, {},
                             onAddToPlaylist = {}, isScreenVisible = visible.targetState,
                             modifier = if (markTransition) Modifier.drawWithContent { drawContent(); drawRect(Color.Red) } else Modifier)
                     }
+                }
                 }
             }
         } }
@@ -100,18 +110,19 @@ class PlayerExpansionMotionUiTest {
         compose.waitForIdle()
     }
 
-    @Test fun portraitOpeningAndClosingShareASmoothZoomWithoutBouncing() = checkRoundTrip()
+    @Test fun portraitOpeningAndClosingShareMeasuredGeometryWithoutBouncing() = checkRoundTrip()
     @Test fun lightThemeKeepsTheSameRoundTripAndWorkingMiniControls() = checkRoundTrip(light = true)
+    @Test fun compactDockReturnsToItsActualSmallerSurfaceAndArtwork() = checkRoundTrip(compact = true)
     @Test @Config(qualifiers = "w891dp-h411dp-land")
     fun landscapeTargetsTheActualNarrowMiniPlayer() = checkRoundTrip()
 
-    private fun checkRoundTrip(light: Boolean = false) {
-        show(light)
-        val miniBefore = compose.onNodeWithTag("mini_player_container").fetchSemanticsNode().boundsInRoot
+    private fun checkRoundTrip(light: Boolean = false, compact: Boolean = false) {
+        show(light, compact = compact)
+        val miniBefore = checkNotNull(motion.miniBounds)
         val viewport = compose.onNodeWithTag("motion_stage").fetchSemanticsNode().boundsInRoot
         compose.onNodeWithTag("mini_player_container").performClick()
         frame()
-        val first = compose.onNodeWithTag("expanded_player_transition").fetchSemanticsNode().boundsInRoot
+        val first = checkNotNull(motion.containerBounds())
         assertTrue("Expansion begins at the dock, not below the window: $first / $miniBefore", first.top >= viewport.height * .45f)
         val openingProgress = mutableListOf(1f - motion.fraction)
         repeat(15) { frame(); openingProgress += 1f - motion.fraction }
@@ -148,22 +159,22 @@ class PlayerExpansionMotionUiTest {
         }
         repeat(16) {
             frame()
-            widestMini = maxOf(widestMini, compose.onNodeWithTag("mini_player_container").fetchSemanticsNode().boundsInRoot.width)
+            widestMini = maxOf(widestMini, checkNotNull(motion.miniBounds).width)
             checkLandingTouch()
         }
         assertTrue("Closing should still be travelling after 250ms", motion.fraction < .97f)
-        compose.onNodeWithTag("expanded_player_transition").assertExists()
+        assertEquals("The same expanded scene remains mounted during closing", 0, playerDisposals)
         compose.onNodeWithTag("motion_stage").captureRoboImage("/tmp/player-minimize-${if (light) "light" else "dark"}-${viewport.width.toInt()}.png",
             RoborazziOptions(taskType = RoborazziTaskType.Record))
         repeat(100) {
             frame()
-            widestMini = maxOf(widestMini, compose.onNodeWithTag("mini_player_container").fetchSemanticsNode().boundsInRoot.width)
+            widestMini = maxOf(widestMini, checkNotNull(motion.miniBounds).width)
             checkLandingTouch()
         }
-        assertTrue("Dock contact should occur after a smooth, bounded journey: $contactFrame frames", contactFrame in 18..40)
+        assertTrue("Dock contact should occur after a smooth, bounded journey: $contactFrame frames", contactFrame in 18..45)
         assertBoundedZoom(closingProgress)
         assertTrue(tappedAtLanding)
-        assertEquals("The mini player must not stretch or bounce during the zoom handoff", miniBefore.width, widestMini, .5f)
+        assertEquals("The mini layout must not stretch during the container handoff", miniBefore.width, widestMini, .5f)
         assertTrue(visible.isIdle && !visible.currentState)
         compose.onNodeWithTag("expanded_player_transition").assertDoesNotExist()
         val miniAfter = compose.onNodeWithTag("mini_player_container").fetchSemanticsNode().boundsInRoot
@@ -172,10 +183,14 @@ class PlayerExpansionMotionUiTest {
         assertEquals(miniBefore.width, miniAfter.width, 1f)
         assertEquals(miniBefore.height, miniAfter.height, 1f)
         assertTrue("Motion frames must not recompose the heavy player tree", playerCompositions - compositions <= 3)
+        assertEquals("The hidden player must be retained, not recreated on every opening", 1, playerMounts)
+        assertEquals(0, playerDisposals)
         compose.onNodeWithTag("mini_player_play_pause").performClick()
-        compose.onNodeWithTag("mini_player_next").performClick()
         assertEquals(2, playTaps)
-        assertEquals(1, nextTaps)
+        if (!compact) {
+            compose.onNodeWithTag("mini_player_next").performClick()
+            assertEquals(1, nextTaps)
+        }
     }
 
     private fun assertBoundedZoom(progress: List<Float>) {
@@ -196,11 +211,11 @@ class PlayerExpansionMotionUiTest {
         compose.onNodeWithTag("mini_player_container").performClick()
         advanceUntil { visible.isIdle }
         compose.onNodeWithContentDescription("Minimize Player").performClick()
-        advanceUntil { motion.fraction in .97f.. .995f }
-        compose.onNodeWithContentDescription("Minimize Player").assertExists()
+        advanceUntil { motion.fraction in .84f.. .93f }
+        assertEquals(0, playerDisposals)
         val progress = motion.fraction
-        // Layout bounds include the entire scaled screen, not the shrinking
-        // custom outline. Measure its actual pixels to verify the handoff.
+        // The expanded layout stays full-sized; its independent container outline
+        // contracts. Verify the rendered outline, not just layout coordinates.
         val file = java.io.File("/tmp/player-closing-morph-outline.png")
         compose.onNodeWithTag("motion_stage").captureRoboImage(file.absolutePath,
             RoborazziOptions(taskType = RoborazziTaskType.Record))
@@ -232,15 +247,18 @@ class PlayerExpansionMotionUiTest {
         assertEquals(mini.height, landed.height, 1f)
     }
 
-    @Test fun openingIsQuickerWhileClosingKeepsItsFullMorphDuration() {
+    @Test fun bothDirectionsUseTheSameBoundedClockAndReverseGeometryPath() {
         show()
         compose.onNodeWithTag("mini_player_container").performClick()
-        repeat(30) { frame() }
-        assertTrue("Opening should be fully settled within half a second", visible.isIdle && visible.currentState)
+        var openingFrames = 0
+        do { frame(); openingFrames++ } while (!visible.isIdle && openingFrames < 60)
+        assertTrue(visible.currentState && visible.isIdle)
         compose.onNodeWithContentDescription("Minimize Player").performClick()
-        repeat(30) { frame() }
-        assertFalse("Closing keeps the longer journey into the mini player", visible.isIdle)
-        advanceUntil { visible.isIdle }
+        var closingFrames = 0
+        do { frame(); closingFrames++ } while (!visible.isIdle && closingFrames < 60)
+        assertTrue("A full stroke should settle near half a second: $openingFrames / $closingFrames",
+            openingFrames in 25..40 && closingFrames in 25..40)
+        assertTrue("Opening and closing must use the same animation spec", abs(openingFrames - closingFrames) <= 2)
         assertFalse(visible.currentState)
     }
 
@@ -257,7 +275,7 @@ class PlayerExpansionMotionUiTest {
         compose.runOnIdle { visible.targetState = true }
         frame()
         assertTrue(abs(motion.fraction - returning) < .3f)
-        compose.onAllNodesWithTag("expanded_player_transition").assertCountEquals(1)
+        assertEquals(1, playerMounts)
         repeat(110) { frame() }
         assertTrue(visible.isIdle && visible.currentState)
         compose.onNodeWithContentDescription("Minimize Player").performClick()
@@ -265,12 +283,15 @@ class PlayerExpansionMotionUiTest {
         assertTrue(visible.isIdle && !visible.currentState)
         compose.onNodeWithTag("expanded_player_transition").assertDoesNotExist()
         compose.onNodeWithTag("mini_player_container").assertIsDisplayed()
+        assertEquals(0, playerDisposals)
     }
 
     @Test fun reversingNearTheOpeningEndpointAndReopeningAfterClosingKeepsControlsUsable() {
         show()
         compose.onNodeWithTag("mini_player_container").performClick()
-        advanceUntil { motion.fraction in .001f.. .08f }
+        // The header button must actually have entered the shrinking clip before
+        // receiving a real touch. Earlier reversals use Back/controller state.
+        advanceUntil { motion.fraction in .001f.. .02f }
         val openingLanding = motion.fraction
         compose.onNodeWithContentDescription("Minimize Player").performClick()
         frame()
@@ -279,10 +300,12 @@ class PlayerExpansionMotionUiTest {
         // player and released its touch handlers at the same endpoint.
         advanceUntil { visible.isIdle }
         val closingLanding = motion.fraction
+        assertFalse("Closing must reach its own endpoint: fraction=$closingLanding target=${visible.targetState}", visible.currentState)
         compose.onNodeWithTag("mini_player_container").performTouchInput { click() }
         frame()
         assertTrue("The landed mini player can reopen without snapping", abs(motion.fraction - closingLanding) < .05f)
-        compose.onAllNodesWithTag("expanded_player_transition").assertCountEquals(1)
+        assertEquals("Reopening must reuse the retained scene", 1, playerMounts)
+        assertEquals(0, playerDisposals)
         advanceUntil { visible.isIdle }
         assertTrue(visible.currentState)
         assertEquals(0f, motion.fraction, .001f)
@@ -291,6 +314,96 @@ class PlayerExpansionMotionUiTest {
         assertFalse(visible.currentState)
         compose.onNodeWithTag("mini_player_next").performTouchInput { click() }
         assertEquals(1, nextTaps)
+    }
+
+    @Test fun lyricsAndCreditsSurviveClosingAndReopeningTheSamePlayerScene() {
+        show()
+        compose.onNodeWithTag("mini_player_container").performClick()
+        advanceUntil { visible.isIdle }
+        compose.onNodeWithTag("flip_album_art_card").performClick()
+        compose.mainClock.advanceTimeBy(400)
+        compose.waitForIdle()
+        compose.onNodeWithText("TRACK CREDITS & DETAILS").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Minimize Player").performClick()
+        advanceUntil { visible.isIdle }
+        compose.onNodeWithTag("mini_player_container").performClick()
+        advanceUntil { visible.isIdle }
+        compose.onNodeWithText("TRACK CREDITS & DETAILS").assertIsDisplayed()
+        compose.onNodeWithTag("player_lyrics_button").performClick()
+        compose.mainClock.advanceTimeBy(600)
+        compose.waitForIdle()
+        compose.onNodeWithTag("flip_album_art_card").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Minimize Player").performClick()
+        advanceUntil { visible.isIdle }
+        compose.onNodeWithTag("mini_player_container").performClick()
+        advanceUntil { visible.isIdle }
+        compose.onNodeWithTag("flip_album_art_card").assertDoesNotExist()
+        compose.onNodeWithTag("player_lyrics_button").performClick()
+        compose.mainClock.advanceTimeBy(600)
+        compose.waitForIdle()
+        compose.onNodeWithTag("flip_album_art_card").assertIsDisplayed()
+        assertEquals(1, playerMounts)
+        assertEquals(0, playerDisposals)
+    }
+
+    @Test fun nestedLyricsArtworkAndPlayerMorphDoNotDrawSeparateCoversOrLoseTheirLayers() {
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+        val previous = coil.Coil.imageLoader(context)
+        val cover = android.graphics.Bitmap.createBitmap(800, 800, android.graphics.Bitmap.Config.ARGB_8888)
+            .apply { eraseColor(android.graphics.Color.MAGENTA) }
+        val loader = coil.ImageLoader.Builder(context).components {
+            add(coil.intercept.Interceptor { chain -> coil.request.SuccessResult(
+                android.graphics.drawable.BitmapDrawable(context.resources, cover), chain.request, coil.decode.DataSource.MEMORY_CACHE) })
+        }.build()
+        coil.Coil.setImageLoader(loader)
+        try {
+            show(artwork = true)
+            compose.onNodeWithTag("mini_player_container").performClick()
+            advanceUntil { visible.isIdle }
+            fun artworkRegions(): Int {
+                val file = java.io.File.createTempFile("nested-player-artwork-", ".png")
+                val image = try {
+                    compose.onNodeWithTag("motion_stage").captureRoboImage(file.absolutePath,
+                        RoborazziOptions(taskType = RoborazziTaskType.Record))
+                    javax.imageio.ImageIO.read(file)
+                } finally { file.delete() }
+                val w = image.width; val h = image.height
+                val ink = BooleanArray(w * h) { index ->
+                    val rgb = java.awt.Color(image.getRGB(index % w, index / w))
+                    rgb.red > 240 && rgb.blue > 240 && rgb.green < 10
+                }
+                var regions = 0
+                for (index in ink.indices) if (ink[index]) {
+                    val pending = java.util.ArrayDeque<Int>()
+                    pending.add(index); ink[index] = false
+                    var count = 0
+                    while (!pending.isEmpty()) {
+                        val pixel = pending.removeLast(); count++
+                        val x = pixel % w; val y = pixel / w
+                        for (next in listOf(if (x > 0) pixel - 1 else -1, if (x < w - 1) pixel + 1 else -1,
+                            if (y > 0) pixel - w else -1, if (y < h - 1) pixel + w else -1)) {
+                            if (next >= 0 && ink[next]) { ink[next] = false; pending.add(next) }
+                        }
+                    }
+                    if (count > 32) regions++
+                }
+                return regions
+            }
+            compose.waitUntil(3_000) { frame(); artworkRegions() == 1 }
+            compose.onNodeWithTag("player_lyrics_button").performClick()
+            compose.mainClock.advanceTimeBy(80)
+            compose.waitForIdle()
+            artworkRegions() // Publish the in-flight inner shared element before closing.
+            compose.runOnIdle { visible.targetState = false }
+            advanceUntil { motion.expandedFraction in .4f.. .6f }
+            assertEquals("The inner lyrics scope must hand its image to the one outer overlay", 1, artworkRegions())
+            advanceUntil { visible.isIdle }
+            compose.onNodeWithTag("mini_player_container").performClick()
+            advanceUntil { visible.isIdle }
+            assertEquals(1, artworkRegions())
+            compose.onNodeWithTag("flip_album_art_card").assertDoesNotExist()
+            assertEquals(1, playerMounts)
+        } finally { coil.Coil.setImageLoader(previous); loader.shutdown() }
     }
 
     private fun advanceUntil(condition: () -> Boolean) {

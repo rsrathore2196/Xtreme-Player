@@ -31,7 +31,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SkipNext
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -42,6 +41,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -92,6 +92,9 @@ fun MiniPlayer(
     compact: Boolean = false
 ) {
     val track = uiState.currentTrack ?: return
+    val morph = LocalPlayerExpansionMotion.current
+    val interactive by remember(morph) { derivedStateOf { morph?.miniInteractive != false } }
+    val artworkDensity = androidx.compose.ui.platform.LocalDensity.current.density
 
     var totalDrag by remember { mutableFloatStateOf(0f) }
 
@@ -116,11 +119,13 @@ fun MiniPlayer(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .clickable {
+            .then(if (!interactive) Modifier.clearAndSetSemantics { } else Modifier)
+            .clickable(enabled = interactive) {
                 AppHaptics.performTap(context)
                 onClick()
             }
-            .pointerInput(track.id) {
+            .pointerInput(track.id, interactive) {
+                if (!interactive) return@pointerInput
                 detectHorizontalDragGestures(
                     onDragStart = { totalDrag = 0f },
                     onHorizontalDrag = { _, dragAmount ->
@@ -144,6 +149,7 @@ fun MiniPlayer(
         Box(
             modifier = Modifier
                 .matchParentSize()
+                .playerMorphElement(PlayerMorphSide.MINI, PlayerMorphPart.SURFACE, track.id)
                 .xtremeLiquidGlassBackground(
                     shape = CircleShape,
                     blurRadius = XtremeLiquidGlassDefaults.FloatingDockBlurRadius,
@@ -189,6 +195,8 @@ fun MiniPlayer(
                             layout(image.width, image.height) { image.placeRelative(0, 0) }
                         }
                         .size(46.dp)
+                        .playerMorphElement(PlayerMorphSide.MINI, PlayerMorphPart.ARTWORK, track.id,
+                            radiusPixels = { (12f + 6f * (compactProgress?.value ?: 0f).coerceIn(0f, 1f)) * artworkDensity })
                         .graphicsLayer {
                             val progress = (compactProgress?.value ?: 0f).coerceIn(0f, 1f)
                             shape = RoundedCornerShape((12f + 6f * progress).dp)
@@ -216,12 +224,15 @@ fun MiniPlayer(
                             softWrap = false,
                             overflow = TextOverflow.Clip,
                             modifier = Modifier.weight(1f, fill = false)
-                                .basicMarquee(iterations = Int.MAX_VALUE, initialDelayMillis = 1000)
+                                .playerMorphElement(PlayerMorphSide.MINI, PlayerMorphPart.TITLE, track.id)
+                                .basicMarquee(iterations = Int.MAX_VALUE, initialDelayMillis = 1000,
+                                    animationMode = if (interactive) androidx.compose.foundation.MarqueeAnimationMode.Immediately
+                                        else androidx.compose.foundation.MarqueeAnimationMode.WhileFocused)
                                 .testTag("mini_player_track_title")
                         )
                         if (uiState.isPlaying) {
                             Spacer(modifier = Modifier.width(6.dp))
-                            MiniAnimatedEqualizerBars()
+                            MiniAnimatedEqualizerBars(Modifier.playerMorphMiniControls(PlayerMorphPart.EQUALIZER, track.id))
                         }
                     }
 
@@ -237,6 +248,7 @@ fun MiniPlayer(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier
+                            .playerMorphElement(PlayerMorphSide.MINI, PlayerMorphPart.ARTIST, track.id)
                             .then(if (compact) Modifier.clearAndSetSemantics { } else Modifier)
                             .compactHeight(compactProgress)
                             .graphicsLayer { alpha = 1f - (compactProgress?.value ?: 0f).coerceIn(0f, 1f) }
@@ -248,10 +260,10 @@ fun MiniPlayer(
                 // Play / Pause Button - neutral liquid glass and matte finish
                 Box(
                     contentAlignment = Alignment.Center,
-                    modifier = Modifier.size(44.dp)
+                    modifier = Modifier.size(44.dp).playerMorphMiniControls(PlayerMorphPart.PLAY_PAUSE, track.id)
                 ) {
                     if (uiState.isLoading) {
-                        CircularProgressIndicator(
+                        VisibleCircularProgressIndicator(
                             modifier = Modifier.size(28.dp),
                             strokeWidth = 2.5.dp,
                             color = neutralButtonColor
@@ -342,6 +354,7 @@ fun MiniPlayer(
                         }
 
                         Surface(
+                            enabled = interactive,
                             onClick = {
                                 AppHaptics.performTap(context)
                                 onPlayPauseClick()
@@ -444,11 +457,12 @@ fun MiniPlayer(
                         AppHaptics.performTap(context)
                         onSkipNext()
                     },
-                    enabled = !compact,
+                    enabled = !compact && interactive,
                     shape = CircleShape,
                     color = Color.Transparent,
                     border = nextMatteBorder,
                     modifier = Modifier
+                        .playerMorphMiniControls(PlayerMorphPart.NEXT, track.id)
                         .then(if (compact) Modifier.clearAndSetSemantics { } else Modifier)
                         .compactWidth(compactProgress)
                         .graphicsLayer { alpha = 1f - (compactProgress?.value ?: 0f).coerceIn(0f, 1f) }
@@ -516,7 +530,7 @@ private fun Modifier.compactHeight(progress: State<Float>?): Modifier =
     }
 
 @Composable
-fun MiniAnimatedEqualizerBars() {
+fun MiniAnimatedEqualizerBars(modifier: Modifier = Modifier) {
 
     val fraction1 by rememberVisibleInfiniteFloat(
         initialValue = 0.25f,
@@ -551,7 +565,7 @@ fun MiniAnimatedEqualizerBars() {
     val eqColor = LocalAppColors.current.primaryAccent
 
     Canvas(
-        modifier = Modifier
+        modifier = modifier
             .size(width = 14.dp, height = 14.dp)
             .graphicsLayer()
     ) {

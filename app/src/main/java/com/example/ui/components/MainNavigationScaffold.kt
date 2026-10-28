@@ -212,6 +212,15 @@ fun MainNavigationScaffold(
     // position/velocity and keep their prepared content across navigation.
     val tabTransition = updateTransition(if (selectedTabIndex == 3 && !preparingStartup) 3 else 0, label = "settings_navigation_transition")
     var isPlayerExpanded by rememberSaveable { mutableStateOf(false) }
+    val playerVisibility = remember {
+        androidx.compose.animation.core.MutableTransitionState(isPlayerExpanded && playerUiState.currentTrack != null)
+    }
+    playerVisibility.targetState = isPlayerExpanded && playerUiState.currentTrack != null
+    val playerMotion = remember { PlayerExpansionMotion() }
+    // Keep the visible recording coherent for the short handoff; playback/queue
+    // state continues live and its newly prefetched artwork is used at the endpoint.
+    val playerVisualTrack = rememberPlayerHandoff(playerUiState.currentTrack, playerVisibility)
+    SideEffect { playerMotion.trackId = playerVisualTrack?.id.orEmpty() }
     var isQueueOpen by rememberSaveable { mutableStateOf(false) }
     var isEqualizerOpen by rememberSaveable { mutableStateOf(false) }
     var isCreatePlaylistOpen by rememberSaveable { mutableStateOf(false) }
@@ -220,10 +229,11 @@ fun MainNavigationScaffold(
     val scrollDock = rememberScrollDockState()
     val dockProgress = rememberScrollDockProgress(scrollDock)
     SideEffect {
-        scrollDock.enabled = !preparingStartup && !isPlayerExpanded && !isSettingsSubpageOpen && !isEqualizerOpen
+        if (isPlayerExpanded || playerVisibility.currentState || !playerVisibility.isIdle) scrollDock.suspendForPlayer()
+        else scrollDock.enabled = !preparingStartup && !isSettingsSubpageOpen && !isEqualizerOpen
     }
     LaunchedEffect(selectedTabIndex, catalogDetail?.destination?.key, selectedPlaylistWithTracks?.playlist?.playlistId,
-        isPlayerExpanded, isSettingsSubpageOpen) { scrollDock.expand() }
+        isSettingsSubpageOpen) { scrollDock.expand() }
 
     // Data admission follows real Search/Library drags and flings as well as
     // Home's nested rows. Observe here without reading scroll state in composition.
@@ -278,8 +288,9 @@ fun MainNavigationScaffold(
     }
 
     // Handle Back Press gracefully across the app
-    BackHandler(enabled = catalogDetail != null || isPlayerExpanded || selectedPlaylistWithTracks != null || selectedTabIndex != 0) {
-        if (isPlayerExpanded) {
+    BackHandler(enabled = catalogDetail != null || isPlayerExpanded || playerVisibility.currentState ||
+        !playerVisibility.isIdle || selectedPlaylistWithTracks != null || selectedTabIndex != 0) {
+        if (isPlayerExpanded || playerVisibility.currentState || !playerVisibility.isIdle) {
             isPlayerExpanded = false
         } else if (catalogDetail != null) {
             viewModel.catalogBrowser.back()
@@ -292,11 +303,6 @@ fun MainNavigationScaffold(
         }
     }
 
-    val playerVisibility = remember {
-        androidx.compose.animation.core.MutableTransitionState(isPlayerExpanded && playerUiState.currentTrack != null)
-    }
-    playerVisibility.targetState = isPlayerExpanded && playerUiState.currentTrack != null
-    val playerMotion = remember { PlayerExpansionMotion() }
     var miniPlayerBounds by remember { mutableStateOf<Rect?>(null) }
     val playerCoversContent = playerVisibility.isIdle && playerVisibility.currentState && playerVisibility.targetState
     val transitionRunning = !playerVisibility.isIdle || tabTransition.isRunning || tabPagerState.isScrollInProgress
@@ -320,6 +326,7 @@ fun MainNavigationScaffold(
     val platformOverscroll = LocalOverscrollConfiguration.current
     CompositionLocalProvider(
         LocalDynamicGlassEnabled provides isDynamicGlassEnabled,
+        LocalPlayerExpansionMotion provides playerMotion,
         LocalAppColors provides appColors,
         LocalLiquidGlassBackdrop provides rememberLiquidGlassBackdrop(captureVisibleRegions = true),
         LocalOverscrollConfiguration provides
@@ -518,8 +525,7 @@ fun MainNavigationScaffold(
                     miniPlayer = {
                     // Retain the mini surface through the handoff, then stop its
                     // hidden marquee/effects while the expanded player is idle.
-                    val isMiniPlayerVisible = playerUiState.currentTrack != null && !isSettingsSubpageOpen && !isEqualizerOpen &&
-                        (!isPlayerExpanded || !playerVisibility.isIdle)
+                    val isMiniPlayerVisible = playerVisualTrack != null && !isSettingsSubpageOpen && !isEqualizerOpen
                     val playerHandoff = isPlayerExpanded || playerVisibility.currentState || !playerVisibility.isIdle
 
                     AnimatedVisibility(
@@ -541,33 +547,40 @@ fun MainNavigationScaffold(
                             }
                             .then(if (isPlayerExpanded) Modifier.clearAndSetSemantics { } else Modifier)
                     ) {
-                        MiniPlayer(
-                            modifier = Modifier.playerMiniTransition(playerMotion),
-                            uiState = playerUiState,
-                            onPlayPauseClick = { viewModel.togglePlayPause() },
-                            onSkipNext = { viewModel.skipNext() },
-                            onSkipPrevious = { viewModel.skipPrevious() },
-                            onClick = { isPlayerExpanded = true },
-                            currentPositionProvider = { viewModel.currentPosition },
-                            compactProgress = dockProgress,
-                            compact = scrollDock.isCompact
-                        )
+                        CompositionLocalProvider(LocalVisualEffectsActive provides
+                            (LocalVisualEffectsActive.current && !playerCoversContent)) {
+                            MiniPlayer(
+                                modifier = Modifier.playerMiniTransition(playerMotion),
+                                uiState = playerUiState.copy(currentTrack = playerVisualTrack),
+                                onPlayPauseClick = { viewModel.togglePlayPause() },
+                                onSkipNext = { viewModel.skipNext() },
+                                onSkipPrevious = { viewModel.skipPrevious() },
+                                onClick = { isPlayerExpanded = true },
+                                currentPositionProvider = { viewModel.currentPosition },
+                                compactProgress = dockProgress,
+                                compact = scrollDock.isCompact
+                            )
+                        }
                     }
 
                     }, dock = {
                         val playerHandoff = isPlayerExpanded || playerVisibility.currentState || !playerVisibility.isIdle
                         AnimatedVisibility(
-                            visible = !isSettingsSubpageOpen && (!isPlayerExpanded || !playerVisibility.isIdle),
+                            visible = !isSettingsSubpageOpen,
                             enter = if (playerHandoff) EnterTransition.None else fadeIn(animationSpec = tween(180)),
                             exit = if (playerHandoff) ExitTransition.None else fadeOut(animationSpec = tween(140)),
                             modifier = Modifier.playerDockTransition(playerMotion)
+                                .then(if (playerHandoff) Modifier.clearAndSetSemantics { } else Modifier)
                         ) {
-                            FloatingPillBottomBar(
-                                selectedTabIndex = selectedTabIndex,
-                                onTabSelected = onDockTabSelected,
-                                compactProgress = dockProgress,
-                                compact = scrollDock.isCompact
-                            )
+                            CompositionLocalProvider(LocalVisualEffectsActive provides
+                                (LocalVisualEffectsActive.current && !playerCoversContent)) {
+                                FloatingPillBottomBar(
+                                    selectedTabIndex = selectedTabIndex,
+                                    onTabSelected = onDockTabSelected,
+                                    compactProgress = dockProgress,
+                                    compact = scrollDock.isCompact
+                                )
+                            }
                         }
                     }
                 )
@@ -584,18 +597,19 @@ fun MainNavigationScaffold(
             }
         }
 
-        // Both directions follow the real mini-player viewport on one layer clock.
+        // One retained scene and measured shared elements follow the same path in both directions.
         PlayerExpansionOverlay(
             visibleState = playerVisibility,
             motion = playerMotion,
             miniPlayerBounds = { miniPlayerBounds },
+            onReopen = { isPlayerExpanded = true },
             modifier = Modifier.fillMaxSize()
         ) {
             val currentLyrics by viewModel.currentLyrics.collectAsStateWithLifecycle()
             val availableAudioDevices by viewModel.availableAudioDevices.collectAsStateWithLifecycle()
             val expandedPlayer by viewModel.playbackPresentationState.collectAsStateWithLifecycle()
             ExpandedPlayerScreen(
-                uiState = expandedPlayer,
+                uiState = expandedPlayer.copy(currentTrack = playerVisualTrack ?: expandedPlayer.currentTrack),
                 onMinimize = { isPlayerExpanded = false },
                 onPlayPause = { viewModel.togglePlayPause() },
                 onSeekTo = { viewModel.seekTo(it) },
