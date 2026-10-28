@@ -15,8 +15,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.PointerEventPass
-import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.IntSize
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -27,8 +27,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 /**
- * Two independent motions: selection controls pill width, while a
- * touch springs the entire glass dock to 1.12x and back (0.5 damping / 300 stiffness).
+ * Touch pressure drives the existing glass feedback. Navigation geometry is
+ * driven separately by selection, without inflating the entire dock on press.
  * Read progress in layer/draw blocks, never in the Home or navigation composition.
  */
 @Stable
@@ -40,7 +40,6 @@ class DockGlassInteraction internal constructor(private val scope: CoroutineScop
     private var motionLease: AutoCloseable? = null
 
     val pressProgress: Float get() = progress.value
-    val scale: Float get() = 1f + 0.12f * pressProgress
     var touchPosition: Offset by mutableStateOf(Offset.Unspecified)
         private set
 
@@ -74,34 +73,12 @@ class DockGlassInteraction internal constructor(private val scope: CoroutineScop
         scope.launch(start = CoroutineStart.UNDISPATCHED) { progress.snapTo(0f) }
     }
 
-    internal suspend fun observeTouches(pointer: PointerInputScope) = with(pointer) {
-        try {
-            awaitEachGesture {
-                val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-                BackgroundWorkCoordinator.cancelNonEssentialWork()
-                var pointerId = down.id
-                touchPosition = down.position
-                pressed(true)
-                try {
-                    while (true) {
-                        // Observe before child clickables. Never consume down,
-                        // move or up: their normal cancellation/click rules own navigation.
-                        val event = awaitPointerEvent(PointerEventPass.Initial)
-                        val current = event.changes.firstOrNull { it.id == pointerId }
-                        val held = current?.takeIf { it.pressed }
-                            ?: event.changes.firstOrNull { it.pressed }
-                            ?: break
-                        pointerId = held.id
-                        touchPosition = held.position
-                    }
-                } finally {
-                    pressed(false)
-                }
-            }
-        } finally {
-            reset()
-        }
+    internal fun touch(position: Offset, started: Boolean) {
+        touchPosition = position
+        if (started) pressed(true)
     }
+
+    internal fun releaseTouch() = pressed(false)
 }
 
 @Composable
@@ -122,14 +99,41 @@ internal fun rememberDockGlassInteraction(): DockGlassInteraction {
     return interaction
 }
 
-internal fun Modifier.observeDockGlassTouches(interaction: DockGlassInteraction?): Modifier =
+internal fun Modifier.observeDockGlassTouches(interaction: DockGlassInteraction?,
+    onPosition: (Offset, IntSize, Boolean) -> Unit,
+    onFinish: () -> Unit): Modifier =
     pointerInput(interaction) {
-        if (interaction != null) interaction.observeTouches(this)
-        else awaitEachGesture {
-            awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-            BackgroundWorkCoordinator.cancelNonEssentialWork()
-            // Observe only; child clickables retain press, cancellation and navigation.
-            do { val event = awaitPointerEvent(PointerEventPass.Initial) }
-            while (event.changes.any { it.pressed })
+        try {
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                BackgroundWorkCoordinator.cancelNonEssentialWork()
+                var pointerId = down.id
+                interaction?.touch(down.position, true)
+                try {
+                    onPosition(down.position, size, true)
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        val held = event.changes.firstOrNull { it.id == pointerId && it.pressed }
+                            ?: event.changes.firstOrNull { it.pressed }
+                        if (held == null) {
+                            // Keep the selection guard through child clickables'
+                            // up handling, then release it for keyboard/accessibility.
+                            awaitPointerEvent(PointerEventPass.Final)
+                            break
+                        }
+                        val transferred = pointerId != held.id
+                        pointerId = held.id
+                        interaction?.touch(held.position, false)
+                        if (transferred || held.position != held.previousPosition)
+                            onPosition(held.position, size, false)
+                    }
+                } finally {
+                    interaction?.releaseTouch()
+                    onFinish()
+                }
+            }
+        } finally {
+            interaction?.reset()
+            onFinish()
         }
     }
