@@ -27,6 +27,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -200,14 +201,17 @@ class FeedNavigationIsolationTest {
     }
 
     @OptIn(com.github.takahirom.roborazzi.ExperimentalRoborazziApi::class)
-    @Test fun settingsOpensDirectlyAsOneOpaquePageWithoutHomeBleed() {
+    @Test fun settingsSlidesAsOneOpaquePageWithoutATranslucentPreview() {
         var destination by mutableIntStateOf(0)
         var settingsDraws = 0
         compose.mainClock.autoAdvance = false
         compose.setContent { MaterialTheme {
+            val pager = rememberPagerState(pageCount = { 3 })
             val transition = androidx.compose.animation.core.updateTransition(destination, label = "first_settings_frame")
-            Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color.Blue)) {
-                Text("Home")
+            Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color.Green)) {
+                RetainedPrimaryTabHost(pager, transition, covered = false) {
+                    Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color.Blue))
+                }
                 CompositionLocalProvider(com.example.ui.theme.LocalAppColors provides
                     com.example.ui.theme.LightAppColors.copy(scaffoldBackground = androidx.compose.ui.graphics.Color.Red)) {
                 SettingsNavigationOverlay(transition) {
@@ -234,14 +238,106 @@ class FeedNavigationIsolationTest {
                 pixels.getRGB((pixels.width * x).toInt(), pixels.height / 2)
             } finally { file.delete() }
         }
-        assertEquals("Settings must open directly, without a Home preview", android.graphics.Color.RED, capturePixel())
-        assertEquals("The revealed margins must be opaque too", android.graphics.Color.RED, capturePixel(.01f))
+        assertEquals("The previous page stays visible until the opaque page reaches it", android.graphics.Color.BLUE, capturePixel(.01f))
+        compose.mainClock.advanceTimeBy(80)
+        assertEquals("The retained Home stays visible outside the moving page", android.graphics.Color.BLUE, capturePixel(.01f))
+        assertEquals("The entering page has no faint preview or translucent duplicate", android.graphics.Color.RED, capturePixel(.999f))
         compose.runOnIdle { assertTrue("There must be only one real Settings presentation", settingsDraws > 0) }
         compose.mainClock.advanceTimeBy(60)
         assertEquals("The entering page must remain opaque", android.graphics.Color.RED, capturePixel(.95f))
         compose.mainClock.advanceTimeBy(340)
         assertEquals(android.graphics.Color.RED, capturePixel())
         compose.runOnIdle { assertTrue(settingsDraws > 0) }
+        compose.runOnIdle { destination = 0 }
+        compose.mainClock.advanceTimeByFrame()
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeBy(100)
+        assertEquals("Closing reveals the previous page progressively", android.graphics.Color.BLUE, capturePixel(.01f))
+        assertEquals("The outgoing page stays opaque", android.graphics.Color.RED, capturePixel(.99f))
+        compose.mainClock.advanceTimeBy(400)
+        assertEquals(android.graphics.Color.BLUE, capturePixel())
+    }
+
+    @Test fun settingsSlidesInAndOutWithoutRescalingOrRebuildingItsContent() = checkSettingsSlide(false)
+
+    @Test @Config(qualifiers = "w891dp-h411dp-land")
+    fun settingsSlideMirrorsInRtlAndFitsLandscape() = checkSettingsSlide(true)
+
+    private fun checkSettingsSlide(rtl: Boolean) {
+        var destination by mutableIntStateOf(0)
+        var settingsCompositions = 0
+        var settingsMeasures = 0
+        val mounts = IntArray(3)
+        val disposals = IntArray(3)
+        compose.mainClock.autoAdvance = false
+        compose.setContent { MaterialTheme {
+            val pager = rememberPagerState(pageCount = { 3 })
+            val transition = androidx.compose.animation.core.updateTransition(destination, label = "settings_slide_test")
+            CompositionLocalProvider(androidx.compose.ui.platform.LocalLayoutDirection provides
+                if (rtl) androidx.compose.ui.unit.LayoutDirection.Rtl else androidx.compose.ui.unit.LayoutDirection.Ltr) {
+            Box(Modifier.fillMaxSize().testTag("settings_motion_stage")) {
+                RetainedPrimaryTabHost(pager, transition, covered = false) { page ->
+                    DisposableEffect(page) { mounts[page]++; onDispose { disposals[page]++ } }
+                    Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color.Blue))
+                }
+                SettingsNavigationOverlay(transition) {
+                    SideEffect { settingsCompositions++ }
+                    Box(Modifier.fillMaxSize().layout { measurable, constraints ->
+                        settingsMeasures++
+                        val child = measurable.measure(constraints)
+                        layout(child.width, child.height) { child.place(0, 0) }
+                    }.background(androidx.compose.ui.graphics.Color.Red))
+                }
+            }
+            }
+        } }
+        compose.mainClock.advanceTimeBy(100)
+        compose.waitForIdle()
+        val viewport = compose.onNodeWithTag("settings_motion_stage").getUnclippedBoundsInRoot()
+        val viewportWidth = (viewport.right - viewport.left).value
+        val viewportHeight = (viewport.bottom - viewport.top).value
+        val sign = if (rtl) -1f else 1f
+        fun offset(): Float = (compose.onNodeWithTag("settings_navigation_content", useUnmergedTree = true).getUnclippedBoundsInRoot().left.value -
+            viewport.left.value) * sign
+        compose.runOnIdle { destination = 3 }
+        compose.mainClock.advanceTimeByFrame()
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeByFrame()
+        compose.waitForIdle()
+        var previous = offset()
+        assertTrue("Opening starts at the trailing edge instead of showing a second Settings layer", previous > viewportWidth * .75f)
+        val measures = settingsMeasures
+        val compositions = settingsCompositions
+        repeat(26) {
+            compose.mainClock.advanceTimeByFrame()
+            compose.waitForIdle()
+            val position = offset()
+            assertTrue("Opening must move continuously towards its destination", position <= previous + .1f)
+            val bounds = compose.onNodeWithTag("settings_navigation_content", useUnmergedTree = true).getUnclippedBoundsInRoot()
+            assertEquals("Keep text and glass at their original scale", viewportWidth, (bounds.right - bounds.left).value, .1f)
+            assertEquals(viewportHeight, (bounds.bottom - bounds.top).value, .1f)
+            assertEquals("Motion must not remeasure Settings", measures, settingsMeasures)
+            previous = position
+        }
+        assertEquals(0f, previous, .1f)
+        assertTrue("Frames must not recompose Settings", settingsCompositions - compositions <= 1)
+        compose.runOnIdle { destination = 0 }
+        compose.mainClock.advanceTimeByFrame()
+        compose.waitForIdle()
+        previous = offset()
+        repeat(15) {
+            compose.mainClock.advanceTimeByFrame()
+            compose.waitForIdle()
+            val position = offset()
+            assertTrue("Closing must retrace the same axis smoothly", position >= previous - .1f)
+            previous = position
+        }
+        assertTrue("Closing moves offscreen before disposal instead of cutting to Home", previous > viewportWidth * .75f)
+        compose.mainClock.advanceTimeBy(600)
+        compose.waitForIdle()
+        compose.onNodeWithTag("settings_navigation_overlay").assertDoesNotExist()
+        assertArrayEquals(intArrayOf(1, 1, 1), mounts)
+        assertArrayEquals(intArrayOf(0, 0, 0), disposals)
     }
 
     @Test fun settingsUsesOneOverlayAcrossInterruptedOpeningAndClosing() {

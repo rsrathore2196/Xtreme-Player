@@ -429,8 +429,7 @@ fun MainNavigationScaffold(
                       }
                     }
                     val primaryCovered = !preparingStartup && (playerCoversContent || catalogDetail != null ||
-                        currentPlaylist != null || tabTransition.currentState == 3 || tabTransition.targetState == 3 ||
-                        tabTransition.isRunning)
+                        currentPlaylist != null)
                     RetainedPrimaryTabHost(state = tabPagerState, transition = tabTransition,
                         covered = primaryCovered, inputBlocked = primaryCovered || selectedTabIndex == 3,
                         prepareStartup = preparingStartup) { tabIndex -> tabContent(tabIndex) }

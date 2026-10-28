@@ -27,8 +27,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.LifecycleOwner
@@ -189,7 +190,7 @@ private class RetainedPageLifecycle(private val parent: Lifecycle) : LifecycleOw
     }
 }
 
-/** Retain the primary tree without drawing a second page beneath Settings. */
+/** Retain the primary page during the Settings slide, with its collectors paused. */
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 internal fun RetainedPrimaryTabHost(
@@ -197,8 +198,9 @@ internal fun RetainedPrimaryTabHost(
     inputBlocked: Boolean = covered, prepareStartup: Boolean = false, content: @Composable (Int) -> Unit
 ) {
     val settingsCoversContent = transition.currentState == 3 || transition.targetState == 3 || transition.isRunning
-    Box(Modifier.fillMaxSize().drawWithContent { if (!covered && !settingsCoversContent) drawContent() }
-        .then(if (inputBlocked) Modifier.clearAndSetSemantics {
+    val settingsSettled = transition.currentState == 3 && transition.targetState == 3 && !transition.isRunning
+    Box(Modifier.fillMaxSize().drawWithContent { if (!covered && !settingsSettled) drawContent() }
+        .then(if (inputBlocked || settingsCoversContent) Modifier.clearAndSetSemantics {
             testTag = "retained_primary_tabs"
             invisibleToUser()
         }.pointerInput(Unit) {
@@ -210,27 +212,26 @@ internal fun RetainedPrimaryTabHost(
     }
 }
 
-/** One opaque page, with a short rise and settle; no translucent preview or outgoing-page fade. */
+/** One opaque page slides on a single layer clock, retracing its path on close. */
 @Composable
 internal fun SettingsNavigationOverlay(
     transition: androidx.compose.animation.core.Transition<Int>,
     content: @Composable () -> Unit
 ) {
     val progress = transition.animateFloat(transitionSpec = {
-        androidx.compose.animation.core.tween(if (targetState == 3) 240 else 180,
+        androidx.compose.animation.core.tween(if (targetState == 3) 360 else 320,
             easing = androidx.compose.animation.core.FastOutSlowInEasing)
     }, label = "settings_page_presentation") { if (it == 3) 1f else 0f }
+    val fromRight = LocalLayoutDirection.current == LayoutDirection.Ltr
     if (transition.currentState == 3 || transition.targetState == 3 || transition.isRunning) {
         Box(Modifier.fillMaxSize().clipToBounds()
-            .background(com.example.ui.theme.LocalAppColors.current.scaffoldBackground)
             .testTag("settings_navigation_overlay")) {
             Box(Modifier.fillMaxSize().graphicsLayer {
-                val remaining = 1f - progress.value
-                scaleX = 1f - 0.015f * remaining
-                scaleY = scaleX
-                translationY = 12.dp.toPx() * remaining
-                clip = true
-            }.testTag("settings_navigation_content")) { content() }
+                // Translate the canvas and its content together, keeping text,
+                // glass and borders sharp. No rescaling or transparent preview.
+                translationX = size.width * (1f - progress.value.coerceIn(0f, 1f)) * if (fromRight) 1f else -1f
+            }.background(com.example.ui.theme.LocalAppColors.current.scaffoldBackground)
+                .testTag("settings_navigation_content")) { content() }
         }
     }
 }
