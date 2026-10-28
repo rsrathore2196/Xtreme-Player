@@ -85,11 +85,65 @@ class ListeningStatsImageTest {
             assertEquals(Color.MAGENTA, pixel(100, 490))
             assertEquals(Color.YELLOW, pixel(445, 499))
             assertNotEquals("Artist portraits are circular, not square", Color.YELLOW, pixel(417, 471))
-            assertEquals(Color.MAGENTA, pixel(420, 1000))
-            assertEquals(Color.YELLOW, pixel(100, 1000))
+            assertEquals(Color.MAGENTA, pixel(430, 985))
+            assertEquals(Color.YELLOW, pixel(90, 985))
             assertFalse(songArt.isRecycled); assertFalse(artistArt.isRecycled)
             File("/tmp/listening-stats-poster.png").outputStream().use { poster.compress(Bitmap.CompressFormat.PNG, 100, it) }
         } finally { poster.recycle(); songArt.recycle(); artistArt.recycle() }
+    }
+
+    @Test fun fullFeaturedNamesWrapWithoutEllipsisAndThePosterRetainsEveryLine() {
+        val title = "Phir Aur Kya Chahiye (From Zara Hatke Zara Bachke) — Extended Original Recording"
+        val artist = "Arijit Singh, Sachin-Jigar and Amitabh Bhattacharya"
+        for (name in listOf(title, artist)) {
+            val layout = ListeningStatsImage.wrappedFeatureName(name)
+            assertTrue(layout.lineCount > 1)
+            assertEquals(name.length, layout.getLineEnd(layout.lineCount - 1))
+            for (line in 0 until layout.lineCount) assertEquals(0, layout.getEllipsisCount(line))
+        }
+        val row = song(1).copy(title = title, artist = artist)
+        val request = ListeningStatsImageRequest(ListeningSummary(60_000, 2, listOf(row), listOf(row.copy(kind = "artist"))),
+            ListeningPeriod.WEEKLY, Color.MAGENTA)
+        val poster = ListeningStatsImage.render(context, request, "Maya")
+        try {
+            val expectedName = ListeningStatsImage.wrappedFeatureName(title)
+            assertTrue("The complete featured name must fit above the image's bottom margin",
+                poster.height >= ((1033 + expectedName.height + 48) * 1.5).toInt())
+            File("/tmp/listening-stats-full-names-poster.png").outputStream().use { poster.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        } finally { poster.recycle() }
+    }
+
+    @Test fun sharedLogoUsesTheOnboardingDrawableAndTheAppNameUsesAccentAndWhite() {
+        val request = ListeningStatsImageRequest(ListeningSummary(0, 0, emptyList(), emptyList()), ListeningPeriod.WEEKLY, Color.MAGENTA)
+        val poster = ListeningStatsImage.render(context, request, "Maya")
+        val expected = Bitmap.createBitmap(192, 192, Bitmap.Config.ARGB_8888)
+        try {
+            val logo = context.getDrawable(R.drawable.ic_onboarding_logo)!!
+            logo.setBounds(0, 0, 192, 192)
+            logo.draw(android.graphics.Canvas(expected))
+            var compared = 0
+            for (y in 1 until 191) for (x in 1 until 177) {
+                val color = expected.getPixel(x, y)
+                if (Color.alpha(color) == 255 && Color.alpha(expected.getPixel(x - 1, y)) == 255 &&
+                    Color.alpha(expected.getPixel(x + 1, y)) == 255) {
+                    val actual = poster.getPixel(642 + x, 102 + y)
+                    val shade = ((.2126f * Color.red(color) + .7152f * Color.green(color) + .0722f * Color.blue(color)) / .65f)
+                        .coerceIn(0f, 255f).toInt()
+                    assertTrue("The original logo's shaded artwork must use the selected accent",
+                        kotlin.math.abs(shade - Color.red(actual)) <= 4 && Color.green(actual) <= 3 &&
+                            kotlin.math.abs(shade - Color.blue(actual)) <= 4)
+                    compared++
+                }
+            }
+            assertTrue("The smaller onboarding logo must retain its original shape at export resolution", compared > 700)
+            fun countColor(top: Int, bottom: Int, color: Int): Int {
+                var count = 0
+                for (y in top until bottom) for (x in 822 until 1018) if (poster.getPixel(x, y) == color) count++
+                return count
+            }
+            assertTrue("Xtreme uses the selected accent", countColor(150, 199, Color.MAGENTA) > 100)
+            assertTrue("Player remains white", countColor(203, 243, Color.WHITE) > 100)
+        } finally { poster.recycle(); expected.recycle() }
     }
 
     @Test fun creationProducesRealPngShareGrantsReadAccessAndSaveCopiesTheSameImage() = runBlocking {

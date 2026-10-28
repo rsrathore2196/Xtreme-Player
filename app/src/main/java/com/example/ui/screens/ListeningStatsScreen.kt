@@ -21,11 +21,15 @@ import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.Constraints
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
@@ -183,7 +187,7 @@ private fun StatCard(label: String, value: String, modifier: Modifier, song: Lis
         BoxWithConstraints(Modifier.statsCardDecoration(colors.primaryAccent, cardColor)) {
             val compact = maxWidth < 176.dp
             val media = song != null || artist != null
-            Column(Modifier.fillMaxSize().padding(if (compact) 12.dp else 16.dp),
+            Column(Modifier.fillMaxSize().padding(if (media) { if (compact) 10.dp else 12.dp } else if (compact) 12.dp else 16.dp),
                 verticalArrangement = Arrangement.SpaceBetween) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -195,19 +199,8 @@ private fun StatCard(label: String, value: String, modifier: Modifier, song: Lis
                 }
                 if (media) {
                     val row = song ?: artist!!
-                    Row(Modifier.fillMaxWidth().weight(1f), verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 12.dp)) {
-                        StatsImage(row, artist != null, Modifier.size(if (compact) 44.dp else 64.dp), roundArtist = true)
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text(value, color = textColor, fontSize = if (compact) 15.sp else 18.sp,
-                                lineHeight = if (compact) 19.sp else 23.sp, fontWeight = FontWeight.Bold,
-                                maxLines = 2, overflow = TextOverflow.Ellipsis)
-                            if (song != null) Text(row.artist, color = labelColor, fontSize = 11.sp,
-                                maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(com.example.ui.util.statsShortTime(row.listenedMs), color = labelColor,
-                                fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        }
-                    }
+                    StatsMediaContent(row, artist != null, label, value, textColor, labelColor,
+                        Modifier.fillMaxWidth().weight(1f))
                 } else {
                     Text(value, color = textColor, style = MaterialTheme.typography.headlineLarge,
                         fontSize = if (compact) 38.sp else 48.sp, lineHeight = if (compact) 44.sp else 54.sp,
@@ -215,6 +208,44 @@ private fun StatCard(label: String, value: String, modifier: Modifier, song: Lis
                     Spacer(Modifier.height(4.dp))
                 }
             }
+        }
+    }
+}
+@Composable
+private fun StatsMediaContent(row: ListeningTotal, artist: Boolean, label: String, name: String,
+    foreground: androidx.compose.ui.graphics.Color, secondary: androidx.compose.ui.graphics.Color, modifier: Modifier) {
+    val density = LocalDensity.current
+    val measurer = rememberTextMeasurer()
+    val titleStyle = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, textAlign = TextAlign.Start)
+    val detailStyle = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, lineHeight = 14.sp, textAlign = TextAlign.Start)
+    val time = com.example.ui.util.statsShortTime(row.listenedMs)
+    BoxWithConstraints(modifier) {
+        val sizing = remember(name, row.artist, artist, time, constraints, density, measurer, titleStyle, detailStyle) {
+            val width = Constraints(maxWidth = constraints.maxWidth)
+            val detailsHeight = measurer.measure(time, detailStyle, constraints = width).size.height +
+                if (artist) 0 else measurer.measure(row.artist, detailStyle, constraints = width).size.height
+            val gaps = with(density) { (if (artist) 6.dp else 9.dp).roundToPx() }
+            var result = titleStyle.copy(fontSize = 11.sp, lineHeight = 14.sp) to 24.dp
+            choose@ for (font in listOf(16f, 15f, 14f, 13f, 12f, 11f)) {
+                val style = titleStyle.copy(fontSize = font.sp, lineHeight = (font + 3).sp)
+                val textHeight = measurer.measure(name, style, constraints = width).size.height + detailsHeight + gaps
+                for (image in listOf(48.dp, 40.dp, 32.dp, 24.dp)) {
+                    if (textHeight + with(density) { image.roundToPx() } <= constraints.maxHeight) {
+                        result = style to image
+                        break@choose
+                    }
+                }
+            }
+            result
+        }
+        // Full-width wrapping is the normal path. Exceptionally long metadata or
+        // accessibility font scales remain readable through this local viewport.
+        Column(Modifier.align(Alignment.TopStart).fillMaxWidth().verticalScroll(rememberScrollState()),
+            horizontalAlignment = Alignment.Start, verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            StatsImage(row, artist, Modifier.size(sizing.second).testTag("stats_artwork_$label"), roundArtist = true)
+            Text(name, Modifier.fillMaxWidth().testTag("stats_name_$label"), style = sizing.first, color = foreground)
+            if (!artist) Text(row.artist, Modifier.fillMaxWidth().testTag("stats_song_artist"), style = detailStyle, color = secondary)
+            Text(time, Modifier.fillMaxWidth(), style = detailStyle, color = secondary)
         }
     }
 }

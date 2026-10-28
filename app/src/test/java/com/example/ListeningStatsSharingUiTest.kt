@@ -9,12 +9,14 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Density
 import androidx.core.graphics.ColorUtils
 import com.example.data.local.ListeningPeriod
 import com.example.data.local.ListeningTotal
@@ -133,10 +135,60 @@ class ListeningStatsSharingUiTest {
         val share = chooser!!.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)!!
         assertEquals("image/png", share.type)
         assertTrue(share.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0)
+        compose.waitUntil(3_000) {
+            shadowOf(android.os.Looper.getMainLooper()).idle()
+            !compose.onNodeWithTag("save_stats_image").fetchSemanticsNode().config.contains(SemanticsProperties.Disabled)
+        }
         compose.onNodeWithTag("save_stats_image").performClick()
-        val picker = shadowOf(compose.activity).nextStartedActivityForResult.intent
-        assertEquals(Intent.ACTION_CREATE_DOCUMENT, picker.action)
-        assertEquals("image/png", picker.type)
-        assertEquals("Xtreme-Player-Monthly-Stats.png", picker.getStringExtra(Intent.EXTRA_TITLE))
+        var picker: Intent? = null
+        compose.waitUntil(3_000) {
+            shadowOf(android.os.Looper.getMainLooper()).idle()
+            // Robolectric also records startActivity's chooser in this separate result queue.
+            val next = shadowOf(compose.activity).nextStartedActivityForResult?.intent
+            if (next?.action == Intent.ACTION_CREATE_DOCUMENT) picker = next
+            picker != null
+        }
+        assertEquals("image/png", picker!!.type)
+        assertEquals("Xtreme-Player-Monthly-Stats.png", picker!!.getStringExtra(Intent.EXTRA_TITLE))
+    }
+
+    @Test fun fullFeaturedNamesFitBelowTheirArtworkInTheSameSquareCards() = verifyFullNames(false)
+
+    @Test @Config(qualifiers = "w360dp-h800dp-port")
+    fun fullFeaturedNamesRemainReadableInNarrowWindowsWithLargerFonts() = verifyFullNames(true)
+
+    private fun verifyFullNames(largeFont: Boolean) {
+        val title = "Phir Aur Kya Chahiye (From Zara Hatke Zara Bachke)"
+        val artist = "Arijit Singh and Sachin-Jigar"
+        val row = song.copy(title = title, artist = artist)
+        val data = summary.copy(songs = listOf(row), artists = listOf(row.copy(kind = "artist")))
+        compose.setContent { MaterialTheme {
+            val density = LocalDensity.current
+            CompositionLocalProvider(LocalAppColors provides if (largeFont) LightAppColors else DarkAppColors,
+                LocalDensity provides Density(density.density, if (largeFont) 1.3f else density.fontScale),
+                LocalArtworkRequestsActive provides false, LocalVisualEffectsActive provides false) {
+                ListeningStatsContent(data, ListeningPeriod.WEEKLY, {}, {}, { _, _ -> }, {})
+            }
+        } }
+        for ((label, name) in listOf("Top Song" to title, "Top Artist" to artist)) {
+            val card = compose.onNodeWithTag("stats_card_$label").fetchSemanticsNode().boundsInRoot
+            val art = compose.onNodeWithTag("stats_artwork_$label").fetchSemanticsNode().boundsInRoot
+            val text = compose.onNodeWithTag("stats_name_$label")
+            val bounds = text.fetchSemanticsNode().boundsInRoot
+            assertEquals(card.width, card.height, 1f)
+            assertTrue("Artwork must be above the full name", art.bottom <= bounds.top + 1f)
+            assertEquals("The name must start directly under the upper-left artwork", art.left, bounds.left, 1f)
+            assertTrue("The complete name must stay inside the square card", bounds.bottom <= card.bottom - 2f)
+            val layouts = mutableListOf<TextLayoutResult>()
+            text.performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
+            val layout = layouts.single()
+            assertEquals(name, layout.layoutInput.text.text)
+            assertFalse(layout.hasVisualOverflow)
+            assertTrue("Every line must be visible, not clipped by the card viewport", bounds.height >= layout.size.height - 1f)
+            assertEquals(name.length, layout.getLineEnd(layout.lineCount - 1))
+            for (line in 0 until layout.lineCount) assertFalse(layout.isLineEllipsized(line))
+        }
+        compose.onNodeWithTag("listening_stats_page").captureRoboImage("/tmp/listening-stats-full-names-" + largeFont + ".png",
+            RoborazziOptions(taskType = RoborazziTaskType.Record))
     }
 }
