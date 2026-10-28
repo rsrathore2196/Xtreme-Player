@@ -6,16 +6,19 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.ui.semantics.Role
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -35,6 +38,10 @@ import com.example.ui.components.AppDynamicLogo
 import com.example.ui.theme.LocalAppColors
 import com.example.ui.theme.LiquidGlass
 import com.example.ui.util.rememberOptimizedImageRequest
+import com.example.ui.util.ListeningStatsImageRequest
+import com.example.ui.util.statsCardDecoration
+import com.example.ui.util.statsCardBase
+import com.example.ui.util.statsCardHighlight
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.catch
 import java.util.Locale
@@ -67,13 +74,19 @@ fun ListeningStatsScreen(period: ListeningPeriod, onPeriod: (ListeningPeriod) ->
     }
     val scope = rememberCoroutineScope()
     var playback by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    val colors = LocalAppColors.current
+    var sharing by remember { mutableStateOf<ListeningStatsImageRequest?>(null) }
     ListeningStatsContent(summary, period, onPeriod, onBack, { track, queue ->
         playback?.cancel()
         playback = scope.launch {
             val resolved = repository.playbackTracks(queue)
             onTrack(resolved.firstOrNull { it.id == track.id } ?: track, resolved)
         }
-    }, onArtist, listState, failure, { reloadRevision++ }, embedded, modifier)
+    }, onArtist, listState, failure, { reloadRevision++ }, embedded, modifier,
+        onShare = { snapshot, selectedPeriod ->
+            sharing = ListeningStatsImageRequest(snapshot, selectedPeriod, colors.primaryAccent.toArgb())
+        })
+    sharing?.let { request -> ListeningStatsShareDialog(request, onDismiss = { sharing = null }) }
 }
 
 @Composable
@@ -81,7 +94,8 @@ internal fun ListeningStatsContent(summary: ListeningSummary?, period: Listening
     onPeriod: (ListeningPeriod) -> Unit, onBack: () -> Unit,
     onTrack: (MusicTrack, List<MusicTrack>) -> Unit, onArtist: (CatalogArtist) -> Unit,
     listState: LazyListState = rememberLazyListState(), failure: String? = null, onRetry: () -> Unit = {},
-    embedded: Boolean = false, modifier: Modifier = Modifier) {
+    embedded: Boolean = false, modifier: Modifier = Modifier,
+    onShare: (ListeningSummary, ListeningPeriod) -> Unit = { _, _ -> }) {
     val colors = LocalAppColors.current
     BackHandler(onBack = onBack)
     val queue = remember(summary?.songs) { summary?.songs.orEmpty().map { it.track() } }
@@ -132,6 +146,16 @@ internal fun ListeningStatsContent(summary: ListeningSummary?, period: Listening
         itemsIndexed(summary?.artists.orEmpty(), key = { _, row -> "artist:${row.identity}" }) { index, row ->
             StatsRankingRow(index, row, true) { onArtist(statsArtist(row)) }
         }
+        item(key = "share_stats") {
+            OutlinedButton(onClick = { summary?.let { onShare(it, period) } }, enabled = summary != null,
+                modifier = Modifier.fillMaxWidth().testTag("share_listening_stats"),
+                shape = RoundedCornerShape(18.dp), border = BorderStroke(1.dp, colors.primaryAccent.copy(alpha = .55f)),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = colors.textPrimary)) {
+                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(10.dp))
+                Text("Share the stats", fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(vertical = 8.dp))
+            }
+        }
     }
     }
 }
@@ -141,46 +165,62 @@ private fun statsArtist(row: ListeningTotal): CatalogArtist = ArtistPhotoReposit
 @Composable
 private fun StatCard(label: String, value: String, modifier: Modifier, song: ListeningTotal? = null, artist: ListeningTotal? = null) {
     val colors = LocalAppColors.current
-    // Built-in presets get a raised surface; custom cards retain their exact saved color.
-    val cardColor = if (colors.neutralSurfaces) colors.cardBackgroundElevated else colors.cardBackground
+    val savedSurface = if (colors.neutralSurfaces) colors.cardBackgroundElevated else colors.cardBackground
+    val cardColor = remember(colors.primaryAccent, savedSurface) { statsCardBase(colors.primaryAccent, savedSurface) }
     val minimumContrast = if (colors.highContrastTypography) 7f else 4.5f
-    val textColor = remember(colors.textPrimary, cardColor, minimumContrast) {
-        LiquidGlass.contrastColor(colors.textPrimary, listOf(cardColor), minimumContrast)
+    val surfaces = remember(cardColor, colors.primaryAccent) {
+        listOf(cardColor, statsCardHighlight(colors.primaryAccent, cardColor),
+            colors.primaryAccent.copy(alpha = .30f).compositeOver(cardColor))
     }
-    val labelColor = remember(colors.textSecondary, cardColor, minimumContrast) {
-        LiquidGlass.contrastColor(colors.textSecondary, listOf(cardColor), minimumContrast)
+    val textColor = remember(colors.textPrimary, surfaces, minimumContrast) {
+        LiquidGlass.contrastColor(colors.textPrimary, surfaces, minimumContrast)
     }
-    val logoSurface = colors.primaryAccent.copy(alpha = 0.08f).compositeOver(cardColor)
+    val labelColor = remember(colors.textSecondary, surfaces, minimumContrast) {
+        LiquidGlass.contrastColor(colors.textSecondary, surfaces, minimumContrast)
+    }
     Surface(modifier.aspectRatio(1f).testTag("stats_card_$label"), shape = RoundedCornerShape(24.dp),
-        color = cardColor, tonalElevation = 0.dp, shadowElevation = 6.dp,
-        border = BorderStroke(1.dp, textColor.copy(alpha = 0.10f))) {
-        BoxWithConstraints {
+        color = cardColor, tonalElevation = 0.dp, shadowElevation = 6.dp) {
+        BoxWithConstraints(Modifier.statsCardDecoration(colors.primaryAccent, cardColor)) {
             val compact = maxWidth < 176.dp
             val media = song != null || artist != null
             Column(Modifier.fillMaxSize().padding(if (compact) 12.dp else 16.dp),
                 verticalArrangement = Arrangement.SpaceBetween) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(label, Modifier.weight(1f), color = labelColor,
+                    Text(label.uppercase(Locale.getDefault()), Modifier.weight(1f), color = labelColor,
                         style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold,
-                        maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        letterSpacing = 1.1.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     AppDynamicLogo(Modifier.size(if (compact) 24.dp else 28.dp)
-                        .clip(RoundedCornerShape(8.dp)).background(logoSurface).testTag("stats_logo_$label"),
-                        cutoutColor = logoSurface, showGlow = false)
+                        .testTag("stats_logo_$label"), cutoutColor = cardColor, showGlow = false)
                 }
-                if (media) StatsImage(song ?: artist!!, artist != null, Modifier.size(if (compact) 40.dp else 52.dp))
-                Text(value, color = textColor,
-                    style = if (media) MaterialTheme.typography.titleMedium else MaterialTheme.typography.headlineLarge,
-                    fontSize = if (media) { if (compact) 16.sp else 18.sp } else if (compact) 32.sp else 40.sp,
-                    lineHeight = if (media) { if (compact) 20.sp else 24.sp } else if (compact) 38.sp else 48.sp,
-                    fontWeight = FontWeight.Bold, maxLines = if (media) 2 else 1, overflow = TextOverflow.Ellipsis)
+                if (media) {
+                    val row = song ?: artist!!
+                    Row(Modifier.fillMaxWidth().weight(1f), verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 12.dp)) {
+                        StatsImage(row, artist != null, Modifier.size(if (compact) 44.dp else 64.dp), roundArtist = true)
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(value, color = textColor, fontSize = if (compact) 15.sp else 18.sp,
+                                lineHeight = if (compact) 19.sp else 23.sp, fontWeight = FontWeight.Bold,
+                                maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            if (song != null) Text(row.artist, color = labelColor, fontSize = 11.sp,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(com.example.ui.util.statsShortTime(row.listenedMs), color = labelColor,
+                                fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                } else {
+                    Text(value, color = textColor, style = MaterialTheme.typography.headlineLarge,
+                        fontSize = if (compact) 38.sp else 48.sp, lineHeight = if (compact) 44.sp else 54.sp,
+                        fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Spacer(Modifier.height(4.dp))
+                }
             }
         }
     }
 }
 @Composable
-private fun StatsImage(row: ListeningTotal, artist: Boolean, modifier: Modifier) {
-    val clipped = modifier.clip(RoundedCornerShape(12.dp))
+private fun StatsImage(row: ListeningTotal, artist: Boolean, modifier: Modifier, roundArtist: Boolean = false) {
+    val clipped = modifier.clip(if (artist && roundArtist) CircleShape else RoundedCornerShape(12.dp))
     if (artist) ArtistPortrait(statsArtist(row), clipped, targetSize = 200, backgroundColor = LocalAppColors.current.cardBackground)
     else AsyncImage(rememberOptimizedImageRequest(row.track(), 120), row.title, clipped, contentScale = ContentScale.Crop)
 }

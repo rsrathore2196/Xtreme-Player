@@ -342,7 +342,8 @@ class ListeningStatsRepository internal constructor(context: Context, suppliedDa
     }
 }
 
-data class ListeningSummary(val millis: Long, val plays: Long, val songs: List<ListeningTotal>, val artists: List<ListeningTotal>) {
+data class ListeningSummary(val millis: Long, val plays: Long, val songs: List<ListeningTotal>, val artists: List<ListeningTotal>,
+    val songCount: Int = songs.size, val artistCount: Int = artists.size) {
     companion object {
         fun from(songs: List<ListeningTotal>, artists: List<ListeningTotal>): ListeningSummary {
             val artistIds = artists.filter { it.artistId.startsWith("UC") }
@@ -355,11 +356,14 @@ data class ListeningSummary(val millis: Long, val plays: Long, val songs: List<L
                 } else it.identity
             }.values.map { group -> group.first().copy(listenedMs = group.sumOf { it.listenedMs }, plays = group.sumOf { it.plays },
                 artistId = group.firstOrNull { it.artistId.startsWith("UC") }?.artistId.orEmpty()) }
+            val mergedSongs = merge(songs, false)
+            val mergedArtists = merge(artists, true).filter { it.listenedMs > 0 }
             return ListeningSummary(songs.sumOf { it.listenedMs }, songs.sumOf { it.plays },
-                merge(songs, false).filter { it.plays > 0 }.sortedWith(compareByDescending<ListeningTotal> { it.plays }
+                mergedSongs.filter { it.plays > 0 }.sortedWith(compareByDescending<ListeningTotal> { it.plays }
                     .thenByDescending { it.listenedMs }.thenBy { it.identity }).take(5),
-                merge(artists, true).filter { it.listenedMs > 0 }.sortedWith(compareByDescending<ListeningTotal> { it.listenedMs }
-                    .thenBy { it.identity }).take(5))
+                mergedArtists.sortedWith(compareByDescending<ListeningTotal> { it.listenedMs }
+                    .thenBy { it.identity }).take(5),
+                mergedSongs.count { it.listenedMs > 0 || it.plays > 0 }, mergedArtists.size)
         }
     }
 }
