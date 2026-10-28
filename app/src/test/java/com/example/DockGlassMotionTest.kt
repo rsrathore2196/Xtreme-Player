@@ -29,6 +29,7 @@ import com.example.ui.components.LocalDynamicGlassEnabled
 import com.example.ui.components.rememberLiquidGlassBackdrop
 import com.example.ui.components.xtremeSharedBackdropSource
 import com.example.ui.theme.DarkAppColors
+import com.example.ui.theme.LightAppColors
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
@@ -55,9 +56,10 @@ class DockGlassMotionTest {
     private var compositions = 0
     private var measures = 0
     private val dock get() = compose.onNodeWithTag("floating_bottom_navigation_bar")
+    private val outerGlass get() = compose.onNodeWithTag("bottom_bar_outer_glass", useUnmergedTree = true)
 
     private fun showDock(glass: Boolean = true, withBackdrop: Boolean = false, owner: LifecycleOwner? = null,
-        direction: LayoutDirection = LayoutDirection.Ltr, initialSelection: Int = 0) {
+        direction: LayoutDirection = LayoutDirection.Ltr, initialSelection: Int = 0, light: Boolean = false) {
         compose.mainClock.autoAdvance = false
         compose.setContent { MaterialTheme {
             val tab = remember { mutableIntStateOf(initialSelection) }
@@ -82,7 +84,7 @@ class DockGlassMotionTest {
                     measures++
                     val placeable = measurable.measure(constraints)
                     layout(placeable.width, placeable.height) { placeable.place(0, 0) }
-                }, appColors = DarkAppColors.copy(dynamicGlassEnabled = glass))
+                }, appColors = (if (light) LightAppColors else DarkAppColors).copy(dynamicGlassEnabled = glass))
             }
             }
         } }
@@ -137,6 +139,74 @@ class DockGlassMotionTest {
             }
             compose.mainClock.advanceTimeBy(1200)
         }
+    }
+
+    @Test fun selectionBouncesTheOuterGlassEvenWithoutAHeldTouch() = checkSelectionBounce()
+
+    @Test fun lightThemeAndGlassDisabledKeepTheSameSelectionBounce() = checkSelectionBounce(light = true, glass = false)
+
+    private fun checkSelectionBounce(light: Boolean = false, glass: Boolean = true) {
+        showDock(light = light, glass = glass)
+        val originalSize = dock.fetchSemanticsNode().size
+        for (title in listOf("search", "library", "home")) {
+            // A semantics click intentionally omits press feedback. Selection
+            // itself must move the complete glass rim, fill and backdrop.
+            compose.onNodeWithTag("nav_tab_${title}_inactive").performClick()
+            compose.mainClock.advanceTimeByFrame()
+            val measureCount = measures
+            val compositionCount = compositions
+            var peak = 1f
+            var trough = 1f
+            repeat(90) {
+                compose.mainClock.advanceTimeByFrame()
+                val parent = dock.fetchSemanticsNode().boundsInRoot
+                val outer = outerGlass.fetchSemanticsNode().boundsInRoot
+                val scale = outer.height / parent.height
+                peak = maxOf(peak, scale)
+                trough = minOf(trough, scale)
+                assertEquals("The whole outer glass scales uniformly", scale, outer.width / parent.width, .001f)
+                assertEquals("The capsule stays centered horizontally", parent.center.x, outer.center.x, .5f)
+                assertEquals("The capsule stays centered vertically", parent.center.y, outer.center.y, .5f)
+                assertEquals("Outer selection motion must not remeasure the dock", measureCount, measures)
+                assertEquals("Outer selection motion must not recompose its host", compositionCount, compositions)
+                assertEquals(originalSize, dock.fetchSemanticsNode().size)
+            }
+            assertTrue("A quick selection must visibly expand the outer glass: $peak", peak > 1.02f)
+            assertTrue("The outer glass must follow the inner spring's restrained landing: $trough", trough < .997f)
+            assertTrue("Keep the added outer motion subtle and bounded", peak <= 1.045f && trough >= .985f)
+            val parent = dock.fetchSemanticsNode().boundsInRoot
+            val outer = outerGlass.fetchSemanticsNode().boundsInRoot
+            assertEquals("Selection returns to the existing resting geometry", parent.height, outer.height, .1f)
+            compose.onNodeWithTag("nav_tab_${title}_active").assertIsSelected()
+        }
+        assertEquals(3, clicks)
+    }
+
+    @Test fun rapidSelectionsRetargetTheOuterGlassContinuouslyWithoutStretchingContent() {
+        showDock()
+        val titles = listOf("home", "search", "library")
+        var previousScale = 1f
+        for (target in listOf(1, 2, 0, 2, 1, 0)) {
+            compose.onNodeWithTag("nav_tab_${titles[target]}_inactive").performClick()
+            repeat(7) {
+                compose.mainClock.advanceTimeByFrame()
+                val outer = outerGlass.fetchSemanticsNode().boundsInRoot
+                val parent = dock.fetchSemanticsNode().boundsInRoot
+                val scale = outer.height / parent.height
+                assertTrue("Retargeting must not jump the outer surface", kotlin.math.abs(scale - previousScale) < .015f)
+                previousScale = scale
+                for (title in titles) {
+                    val icon = compose.onNodeWithContentDescription(title.replaceFirstChar { it.uppercase() },
+                        useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+                    assertEquals("Only the outer glass gets the new motion", icon.width, icon.height, .6f)
+                }
+            }
+        }
+        compose.mainClock.advanceTimeBy(1600)
+        val parent = dock.fetchSemanticsNode().boundsInRoot
+        assertEquals(parent.height, outerGlass.fetchSemanticsNode().boundsInRoot.height, .1f)
+        assertEquals(6, clicks)
+        assertEquals(0, selected)
     }
 
     @Test fun retainedEndpointsAndTouchTargetsAlsoWorkInRtl() {

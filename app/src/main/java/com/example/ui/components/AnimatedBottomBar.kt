@@ -175,7 +175,20 @@ fun AnimatedBottomBar(
             .height(64.dp),
         contentAlignment = Alignment.Center
     ) {
-        Box(Modifier.matchParentSize().xtremeLiquidGlassBackground(
+        Box(Modifier.matchParentSize().graphicsLayer {
+            // Complementary tab widths mostly cancel as selection moves. Give
+            // the outer glass its own restrained deformation on those same
+            // springs, including their landing. Summing every tab preserves
+            // continuity when another tab is tapped before the motion finishes.
+            var deformation = 0f
+            for (motion in motions) {
+                val expansion = motion.expansion.value
+                deformation += expansion * (1f - expansion)
+            }
+            val scale = 1f + .035f * (2f * deformation).coerceIn(-.4f, 1.25f)
+            scaleX = scale
+            scaleY = scale
+        }.testTag("bottom_bar_outer_glass").xtremeLiquidGlassBackground(
             shape = viewportShape,
             blurRadius = XtremeLiquidGlassDefaults.FloatingDockBlurRadius,
             surfaceTintAlpha = XtremeLiquidGlassDefaults.FloatingDockTintAlpha,
