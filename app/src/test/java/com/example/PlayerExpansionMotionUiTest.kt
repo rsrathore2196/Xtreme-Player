@@ -61,20 +61,22 @@ class PlayerExpansionMotionUiTest {
                 Box(Modifier.fillMaxSize().background(colors.scaffoldBackground).testTag("motion_stage")) {
                     AdaptiveBottomControls(
                         landscape = LocalConfiguration.current.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE,
+                        collapseProgress = remember { mutableStateOf(0f) },
                         modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(bottom = 12.dp),
                         miniPlayer = {
-                            Box(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp)
-                                .onGloballyPositioned { bounds = it.boundsInRoot() }
-                                .then(if (visible.targetState) Modifier.clearAndSetSemantics { } else Modifier)) {
-                                androidx.compose.animation.AnimatedVisibility(!visible.targetState || !visible.isIdle,
-                                    enter = EnterTransition.None, exit = ExitTransition.None) {
+                            androidx.compose.animation.AnimatedVisibility(!visible.targetState || !visible.isIdle,
+                                enter = EnterTransition.None, exit = ExitTransition.None,
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp)
+                                    .onGloballyPositioned { if (it.size.width > 0 && it.size.height > 0) bounds = it.boundsInRoot() }
+                                    .then(if (visible.targetState) Modifier.clearAndSetSemantics { } else Modifier)) {
                                     MiniPlayer(PlayerUiState(currentTrack = song), { playTaps++ }, { nextTaps++ }, {},
                                         { visible.targetState = true }, modifier = Modifier.playerMiniTransition(motion))
-                                }
                             }
                         },
                         dock = {
-                            AnimatedVisibility(!visible.targetState, enter = EnterTransition.None, exit = ExitTransition.None) {
+                            AnimatedVisibility(!visible.targetState || !visible.isIdle,
+                                enter = EnterTransition.None, exit = ExitTransition.None,
+                                modifier = Modifier.playerDockTransition(motion)) {
                                 FloatingPillBottomBar(0, {})
                             }
                         }
@@ -109,9 +111,11 @@ class PlayerExpansionMotionUiTest {
         frame()
         val first = compose.onNodeWithTag("expanded_player_transition").fetchSemanticsNode().boundsInRoot
         assertTrue("Expansion begins at the dock, not below the window: $first / $miniBefore", first.top >= viewport.height * .45f)
+        repeat(15) { frame() }
+        assertTrue("Opening must retain a visible journey instead of snapping to the full viewport", motion.fraction > .01f)
         var openingOvershoot = 0f
-        repeat(65) { frame(); openingOvershoot = minOf(openingOvershoot, motion.fraction) }
-        assertTrue("The expanded landing has a damped elastic settle", openingOvershoot < -.001f)
+        repeat(100) { frame(); openingOvershoot = minOf(openingOvershoot, motion.fraction) }
+        assertTrue("The expanded landing must have a perceptible damped bounce", openingOvershoot < -.04f)
         assertTrue(visible.isIdle && visible.currentState)
         assertEquals(0f, motion.fraction, .001f)
         val expanded = compose.onNodeWithTag("expanded_player_transition").fetchSemanticsNode().boundsInRoot
@@ -125,8 +129,12 @@ class PlayerExpansionMotionUiTest {
         var closingOvershoot = 1f
         var widestMini = miniBefore.width
         var tappedAtLanding = false
+        var closingFrames = 1
+        var contactFrame = 0
         fun checkLandingTouch() {
+            closingFrames++
             if (motion.fraction > 1f && !tappedAtLanding) {
+                contactFrame = closingFrames
                 compose.onNodeWithTag("mini_player_play_pause").performTouchInput { click() }
                 assertEquals("The invisible expanded surface must not intercept the landed mini player's button", 1, playTaps)
                 tappedAtLanding = true
@@ -138,18 +146,20 @@ class PlayerExpansionMotionUiTest {
             widestMini = maxOf(widestMini, compose.onNodeWithTag("mini_player_container").fetchSemanticsNode().boundsInRoot.width)
             checkLandingTouch()
         }
+        assertTrue("Closing should still be travelling after 250ms", motion.fraction < .97f)
         compose.onNodeWithTag("expanded_player_transition").assertExists()
         compose.onNodeWithTag("motion_stage").captureRoboImage("/tmp/player-minimize-${if (light) "light" else "dark"}-${viewport.width.toInt()}.png",
             RoborazziOptions(taskType = RoborazziTaskType.Record))
-        repeat(65) {
+        repeat(100) {
             frame()
             closingOvershoot = maxOf(closingOvershoot, motion.fraction)
             widestMini = maxOf(widestMini, compose.onNodeWithTag("mini_player_container").fetchSemanticsNode().boundsInRoot.width)
             checkLandingTouch()
         }
-        assertTrue("Mini landing reads the same spring overshoot", closingOvershoot > 1.001f)
+        assertTrue("Dock contact should occur after a smooth, bounded journey: $contactFrame frames", contactFrame in 18..40)
+        assertTrue("Mini landing reads the same perceptible spring overshoot", closingOvershoot > 1.04f)
         assertTrue(tappedAtLanding)
-        assertTrue("The mini player visibly springs after reaching its dock", widestMini > miniBefore.width + .3f)
+        assertTrue("The mini player visibly springs after reaching its dock", widestMini > miniBefore.width * 1.025f)
         assertTrue(visible.isIdle && !visible.currentState)
         compose.onNodeWithTag("expanded_player_transition").assertDoesNotExist()
         val miniAfter = compose.onNodeWithTag("mini_player_container").fetchSemanticsNode().boundsInRoot
@@ -178,10 +188,10 @@ class PlayerExpansionMotionUiTest {
         frame()
         assertTrue(abs(motion.fraction - returning) < .3f)
         compose.onAllNodesWithTag("expanded_player_transition").assertCountEquals(1)
-        repeat(80) { frame() }
+        repeat(110) { frame() }
         assertTrue(visible.isIdle && visible.currentState)
         compose.onNodeWithContentDescription("Minimize Player").performClick()
-        repeat(80) { frame() }
+        repeat(110) { frame() }
         assertTrue(visible.isIdle && !visible.currentState)
         compose.onNodeWithTag("expanded_player_transition").assertDoesNotExist()
         compose.onNodeWithTag("mini_player_container").assertIsDisplayed()

@@ -9,6 +9,8 @@ import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.example.ui.screens.OnboardingScreen
 import com.example.ui.theme.*
 import com.github.takahirom.roborazzi.*
@@ -63,7 +65,13 @@ class OnboardingAppearanceUiTest {
         assertEquals("Brand accent must be inherited, not substituted", inherited.primaryAccent, textColor("Xtreme"))
         assertCanvas("welcome")
         compose.onNodeWithTag("start_listening_button").performScrollTo().performClick()
-        compose.onNodeWithText("Make it yours.").assertIsDisplayed()
+        compose.onNodeWithText("Make it yours.").assertDoesNotExist()
+        compose.onNodeWithTag("onboarding_details_logo").assertWidthIsEqualTo(70.4.dp).assertHeightIsEqualTo(70.4.dp)
+        for (brand in listOf("Xtreme", "Player")) {
+            val layouts = mutableListOf<TextLayoutResult>()
+            compose.onNodeWithText(brand).performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
+            assertEquals(26.4.sp, layouts.single().layoutInput.style.fontSize)
+        }
         compose.onNodeWithText("A LITTLE ABOUT YOU").assertDoesNotExist()
         for (name in listOf("English", "Hindi", "Punjabi", "Spanish", "Korean"))
             compose.onNodeWithTag("language_chip_$name").assertExists()

@@ -235,7 +235,7 @@ private fun OnboardingContent(
                         verticalArrangement = Arrangement.spacedBy(16.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        // 1. TOP HERO HEADER: Centered Original Logo, App Title & Step Badge
+                        // Centered original logo and app title.
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             modifier = Modifier
@@ -245,7 +245,7 @@ private fun OnboardingContent(
                             Box(contentAlignment = Alignment.Center, modifier = Modifier.size(76.dp)) {
                                 Image(painterResource(R.drawable.ic_onboarding_logo),
                                     contentDescription = "Xtreme Player Logo",
-                                    modifier = Modifier.size(64.dp).testTag("onboarding_details_logo"))
+                                    modifier = Modifier.size(70.4.dp).testTag("onboarding_details_logo"))
                             }
 
                             Spacer(modifier = Modifier.height(8.dp))
@@ -260,7 +260,7 @@ private fun OnboardingContent(
                                     style = MaterialTheme.typography.titleLarge.copy(
                                         fontWeight = FontWeight.Black,
                                         letterSpacing = 1.sp,
-                                        fontSize = 24.sp,
+                                        fontSize = 26.4.sp,
                                         color = primaryAccent
                                     )
                                 )
@@ -270,17 +270,13 @@ private fun OnboardingContent(
                                     style = MaterialTheme.typography.titleLarge.copy(
                                         fontWeight = FontWeight.Black,
                                         letterSpacing = 1.sp,
-                                        fontSize = 24.sp,
+                                        fontSize = 26.4.sp,
                                         color = textPrimary
                                     )
                                 )
                             }
 
                             Spacer(modifier = Modifier.height(4.dp))
-
-                            Text("Make it yours.", color = textPrimary, fontSize = 28.sp,
-                                fontWeight = FontWeight.Bold, letterSpacing = (-.5).sp,
-                                modifier = Modifier.padding(top = 12.dp, bottom = 6.dp))
 
                             Text(
                                 text = "Personalize your recommendations",

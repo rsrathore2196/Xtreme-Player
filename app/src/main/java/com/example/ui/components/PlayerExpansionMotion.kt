@@ -44,24 +44,30 @@ internal class PlayerExpansionMotion {
 }
 
 private fun collapsedViewport(value: Float): Float {
-    val unit = value.coerceIn(0f, 1f)
-    return unit * unit * (3f - 2f * unit)
+    // The spring already eases velocity. A second easing made most of the
+    // visible journey finish before the spring's landing was actually reached.
+    return value.coerceIn(0f, 1f)
 }
 
 private fun miniReveal(viewport: Float): Float {
-    val unit = ((viewport - .25f) / .7f).coerceIn(0f, 1f)
+    val unit = ((viewport - .62f) / .35f).coerceIn(0f, 1f)
     return unit * unit * (3f - 2f * unit)
 }
 
 internal fun Modifier.playerMiniTransition(motion: PlayerExpansionMotion): Modifier = graphicsLayer {
     val raw = motion.fraction
     val reveal = miniReveal(collapsedViewport(raw))
-    val landing = (raw - 1f).coerceIn(0f, .08f)
+    val landing = (raw - 1f).coerceIn(0f, .10f)
     alpha = reveal
     transformOrigin = TransformOrigin(.5f, 1f)
-    scaleX = .98f + .02f * reveal + landing * .38f
+    scaleX = .98f + .02f * reveal + landing * .65f
     scaleY = scaleX
-    translationY = -(1f - reveal) * 8.dp.toPx() - landing * 48.dp.toPx()
+    translationY = -(1f - reveal) * 8.dp.toPx() - landing * 96.dp.toPx()
+}
+
+/** Retain dock geometry through the handoff and fade on the same clock. */
+internal fun Modifier.playerDockTransition(motion: PlayerExpansionMotion): Modifier = graphicsLayer {
+    alpha = miniReveal(collapsedViewport(motion.fraction))
 }
 
 /** Animate the existing player layer into the real mini-player viewport. Its
@@ -89,7 +95,11 @@ internal fun PlayerExpansionOverlay(
         // One visibility transition owns both directions, including reversals.
         // It cannot dispose the surface before the minimize motion finishes.
         val collapse = transition.animateFloat(
-            transitionSpec = { spring(dampingRatio = .74f, stiffness = 200f, visibilityThreshold = .0005f) },
+            transitionSpec = {
+                spring(dampingRatio = .64f,
+                    stiffness = if (targetState == EnterExitState.Visible) 90f else 70f,
+                    visibilityThreshold = .0005f)
+            },
             label = "player_expansion_bounds"
         ) { if (it == EnterExitState.Visible) 0f else 1f }
         SideEffect { motion.bind(collapse) }
@@ -100,8 +110,8 @@ internal fun PlayerExpansionOverlay(
         }
         Box(Modifier.fillMaxSize().graphicsLayer {
             val raw = collapse.value
-            // Flatten the viewport's endpoint velocity so spring overshoot is a
-            // small elastic landing, never a gap beyond the full-screen edges.
+            // Clamp the viewport at its destination; overshoot becomes a visible
+            // elastic landing rather than a gap beyond the full-screen edges.
             val progress = collapsedViewport(raw)
             if (size.width > 0f && size.height > 0f) {
                 val measured = (if (visibleState.targetState) openingBounds else miniPlayerBounds())?.translate(-origin)?.takeIf {
@@ -115,7 +125,7 @@ internal fun PlayerExpansionOverlay(
                 val width = size.width + (target.width - size.width) * progress
                 val height = size.height + (target.height - size.height) * progress
                 val baseScale = width / size.width
-                val scale = baseScale * (1f + (-raw).coerceIn(0f, .08f) * .14f)
+                val scale = baseScale * (1f + (-raw).coerceIn(0f, .10f) * .45f)
                 transformOrigin = TransformOrigin(0f, 0f)
                 scaleX = scale
                 scaleY = scale

@@ -93,6 +93,9 @@ fun InfiniteRadioHeroCard(
             val fullQualityArtwork = remember(artworkRequest, artworkSize) {
                 artworkRequest.newBuilder().size(artworkSize.width, artworkSize.height)
                     .transformations(com.example.ui.util.HeroArtworkCropTransformation)
+                    // A generic cached thumbnail has not received the Hero crop.
+                    // Draw only transformed results, including engine memory/disk hits.
+                    .placeholderMemoryCacheKey(null as String?)
                     .allowHardware(false)
                     .precision(Precision.INEXACT).allowRgb565(false).build()
             }

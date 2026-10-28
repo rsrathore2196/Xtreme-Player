@@ -555,18 +555,22 @@ fun MainNavigationScaffold(
                         )
                     }
 
-                    }, dock = { AnimatedVisibility(
-                        visible = !isSettingsSubpageOpen && !isPlayerExpanded,
-                        enter = fadeIn(animationSpec = tween(180)),
-                        exit = fadeOut(animationSpec = tween(140))
-                    ) {
-                        FloatingPillBottomBar(
-                            selectedTabIndex = selectedTabIndex,
-                            onTabSelected = onDockTabSelected,
-                            compactProgress = dockProgress,
-                            compact = scrollDock.isCompact
-                        )
-                    } }
+                    }, dock = {
+                        val playerHandoff = isPlayerExpanded || playerVisibility.currentState || !playerVisibility.isIdle
+                        AnimatedVisibility(
+                            visible = !isSettingsSubpageOpen && (!isPlayerExpanded || !playerVisibility.isIdle),
+                            enter = if (playerHandoff) EnterTransition.None else fadeIn(animationSpec = tween(180)),
+                            exit = if (playerHandoff) ExitTransition.None else fadeOut(animationSpec = tween(140)),
+                            modifier = Modifier.playerDockTransition(playerMotion)
+                        ) {
+                            FloatingPillBottomBar(
+                                selectedTabIndex = selectedTabIndex,
+                                onTabSelected = onDockTabSelected,
+                                compactProgress = dockProgress,
+                                compact = scrollDock.isCompact
+                            )
+                        }
+                    }
                 )
 
                 // Floating 3D Liquid Glass Auto-Update Pop-up Bar at top of main screen
