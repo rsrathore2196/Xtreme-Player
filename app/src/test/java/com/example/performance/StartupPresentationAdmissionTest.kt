@@ -96,6 +96,104 @@ class StartupPresentationAdmissionTest {
         assertTrue(requested)
     }
 
+    @Test fun admittedStartupContinuationsYieldAfterRevealWithoutLosingRestoredData() = runTest {
+        val loaded = CompletableDeferred<Unit>()
+        val resumeDecode = CompletableDeferred<Unit>()
+        var restoredRecords = 0
+        val restore = launch {
+            coordinator.startup(BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI) {
+                val gate = kotlinx.coroutines.currentCoroutineContext()[NonEssentialWork]
+                assertNotNull("Already-admitted restoration needs a continuation gate", gate)
+                // Initialization owns this work, even while its own frames are busy.
+                assertTrue(gate!!.canRun())
+                loaded.complete(Unit)
+                resumeDecode.await()
+                assertFalse("The continuation must not compete with tab movement", gate.canRun())
+                gate.awaitAdmission()
+                restoredRecords = 300
+            }
+        }
+        runCurrent()
+        assertTrue(loaded.isCompleted)
+        state.value = state.value.expirePreparation()
+        (BackgroundWorkCoordinator::class.java.getDeclaredField("initialPresentationPending")
+            .apply { isAccessible = true }.get(null) as AtomicBoolean).set(false)
+        val navigation = coordinator.navigationBusy()
+        try {
+            resumeDecode.complete(Unit)
+            runCurrent(); advanceTimeBy(100); runCurrent()
+            assertEquals(0, restoredRecords)
+        } finally { navigation.close() }
+        coordinator.scrolling(true)
+        advanceTimeBy(100); runCurrent()
+        assertEquals(0, restoredRecords)
+        coordinator.scrolling(false)
+        ShadowSystemClock.advanceBy(Duration.ofMillis(300))
+        advanceTimeBy(100); runCurrent()
+        assertEquals("Required restoration resumes intact after interaction", 300, restoredRecords)
+        restore.join()
+    }
+
+    @Test fun realCpuContinuationParksWithoutHoldingTheWorkerOrBlockingPlayback() = kotlinx.coroutines.runBlocking {
+        val admitted = CompletableDeferred<Unit>()
+        val fetched = CompletableDeferred<Unit>()
+        val parked = CompletableDeferred<Unit>()
+        val decoded = CompletableDeferred<Unit>()
+        val restore = launch {
+            coordinator.startup(BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI) {
+                val gate = kotlinx.coroutines.currentCoroutineContext()[NonEssentialWork]!!
+                admitted.complete(Unit)
+                fetched.await()
+                val observedGate = NonEssentialWork(gate.owner, gate.canRun) {
+                    parked.complete(Unit)
+                    gate.awaitAdmission()
+                }
+                kotlinx.coroutines.withContext(AppDispatchers.CpuBounded + observedGate) {
+                    decoded.complete(Unit)
+                }
+            }
+        }
+        try {
+            kotlinx.coroutines.withTimeout(5_000) { admitted.await() }
+            state.value = state.value.expirePreparation()
+            coordinator.scrolling(true)
+            fetched.complete(Unit)
+            kotlinx.coroutines.withTimeout(5_000) { parked.await() }
+            assertFalse(decoded.isCompleted)
+            kotlinx.coroutines.withTimeout(5_000) {
+                coordinator.startup(BackgroundWorkCoordinator.StartupPriority.CRITICAL) {
+                    kotlinx.coroutines.withContext(AppDispatchers.CpuBounded) { assertFalse(decoded.isCompleted) }
+                }
+            }
+            coordinator.scrolling(false)
+            ShadowSystemClock.advanceBy(Duration.ofMillis(300))
+            kotlinx.coroutines.withTimeout(5_000) { decoded.await(); restore.join() }
+        } finally {
+            coordinator.scrolling(false)
+            restore.cancelAndJoin()
+        }
+    }
+
+    @Test fun cancellingParkedStartupWorkReleasesItsLaneForUserWork() = runTest {
+        val continueWork = CompletableDeferred<Unit>()
+        val restore = launch {
+            coordinator.startup(BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI) {
+                continueWork.await()
+                kotlinx.coroutines.currentCoroutineContext()[NonEssentialWork]!!.awaitAdmission()
+            }
+        }
+        runCurrent()
+        state.value = state.value.expirePreparation()
+        coordinator.scrolling(true)
+        continueWork.complete(Unit)
+        runCurrent()
+        restore.cancelAndJoin()
+        coordinator.scrolling(false)
+        var requested = false
+        coordinator.startup(BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI) { requested = true }
+        assertTrue(requested)
+    }
+
     @Test fun disposablePreparationCannotStartAfterWaitingPastItsModalBudget() = runTest {
         val release = CompletableDeferred<Unit>()
         val owner = launch {
@@ -108,14 +206,14 @@ class StartupPresentationAdmissionTest {
                 boundToInitialPresentation = true) { ran = true }
         }
         runCurrent()
-        ShadowSystemClock.advanceBy(Duration.ofSeconds(6))
+        ShadowSystemClock.advanceBy(Duration.ofSeconds(7))
         advanceTimeBy(100); runCurrent()
         assertTrue(preparation.isCancelled)
         assertFalse(ran)
         release.complete(Unit)
         owner.join(); preparation.join()
-        assertTrue("Preparation plus the existing exit must remain within six seconds",
-            BackgroundWorkCoordinator.INITIAL_PREPARATION_MS + 200L <= 6_000L)
+        assertTrue("Preparation plus the existing exit must remain within seven seconds",
+            BackgroundWorkCoordinator.INITIAL_PREPARATION_MS + 200L <= 7_000L)
     }
 
     @Test fun aLateDisposableStartupRequestCannotBecomeNewEssentialWorkAfterReveal() = runTest {

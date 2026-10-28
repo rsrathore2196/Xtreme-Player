@@ -43,8 +43,8 @@ object BackgroundWorkCoordinator {
         if (_startupReadiness.value.complete) initialPresentationPending.set(false)
     }
 
-    // Leave 200ms for the existing 180ms exit animation within the six-second budget.
-    internal const val INITIAL_PREPARATION_MS = 5_800L
+    // Leave 200ms for the existing 180ms exit animation within the seven-second budget.
+    internal const val INITIAL_PREPARATION_MS = 6_800L
     private val initialStartedAt = AtomicLong(0L)
     private var initialDeadlineJob: Job? = null
     private val deadlineScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + AppDispatchers.Io)
@@ -58,7 +58,8 @@ object BackgroundWorkCoordinator {
         if (initialStartedAt.compareAndSet(0L, SystemClock.elapsedRealtime().coerceAtLeast(1L))) {
             initialDeadlineJob?.cancel()
             initialDeadlineJob = deadlineScope.launch {
-                delay(INITIAL_PREPARATION_MS)
+                // Scheduling latency must consume the budget, not extend the popup.
+                delay(initialPreparationRemainingMillis)
                 if (!_startupReadiness.value.complete) {
                     _startupReadiness.update { it.expirePreparation() }
                     // A deadline is a fallback, never evidence that a remote fetch succeeded.
@@ -248,6 +249,25 @@ object BackgroundWorkCoordinator {
             }
         }
 
+    /**
+     * Admission is not permission to keep consuming CPU after the modal deadline.
+     * Retain required restoration and its lane, but park CPU continuations during
+     * interactive frames. Unlike optional enrichment this uses the short interaction
+     * fence: waiting for the optional lane/15s idle here could block local tab data
+     * behind the very restoration that owns the essential lane.
+     */
+    private suspend fun initialContinuationContext(urgent: () -> Boolean): NonEssentialWork {
+        fun canRun() = urgent() || !foreground.get() ||
+            (!startupReadiness.value.complete && initialPreparationRemainingMillis > 0L) ||
+            isInteractionIdle()
+        return NonEssentialWork(currentCoroutineContext()[Job], ::canRun) {
+            while (!canRun()) {
+                currentCoroutineContext().ensureActive()
+                delay(50L)
+            }
+        }
+    }
+
     /** WorkManager also participates in dock preemption, without requiring a headless Home. */
     internal suspend fun <T> maintenance(block: suspend () -> T): T =
         optionalProcessing(block = block)
@@ -342,7 +362,11 @@ object BackgroundWorkCoordinator {
             val effectivePriority = if (admittedEssential) StartupPriority.ESSENTIAL_UI
                 else if (initialRequest) StartupPriority.DEFERRED else priority
             val admission = Admission(effectivePriority, cardWork)
-            val context = if (admittedEssential) admission else admission + optionalContext(requireForeground, urgent)
+            val context = when {
+                admittedEssential && initialRequest -> admission + initialContinuationContext(urgent)
+                admittedEssential -> admission
+                else -> admission + optionalContext(requireForeground, urgent)
+            }
             return withContext(context) {
                 if (initialWork) withTimeout(initialPreparationRemainingMillis.coerceAtLeast(1L)) {
                     work { traceWork(label, block) }
@@ -373,6 +397,7 @@ object BackgroundWorkCoordinator {
         // A fast batch must also give other coroutines a turn, even when no gesture
         // is active. This gate never waits for jobs == 0 (the caller may own a lease).
         yield()
+        if (!bypass()) currentCoroutineContext()[NonEssentialWork]?.awaitAdmission?.invoke()
         val admission = currentCoroutineContext()[Admission]
         while (true) {
             currentCoroutineContext().ensureActive()
