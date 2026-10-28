@@ -273,4 +273,48 @@ class ScrollResponsiveDockUiTest {
         compose.waitForIdle()
         assertTrue(bounds("mini_player_container").bottom < bounds("floating_bottom_navigation_bar").top)
     }
+
+    @Test fun collapsingAndExpandingDoNotSnapAcrossTheLastPixels() = checkSettlingFrames()
+
+    @Test @Config(qualifiers = "w740dp-h360dp-land")
+    fun landscapeDockAlsoSettlesWithoutAnEndpointAdjustment() = checkSettlingFrames()
+
+    private fun checkSettlingFrames() {
+        show()
+        compose.mainClock.autoAdvance = false
+        fun checkEndpoint(target: Float) {
+            var previous = dockProgress.value
+            var previousMini = bounds("mini_player_container")
+            var previousBar = bounds("floating_bottom_navigation_bar")
+            repeat(160) {
+                compose.mainClock.advanceTimeByFrame()
+                compose.waitForIdle()
+                val current = dockProgress.value
+                val mini = bounds("mini_player_container")
+                val bar = bounds("floating_bottom_navigation_bar")
+                if (current == target && previous != target) {
+                    assertTrue("The spring must not discard a visible final distance: $previous -> $current",
+                        kotlin.math.abs(current - previous) <= .0005f)
+                    for ((before, after) in listOf(previousMini to mini, previousBar to bar)) {
+                        assertEquals("No horizontal endpoint correction", before.left, after.left, 1.1f)
+                        assertEquals("No vertical endpoint correction", before.top, after.top, 1.1f)
+                        assertEquals(before.width, after.width, 1.1f)
+                        assertEquals(before.height, after.height, 1.1f)
+                    }
+                    return
+                }
+                previous = current
+                previousMini = mini
+                previousBar = bar
+            }
+            fail("Dock did not reach its endpoint")
+        }
+        compose.runOnIdle {
+            dock.onPostScroll(androidx.compose.ui.geometry.Offset(0f, -100f),
+                androidx.compose.ui.geometry.Offset.Zero, androidx.compose.ui.input.nestedscroll.NestedScrollSource.UserInput)
+        }
+        checkEndpoint(1f)
+        compose.runOnIdle { dock.expand() }
+        checkEndpoint(0f)
+    }
 }

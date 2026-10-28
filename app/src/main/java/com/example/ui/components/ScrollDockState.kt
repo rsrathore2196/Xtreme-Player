@@ -76,7 +76,9 @@ internal fun rememberScrollDockState(): ScrollDockState {
 internal fun rememberScrollDockProgress(state: ScrollDockState): State<Float> {
     val transition = updateTransition(state.isCompact, label = "scroll_dock_morph")
     val progress = transition.animateFloat(
-        transitionSpec = { spring(dampingRatio = 1f, stiffness = 120f) }, label = "dock_bounds"
+        // This unit interval controls hundreds of screen pixels. The default
+        // .01 threshold snapped the final visible distance to the endpoint.
+        transitionSpec = { spring(dampingRatio = 1f, stiffness = 120f, visibilityThreshold = .0001f) }, label = "dock_bounds"
     ) { compact -> if (compact) 1f else 0f }
     DisposableEffect(transition.isRunning) {
         val work = if (transition.isRunning) BackgroundWorkCoordinator.navigationBusy() else null

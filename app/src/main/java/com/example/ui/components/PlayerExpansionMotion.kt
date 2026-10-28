@@ -50,7 +50,9 @@ private fun collapsedViewport(value: Float): Float {
 }
 
 private fun miniReveal(viewport: Float): Float {
-    val unit = ((viewport - .62f) / .35f).coerceIn(0f, 1f)
+    // Complete the handoff at the actual mini-player bounds. Finishing the
+    // fade before the geometry lands leaves a visible gap at the destination.
+    val unit = ((viewport - .88f) / .12f).coerceIn(0f, 1f)
     return unit * unit * (3f - 2f * unit)
 }
 
@@ -89,7 +91,8 @@ internal fun PlayerExpansionOverlay(
         // It cannot dispose the surface before the minimize motion finishes.
         val collapse = transition.animateFloat(
             transitionSpec = {
-                tween(durationMillis = 560, easing = FastOutSlowInEasing)
+                tween(durationMillis = if (targetState == EnterExitState.Visible) 440 else 560,
+                    easing = FastOutSlowInEasing)
             },
             label = "player_expansion_bounds"
         ) { if (it == EnterExitState.Visible) 0f else 1f }

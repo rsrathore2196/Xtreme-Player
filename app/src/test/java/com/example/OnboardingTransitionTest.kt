@@ -55,7 +55,16 @@ class OnboardingTransitionTest {
             compose.waitForIdle()
         }
         compose.waitUntil(5_000) { starts[OnboardingStep.DETAILS] == 1 }
+        // This bare ComponentActivity does not send MainActivity's first-draw
+        // acknowledgement. Finish the prepared form's draw and expire any
+        // prior fixture's touch cooldown before measuring this transition's lease.
+        compose.runOnIdle {
+            compose.activity.window.decorView.viewTreeObserver.dispatchOnDraw()
+            BackgroundWorkCoordinator.firstFrameRendered()
+            org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(400))
+        }
         compose.waitForIdle()
+        assertTrue("The prepared intro must be idle before starting the transition", BackgroundWorkCoordinator.navigationIsIdle())
         compose.onNodeWithTag("test_page_STARTUP").assertIsDisplayed()
         compose.onNodeWithTag("test_page_DETAILS").assertDoesNotExist()
         val preparedMeasures = measures[OnboardingStep.DETAILS]

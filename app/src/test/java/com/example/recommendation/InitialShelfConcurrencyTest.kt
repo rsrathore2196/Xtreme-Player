@@ -75,12 +75,15 @@ class InitialShelfConcurrencyTest {
     @Test fun optionalShelfWorkRemainsOneAtATime() = runTest {
         var active = 0
         var maximum = 0
-        UnifiedRecommendationEngine.prepareShelves(Shelf.entries, false) {
+        val visited = mutableListOf<Shelf>()
+        UnifiedRecommendationEngine.prepareShelves(Shelf.entries, false) { shelf ->
+            visited += shelf
             active++; maximum = maxOf(maximum, active)
             delay(100)
             active--
         }
         assertEquals(1, maximum)
-        assertEquals(600L, currentTime)
+        assertEquals(Shelf.entries, visited)
+        assertEquals(Shelf.entries.size * 100L, currentTime)
     }
 }

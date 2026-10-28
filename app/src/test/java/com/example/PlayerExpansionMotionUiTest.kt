@@ -11,6 +11,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.boundsInRoot
@@ -48,7 +49,7 @@ class PlayerExpansionMotionUiTest {
     private var playTaps = 0
     private var nextTaps = 0
 
-    private fun show(light: Boolean = false) {
+    private fun show(light: Boolean = false, markTransition: Boolean = false) {
         compose.mainClock.autoAdvance = false
         val song = MusicTrack("motion", "Song", "Artist", "Album", 180_000, "", "")
         compose.setContent { MaterialTheme {
@@ -84,7 +85,8 @@ class PlayerExpansionMotionUiTest {
                     PlayerExpansionOverlay(visible, motion, { bounds }, Modifier.fillMaxSize()) {
                         SideEffect { playerCompositions++ }
                         ExpandedPlayerScreen(PlayerUiState(currentTrack = song), { visible.targetState = false }, {}, {}, {}, {}, {}, {}, {}, {},
-                            onAddToPlaylist = {}, isScreenVisible = visible.targetState)
+                            onAddToPlaylist = {}, isScreenVisible = visible.targetState,
+                            modifier = if (markTransition) Modifier.drawWithContent { drawContent(); drawRect(Color.Red) } else Modifier)
                     }
                 }
             }
@@ -137,7 +139,7 @@ class PlayerExpansionMotionUiTest {
         fun checkLandingTouch() {
             closingProgress += motion.fraction
             closingFrames++
-            if (motion.fraction >= .97f && !tappedAtLanding) {
+            if (visible.isIdle && !visible.currentState && !tappedAtLanding) {
                 contactFrame = closingFrames
                 compose.onNodeWithTag("mini_player_play_pause").performTouchInput { click() }
                 assertEquals("The invisible expanded surface must not intercept the landed mini player's button", 1, playTaps)
@@ -187,6 +189,61 @@ class PlayerExpansionMotionUiTest {
         assertEquals("Zoom must finish at its exact destination", 1f, progress.last(), .0001f)
     }
 
+    @Test fun closingRetainsThePlayerUntilItsViewportFinishesMorphingIntoTheMiniPlayer() {
+        show(markTransition = true)
+        val mini = compose.onNodeWithTag("mini_player_container").fetchSemanticsNode().boundsInRoot
+        val viewport = compose.onNodeWithTag("motion_stage").fetchSemanticsNode().boundsInRoot
+        compose.onNodeWithTag("mini_player_container").performClick()
+        advanceUntil { visible.isIdle }
+        compose.onNodeWithContentDescription("Minimize Player").performClick()
+        advanceUntil { motion.fraction in .97f.. .995f }
+        compose.onNodeWithContentDescription("Minimize Player").assertExists()
+        val progress = motion.fraction
+        // Layout bounds include the entire scaled screen, not the shrinking
+        // custom outline. Measure its actual pixels to verify the handoff.
+        val file = java.io.File("/tmp/player-closing-morph-outline.png")
+        compose.onNodeWithTag("motion_stage").captureRoboImage(file.absolutePath,
+            RoborazziOptions(taskType = RoborazziTaskType.Record))
+        val pixels = javax.imageio.ImageIO.read(file)
+        var left = pixels.width; var top = pixels.height; var right = -1; var bottom = -1
+        for (y in 0 until pixels.height) for (x in 0 until pixels.width) {
+            val color = java.awt.Color(pixels.getRGB(x, y), true)
+            if (color.red > color.green + 5 && color.red > color.blue + 5) {
+                left = minOf(left, x); top = minOf(top, y)
+                right = maxOf(right, x); bottom = maxOf(bottom, y)
+            }
+        }
+        assertTrue("The outgoing screen remains rendered through the final morph", right > left && bottom > top)
+        val closing = Rect(viewport.left + left * viewport.width / pixels.width,
+            viewport.top + top * viewport.height / pixels.height,
+            viewport.left + (right + 1) * viewport.width / pixels.width,
+            viewport.top + (bottom + 1) * viewport.height / pixels.height)
+        fun expected(start: Float, end: Float) = start + (end - start) * progress
+        assertEquals("The shrinking left edge must aim at the real mini player", expected(viewport.left, mini.left), closing.left, 2f)
+        assertEquals(expected(viewport.top, mini.top), closing.top, 2f)
+        assertEquals(expected(viewport.right, mini.right), closing.right, 2f)
+        assertEquals(expected(viewport.bottom, mini.bottom), closing.bottom, 2f)
+        advanceUntil { visible.isIdle }
+        compose.onNodeWithTag("expanded_player_transition").assertDoesNotExist()
+        val landed = compose.onNodeWithTag("mini_player_container").fetchSemanticsNode().boundsInRoot
+        assertEquals(mini.left, landed.left, 1f)
+        assertEquals(mini.top, landed.top, 1f)
+        assertEquals(mini.width, landed.width, 1f)
+        assertEquals(mini.height, landed.height, 1f)
+    }
+
+    @Test fun openingIsQuickerWhileClosingKeepsItsFullMorphDuration() {
+        show()
+        compose.onNodeWithTag("mini_player_container").performClick()
+        repeat(30) { frame() }
+        assertTrue("Opening should be fully settled within half a second", visible.isIdle && visible.currentState)
+        compose.onNodeWithContentDescription("Minimize Player").performClick()
+        repeat(30) { frame() }
+        assertFalse("Closing keeps the longer journey into the mini player", visible.isIdle)
+        advanceUntil { visible.isIdle }
+        assertFalse(visible.currentState)
+    }
+
     @Test fun rapidReversalsDoNotSnapDisposeThePlayerOrDuplicateItsContent() {
         show()
         compose.onNodeWithTag("mini_player_container").performClick()
@@ -210,7 +267,7 @@ class PlayerExpansionMotionUiTest {
         compose.onNodeWithTag("mini_player_container").assertIsDisplayed()
     }
 
-    @Test fun reversingNearTheEndpointsKeepsTheZoomContinuousAndControlsUsable() {
+    @Test fun reversingNearTheOpeningEndpointAndReopeningAfterClosingKeepsControlsUsable() {
         show()
         compose.onNodeWithTag("mini_player_container").performClick()
         advanceUntil { motion.fraction in .001f.. .08f }
@@ -218,9 +275,9 @@ class PlayerExpansionMotionUiTest {
         compose.onNodeWithContentDescription("Minimize Player").performClick()
         frame()
         assertTrue("Reversing the zoom must not jump to an endpoint", abs(motion.fraction - openingLanding) < .05f)
-        // An interrupted transition retains its current momentum instead of
-        // restarting the zoom. Reopen as soon as the mini is visible again.
-        advanceUntil { motion.fraction >= .99f }
+        // Reopen once the closing surface has finished morphing into the mini
+        // player and released its touch handlers at the same endpoint.
+        advanceUntil { visible.isIdle }
         val closingLanding = motion.fraction
         compose.onNodeWithTag("mini_player_container").performTouchInput { click() }
         frame()
