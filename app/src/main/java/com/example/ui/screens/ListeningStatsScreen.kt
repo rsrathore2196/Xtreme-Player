@@ -17,6 +17,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
@@ -170,11 +171,15 @@ private fun statsArtist(row: ListeningTotal): CatalogArtist = ArtistPhotoReposit
 private fun StatCard(label: String, value: String, modifier: Modifier, song: ListeningTotal? = null, artist: ListeningTotal? = null) {
     val colors = LocalAppColors.current
     val savedSurface = if (colors.neutralSurfaces) colors.cardBackgroundElevated else colors.cardBackground
-    val cardColor = remember(colors.primaryAccent, savedSurface) { statsCardBase(colors.primaryAccent, savedSurface) }
+    val neutralAmoled = colors.isDark && colors.isAmoled
+    val cardAccent = if (neutralAmoled) Color(0xFF353535) else colors.primaryAccent
+    val cardColor = remember(colors.primaryAccent, savedSurface, neutralAmoled) {
+        if (neutralAmoled) Color(0xFF101010) else statsCardBase(colors.primaryAccent, savedSurface)
+    }
     val minimumContrast = if (colors.highContrastTypography) 7f else 4.5f
-    val surfaces = remember(cardColor, colors.primaryAccent) {
-        listOf(cardColor, statsCardHighlight(colors.primaryAccent, cardColor),
-            colors.primaryAccent.copy(alpha = .30f).compositeOver(cardColor))
+    val surfaces = remember(cardColor, cardAccent) {
+        listOf(cardColor, statsCardHighlight(cardAccent, cardColor),
+            cardAccent.copy(alpha = .30f).compositeOver(cardColor))
     }
     val textColor = remember(colors.textPrimary, surfaces, minimumContrast) {
         LiquidGlass.contrastColor(colors.textPrimary, surfaces, minimumContrast)
@@ -184,7 +189,7 @@ private fun StatCard(label: String, value: String, modifier: Modifier, song: Lis
     }
     Surface(modifier.aspectRatio(1f).testTag("stats_card_$label"), shape = RoundedCornerShape(24.dp),
         color = cardColor, tonalElevation = 0.dp, shadowElevation = 6.dp) {
-        BoxWithConstraints(Modifier.statsCardDecoration(colors.primaryAccent, cardColor)) {
+        BoxWithConstraints(Modifier.statsCardDecoration(cardAccent, cardColor)) {
             val compact = maxWidth < 176.dp
             val media = song != null || artist != null
             Column(Modifier.fillMaxSize().padding(if (media) { if (compact) 10.dp else 12.dp } else if (compact) 12.dp else 16.dp),

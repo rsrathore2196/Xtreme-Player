@@ -111,6 +111,35 @@ class ListeningStatsSharingUiTest {
         capture("custom")
     }
 
+    @Test fun amoledStatsCardsUseNearBlackNeutralSurfacesForWhiteAndColouredAccents() {
+        var palette by mutableStateOf(DarkAppColors.copy(isAmoled = true, scaffoldBackground = Color.Black,
+            cardBackground = Color.Black, primaryAccent = Color.White))
+        compose.setContent { MaterialTheme {
+            CompositionLocalProvider(LocalAppColors provides palette, LocalDynamicGlassEnabled provides false,
+                LocalArtworkRequestsActive provides false, LocalVisualEffectsActive provides false) {
+                ListeningStatsContent(summary, ListeningPeriod.WEEKLY, {}, {}, { _, _ -> }, {})
+            }
+        } }
+        for ((name, accent) in listOf("white" to Color.White, "cyan" to Color.Cyan)) {
+            compose.runOnIdle { palette = palette.copy(primaryAccent = accent) }
+            for (label in listOf("Minutes Played", "Top Song", "Top Artist", "Songs Played")) {
+                val file = File("/tmp/listening-stats-amoled-$name-$label.png")
+                compose.onNodeWithTag("stats_card_$label").captureRoboImage(file.absolutePath,
+                    RoborazziOptions(taskType = RoborazziTaskType.Record))
+                val pixels = ImageIO.read(file)
+                val pixel = java.awt.Color(pixels.getRGB((pixels.width * .85f).toInt(), (pixels.height * .4f).toInt()), true)
+                assertTrue("$label: AMOLED interiors must stay near black", maxOf(pixel.red, pixel.green, pixel.blue) <= 48)
+                assertTrue("$label: AMOLED interiors must be neutral grey", maxOf(pixel.red, pixel.green, pixel.blue) -
+                    minOf(pixel.red, pixel.green, pixel.blue) <= 3)
+                compose.onNodeWithTag("stats_logo_$label").assertIsDisplayed()
+            }
+        }
+        val layouts = mutableListOf<TextLayoutResult>()
+        compose.onNodeWithText("1.5").performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
+        assertTrue("Neutral AMOLED cards retain readable text", ColorUtils.calculateContrast(
+            layouts.single().layoutInput.style.color.toArgb(), android.graphics.Color.rgb(48, 48, 48)) >= 7.0)
+    }
+
     @Test fun popupSharesThePngAndSaveOpensTheAndroidImageDocumentPicker() {
         UserProfilePreferences.saveUserProfile(compose.activity, UserProfile(name = "Maya"))
         val request = ListeningStatsImageRequest(summary.copy(songs = emptyList(), artists = emptyList()),
