@@ -3,7 +3,6 @@ package com.example.ui.components
 import androidx.compose.animation.animateColor
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.updateTransition
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -70,7 +69,7 @@ internal val CompactDockTabWidth = 48.dp
 internal val DockHorizontalPadding = 6.dp
 internal val CompactDockHorizontalPadding = 12.dp
 internal val CompactPrimaryDockWidth = CompactDockTabWidth * 2 + CompactDockHorizontalPadding * 2
-private val DockSpatialMotion = spring<Float>(dampingRatio = .8f, stiffness = 650f, visibilityThreshold = .001f)
+private val DockSpatialMotion = spring<Float>(dampingRatio = .72f, stiffness = 480f, visibilityThreshold = .001f)
 private val DockEffectMotion = spring<Float>(dampingRatio = 1f, stiffness = 700f, visibilityThreshold = .001f)
 
 /**
@@ -132,12 +131,9 @@ fun AnimatedBottomBar(
             transitionSpec = { DockSpatialMotion },
             label = "tab_expansion_${item.index}"
         ) { selected -> if (selected == item.index) 1f else 0f }
-        val labelAlpha = selectionTransition.animateFloat(
-            transitionSpec = {
-                if (targetState == item.index) DockSpatialMotion
-                else tween(90)
-            }, label = "tab_label_alpha_${item.index}"
-        ) { selected -> if (selected == item.index) 1f else 0f }
+        // Width, reveal and opacity follow the same retargetable spring in both
+        // directions; an outgoing label must not vanish before its pill contracts.
+        val labelAlpha = expansion
         val indicatorAlpha = selectionTransition.animateFloat(transitionSpec = { DockEffectMotion },
             label = "tab_indicator_${item.index}") { selected -> if (selected == item.index) 1f else 0f }
         val foreground = selectionTransition.animateColor(
@@ -259,7 +255,7 @@ fun AnimatedBottomBar(
                             transformOrigin = origin
                         }) {
                             Box(Modifier.matchParentSize().graphicsLayer {
-                                alpha = motion.indicatorAlpha.value.coerceIn(0f, 1f)
+                                alpha = motion.expansion.value.coerceIn(0f, 1f)
                                 val width = geometry.tabWidth(position)
                                 shape = DockPillShape(width, direction == LayoutDirection.Rtl, geometry.pillHeight(size.height))
                                 clip = true
@@ -275,8 +271,10 @@ fun AnimatedBottomBar(
                                     val pillHeight = geometry.pillHeight(size.height)
                                     val top = (size.height - pillHeight) / 2f
                                     val left = if (direction == LayoutDirection.Ltr) 0f else size.width - width
-                                    drawRect(activePillBrush)
-                                    if (appColors.dynamicGlassEnabled) drawRect(specularSheen)
+                                    // Paint the live spring bounds, including its small
+                                    // overshoot beyond the fixed measurement endpoint.
+                                    drawRect(activePillBrush, Offset(left, top), Size(width, pillHeight))
+                                    if (appColors.dynamicGlassEnabled) drawRect(specularSheen, Offset(left, top), Size(width, pillHeight))
                                     drawRoundRect(activeBorder, Offset(left + stroke / 2f, top + stroke / 2f),
                                         Size((width - stroke).coerceAtLeast(0f), (pillHeight - stroke).coerceAtLeast(0f)),
                                         CornerRadius((pillHeight - stroke).coerceAtLeast(0f) / 2f), style = borderStyle)
@@ -307,7 +305,7 @@ fun AnimatedBottomBar(
                         alpha = if (geometry.retained(index)) 1f else 1f - geometry.progress
                         transformOrigin = origin
                         translationX = if (direction == LayoutDirection.Ltr) left else left + tabWidth - tab.width
-                        translationY = -1.5f * motions[index].indicatorAlpha.value * (1f - geometry.progress)
+                        translationY = -1.5f * motions[index].expansion.value.coerceIn(0f, 1f) * (1f - geometry.progress)
                     }
                 }
             }

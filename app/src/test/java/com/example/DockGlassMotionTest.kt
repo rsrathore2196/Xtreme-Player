@@ -144,7 +144,7 @@ class DockGlassMotionTest {
         }
     }
 
-    @Test fun selectionUsesARestrainedFastSpringWithoutAnExtraOuterPulse() = checkSelectionMotion()
+    @Test fun selectionUsesASoftElasticSpringWithoutAnExtraOuterPulse() = checkSelectionMotion()
 
     @Test fun aTabTapSpringScalesTheOuterCapsuleAndItsContentTogetherThenSettles() = checkTouchSpring()
 
@@ -214,7 +214,8 @@ class DockGlassMotionTest {
             val journey = finalWidth - initialWidth
             assertTrue("The selected pill should expand", journey > 10f)
             assertTrue("The width change should be mostly complete after about 120ms", (widths[6] - initialWidth) / journey > .8f)
-            assertTrue("The width spring should have only a restrained overshoot", widths.max() <= finalWidth + journey * .025f)
+            val overshoot = (widths.max() - finalWidth) / journey
+            assertTrue("The pill should have one visible, controlled elastic overshoot: $overshoot", overshoot in .02f.. .05f)
             assertEquals("The pill should finish its settle without a long tail", finalWidth, widths[34], .1f)
             val parent = dock.fetchSemanticsNode().boundsInRoot
             val outer = outerGlass.fetchSemanticsNode().boundsInRoot
