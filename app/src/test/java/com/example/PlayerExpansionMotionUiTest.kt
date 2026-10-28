@@ -98,7 +98,7 @@ class PlayerExpansionMotionUiTest {
         compose.waitForIdle()
     }
 
-    @Test fun portraitOpeningAndClosingShareOneBounceAndLandAtTheMiniPlayer() = checkRoundTrip()
+    @Test fun portraitOpeningAndClosingShareASmoothZoomWithoutBouncing() = checkRoundTrip()
     @Test fun lightThemeKeepsTheSameRoundTripAndWorkingMiniControls() = checkRoundTrip(light = true)
     @Test @Config(qualifiers = "w891dp-h411dp-land")
     fun landscapeTargetsTheActualNarrowMiniPlayer() = checkRoundTrip()
@@ -111,17 +111,14 @@ class PlayerExpansionMotionUiTest {
         frame()
         val first = compose.onNodeWithTag("expanded_player_transition").fetchSemanticsNode().boundsInRoot
         assertTrue("Expansion begins at the dock, not below the window: $first / $miniBefore", first.top >= viewport.height * .45f)
-        repeat(15) { frame() }
+        val openingProgress = mutableListOf(1f - motion.fraction)
+        repeat(15) { frame(); openingProgress += 1f - motion.fraction }
         assertTrue("Opening must retain a visible journey instead of snapping to the full viewport", motion.fraction > .01f)
-        var openingOvershoot = 0f
-        val openingLanding = mutableListOf<Float>()
         repeat(100) {
             frame()
-            openingOvershoot = minOf(openingOvershoot, motion.fraction)
-            openingLanding += 1f - motion.fraction
+            openingProgress += 1f - motion.fraction
         }
-        assertTrue("The expanded landing must have a perceptible single bounce", openingOvershoot < -.04f)
-        assertSingleLanding(openingLanding)
+        assertBoundedZoom(openingProgress)
         assertTrue(visible.isIdle && visible.currentState)
         assertEquals(0f, motion.fraction, .001f)
         val expanded = compose.onNodeWithTag("expanded_player_transition").fetchSemanticsNode().boundsInRoot
@@ -132,16 +129,15 @@ class PlayerExpansionMotionUiTest {
         val compositions = playerCompositions
         compose.onNodeWithContentDescription("Minimize Player").performClick()
         frame()
-        var closingOvershoot = 1f
         var widestMini = miniBefore.width
         var tappedAtLanding = false
         var closingFrames = 1
         var contactFrame = 0
-        val closingLanding = mutableListOf<Float>()
+        val closingProgress = mutableListOf(motion.fraction)
         fun checkLandingTouch() {
-            closingLanding += motion.fraction
+            closingProgress += motion.fraction
             closingFrames++
-            if (motion.fraction > 1f && !tappedAtLanding) {
+            if (motion.fraction >= .97f && !tappedAtLanding) {
                 contactFrame = closingFrames
                 compose.onNodeWithTag("mini_player_play_pause").performTouchInput { click() }
                 assertEquals("The invisible expanded surface must not intercept the landed mini player's button", 1, playTaps)
@@ -150,7 +146,6 @@ class PlayerExpansionMotionUiTest {
         }
         repeat(16) {
             frame()
-            closingOvershoot = maxOf(closingOvershoot, motion.fraction)
             widestMini = maxOf(widestMini, compose.onNodeWithTag("mini_player_container").fetchSemanticsNode().boundsInRoot.width)
             checkLandingTouch()
         }
@@ -160,15 +155,13 @@ class PlayerExpansionMotionUiTest {
             RoborazziOptions(taskType = RoborazziTaskType.Record))
         repeat(100) {
             frame()
-            closingOvershoot = maxOf(closingOvershoot, motion.fraction)
             widestMini = maxOf(widestMini, compose.onNodeWithTag("mini_player_container").fetchSemanticsNode().boundsInRoot.width)
             checkLandingTouch()
         }
         assertTrue("Dock contact should occur after a smooth, bounded journey: $contactFrame frames", contactFrame in 18..40)
-        assertTrue("Mini landing reads the same perceptible single overshoot", closingOvershoot > 1.04f)
-        assertSingleLanding(closingLanding)
+        assertBoundedZoom(closingProgress)
         assertTrue(tappedAtLanding)
-        assertTrue("The mini player visibly bounces once after reaching its dock", widestMini > miniBefore.width * 1.025f)
+        assertEquals("The mini player must not stretch or bounce during the zoom handoff", miniBefore.width, widestMini, .5f)
         assertTrue(visible.isIdle && !visible.currentState)
         compose.onNodeWithTag("expanded_player_transition").assertDoesNotExist()
         val miniAfter = compose.onNodeWithTag("mini_player_container").fetchSemanticsNode().boundsInRoot
@@ -183,15 +176,15 @@ class PlayerExpansionMotionUiTest {
         assertEquals(1, nextTaps)
     }
 
-    private fun assertSingleLanding(progress: List<Float>) {
-        val peak = progress.indices.maxBy { progress[it] }
-        assertTrue("The landing should visibly pass its destination once", progress[peak] > 1.04f)
-        progress.drop(peak).zipWithNext().forEach { (previous, current) ->
-            assertTrue("After its one bounce the surface must settle without reversing again: $previous -> $current",
-                current <= previous + .0001f)
-            assertTrue("The landing must not cross back past its destination and expose another bounce: $current",
-                current >= 1f - .0001f)
+    private fun assertBoundedZoom(progress: List<Float>) {
+        progress.forEach { value ->
+            assertTrue("Zoom must stay within its two endpoints without overshoot: $value", value in -.0001f..1.0001f)
         }
+        progress.zipWithNext().forEach { (previous, current) ->
+            assertTrue("Zoom must approach its destination without bouncing back: $previous -> $current",
+                current >= previous - .0001f)
+        }
+        assertEquals("Zoom must finish at its exact destination", 1f, progress.last(), .0001f)
     }
 
     @Test fun rapidReversalsDoNotSnapDisposeThePlayerOrDuplicateItsContent() {
@@ -217,16 +210,16 @@ class PlayerExpansionMotionUiTest {
         compose.onNodeWithTag("mini_player_container").assertIsDisplayed()
     }
 
-    @Test fun reversingDuringTheLandingKeepsTheHandoffContinuousAndControlsUsable() {
+    @Test fun reversingNearTheEndpointsKeepsTheZoomContinuousAndControlsUsable() {
         show()
         compose.onNodeWithTag("mini_player_container").performClick()
-        advanceUntil { motion.fraction < -.01f }
+        advanceUntil { motion.fraction in .001f.. .08f }
         val openingLanding = motion.fraction
         compose.onNodeWithContentDescription("Minimize Player").performClick()
         frame()
-        assertTrue("Reversing the top landing must not jump to an endpoint", abs(motion.fraction - openingLanding) < .05f)
+        assertTrue("Reversing the zoom must not jump to an endpoint", abs(motion.fraction - openingLanding) < .05f)
         // An interrupted transition retains its current momentum instead of
-        // restarting the full bounce. Reopen as soon as the mini is landed.
+        // restarting the zoom. Reopen as soon as the mini is visible again.
         advanceUntil { motion.fraction >= .99f }
         val closingLanding = motion.fraction
         compose.onNodeWithTag("mini_player_container").performTouchInput { click() }

@@ -5,7 +5,6 @@ import androidx.compose.animation.EnterExitState
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExperimentalAnimationApi
-import androidx.compose.animation.core.Easing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.animateFloat
@@ -50,33 +49,13 @@ private fun collapsedViewport(value: Float): Float {
     return value.coerceIn(0f, 1f)
 }
 
-// One overshoot, then a monotonic return to rest. Both legs meet at zero
-// velocity and finish at zero velocity; an underdamped spring would cross the target
-// again, shrinking the expanded viewport and repeating the mini-player bounce.
-private val PlayerExpansionEasing = Easing { fraction ->
-    val peakTime = .65f
-    val peak = 1.055f
-    if (fraction <= peakTime) {
-        peak * FastOutSlowInEasing.transform(fraction / peakTime)
-    } else {
-        peak - (peak - 1f) * FastOutSlowInEasing.transform((fraction - peakTime) / (1f - peakTime))
-    }
-}
-
 private fun miniReveal(viewport: Float): Float {
     val unit = ((viewport - .62f) / .35f).coerceIn(0f, 1f)
     return unit * unit * (3f - 2f * unit)
 }
 
 internal fun Modifier.playerMiniTransition(motion: PlayerExpansionMotion): Modifier = graphicsLayer {
-    val raw = motion.fraction
-    val reveal = miniReveal(collapsedViewport(raw))
-    val landing = (raw - 1f).coerceIn(0f, .10f)
-    alpha = reveal
-    transformOrigin = TransformOrigin(.5f, 1f)
-    scaleX = .98f + .02f * reveal + landing * .65f
-    scaleY = scaleX
-    translationY = -(1f - reveal) * 8.dp.toPx() - landing * 96.dp.toPx()
+    alpha = miniReveal(collapsedViewport(motion.fraction))
 }
 
 /** Retain dock geometry through the handoff and fade on the same clock. */
@@ -110,8 +89,7 @@ internal fun PlayerExpansionOverlay(
         // It cannot dispose the surface before the minimize motion finishes.
         val collapse = transition.animateFloat(
             transitionSpec = {
-                tween(durationMillis = if (targetState == EnterExitState.Visible) 820 else 880,
-                    easing = PlayerExpansionEasing)
+                tween(durationMillis = 560, easing = FastOutSlowInEasing)
             },
             label = "player_expansion_bounds"
         ) { if (it == EnterExitState.Visible) 0f else 1f }
@@ -122,10 +100,9 @@ internal fun PlayerExpansionOverlay(
             }
         }
         Box(Modifier.fillMaxSize().graphicsLayer {
-            val raw = collapse.value
-            // Clamp the viewport at its destination; overshoot becomes a visible
-            // elastic landing rather than a gap beyond the full-screen edges.
-            val progress = collapsedViewport(raw)
+            // Both directions zoom along the same bounded path, with no
+            // overshoot, elastic landing or second mini-player transform.
+            val progress = collapsedViewport(collapse.value)
             if (size.width > 0f && size.height > 0f) {
                 val measured = (if (visibleState.targetState) openingBounds else miniPlayerBounds())?.translate(-origin)?.takeIf {
                     it.width > 0f && it.height > 0f && it.left >= 0f && it.top >= 0f &&
@@ -137,12 +114,11 @@ internal fun PlayerExpansionOverlay(
                     size.width * .92f, size.height - minOf(80.dp.toPx(), size.height * .2f))
                 val width = size.width + (target.width - size.width) * progress
                 val height = size.height + (target.height - size.height) * progress
-                val baseScale = width / size.width
-                val scale = baseScale * (1f + (-raw).coerceIn(0f, .10f) * .45f)
+                val scale = width / size.width
                 transformOrigin = TransformOrigin(0f, 0f)
                 scaleX = scale
                 scaleY = scale
-                translationX = target.left * progress - size.width * (scale - baseScale) * .5f
+                translationX = target.left * progress
                 translationY = target.top * progress
                 clip = progress > 0f
                 shape = PlayerMinimizeClip(height / scale, target.height * .5f * progress / scale)
@@ -150,7 +126,7 @@ internal fun PlayerExpansionOverlay(
             }
         }.testTag("expanded_player_transition")) {
             // Once it is fully transparent, release the expanded screen's touch
-            // handlers. The shared motion still drives the mini player's settle.
+            // handlers while the shared zoom completes its handoff.
             if (keepExpandedContent) content()
         }
     }
