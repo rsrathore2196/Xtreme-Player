@@ -22,11 +22,11 @@ internal typealias RecommendationDiscoveryLookup = suspend (String, String, Stri
 @OptIn(ExperimentalCoroutinesApi::class)
 class UnifiedRecommendationEngine private constructor(context: Context?,
     private val limits: Limits, private val weights: Weights,
-    lookup: RecommendationDiscoveryLookup?) {
+    lookup: RecommendationDiscoveryLookup?, private val nowMillis: () -> Long) {
     constructor(context: Context?, limits: Limits = Limits(), weights: Weights = Weights()) :
-        this(context, limits, weights, null)
-    internal constructor(lookup: RecommendationDiscoveryLookup, limits: Limits = Limits(), weights: Weights = Weights()) :
-        this(null, limits, weights, lookup)
+        this(context, limits, weights, null, System::currentTimeMillis)
+    internal constructor(lookup: RecommendationDiscoveryLookup, limits: Limits = Limits(), weights: Weights = Weights(),
+        nowMillis: () -> Long = System::currentTimeMillis) : this(null, limits, weights, lookup, nowMillis)
     enum class Shelf(val itemKey: String) {
         QUICK("card_2_ytm_dynamic_feed"), ERA("card_3_era_specific_hits"),
         CHART("card_4_country_language_hits"), PERSONALIZED("card_6_personalized_recommendation"),
@@ -82,6 +82,14 @@ class UnifiedRecommendationEngine private constructor(context: Context?,
         const val SOURCE = "native-discovery-mood-v3-youtube"
         const val CHART_TTL = 3 * 60 * 60_000L
         const val CONTEXT_TTL = 6 * 60 * 60_000L
+        /** Bounded novelty: language, country and mood still dominate ranking. */
+        private fun discoveryVariety(id: String, variation: Long): Float {
+            var hash = id.hashCode() xor variation.hashCode()
+            hash = (hash xor (hash ushr 16)) * -2048144789
+            hash = (hash xor (hash ushr 13)) * -1028477387
+            hash = hash xor (hash ushr 16)
+            return (hash and 0xffff) / 65535f
+        }
         fun seedKey(track: MusicTrack?): String = track?.let { HomeRecommendationPolicy.metadataKey(it) }.orEmpty()
         /** A real YouTube catalog identity is sufficient for a Home card. Audio
          * extraction belongs to playback, never to recommendation presentation. */
@@ -106,7 +114,10 @@ class UnifiedRecommendationEngine private constructor(context: Context?,
     fun refresh(profile: UserProfile, country: String, taste: UserTasteProfile, current: MusicTrack?,
         history: List<MusicTrack>, favorites: List<MusicTrack>, known: List<MusicTrack>, force: Boolean,
         shelves: Set<Shelf> = Shelf.entries.toSet(), startupBatch: Boolean = false): Flow<Batch> = channelFlow {
-        val variation = if (force) rotation.incrementAndGet() else rotation.get()
+        // Stable through tab changes and process restarts, but never permanently
+        // pinned to variation zero. A manual refresh advances the same discovery path.
+        val variation = nowMillis().coerceAtLeast(0L) / (24 * 60 * 60_000L) +
+            if (force) rotation.incrementAndGet() else rotation.get()
         val seed = current ?: history.firstOrNull()
         val recent = HomeRecommendationPolicy.Recordings().apply {
             current?.let { add(it) }
@@ -297,12 +308,19 @@ class UnifiedRecommendationEngine private constructor(context: Context?,
             val selected = languages.ifEmpty { listOf("") }
             // Balanced rounds cover all selected languages; cap work per refresh and
             // rotate the starting language rather than permanently dropping selections.
-            val start = (variation % selected.size).toInt()
+            val start = if (initialBatch && !force) 0 else (variation % selected.size).toInt()
             for (i in 0 until minOf(selected.size, 4)) {
                 val lang = selected[(start + i) % selected.size]
                 val query = when (shelf) {
-                    Shelf.ERA -> "$lang ${if ((i + variation) % 2L == 0L) "1990s" else "2000s"} original hits"
-                    Shelf.CHART -> "$lang popular songs $country"
+                    Shelf.ERA -> {
+                        val decade = if ((i + variation) % 2L == 0L) "1990s" else "2000s"
+                        val topic = listOf("original hits", "classic songs", "evergreen hits")[(variation / 2 % 3).toInt()]
+                        "$lang $decade $topic"
+                    }
+                    Shelf.CHART -> {
+                        val topic = listOf("popular songs", "trending songs", "top hits")[(variation % 3).toInt()]
+                        "$lang $topic $country"
+                    }
                     else -> {
                         val genre = taste.genreAffinities.filterValues { it > 0f }.maxByOrNull { it.value }?.key.orEmpty()
                         val topic = if (variation % 2L == 0L) "new releases" else "original hits"
@@ -358,7 +376,7 @@ class UnifiedRecommendationEngine private constructor(context: Context?,
                 weights.country * (if (c.regional) 1f else .35f) + weights.mood * moodAffinity +
                 weights.discovery / (1 + c.ordinal)) - (taste.skipCounts[key] ?: 0) * 20 -
                 minOf(taste.playCounts[key] ?: 0, 10) * 2 - (if (key in taste.recentRecordings) 10 else 0) +
-                (if (variation > 0) ((track.id.hashCode().toLong() xor variation) and 7).toFloat() * .3f else 0f)
+                (if (variation > 0) discoveryVariety(track.id, variation) * weights.discovery * 100 else 0f)
         }
         val sorted = eligible.sortedByDescending(::score)
         // Interleave language groups before matching so a single language cannot

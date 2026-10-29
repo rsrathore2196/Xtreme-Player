@@ -28,7 +28,7 @@ class InitialDiscoveryBudgetTest {
             val call = Lookup(operation, query, country, essential)
             calls.add(call)
             response(call)
-        })
+        }, nowMillis = { 0L })
 
     private suspend fun load(engine: UnifiedRecommendationEngine, shelf: Shelf = Shelf.QUICK,
         profile: UserProfile = UserProfile(languages = listOf("English", "Hindi", "Punjabi")),

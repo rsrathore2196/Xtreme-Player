@@ -1102,7 +1102,10 @@ class HomeViewModel(
         homeVisible.value = visible
         if (!visible) {
             setHomeScrolling(false)
-        } else if (startupRefreshScheduled && (pendingExplicitRefresh || pendingSilentRefresh)) {
+        } else if (startupRefreshScheduled) {
+            // A retained viewport may be identical after hours in the background.
+            // Recheck shelf TTLs on resume; fresh shelves produce no requests, and
+            // expired shelves keep their visible content until idle revalidation.
             refreshHome(isExplicitPull = pendingExplicitRefresh)
         }
       }
