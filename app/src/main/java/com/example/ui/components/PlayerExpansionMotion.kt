@@ -61,6 +61,7 @@ internal class PlayerMorphCapture(
     var key = ""
     var recordedKey: String? = null
     var ready = false
+    var image: ImageBitmap? = null
     var direction = LayoutDirection.Ltr
     var detached = false
     private var released = false
@@ -134,8 +135,13 @@ internal class PlayerExpansionMotion {
     }
     internal fun invalidate() { revision++ }
     private fun sessionOwns(capture: PlayerMorphCapture) = session?.nodes?.values?.any { it === capture } == true
-    internal fun frozen(capture: PlayerMorphCapture) = capture.ready && capture.presentation == capture.recordedPresentation &&
-        transitioning && sessionOwns(capture)
+    // A successful image can still be inside Coil's fade-in. Honor its own draw
+    // invalidations while hidden; freezing that display list can stall the painter
+    // on an empty frame until the mini becomes visible again. No frame ticker or
+    // new image request is needed, and metadata keeps its retained display lists.
+    internal fun frozen(capture: PlayerMorphCapture) =
+        !(capture.side == PlayerMorphSide.MINI && capture.part == PlayerMorphPart.ARTWORK) &&
+        capture.ready && capture.presentation == capture.recordedPresentation && transitioning && sessionOwns(capture)
     internal fun hides(capture: PlayerMorphCapture): Boolean = viewport != null && covered &&
         (capture.side == PlayerMorphSide.MINI || transitioning)
 
@@ -268,7 +274,15 @@ internal class PlayerExpansionMotion {
         capture.layer.alpha = opacity.coerceIn(0f, 1f)
         capture.layer.blendMode = blend
         withTransform({ translate(target.left + dx, target.top + dy); scale(sx, sy, Offset.Zero) }) {
-            drawLayer(capture.layer)
+            val image = capture.image
+            if (image != null && capture.part == PlayerMorphPart.ARTWORK) {
+                // Coil's successful painter can still be fading from transparency.
+                // Reuse its decoded bitmap for the shared image, at the SAME crop,
+                // opacity and bounds; the normal painter keeps its existing fade.
+                val side = minOf(image.width, image.height)
+                drawImage(image, srcOffset = IntOffset((image.width - side) / 2, (image.height - side) / 2),
+                    srcSize = IntSize(side, side), dstSize = size, alpha = opacity.coerceIn(0f, 1f), blendMode = blend)
+            } else drawLayer(capture.layer)
         }
     }
 }
@@ -283,7 +297,7 @@ private fun smooth(value: Float): Float = value.coerceIn(0f, 1f).let { it * it *
 internal fun Modifier.playerMorphElement(
     side: PlayerMorphSide, part: PlayerMorphPart, key: String,
     radius: Dp = 0.dp, active: Boolean = true, presentation: Int = 0, ready: Boolean = true,
-    radiusPixels: (() -> Float)? = null
+    radiusPixels: (() -> Float)? = null, image: ImageBitmap? = null
 ): Modifier {
     val motion = LocalPlayerExpansionMotion.current ?: return this
     val graphics = LocalGraphicsContext.current
@@ -300,6 +314,7 @@ internal fun Modifier.playerMorphElement(
     SideEffect {
         capture.key = key; capture.radius = radiusPx; capture.active = active
         capture.presentation = presentation; capture.direction = direction
+        if (capture.image !== image) { capture.image = image; motion.invalidate() }
     }
     return onGloballyPositioned {
         val bounds = it.boundsInRoot()

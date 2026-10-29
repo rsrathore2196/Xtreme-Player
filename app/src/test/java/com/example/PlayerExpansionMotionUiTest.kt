@@ -406,6 +406,79 @@ class PlayerExpansionMotionUiTest {
         } finally { coil.Coil.setImageLoader(previous); loader.shutdown() }
     }
 
+    @Test fun artworkRemainsVisibleThroughTheFinalClosingFramesAndMiniHandoff() = checkArtworkHandoff(fullscreen = true)
+    @Test fun standardArtworkKeepsTheSameClosingHandoff() = checkArtworkHandoff(fullscreen = false)
+    @Test @Config(qualifiers = "w891dp-h411dp-land")
+    fun landscapeArtworkKeepsTheSameClosingHandoff() = checkArtworkHandoff(fullscreen = false)
+
+    private fun checkArtworkHandoff(fullscreen: Boolean) {
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+        val wasFullscreen = com.example.data.local.OtherSettingsPreferences.playerExperienceSettings(context).fullScreenAlbumArt
+        com.example.data.local.OtherSettingsPreferences.setFullScreenAlbumArt(context, fullscreen)
+        val previous = coil.Coil.imageLoader(context)
+        val cover = android.graphics.Bitmap.createBitmap(800, 800, android.graphics.Bitmap.Config.ARGB_8888)
+            .apply { eraseColor(android.graphics.Color.MAGENTA) }
+        val miniAvailable = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val miniDelivered = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val loader = coil.ImageLoader.Builder(context).components {
+            add(coil.intercept.Interceptor { chain ->
+                val metadata = chain.request.parameters.value<com.example.ui.util.ArtworkRequestMetadata>(com.example.ui.util.ARTWORK_METADATA_PARAMETER)
+                if (metadata?.targetSize == com.example.ui.util.ImageConfig.MINI_PLAYER_SIZE) {
+                    miniAvailable.await()
+                    miniDelivered.complete(Unit)
+                }
+                coil.request.SuccessResult(android.graphics.drawable.BitmapDrawable(context.resources, cover),
+                    chain.request, coil.decode.DataSource.NETWORK)
+            })
+        }.build()
+        coil.Coil.setImageLoader(loader)
+        fun image(): java.awt.image.BufferedImage {
+            val file = java.io.File.createTempFile("player-artwork-handoff-", ".png")
+            return try {
+                compose.onNodeWithTag("motion_stage").captureRoboImage(file.absolutePath,
+                    RoborazziOptions(taskType = RoborazziTaskType.Record))
+                javax.imageio.ImageIO.read(file)
+            } finally { file.delete() }
+        }
+        fun capture(side: PlayerMorphSide): PlayerMorphCapture {
+            @Suppress("UNCHECKED_CAST")
+            val captures = PlayerExpansionMotion::class.java.getDeclaredField("captures")
+                .apply { isAccessible = true }.get(motion) as List<PlayerMorphCapture>
+            return captures.last { it.side == side && it.part == PlayerMorphPart.ARTWORK && it.active }
+        }
+        fun hasArtAt(image: java.awt.image.BufferedImage, bounds: Rect): Boolean {
+            val stage = compose.onNodeWithTag("motion_stage").fetchSemanticsNode().boundsInRoot
+            val x = ((bounds.center.x - stage.left) * image.width / stage.width).toInt().coerceIn(0, image.width - 1)
+            val y = ((bounds.center.y - stage.top) * image.height / stage.height).toInt().coerceIn(0, image.height - 1)
+            val pixel = java.awt.Color(image.getRGB(x, y))
+            return pixel.red > 200 && pixel.blue > 200 && pixel.green < 50
+        }
+        try {
+            show(artwork = true)
+            repeat(2) { cycle ->
+                compose.onNodeWithTag("mini_player_container").performClick()
+                advanceUntil { visible.isIdle }
+                compose.waitUntil(3_000) { frame(); hasArtAt(image(), checkNotNull(capture(PlayerMorphSide.EXPANDED).bounds)) }
+                miniAvailable.complete(Unit)
+                compose.waitUntil(3_000) { miniDelivered.isCompleted }
+                val mini = checkNotNull(capture(PlayerMorphSide.MINI).bounds)
+                val full = checkNotNull(capture(PlayerMorphSide.EXPANDED).bounds)
+                compose.onNodeWithContentDescription("Minimize Player").performClick()
+                for (end in listOf(.7f, .4f, .15f, .04f)) {
+                    advanceUntil { motion.expandedFraction <= end }
+                    val bounds = androidx.compose.ui.geometry.lerp(mini, full, motion.expandedFraction)
+                    assertTrue("The shared artwork cannot disappear before landing (cycle=$cycle, expanded=${motion.expandedFraction})",
+                        hasArtAt(image(), bounds))
+                }
+                advanceUntil { visible.isIdle }
+                assertTrue("The landed mini must show the same artwork", hasArtAt(image(), mini))
+            }
+        } finally {
+            coil.Coil.setImageLoader(previous); loader.shutdown()
+            com.example.data.local.OtherSettingsPreferences.setFullScreenAlbumArt(context, wasFullscreen)
+        }
+    }
+
     private fun advanceUntil(condition: () -> Boolean) {
         repeat(120) {
             frame()
