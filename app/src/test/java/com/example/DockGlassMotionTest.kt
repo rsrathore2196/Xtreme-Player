@@ -217,8 +217,8 @@ class DockGlassMotionTest {
             assertTrue("The selected pill should expand", journey > 10f)
             assertTrue("The width change should be mostly complete after about 120ms", (widths[6] - initialWidth) / journey > .8f)
             val overshoot = (widths.max() - finalWidth) / journey
-            assertTrue("The pill should have one visible, controlled elastic overshoot: $overshoot", overshoot in .055f.. .10f)
-            assertEquals("The pill should finish its settle without a long tail", finalWidth, widths[34], .1f)
+            assertTrue("The pill should have one visible, controlled elastic overshoot: $overshoot", overshoot in .055f.. .18f)
+            assertEquals("The pill should finish its settle without a long tail", finalWidth, widths[38], .2f)
             if (title == "search") {
                 assertTrue("Outgoing label width must not cancel the outer capsule rebound",
                     outerWidths.max() - outerWidths.last() > 2f)

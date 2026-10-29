@@ -34,13 +34,14 @@ import kotlinx.coroutines.launch
 @Stable
 class DockGlassInteraction internal constructor(private val scope: CoroutineScope) {
     private val progress = Animatable(0f, 0.001f)
-    private val pressSpring = spring<Float>(dampingRatio = 0.5f, stiffness = 300f, visibilityThreshold = 0.001f)
+    private val pressSpring = spring<Float>(dampingRatio = 0.48f, stiffness = 400f, visibilityThreshold = 0.001f)
+    private val releaseSpring = spring<Float>(dampingRatio = 0.42f, stiffness = 320f, visibilityThreshold = 0.001f)
     private var animation: Job? = null
     private var generation = 0
     private var motionLease: AutoCloseable? = null
 
     val pressProgress: Float get() = progress.value
-    // One uniform spatial response, including the spring's small release rebound.
+    // One uniform spatial response, including the spring's release rebound bounce.
     // Read only from the outer hardware layer, never from measurement/composition.
     val scale: Float get() = 1f + 0.04f * progress.value
     var touchPosition: Offset by mutableStateOf(Offset.Unspecified)
@@ -54,7 +55,8 @@ class DockGlassInteraction internal constructor(private val scope: CoroutineScop
         animation = scope.launch {
             try {
                 // Retarget the same Animatable, retaining velocity on rapid touches.
-                progress.animateTo(if (value) 1f else 0f, pressSpring, initialVelocity = velocity)
+                val spec = if (value) pressSpring else releaseSpring
+                progress.animateTo(if (value) 1f else 0f, spec, initialVelocity = velocity)
             } finally {
                 if (generation == request && !value) releaseLease()
             }

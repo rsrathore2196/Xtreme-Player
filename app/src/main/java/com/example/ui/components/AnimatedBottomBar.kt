@@ -69,10 +69,10 @@ internal val CompactDockTabWidth = 48.dp
 internal val DockHorizontalPadding = 6.dp
 internal val CompactDockHorizontalPadding = 12.dp
 internal val CompactPrimaryDockWidth = CompactDockTabWidth * 2 + CompactDockHorizontalPadding * 2
-// A single spatial spring owns both tabs and their enclosing viewport. Keep its
-// rebound visible without adding another scale pulse or a second settling clock.
-private val DockSpatialMotion = spring<Float>(dampingRatio = .64f, stiffness = 420f, visibilityThreshold = .001f)
-private val DockEffectMotion = spring<Float>(dampingRatio = 1f, stiffness = 700f, visibilityThreshold = .001f)
+// A single spatial spring owns both tabs and their enclosing viewport, tuned
+// for fluid, bouncy elasticity without jitter or lag.
+private val DockSpatialMotion = spring<Float>(dampingRatio = .52f, stiffness = 340f, visibilityThreshold = .001f)
+private val DockEffectMotion = spring<Float>(dampingRatio = .50f, stiffness = 320f, visibilityThreshold = .001f)
 
 /**
  * Data model for AnimatedBottomBar tabs.
@@ -139,7 +139,7 @@ fun AnimatedBottomBar(
         val indicatorAlpha = selectionTransition.animateFloat(transitionSpec = { DockEffectMotion },
             label = "tab_indicator_${item.index}") { selected -> if (selected == item.index) 1f else 0f }
         val foreground = selectionTransition.animateColor(
-            transitionSpec = { spring(dampingRatio = 1f, stiffness = 700f) },
+            transitionSpec = { spring(dampingRatio = 0.85f, stiffness = 450f) },
             label = "tab_foreground_${item.index}") { selected -> if (selected == item.index) selectedContent else unselectedContent }
         remember(expansion, labelAlpha, indicatorAlpha, foreground) { DockTabMotion(expansion, labelAlpha, indicatorAlpha, foreground) }
     }
@@ -308,7 +308,7 @@ fun AnimatedBottomBar(
                         alpha = if (geometry.retained(index)) 1f else 1f - geometry.progress
                         transformOrigin = origin
                         translationX = if (direction == LayoutDirection.Ltr) left else left + tabWidth - tab.width
-                        translationY = -1.5f * motions[index].expansion.value.coerceIn(0f, 1f) * (1f - geometry.progress)
+                        translationY = -2f * motions[index].expansion.value.coerceAtLeast(0f) * (1f - geometry.progress)
                     }
                 }
             }
@@ -434,7 +434,7 @@ private fun BottomBarTabContent(
                         // spatial bounce on top of the pill's width motion.
                         translationX = (insetDelta * expansion.value - compactInsetDelta * (compactProgress?.value ?: 0f)) *
                             if (labelDirection == LayoutDirection.Ltr) 1f else -1f
-                        scaleX = 1f + 0.12f * selectionEffect.value
+                        scaleX = 1f + 0.14f * selectionEffect.value
                         scaleY = scaleX
                     }
             )

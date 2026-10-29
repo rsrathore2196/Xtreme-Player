@@ -65,16 +65,16 @@ class DockSelectionMotionParityTest {
                             titles.forEachIndexed { index, title ->
                                 val selected = selection.intValue == index
                                 val padding by animateDpAsState(if (selected) 16.dp else 14.dp,
-                                    spring(dampingRatio = .64f, stiffness = 420f), label = "measured_padding_$index")
+                                    spring(dampingRatio = .52f, stiffness = 340f), label = "measured_padding_$index")
                                 Row(Modifier.testTag("measured_$index").height(52.dp)
                                     .padding(horizontal = padding), verticalAlignment = Alignment.CenterVertically) {
                                     Spacer(Modifier.size(24.dp))
                                     AnimatedVisibility(selected,
-                                        enter = fadeIn(spring(dampingRatio = .64f, stiffness = 420f)) +
-                                            expandHorizontally(spring(dampingRatio = .64f, stiffness = 420f),
+                                        enter = fadeIn(spring(dampingRatio = .52f, stiffness = 340f)) +
+                                            expandHorizontally(spring(dampingRatio = .52f, stiffness = 340f),
                                                 expandFrom = Alignment.Start, clip = false),
-                                        exit = fadeOut(spring(dampingRatio = .64f, stiffness = 420f)) +
-                                            shrinkHorizontally(spring(dampingRatio = .64f, stiffness = 420f),
+                                        exit = fadeOut(spring(dampingRatio = .52f, stiffness = 340f)) +
+                                            shrinkHorizontally(spring(dampingRatio = .52f, stiffness = 340f),
                                                 shrinkTowards = Alignment.Start, clip = false)) {
                                         Text(title, Modifier.padding(start = 6.dp), fontWeight = FontWeight.Bold,
                                             fontSize = 14.5.sp, letterSpacing = .2.sp, maxLines = 1, softWrap = false)
