@@ -595,7 +595,7 @@ fun AboutPage(
                         border = BorderStroke(1.dp, if (isDarkMode) Color(0xFF10B981) else Color(0xFF059669))
                     ) {
                         Text(
-                            text = "STABLE",
+                            text = "STABLE RELEASE",
                             fontSize = 9.5.sp,
                             fontWeight = FontWeight.ExtraBold,
                             letterSpacing = 0.5.sp,

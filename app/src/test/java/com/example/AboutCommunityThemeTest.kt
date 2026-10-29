@@ -42,7 +42,7 @@ class AboutCommunityThemeTest {
             }
         } }
         compose.onNodeWithText("Build Verification").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("STABLE").assertExists()
+        compose.onNodeWithText("STABLE RELEASE").assertIsDisplayed()
         compose.onNodeWithText("Audio Architecture").assertDoesNotExist()
         compose.onNodeWithText("16-Bit PCM / 5-Band DSP").assertDoesNotExist()
     }
