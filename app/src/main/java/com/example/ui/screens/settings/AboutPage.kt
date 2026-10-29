@@ -640,7 +640,7 @@ fun SupportDonationCard(
     val appColors = LocalAppColors.current
 
     val upiId = "rajaasingh88-4@okicici"
-    val presetAmounts = listOf("50", "100", "250", "Custom")
+    val presetAmounts = listOf("100", "250", "500", "Custom")
     var selectedPreset by remember { mutableStateOf("100") }
     var customAmount by remember { mutableStateOf("") }
 
