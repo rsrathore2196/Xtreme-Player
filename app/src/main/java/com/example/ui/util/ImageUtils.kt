@@ -5,6 +5,7 @@ import com.example.performance.AppDispatchers
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.ui.unit.IntSize
@@ -21,7 +22,7 @@ import com.example.data.model.MusicTrack
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
-/** Hidden retained tabs may reuse memory images, but never fetch/decode unseen artwork. */
+/** Ordinary hidden tabs reuse memory; only bounded viewport preparation may load ahead. */
 val LocalArtworkRequestsActive = compositionLocalOf { true }
 
 internal const val ARTWORK_VISIBILITY_PARAMETER = "com.example.artwork.visibility"
@@ -38,12 +39,13 @@ fun rememberPlaylistCoverRequest(
     val context = LocalContext.current
     val active = LocalArtworkRequestsActive.current && loadAllowed
     val visibility = remember(context, url, targetSize) { ArtworkVisibility(active) }
+    val ticket = rememberViewportArtwork(visibility, "playlist:$url:$targetSize", enabled = loadAllowed && url.isNotBlank())
     SideEffect { visibility.active.value = active }
     val previouslyRequested = remember(url) { mutableStateOf(false) }
-    // Keep an existing painter/request when a retained tab hides. Never start
-    // artwork for a hidden, never-visited row, including lazy precomposition.
-    SideEffect { if (active) previouslyRequested.value = true }
-    if (url.isBlank() || !active && !previouslyRequested.value) return null
+    // Retain existing painters when a tab hides. New hidden rows need an
+    // explicit, bounded viewport-preparation ticket before starting artwork.
+    SideEffect { if (active || ticket != null) previouslyRequested.value = true }
+    if (url.isBlank() || !active && ticket == null && !previouslyRequested.value) return null
     val dimension = mapTargetSizeToArtworkDimension(targetSize)
     return remember(context, url, dimension, visibility) {
         buildPlaylistCoverRequest(context, url, dimension, visibility)
@@ -224,6 +226,8 @@ fun rememberOptimizedImageRequest(
         track?.durationMs, track?.coverUrl, targetSize, decodeSize) {
         ArtworkVisibility(visibleContent)
     }
+    rememberViewportArtwork(visibility, "song:$url:${track?.id}:$targetSize:$decodeSize",
+        enabled = url.isNotBlank() || youtubeArtworkAlternatives(track?.id, emptyList()).isNotEmpty())
     SideEffect { visibility.active.value = visibleContent }
     // Transport URL/bitrate changes do not change artwork. Metadata edits and a larger
     // destination do create a new request, including when a recycled row keeps its ID.
@@ -232,6 +236,19 @@ fun rememberOptimizedImageRequest(
         buildOptimizedImageRequest(context, url, targetSize, track, crossfadeEnabled,
             preferStableArtwork, decodeSize, visibleContent, visibility = visibility)
     }
+}
+
+/** Register during composition, so the prepared draw cannot race image enqueue on IO. */
+@Composable
+private fun rememberViewportArtwork(visibility: ArtworkVisibility, key: String, enabled: Boolean = true): ViewportArtworkPreparation.Ticket? {
+    val preparation = LocalViewportArtworkPreparation.current ?: return null
+    val ticket = remember(preparation, key, enabled) { if (enabled) preparation.register(key) else null }
+    SideEffect { visibility.prepare(ticket) }
+    DisposableEffect(visibility, ticket) { onDispose {
+        if (visibility.preparation.value === ticket) visibility.prepare(null)
+        ticket?.finish()
+    } }
+    return ticket
 }
 
 /** Same identity/cache keys for bounded startup prefetch and the eventual visible target. */

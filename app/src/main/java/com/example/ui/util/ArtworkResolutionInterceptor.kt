@@ -18,6 +18,9 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -28,8 +31,19 @@ import java.net.URI
 const val ARTWORK_METADATA_PARAMETER = "com.example.artwork.metadata"
 
 /** Visibility controls unfinished work, not the content/painter/cache identity. */
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class ArtworkVisibility internal constructor(active: Boolean) {
     internal val active = MutableStateFlow(active)
+    internal val preparation = MutableStateFlow<ViewportArtworkPreparation.Ticket?>(null)
+    @Volatile private var completed = false
+    internal val permitted = preparation.flatMapLatest { ticket ->
+        combine(this.active, ticket?.allowed ?: flowOf(false)) { visible, preparing -> visible || preparing }
+    }
+    internal fun prepare(ticket: ViewportArtworkPreparation.Ticket?) {
+        preparation.value = ticket
+        if (completed) ticket?.finish()
+    }
+    internal fun complete() { completed = true; preparation.value?.finish() }
 }
 
 /** Provider identity and viewport ownership; no metadata search or cross-provider matching. */
@@ -123,10 +137,22 @@ class ArtworkResolutionInterceptor : Interceptor {
         val visibility = metadata?.visibility ?: chain.request.parameters.value<ArtworkVisibility>(ARTWORK_VISIBILITY_PARAMETER)
         visibility?.let { visibility ->
             while (true) {
-                visibility.active.first { it }
+                visibility.permitted.first { it }
+                val ticket = visibility.preparation.value?.takeIf { it.allowed.value }
                 val result = coroutineScope {
-                    val hidden = async(start = CoroutineStart.UNDISPATCHED) { visibility.active.first { !it } }
-                    val loading = async(com.example.performance.AppDispatchers.Io) { load() }
+                    val hidden = async(start = CoroutineStart.UNDISPATCHED) { visibility.permitted.first { !it } }
+                    val loading = async(com.example.performance.AppDispatchers.Io) {
+                        try {
+                            if (ticket == null) load() else ticket.load(visible = { visibility.active.value }) {
+                                if (playlist) playlistCover(chain, preparation = true)
+                                else resolve(chain, checkNotNull(metadata).copy(startupPreparation = true))
+                            }
+                        } catch (error: Exception) {
+                            if (error is kotlinx.coroutines.CancellationException) throw error
+                            if (ticket != null && !visibility.active.value) ErrorResult(null, chain.request, error)
+                            else { visibility.complete(); throw error }
+                        }
+                    }
                     try {
                         select<ImageResult?> {
                             loading.onAwait { it }
@@ -136,7 +162,17 @@ class ArtworkResolutionInterceptor : Interceptor {
                 }
                 // Successful requests finish once. Hiding a retained tab then
                 // leaves its painter intact; only unfinished work resumes later.
-                if (result != null) return result
+                if (result != null) {
+                    if (result is ErrorResult && ticket != null && !visibility.active.value) {
+                        // A failed hidden warm-up is not a failed visible request.
+                        // Stop this preparation attempt; retry normally on first visit.
+                        ticket.allowed.value = false
+                        ticket.finish()
+                        continue
+                    }
+                    visibility.complete()
+                    return result
+                }
             }
         }
         if (metadata?.visibleContent == false) {
@@ -149,13 +185,13 @@ class ArtworkResolutionInterceptor : Interceptor {
     }
 
     /** Raw playlist cover URLs never need song matching or provider URL upgrades. */
-    private suspend fun playlistCover(chain: Interceptor.Chain): ImageResult {
+    private suspend fun playlistCover(chain: Interceptor.Chain, preparation: Boolean = false): ImageResult {
         val request = chain.request
         val cachedRequest = request.newBuilder().networkCachePolicy(CachePolicy.DISABLED).build()
         val memory = chain.proceed(cachedRequest.newBuilder().diskCachePolicy(CachePolicy.DISABLED).build())
         if (memory is SuccessResult) return memory
         val url = request.data.toString()
-        return admittedArtwork(url) {
+        return admittedArtwork(url, startup = preparation) {
             val prepared = chain.proceed(cachedRequest)
             if (prepared is SuccessResult) prepared else chain.proceed(request)
         }

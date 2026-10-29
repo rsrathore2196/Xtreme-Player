@@ -41,6 +41,9 @@ import com.example.performance.BackgroundWorkCoordinator
 import com.example.performance.StartupStatus
 import com.example.performance.StartupTask
 import com.example.ui.util.LocalArtworkRequestsActive
+import com.example.ui.util.LocalViewportArtworkPreparation
+import com.example.ui.util.ViewportArtworkPreparation
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
@@ -59,6 +62,34 @@ internal fun MainTabPager(
     var mounted by remember { mutableStateOf(if (prepareStartup) setOf(state.currentPage) else setOf(0, 1, 2)) }
     var preparingPage by remember { mutableIntStateOf(-1) }
     val measured = remember { List(3) { CompletableDeferred<Unit>() } }
+    val preparedPages = remember { mutableSetOf<Int>() }
+    var artworkPreparation by remember { mutableStateOf<ViewportArtworkPreparation?>(null) }
+    suspend fun preparePage(index: Int) {
+        val artwork = ViewportArtworkPreparation(initial = prepareStartup)
+        try {
+            artworkPreparation = artwork
+            preparingPage = index
+            mounted = mounted + index
+            measured[index].await()
+            view.awaitStartupContentDraw { }
+            val budget = if (prepareStartup) minOf(1_500L, BackgroundWorkCoordinator.initialPreparationRemainingMillis)
+                else 1_500L
+            val warmed = budget > 0 && withTimeoutOrNull(budget) {
+                // A committed draw may add another first-viewport image after
+                // a cached flow publishes. Drain that work within the SAME budget.
+                do {
+                    artwork.awaitCompletion()
+                    view.awaitStartupContentDraw { }
+                } while (!artwork.complete)
+                true
+            } == true
+            if (warmed) preparedPages.add(index)
+        } finally {
+            artwork.close()
+            preparingPage = -1
+            artworkPreparation = null
+        }
+    }
     // Visible navigation always wins over optional hidden-tab preparation.
     LaunchedEffect(state.currentPage, state.targetPage) {
         mounted = mounted + state.currentPage + state.targetPage
@@ -67,16 +98,13 @@ internal fun MainTabPager(
         if (!prepareStartup) {
             // A preparation timeout must not mount all unfinished screens on the
             // first interactive frame. User navigation still mounts its target immediately.
-            for (index in 0..2) {
-                if (index in mounted) continue
-                BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.DEFERRED,
-                    label = "Retained tab preparation $index") {
-                    try {
-                        preparingPage = index
-                        mounted = mounted + index
-                        measured[index].await()
-                        view.awaitStartupContentDraw { }
-                    } finally { preparingPage = -1 }
+            lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                for (index in 0..2) {
+                    if (index in preparedPages) continue
+                    BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.DEFERRED,
+                        label = "Retained tab preparation $index") {
+                        preparePage(index)
+                    }
                 }
             }
             return@LaunchedEffect
@@ -107,14 +135,9 @@ internal fun MainTabPager(
                     coordinator.startup(BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI,
                         boundToInitialPresentation = true, label = "Initial tab layout $index") {
                         withContext(AppDispatchers.Main) {
-                            try {
-                                preparingPage = index
-                                mounted = mounted + index
-                                measured[index].await()
-                                // Bind cached flows while preparing, not on the first
-                                // slide into the page. Hidden effects stay inactive.
-                                view.awaitStartupContentDraw { }
-                            } finally { preparingPage = -1 }
+                            // Bind the cached first viewport and decode its artwork
+                            // before the first slide. Hidden animation effects stay off.
+                            preparePage(index)
                         }
                     }
                 }
@@ -157,7 +180,9 @@ internal fun MainTabPager(
             page.update()
         }
         CompositionLocalProvider(LocalVisualEffectsActive provides (visible && parentEffectsActive),
-            LocalArtworkRequestsActive provides visible, LocalLifecycleOwner provides page) {
+            LocalArtworkRequestsActive provides visible,
+            LocalViewportArtworkPreparation provides artworkPreparation.takeIf { collectPreparedData },
+            LocalLifecycleOwner provides page) {
             Box(Modifier.fillMaxSize().graphicsLayer { clip = false }
                 .testTag(if (settled) "main_tab_${index}_settled" else "main_tab_${index}_retained")) {
                 if (index in mounted) Box(Modifier.fillMaxSize().onGloballyPositioned {

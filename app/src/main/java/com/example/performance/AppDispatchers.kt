@@ -24,7 +24,7 @@ object AppDispatchers {
     val Imports: CoroutineDispatcher = BackgroundDispatcher(Dispatchers.IO.limitedParallelism(2))
 }
 
-/** Only optional admitted work carries this element. Playback and explicit actions do not. */
+/** Cooperative UI/optional CPU work carries this element. Critical playback does not. */
 internal class NonEssentialWork(
     val owner: Job?,
     val canRun: () -> Boolean,

@@ -514,6 +514,12 @@ class HomeViewModel(
     val countryLanguageCard get() = sectionState(Shelf.CHART)
     val personalizedCard get() = sectionState(Shelf.PERSONALIZED)
 
+    private fun eligibleHomeSections() = HomeFeedSection.entries.filterTo(mutableSetOf()) { section ->
+        if (section == HomeFeedSection.ARTISTS) _mostListenedArtists.value.isNotEmpty() ||
+            (_userMode.value == HomeUserMode.EXISTING_USER && actualPlays.value.any(UserTasteProfile::played))
+        else section.shelf in eligibleShelves()
+    }
+
     /** Called only after a genuine forward scroll reaches the current feed tail. */
     fun revealNextHomeSection() {
         ownerScope.launch {
@@ -521,11 +527,7 @@ class HomeViewModel(
             revealJob = ownerScope.launch {
                 try {
                     awaitHomePresentation()
-                    val eligible = HomeFeedSection.entries.filterTo(mutableSetOf()) { section ->
-                        if (section == HomeFeedSection.ARTISTS) _mostListenedArtists.value.isNotEmpty() ||
-                            (_userMode.value == HomeUserMode.EXISTING_USER && actualPlays.value.any(UserTasteProfile::played))
-                        else section.shelf in eligibleShelves()
-                    }
+                    val eligible = eligibleHomeSections()
                     val current = _feedWindow.value
                     val next = current.appendNext(eligible)
                     if (next === current) return@launch
@@ -652,7 +654,9 @@ class HomeViewModel(
 
     private data class ArtistHistory(val plays: List<Pair<String, String>>, val trackIds: List<String>, val identityRevision: Long)
     private val appliedCachedArtistSessions = mutableSetOf<String>()
-    private suspend fun refreshListeningCards() {
+    private var artistWarmupRequested = 0L
+    private var artistWarmupCompleted = 0L
+    private suspend fun refreshListeningCards(prepareAhead: Boolean = false) {
         // Reuse the live Room snapshots; song-start requests add their pending play
         // before Room commits it, without re-querying all history and metadata.
         restored.await()
@@ -668,7 +672,7 @@ class HomeViewModel(
                 if (_mostListenedArtists.value.isEmpty()) StartupStatus.UNAVAILABLE else StartupStatus.FALLBACK_READY)
             return
         }
-        if (HomeFeedSection.ARTISTS !in _feedWindow.value.sections) {
+        if (HomeFeedSection.ARTISTS !in _feedWindow.value.sections && !prepareAhead) {
             // Recents are essential; an unseen artist shelf must not trigger a
             // historical ranking pass or hold the startup readiness fence.
             val pending = pendingCardPlays.values.toList().asReversed()
@@ -1287,7 +1291,11 @@ class HomeViewModel(
         }
         ownerScope.launch {
             listeningCardRequests.collectLatest {
-                try { refreshListeningCards() }
+                val warmup = artistWarmupRequested
+                try {
+                    refreshListeningCards(prepareAhead = warmup > artistWarmupCompleted)
+                    artistWarmupCompleted = warmup
+                }
                 catch (e: CancellationException) { throw e }
                 catch (e: Exception) {
                     android.util.Log.w("HomeViewModel", "Could not update listening cards", e)
@@ -1299,6 +1307,41 @@ class HomeViewModel(
                     artistPreparationRevision.update { it + 1L }
                 }
             }
+        }
+        ownerScope.launch {
+            initialHomePrepared.await()
+            BackgroundWorkCoordinator.awaitInitialPresentation()
+            // Prepare only the NEXT local section. Its visibility still belongs to
+            // real scroll intent, and no discovery/image request is started here.
+            combine(_feedWindow, candidates, personalizationHistory) { window, pool, history -> Triple(window, pool, history) }
+                .distinctUntilChanged().collectLatest { (window, pool, history) ->
+                    if (!history.ready) return@collectLatest
+                    val next = window.appendNext(eligibleHomeSections()).sections.lastOrNull()
+                        ?.takeIf { it !in window.sections } ?: return@collectLatest
+                    awaitHomeIdle(allowWhenEmpty = false, quietMillis = 15_000L)
+                    if (window != _feedWindow.value || pool !== candidates.value) return@collectLatest
+                    if (next == HomeFeedSection.ARTISTS) {
+                        artistWarmupRequested++
+                        listeningCardRequests.update { it + 1L }
+                    } else {
+                        val shelf = next.shelf ?: return@collectLatest
+                        val pools = mapOf(Shelf.QUICK to pool.quick, Shelf.ERA to pool.era, Shelf.CHART to pool.chart,
+                            Shelf.PERSONALIZED to pool.personalized, Shelf.INSPIRED to pool.inspired)
+                        if (pools[shelf].isNullOrEmpty()) return@collectLatest
+                        BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.DEFERRED,
+                            label = "Next cached Home section") {
+                            withContext(workerDispatcher) {
+                                val seen = HomeRecommendationPolicy.Recordings()
+                                val recent = (recentlyPlayed.value + _listeningHistoryCard.value.tracks +
+                                    listOfNotNull(activeRecommendationTrack())).filter(seen::add)
+                                shelfPreparation.prepare(pools, eligibleShelves().intersect(window.shelves + shelf),
+                                    tasteProfile.value, recent, previousExposure,
+                                    pool.seedKey.isNotBlank() && pool.seedKey == UnifiedRecommendationEngine.seedKey(activeRecommendationTrack()),
+                                    ::yieldHomePreparation)
+                            }
+                        }
+                    }
+                }
         }
         ownerScope.launch {
             initialHomePrepared.await()

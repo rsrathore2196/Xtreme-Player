@@ -49,7 +49,9 @@ class InitialHomePreparationTest {
     @Test fun confirmedEmptyHistoryUsesOnlyCachedDiscoveryShelvesWithoutANetworkBootstrapOrVisibleHome() = prepare(false)
     @Test fun returningUserWithCachedShelvesDoesNotWaitForFreshTaste() = prepare(true)
 
-    private fun prepare(existingUser: Boolean) = runBlocking {
+    @Test fun returningUserCanPrepareTheNextArtistSectionWithoutRevealingIt() = prepare(true, warmAhead = true)
+
+    private fun prepare(existingUser: Boolean, warmAhead: Boolean = false) = runBlocking {
         Dispatchers.setMain(UnconfinedTestDispatcher())
         val app = ApplicationProvider.getApplicationContext<Application>()
         val store = ViewModelStore()
@@ -171,6 +173,22 @@ class InitialHomePreparationTest {
             withTimeout(2_000L) { coordinator.awaitInitialPresentationSettled() }
             assertTrue(coordinator.startupReadiness.value.complete)
             val completedPresentation = coordinator.startupReadiness.value
+            if (warmAhead) {
+                home.setHomeVisible(true)
+                ShadowSystemClock.advanceBy(Duration.ofSeconds(16))
+                withTimeout(6_000L) {
+                    while (home.mostListenedArtists.value.isEmpty()) {
+                        shadowOf(Looper.getMainLooper()).idle()
+                        ShadowSystemClock.advanceBy(Duration.ofMillis(100))
+                        delay(10L)
+                    }
+                }
+                assertEquals("Original Artist", home.mostListenedArtists.value.first().name)
+                assertEquals(300, home.mostListenedArtists.value.first().playCount)
+                assertEquals("Data preparation cannot reveal or insert a Home card",
+                    com.example.ui.viewmodel.HomeFeedWindow.INITIAL, home.feedWindow.value.sections)
+                assertTrue(home.eraCard.value.tracks.isEmpty())
+            }
             val played = track("first-real-play")
             database.musicDao().insertOrUpdateTrack(com.example.data.local.TrackEntity.fromMusicTrack(played))
             val playedEvent = com.example.data.local.ListeningEventEntity.fromTrack(

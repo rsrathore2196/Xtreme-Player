@@ -96,6 +96,41 @@ class StartupPresentationAdmissionTest {
         assertTrue(requested)
     }
 
+    @Test fun newlyAdmittedUiWorkAfterStartupYieldsToTheNextGestureWithoutWaitingFifteenSeconds() = runTest {
+        state.value = state.value.expirePreparation()
+        (BackgroundWorkCoordinator::class.java.getDeclaredField("initialPresentationPending")
+            .apply { isAccessible = true }.get(null) as AtomicBoolean).set(false)
+        val decode = CompletableDeferred<Unit>()
+        var completed = false
+        val uiWork = launch {
+            coordinator.startup(BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI) {
+                val gate = kotlinx.coroutines.currentCoroutineContext()[NonEssentialWork]
+                assertNotNull("Post-startup UI work also needs continuation protection", gate)
+                decode.await()
+                gate!!.awaitAdmission()
+                completed = true
+            }
+        }
+        runCurrent()
+        val navigation = coordinator.navigationBusy()
+        try {
+            decode.complete(Unit)
+            runCurrent(); advanceTimeBy(100); runCurrent()
+            assertFalse(completed)
+            var played = false
+            coordinator.startup(BackgroundWorkCoordinator.StartupPriority.CRITICAL) { played = true }
+            assertTrue(played)
+        } finally { navigation.close() }
+        coordinator.scrolling(true)
+        advanceTimeBy(100); runCurrent()
+        assertFalse(completed)
+        coordinator.scrolling(false)
+        ShadowSystemClock.advanceBy(Duration.ofMillis(300))
+        advanceTimeBy(100); runCurrent()
+        assertTrue("Visible UI resumes after the short interaction fence", completed)
+        uiWork.join()
+    }
+
     @Test fun admittedStartupContinuationsYieldAfterRevealWithoutLosingRestoredData() = runTest {
         val loaded = CompletableDeferred<Unit>()
         val resumeDecode = CompletableDeferred<Unit>()

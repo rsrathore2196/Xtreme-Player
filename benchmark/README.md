@@ -83,3 +83,10 @@ capped profile, and empty vs large listening histories, alongside the existing c
 artwork and hot/warm/cold launch cases. Observe both the first six interactive seconds and
 the later optional-work window. Traces are required before changing retained-tab lifecycle
 publication or image memory budgets; these are not established bottlenecks from static code.
+
+The responsiveness benchmark also includes `coldFirstInteractionAfterOneMinute` and
+`warmFirstInteractionAfterOneMinute`. They wait 60 seconds after initialization **before**
+any scrolling or tab selection, then repeat the same interactions. Compare their first-use
+frames with later frames in the same trace; do not warm the destinations in setup.
+Use the recorded viewport-artwork, listening-card and next-section trace slices to distinguish
+image/data preparation from Main/RenderThread, GC and compilation costs. Keep user data intact.

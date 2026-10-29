@@ -278,13 +278,12 @@ fun MainNavigationScaffold(
         // The OS dialog may pause this lifecycle. Its result is retained by the VM
         // so the next resumed pass continues instead of requesting permission again.
         viewModel.awaitNotificationPermissionResult()
-        // An automatic release check is optional. A fixed startup delay alone
-        // allowed it to compete with the first artwork/Room/recommendation wave.
-        // AppUpdateManager owns serialized MAINTENANCE admission and promotion
-        // for manual checks; do not add a competing readiness/timer gate here.
-        if (viewModel.beginAutomaticUpdateCheck())
-            com.example.updater.AppUpdateManager.checkForUpdate(context = context)
       }
+    }
+
+    AutomaticAppUpdateCheck(viewModel, viewModel::beginAutomaticUpdateCheck) {
+        // The manager owns IO, maintenance admission and manual-check promotion.
+        com.example.updater.AppUpdateManager.checkForUpdate(context = context)
     }
 
     // Handle Back Press gracefully across the app

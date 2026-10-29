@@ -250,13 +250,13 @@ object BackgroundWorkCoordinator {
         }
 
     /**
-     * Admission is not permission to keep consuming CPU after the modal deadline.
-     * Retain required restoration and its lane, but park CPU continuations during
+     * Admission is not permission to keep consuming CPU through a later gesture.
+     * Retain required UI work and its lane, but park CPU continuations during
      * interactive frames. Unlike optional enrichment this uses the short interaction
      * fence: waiting for the optional lane/15s idle here could block local tab data
      * behind the very restoration that owns the essential lane.
      */
-    private suspend fun initialContinuationContext(urgent: () -> Boolean): NonEssentialWork {
+    private suspend fun uiContinuationContext(urgent: () -> Boolean): NonEssentialWork {
         fun canRun() = urgent() || !foreground.get() ||
             (!startupReadiness.value.complete && initialPreparationRemainingMillis > 0L) ||
             isInteractionIdle()
@@ -363,8 +363,7 @@ object BackgroundWorkCoordinator {
                 else if (initialRequest) StartupPriority.DEFERRED else priority
             val admission = Admission(effectivePriority, cardWork)
             val context = when {
-                admittedEssential && initialRequest -> admission + initialContinuationContext(urgent)
-                admittedEssential -> admission
+                admittedEssential -> admission + uiContinuationContext(urgent)
                 else -> admission + optionalContext(requireForeground, urgent)
             }
             return withContext(context) {

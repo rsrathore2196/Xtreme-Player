@@ -41,16 +41,22 @@ class StartupResponsivenessBenchmark {
 
     @Test fun coldOpening() = opening(StartupMode.COLD)
     @Test fun warmReopening() = opening(StartupMode.WARM)
+    @Test fun coldFirstInteractionAfterOneMinute() = opening(StartupMode.COLD, idleBeforeFirstInteractionMs = 60_000L)
+    @Test fun warmFirstInteractionAfterOneMinute() = opening(StartupMode.WARM, idleBeforeFirstInteractionMs = 60_000L)
     @Test fun retainedActivityReopening() = opening(StartupMode.HOT)
     @Test fun rapidTabRetargeting() = opening(StartupMode.WARM, rapidRetargeting = true)
     @Test fun optionalWorkWakeupAndInteraction() = opening(StartupMode.WARM, observeOptionalWakeup = true)
 
-    private fun opening(mode: StartupMode, observeOptionalWakeup: Boolean = false, rapidRetargeting: Boolean = false) = benchmark.measureRepeated(
+    private fun opening(mode: StartupMode, observeOptionalWakeup: Boolean = false, rapidRetargeting: Boolean = false,
+        idleBeforeFirstInteractionMs: Long = 0L) = benchmark.measureRepeated(
         packageName = TARGET,
         metrics = listOf(StartupTimingMetric(), FrameTimingMetric(),
             TraceSectionMetric("Xtreme/Home recent restore"),
             TraceSectionMetric("Xtreme/Home history page"),
-            TraceSectionMetric("Xtreme/Artwork cached mapping")),
+            TraceSectionMetric("Xtreme/Artwork cached mapping"),
+            TraceSectionMetric("Xtreme/Tab viewport artwork"),
+            TraceSectionMetric("Xtreme/Listening cards prepare"),
+            TraceSectionMetric("Xtreme/Next cached Home section")),
         compilationMode = CompilationMode.Partial(),
         startupMode = mode,
         iterations = 5,
@@ -69,6 +75,9 @@ class StartupResponsivenessBenchmark {
         check(device.wait(Until.gone(By.res("startup_initialization_overlay")), 90_000L)) {
             "Startup presentation did not finish; cannot measure interactive navigation."
         }
+        // Do not visit any other tab or scroll before this wait: doing so would
+        // warm the exact first-use work this scenario is intended to measure.
+        if (idleBeforeFirstInteractionMs > 0L) SystemClock.sleep(idleBeforeFirstInteractionMs)
         val interactiveStart = SystemClock.elapsedRealtime()
         do {
             // Deliberately no waitForIdle(): that would skip the reported loading window.
