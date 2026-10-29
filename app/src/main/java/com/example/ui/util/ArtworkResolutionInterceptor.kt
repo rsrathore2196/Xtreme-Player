@@ -55,6 +55,7 @@ data class ArtworkRequestMetadata(
     val targetSize: Int = sourceDimension,
     val visibleContent: Boolean = true,
     val startupPreparation: Boolean = false,
+    val cacheOnlyPreparation: Boolean = false,
     val visibility: ArtworkVisibility? = null,
     val currentTrack: Boolean = false
 )
@@ -144,8 +145,8 @@ class ArtworkResolutionInterceptor : Interceptor {
                     val loading = async(com.example.performance.AppDispatchers.Io) {
                         try {
                             if (ticket == null) load() else ticket.load(visible = { visibility.active.value }) {
-                                if (playlist) playlistCover(chain, preparation = true)
-                                else resolve(chain, checkNotNull(metadata).copy(startupPreparation = true))
+                                if (playlist) playlistCover(chain, preparation = true, cacheOnly = !visibility.active.value)
+                                else resolve(chain, checkNotNull(metadata).copy(startupPreparation = true, cacheOnlyPreparation = !visibility.active.value))
                             }
                         } catch (error: Exception) {
                             if (error is kotlinx.coroutines.CancellationException) throw error
@@ -185,7 +186,7 @@ class ArtworkResolutionInterceptor : Interceptor {
     }
 
     /** Raw playlist cover URLs never need song matching or provider URL upgrades. */
-    private suspend fun playlistCover(chain: Interceptor.Chain, preparation: Boolean = false): ImageResult {
+    private suspend fun playlistCover(chain: Interceptor.Chain, preparation: Boolean = false, cacheOnly: Boolean = false): ImageResult {
         val request = chain.request
         val cachedRequest = request.newBuilder().networkCachePolicy(CachePolicy.DISABLED).build()
         val memory = chain.proceed(cachedRequest.newBuilder().diskCachePolicy(CachePolicy.DISABLED).build())
@@ -193,7 +194,7 @@ class ArtworkResolutionInterceptor : Interceptor {
         val url = request.data.toString()
         return admittedArtwork(url, startup = preparation) {
             val prepared = chain.proceed(cachedRequest)
-            if (prepared is SuccessResult) prepared else chain.proceed(request)
+            if (prepared is SuccessResult || cacheOnly) prepared else chain.proceed(request)
         }
     }
 
@@ -319,6 +320,10 @@ class ArtworkResolutionInterceptor : Interceptor {
         val persisted = better(memory, best(cacheUrls, cacheOnly = true))
         if (persisted != null && sufficient(persisted)) return persisted
         present(persisted)
+        // Hidden first-view preparation never spends another tab's budget on the
+        // network. Keep small cached pixels as a placeholder, then upgrade on visibility.
+        if (metadata.cacheOnlyPreparation)
+            return ErrorResult(persisted?.drawable, request, IOException("Artwork not cached at viewport size"))
         val loaded = better(persisted, best(urls))
         return loaded ?: lastError ?: ErrorResult(null, request, IOException("Provider artwork unavailable"))
     }

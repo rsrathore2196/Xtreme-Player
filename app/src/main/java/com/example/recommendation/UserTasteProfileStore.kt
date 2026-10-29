@@ -27,10 +27,17 @@ object UserTasteProfileStore {
     private const val VERSION = 2
     private const val MAX_BYTES = 2 * 1024 * 1024
     internal data class Snapshot(val contextKey: String, val fingerprint: String,
-        val completeHistory: Boolean, val profile: UserTasteProfile) {
+        val completeHistory: Boolean, val profile: UserTasteProfile, val inputRevision: String? = null) {
         fun matches(key: String, signature: String, nowMs: Long = System.currentTimeMillis()): Boolean =
             contextKey == key && fingerprint == signature && nowMs - profile.lastUpdatedMs in 0..3_600_000L
     }
+    /** Both derived files must describe the same authoritative database snapshot. */
+    internal fun canRestoreWithoutHistory(snapshot: Snapshot?, key: String, revision: String?,
+        cardsRevision: String?, presentationComplete: Boolean, nowMs: Long = System.currentTimeMillis()): Boolean =
+        presentationComplete && !revision.isNullOrBlank() && cardsRevision == revision &&
+            snapshot?.completeHistory == true && snapshot.contextKey == key && snapshot.inputRevision == revision &&
+            nowMs - snapshot.profile.lastUpdatedMs in 0..3_600_000L
+
     private data class Write(val directory: File, val snapshot: Snapshot)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val cachedProfile = AtomicReference<Snapshot?>(null)
@@ -110,14 +117,15 @@ object UserTasteProfileStore {
 
     internal fun encode(snapshot: Snapshot): ByteArray = serialize(snapshot.profile)
         .put("contextKey", snapshot.contextKey).put("fingerprint", snapshot.fingerprint)
-        .put("completeHistory", snapshot.completeHistory).toString().toByteArray(Charsets.UTF_8)
+        .put("completeHistory", snapshot.completeHistory).put("inputRevision", snapshot.inputRevision).toString().toByteArray(Charsets.UTF_8)
 
     internal fun decode(text: String): Snapshot? = runCatching {
         val root = JSONObject(text)
         if (root.optInt("version") != VERSION || root.optString("contextKey").isBlank() ||
             root.optString("fingerprint").isBlank()) return null
         Snapshot(root.getString("contextKey"), root.getString("fingerprint"),
-            root.optBoolean("completeHistory"), deserialize(root) ?: return null)
+            root.optBoolean("completeHistory"), deserialize(root) ?: return null,
+            root.optString("inputRevision").takeIf { it.isNotBlank() && it != "null" })
     }.getOrNull()
 
     /** Includes changed rows, not just a last event ID: milestones update existing rows. */

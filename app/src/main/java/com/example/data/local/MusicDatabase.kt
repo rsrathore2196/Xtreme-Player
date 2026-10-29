@@ -10,8 +10,8 @@ import com.example.performance.AppDispatchers
 import kotlinx.coroutines.asExecutor
 
 @Database(
-    entities = [TrackEntity::class, PlaylistEntity::class, PlaylistTrackCrossRef::class, ListeningEventEntity::class, ListeningTotal::class, ListeningCheckpoint::class, ListeningIdentityMigration::class],
-    version = 14,
+    entities = [TrackEntity::class, PlaylistEntity::class, PlaylistTrackCrossRef::class, ListeningEventEntity::class, ListeningTotal::class, ListeningCheckpoint::class, ListeningIdentityMigration::class, HomeInputRevision::class],
+    version = 15,
     exportSchema = true
 )
 abstract class MusicDatabase : RoomDatabase() {
@@ -209,6 +209,17 @@ abstract class MusicDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS home_input_revision (id INTEGER NOT NULL PRIMARY KEY, epoch TEXT NOT NULL, generation INTEGER NOT NULL, replacingTrack TEXT, replacingEvent INTEGER)")
+                HomeInputRevisionTriggers.install(db)
+            }
+        }
+
+        private val homeRevisionCallback = object : Callback() {
+            override fun onOpen(db: SupportSQLiteDatabase) { HomeInputRevisionTriggers.install(db) }
+        }
+
         val ALL_MIGRATIONS = arrayOf(
             MIGRATION_1_2,
             MIGRATION_2_3,
@@ -221,7 +232,7 @@ abstract class MusicDatabase : RoomDatabase() {
             MIGRATION_8_9,
             MIGRATION_9_10,
             MIGRATION_10_11,
-            MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14
+            MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15
         )
 
         fun getDatabase(context: Context): MusicDatabase {
@@ -234,6 +245,7 @@ abstract class MusicDatabase : RoomDatabase() {
                     .setQueryExecutor(AppDispatchers.Database.asExecutor())
                     .setTransactionExecutor(AppDispatchers.Io.asExecutor())
                     .addMigrations(*ALL_MIGRATIONS)
+                    .addCallback(homeRevisionCallback)
                     // Missing upgrade/downgrade paths must fail and leave the existing
                     // database intact. Never add destructive migration fallbacks here.
                     .build()
@@ -244,6 +256,7 @@ abstract class MusicDatabase : RoomDatabase() {
 
         fun createInMemoryDatabase(context: Context): MusicDatabase {
             return Room.inMemoryDatabaseBuilder(context.applicationContext, MusicDatabase::class.java)
+                .addCallback(homeRevisionCallback)
                 .allowMainThreadQueries()
                 .build()
         }

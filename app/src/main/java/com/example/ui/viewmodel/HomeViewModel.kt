@@ -125,8 +125,22 @@ class HomeViewModel(
     }
     private val restored = CompletableDeferred<Unit>()
     private val additionalCacheRestored = CompletableDeferred<Unit>()
+    private val fullCacheRequested = CompletableDeferred<Unit>()
+    private val fullCacheAttemptFinished = CompletableDeferred<Unit>()
+    private val historicalAttemptFinished = MutableStateFlow(false)
+    @Volatile private var historicalRestorationStarted = false
+    private val historicalDemand = MutableStateFlow(false)
+    private val homeInputRevision = MutableStateFlow<String?>(null)
+    @Volatile private var historicalInputRevision: String? = null
+    @Volatile private var rankedArtistsInputRevision: String? = null
+    @Volatile private var cachedCardsInputRevision: String? = initialCards?.inputRevision
+
+    private fun canReuseSavedHistory(): Boolean = UserTasteProfileStore.canRestoreWithoutHistory(
+        cachedTasteSnapshot, profileKey(), homeInputRevision.value, cachedCardsInputRevision, completeCachePreview)
+
+    private fun requestHistoricalInputs() { historicalDemand.value = true }
     private val initialCachePrepared = CompletableDeferred<Unit>()
-    private var completeCachePreview = initialCards?.presentationComplete == true
+    @Volatile private var completeCachePreview = initialCards?.presentationComplete == true
     private val essentialsLoaded = CompletableDeferred<Unit>()
     private val listeningCardsReady = CompletableDeferred<Unit>()
     private val startupRecommendationsComplete = CompletableDeferred<Unit>()
@@ -186,6 +200,8 @@ class HomeViewModel(
             var previousIds: Set<Long>? = null
             listeningEventDao.observeActualPlaySnapshot().distinctUntilChanged()
                 .flowOn(dataDispatcher).collect { snapshot ->
+                val previousRevision = homeInputRevision.value
+                val revision = snapshot.first().inputRevision
                 val allEvents = snapshot.mapNotNull { it.event }
                 val recentLimit = initialRecentEventCount(allEvents.map { it.trackId })
                 val events = allEvents.take(recentLimit)
@@ -194,7 +210,11 @@ class HomeViewModel(
                 val rebuildOlder = previousCount >= 0 && (count < previousCount || count > previousCount + 1 ||
                     count == previousCount && previousIds != ids || count != previousCount && previousIds == ids ||
                     historicalLoadFailed && count != previousCount)
-                val reloadHistory = previousIds == null || rebuildOlder
+                val wakeCachedHistory = !historicalRestorationStarted && previousRevision != null && previousRevision != revision
+                val olderInputsChanged = previousRevision != null && previousRevision != revision &&
+                    previousCount == count && events.all { retainedEvents[it.id] == it }
+                val reloadHistory = previousIds == null || rebuildOlder || olderInputsChanged
+                homeInputRevision.value = revision
                 // Usually 60 events suffice; repeated plays expand the window for Recents.
                 // Older events remain available to the independent historical reader.
                 // Only the visible recent window is reactive. Older personalization
@@ -217,7 +237,7 @@ class HomeViewModel(
                 historyReadyForRanking.value = true
                 if (events.isEmpty()) { cachedHero.value = null; cachedHistory.value = null }
                 eventsLoaded.complete(Unit)
-                if (rebuildOlder) historicalReload.update { it + 1L }
+                if (rebuildOlder || olderInputsChanged || wakeCachedHistory) historicalReload.update { it + 1L }
             }
     }.catch { error ->
         if (error is CancellationException) throw error
@@ -281,6 +301,7 @@ class HomeViewModel(
     }.flowOn(dataDispatcher).stateIn(dataScope, SharingStarted.Eagerly, PersonalizationHistory())
 
     private suspend fun loadHistoricalPersonalization() {
+        val revision = listeningEventDao.getHomeInputRevision()
         val recent = combine(actualPlays, historyRows) { events, rows -> events to rows }
             .first { (events, rows) -> eventsLoaded.isCompleted && rows.ids == events.map { it.trackId }.distinct() }
             .let { (events, rows) -> PersonalizationHistory(events, rows.tracks, true) }
@@ -291,7 +312,7 @@ class HomeViewModel(
             BackgroundWorkCoordinator.yieldToInteraction(requireForeground = true)
             val before = cursor
             val batch = BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.DEFERRED,
-                label = "Home history page") {
+                label = "Home history page", urgent = { pendingExplicitRefresh || activeRefreshIsExplicit }) {
                 withContext(dataDispatcher) {
                     val page = listeningEventDao.getActualPlaysBefore(before.timestamp, before.id,
                         minOf(200, 5000 - events.size))
@@ -308,6 +329,9 @@ class HomeViewModel(
         currentCoroutineContext().ensureActive()
         // One publication, not one taste/ranking/render pass per history page.
         BackgroundWorkCoordinator.yieldToInteraction(requireForeground = true)
+        historicalInputRevision = revision?.takeIf {
+            it == homeInputRevision.value && it == listeningEventDao.getHomeInputRevision()
+        }
         historicalRows.value = PersonalizationHistory(events.values.toList(), metadata.values.toList(), true, true)
     }
 
@@ -317,7 +341,7 @@ class HomeViewModel(
         val taste: UserTasteProfile = UserTasteProfile.COLD_START_PROFILE)
     private var lastTasteInputs: TasteInputs? = null
     private val tasteCacheLoaded = CompletableDeferred<Unit>()
-    private var cachedTasteSnapshot = UserTasteProfileStore.peekSnapshot(profileKey())
+    @Volatile private var cachedTasteSnapshot = UserTasteProfileStore.peekSnapshot(profileKey())
     private var retainedTaste = cachedTasteSnapshot?.profile ?: UserTasteProfile.COLD_START_PROFILE
     private val tasteSnapshot = combine(personalizationHistory, favoriteTracks, _userProfile) { history, favorites, preferences ->
         if (history.ready) TasteInputs(history.events, history.tracks, favorites, preferences, history.complete) else null
@@ -362,9 +386,12 @@ class HomeViewModel(
                     retainedTaste = taste
                     lastTasteInputs = inputs
                     if (inputs.complete) {
-                        val snapshot = UserTasteProfileStore.Snapshot(key, signature, true, taste)
+                        val revision = historicalInputRevision?.takeIf { it == homeInputRevision.value &&
+                            it == listeningEventDao.getHomeInputRevision() }
+                        val snapshot = UserTasteProfileStore.Snapshot(key, signature, true, taste, revision)
                         cachedTasteSnapshot = snapshot
                         UserTasteProfileStore.save(application, snapshot)
+                        ownerScope.launch { savePreparedCards() }
                     }
                 }
             }
@@ -719,6 +746,11 @@ class HomeViewModel(
             // Full historical reconciliation is optional. A new play must never
             // promote a 5,000-event ranking pass to the critical playback lane.
         }
+        if (!historicalRestorationStarted && !historicalRows.value.complete &&
+            rankedIdentityRevision != ArtistPhotoRepository.identities.value) {
+            requestHistoricalInputs()
+            historicalAttemptFinished.first { it }
+        }
         val longTerm = personalizationHistory.first { it.ready }
         val artistIdentityRevision = ArtistPhotoRepository.identities.value
         val pending = pendingCardPlays.toMap()
@@ -782,7 +814,9 @@ class HomeViewModel(
         if (!keepCachedArtists) appliedCachedArtistSessions.retainAll(pendingCardPlays.keys)
         BackgroundWorkCoordinator.startupTask(StartupTask.RECENT_HISTORY, StartupStatus.READY)
         BackgroundWorkCoordinator.startupTask(StartupTask.RECENT_ARTISTS, StartupStatus.READY)
-        if (changed) savePreparedCards()
+        if (!keepCachedArtists && longTerm.complete && pending.all { (session, track) -> (session to track.id) in committed })
+            rankedArtistsInputRevision = historicalInputRevision?.takeIf { it == homeInputRevision.value }
+        if (changed || rankedArtistsInputRevision != null) savePreparedCards()
         artistPreparationRevision.update { it + 1L }
     }
 
@@ -871,6 +905,16 @@ class HomeViewModel(
     private val preparedSignal = java.util.concurrent.atomic.AtomicReference<PreparedSignal?>(null)
 
     private suspend fun renderRecommendations() {
+        if (!preparingInitialHome && completeCachePreview &&
+            (!canReuseSavedHistory() || candidates.value != savedCandidates ||
+                activeRecommendationTrack()?.let { UnifiedRecommendationEngine.seedKey(it) != candidates.value.seedKey } == true)) {
+            fullCacheRequested.complete(Unit)
+            fullCacheAttemptFinished.await()
+            if (!historicalRestorationStarted && !historicalRows.value.complete) {
+                requestHistoricalInputs()
+                historicalAttemptFinished.first { it }
+            }
+        }
         if (preparingInitialHome || activeRefreshIsExplicit) prepareRecommendations()
         else if (foregroundPresentation) BackgroundWorkCoordinator.startup(
             BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI, label = "Demanded Home ranking") { prepareRecommendations() }
@@ -884,6 +928,10 @@ class HomeViewModel(
     private suspend fun prepareRecommendations() = withContext(workerDispatcher) {
         restored.await()
         val pool = candidates.value
+        // A validated presentation already contains every displayed shelf. Merely
+        // reopening or revealing one must not rerank a shortened preview pool.
+        if (canReuseSavedHistory() && !historicalRows.value.complete && pool == savedCandidates &&
+            (activeRecommendationTrack() == null || UnifiedRecommendationEngine.seedKey(activeRecommendationTrack()) == pool.seedKey)) return@withContext
         if (pool.source != UnifiedRecommendationEngine.SOURCE || pool.contextKey != profileKey()) return@withContext
         yieldHomePreparation()
         val history = personalizationHistory.value
@@ -997,7 +1045,11 @@ class HomeViewModel(
             personalizedCandidates = pool.personalized, inspiredTrackCandidates = pool.inspired, recommendationSource = pool.source,
             seedKey = pool.seedKey, seedTitle = pool.seedTitle,
             shelfLoads = shelfLoads.toMap(), readyShelves = pool.ready.mapTo(mutableSetOf()) { it.name },
-            presentationComplete = initialComplete || !preparingInitialHome)
+            presentationComplete = initialComplete || !preparingInitialHome,
+            inputRevision = historicalInputRevision?.takeIf { revision ->
+                revision == homeInputRevision.value && revision == rankedArtistsInputRevision &&
+                    revision == cachedTasteSnapshot?.inputRevision
+            } ?: cachedCardsInputRevision?.takeIf { canReuseSavedHistory() && !historicalDemand.value })
         shelfCache.savePresentationCheckpoint(snapshot, initialComplete)
         // A compact durable presentation never depends on decoding the old full
         // pools; the optional full writer must still preserve those pools first.
@@ -1074,6 +1126,7 @@ class HomeViewModel(
         // Onboarding/name updates must not cancel the first request and then have
         // its replacement rejected by the unchanged music-preference retry key.
         if (musicPreferencesChanged) {
+            requestHistoricalInputs()
             homeRefreshJob?.cancel()
             homeRefreshJob = null
             refreshHome(isExplicitPull = false)
@@ -1130,6 +1183,7 @@ class HomeViewModel(
         if (cached.profileKey != profileKey()) return // Preferences may change during CPU preparation.
         val current = candidates.value
         if (!additional) {
+            cachedCardsInputRevision = cached.inputRevision
             savedSignal = cached.signal; savedGeneration = cached.generation
             preparedCards.update { cards -> cards.enrichFromCache(sections, cards) }
             cachePreviewCards = preparedCards.value
@@ -1248,13 +1302,24 @@ class HomeViewModel(
             initialHomePrepared.await()
             startupRecommendationsComplete.await()
             BackgroundWorkCoordinator.awaitInitialPresentation()
-            historicalReload.collectLatest {
+            tasteCacheLoaded.await()
+            var loadedReload = -1L
+            combine(historicalReload, historicalDemand) { reload, demand -> reload to demand }
+                .collectLatest { (reload, demand) ->
+                if (historicalRows.value.complete && reload == loadedReload) return@collectLatest
+                if (!demand && canReuseSavedHistory()) {
+                    BackgroundWorkCoordinator.traceWork("Home history cache hit") { }
+                    return@collectLatest
+                }
+                historicalRestorationStarted = true
+                historicalAttemptFinished.value = false
                 // Rebuild older pages only after structural import/deletion changes;
                 // normal playback milestones merge into the retained long-term window.
                 historicalLoadFailed = false
                 for (attempt in 0..1) {
                     try {
                         loadHistoricalPersonalization()
+                        loadedReload = reload
                         historicalLoadFailed = false
                         break
                     } catch (e: CancellationException) { throw e }
@@ -1263,6 +1328,7 @@ class HomeViewModel(
                         android.util.Log.w("HomeViewModel", "Historical personalization unavailable", e)
                     }
                 }
+                historicalAttemptFinished.value = true
             }
         }
         dataScope.launch {
@@ -1441,6 +1507,7 @@ class HomeViewModel(
                     // to finish a cache-backed startup presentation.
                     initialHomePrepared.await()
                     BackgroundWorkCoordinator.awaitInitialPresentation()
+                    fullCacheRequested.await()
                 }
                 BackgroundWorkCoordinator.startup(
                     if (!completeCachePreview && preparingInitialHome) BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI
@@ -1457,6 +1524,7 @@ class HomeViewModel(
             } finally {
                 // Partial first-read snapshots must never overwrite full disk pools.
                 if (mergedFullCache) additionalCacheRestored.complete(Unit)
+                fullCacheAttemptFinished.complete(Unit)
                 initialCachePrepared.complete(Unit)
                 BackgroundWorkCoordinator.startupTask(StartupTask.HOME_CACHE, StartupStatus.READY)
                 if (mergedFullCache) savePreparedCards()
@@ -1814,6 +1882,15 @@ class HomeViewModel(
             if (requested.isEmpty()) {
                 if (isExplicitPull) pendingExplicitRefresh = true
                 return@launch
+            }
+            if (!initialPresentation && completeCachePreview && !additionalCacheRestored.isCompleted) {
+                if (isExplicitPull) pendingExplicitRefresh = true
+                fullCacheRequested.complete(Unit)
+                fullCacheAttemptFinished.await()
+            }
+            if (!initialPresentation && !historicalRestorationStarted && !historicalRows.value.complete) {
+                requestHistoricalInputs()
+                historicalAttemptFinished.first { it }
             }
             if (homeRefreshJob?.isActive == true) {
                 pendingShelfRequests.addAll(requested - activeRecommendationShelves)

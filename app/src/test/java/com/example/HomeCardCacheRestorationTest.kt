@@ -75,18 +75,20 @@ class HomeCardCacheRestorationTest {
     }
 
     @Test fun previewRestoresVisibleTracksAndFullReadEnrichesPools() = runBlocking {
-        writeSnapshot(snapshot())
+        writeSnapshot(snapshot().copy(inputRevision = "database:42"))
         val cache = HomeCardCache(app)
         try {
             val preview = cache.readInitial(profile)!!
             assertEquals(video("quick"), preview.quick.tracks.single().id)
             assertEquals(video("era"), preview.era.tracks.single().id)
             assertTrue(preview.presentationComplete)
+            assertEquals("database:42", preview.inputRevision)
             assertTrue(preview.quickCandidates.isEmpty())
             assertTrue(preview.shelfLoads.getValue("QUICK").partial)
             assertFalse(preview.shelfLoads.getValue("ERA").partial)
             val full = cache.read(profile)!!
             assertEquals(preview.quick.tracks, full.quick.tracks)
+            assertEquals(preview.inputRevision, full.inputRevision)
             assertEquals(preview.shelfLoads, full.shelfLoads)
             assertEquals(video("era"), full.era.tracks.single().id)
             assertEquals(video("quick"), full.quickCandidates.single().id)

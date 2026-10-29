@@ -83,50 +83,43 @@ class ArtworkLoadingWorkloadTest {
         }
     }
 
-    @Test fun failedHiddenPreparationWaitsForARealVisitRatherThanFailingOrRetryingInABackgroundLoop() = runBlocking {
+    @Test fun hiddenCacheMissDoesNotStartNetworkWorkAndLoadsNormallyOnFirstVisit() = runBlocking {
         val batch = ViewportArtworkPreparation()
         val visibility = ArtworkVisibility(false)
         visibility.prepare(checkNotNull(batch.register("cover")))
         val req = request().newBuilder().setParameter(ARTWORK_METADATA_PARAMETER,
             ArtworkRequestMetadata(provider, 600, visibility = visibility), null).build()
         var attempts = 0
-        val chain = Chain(req, onNetwork = { if (++attempts == 1) throw IOException("offline during preparation") })
+        val chain = Chain(req, onNetwork = { attempts++ })
         val image = async { ArtworkResolutionInterceptor().intercept(chain) }
         try {
             withTimeout(3_000) { batch.awaitCompletion() }
-            assertEquals(1, attempts)
+            assertEquals(0, attempts)
             assertTrue(image.isActive)
             batch.close()
             visibility.active.value = true
             assertTrue(withTimeout(3_000) { image.await() } is SuccessResult)
-            assertEquals(2, attempts)
+            assertEquals(1, attempts)
         } finally { batch.close(); image.cancelAndJoin() }
     }
 
-    @Test fun endingHiddenPreparationCancelsItsFetchButRetainsThePainterRequestForFirstVisit() = runBlocking {
+    @Test fun hiddenPlaylistCacheMissCompletesPreparationWithoutDownloading() = runBlocking {
         val batch = ViewportArtworkPreparation()
         val visibility = ArtworkVisibility(false)
-        visibility.prepare(checkNotNull(batch.register("cover")))
-        val req = request().newBuilder().setParameter(ARTWORK_METADATA_PARAMETER,
-            ArtworkRequestMetadata(provider, 600, visibility = visibility), null).build()
-        val entered = CompletableDeferred<Unit>()
-        val stopped = CompletableDeferred<Unit>()
-        var attempts = 0
-        val chain = Chain(req, onNetwork = {
-            if (++attempts == 1) {
-                entered.complete(Unit)
-                try { awaitCancellation() } finally { stopped.complete(Unit) }
-            }
-        })
-        val image = async { ArtworkResolutionInterceptor().intercept(chain) }
+        visibility.prepare(checkNotNull(batch.register("playlist")))
+        val req = ImageRequest.Builder(context).data(provider).size(300, 300)
+            .setParameter(PLAYLIST_COVER_PARAMETER, true, null)
+            .setParameter(ARTWORK_VISIBILITY_PARAMETER, visibility, null).build()
+        val downloads = AtomicInteger()
+        val image = async { ArtworkResolutionInterceptor().intercept(Chain(req, onNetwork = { downloads.incrementAndGet() })) }
         try {
-            withTimeout(3_000) { entered.await() }
-            batch.close()
-            withTimeout(3_000) { stopped.await() }
+            withTimeout(3_000) { batch.awaitCompletion() }
+            assertEquals(0, downloads.get())
             assertTrue(image.isActive)
+            batch.close()
             visibility.active.value = true
             assertTrue(withTimeout(3_000) { image.await() } is SuccessResult)
-            assertEquals(2, attempts)
+            assertEquals(1, downloads.get())
         } finally { batch.close(); image.cancelAndJoin() }
     }
 

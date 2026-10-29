@@ -47,7 +47,8 @@ data class SavedHomeCards(
     val readyShelves: Set<String> = emptySet(),
     /** All displayed shelves are present; large discovery pools may still be omitted. */
     val presentationComplete: Boolean = true,
-    val checkpointRevision: Long = 0L
+    val checkpointRevision: Long = 0L,
+    val inputRevision: String? = null
 )
 
 private fun compactPresentation(s: SavedHomeCards) = s.copy(
@@ -463,7 +464,7 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
         fun section(value: SectionState) = JSONObject().put("title", value.title)
             .put("subtitle", value.subtitle).put("tracks", ids(value.tracks.take(MAX_TRACKS_PER_LIST)))
         val root = JSONObject().put("version", 4).put("presentationComplete", s.presentationComplete)
-            .put("checkpointRevision", s.checkpointRevision)
+            .put("checkpointRevision", s.checkpointRevision).put("inputRevision", s.inputRevision)
         if (includePreview) {
             root.put("preview", encode(compactPresentation(s), false))
         }
@@ -548,7 +549,8 @@ class HomeCardCache(context: Context, workerDispatcher: CoroutineDispatcher = Ba
             }.toMap().filterKeys { key -> UnifiedRecommendationEngine.Shelf.entries.any { it.name == key } } }.orEmpty(),
             root.optJSONArray("readyShelves")?.let { a -> (0 until a.length()).map { a.optString(it) }
                 .filter { name -> UnifiedRecommendationEngine.Shelf.entries.any { it.name == name } }.toSet() }.orEmpty(),
-            presentationComplete, root.optLong("checkpointRevision"))
+            presentationComplete, root.optLong("checkpointRevision"),
+            root.optString("inputRevision").takeIf { it.isNotBlank() && it != "null" })
         fun verified(list: List<MusicTrack>) = list.filter(UnifiedRecommendationEngine::verified).map { it.copy(recommendationOnly = true) }
         fun clean(section: SectionState): SectionState {
             val tracks = verified(section.tracks)
