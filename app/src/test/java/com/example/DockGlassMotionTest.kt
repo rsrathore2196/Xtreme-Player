@@ -196,12 +196,14 @@ class DockGlassMotionTest {
             val measureCount = measures
             val compositionCount = compositions
             val widths = mutableListOf<Float>()
+            val outerWidths = mutableListOf<Float>()
             repeat(40) {
                 compose.mainClock.advanceTimeByFrame()
                 val parent = dock.fetchSemanticsNode().boundsInRoot
                 val outer = outerGlass.fetchSemanticsNode().boundsInRoot
                 val scale = outer.height / parent.height
                 widths += compose.onNodeWithTag("nav_tab_${title}_active").fetchSemanticsNode().boundsInRoot.width
+                outerWidths += outer.width
                 assertEquals("No extra outer inflation or press bounce", 1f, scale, .001f)
                 assertEquals("The whole outer glass scales uniformly", scale, outer.width / parent.width, .001f)
                 assertEquals("The capsule stays centered horizontally", parent.center.x, outer.center.x, .5f)
@@ -215,8 +217,12 @@ class DockGlassMotionTest {
             assertTrue("The selected pill should expand", journey > 10f)
             assertTrue("The width change should be mostly complete after about 120ms", (widths[6] - initialWidth) / journey > .8f)
             val overshoot = (widths.max() - finalWidth) / journey
-            assertTrue("The pill should have one visible, controlled elastic overshoot: $overshoot", overshoot in .02f.. .05f)
+            assertTrue("The pill should have one visible, controlled elastic overshoot: $overshoot", overshoot in .055f.. .10f)
             assertEquals("The pill should finish its settle without a long tail", finalWidth, widths[34], .1f)
+            if (title == "search") {
+                assertTrue("Outgoing label width must not cancel the outer capsule rebound",
+                    outerWidths.max() - outerWidths.last() > 2f)
+            }
             val parent = dock.fetchSemanticsNode().boundsInRoot
             val outer = outerGlass.fetchSemanticsNode().boundsInRoot
             assertEquals("Selection returns to the existing resting geometry", parent.height, outer.height, .1f)

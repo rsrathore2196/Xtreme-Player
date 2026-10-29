@@ -69,7 +69,9 @@ internal val CompactDockTabWidth = 48.dp
 internal val DockHorizontalPadding = 6.dp
 internal val CompactDockHorizontalPadding = 12.dp
 internal val CompactPrimaryDockWidth = CompactDockTabWidth * 2 + CompactDockHorizontalPadding * 2
-private val DockSpatialMotion = spring<Float>(dampingRatio = .72f, stiffness = 480f, visibilityThreshold = .001f)
+// A single spatial spring owns both tabs and their enclosing viewport. Keep its
+// rebound visible without adding another scale pulse or a second settling clock.
+private val DockSpatialMotion = spring<Float>(dampingRatio = .64f, stiffness = 420f, visibilityThreshold = .001f)
 private val DockEffectMotion = spring<Float>(dampingRatio = 1f, stiffness = 700f, visibilityThreshold = .001f)
 
 /**
@@ -147,7 +149,8 @@ fun AnimatedBottomBar(
         with(density) {
             DockGeometry(expandedWidths, motions, (24.dp.roundToPx() + 14.dp.roundToPx() * 2).toFloat(),
                 4.dp.toPx(), DockHorizontalPadding.toPx(), compactProgress, CompactDockTabWidth.toPx(),
-                selectedPosition, companionPosition, CompactDockHorizontalPadding.toPx())
+                selectedPosition, companionPosition, CompactDockHorizontalPadding.toPx(),
+                ((16.dp.roundToPx() - 14.dp.roundToPx()) * 2).toFloat())
         }
     }
     val viewportShape = remember(geometry) { DockViewportShape(horizontalScale = { geometry.width / geometry.reservedWidth }) }
@@ -323,7 +326,7 @@ private class DockGeometry(
     private val collapsed: Float, private val gap: Float, private val padding: Float,
     private val compactProgress: State<Float>?, private val compactTabWidth: Float,
     private val selectedPosition: State<Int>, private val companionPosition: Int,
-    private val compactPadding: Float
+    private val compactPadding: Float, private val paddingGrowth: Float
 ) {
     val reservedWidth = (collapsed * expanded.size + (expanded.maxOrNull()?.minus(collapsed) ?: 0f) +
         gap * (expanded.size - 1).coerceAtLeast(0) + padding * 2).coerceAtLeast(1f)
@@ -331,8 +334,16 @@ private class DockGeometry(
     fun pillHeight(fullHeight: Float): Float = fullHeight + (minOf(fullHeight, compactTabWidth) - fullHeight) * progress
     private val edgePadding: Float get() = padding + (compactPadding - padding) * progress
     fun retained(index: Int): Boolean = index == selectedPosition.value || index == companionPosition
-    private fun fullTabWidth(index: Int): Float =
-        (collapsed + (expanded[index] - collapsed) * motions[index].expansion.value).coerceAtLeast(1f)
+    private fun fullTabWidth(index: Int): Float {
+        val expansion = motions[index].expansion.value
+        // A revealed label can overshoot its full width but cannot have negative
+        // width. Let padding follow the whole spring, just as a measured Row does.
+        // Otherwise the outgoing label's negative width cancels the incoming
+        // overshoot and makes the outer capsule look rigid at every tab change.
+        val labelWidth = (expanded[index] - collapsed - paddingGrowth).coerceAtLeast(0f)
+        return (collapsed + paddingGrowth * expansion + labelWidth * expansion.coerceAtLeast(0f))
+            .coerceAtLeast(1f)
+    }
     fun tabWidth(index: Int): Float {
         val full = fullTabWidth(index)
         val target = if (retained(index)) compactTabWidth else 0f
