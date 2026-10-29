@@ -37,7 +37,7 @@ class ListeningStatsBackupTest {
             repository.flush()
             val backup = BackupRestoreManager.createBackup(context, source).getOrThrow()
             val body = File(backup.filePath).readText()
-            assertEquals(4, JSONObject(body).getInt("schemaVersion"))
+            assertEquals(5, JSONObject(body).getInt("schemaVersion"))
             assertEquals(4, JSONObject(body).getJSONArray("listeningStats").length())
             assertEquals(2, JSONObject(body).getJSONArray("listeningIdentityMigrations").length())
             repeat(2) {

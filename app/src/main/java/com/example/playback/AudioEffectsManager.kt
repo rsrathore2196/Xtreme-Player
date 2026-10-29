@@ -74,35 +74,77 @@ object AudioEffectsManager {
     // UI mutations only hold this lock for small immutable-state updates. DSP
     // snapshots are published by the worker without invoking native audio effects.
     private val stateLock = Any()
+    private val preferencesLock = Any()
+    @Volatile private var preferences: android.content.SharedPreferences? = null
+    @Volatile private var preferencesInitialized = false
+    private var pendingSettings = false
     private var revision = 0L
-    private data class Request(val revision: Long, val state: AudioEffectsState)
+    private data class Request(val revision: Long, val state: AudioEffectsState, val persist: Boolean)
     private val commands = Channel<Unit>(Channel.CONFLATED)
     private val effectsScope = CoroutineScope(SupervisorJob() + Dispatchers.IO).also { scope ->
         scope.launch {
             for (ignored in commands) {
-                val request = synchronized(stateLock) { Request(revision, _effectsState.value) }
-                try { reconcile(request) }
+                val request = synchronized(stateLock) { Request(revision, _effectsState.value, pendingSettings) }
+                try {
+                    if (reconcile(request) && request.persist) preferences?.let { store ->
+                        val encoded = com.example.data.local.AudioEffectsPreferences.encode(request.state)
+                        synchronized(stateLock) {
+                            if (revision == request.revision) {
+                                // The handle is already IO-loaded. Enqueue in state-update order;
+                                // a stale worker must never overwrite a restored/newer configuration.
+                                store.edit().putString(com.example.data.local.AudioEffectsPreferences.KEY, encoded).apply()
+                                pendingSettings = false
+                            }
+                        }
+                    }
+                }
                 catch (e: CancellationException) { throw e }
                 catch (e: Exception) { Log.e(TAG, "Audio effect command failed", e) }
             }
         }
     }
 
-    private fun updateDesired(transform: (AudioEffectsState) -> AudioEffectsState) {
+    private fun updateDesired(persistSettings: Boolean = true, transform: (AudioEffectsState) -> AudioEffectsState) {
         synchronized(stateLock) {
             val previous = _effectsState.value
             val next = transform(previous)
             if (next == previous) return
             revision++
+            pendingSettings = pendingSettings || persistSettings
             _effectsState.value = next
             commands.trySend(Unit)
         }
     }
 
     fun attachAudioSession(sessionId: Int) {
-        if (sessionId > 0) updateDesired { it.copy(audioSessionId = sessionId) }
+        if (sessionId > 0) updateDesired(persistSettings = false) { it.copy(audioSessionId = sessionId) }
     }
-    fun detachAudioSession() { updateDesired { it.copy(audioSessionId = 0) } }
+    fun detachAudioSession() { updateDesired(persistSettings = false) { it.copy(audioSessionId = 0) } }
+
+    /** Joins the existing IO settings load, without another worker or a main-thread read. */
+    internal fun initializePreferences(context: android.content.Context) {
+        if (preferencesInitialized) return
+        synchronized(preferencesLock) {
+            if (preferencesInitialized) return
+            val started = synchronized(stateLock) { revision }
+            val store = com.example.data.local.ReactiveSettingsRepository.preferences(context,
+                com.example.data.local.AudioEffectsPreferences.STORE)
+            val raw = store.getString(com.example.data.local.AudioEffectsPreferences.KEY, null)
+            val restored = raw?.let { runCatching {
+                com.example.data.local.AudioEffectsPreferences.decode(it, _effectsState.value)
+            }.getOrNull() }
+            synchronized(stateLock) {
+                if (restored != null && revision == started && !pendingSettings) restoreConfiguration(restored)
+            }
+            preferences = store
+            preferencesInitialized = true
+            commands.trySend(Unit)
+        }
+    }
+
+    internal fun restoreConfiguration(configuration: AudioEffectsState) {
+        updateDesired(persistSettings = false) { configuration.copy(audioSessionId = it.audioSessionId) }
+    }
     fun setEnabled(enabled: Boolean) { updateDesired { it.copy(isEnabled = enabled) } }
     fun setBandLevel(bandIndex: Short, levelMb: Short) { updateDesired { state ->
         val band = state.bands.firstOrNull { it.index == bandIndex } ?: return@updateDesired state
@@ -154,13 +196,14 @@ object AudioEffectsManager {
 
     // The render thread reads one complete immutable snapshot at buffer boundaries.
     // Coalescing keeps rapid slider changes cheap; obsolete worker states never win.
-    private fun reconcile(request: Request) {
+    private fun reconcile(request: Request): Boolean {
         synchronized(stateLock) {
-            if (revision != request.revision) return
+            if (revision != request.revision) return false
             PsychoacousticAudioProcessor.settings.set(request.state)
             AudioSignalPath.update { it.copy(clarityEnabled = request.state.crystalClarityEnabled,
                 eqActive = request.state.isEnabled && !it.directApproved,
                 dspActive = (request.state.isEnabled || it.spatialActive || it.skipSilenceActive) && !it.directApproved) }
+            return true
         }
     }
 

@@ -23,12 +23,15 @@ data class StartupSettings(
     val textScale get() = OtherSettingsPreferences.TEXT_SIZE_OPTIONS[textSizeIndex].scale
     val uiScale get() = OtherSettingsPreferences.UI_SIZE_OPTIONS[uiSizeIndex].scale
     companion object {
-        fun read(context: Context) = StartupSettings(
-            ThemePreferences.getThemeMode(context), ThemePreferences.getCustomThemeState(context),
-            OtherSettingsPreferences.getTextSizeIndex(context), OtherSettingsPreferences.getUiSizeIndex(context),
-            OtherSettingsPreferences.isDynamicGlassEnabled(context), UserProfilePreferences.getUserProfile(context),
-            AudioQualityPreferences.getSelectedQuality(context)
-        )
+        fun read(context: Context): StartupSettings {
+            com.example.playback.AudioEffectsManager.initializePreferences(context)
+            return StartupSettings(
+                ThemePreferences.getThemeMode(context), ThemePreferences.getCustomThemeState(context),
+                OtherSettingsPreferences.getTextSizeIndex(context), OtherSettingsPreferences.getUiSizeIndex(context),
+                OtherSettingsPreferences.isDynamicGlassEnabled(context), UserProfilePreferences.getUserProfile(context),
+                AudioQualityPreferences.getSelectedQuality(context)
+            )
+        }
     }
 }
 

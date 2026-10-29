@@ -1,6 +1,8 @@
 package com.example.ui.screens
 
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloat
@@ -16,6 +18,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -74,6 +77,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -121,6 +125,8 @@ import com.example.ui.theme.resolveColorScheme
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.XtremeGradients
 import com.example.util.AppHaptics
+import com.example.data.local.BackupRestoreManager
+import com.example.ui.viewmodel.OnboardingRestoreState
 
 enum class OnboardingStep {
     STARTUP,
@@ -151,14 +157,16 @@ private fun onboardingColors(colors: AppThemeColors): AppThemeColors = colors.co
 @Composable
 fun OnboardingScreen(
     onComplete: (name: String, languages: List<String>, country: String, countryCode: String, flag: String) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    restoreState: OnboardingRestoreState = OnboardingRestoreState(),
+    onRestoreBackup: (android.net.Uri) -> Unit = {}
 ) {
     val inheritedColors = LocalAppColors.current
     val colors = remember(inheritedColors) { onboardingColors(inheritedColors) }
     val scheme = remember(colors) { resolveColorScheme(colors.isDark, colors) }
     CompositionLocalProvider(LocalAppColors provides colors) {
         MaterialTheme(colorScheme = scheme) {
-            OnboardingContent(onComplete, modifier)
+            OnboardingContent(onComplete, modifier, restoreState, onRestoreBackup)
         }
     }
 }
@@ -167,7 +175,9 @@ fun OnboardingScreen(
 @Composable
 private fun OnboardingContent(
     onComplete: (name: String, languages: List<String>, country: String, countryCode: String, flag: String) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    restoreState: OnboardingRestoreState,
+    onRestoreBackup: (android.net.Uri) -> Unit
 ) {
     val context = LocalContext.current
     val appColors = LocalAppColors.current
@@ -182,6 +192,41 @@ private fun OnboardingContent(
     }
     var isCountryPickerOpen by remember { mutableStateOf(false) }
     var isLanguagePickerOpen by remember { mutableStateOf(false) }
+    var pickerOpen by rememberSaveable { mutableStateOf(false) }
+    var pickerError by rememberSaveable { mutableStateOf<String?>(null) }
+    val documentPicker = rememberLauncherForActivityResult(object : ActivityResultContracts.OpenDocument() {
+        override fun createIntent(context: android.content.Context, input: Array<String>): android.content.Intent =
+            super.createIntent(context, input).addCategory(android.content.Intent.CATEGORY_OPENABLE)
+    }) { uri ->
+        pickerOpen = false
+        uri?.let(onRestoreBackup)
+    }
+    fun openBackupPicker() {
+        try { documentPicker.launch(arrayOf("*/*")) }
+        catch (_: android.content.ActivityNotFoundException) {
+            pickerOpen = false
+            pickerError = "No file manager is available to select a backup."
+        }
+    }
+    val storagePermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
+        if (BackupRestoreManager.getRequiredStoragePermissions().all { grants[it] == true }) {
+            openBackupPicker()
+        } else {
+            pickerOpen = false
+            pickerError = "Allow storage access to select your backup, then tap Restore again."
+        }
+    }
+
+    LaunchedEffect(restoreState.profileForDetails) {
+        restoreState.profileForDetails?.let { profile ->
+            nameInput = profile.name
+            selectedLanguages = profile.languages.toSet()
+            selectedCountry = CountryData.allCountries.firstOrNull { it.code == profile.countryCode } ?: selectedCountry
+            currentStep = OnboardingStep.DETAILS
+        }
+    }
+
+    BackHandler(enabled = restoreState.restoring) { /* Keep the validated restore owned by the ViewModel. */ }
 
     BackHandler(enabled = currentStep == OnboardingStep.DETAILS) {
         focusManager.clearFocus(force = true)
@@ -222,7 +267,16 @@ private fun OnboardingContent(
                         onStartListening = {
                             BackgroundWorkCoordinator.navigationInteraction()
                             currentStep = OnboardingStep.DETAILS
-                        }
+                        },
+                        onRestore = {
+                            pickerError = null
+                            pickerOpen = true
+                            val permissions = BackupRestoreManager.getRequiredStoragePermissions()
+                            if (permissions.isEmpty() || BackupRestoreManager.isStoragePermissionGranted(context)) openBackupPicker()
+                            else storagePermission.launch(permissions)
+                        },
+                        actionsEnabled = !pickerOpen && !restoreState.restoring,
+                        restoreMessage = if (restoreState.restoring) "Restoring backup…" else pickerError ?: restoreState.error
                     )
                 }
                 OnboardingStep.DETAILS -> {
@@ -838,12 +892,15 @@ internal fun RetainedOnboardingPages(step: OnboardingStep, content: @Composable 
 /**
  * Initial startup page shown the first time a user opens Xtreme Player.
  * Displays the big dynamic app logo, the app name "Xtreme Player" directly under the logo,
- * rich studio-quality audio highlights, and an attractive "Start Listening" button.
+ * rich studio-quality audio highlights, and new-user/restore actions.
  */
 @Composable
 fun OnboardingStartupPage(
     onStartListening: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onRestore: () -> Unit = {},
+    actionsEnabled: Boolean = true,
+    restoreMessage: String? = null
 ) {
     val context = LocalContext.current
     val appColors = LocalAppColors.current
@@ -959,45 +1016,63 @@ fun OnboardingStartupPage(
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        // Attractive Button Below: "Start Listening"
-        Button(
-            onClick = {
-                AppHaptics.performTap(context)
-                onStartListening()
-            },
-            shape = RoundedCornerShape(22.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = primaryAccent,
-                contentColor = appColors.onPrimaryAccent
-            ),
-            elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(56.dp)
-                .shadow(
-                    elevation = 3.dp,
-                    shape = RoundedCornerShape(22.dp),
-                    spotColor = Color.Black
-                )
-                .testTag("start_listening_button")
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Center
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Button(
+                onClick = {
+                    AppHaptics.performTap(context)
+                    onStartListening()
+                },
+                enabled = actionsEnabled,
+                contentPadding = PaddingValues(horizontal = 12.dp),
+                shape = RoundedCornerShape(22.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = primaryAccent,
+                    contentColor = appColors.onPrimaryAccent
+                ),
+                elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp),
+                modifier = Modifier
+                    .weight(1f)
+                    .height(56.dp)
+                    .shadow(
+                        elevation = 3.dp,
+                        shape = RoundedCornerShape(22.dp),
+                        spotColor = Color.Black
+                    )
+                    .testTag("start_listening_button")
             ) {
-                Text(
-                    text = "Start Listening",
-                    fontSize = 17.sp,
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = 0.5.sp
-                )
-                Spacer(modifier = Modifier.width(10.dp))
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                    contentDescription = null,
-                    modifier = Modifier.size(20.dp)
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Text(
+                        text = "New User",
+                        maxLines = 1,
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.5.sp
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
             }
+            Button(
+                onClick = { AppHaptics.performTap(context); onRestore() },
+                enabled = actionsEnabled,
+                shape = RoundedCornerShape(22.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black),
+                elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp),
+                modifier = Modifier.weight(1f).height(56.dp).testTag("onboarding_restore_button")
+            ) {
+                Text("Restore", fontSize = 17.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.5.sp)
+            }
+        }
+        restoreMessage?.let { message ->
+            Text(message, color = textPrimary, style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(top = 12.dp).testTag("onboarding_restore_status"))
         }
         Text("Open source · Ad-free · Free to use", color = textMuted,
             fontSize = 11.sp, fontWeight = FontWeight.Medium,

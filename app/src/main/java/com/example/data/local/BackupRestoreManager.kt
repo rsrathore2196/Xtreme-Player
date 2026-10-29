@@ -58,7 +58,8 @@ object BackupRestoreManager {
         val message: String,
         val restoredPlaylistsCount: Int = 0,
         val restoredTracksCount: Int = 0,
-        val profileRestored: Boolean = false
+        val profileRestored: Boolean = false,
+        val needsOnboardingDetails: Boolean = false
     )
 
     private fun getPrefs(context: Context): SharedPreferences {
@@ -364,6 +365,7 @@ object BackupRestoreManager {
         val work = com.example.performance.BackgroundWorkCoordinator.busy()
         try {
             com.example.data.repository.ListeningStatsRepository.flushExisting()
+            (context.applicationContext as? com.example.XtremeMusicApp)?.settingsRepository?.awaitPendingWrites()
             val dao = musicDatabase.musicDao()
             var listeningTotals = emptyList<ListeningTotal>()
             var listeningMigrations = emptyList<ListeningIdentityMigration>()
@@ -374,6 +376,7 @@ object BackupRestoreManager {
                 Triple(dao.getAllPlaylistsSync(), dao.getAllTracksSync(), dao.getAllPlaylistCrossRefsSync())
             }
             val userProfile = UserProfilePreferences.getUserProfile(context)
+            val settings = BackupSettings.capture(context)
             require(allTracks.size <= MAX_BACKUP_ITEMS && playlists.size <= MAX_BACKUP_ITEMS && crossRefs.size <= MAX_BACKUP_ITEMS) {
                 "Backup is too large to restore safely"
             }
@@ -383,7 +386,8 @@ object BackupRestoreManager {
             val rootJson = JSONObject()
             rootJson.put("app", "Xtreme Player")
             rootJson.put("version", com.example.BuildConfig.VERSION_NAME)
-            rootJson.put("schemaVersion", 4)
+            rootJson.put("schemaVersion", 5)
+            rootJson.put("settings", BackupSettings.encode(settings))
             rootJson.put("listeningStats", ListeningStatsBackup.encode(listeningTotals))
             rootJson.put("listeningIdentityMigrations", ListeningStatsBackup.encodeMigrations(listeningMigrations))
             rootJson.put("createdAt", System.currentTimeMillis())
@@ -514,7 +518,8 @@ object BackupRestoreManager {
         val hasPlaylists: Boolean,
         val ignoredOrphanRefs: Int = 0,
         val listeningStats: List<ListeningTotal> = emptyList(),
-        val listeningMigrations: List<ListeningIdentityMigration> = emptyList()
+        val listeningMigrations: List<ListeningIdentityMigration> = emptyList(),
+        val settings: Map<String, Map<String, Any>> = emptyMap()
     )
 
     private fun normalizeText(text: String): String =
@@ -608,7 +613,7 @@ object BackupRestoreManager {
         val root = JSONObject(text)
         if (root.has("app")) require(stringField(root, "app").equals("Xtreme Player", true)) { "Not an Xtreme Player backup" }
         val schema = longField(root, "schemaVersion", 1L)
-        require(schema in 1L..4L) { "Unsupported backup schema version: $schema" }
+        require(schema in 1L..5L) { "Unsupported backup schema version: $schema" }
         require(listOf("playlists", "libraryTracks", "tracks", "favoriteTracks", "userProfile").any(root::has)) {
             "No backup data found"
         }
@@ -702,20 +707,27 @@ object BackupRestoreManager {
         require(playlists.isNotEmpty() || tracks.isNotEmpty() || profile != null) { "Backup file is empty" }
         return ParsedBackup(playlists, tracks, validParentRefs, profile, root.has("playlists"), refs.size - validParentRefs.size,
             if (root.has("listeningStats")) ListeningStatsBackup.decode(root.getJSONArray("listeningStats")) else emptyList(),
-            if (root.has("listeningIdentityMigrations")) ListeningStatsBackup.decodeMigrations(root.getJSONArray("listeningIdentityMigrations")) else emptyList())
+            if (root.has("listeningIdentityMigrations")) ListeningStatsBackup.decodeMigrations(root.getJSONArray("listeningIdentityMigrations")) else emptyList(),
+            if (root.has("settings")) BackupSettings.decode(root.getJSONObject("settings")) else emptyMap())
     }
 
     private fun restoredProfile(json: JSONObject, previous: UserProfile): UserProfile = previous.copy(
         name = stringField(json, "name", previous.name),
         country = stringField(json, "country", previous.country),
         countryCode = stringField(json, "countryCode", previous.countryCode),
-        flag = stringField(json, "flag", previous.flag),
+        flag = stringField(json, "flag", com.example.data.model.CountryData.allCountries.firstOrNull {
+            it.code.equals(stringField(json, "countryCode", previous.countryCode), ignoreCase = true)
+        }?.flag ?: previous.flag),
         languages = if (json.has("languages")) arrayField(json, "languages").let { array ->
             (0 until array.length()).map { array.getString(it) }.ifEmpty { previous.languages }
         } else previous.languages,
         appLanguage = stringField(json, "appLanguage", previous.appLanguage),
         isOnboardingCompleted = booleanField(json, "isOnboardingCompleted", previous.isOnboardingCompleted)
     )
+
+    private fun hasOnboardingDetails(profile: JSONObject?): Boolean = profile != null &&
+        listOf("name", "country", "countryCode").all { profile.optString(it).isNotBlank() } &&
+        profile.optJSONArray("languages")?.let { it.length() > 0 } == true
 
     private fun readBackupText(input: java.io.InputStream): String = input.bufferedReader().use { reader ->
         val result = StringBuilder()
@@ -735,9 +747,10 @@ object BackupRestoreManager {
         musicDatabase: MusicDatabase,
         uri: Uri,
         mode: RestoreMode = RestoreMode.MERGE,
-        confirmReplace: Boolean = false
+        confirmReplace: Boolean = false,
+        finishOnboarding: Boolean = false
     ): RestoreSummary = restoreBackup(context, musicDatabase, uriString = uri.toString(),
-        mode = mode, confirmReplace = confirmReplace)
+        mode = mode, confirmReplace = confirmReplace, finishOnboarding = finishOnboarding)
 
     /** Parse and validate the complete backup before changing any persisted user record. */
     suspend fun restoreBackup(
@@ -747,12 +760,15 @@ object BackupRestoreManager {
         uriString: String? = null,
         rawJson: String? = null,
         mode: RestoreMode = RestoreMode.MERGE,
-        confirmReplace: Boolean = false
+        confirmReplace: Boolean = false,
+        finishOnboarding: Boolean = false
     ): RestoreSummary = withContext(Dispatchers.IO) {
       com.example.performance.BackgroundWorkCoordinator.work {
         restoreMutex.withLock {
             var previousProfile: UserProfile? = null
             var profileWriteAttempted = false
+            var previousSettings = emptyMap<String, Map<String, Any>>()
+            var settingsWriteAttempted = false
             var databaseCommitted = false
             try {
                 require(mode != RestoreMode.REPLACE || confirmReplace) {
@@ -765,7 +781,11 @@ object BackupRestoreManager {
                 val backup = withContext(AppDispatchers.CpuBounded) { parseBackup(text) }
                 val beforeProfile = UserProfilePreferences.getUserProfile(context)
                 previousProfile = beforeProfile
-                val profile = backup.profile?.let { restoredProfile(it, beforeProfile) }
+                val importedProfile = backup.profile?.let { restoredProfile(it, beforeProfile) }
+                val needsDetails = finishOnboarding && !hasOnboardingDetails(backup.profile)
+                val profile = if (finishOnboarding) (importedProfile ?: beforeProfile).copy(
+                    isOnboardingCompleted = !needsDetails) else importedProfile
+                previousSettings = BackupSettings.read(context, backup.settings.keys)
                 val dao = musicDatabase.musicDao()
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 // Once validated restoration starts, cancellation must not separate Room's commit
@@ -855,22 +875,45 @@ object BackupRestoreManager {
                             val originalId = migration.catalogIdentity.removePrefix("catalog:")
                             migration.copy(catalogIdentity = "catalog:${trackIdMap[originalId] ?: originalId}")
                         })
+                        if (backup.settings.isNotEmpty()) {
+                            settingsWriteAttempted = true
+                            BackupSettings.write(context, backup.settings)
+                        }
                         profile?.let {
                             profileWriteAttempted = true
-                            check(UserProfilePreferences.persistUserProfile(context, it)) { "Could not save restored user profile" }
+                            // A process death before Room commits must not bypass onboarding with an incomplete import.
+                            val staged = if (finishOnboarding) it.copy(isOnboardingCompleted = false) else it
+                            check(UserProfilePreferences.persistUserProfile(context, staged)) { "Could not save restored user profile" }
                         }
                         importedTracks.size
                     }
                     databaseCommitted = true
+                    if (finishOnboarding && profile?.isOnboardingCompleted == true) {
+                        check(UserProfilePreferences.persistUserProfile(context, profile)) { "Could not finish restored onboarding" }
+                    }
                     com.example.data.repository.ListeningStatsRepository.invalidateExisting()
+                    BackupSettings.publish(context, backup.settings)
                     profile?.let { UserProfilePreferences.publishUserProfile(it) }
                     restoredCount
                 }
                 RestoreSummary(true,
                     "Backup successfully restored! Recovered ${backup.playlists.size} playlists and $restoredTrackCount new tracks into your library." +
                         if (backup.ignoredOrphanRefs > 0) " Ignored ${backup.ignoredOrphanRefs} links to deleted playlists." else "",
-                    backup.playlists.size, restoredTrackCount, profile != null)
+                    backup.playlists.size, restoredTrackCount, backup.profile != null, needsDetails)
             } catch (error: Exception) {
+                var settingsRollbackFailed = false
+                if (settingsWriteAttempted && !databaseCommitted) {
+                    withContext(kotlinx.coroutines.NonCancellable) {
+                        previousSettings.forEach { (store, values) ->
+                            try { BackupSettings.write(context, mapOf(store to values)) }
+                            catch (rollbackError: Exception) {
+                                settingsRollbackFailed = true
+                                error.addSuppressed(rollbackError)
+                                android.util.Log.e("BackupRestoreManager", "Could not roll back settings after restore failure", error)
+                            }
+                        }
+                    }
+                }
                 var profileRollbackFailed = false
                 if (profileWriteAttempted && !databaseCommitted) previousProfile?.let { previous ->
                     withContext(kotlinx.coroutines.NonCancellable) {
@@ -886,8 +929,9 @@ object BackupRestoreManager {
                     }
                 }
                 if (error is CancellationException) throw error
-                val profileWarning = if (profileRollbackFailed) " Library changes were rolled back, but the user profile could not be recovered." else ""
-                RestoreSummary(false, "Failed to restore backup: ${error.localizedMessage ?: "Invalid file format"}$profileWarning")
+                val rollbackWarning = if (profileRollbackFailed || settingsRollbackFailed)
+                    " Library changes were rolled back, but some preferences could not be recovered." else ""
+                RestoreSummary(false, "Failed to restore backup: ${error.localizedMessage ?: "Invalid file format"}$rollbackWarning")
             }
         }
       }

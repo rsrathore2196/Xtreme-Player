@@ -144,7 +144,7 @@ class BackupRestoreSafetyTest {
 
     @Test fun unsupportedOrMalformedVersionsAreRejectedWithoutWrites() = runBlocking {
         db.musicDao().insertPlaylist(PlaylistEntity(1, "Original"))
-        for (version in listOf<Any>(0, 5, 10, 2.5, "2", JSONObject.NULL)) {
+        for (version in listOf<Any>(0, 6, 10, 2.5, "2", JSONObject.NULL)) {
             val json = backup(listOf(song("imported"))).put("schemaVersion", version)
             val result = BackupRestoreManager.restoreBackup(context, db, rawJson = json.toString())
             assertFalse("Accepted version $version", result.success)

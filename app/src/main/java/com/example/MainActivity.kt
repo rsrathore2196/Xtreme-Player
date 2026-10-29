@@ -147,6 +147,7 @@ class MainActivity : ComponentActivity() {
             val textScale by playerViewModel.textScale.collectAsStateWithLifecycle()
             val uiScale by playerViewModel.uiScale.collectAsStateWithLifecycle()
             val isOnboardingCompleted by playerViewModel.isOnboardingCompleted.collectAsStateWithLifecycle()
+            val onboardingRestore by playerViewModel.onboardingRestore.collectAsStateWithLifecycle()
             val isSystemDark = androidx.compose.foundation.isSystemInDarkTheme()
             val effectiveDark = when (themeMode) {
                 com.example.data.local.AppThemeMode.SYSTEM -> isSystemDark
@@ -187,7 +188,9 @@ class MainActivity : ComponentActivity() {
                                     countryCode = countryCode,
                                     flag = flag
                                 )
-                            }
+                            },
+                            restoreState = onboardingRestore,
+                            onRestoreBackup = playerViewModel::restoreOnboardingBackup
                         )
                     }
                 }

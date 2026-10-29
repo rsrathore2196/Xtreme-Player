@@ -108,6 +108,12 @@ internal fun navigationPlayerSnapshot(state: PlayerUiState) = PlayerUiState(
     currentTrack = state.currentTrack, isPlaying = state.isPlaying, isLoading = state.isLoading,
     isAutoplayEnabled = state.isAutoplayEnabled, isInfiniteRadio = state.isInfiniteRadio)
 
+data class OnboardingRestoreState(
+    val restoring: Boolean = false,
+    val error: String? = null,
+    val profileForDetails: com.example.data.local.UserProfile? = null
+)
+
 class PlayerViewModel(
     private val repository: MusicRepository,
     private val playbackManager: PlaybackManager,
@@ -358,6 +364,43 @@ class PlayerViewModel(
     private val _isOnboardingCompleted = MutableStateFlow(initialSettings.profile.isOnboardingCompleted)
     val isOnboardingCompleted: StateFlow<Boolean> = _isOnboardingCompleted.asStateFlow()
 
+    private val _onboardingRestore = MutableStateFlow(OnboardingRestoreState())
+    val onboardingRestore: StateFlow<OnboardingRestoreState> = _onboardingRestore.asStateFlow()
+
+    /** ViewModel ownership keeps the import alive across picker returns and Activity recreation. */
+    fun restoreOnboardingBackup(uri: android.net.Uri) {
+        if (_onboardingRestore.value.restoring || _isOnboardingCompleted.value) return
+        _onboardingRestore.value = OnboardingRestoreState(restoring = true)
+        viewModelScope.launch {
+            try {
+                val settings = withContext(AppDispatchers.Io) {
+                    val database = com.example.data.local.MusicDatabase.getDatabase(application)
+                    val result = com.example.data.local.BackupRestoreManager.restoreFromUri(
+                        application, database, uri, finishOnboarding = true)
+                    check(result.success) { result.message }
+                    // Read the imported snapshot, not the original first-launch settings.
+                    com.example.data.local.StartupSettings.read(application)
+                }
+                _themeSelection.value = com.example.data.local.ThemeSelection(settings.themeMode, settings.customTheme)
+                _textScaleIndex.value = settings.textSizeIndex
+                _textScale.value = settings.textScale
+                _uiScaleIndex.value = settings.uiSizeIndex
+                _uiScale.value = settings.uiScale
+                _isDynamicGlassEnabled.value = settings.dynamicGlass
+                _isDarkMode.value = com.example.data.local.ThemePreferences.isDark(application, settings.themeMode)
+                _userProfile.value = settings.profile
+                _onboardingRestore.value = OnboardingRestoreState(
+                    profileForDetails = settings.profile.takeUnless { it.isOnboardingCompleted })
+                // Publish last so the app's first screen uses the restored profile and appearance.
+                _isOnboardingCompleted.value = settings.profile.isOnboardingCompleted
+                if (settings.profile.isOnboardingCompleted) loadCatalog()
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) {
+                _onboardingRestore.value = OnboardingRestoreState(error = error.localizedMessage ?: "Could not restore this backup")
+            }
+        }
+    }
+
     fun completeOnboarding(
         name: String,
         languages: List<String>,
@@ -365,7 +408,7 @@ class PlayerViewModel(
         countryCode: String,
         flag: String
     ) {
-        val profile = com.example.data.local.UserProfile(
+        val profile = _userProfile.value.copy(
             name = name.trim().ifBlank { "User" },
             languages = if (languages.isNotEmpty()) languages else listOf("English", "Hindi", "Punjabi"),
             country = country.trim().ifBlank { "India" },
