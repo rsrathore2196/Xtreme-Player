@@ -17,7 +17,7 @@ import com.example.performance.StartupGroup
 import com.example.performance.StartupStatus
 import com.example.performance.StartupTask
 import com.example.playback.PlaybackManager
-import com.example.recommendation.UnifiedRecommendationEngine
+import com.example.recommendation.HomeRecommendationPolicy
 import com.example.ui.viewmodel.HomeViewModel
 import com.example.ui.viewmodel.SectionState
 import java.time.Duration
@@ -98,7 +98,7 @@ class InitialHomePreparationTest {
             cache.save(SavedHomeCards("US|English", "signal", 1, System.currentTimeMillis(), quick, era, chart,
                 SectionState("Recently Played"), SectionState("Recommended for You"), emptyList(),
                 quick.tracks, era.tracks, chart.tracks, quick.tracks + era.tracks + chart.tracks,
-                recommendationSource = UnifiedRecommendationEngine.SOURCE))
+                recommendationSource = HomeRecommendationPolicy.SOURCE))
             coordinator.firstFrameRendered()
             coordinator.foreground(true)
             // Robolectric rewinds uptime between fixtures while keeping the

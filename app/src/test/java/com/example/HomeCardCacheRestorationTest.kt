@@ -6,7 +6,7 @@ import com.example.data.cache.HomeCardCache
 import com.example.data.cache.SavedHomeCards
 import com.example.data.model.MusicTrack
 import com.example.performance.BackgroundWorkCoordinator
-import com.example.recommendation.UnifiedRecommendationEngine
+import com.example.recommendation.HomeRecommendationPolicy
 import com.example.ui.viewmodel.SectionState
 import java.time.Duration
 import java.util.concurrent.atomic.AtomicReference
@@ -60,7 +60,7 @@ class HomeCardCacheRestorationTest {
         return SavedHomeCards(profile, "signal", generation, System.currentTimeMillis(), quick, era, chart,
             SectionState(title = "History"), SectionState(title = "Personalized"), emptyList(),
             quick.tracks, era.tracks, chart.tracks, quick.tracks + era.tracks + chart.tracks,
-            recommendationSource = UnifiedRecommendationEngine.SOURCE, readyShelves = setOf("QUICK", "ERA", "CHART"),
+            recommendationSource = HomeRecommendationPolicy.SOURCE, readyShelves = setOf("QUICK", "ERA", "CHART"),
             shelfLoads = mapOf("QUICK" to com.example.data.cache.RecommendationShelfLoad("profile", 123L, partial = true),
                 "ERA" to com.example.data.cache.RecommendationShelfLoad("profile", 123L)))
     }

@@ -46,12 +46,12 @@ object AlbumArtDeduplicator {
         val result = mutableListOf<MusicTrack>()
 
         for (track in this) {
-            val rootTitle = RecommendationEngine.extractRootTitle(track.title)
+            val rootTitle = HomeRecommendationPolicy.normalizeTitle(track.title)
             val coverKey = extractBaseCoverKey(track.coverUrl)
             val albumKey = extractCleanAlbumKey(track.album)
 
             // 1. Never repeat same song name or variant
-            if (rootTitle.isNotBlank() && (seenRoots.contains(rootTitle) || seenRoots.any { RecommendationEngine.isSameSongOrVariant(it, rootTitle) })) {
+            if (rootTitle.isNotBlank() && (seenRoots.contains(rootTitle) || seenRoots.any { HomeRecommendationPolicy.isSameSongOrVariant(it, rootTitle) })) {
                 continue
             }
 

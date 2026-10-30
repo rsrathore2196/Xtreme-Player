@@ -911,41 +911,33 @@ class PlayerViewModel(
         val state = playbackManager.uiState.value
         if (state.isInfiniteRadio && (state.isPlaying || state.isLoading)) return
         activePlaybackLaunchJob?.cancel()
-        activePlaybackLaunchJob = viewModelScope.launch(AppDispatchers.CpuBounded) {
+        activePlaybackLaunchJob = viewModelScope.launch(AppDispatchers.Io) {
             val recent = (recentlyPlayed.value + playbackManager.recommendationEngine.getSessionTracks() +
                 state.queue.take((state.currentIndex + 1).coerceAtLeast(0)) + listOfNotNull(state.currentTrack))
-            val excluded = com.example.recommendation.HomeRecommendationPolicy.Recordings().apply { recent.forEach { add(it) } }
-            val profile = _userProfile.value
-            val taste = com.example.recommendation.UserTasteProfileStore.peek("${profile.countryCode}|${profile.languages.joinToString(",")}")
-                ?: com.example.recommendation.UserTasteProfile.COLD_START_PROFILE
-            fun eligible(track: MusicTrack) = !excluded.contains(track) &&
-                taste.keyFor(track) !in taste.recentRecordings
-            val candidates = (_catalogTracks.value + recentlyPlayed.value + favoriteTracks.value + listOfNotNull(seedTrack))
-                .distinctBy { it.id }
-                .filter { com.example.recommendation.UnifiedRecommendationEngine.verified(it) && eligible(it) }
-                .map { it.copy(recommendationOnly = true) }
-            val pivot = seedTrack ?: state.currentTrack ?: recent.firstOrNull()
-            val pool = try {
-                if (pivot != null) {
-                    repository.cachedRadioCandidates(pivot, recent, candidates, taste, 30).ifEmpty {
-                        repository.recommendationRadio(pivot, recent, 12, taste)
-                    }
-                } else candidates.ifEmpty { repository.getYtmQuickPicks(limit = 30) }
-            } catch (cancelled: CancellationException) { throw cancelled }
-            catch (error: Exception) {
-                android.util.Log.w("Autoplay", "Radio discovery failed: ${error.javaClass.simpleName}")
-                emptyList()
+            val excluded = (recent.map { it.id }).toSet()
+
+            val pivot = seedTrack
+                ?: state.currentTrack
+                ?: recentlyPlayed.value.firstOrNull()
+                ?: _catalogTracks.value.firstOrNull()
+
+            val radioTracks = if (pivot != null) {
+                repository.fetchYouTubeRadio(pivot, excluded, limit = 12)
+            } else {
+                repository.getYtmQuickPicks(limit = 12)
             }
-            val randomized = pool.filter(::eligible).take(12).shuffled()
-            val chosen = randomized.firstOrNull() ?: run {
+
+            val chosen = seedTrack ?: radioTracks.firstOrNull() ?: pivot ?: run {
                 withContext(Dispatchers.Main.immediate) {
                     playbackManager.reportPlaybackLookupFailure("No new recommendations are available. Please try again.")
                 }
                 return@launch
             }
+            val queueTracks = (listOf(chosen) + radioTracks.filter { it.id != chosen.id }).distinctBy { it.id }
+
             withContext(Dispatchers.Main.immediate) {
                 playbackManager.setAutoplayEnabled(true)
-                playbackManager.playTrack(chosen, randomized, isExplicitPlaylist = false, isInfiniteRadio = true)
+                playbackManager.playTrack(chosen, queueTracks, isExplicitPlaylist = false, isInfiniteRadio = true)
             }
         }
     }

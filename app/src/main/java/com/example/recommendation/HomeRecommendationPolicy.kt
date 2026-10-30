@@ -10,6 +10,11 @@ import java.util.Locale
 /** Recording identity is independent of provider IDs and artwork. Keep real version labels. */
 object HomeRecommendationPolicy {
     const val MAX_SHELF_TRACKS = 12
+    const val SOURCE = "youtube_music_server"
+    const val CHART_TTL = 3600_000L
+    const val CONTEXT_TTL = 1800_000L
+
+    fun seedKey(track: MusicTrack?): String = track?.let { "${it.id}|${it.title}|${it.artist}" } ?: ""
     private const val NORMALIZATION_CACHE_SIZE = 4096
     private val normalizedValues = LruCache<String, String>(NORMALIZATION_CACHE_SIZE)
     private data class MetadataInput(val title: String, val artistNames: List<String>)
@@ -25,6 +30,17 @@ object HomeRecommendationPolicy {
             synchronized(eligibility) { eligibility.put(key, result) }
         }
     }
+
+    /**
+     * Checks if a track is a genuine, verified YouTube recommendation track.
+     */
+    fun verified(track: MusicTrack): Boolean =
+        track.id.startsWith("yt_") &&
+        com.example.data.remote.YouTubeAudioStreamService.isVideoId(track.id.removePrefix("yt_")) &&
+        track.title.isNotBlank() &&
+        track.artist.isNotBlank() &&
+        !track.isLossless &&
+        isOriginalRecommendationTrack(track)
     private val punctuation = Regex("[^\\p{L}\\p{N}]+")
     private val artistSeparator = Regex("(?i),|;|\\s+(?:feat\\.?|ft\\.?|featuring|&)\\s+")
     private val topicSuffix = Regex("(?i)\\s*-\\s*topic$")
@@ -199,4 +215,41 @@ object HomeRecommendationPolicy {
 
     fun interleave(groups: List<List<MusicTrack>>): List<MusicTrack> =
         (0 until (groups.maxOfOrNull { it.size } ?: 0)).flatMap { index -> groups.mapNotNull { it.getOrNull(index) } }
+
+    fun normalizeTitle(rawTitle: String): String {
+        var title = rawTitle.lowercase(Locale.ROOT)
+        title = title.replace(Regex("\\[.*?\\]|\\(.*?\\)"), " ")
+        title = title.replace(Regex("(?i)\\b(official|music|video|audio|lyrics?|lyrical|hd|4k|remastered|version|edit|ft\\.?|feat\\.?|full song)\\b"), " ")
+        title = title.replace(Regex("[^\\p{L}\\p{Nd}\\s]"), " ")
+        return title.trim().replace(Regex("\\s+"), " ")
+    }
+
+    fun isSameSongOrVariant(track1Title: String, track2Title: String): Boolean {
+        val root1 = normalizeTitle(track1Title)
+        val root2 = normalizeTitle(track2Title)
+        if (root1.isBlank() || root2.isBlank()) return false
+        if (root1 == root2) return true
+        if (root1.length >= 3 && root2.length >= 3) {
+            if (root1.startsWith(root2) || root2.startsWith(root1)) return true
+            if (root1.contains(root2) || root2.contains(root1)) return true
+        }
+        val words1 = root1.split(" ").filter { it.length >= 3 }
+        val words2 = root2.split(" ").filter { it.length >= 3 }
+        if (words1.isNotEmpty() && words2.isNotEmpty()) {
+            val set1 = words1.toSet()
+            val set2 = words2.toSet()
+            val sharedWords = set1.intersect(set2)
+            if (sharedWords.size >= set1.size || sharedWords.size >= set2.size) return true
+            if (sharedWords.size >= 2 && (sharedWords.size.toDouble() / set1.size >= 0.6 || sharedWords.size.toDouble() / set2.size >= 0.6)) return true
+        }
+        return false
+    }
+
+    fun played(event: com.example.data.local.ListeningEventEntity): Boolean =
+        event.eventType == "ACTUAL_PLAY" && event.playedDurationMs > 0
+
+    fun meaningful(event: com.example.data.local.ListeningEventEntity): Boolean =
+        event.eventType == "ACTUAL_PLAY" &&
+        (event.playedDurationMs >= 30_000 || (event.trackDurationMs > 0 && event.playedDurationMs >= (event.trackDurationMs + 1) / 2))
 }
+

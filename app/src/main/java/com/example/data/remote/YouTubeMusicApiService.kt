@@ -333,13 +333,135 @@ object YouTubeMusicApiService {
         }
     }
 
-    /** Provider radio candidates, preserving its related-song ordering without resolving streams. */
-    suspend fun getRadioRecommendations(videoId: String, limit: Int = 40): List<MusicTrack> = withContext(Dispatchers.IO) {
+    /** Fetch direct YouTube Music Home (FEmusic_home) server recommendations. */
+    suspend fun getHomeRecommendations(countryCode: String, continuation: String? = null, languageCode: String = "en"): YouTubeHomeParser.ParsedHomeFeed = withContext(Dispatchers.IO) {
+        val region = countryCode.takeIf { it.matches(Regex("[A-Za-z]{2}")) }?.uppercase() ?: "US"
+        try {
+            val body = YouTubeAudioStreamService.discoveryResponse(
+                operation = "browse",
+                value = "FEmusic_home",
+                countryCode = region,
+                continuation = continuation,
+                languageCode = languageCode
+            )
+            YouTubeHomeParser.parseHomeFeed(JSONObject(body))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            try {
+                // Direct WEB_REMIX browse HTTP fallback if needed
+                val profile = YouTubeClient.WEB_REMIX
+                val payload = JSONObject().put("context", JSONObject().put("client", JSONObject()
+                    .put("clientName", profile.clientName).put("clientVersion", profile.clientVersion)
+                    .put("hl", languageCode).put("gl", region)))
+                if (continuation == null) payload.put("browseId", "FEmusic_home")
+                val url = "https://music.youtube.com/youtubei/v1/browse".toHttpUrl().newBuilder().apply {
+                    if (continuation != null) {
+                        addQueryParameter("continuation", continuation)
+                        addQueryParameter("ctoken", continuation)
+                    }
+                }.build()
+                val request = Request.Builder().url(url)
+                    .post(payload.toString().toRequestBody(jsonMediaType))
+                    .header("User-Agent", profile.userAgent).header("Referer", "https://music.youtube.com/")
+                    .header("Origin", "https://music.youtube.com")
+                    .header("X-YouTube-Client-Name", profile.clientId)
+                    .header("X-YouTube-Client-Version", profile.clientVersion).build()
+                val body = httpClient.catalogRequest(request)
+                YouTubeHomeParser.parseHomeFeed(JSONObject(body))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Error fetching YouTube Music Home feed: ${e.message}")
+                YouTubeHomeParser.ParsedHomeFeed(emptyList(), null)
+            }
+        }
+    }
+
+    /**
+     * Profile-based recommendation shelf ("Music for You") using selected country and languages.
+     * Lightweight, bounded (max 3 targeted queries), preserving server relevance ordering.
+     */
+    suspend fun getProfileShelf(countryCode: String, languages: List<String>): com.example.data.model.ServerHomeShelf? = withContext(Dispatchers.IO) {
+        val region = countryCode.takeIf { it.matches(Regex("[A-Za-z]{2}")) }?.uppercase() ?: "US"
+        val cleaned = languages.map { it.trim() }.filter { it.isNotBlank() }
+        val queries = if (cleaned.isEmpty()) listOf("Top Hits") else cleaned.take(3).map { "$it Hits" }
+        val results = mutableListOf<List<MusicTrack>>()
+        for (q in queries) {
+            val page = try {
+                searchSongsPage(q, useInnerTubeX = true, countryCode = region)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                try { searchSongsPage(q, useInnerTubeX = false, countryCode = region) } catch (_: Exception) { null }
+            }
+            if (page != null && page.tracks.isNotEmpty()) {
+                results.add(page.tracks)
+            }
+        }
+        if (results.isEmpty()) return@withContext null
+        val interleaved = mutableListOf<MusicTrack>()
+        val seen = mutableSetOf<String>()
+        val maxLen = results.maxOf { it.size }
+        for (i in 0 until maxLen) {
+            for (list in results) {
+                if (i < list.size) {
+                    val t = list[i]
+                    if (seen.add(t.id)) {
+                        interleaved.add(t)
+                        if (interleaved.size >= 15) break
+                    }
+                }
+            }
+            if (interleaved.size >= 15) break
+        }
+        if (interleaved.isEmpty()) return@withContext null
+        com.example.data.model.ServerHomeShelf(
+            id = "profile_shelf_music_for_you",
+            title = "Music for You",
+            subtitle = "Based on your music preferences",
+            tracks = interleaved
+        )
+    }
+
+    /**
+     * Resolves genuine YouTube video ID for any seed track (using direct reference or accurate search).
+     */
+    suspend fun resolveSeedVideoId(seed: MusicTrack): String? = withContext(Dispatchers.IO) {
+        val direct = YouTubeAudioStreamService.videoIdFromReference(seed.id, seed.audioUrl)
+        if (direct != null && YouTubeAudioStreamService.isVideoId(direct)) return@withContext direct
+        val query = "${seed.title} ${seed.artist}".trim()
+        if (query.isBlank()) return@withContext null
+        try {
+            val page = searchSongsPage(query, useInnerTubeX = true)
+            val candidate = page.tracks.firstOrNull() ?: searchSongsPage(query, useInnerTubeX = false).tracks.firstOrNull()
+            candidate?.let { YouTubeAudioStreamService.videoIdFromReference(it.id, it.audioUrl) }
+        } catch (_: Exception) { null }
+    }
+
+    /** Direct native YouTube Music radio recommendations preserving server ordering. */
+    suspend fun getRadioRecommendations(videoId: String, limit: Int = 40, countryCode: String? = null): List<MusicTrack> = withContext(Dispatchers.IO) {
         if (!videoId.matches(Regex("[A-Za-z0-9_-]{11}"))) return@withContext emptyList()
+        val region = countryCode?.takeIf { it.matches(Regex("[A-Za-z]{2}")) }?.uppercase() ?: "US"
+        // 1. Try InnerTubeX discoveryResponse with related
+        try {
+            val body = YouTubeAudioStreamService.discoveryResponse(
+                operation = "related",
+                value = videoId,
+                countryCode = region
+            )
+            val parsed = withContext(AppDispatchers.CpuBounded) {
+                parseRadioPanelTracks(JSONObject(body), limit)
+            }
+            if (parsed.isNotEmpty()) return@withContext parsed
+        } catch (e: CancellationException) { throw e } catch (_: Exception) {}
+
+        // 2. Direct /youtubei/v1/next with RDAMVM{videoId}
         try {
             val payload = JSONObject().apply {
                 put("context", JSONObject().put("client", JSONObject()
-                    .put("clientName", "WEB_REMIX").put("clientVersion", "1.20231204.01.00").put("hl", "en")))
+                    .put("clientName", "WEB_REMIX").put("clientVersion", "1.20231204.01.00")
+                    .put("hl", "en").put("gl", region)))
                 put("videoId", videoId)
                 put("playlistId", "RDAMVM$videoId")
                 put("isAudioOnly", true)
@@ -349,21 +471,28 @@ object YouTubeMusicApiService {
                 .header("User-Agent", "Mozilla/5.0").header("Referer", "https://music.youtube.com/").build()
             val body = httpClient.catalogRequest(request)
             withContext(AppDispatchers.CpuBounded) {
-                val tracks = mutableListOf<MusicTrack>()
-                fun visit(value: Any?, depth: Int = 0) {
-                    if (depth > 24 || tracks.size >= limit) return
-                    when (value) {
-                        is JSONObject -> {
-                            if (value.has("playlistPanelVideoRenderer")) parseAnyRenderer(value)?.let(tracks::add)
-                            else value.keys().forEach { visit(value.opt(it), depth + 1) }
-                        }
-                        is JSONArray -> for (index in 0 until value.length()) visit(value.opt(index), depth + 1)
+                parseRadioPanelTracks(JSONObject(body), limit)
+            }
+        } catch (e: CancellationException) { throw e } catch (_: Exception) { emptyList() }
+    }
+
+    private fun parseRadioPanelTracks(root: JSONObject, limit: Int): List<MusicTrack> {
+        val tracks = mutableListOf<MusicTrack>()
+        fun visit(value: Any?, depth: Int = 0) {
+            if (depth > 24 || tracks.size >= limit) return
+            when (value) {
+                is JSONObject -> {
+                    if (value.has("playlistPanelVideoRenderer")) {
+                        parseAnyRenderer(value)?.let(tracks::add)
+                    } else {
+                        value.keys().forEach { visit(value.opt(it), depth + 1) }
                     }
                 }
-                visit(JSONObject(body))
-                tracks.distinctBy { it.id }.take(limit)
+                is JSONArray -> for (index in 0 until value.length()) visit(value.opt(index), depth + 1)
             }
-        } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { emptyList() }
+        }
+        visit(root)
+        return tracks.distinctBy { it.id }.take(limit)
     }
 
     private fun parseSearchResults(jsonString: String, limit: Int): List<MusicTrack> {

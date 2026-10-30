@@ -25,10 +25,6 @@ import com.example.data.local.MusicDatabase
 import com.example.data.local.TrackEntity
 import com.example.data.model.toMediaItem
 import com.example.data.remote.MusicDataSource
-import com.example.recommendation.CustomRecommendationQueryWrapper
-import com.example.recommendation.HomeRecommendationPolicy
-import com.example.recommendation.UserTasteProfile
-import com.example.recommendation.RecommendationEngine
 import com.example.service.MusicService
 import com.example.service.PlaybackSessionStore
 import com.google.common.util.concurrent.ListenableFuture
@@ -209,7 +205,21 @@ class PlaybackManager(
         _uiState.update { it.copy(isLoading = false, isPlaying = false) }
     }
 
-    val recommendationEngine = RecommendationEngine()
+    inner class SessionMemoryTracker {
+        private val sessionTracks = java.util.concurrent.CopyOnWriteArrayList<MusicTrack>()
+        private val sessionPlayedIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        fun getSessionTracks(): List<MusicTrack> = sessionTracks.toList()
+        fun recordTrackPlayed(track: MusicTrack) {
+            if (sessionPlayedIds.add(track.id)) {
+                sessionTracks.add(track)
+            }
+        }
+        fun clear() {
+            sessionTracks.clear()
+            sessionPlayedIds.clear()
+        }
+    }
+    val recommendationEngine = SessionMemoryTracker()
     @Volatile private var candidateCatalogPool: List<MusicTrack> = emptyList()
     private val candidateDispatcher = AppDispatchers.CpuBounded
     private val candidateUpdates = kotlinx.coroutines.sync.Mutex()
@@ -1990,116 +2000,76 @@ class PlaybackManager(
         lastRefillKey = requestKey
         lastRefillAt = now
         recommendationFetchJob = scope.launch {
-            val attemptedIds = mutableSetOf<String>()
             try {
-                val taste = withContext(AppDispatchers.Database) {
-                    val events = listeningEventDao.getActualPlays(limit = 5000)
-                    val groups = withContext(AppDispatchers.CpuBounded) { events.map { it.trackId }.distinct().chunked(900) }
-                    val metadata = groups.flatMap { database.musicDao().getTracksByIds(it) }
-                    val favorites = repository?.favoriteSnapshotOrRetained().orEmpty()
-                    withContext(AppDispatchers.CpuBounded) { UserTasteProfile.fromEvents(events, metadata.map { it.toMusicTrack() }, favorites) }
-                }
-                suspend fun appendCandidates(pool: List<MusicTrack>, targetSize: Int = upcomingQueueTarget) {
-                    val nativeSnapshot = queueSnapshot()
-                    val radioSnapshot = pendingCollectionRadio
-                    val ranked = withContext(AppDispatchers.CpuBounded) {
-                        val queuedSnapshot = nativeSnapshot + radioSnapshot
-                        val excludedIds = queuedSnapshot.mapTo(mutableSetOf()) { it.id } + attemptedIds
-                        recommendationEngine.buildInfiniteAutoplayRecommendations(
-                            currentTrack = track,
-                            candidatePool = pool.filterNot { it.audioUrl.contains("soundhelix.com", ignoreCase = true) },
-                            limit = 40,
-                            alreadyQueuedIds = excludedIds,
-                            alreadyQueuedTracks = queuedSnapshot,
-                            tasteProfile = taste
-                        )
-                    }
-                    for (candidate in ranked) {
-                        if (!isActive || queueGeneration != generation || !_uiState.value.isAutoplayEnabled) return
-                        if (availableUpcoming() >= targetSize) return
-                        if (!attemptedIds.add(candidate.id) || activeQueue.any { it.id == candidate.id }) continue
-                        val resolved = try {
-                            withContext(AppDispatchers.Io) {
-                                if (!com.example.data.repository.StreamResolver.needsResolution(candidate)) candidate
-                                else repository?.resolvePlayableTrack(candidate)
-                            }
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (e: Exception) {
-                            Log.w(TAG, "Skipping unavailable queue candidate '${candidate.title}': ${e.message}")
-                            null
-                        } ?: continue
-                        if (resolved.audioUrl.isBlank()) continue
-                        if (!isActive || queueGeneration != generation || !_uiState.value.isAutoplayEnabled) return
-                        val currentQueue = queueSnapshot()
-                        val radioQueue = pendingCollectionRadio
-                        val duplicate = withContext(AppDispatchers.CpuBounded) {
-                            val queued = HomeRecommendationPolicy.Recordings()
-                            currentQueue.forEach { queued.add(it) }
-                            radioQueue.forEach { queued.add(it) }
-                            queued.contains(resolved)
-                        }
-                        if (!isActive || queueGeneration != generation || !_uiState.value.isAutoplayEnabled) return
-                        if (duplicate || activeQueue.any { it.id == resolved.id }) continue
-
-                        if (isCurrentSessionExplicitPlaylist) {
-                            // Keep radio out of the native collection timeline, including
-                            // shuffle order, until that collection has actually finished.
-                            pendingCollectionRadio = pendingCollectionRadio + resolved
-                            if (advanceWhenQueueReady || player.playbackState == Player.STATE_ENDED) {
-                                startCollectionRadio()
-                                return
-                            }
-                            continue
-                        }
-
-                        // Set the backing list before adding: player callbacks may run synchronously.
-                        activeQueue.add(resolved)
-                        queueRevision++
-                        try {
-                            player.addMediaItem(resolved.toMediaItem())
-                        } catch (e: Exception) {
-                            activeQueue.removeAt(activeQueue.lastIndex)
-                            queueRevision++
-                            throw e
-                        }
-                        publishQueueState()
-                        if (advanceWhenQueueReady && player.hasNextMediaItem()) {
-                            advanceWhenQueueReady = false
-                            player.seekToNextMediaItem()
-                            player.prepare()
-                            player.play()
-                        }
-                    }
-                }
-
                 val seed = _uiState.value.currentTrack ?: track
-                val catalog = candidateCatalogPool
                 val nativeSnapshot = queueSnapshot()
                 val radioSnapshot = pendingCollectionRadio
-                val (localPool, queued) = withContext(AppDispatchers.CpuBounded) {
-                    catalog.filter { it.recommendationOnly &&
-                        com.example.recommendation.UnifiedRecommendationEngine.verified(it) } to
-                        (nativeSnapshot + radioSnapshot + recommendationEngine.getSessionTracks())
+                val sessionHistory = try {
+                    listeningEventDao.getSessionPlayedTrackIds(currentSessionId).toSet()
+                } catch (_: Exception) {
+                    emptySet()
                 }
-                if (!isActive || queueGeneration != generation) return@launch
+                val queuedIds = (nativeSnapshot + radioSnapshot).mapTo(mutableSetOf()) { it.id } +
+                    recommendationEngine.getSessionTracks().map { it.id } + sessionHistory + setOf(seed.id)
+
                 val needed = (upcomingQueueTarget - remaining).coerceAtLeast(1)
-                val discovery = async(AppDispatchers.Io) {
-                    withTimeoutOrNull(15_000) {
-                        repository?.recommendationRadio(seed, alreadyQueued = queued, limit = needed, taste = taste).orEmpty()
-                    }.orEmpty()
+                val radioTracks = repository?.fetchYouTubeRadio(
+                    seed = seed,
+                    excludedIds = queuedIds,
+                    limit = needed
+                ).orEmpty()
+
+                for (candidate in radioTracks) {
+                    if (!isActive || queueGeneration != generation || !_uiState.value.isAutoplayEnabled) return@launch
+                    if (availableUpcoming() >= upcomingQueueTarget) return@launch
+                    if (activeQueue.any { it.id == candidate.id }) continue
+
+                    val resolved = try {
+                        withContext(AppDispatchers.Io) {
+                            if (!com.example.data.repository.StreamResolver.needsResolution(candidate)) candidate
+                            else repository?.resolvePlayableTrack(candidate)
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Skipping unavailable radio track '${candidate.title}': ${e.message}")
+                        null
+                    } ?: continue
+
+                    if (resolved.audioUrl.isBlank()) continue
+                    if (!isActive || queueGeneration != generation || !_uiState.value.isAutoplayEnabled) return@launch
+                    if (activeQueue.any { it.id == resolved.id }) continue
+
+                    if (isCurrentSessionExplicitPlaylist) {
+                        pendingCollectionRadio = pendingCollectionRadio + resolved
+                        if (advanceWhenQueueReady || player.playbackState == Player.STATE_ENDED) {
+                            startCollectionRadio()
+                            return@launch
+                        }
+                        continue
+                    }
+
+                    activeQueue.add(resolved)
+                    queueRevision++
+                    try {
+                        player.addMediaItem(resolved.toMediaItem())
+                    } catch (e: Exception) {
+                        activeQueue.removeAt(activeQueue.lastIndex)
+                        queueRevision++
+                        throw e
+                    }
+                    publishQueueState()
+                    if (advanceWhenQueueReady && player.hasNextMediaItem()) {
+                        advanceWhenQueueReady = false
+                        player.seekToNextMediaItem()
+                        player.prepare()
+                        player.play()
+                    }
                 }
-                val local = repository?.cachedRadioCandidates(seed, queued, localPool, taste, 40).orEmpty()
-                // Keep an exhausted queue moving while discovery runs; do not fill all slots with generic catalog tracks.
-                if (availableUpcoming() == 0) appendCandidates(local, targetSize = 1)
-                val targeted = discovery.await()
-                rememberQueueCandidates(targeted)
-                appendCandidates(targeted)
-                if (availableUpcoming() < upcomingQueueTarget) appendCandidates(local)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Log.w(TAG, "Queue refill failed: ${e.message}", e)
+                Log.w(TAG, "YouTube Music Radio queue refill failed: ${e.message}", e)
             } finally {
                 if (queueGeneration == generation) {
                     if (advanceWhenQueueReady) {

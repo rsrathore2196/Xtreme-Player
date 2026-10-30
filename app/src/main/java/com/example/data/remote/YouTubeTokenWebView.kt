@@ -55,15 +55,24 @@ internal class YouTubeTokenWebView private constructor() : YouTubeTokenBrowser {
         check(alive)
         val web = WebView(context.applicationContext)
         view = web
+        web.setLayerType(android.view.View.LAYER_TYPE_SOFTWARE, null)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            runCatching {
+                web.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_BOUND, false)
+            }
+        }
         web.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
+            databaseEnabled = false
+            setGeolocationEnabled(false)
             allowFileAccess = false
             allowContentAccess = false
             mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
             javaScriptCanOpenWindowsAutomatically = false
             setSupportMultipleWindows(false)
             userAgentString = YouTubeClient.WEB_REMIX.userAgent
+            cacheMode = WebSettings.LOAD_NO_CACHE
         }
         web.webChromeClient = object : WebChromeClient() {
             override fun onConsoleMessage(consoleMessage: ConsoleMessage?) = true
@@ -77,6 +86,7 @@ internal class YouTubeTokenWebView private constructor() : YouTubeTokenBrowser {
                 if (request.isForMainFrame) fail(IOException("YouTube attestation page failed"))
             }
             override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                rendererProcessCrashed = true
                 fail(IOException("YouTube attestation renderer stopped"))
                 destroyView()
                 return true
@@ -139,9 +149,11 @@ internal class YouTubeTokenWebView private constructor() : YouTubeTokenBrowser {
     private fun destroyView() {
         view?.let { web ->
             view = null
-            web.stopLoading()
-            web.removeJavascriptInterface("Attestation")
-            web.destroy()
+            runCatching {
+                web.stopLoading()
+                web.removeJavascriptInterface("Attestation")
+                web.destroy()
+            }
         }
     }
     override suspend fun close() = withContext(NonCancellable + Dispatchers.Main.immediate) {
@@ -150,6 +162,7 @@ internal class YouTubeTokenWebView private constructor() : YouTubeTokenBrowser {
     }
 
     companion object {
+        @Volatile var rendererProcessCrashed: Boolean = false
         private const val MAX_RESPONSE = 4 * 1024 * 1024
         private const val REQUEST_KEY = "O43z0dpjhgX20SCx4KAo"
         // Public anonymous attestation client identifier, not a user/API credential.
@@ -157,6 +170,9 @@ internal class YouTubeTokenWebView private constructor() : YouTubeTokenBrowser {
         internal data class Challenge(val script: String, val scriptUrl: String, val program: String, val globalName: String)
 
         suspend fun open(context: Context, http: OkHttpClient): YouTubeTokenBrowser {
+            if (rendererProcessCrashed) {
+                throw IOException("YouTube attestation WebView disabled due to renderer crash")
+            }
             val browser = YouTubeTokenWebView()
             try {
                 browser.initialize(context, http)

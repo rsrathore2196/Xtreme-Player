@@ -1,7 +1,15 @@
 package com.example.ui.viewmodel
 
 import androidx.compose.runtime.Immutable
-import com.example.recommendation.UnifiedRecommendationEngine.Shelf
+
+/** Shelf keys representing recommendation card sections */
+enum class Shelf(val itemKey: String) {
+    QUICK("shelf_quick_picks"),
+    CHART("shelf_country_trending"),
+    ERA("shelf_era_classics"),
+    PERSONALIZED("shelf_recommended_for_you"),
+    INSPIRED("shelf_because_you_listened")
+}
 
 /** Display ownership is retained by Home, independently of cached discovery pools. */
 enum class HomeFeedSection(val shelf: Shelf?) {

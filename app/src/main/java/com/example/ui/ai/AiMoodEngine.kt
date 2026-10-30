@@ -125,7 +125,7 @@ object AiMoodEngine {
         // Deduplication keys to guarantee zero duplicates across sections
         val usedTrackIds = countryPriorityTracks.map { it.id }.toMutableSet()
         val usedTitles = countryPriorityTracks.map {
-            com.example.recommendation.RecommendationEngine.normalizeTitle(it.title)
+            com.example.recommendation.HomeRecommendationPolicy.normalizeTitle(it.title)
         }.filter { it.isNotBlank() }.toMutableSet()
 
         // 2. USER PROFILE PERSONALIZED SHELF: "Made For [Name]"
@@ -133,9 +133,9 @@ object AiMoodEngine {
         val displayName = userProfile?.name?.trim()?.takeIf { it.isNotBlank() } ?: "You"
         val userLangs = (userProfile?.languages?.takeIf { it.isNotEmpty() } ?: listOf("Hindi", "Punjabi", "English")).map { it.lowercase() }
         val candidateUserTracks = catalogTracks.filter { track ->
-            val normTitle = com.example.recommendation.RecommendationEngine.normalizeTitle(track.title)
+            val normTitle = com.example.recommendation.HomeRecommendationPolicy.normalizeTitle(track.title)
             !usedTrackIds.contains(track.id) &&
-            !usedTitles.any { com.example.recommendation.RecommendationEngine.isSameSongOrVariant(it, normTitle) }
+            !usedTitles.any { com.example.recommendation.HomeRecommendationPolicy.isSameSongOrVariant(it, normTitle) }
         }
 
         val userTracks = candidateUserTracks.filter { track ->
@@ -220,12 +220,12 @@ object AiMoodEngine {
         val result = mutableListOf<MusicTrack>()
 
         for (track in this) {
-            val normTitle = com.example.recommendation.RecommendationEngine.normalizeTitle(track.title)
+            val normTitle = com.example.recommendation.HomeRecommendationPolicy.normalizeTitle(track.title)
             val albumKey = if (track.album.isNotBlank() && track.album != "Single" && track.album != "HD Stream") track.album.lowercase() else null
             val coverKey = track.coverUrl.ifBlank { null }
 
             // Reject if duplicate variant of same title, or same album, or same cover art
-            if (normTitle.isNotBlank() && seenTitles.any { com.example.recommendation.RecommendationEngine.isSameSongOrVariant(it, normTitle) }) continue
+            if (normTitle.isNotBlank() && seenTitles.any { com.example.recommendation.HomeRecommendationPolicy.isSameSongOrVariant(it, normTitle) }) continue
             if (albumKey != null && seenAlbums.contains(albumKey)) continue
             if (coverKey != null && seenCovers.contains(coverKey)) continue
 

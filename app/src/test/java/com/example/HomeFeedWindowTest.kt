@@ -3,7 +3,7 @@ package com.example
 import com.example.ui.viewmodel.HomeFeedSection
 import com.example.ui.viewmodel.HomeFeedWindow
 import com.example.ui.viewmodel.HomeRevealGesture
-import com.example.recommendation.UnifiedRecommendationEngine.Shelf
+import com.example.ui.viewmodel.Shelf
 import org.junit.Assert.*
 import org.junit.Test
 

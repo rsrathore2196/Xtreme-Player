@@ -367,7 +367,7 @@ internal class StreamResolver(
                 cachedFor(policy.sourceId(PlaybackSourceKind.JIOSAAVN))?.let { return it }
                 // Each provider owns its bounded budget. Earlier Archive/YouTube
                 // work cannot spend the fallback provider's resolution window.
-                return attempt(6_000L) { jioExact() ?: standardFallback() }
+                return attempt(12_000L) { jioExact() ?: standardFallback() }
             }
             if (currentSourceOnly) {
                 if (track.source.startsWith("Streaming Addon:")) policy.playbackSources
@@ -376,8 +376,11 @@ internal class StreamResolver(
                         attempt(16_000L) { resolveAddon(source, track, policy, rejectedUrls + listOfNotNull(failedUrl)) }
                     }
                 else if (archiveTransport(track.audioUrl)) null
-                else if (youtubeSelection && policy.allows(PlaybackSourceKind.YOUTUBE)) youtubeExact(track)
-                else if (!youtubeSelection && policy.allows(PlaybackSourceKind.JIOSAAVN)) attempt(6_000L) { jioExact() ?: standardFallback() }
+                else if (youtubeSelection && policy.allows(PlaybackSourceKind.YOUTUBE)) {
+                    val exact = youtubeExact(track)
+                    exact ?: youtubeFallback()
+                }
+                else if (!youtubeSelection && policy.allows(PlaybackSourceKind.JIOSAAVN)) attempt(12_000L) { jioExact() ?: standardFallback() }
                 else null
             } else {
                 val currentProvider = com.example.playback.SourceTransitionOrigin.sourceId(track.id,
@@ -396,7 +399,10 @@ internal class StreamResolver(
                     val state = failure()
                     val answer = try {
                         cachedFor(provider.id) ?: when (provider.kind) {
-                            PlaybackSourceKind.YOUTUBE -> if (selectedVideoId(track) != null) youtubeExact(track) else youtubeFallback()
+                            PlaybackSourceKind.YOUTUBE -> {
+                                val exact = if (selectedVideoId(track) != null) youtubeExact(track) else null
+                                exact ?: youtubeFallback()
+                            }
                             PlaybackSourceKind.JIOSAAVN -> boundedJio()
                             PlaybackSourceKind.INTERNET_ARCHIVE -> if (selectedArchive) {
                                 val direct = attempt(if (manualUpgrade) 12_000L else 6_000L) {
@@ -681,7 +687,7 @@ internal suspend fun <T : Any> resolveProviderCandidates(sources: List<PlaybackS
         suspend fun lookup(): T? {
             // A fast primary needs no speculative network work. Failure releases
             // fallbacks immediately; a slow primary gets only a short head start.
-            if (withTimeoutOrNull(250L) { primary.await() != null } == true) return null
+            if (runCatching { withTimeoutOrNull(250L) { primary.await() != null } }.getOrNull() == true) return null
             return limited(source)
         }
         // Queueing behind other custom servers cannot multiply the group's

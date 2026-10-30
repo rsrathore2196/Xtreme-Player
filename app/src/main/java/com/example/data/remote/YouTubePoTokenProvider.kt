@@ -30,19 +30,19 @@ internal class YouTubePoTokenProvider(
     @Volatile private var closed = false
     private val webViewSupported by lazy(LazyThreadSafetyMode.PUBLICATION) { runCatching(supported).getOrDefault(false) }
     override val capabilities: TokenProviderCapabilities
-        get() = if (!closed && now() >= retryAfterMs && webViewSupported)
+        get() = if (!closed && !YouTubeTokenWebView.rendererProcessCrashed && now() >= retryAfterMs && webViewSupported)
             TokenProviderCapabilities(setOf(PoTokenProviderKind.WEB_BOTGUARD), usesWebView = true)
         else TokenProviderCapabilities()
 
     override suspend fun getPoToken(videoId: String, visitorData: String, cookie: String?): PoTokenResult? {
-        if (closed || !YouTubeAudioStreamService.isVideoId(videoId) || visitorData.isBlank() ||
+        if (closed || YouTubeTokenWebView.rendererProcessCrashed || !YouTubeAudioStreamService.isVideoId(videoId) || visitorData.isBlank() ||
             visitorData.length > 4096 || capabilities.providers.isEmpty()) return null
         // Credentials never enter diagnostics, disk, or the browser bridge.
         val account = cookie?.takeIf(String::isNotEmpty)?.let {
             MessageDigest.getInstance("SHA-256").digest(it.toByteArray()).joinToString("") { b -> "%02x".format(b) }
         }.orEmpty()
         return lock.withLock {
-            if (closed) return@withLock null
+            if (closed || YouTubeTokenWebView.rendererProcessCrashed) return@withLock null
             if (now() < retryAfterMs) return@withLock null
             // Waiting for another token request is cancellable, but does not
             // consume this session's attestation deadline or mark it failed.
@@ -79,6 +79,10 @@ internal class YouTubePoTokenProvider(
                     } catch (error: Exception) {
                         discard()
                         PlaybackDiagnostics.youtubeEvent(videoId, "TOKEN_FAILED", reason = PlaybackDiagnostics.reason(error))
+                        if (YouTubeTokenWebView.rendererProcessCrashed) {
+                            retryAfterMs = Long.MAX_VALUE
+                            return@withTimeoutOrNull null
+                        }
                         if (attempt == 1) {
                             return@withTimeoutOrNull null
                         }
@@ -89,7 +93,7 @@ internal class YouTubePoTokenProvider(
             if (result == null) {
                 // Includes our own deadline, which previously bypassed cooldown
                 // and advertised unusable token-required clients repeatedly.
-                retryAfterMs = now() + 5_000L
+                retryAfterMs = if (YouTubeTokenWebView.rendererProcessCrashed) Long.MAX_VALUE else now() + 30_000L
                 discard()
             }
             result

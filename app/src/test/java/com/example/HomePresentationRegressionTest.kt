@@ -1,7 +1,7 @@
 package com.example
 
 import com.example.data.model.MusicTrack
-import com.example.recommendation.UnifiedRecommendationEngine.Shelf
+import com.example.ui.viewmodel.Shelf
 import com.example.ui.viewmodel.RecommendationCards
 import com.example.ui.viewmodel.SectionState
 import com.example.ui.viewmodel.enrichFromCache

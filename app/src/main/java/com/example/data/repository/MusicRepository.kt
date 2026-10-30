@@ -16,7 +16,6 @@ import com.example.data.remote.MusicDataSource
 import com.example.data.local.MusicDatabase
 import com.example.data.local.UserProfilePreferences
 import com.example.recommendation.HomeRecommendationPolicy
-import com.example.recommendation.UserTasteProfile
 import com.example.performance.BackgroundWorkCoordinator
 import com.example.recommendation.DiscoveryRequestCoordinator
 import kotlinx.coroutines.sync.Mutex
@@ -128,13 +127,21 @@ class MusicRepository private constructor(
     @Volatile var retainedPlaylists: List<PlaylistEntity> = emptyList()
         private set
 
+    class TrackAvailabilityTracker {
+        private val _unavailable = kotlinx.coroutines.flow.MutableStateFlow<Map<String, Long>>(emptyMap())
+        val unavailable: kotlinx.coroutines.flow.StateFlow<Map<String, Long>> = _unavailable
+        fun markUnavailable(track: MusicTrack) {
+            val now = android.os.SystemClock.elapsedRealtime()
+            _unavailable.value = _unavailable.value + (track.id to (now + 600_000L))
+        }
+    }
+    val recommendations = TrackAvailabilityTracker()
+
     val catalogBrowser = CatalogRepository(context)
     // Home's owners and workers share this cap, including discovery ranking.
     internal val homeDispatcher = BackgroundWorkCoordinator.optionalCpuDispatcher
-    val recommendations by lazy { com.example.recommendation.UnifiedRecommendationEngine(context) }
-
     internal suspend fun cacheRecommendationTracks(tracks: List<MusicTrack>) = withContext(homeDispatcher) {
-        val rows = tracks.filter(com.example.recommendation.UnifiedRecommendationEngine::verified)
+        val rows = tracks.filter { it.id.startsWith("yt_") && it.title.isNotBlank() }
             .distinctBy { it.id }.map { TrackEntity.fromMusicTrack(it).copy(isCached = true) }
         if (rows.isNotEmpty()) withContext(AppDispatchers.Database) { musicDao.mergeTracksMetadata(rows) }
     }
@@ -253,49 +260,42 @@ class MusicRepository private constructor(
     private fun browseLanguage(): String = (context?.resources?.configuration?.locales?.get(0)
         ?: java.util.Locale.getDefault()).language.ifBlank { "en" }
 
-    /** Compatibility entry points delegate to the same engine; no independent discovery. */
-    private suspend fun recommendationShelf(profile: UserProfile, shelf: com.example.recommendation.UnifiedRecommendationEngine.Shelf,
-        limit: Int, force: Boolean = false): List<MusicTrack> {
-        var result = emptyList<MusicTrack>()
-        kotlinx.coroutines.withTimeoutOrNull(20_000L) {
-            recommendations.refresh(profile, profile.country, UserTasteProfile.COLD_START_PROFILE,
-                null, emptyList(), emptyList(), getInitialCatalog(profile), force, setOf(shelf)).collect { batch ->
-                result = when (shelf) {
-                    com.example.recommendation.UnifiedRecommendationEngine.Shelf.ERA -> batch.era
-                    com.example.recommendation.UnifiedRecommendationEngine.Shelf.CHART -> batch.chart.orEmpty()
-                    else -> batch.quick
-                }
-            }
-        }
-        return result.take(limit)
+    /** Direct YouTube Music server radio recommendation. Preserves server recommendation ordering. */
+    suspend fun fetchYouTubeRadio(
+        seed: MusicTrack,
+        excludedIds: Set<String> = emptySet(),
+        limit: Int = 10,
+        countryCode: String? = null
+    ): List<MusicTrack> = withContext(AppDispatchers.Io) {
+        val resolvedVideoId = com.example.data.remote.YouTubeMusicApiService.resolveSeedVideoId(seed) ?: return@withContext emptyList()
+        val profile = homeProfile()
+        val region = countryCode ?: profile.countryCode
+        val recommendations = com.example.data.remote.YouTubeMusicApiService.getRadioRecommendations(
+            videoId = resolvedVideoId,
+            limit = (limit + excludedIds.size + 4).coerceAtLeast(20),
+            countryCode = region
+        )
+        recommendations.filter { it.id !in excludedIds && it.id != seed.id }
+            .distinctBy { it.id }
+            .take(limit)
     }
-    suspend fun syncOnlineCatalog(profile: UserProfile? = null): List<MusicTrack> =
-        getYtmQuickPicks().ifEmpty { getInitialCatalog(profile) }
-    suspend fun getPunjabiHits(limit: Int = 15): List<MusicTrack> = getCountryAndLanguageHits(homeProfile(), limit)
-    suspend fun getEraHits(limit: Int = 15, forceRefresh: Boolean = false,
-        @Suppress("UNUSED_PARAMETER") deferRoomMergeUntilIdle: Boolean = false): List<MusicTrack> =
-        recommendationShelf(homeProfile(), com.example.recommendation.UnifiedRecommendationEngine.Shelf.ERA, limit, forceRefresh)
-    suspend fun getYtmQuickPicks(limit: Int = 15, forceRefresh: Boolean = false,
-        @Suppress("UNUSED_PARAMETER") deferRoomMergeUntilIdle: Boolean = false): List<MusicTrack> =
-        recommendationShelf(homeProfile(), com.example.recommendation.UnifiedRecommendationEngine.Shelf.QUICK, limit, forceRefresh)
-    suspend fun getCountryAndLanguageHits(profile: UserProfile?, limit: Int = 15, forceRefresh: Boolean = false): List<MusicTrack> =
-        recommendationShelf(homeProfile(profile), com.example.recommendation.UnifiedRecommendationEngine.Shelf.CHART, limit, forceRefresh)
+
+    suspend fun syncOnlineCatalog(profile: UserProfile? = null): List<MusicTrack> = getInitialCatalog(profile)
+    suspend fun getPunjabiHits(limit: Int = 15): List<MusicTrack> = getInitialCatalog().take(limit)
+    suspend fun getEraHits(limit: Int = 15, @Suppress("UNUSED_PARAMETER") forceRefresh: Boolean = false,
+        @Suppress("UNUSED_PARAMETER") deferRoomMergeUntilIdle: Boolean = false): List<MusicTrack> = getInitialCatalog().take(limit)
+    suspend fun getYtmQuickPicks(limit: Int = 15, @Suppress("UNUSED_PARAMETER") forceRefresh: Boolean = false,
+        @Suppress("UNUSED_PARAMETER") deferRoomMergeUntilIdle: Boolean = false): List<MusicTrack> = getInitialCatalog().take(limit)
+    suspend fun getCountryAndLanguageHits(profile: UserProfile?, limit: Int = 15, @Suppress("UNUSED_PARAMETER") forceRefresh: Boolean = false): List<MusicTrack> =
+        getInitialCatalog(profile).take(limit)
 
     suspend fun recommendationRadio(seed: MusicTrack, alreadyQueued: List<MusicTrack>, limit: Int,
-        taste: UserTasteProfile? = null): List<MusicTrack> = withContext(AppDispatchers.CpuBounded) {
-        val profile = homeProfile()
-        val actualTaste = taste ?: context?.let {
-            val events = withContext(AppDispatchers.Database) { MusicDatabase.getDatabase(it).listeningEventDao().getActualPlays(250) }
-            val ids = events.map { event -> event.trackId }.distinct()
-            val metadata = withContext(AppDispatchers.Database) { musicDao.getTracksByIds(ids) }.map { row -> row.toMusicTrack() }
-            UserTasteProfile.fromEvents(events, metadata, favoriteSnapshotOrRetained())
-        } ?: UserTasteProfile.COLD_START_PROFILE
-        recommendations.radio(seed, profile, actualTaste, alreadyQueued, limit)
-    }
+        @Suppress("UNUSED_PARAMETER") taste: Any? = null): List<MusicTrack> =
+        fetchYouTubeRadio(seed, alreadyQueued.map { it.id }.toSet(), limit)
 
-    suspend fun cachedRadioCandidates(seed: MusicTrack, queued: List<MusicTrack>, tracks: List<MusicTrack>,
-        taste: UserTasteProfile, limit: Int): List<MusicTrack> =
-        recommendations.radioCandidates(seed, homeProfile(), taste, queued, tracks, limit)
+    suspend fun cachedRadioCandidates(seed: MusicTrack, queued: List<MusicTrack>, @Suppress("UNUSED_PARAMETER") tracks: List<MusicTrack>,
+        @Suppress("UNUSED_PARAMETER") taste: Any? = null, limit: Int = 10): List<MusicTrack> =
+        fetchYouTubeRadio(seed, queued.map { it.id }.toSet(), limit)
 
     fun observeFavoriteTrackIds(): Flow<Set<String>> = flow { emitAll(musicDao.observeFavoriteTrackIds()) }
         .flowOn(AppDispatchers.Database).map { it.toSet() }.distinctUntilChanged().flowOn(homeDispatcher)

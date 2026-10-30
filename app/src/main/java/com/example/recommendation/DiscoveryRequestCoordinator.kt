@@ -18,12 +18,12 @@ internal object DiscoveryRequestCoordinator {
 
     /** A pull can promote its existing refresh without launching another pass. */
     class HomeRefresh(requested: Boolean, val initialShelf: Boolean = false,
-        val essentialShelves: Set<UnifiedRecommendationEngine.Shelf> = emptySet(),
+        val essentialShelves: Set<com.example.ui.viewmodel.Shelf> = emptySet(),
         val initialPresentation: Boolean = false) : AbstractCoroutineContextElement(Key) {
         companion object Key : CoroutineContext.Key<HomeRefresh>
         val requested = MutableStateFlow(requested)
-        val waitingShelf = MutableStateFlow<UnifiedRecommendationEngine.Shelf?>(null)
-        val activeShelf = MutableStateFlow<UnifiedRecommendationEngine.Shelf?>(null)
+        val waitingShelf = MutableStateFlow<com.example.ui.viewmodel.Shelf?>(null)
+        val activeShelf = MutableStateFlow<com.example.ui.viewmodel.Shelf?>(null)
         fun promote() { requested.value = true }
 
         /** Start the deadline on a pull, including promotion of a deferred silent pass. */
