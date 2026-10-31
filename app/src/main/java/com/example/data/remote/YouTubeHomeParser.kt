@@ -191,16 +191,20 @@ object YouTubeHomeParser {
 
                     if (tracks.isNotEmpty() && title.isNotBlank()) {
                         val shelfContinuation = extractContinuation(shelfRenderer)
-                        val shelfId = "server_shelf_${shelves.size}_${title.hashCode()}"
-                        shelves.add(
-                            ServerHomeShelf(
-                                id = shelfId,
-                                title = title,
-                                subtitle = subtitle,
-                                tracks = tracks,
-                                continuationToken = shelfContinuation
+                        val titleSlug = title.lowercase(java.util.Locale.ROOT).replace(Regex("[^a-z0-9]+"), "_").take(30)
+                        val firstId = tracks.firstOrNull()?.id?.removePrefix("yt_")?.take(11).orEmpty()
+                        val shelfId = "server_shelf_${titleSlug}_${firstId}"
+                        if (shelves.none { it.id == shelfId }) {
+                            shelves.add(
+                                ServerHomeShelf(
+                                    id = shelfId,
+                                    title = title,
+                                    subtitle = subtitle,
+                                    tracks = tracks,
+                                    continuationToken = shelfContinuation
+                                )
                             )
-                        )
+                        }
                     }
                 }
             }

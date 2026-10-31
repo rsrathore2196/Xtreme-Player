@@ -685,22 +685,14 @@ fun HomeScreenContent(
                     }
                 }
             } else {
-                for (feedSection in window.sections) {
-                    if (feedSection != HomeFeedSection.ARTISTS) {
-                        val shelf = feedSection.shelf ?: continue
-                        artworkItem(state = listState, key = shelf.itemKey, contentType = "song_shelf") {
-                            val fallback = when (shelf) {
-                                Shelf.QUICK -> ytmCard
-                                Shelf.CHART -> countryLanguageCard
-                                Shelf.ERA -> eraCard
-                                Shelf.PERSONALIZED -> personalizedCard
-                                Shelf.INSPIRED -> inspiredTrackCard
-                            }
-                            val section = homeViewModel?.sectionState(shelf)?.collectAsStateWithLifecycle()?.value ?: fallback
-                            SectionCardLayout(state = section, tracksPrepared = homeViewModel != null,
-                                currentPlayingId = currentPlayingId, cardBg = cardBg, cardBorderColor = cardBorderColor,
-                                textPrimaryColor = textPrimaryColor, textMutedColor = textMutedColor, onTrackClick = onTrackClick)
+                for (i in 0 until 2) {
+                    artworkItem(state = listState, key = "loading_shelf_$i", contentType = "loading_shelf") {
+                        val loadingSection = remember {
+                            SectionState(title = if (i == 0) "Top Recommendations" else "Recommended for You", isLoading = true)
                         }
+                        SectionCardLayout(state = loadingSection, tracksPrepared = true,
+                            currentPlayingId = currentPlayingId, cardBg = cardBg, cardBorderColor = cardBorderColor,
+                            textPrimaryColor = textPrimaryColor, textMutedColor = textMutedColor, onTrackClick = onTrackClick)
                     }
                 }
             }

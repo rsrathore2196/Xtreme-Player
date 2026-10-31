@@ -25,6 +25,7 @@ import com.example.data.local.MusicDatabase
 import com.example.data.local.TrackEntity
 import com.example.data.model.toMediaItem
 import com.example.data.remote.MusicDataSource
+import com.example.data.remote.YouTubeAudioStreamService
 import com.example.service.MusicService
 import com.example.service.PlaybackSessionStore
 import com.google.common.util.concurrent.ListenableFuture
@@ -227,8 +228,8 @@ class PlaybackManager(
     private var recommendationFetchJob: Job? = null
     private var queueGeneration = 0L
     private var advanceWhenQueueReady = false
-    private val refillThreshold = 5
-    private val upcomingQueueTarget = 12
+    private val refillThreshold = 3
+    private val upcomingQueueTarget = 10
     private var lastRefillKey: String? = null
     private var lastRefillAt = 0L
 
@@ -1841,7 +1842,7 @@ class PlaybackManager(
             autoplayEnabled = _uiState.value.isAutoplayEnabled
             targetQuality = _uiState.value.selectedQuality
             prepared = withContext(AppDispatchers.CpuBounded) {
-                val tracks = if (autoplayEnabled && !isExplicitPlaylist && !preserveQueue) {
+                val tracks = if (autoplayEnabled && !isExplicitPlaylist && !preserveQueue && !_uiState.value.isInfiniteRadio) {
                     // A discovery screen is candidate context, not a collection
                     // chosen by the listener. Radio supplies the next recordings.
                     mutableStateListOf(track)
@@ -2024,16 +2025,23 @@ class PlaybackManager(
                     if (availableUpcoming() >= upcomingQueueTarget) return@launch
                     if (activeQueue.any { it.id == candidate.id }) continue
 
-                    val resolved = try {
-                        withContext(AppDispatchers.Io) {
-                            if (!com.example.data.repository.StreamResolver.needsResolution(candidate)) candidate
-                            else repository?.resolvePlayableTrack(candidate)
+                    val resolved = if (!candidate.audioUrl.isBlank() && !com.example.data.repository.StreamResolver.needsResolution(candidate)) {
+                        candidate
+                    } else if (candidate.id.startsWith("yt_") || YouTubeAudioStreamService.isVideoId(candidate.id)) {
+                        // Metadata-first queue item with virtual playback URI; stream resolves just-in-time on play
+                        val vid = candidate.id.removePrefix("yt_")
+                        candidate.copy(audioUrl = YouTubeAudioStreamService.playbackUri("yt_$vid", "").toString())
+                    } else {
+                        try {
+                            withContext(AppDispatchers.Io) {
+                                repository?.resolvePlayableTrack(candidate)
+                            }
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Skipping unavailable radio track '${candidate.title}': ${e.message}")
+                            null
                         }
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Skipping unavailable radio track '${candidate.title}': ${e.message}")
-                        null
                     } ?: continue
 
                     if (resolved.audioUrl.isBlank()) continue

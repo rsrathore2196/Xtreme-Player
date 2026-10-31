@@ -137,26 +137,41 @@ object YouTubeAudioStreamService {
         fun sabrChunks(bootstrap: SabrBootstrap, startMs: Long): Flow<SabrChunk> =
             SabrAudioStream(sabrHttp, bootstrap, maxRequestsWithoutProgress = 3, initialPlayerTimeMs = startMs).chunks()
 
-        suspend fun searchSongs(query: String, continuation: String?): String {
-            val response = engine(320_000).innerTube.search(
-                client = YouTubeClient.WEB_REMIX, query = query.takeIf { continuation == null },
-                params = "EgWKAQIIAWoKEAkQBRAKEAMQBA==".takeIf { continuation == null },
-                continuation = continuation, setLogin = false)
-            val body = response.bodyAsTextLimited(4 * 1024 * 1024)
-            if (response.status.value !in 200..299) throw IOException("YouTube Music search is unavailable")
-            return body
+        suspend fun searchSongs(query: String, continuation: String?, countryCode: String? = null, languageCode: String? = null): String {
+            val session = if (countryCode != null || languageCode != null) {
+                engine(320_000).innerTube.createIsolatedSession(includeAccount = false).apply {
+                    locale = com.metrolist.innertubex.models.YouTubeLocale(
+                        gl = countryCode?.uppercase(java.util.Locale.ROOT)?.takeIf { it.matches(Regex("[A-Z]{2}")) }.orEmpty(),
+                        hl = languageCode?.takeIf { it.matches(Regex("[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8})*")) } ?: "en")
+                    regionOverrideActive = true
+                }
+            } else null
+
+            try {
+                val target = session ?: engine(320_000).innerTube
+                val response = target.search(
+                    client = YouTubeClient.WEB_REMIX, query = query.takeIf { continuation == null },
+                    params = "EgWKAQIIAWoKEAkQBRAKEAMQBA==".takeIf { continuation == null },
+                    continuation = continuation, setLogin = false)
+                val body = response.bodyAsTextLimited(4 * 1024 * 1024)
+                if (response.status.value !in 200..299) throw IOException("YouTube Music search is unavailable")
+                return body
+            } finally {
+                session?.close()
+            }
         }
         suspend fun discovery(operation: String, value: String, countryCode: String,
-            params: String? = null, continuation: String? = null, languageCode: String = "en"): String {
+            params: String? = null, continuation: String? = null, languageCode: String = "en",
+            includeAccount: Boolean = false): String {
             // Isolate locale/account state; recommendations must not mutate the playback
             // extractor's session or another concurrent search's regional context.
-            val session = engine(320_000).innerTube.createIsolatedSession(includeAccount = false)
+            val session = engine(320_000).innerTube.createIsolatedSession(includeAccount = includeAccount)
             try {
                 session.locale = com.metrolist.innertubex.models.YouTubeLocale(
                     gl = countryCode.uppercase(java.util.Locale.ROOT).takeIf { it.matches(Regex("[A-Z]{2}")) }.orEmpty(),
                     hl = languageCode.takeIf { it.matches(Regex("[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8})*")) } ?: "en")
                 session.regionOverrideActive = true
-                return requestDiscovery(session, operation, value, params, continuation)
+                return requestDiscovery(session, operation, value, params, continuation, setLogin = includeAccount)
             } finally { session.close() }
         }
         suspend fun close() {
@@ -191,25 +206,28 @@ object YouTubeAudioStreamService {
     private fun runtime(): Runtime = runtime ?: synchronized(runtimeLock) { runtime ?: Runtime().also { runtime = it } }
 
     /** Import uses the same InnerTubeX session/client stack as audio extraction. */
-    internal suspend fun searchSongsResponse(query: String, continuation: String?): String =
-        withContext(Dispatchers.IO) { runtime().searchSongs(query, continuation) }
+    internal suspend fun searchSongsResponse(query: String, continuation: String?, countryCode: String? = null, languageCode: String? = null): String =
+        withContext(Dispatchers.IO) { runtime().searchSongs(query, continuation, countryCode, languageCode) }
 
     internal suspend fun discoveryResponse(operation: String, value: String, countryCode: String,
-        params: String? = null, continuation: String? = null, languageCode: String = "en"): String =
-        withContext(Dispatchers.IO) { runtime().discovery(operation, value, countryCode, params, continuation, languageCode) }
+        params: String? = null, continuation: String? = null, languageCode: String = "en",
+        includeAccount: Boolean = false): String =
+        withContext(Dispatchers.IO) { runtime().discovery(operation, value, countryCode, params, continuation, languageCode, includeAccount) }
 
     internal suspend fun requestDiscovery(session: InnerTube, operation: String, value: String,
-        params: String? = null, continuation: String? = null): String {
+        params: String? = null, continuation: String? = null, setLogin: Boolean = false): String {
         val response = when (operation) {
-            "related" -> session.next(client = YouTubeClient.WEB_REMIX, videoId = value)
+            "radio" -> session.next(client = YouTubeClient.WEB_REMIX, videoId = value,
+                playlistId = params ?: "RDAMVM$value", continuation = continuation)
+            "related" -> session.next(client = YouTubeClient.WEB_REMIX, videoId = value, continuation = continuation)
             "browse" -> session.browse(client = YouTubeClient.WEB_REMIX,
                 browseId = value.takeIf { continuation == null }, params = params.takeIf { continuation == null },
-                continuation = continuation, setLogin = false)
+                continuation = continuation, setLogin = setLogin)
             else -> session.search(client = YouTubeClient.WEB_REMIX, query = value.takeIf { continuation == null },
                 // Artist lookups must retain their artist filter, rather than searching songs.
                 params = (params ?: "EgWKAQIIAWoKEAkQBRAKEAMQBA==".takeUnless { operation == "searchAll" })
                     .takeIf { continuation == null },
-                continuation = continuation, setLogin = false)
+                continuation = continuation, setLogin = setLogin)
         }
         val body = response.bodyAsTextLimited(4 * 1024 * 1024)
         if (response.status.value !in 200..299) throw IOException("Music discovery is temporarily unavailable")

@@ -937,7 +937,7 @@ class PlayerViewModel(
 
             withContext(Dispatchers.Main.immediate) {
                 playbackManager.setAutoplayEnabled(true)
-                playbackManager.playTrack(chosen, queueTracks, isExplicitPlaylist = false, isInfiniteRadio = true)
+                playbackManager.playTrack(chosen, queueTracks, isExplicitPlaylist = false, isInfiniteRadio = true, preserveQueue = true)
             }
         }
     }

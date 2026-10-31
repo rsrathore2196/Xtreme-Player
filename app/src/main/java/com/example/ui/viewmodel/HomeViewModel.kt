@@ -295,38 +295,7 @@ class HomeViewModel(
     }.flowOn(dataDispatcher).stateIn(dataScope, SharingStarted.Eagerly, PersonalizationHistory())
 
     private suspend fun loadHistoricalPersonalization() {
-        val revision = listeningEventDao.getHomeInputRevision()
-        val recent = combine(actualPlays, historyRows) { events, rows -> events to rows }
-            .first { (events, rows) -> eventsLoaded.isCompleted && rows.ids == events.map { it.trackId }.distinct() }
-            .let { (events, rows) -> PersonalizationHistory(events, rows.tracks, true) }
-        val events = recent.events.associateByTo(linkedMapOf()) { it.id }
-        val metadata = recent.tracks.associateByTo(linkedMapOf()) { it.id }
-        var cursor = recent.events.lastOrNull()
-        while (cursor != null && events.size < 5000) {
-            BackgroundWorkCoordinator.yieldToInteraction(requireForeground = true)
-            val before = cursor
-            val batch = BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.DEFERRED,
-                label = "Home history page", urgent = { pendingExplicitRefresh || activeRefreshIsExplicit }) {
-                withContext(dataDispatcher) {
-                    val page = listeningEventDao.getActualPlaysBefore(before.timestamp, before.id,
-                        minOf(200, 5000 - events.size))
-                    val missing = page.map { it.trackId }.distinct().filterNot(metadata::containsKey)
-                    val tracks = if (missing.isEmpty()) emptyList() else database.musicDao().getTracksByIds(missing)
-                    page to withContext(workerDispatcher) { tracks.map { it.toMusicTrack() } }
-                }
-            }
-            if (batch.first.isEmpty()) break
-            batch.first.forEach { events[it.id] = it }
-            batch.second.forEach { metadata[it.id] = it }
-            cursor = batch.first.last()
-        }
-        currentCoroutineContext().ensureActive()
-        // One publication, not one taste/ranking/render pass per history page.
-        BackgroundWorkCoordinator.yieldToInteraction(requireForeground = true)
-        historicalInputRevision = revision?.takeIf {
-            it == homeInputRevision.value && it == listeningEventDao.getHomeInputRevision()
-        }
-        historicalRows.value = PersonalizationHistory(events.values.toList(), metadata.values.toList(), true, true)
+        historicalAttemptFinished.value = true
     }
 
     internal data class LocalTasteSummary(
@@ -502,6 +471,72 @@ class HomeViewModel(
     private var homeContinuationToken: String? = initialCards?.continuationToken
     private var isFetchingHomeContinuations = false
 
+    private var serverHomeJob: Job? = null
+    private var profileShelfJob: Job? = null
+    @Volatile private var serverHomeFetchedAt: Long = initialCards?.refreshedAt ?: 0L
+    @Volatile private var profileShelfFetchedAt: Long = 0L
+    @Volatile private var serverHomeCountryCode: String = _userProfile.value.countryCode
+    @Volatile private var profileShelfKey: String = "${_userProfile.value.countryCode}|${_userProfile.value.languages.joinToString(",")}"
+    @Volatile private var profileShelfRotation: Int = 0
+
+    suspend fun loadServerHome(force: Boolean = false) {
+        if (!force && serverHomeJob?.isActive == true) return
+        val country = _userProfile.value.countryCode.takeIf { it.isNotBlank() } ?: "US"
+        if (!force && country == serverHomeCountryCode && System.currentTimeMillis() - serverHomeFetchedAt < 10 * 60 * 1000L && _serverShelves.value.isNotEmpty()) return
+
+        serverHomeJob?.cancel()
+        val job = ownerScope.launch {
+            serverHomeCountryCode = country
+            try {
+                val feed = withContext(AppDispatchers.Io) {
+                    YouTubeMusicApiService.getHomeRecommendations(countryCode = country, languageCode = "en")
+                }
+                if (feed.shelves.isNotEmpty()) {
+                    _serverShelves.value = feed.shelves
+                    homeContinuationToken = feed.continuationToken
+                    serverHomeFetchedAt = System.currentTimeMillis()
+                    savePreparedCards()
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Preserve cached Home content during transient failures
+                android.util.Log.w("HomeViewModel", "Failed to load server home feed: ${e.message}")
+            }
+        }
+        serverHomeJob = job
+    }
+
+    suspend fun loadProfileShelf(force: Boolean = false) {
+        if (!force && profileShelfJob?.isActive == true) return
+        val profile = _userProfile.value
+        val country = profile.countryCode.takeIf { it.isNotBlank() } ?: "US"
+        val currentKey = "$country|${profile.languages.joinToString(",")}"
+        if (!force && currentKey == profileShelfKey && System.currentTimeMillis() - profileShelfFetchedAt < 10 * 60 * 1000L && _profileShelf.value != null) return
+
+        profileShelfJob?.cancel()
+        val job = ownerScope.launch {
+            profileShelfKey = currentKey
+            val offset = profileShelfRotation++
+            try {
+                val shelf = withContext(AppDispatchers.Io) {
+                    YouTubeMusicApiService.getProfileShelf(country, profile.languages, rotationOffset = offset)
+                }
+                if (shelf != null && shelf.tracks.isNotEmpty()) {
+                    _profileShelf.value = shelf
+                    profileShelfFetchedAt = System.currentTimeMillis()
+                    savePreparedCards()
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Preserve cached profile shelf during transient failures
+                android.util.Log.w("HomeViewModel", "Failed to load profile shelf: ${e.message}")
+            }
+        }
+        profileShelfJob = job
+    }
+
     /** Called only after a genuine forward scroll reaches the current feed tail. */
     fun revealNextHomeSection() {
         ownerScope.launch {
@@ -511,17 +546,26 @@ class HomeViewModel(
                 _revealedShelfCount.value = (currentCount + 2).coerceAtMost(totalCount)
             } else if (!homeContinuationToken.isNullOrBlank() && !isFetchingHomeContinuations) {
                 isFetchingHomeContinuations = true
+                val token = homeContinuationToken
                 try {
                     val profile = _userProfile.value
                     val countryCode = profile.countryCode.takeIf { it.isNotBlank() } ?: "US"
                     val moreFeed = withContext(AppDispatchers.Io) {
-                        YouTubeMusicApiService.getHomeRecommendations(countryCode, continuation = homeContinuationToken)
+                        YouTubeMusicApiService.getHomeRecommendations(countryCode, continuation = token)
                     }
                     if (moreFeed.shelves.isNotEmpty()) {
-                        homeContinuationToken = moreFeed.continuationToken
-                        val combined = _serverShelves.value + moreFeed.shelves
-                        _serverShelves.value = combined
-                        _revealedShelfCount.value = (_revealedShelfCount.value + 2).coerceAtMost(combined.size)
+                        // Deduplicate continuation token and shelves
+                        homeContinuationToken = if (moreFeed.continuationToken == token) null else moreFeed.continuationToken
+                        val existingIds = _serverShelves.value.map { it.id }.toSet()
+                        val uniqueNew = moreFeed.shelves.filter { it.id !in existingIds }
+                        if (uniqueNew.isNotEmpty()) {
+                            val combined = _serverShelves.value + uniqueNew
+                            _serverShelves.value = combined
+                            _revealedShelfCount.value = (_revealedShelfCount.value + 2).coerceAtMost(combined.size)
+                            savePreparedCards()
+                        }
+                    } else {
+                        homeContinuationToken = null
                     }
                 } catch (_: Exception) {
                 } finally {
@@ -1102,16 +1146,28 @@ class HomeViewModel(
     }
 
     private fun applyUserProfile(profile: UserProfile) {
-        if (_userProfile.value == profile) return
-        val musicPreferencesChanged = profileKey(profile) != profileKey()
+        val old = _userProfile.value
+        if (old == profile) return
+        val countryChanged = old.countryCode != profile.countryCode
+        val languagesChanged = old.languages != profile.languages
         _userProfile.value = profile
-        // Onboarding/name updates must not cancel the first request and then have
-        // its replacement rejected by the unchanged music-preference retry key.
-        if (musicPreferencesChanged) {
-            requestHistoricalInputs()
-            homeRefreshJob?.cancel()
-            homeRefreshJob = null
-            refreshHome(isExplicitPull = false)
+        if (countryChanged) {
+            // Country changed: invalidate and reload both server home and profile shelf
+            _serverShelves.value = emptyList()
+            _profileShelf.value = null
+            homeContinuationToken = null
+            serverHomeJob?.cancel()
+            profileShelfJob?.cancel()
+            ownerScope.launch {
+                loadServerHome(force = true)
+                loadProfileShelf(force = true)
+            }
+        } else if (languagesChanged) {
+            // Language-only change: do not reload server home shelves, reload only profile shelf
+            profileShelfJob?.cancel()
+            ownerScope.launch {
+                loadProfileShelf(force = true)
+            }
         }
     }
 
@@ -1973,93 +2029,10 @@ class HomeViewModel(
     }
 
     private suspend fun refreshSuggestions(force: Boolean, requested: Set<Shelf>, startupBatch: Boolean = false) = withContext(ownerDispatcher) {
-        val profile = _userProfile.value
-        val countryCode = profile.countryCode.takeIf { it.isNotBlank() } ?: "US"
-        val lang = profile.languages.firstOrNull()?.takeIf { it.isNotBlank() } ?: "en"
-        val requestGeneration = refreshGeneration
-        val startedAt = System.currentTimeMillis()
-        val nextGeneration = candidates.value.generation + 1
-        val fresh = linkedMapOf<String, MusicTrack>()
-
-        try {
-            val feed = withContext(AppDispatchers.Io) {
-                YouTubeMusicApiService.getHomeRecommendations(countryCode = countryCode, languageCode = lang)
-            }
-            if (feed.shelves.isNotEmpty()) {
-                _serverShelves.value = feed.shelves
-                homeContinuationToken = feed.continuationToken
-                feed.shelves.flatMap { it.tracks }.forEach { fresh[it.id] = it }
-            }
-
-            // Exactly ONE profile-based recommendation shelf ("Music for You") at low priority
-            val pShelf = try {
-                withContext(AppDispatchers.Io) {
-                    YouTubeMusicApiService.getProfileShelf(countryCode, profile.languages)
-                }
-            } catch (_: Exception) { null }
-
-            if (pShelf != null && pShelf.tracks.isNotEmpty()) {
-                _profileShelf.value = pShelf
-                pShelf.tracks.forEach { fresh[it.id] = it }
-            }
-
-            // Sync with preparedCards and candidates for backward compatibility
-            val quickTracks = feed.shelves.getOrNull(0)?.tracks.orEmpty()
-            val chartTracks = feed.shelves.getOrNull(1)?.tracks.orEmpty()
-            val eraTracks = feed.shelves.getOrNull(2)?.tracks.orEmpty()
-            val personalizedTracks = pShelf?.tracks ?: feed.shelves.getOrNull(3)?.tracks.orEmpty()
-
-            val batch = ShelfBatch(
-                quick = quickTracks,
-                era = eraTracks,
-                chart = chartTracks,
-                personalized = personalizedTracks,
-                chartFetchedAt = startedAt,
-                requested = setOf(Shelf.QUICK, Shelf.CHART, Shelf.ERA, Shelf.PERSONALIZED),
-                fetchedAt = mapOf(
-                    Shelf.QUICK to startedAt,
-                    Shelf.CHART to startedAt,
-                    Shelf.ERA to startedAt,
-                    Shelf.PERSONALIZED to startedAt
-                )
-            )
-
-            val results = mapOf(
-                Shelf.QUICK to quickTracks,
-                Shelf.CHART to chartTracks,
-                Shelf.ERA to eraTracks,
-                Shelf.PERSONALIZED to personalizedTracks
-            ).filterValues { it.isNotEmpty() }
-
-            candidates.update { old ->
-                old.withResults(results, batch, profileKey(profile), true, nextGeneration, explicit = force || activeRefreshIsExplicit)
-            }
-
-            preparedCards.update { cards ->
-                cards.copy(
-                    quick = SectionState(title = feed.shelves.getOrNull(0)?.title ?: "Quick Picks", tracks = quickTracks, isLoaded = quickTracks.isNotEmpty()),
-                    chart = SectionState(title = feed.shelves.getOrNull(1)?.title ?: "Trending", tracks = chartTracks, isLoaded = chartTracks.isNotEmpty()),
-                    era = SectionState(title = feed.shelves.getOrNull(2)?.title ?: "Featured Hits", tracks = eraTracks, isLoaded = eraTracks.isNotEmpty()),
-                    personalized = SectionState(title = pShelf?.title ?: "Music for You", subtitle = pShelf?.subtitle.orEmpty(), tracks = personalizedTracks, isLoaded = personalizedTracks.isNotEmpty())
-                )
-            }
-            _recommendationCards.value = preparedCards.value
-            savePreparedCards()
-        } catch (e: Exception) {
-            android.util.Log.w("HomeViewModel", "Error fetching direct YouTube Music recommendations: ${e.message}")
-        } finally {
-            if (fresh.isNotEmpty() && requestGeneration == refreshGeneration && profileKey() == profileKey(profile)) {
-                val verified = fresh.values.toList()
-                dataScope.launch {
-                    BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.DEFERRED,
-                        requireForeground = false) { repository.cacheRecommendationTracks(verified) }
-                }
-                _catalogTracks.value = withContext(workerDispatcher) {
-                    HomeRecommendationPolicy.originals(verified + _catalogTracks.value).take(300)
-                }
-                playbackManager.setCandidatePool(_catalogTracks.value)
-            }
-        }
+        val serverHome = ownerScope.async { loadServerHome(force = force) }
+        ownerScope.launch { loadProfileShelf(force = force) }
+        // A slow profile search must not delay server Home publication or startup
+        serverHome.await()
     }
 
     fun loadEraSectionIfNeeded() {

@@ -40,18 +40,62 @@ object YouTubeMusicApiService {
     private val artistSearchCache = android.util.LruCache<String, Pair<Long, SongSearchPage>>(48)
     private val artistSearchLocks = Array(8) { Mutex() }
 
+    object LanguageCodeMapper {
+        private val nameToCode = mapOf(
+            "hindi" to "hi",
+            "punjabi" to "pa",
+            "tamil" to "ta",
+            "telugu" to "te",
+            "malayalam" to "ml",
+            "bengali" to "bn",
+            "marathi" to "mr",
+            "gujarati" to "gu",
+            "kannada" to "kn",
+            "urdu" to "ur",
+            "bhojpuri" to "bho",
+            "haryanvi" to "bgc",
+            "rajasthani" to "raj",
+            "assamese" to "as",
+            "odia" to "or",
+            "english" to "en",
+            "spanish" to "es",
+            "french" to "fr",
+            "german" to "de",
+            "japanese" to "ja",
+            "korean" to "ko",
+            "chinese" to "zh",
+            "arabic" to "ar",
+            "russian" to "ru",
+            "portuguese" to "pt",
+            "italian" to "it",
+            "turkish" to "tr",
+            "indonesian" to "id",
+            "thai" to "th",
+            "vietnamese" to "vi"
+        )
+
+        fun toBcp47(input: String): String {
+            val trimmed = input.trim().lowercase(java.util.Locale.ROOT)
+            if (trimmed.matches(Regex("^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$"))) {
+                return trimmed
+            }
+            return nameToCode[trimmed] ?: "en"
+        }
+    }
+
     /** Incremental songs-only fallback for artist pages; never loads an entire discography. */
     suspend fun searchSongsPage(query: String, continuation: String? = null,
-        useInnerTubeX: Boolean = false, forceRefresh: Boolean = false, countryCode: String? = null): SongSearchPage = withContext(Dispatchers.IO) {
+        useInnerTubeX: Boolean = false, forceRefresh: Boolean = false, countryCode: String? = null, languageCode: String? = null): SongSearchPage = withContext(Dispatchers.IO) {
         if (query.isBlank()) return@withContext SongSearchPage(emptyList(), null)
-        val key = "${query.trim().lowercase(java.util.Locale.ROOT)}|${continuation.orEmpty()}|$useInnerTubeX|${countryCode.orEmpty()}"
+        val validLang = languageCode?.let { LanguageCodeMapper.toBcp47(it) } ?: "en"
+        val key = "${query.trim().lowercase(java.util.Locale.ROOT)}|${continuation.orEmpty()}|$useInnerTubeX|${countryCode.orEmpty()}|$validLang"
         artistSearchLocks[(key.hashCode() and Int.MAX_VALUE) % artistSearchLocks.size].withLock {
             if (forceRefresh) artistSearchCache.remove(key)
             artistSearchCache.get(key)?.takeIf { System.currentTimeMillis() - it.first < 300_000L }
                 ?.let { return@withLock it.second }
             if (useInnerTubeX) {
                 val page = try {
-                    val body = YouTubeAudioStreamService.searchSongsResponse(query.trim(), continuation)
+                    val body = YouTubeAudioStreamService.searchSongsResponse(query.trim(), continuation, countryCode = countryCode, languageCode = validLang)
                     withContext(AppDispatchers.CpuBounded) { parseSongSearchPage(body) }
                 } catch (e: CancellationException) { throw e }
                 catch (_: Exception) { null }
@@ -64,7 +108,7 @@ object YouTubeMusicApiService {
             val profile = YouTubeClient.WEB_REMIX
             val payload = JSONObject().put("context", JSONObject().put("client", JSONObject()
                 .put("clientName", profile.clientName).put("clientVersion", profile.clientVersion)
-                .put("hl", "en").put("gl", countryCode?.takeIf { it.matches(Regex("[A-Za-z]{2}")) }?.uppercase(java.util.Locale.ROOT) ?: "US")))
+                .put("hl", validLang).put("gl", countryCode?.takeIf { it.matches(Regex("[A-Za-z]{2}")) }?.uppercase(java.util.Locale.ROOT) ?: "US")))
             if (continuation == null) payload.put("query", query.trim()).put("params", "EgWKAQIIAWoKEAkQBRAKEAMQBA==")
             // Search continuations are URL parameters, as in InnerTubeX's search API.
             val url = "https://music.youtube.com/youtubei/v1/search".toHttpUrl().newBuilder().apply {
@@ -380,20 +424,29 @@ object YouTubeMusicApiService {
 
     /**
      * Profile-based recommendation shelf ("Music for You") using selected country and languages.
-     * Lightweight, bounded (max 3 targeted queries), preserving server relevance ordering.
+     * Lightweight, bounded (max 3 targeted queries), rotating strategy for >3 languages, preserving server relevance ordering.
      */
-    suspend fun getProfileShelf(countryCode: String, languages: List<String>): com.example.data.model.ServerHomeShelf? = withContext(Dispatchers.IO) {
-        val region = countryCode.takeIf { it.matches(Regex("[A-Za-z]{2}")) }?.uppercase() ?: "US"
+    suspend fun getProfileShelf(countryCode: String, languages: List<String>, rotationOffset: Int = 0): com.example.data.model.ServerHomeShelf? = withContext(Dispatchers.IO) {
+        val region = countryCode.takeIf { it.matches(Regex("[A-Za-z]{2}")) }?.uppercase(java.util.Locale.ROOT) ?: "US"
         val cleaned = languages.map { it.trim() }.filter { it.isNotBlank() }
-        val queries = if (cleaned.isEmpty()) listOf("Top Hits") else cleaned.take(3).map { "$it Hits" }
+        
+        // Rotating window for >3 selected languages across refreshes
+        val selectedLanguages = if (cleaned.isEmpty()) emptyList() else if (cleaned.size <= 3) cleaned else {
+            val offset = (rotationOffset % cleaned.size + cleaned.size) % cleaned.size
+            (0 until minOf(3, cleaned.size)).map { cleaned[(offset + it) % cleaned.size] }
+        }
+
+        val queries = if (selectedLanguages.isEmpty()) listOf("Top Hits" to "en") else selectedLanguages.map { lang ->
+            "$lang Hits" to LanguageCodeMapper.toBcp47(lang)
+        }
         val results = mutableListOf<List<MusicTrack>>()
-        for (q in queries) {
+        for ((q, langCode) in queries) {
             val page = try {
-                searchSongsPage(q, useInnerTubeX = true, countryCode = region)
+                searchSongsPage(q, useInnerTubeX = true, countryCode = region, languageCode = langCode)
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
-                try { searchSongsPage(q, useInnerTubeX = false, countryCode = region) } catch (_: Exception) { null }
+                try { searchSongsPage(q, useInnerTubeX = false, countryCode = region, languageCode = langCode) } catch (_: Exception) { null }
             }
             if (page != null && page.tracks.isNotEmpty()) {
                 results.add(page.tracks)
@@ -442,12 +495,13 @@ object YouTubeMusicApiService {
     /** Direct native YouTube Music radio recommendations preserving server ordering. */
     suspend fun getRadioRecommendations(videoId: String, limit: Int = 40, countryCode: String? = null): List<MusicTrack> = withContext(Dispatchers.IO) {
         if (!videoId.matches(Regex("[A-Za-z0-9_-]{11}"))) return@withContext emptyList()
-        val region = countryCode?.takeIf { it.matches(Regex("[A-Za-z]{2}")) }?.uppercase() ?: "US"
-        // 1. Try InnerTubeX discoveryResponse with related
+        val region = countryCode?.takeIf { it.matches(Regex("[A-Za-z]{2}")) }?.uppercase(java.util.Locale.ROOT) ?: "US"
+        // 1. Primary: dedicated native radio request via InnerTubeX discoveryResponse ("radio" operation with playlistId RDAMVM$videoId)
         try {
             val body = YouTubeAudioStreamService.discoveryResponse(
-                operation = "related",
+                operation = "radio",
                 value = videoId,
+                params = "RDAMVM$videoId",
                 countryCode = region
             )
             val parsed = withContext(AppDispatchers.CpuBounded) {
@@ -456,7 +510,7 @@ object YouTubeMusicApiService {
             if (parsed.isNotEmpty()) return@withContext parsed
         } catch (e: CancellationException) { throw e } catch (_: Exception) {}
 
-        // 2. Direct /youtubei/v1/next with RDAMVM{videoId}
+        // 2. Direct /youtubei/v1/next with RDAMVM{videoId} fallback
         try {
             val payload = JSONObject().apply {
                 put("context", JSONObject().put("client", JSONObject()
@@ -470,6 +524,19 @@ object YouTubeMusicApiService {
                 .post(payload.toString().toRequestBody(jsonMediaType))
                 .header("User-Agent", "Mozilla/5.0").header("Referer", "https://music.youtube.com/").build()
             val body = httpClient.catalogRequest(request)
+            val parsed = withContext(AppDispatchers.CpuBounded) {
+                parseRadioPanelTracks(JSONObject(body), limit)
+            }
+            if (parsed.isNotEmpty()) return@withContext parsed
+        } catch (e: CancellationException) { throw e } catch (_: Exception) {}
+
+        // 3. Fallback: related endpoint if radio list was unavailable
+        try {
+            val body = YouTubeAudioStreamService.discoveryResponse(
+                operation = "related",
+                value = videoId,
+                countryCode = region
+            )
             withContext(AppDispatchers.CpuBounded) {
                 parseRadioPanelTracks(JSONObject(body), limit)
             }

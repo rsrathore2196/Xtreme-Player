@@ -150,15 +150,39 @@ class HomeCardCache(context: Context, @Suppress("UNUSED_PARAMETER") workerDispat
     }
 
     suspend fun readDisk(profile: String): SavedHomeCards? = withContext(AppDispatchers.Io) {
+        var isLegacy = false
         val bytes = fileMutex.withLock {
-            val target = if (file.baseFile.exists()) file else if (legacyFile.baseFile.exists()) legacyFile else null
+            val target = if (file.baseFile.exists()) {
+                file
+            } else if (legacyFile.baseFile.exists()) {
+                isLegacy = true
+                legacyFile
+            } else null
             if (target != null && target.baseFile.length() > 0) {
                 runCatching { target.openRead().use { it.readBytes() } }.getOrNull()
             } else null
         } ?: return@withContext null
 
         val cards = try {
-            deserialize(String(bytes))
+            val loaded = deserialize(String(bytes))
+            if (isLegacy) {
+                // Prevent old v1 custom recommendation snapshots from appearing as current Home recommendations
+                // while preserving local history, artists, and catalog data during migration
+                loaded.copy(
+                    serverShelves = emptyList(),
+                    profileShelf = null,
+                    continuationToken = null,
+                    quick = SectionState(title = "Quick Picks"),
+                    era = SectionState(title = "Era-Specific Hits"),
+                    chart = SectionState(title = "Trending"),
+                    personalized = SectionState(title = "Music for You"),
+                    inspiredTrack = SectionState(title = "Because You Listened"),
+                    quickCandidates = emptyList(),
+                    eraCandidates = emptyList(),
+                    chartCandidates = emptyList(),
+                    recommendationSource = "youtube_music_server"
+                )
+            } else loaded
         } catch (_: Exception) {
             null
         }

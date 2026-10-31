@@ -269,7 +269,7 @@ internal class StreamResolver(
         val primary = RecordingIdentity.artistNames(track).firstOrNull().orEmpty()
         val queries = listOf("$title $artist".trim(), "$title $primary".trim(), title)
             .filter(String::isNotBlank).distinctBy(CatalogNames::normalize).take(3)
-        suspend fun standardFallback(): MusicTrack? = attempt(12_000L) {
+        suspend fun standardFallback(): MusicTrack? = attempt(6_000L) {
             matchedProvider("jio")?.let { previous ->
                 if (!forceRefresh && usable(previous)) return@attempt previous
                 val updated = detail(previous.id.removePrefix("online_"), 3_000L)
@@ -367,7 +367,7 @@ internal class StreamResolver(
                 cachedFor(policy.sourceId(PlaybackSourceKind.JIOSAAVN))?.let { return it }
                 // Each provider owns its bounded budget. Earlier Archive/YouTube
                 // work cannot spend the fallback provider's resolution window.
-                return attempt(12_000L) { jioExact() ?: standardFallback() }
+                return attempt(6_000L) { jioExact() ?: standardFallback() }
             }
             if (currentSourceOnly) {
                 if (track.source.startsWith("Streaming Addon:")) policy.playbackSources
@@ -378,9 +378,9 @@ internal class StreamResolver(
                 else if (archiveTransport(track.audioUrl)) null
                 else if (youtubeSelection && policy.allows(PlaybackSourceKind.YOUTUBE)) {
                     val exact = youtubeExact(track)
-                    exact ?: youtubeFallback()
+                    exact ?: if (selectedVideoId(track) == null) youtubeFallback() else null
                 }
-                else if (!youtubeSelection && policy.allows(PlaybackSourceKind.JIOSAAVN)) attempt(12_000L) { jioExact() ?: standardFallback() }
+                else if (!youtubeSelection && policy.allows(PlaybackSourceKind.JIOSAAVN)) attempt(6_000L) { jioExact() ?: standardFallback() }
                 else null
             } else {
                 val currentProvider = com.example.playback.SourceTransitionOrigin.sourceId(track.id,
@@ -400,8 +400,12 @@ internal class StreamResolver(
                     val answer = try {
                         cachedFor(provider.id) ?: when (provider.kind) {
                             PlaybackSourceKind.YOUTUBE -> {
-                                val exact = if (selectedVideoId(track) != null) youtubeExact(track) else null
-                                exact ?: youtubeFallback()
+                                val videoId = selectedVideoId(track)
+                                if (videoId != null) {
+                                    youtubeExact(track)
+                                } else {
+                                    youtubeFallback()
+                                }
                             }
                             PlaybackSourceKind.JIOSAAVN -> boundedJio()
                             PlaybackSourceKind.INTERNET_ARCHIVE -> if (selectedArchive) {

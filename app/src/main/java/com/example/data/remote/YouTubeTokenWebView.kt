@@ -87,6 +87,7 @@ internal class YouTubeTokenWebView private constructor() : YouTubeTokenBrowser {
             }
             override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
                 rendererProcessCrashed = true
+                lastCrashTimestampMs = SystemClock.elapsedRealtime()
                 fail(IOException("YouTube attestation renderer stopped"))
                 destroyView()
                 return true
@@ -163,6 +164,23 @@ internal class YouTubeTokenWebView private constructor() : YouTubeTokenBrowser {
 
     companion object {
         @Volatile var rendererProcessCrashed: Boolean = false
+        @Volatile var lastCrashTimestampMs: Long = 0L
+        const val RENDERER_CRASH_COOLDOWN_MS = 5 * 60 * 1000L // 5 minutes
+
+        fun isRendererInCooldown(now: Long = SystemClock.elapsedRealtime()): Boolean {
+            if (!rendererProcessCrashed) return false
+            if (now - lastCrashTimestampMs >= RENDERER_CRASH_COOLDOWN_MS) {
+                // Cooldown period expired, allow recovery attempt
+                return false
+            }
+            return true
+        }
+
+        fun markRecoverySuccess() {
+            rendererProcessCrashed = false
+            lastCrashTimestampMs = 0L
+        }
+
         private const val MAX_RESPONSE = 4 * 1024 * 1024
         private const val REQUEST_KEY = "O43z0dpjhgX20SCx4KAo"
         // Public anonymous attestation client identifier, not a user/API credential.
@@ -170,12 +188,13 @@ internal class YouTubeTokenWebView private constructor() : YouTubeTokenBrowser {
         internal data class Challenge(val script: String, val scriptUrl: String, val program: String, val globalName: String)
 
         suspend fun open(context: Context, http: OkHttpClient): YouTubeTokenBrowser {
-            if (rendererProcessCrashed) {
-                throw IOException("YouTube attestation WebView disabled due to renderer crash")
+            if (isRendererInCooldown()) {
+                throw IOException("YouTube attestation WebView in cooldown after renderer crash")
             }
             val browser = YouTubeTokenWebView()
             try {
                 browser.initialize(context, http)
+                markRecoverySuccess()
                 return browser
             } catch (error: Throwable) {
                 browser.close()
