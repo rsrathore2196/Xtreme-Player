@@ -600,19 +600,14 @@ fun HomeScreenContent(
                 artworkItem(state = listState, key = "most_listened_artists", contentType = "artist_shelf") {
                     val artists = homeViewModel?.mostListenedArtists?.collectAsStateWithLifecycle()?.value ?: mostListenedArtists
                     if (artists.isEmpty()) return@artworkItem
-                    var artistPage by rememberSaveable(artists.firstOrNull()?.name) { mutableIntStateOf(0) }
-                    val pageCount = (artists.size + 14) / 15
-                    val page = artistPage.coerceIn(0, pageCount - 1)
-                    val visibleArtists = remember(artists, page) {
-                        artists.drop(page * 15).take(15)
+                    val visibleArtists = remember(artists) {
+                        artists.take(15)
                     }
                     val artistListState = rememberLazyListState()
                     ObserveHomeScroll(artistListState)
-                    val artistScope = rememberCoroutineScope()
                     Column(Modifier.padding(top = 22.dp)) {
                         Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            verticalAlignment = Alignment.CenterVertically) {
                             Text(
                                 "Most Listened Artists",
                                 modifier = Modifier.weight(1f),
@@ -620,14 +615,6 @@ fun HomeScreenContent(
                                 fontWeight = FontWeight.Bold,
                                 color = textPrimaryColor
                             )
-                            if (page > 0) ArtistPageButton(forward = false, tint = textPrimaryColor) {
-                                artistPage = page - 1
-                                artistScope.launch { artistListState.scrollToItem(0) }
-                            }
-                            if (page + 1 < pageCount) ArtistPageButton(forward = true, tint = textPrimaryColor) {
-                                artistPage = page + 1
-                                artistScope.launch { artistListState.scrollToItem(0) }
-                            }
                         }
                         Spacer(Modifier.height(12.dp))
                         LazyRow(

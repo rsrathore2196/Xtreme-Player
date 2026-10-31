@@ -106,7 +106,7 @@ internal fun addPendingArtistPlays(cached: List<MostListenedArtist>, tracks: Col
         artists[key] = MostListenedArtist(display, (previous?.playCount ?: 0) + 1,
             (listOf(track) + previous?.tracks.orEmpty()).distinctBy { it.id }.take(3))
     }
-    return artists.values.sortedByDescending { it.playCount }.take(20)
+    return artists.values.sortedByDescending { it.playCount }.take(15)
 }
 internal fun RecommendationCards.section(shelf: Shelf): SectionState = when (shelf) {
     Shelf.QUICK -> quick

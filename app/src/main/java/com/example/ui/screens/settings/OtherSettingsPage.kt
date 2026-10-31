@@ -253,6 +253,7 @@ fun OtherSettingsPage(
 
                         // Usage quota bar
                         val usagePercent = cacheStats.usagePercentage
+                        val quotaBarTrackColor = if (appColors.isAmoled) Color(0xFF3E4048) else if (appColors.isDark) Color(0xFF34363E) else appColors.cardBorder
                         androidx.compose.material3.LinearProgressIndicator(
                             progress = { usagePercent },
                             modifier = Modifier
@@ -260,7 +261,7 @@ fun OtherSettingsPage(
                                 .height(6.dp)
                                 .clip(RoundedCornerShape(3.dp)),
                             color = if (usagePercent > 0.85f) Color(0xFFEF4444) else accentColor,
-                            trackColor = appColors.cardBorder
+                            trackColor = quotaBarTrackColor
                         )
 
                         Spacer(modifier = Modifier.height(6.dp))
@@ -889,6 +890,7 @@ internal fun CacheQuotaSlider(quotaBytes: Long, onQuotaSelected: (Long) -> Unit)
                     color = colors.primaryAccent, fontWeight = FontWeight.Bold, fontSize = 15.sp,
                     modifier = Modifier.testTag("cache_limit_value"))
             }
+            val sliderInactiveTrackColor = if (colors.isAmoled) Color(0xFF3E4048) else if (colors.isDark) Color(0xFF34363E) else colors.cardBorder
             androidx.compose.material3.Slider(
                 value = selection,
                 onValueChange = { selection = it },
@@ -896,7 +898,7 @@ internal fun CacheQuotaSlider(quotaBytes: Long, onQuotaSelected: (Long) -> Unit)
                 valueRange = 512f..8192f,
                 colors = androidx.compose.material3.SliderDefaults.colors(
                     thumbColor = colors.primaryAccent, activeTrackColor = colors.primaryAccent,
-                    inactiveTrackColor = colors.cardBorder),
+                    inactiveTrackColor = sliderInactiveTrackColor),
                 modifier = Modifier.fillMaxWidth().testTag("slider_cache_quota"))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text("512 MB", color = colors.textMuted, fontSize = 10.sp)

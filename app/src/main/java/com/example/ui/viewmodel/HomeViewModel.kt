@@ -682,7 +682,7 @@ class HomeViewModel(
         restoredCandidates(it)
     } ?: Candidates())
     private var savedCandidates: Candidates? = initialCards?.let { candidates.value }
-    private val _mostListenedArtists = MutableStateFlow(initialCards?.artists.orEmpty().take(20))
+    private val _mostListenedArtists = MutableStateFlow(initialCards?.artists.orEmpty().take(15))
     val mostListenedArtists: StateFlow<List<MostListenedArtist>> = _mostListenedArtists.asStateFlow()
     val hasListenedArtists = combine(mostListenedArtists, _userMode) { artists, mode ->
         mode != HomeUserMode.NEW_USER && artists.isNotEmpty() }.distinctUntilChanged()
@@ -902,7 +902,7 @@ class HomeViewModel(
                     if (songs.size < 3 && songs.none { it.id == track.id }) songs.add(track)
                 }
             }
-            val result = names.keys.sortedByDescending { counts[it] ?: 0 }.take(20).map { artist ->
+            val result = names.keys.sortedByDescending { counts[it] ?: 0 }.take(15).map { artist ->
                 MostListenedArtist(names.getValue(artist), counts.getValue(artist), artistTracks.getValue(artist).toList())
             }
             currentCoroutineContext().ensureActive()
@@ -1063,7 +1063,7 @@ class HomeViewModel(
         val cards = preparedCards.value
         val snapshot = SavedHomeCards(profileKey(), savedSignal.orEmpty(), pool.generation, lastDiscoveryRefresh,
             cards.quick, cards.era, cards.chart, _listeningHistoryCard.value, cards.personalized,
-            _mostListenedArtists.value.take(20), pool.quick, pool.era, pool.chart,
+            _mostListenedArtists.value.take(15), pool.quick, pool.era, pool.chart,
             _catalogTracks.value, chartRefreshedAt = lastRegionalRefresh,
             inspiredTrack = cards.inspiredTrack,
             personalizedCandidates = pool.personalized, inspiredTrackCandidates = pool.inspired, recommendationSource = pool.source,
@@ -1267,7 +1267,7 @@ class HomeViewModel(
         // authoritative library after the user clears history.
         if (!listeningCardsPublished) {
             if (_listeningHistoryCard.value != cached.history) _listeningHistoryCard.value = cached.history
-            val artists = cached.artists.take(20)
+            val artists = cached.artists.take(15)
             if (_mostListenedArtists.value != artists) _mostListenedArtists.value = artists
             cachedHero.value = cached.history.tracks.firstOrNull() ?: cached.catalog.firstOrNull()
             cachedHistory.value = cached.history.tracks
