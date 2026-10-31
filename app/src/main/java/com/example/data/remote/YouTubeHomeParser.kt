@@ -14,7 +14,9 @@ object YouTubeHomeParser {
 
     data class ParsedHomeFeed(
         val shelves: List<ServerHomeShelf>,
-        val continuationToken: String?
+        val continuationToken: String?,
+        val isError: Boolean = false,
+        val errorMessage: String? = null
     )
 
     private fun string(value: JSONObject, key: String): String =
@@ -193,18 +195,21 @@ object YouTubeHomeParser {
                         val shelfContinuation = extractContinuation(shelfRenderer)
                         val titleSlug = title.lowercase(java.util.Locale.ROOT).replace(Regex("[^a-z0-9]+"), "_").take(30)
                         val firstId = tracks.firstOrNull()?.id?.removePrefix("yt_")?.take(11).orEmpty()
-                        val shelfId = "server_shelf_${titleSlug}_${firstId}"
-                        if (shelves.none { it.id == shelfId }) {
-                            shelves.add(
-                                ServerHomeShelf(
-                                    id = shelfId,
-                                    title = title,
-                                    subtitle = subtitle,
-                                    tracks = tracks,
-                                    continuationToken = shelfContinuation
-                                )
-                            )
+                        val baseShelfId = "server_shelf_${titleSlug}_${firstId}"
+                        var shelfId = baseShelfId
+                        var collisionCounter = 1
+                        while (shelves.any { it.id == shelfId }) {
+                            shelfId = "${baseShelfId}_${collisionCounter++}"
                         }
+                        shelves.add(
+                            ServerHomeShelf(
+                                id = shelfId,
+                                title = title,
+                                subtitle = subtitle,
+                                tracks = tracks,
+                                continuationToken = shelfContinuation
+                            )
+                        )
                     }
                 }
             }

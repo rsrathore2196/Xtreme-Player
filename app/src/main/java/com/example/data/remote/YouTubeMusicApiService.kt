@@ -377,8 +377,15 @@ object YouTubeMusicApiService {
         }
     }
 
+    fun hasAuthenticatedAccount(): Boolean = false
+
     /** Fetch direct YouTube Music Home (FEmusic_home) server recommendations. */
-    suspend fun getHomeRecommendations(countryCode: String, continuation: String? = null, languageCode: String = "en"): YouTubeHomeParser.ParsedHomeFeed = withContext(Dispatchers.IO) {
+    suspend fun getHomeRecommendations(
+        countryCode: String,
+        continuation: String? = null,
+        languageCode: String = "en",
+        includeAccount: Boolean = hasAuthenticatedAccount()
+    ): YouTubeHomeParser.ParsedHomeFeed = withContext(Dispatchers.IO) {
         val region = countryCode.takeIf { it.matches(Regex("[A-Za-z]{2}")) }?.uppercase() ?: "US"
         try {
             val body = YouTubeAudioStreamService.discoveryResponse(
@@ -386,39 +393,32 @@ object YouTubeMusicApiService {
                 value = "FEmusic_home",
                 countryCode = region,
                 continuation = continuation,
-                languageCode = languageCode
+                languageCode = languageCode,
+                includeAccount = includeAccount
             )
-            YouTubeHomeParser.parseHomeFeed(JSONObject(body))
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: Exception) {
-            try {
+            val feed = YouTubeHomeParser.parseHomeFeed(JSONObject(body))
+            if (feed.shelves.isEmpty() && continuation == null) {
                 // Direct WEB_REMIX browse HTTP fallback if needed
                 val profile = YouTubeClient.WEB_REMIX
                 val payload = JSONObject().put("context", JSONObject().put("client", JSONObject()
                     .put("clientName", profile.clientName).put("clientVersion", profile.clientVersion)
                     .put("hl", languageCode).put("gl", region)))
-                if (continuation == null) payload.put("browseId", "FEmusic_home")
-                val url = "https://music.youtube.com/youtubei/v1/browse".toHttpUrl().newBuilder().apply {
-                    if (continuation != null) {
-                        addQueryParameter("continuation", continuation)
-                        addQueryParameter("ctoken", continuation)
-                    }
-                }.build()
+                payload.put("browseId", "FEmusic_home")
+                val url = "https://music.youtube.com/youtubei/v1/browse".toHttpUrl().newBuilder().build()
                 val request = Request.Builder().url(url)
                     .post(payload.toString().toRequestBody(jsonMediaType))
                     .header("User-Agent", profile.userAgent).header("Referer", "https://music.youtube.com/")
                     .header("Origin", "https://music.youtube.com")
                     .header("X-YouTube-Client-Name", profile.clientId)
                     .header("X-YouTube-Client-Version", profile.clientVersion).build()
-                val body = httpClient.catalogRequest(request)
-                YouTubeHomeParser.parseHomeFeed(JSONObject(body))
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "Error fetching YouTube Music Home feed: ${e.message}")
-                YouTubeHomeParser.ParsedHomeFeed(emptyList(), null)
-            }
+                val fallbackBody = httpClient.catalogRequest(request)
+                YouTubeHomeParser.parseHomeFeed(JSONObject(fallbackBody))
+            } else feed
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Error fetching YouTube Music Home feed: ${e.message}")
+            YouTubeHomeParser.ParsedHomeFeed(emptyList(), null, isError = true, errorMessage = e.message)
         }
     }
 
@@ -487,8 +487,28 @@ object YouTubeMusicApiService {
         if (query.isBlank()) return@withContext null
         try {
             val page = searchSongsPage(query, useInnerTubeX = true)
-            val candidate = page.tracks.firstOrNull() ?: searchSongsPage(query, useInnerTubeX = false).tracks.firstOrNull()
+            val candidates = page.tracks.ifEmpty {
+                try { searchSongsPage(query, useInnerTubeX = false).tracks } catch (_: Exception) { emptyList() }
+            }
+            val seedTitleNorm = com.example.recommendation.HomeRecommendationPolicy.normalize(seed.title)
+            val seedArtistNorm = com.example.recommendation.HomeRecommendationPolicy.normalize(seed.artist)
+            val candidate = candidates.firstOrNull { c ->
+                val cTitleNorm = com.example.recommendation.HomeRecommendationPolicy.normalize(c.title)
+                val cArtistNorm = com.example.recommendation.HomeRecommendationPolicy.normalize(c.artist)
+                val titleMatch = cTitleNorm.contains(seedTitleNorm) || seedTitleNorm.contains(cTitleNorm)
+                val artistMatch = seedArtistNorm.isBlank() || seedArtistNorm in setOf("unknown", "various artists") ||
+                    cArtistNorm.contains(seedArtistNorm) || seedArtistNorm.contains(cArtistNorm) ||
+                    cTitleNorm.contains(seedArtistNorm)
+                val durationMatch = seed.durationMs <= 0 || c.durationMs <= 0 ||
+                    kotlin.math.abs(seed.durationMs - c.durationMs) <= 75_000L
+                titleMatch && artistMatch && durationMatch
+            } ?: candidates.firstOrNull { c ->
+                val cTitleNorm = com.example.recommendation.HomeRecommendationPolicy.normalize(c.title)
+                cTitleNorm.contains(seedTitleNorm) || seedTitleNorm.contains(cTitleNorm)
+            }
             candidate?.let { YouTubeAudioStreamService.videoIdFromReference(it.id, it.audioUrl) }
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) { null }
     }
 

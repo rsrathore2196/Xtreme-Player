@@ -275,6 +275,19 @@ class HomeCardCache(context: Context, @Suppress("UNUSED_PARAMETER") workerDispat
             root.put("profileShelf", pObj)
         }
 
+        // Artists
+        val artistsArray = JSONArray()
+        for (a in cards.artists.take(15)) {
+            val aObj = JSONObject()
+            aObj.put("name", a.name)
+            aObj.put("playCount", a.playCount)
+            val aTracks = JSONArray()
+            for (t in a.tracks) aTracks.put(serializeTrack(t))
+            aObj.put("tracks", aTracks)
+            artistsArray.put(aObj)
+        }
+        root.put("artists", artistsArray)
+
         // Backward compatibility sections
         root.put("quick", serializeSection(cards.quick))
         root.put("era", serializeSection(cards.era))
@@ -406,6 +419,20 @@ class HomeCardCache(context: Context, @Suppress("UNUSED_PARAMETER") workerDispat
             for (i in 0 until readyArr.length()) readyArr.optString(i).takeIf(String::isNotBlank)?.let(readyShelves::add)
         }
 
+        val artistsList = mutableListOf<MostListenedArtist>()
+        val artistsArray = root.optJSONArray("artists")
+        if (artistsArray != null) {
+            for (i in 0 until artistsArray.length()) {
+                val aObj = artistsArray.optJSONObject(i) ?: continue
+                val name = aObj.optString("name", "")
+                val playCount = aObj.optInt("playCount", 0)
+                val tracks = deserializeTracks(aObj.optJSONArray("tracks"))
+                if (name.isNotBlank()) {
+                    artistsList.add(MostListenedArtist(name, playCount, tracks))
+                }
+            }
+        }
+
         return SavedHomeCards(
             profileKey = profileKey,
             signal = signal,
@@ -416,6 +443,7 @@ class HomeCardCache(context: Context, @Suppress("UNUSED_PARAMETER") workerDispat
             chart = chart,
             history = history,
             personalized = if (personalized.tracks.isNotEmpty()) personalized else SectionState(title = "Music for You", tracks = profileShelf?.tracks.orEmpty(), isLoaded = profileShelf != null),
+            artists = artistsList.take(15),
             inspiredTrack = inspired,
             quickCandidates = quickCandidates,
             eraCandidates = eraCandidates,

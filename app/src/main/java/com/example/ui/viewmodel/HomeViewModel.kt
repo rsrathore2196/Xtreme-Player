@@ -28,6 +28,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.onEach
 import com.example.data.cache.HomeCardCache
@@ -471,70 +472,110 @@ class HomeViewModel(
     private var homeContinuationToken: String? = initialCards?.continuationToken
     private var isFetchingHomeContinuations = false
 
-    private var serverHomeJob: Job? = null
-    private var profileShelfJob: Job? = null
+    private var serverHomeDeferred: Deferred<Boolean>? = null
+    private var profileShelfDeferred: Deferred<Boolean>? = null
     @Volatile private var serverHomeFetchedAt: Long = initialCards?.refreshedAt ?: 0L
     @Volatile private var profileShelfFetchedAt: Long = 0L
     @Volatile private var serverHomeCountryCode: String = _userProfile.value.countryCode
     @Volatile private var profileShelfKey: String = "${_userProfile.value.countryCode}|${_userProfile.value.languages.joinToString(",")}"
     @Volatile private var profileShelfRotation: Int = 0
+    private var serverHomeGeneration: Long = 0L
+    private var profileShelfGeneration: Long = 0L
+    private val exhaustedContinuationTokens = mutableSetOf<String>()
 
-    suspend fun loadServerHome(force: Boolean = false) {
-        if (!force && serverHomeJob?.isActive == true) return
+    suspend fun loadServerHome(force: Boolean = false): Boolean = withContext(ownerDispatcher) {
         val country = _userProfile.value.countryCode.takeIf { it.isNotBlank() } ?: "US"
-        if (!force && country == serverHomeCountryCode && System.currentTimeMillis() - serverHomeFetchedAt < 10 * 60 * 1000L && _serverShelves.value.isNotEmpty()) return
+        val now = System.currentTimeMillis()
+        if (!force && country == serverHomeCountryCode && now - serverHomeFetchedAt < 10 * 60 * 1000L && _serverShelves.value.isNotEmpty()) {
+            return@withContext true
+        }
+        val existing = serverHomeDeferred
+        if (!force && existing?.isActive == true) {
+            return@withContext existing.await()
+        }
 
-        serverHomeJob?.cancel()
-        val job = ownerScope.launch {
+        val generation = ++serverHomeGeneration
+        val deferred = ownerScope.async {
             serverHomeCountryCode = country
             try {
                 val feed = withContext(AppDispatchers.Io) {
                     YouTubeMusicApiService.getHomeRecommendations(countryCode = country, languageCode = "en")
                 }
                 if (feed.shelves.isNotEmpty()) {
-                    _serverShelves.value = feed.shelves
-                    homeContinuationToken = feed.continuationToken
-                    serverHomeFetchedAt = System.currentTimeMillis()
-                    savePreparedCards()
+                    if (generation == serverHomeGeneration) {
+                        _serverShelves.value = feed.shelves
+                        homeContinuationToken = feed.continuationToken
+                        serverHomeFetchedAt = System.currentTimeMillis()
+                        _revealedShelfCount.value = feed.shelves.size.coerceAtMost(4)
+                        exhaustedContinuationTokens.clear()
+                        savePreparedCards()
+                    }
+                    true
+                } else {
+                    false
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                // Preserve cached Home content during transient failures
                 android.util.Log.w("HomeViewModel", "Failed to load server home feed: ${e.message}")
+                if (_serverShelves.value.isEmpty()) {
+                    _refreshErrorMessage.value = "Recommendations are temporarily unavailable. Tap to retry."
+                }
+                false
             }
         }
-        serverHomeJob = job
+        serverHomeDeferred = deferred
+        try {
+            deferred.await()
+        } finally {
+            if (serverHomeDeferred === deferred) serverHomeDeferred = null
+        }
     }
 
-    suspend fun loadProfileShelf(force: Boolean = false) {
-        if (!force && profileShelfJob?.isActive == true) return
+    suspend fun loadProfileShelf(force: Boolean = false): Boolean = withContext(ownerDispatcher) {
         val profile = _userProfile.value
         val country = profile.countryCode.takeIf { it.isNotBlank() } ?: "US"
         val currentKey = "$country|${profile.languages.joinToString(",")}"
-        if (!force && currentKey == profileShelfKey && System.currentTimeMillis() - profileShelfFetchedAt < 10 * 60 * 1000L && _profileShelf.value != null) return
+        val now = System.currentTimeMillis()
+        if (!force && currentKey == profileShelfKey && now - profileShelfFetchedAt < 10 * 60 * 1000L && _profileShelf.value != null) {
+            return@withContext true
+        }
+        val existing = profileShelfDeferred
+        if (!force && existing?.isActive == true) {
+            return@withContext existing.await()
+        }
 
-        profileShelfJob?.cancel()
-        val job = ownerScope.launch {
+        val generation = ++profileShelfGeneration
+        val offset = profileShelfRotation++
+        val deferred = ownerScope.async {
             profileShelfKey = currentKey
-            val offset = profileShelfRotation++
             try {
                 val shelf = withContext(AppDispatchers.Io) {
                     YouTubeMusicApiService.getProfileShelf(country, profile.languages, rotationOffset = offset)
                 }
                 if (shelf != null && shelf.tracks.isNotEmpty()) {
-                    _profileShelf.value = shelf
-                    profileShelfFetchedAt = System.currentTimeMillis()
-                    savePreparedCards()
+                    if (generation == profileShelfGeneration) {
+                        _profileShelf.value = shelf
+                        profileShelfFetchedAt = System.currentTimeMillis()
+                        savePreparedCards()
+                    }
+                    true
+                } else {
+                    false
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                // Preserve cached profile shelf during transient failures
                 android.util.Log.w("HomeViewModel", "Failed to load profile shelf: ${e.message}")
+                false
             }
         }
-        profileShelfJob = job
+        profileShelfDeferred = deferred
+        try {
+            deferred.await()
+        } finally {
+            if (profileShelfDeferred === deferred) profileShelfDeferred = null
+        }
     }
 
     /** Called only after a genuine forward scroll reaches the current feed tail. */
@@ -545,17 +586,23 @@ class HomeViewModel(
             if (currentCount < totalCount) {
                 _revealedShelfCount.value = (currentCount + 2).coerceAtMost(totalCount)
             } else if (!homeContinuationToken.isNullOrBlank() && !isFetchingHomeContinuations) {
+                val token = homeContinuationToken ?: return@launch
+                if (token in exhaustedContinuationTokens) return@launch
                 isFetchingHomeContinuations = true
-                val token = homeContinuationToken
+                val generation = serverHomeGeneration
+                val countryCode = serverHomeCountryCode
                 try {
-                    val profile = _userProfile.value
-                    val countryCode = profile.countryCode.takeIf { it.isNotBlank() } ?: "US"
                     val moreFeed = withContext(AppDispatchers.Io) {
                         YouTubeMusicApiService.getHomeRecommendations(countryCode, continuation = token)
                     }
+                    if (generation != serverHomeGeneration || countryCode != serverHomeCountryCode) {
+                        // Discard stale responses after refresh or region change
+                        return@launch
+                    }
                     if (moreFeed.shelves.isNotEmpty()) {
-                        // Deduplicate continuation token and shelves
-                        homeContinuationToken = if (moreFeed.continuationToken == token) null else moreFeed.continuationToken
+                        exhaustedContinuationTokens.add(token)
+                        homeContinuationToken = if (moreFeed.continuationToken == token || moreFeed.continuationToken in exhaustedContinuationTokens) null
+                            else moreFeed.continuationToken
                         val existingIds = _serverShelves.value.map { it.id }.toSet()
                         val uniqueNew = moreFeed.shelves.filter { it.id !in existingIds }
                         if (uniqueNew.isNotEmpty()) {
@@ -565,8 +612,11 @@ class HomeViewModel(
                             savePreparedCards()
                         }
                     } else {
+                        exhaustedContinuationTokens.add(token)
                         homeContinuationToken = null
                     }
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (_: Exception) {
                 } finally {
                     isFetchingHomeContinuations = false
@@ -769,63 +819,52 @@ class HomeViewModel(
             // Full historical reconciliation is optional. A new play must never
             // promote a 5,000-event ranking pass to the critical playback lane.
         }
-        if (!historicalRestorationStarted && !historicalRows.value.complete &&
-            rankedIdentityRevision != ArtistPhotoRepository.identities.value) {
-            requestHistoricalInputs()
-            historicalAttemptFinished.first { it }
-        }
-        val longTerm = personalizationHistory.first { it.ready }
         val artistIdentityRevision = ArtistPhotoRepository.identities.value
         val pending = pendingCardPlays.toMap()
-        val keepCachedArtists = !longTerm.complete && _mostListenedArtists.value.isNotEmpty() &&
-            rankedIdentityRevision == ArtistPhotoRepository.identities.value
-        val cachedArtists = _mostListenedArtists.value
         val priority = when {
             preparingInitialHome || foregroundArtist -> BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI
             else -> BackgroundWorkCoordinator.StartupPriority.DEFERRED
         }
         val (recent, artists, committed) = BackgroundWorkCoordinator.startup(priority, label = "Listening cards prepare") {
-          withContext(workerDispatcher) {
-            val played = ArrayList<ListeningEventEntity>()
-            val recorded = mutableSetOf<Pair<String, String>>()
-            longTerm.events.forEachIndexed { index, event ->
-                if (index % 128 == 0) yieldHomePreparation()
-                if (HomeRecommendationPolicy.played(event)) {
-                    played.add(event)
-                    recorded.add(event.sessionId to event.trackId)
+            withContext(workerDispatcher) {
+                val topAffinity = withContext(dataDispatcher) {
+                    try {
+                        listeningEventDao.getTopArtistsSince(0L, limit = 50)
+                    } catch (e: Exception) {
+                        emptyList()
+                    }
                 }
+                val recorded = events.map { it.sessionId to it.trackId }.toSet()
+                val uncommitted = pending.filter { (session, track) -> (session to track.id) !in recorded }
+                val liveTracks = uncommitted.values.toList().asReversed()
+                val allTracks = (liveTracks + rows.tracks + _catalogTracks.value).distinctBy { it.id }
+                val byId = allTracks.associateBy { it.id }
+                val seen = HomeRecommendationPolicy.Recordings()
+                val recentTracks = (liveTracks.asSequence() + events.asSequence().filter(HomeRecommendationPolicy::played)
+                    .mapNotNull { byId[it.trackId] }).filter(seen::add).take(30).toList()
+
+                val dbArtists = topAffinity.map { affinity ->
+                    val artistKey = HomeRecommendationPolicy.mainArtistKey(affinity.artistName)
+                    val artistTracks = allTracks.filter { track ->
+                        HomeRecommendationPolicy.mainArtists(track).any {
+                            HomeRecommendationPolicy.mainArtistKey(it) == artistKey
+                        }
+                    }.distinctBy { it.id }.take(3)
+                    MostListenedArtist(
+                        name = affinity.artistName,
+                        playCount = affinity.playCount,
+                        tracks = artistTracks
+                    )
+                }
+                val finalArtists = addPendingArtistPlays(dbArtists, uncommitted.values).take(15)
+                Triple(recentTracks, finalArtists, recorded)
             }
-            val uncommitted = pending.filter { (session, track) -> (session to track.id) !in recorded }
-            val liveTracks = uncommitted.values.toList().asReversed()
-            val metadata = rows.tracks
-            val tracks = (liveTracks + metadata + longTerm.tracks).distinctBy { it.id }
-            val byId = tracks.associateBy { it.id }
-            val seen = HomeRecommendationPolicy.Recordings()
-            val recentTracks = (liveTracks.asSequence() + events.asSequence().filter(HomeRecommendationPolicy::played)
-                .mapNotNull { byId[it.trackId] }).filter(seen::add).take(30).toList()
-            val plays = uncommitted.entries.toList().asReversed().map { (session, track) -> session to track.id } +
-                played.map { it.sessionId to it.trackId }
-            val artists = if (keepCachedArtists) addPendingArtistPlays(cachedArtists,
-                pending.filterKeys { it !in appliedCachedArtistSessions }.values)
-            else rankListenedArtists(plays, tracks)
-            Triple(recentTracks, artists, recorded)
-          }
         }
         currentCoroutineContext().ensureActive()
-        if (artistIdentityRevision != ArtistPhotoRepository.identities.value) {
-            listeningCardRequests.update { it + 1L }
-            return
-        }
-        // Essential data is prepared even when a tab transition is underway.
-        // Its optional visual publication must not hold startup readiness back.
         listeningCardsReady.complete(Unit)
         if (!preparingInitialHome) {
             homeScrolling.first { !it }
             BackgroundWorkCoordinator.awaitNavigationIdle()
-        }
-        if (artistIdentityRevision != ArtistPhotoRepository.identities.value) {
-            listeningCardRequests.update { it + 1L }
-            return
         }
         listeningCardsPublished = true
         val changed = _listeningHistoryCard.value.tracks != recent || _mostListenedArtists.value != artists
@@ -834,12 +873,10 @@ class HomeViewModel(
         if (_mostListenedArtists.value != artists) _mostListenedArtists.value = artists
         appliedCachedArtistSessions.addAll(pending.keys)
         pendingCardPlays.entries.removeAll { (it.key to it.value.id) in committed }
-        if (!keepCachedArtists) appliedCachedArtistSessions.retainAll(pendingCardPlays.keys)
+        appliedCachedArtistSessions.retainAll(pendingCardPlays.keys)
         BackgroundWorkCoordinator.startupTask(StartupTask.RECENT_HISTORY, StartupStatus.READY)
         BackgroundWorkCoordinator.startupTask(StartupTask.RECENT_ARTISTS, StartupStatus.READY)
-        if (!keepCachedArtists && longTerm.complete && pending.all { (session, track) -> (session to track.id) in committed })
-            rankedArtistsInputRevision = historicalInputRevision?.takeIf { it == homeInputRevision.value }
-        if (changed || rankedArtistsInputRevision != null) savePreparedCards()
+        if (changed) savePreparedCards()
         artistPreparationRevision.update { it + 1L }
     }
 
@@ -1039,10 +1076,6 @@ class HomeViewModel(
             // waits, so a preview cannot overwrite still-unrestored candidate pools.
             savePreparedCards()
             if (manualRenderGeneration == pool.generation) manualRenderGeneration = -1L
-            if (nextExposure.isNotEmpty() && nextExposure != lastPersistedExposure) withContext(AppDispatchers.Io) {
-                exposurePreferences.edit().putStringSet("recordings_v2", nextExposure).apply()
-                lastPersistedExposure = nextExposure
-            }
         }
     }
 
@@ -1056,30 +1089,21 @@ class HomeViewModel(
         kotlinx.coroutines.yield()
     }
 
-    private var lastPersistedExposure: Set<String> = emptySet()
     private fun savePreparedCards(initialComplete: Boolean = false) {
-        val pool = candidates.value
-        if (pool.contextKey != profileKey() || pool.source != HomeRecommendationPolicy.SOURCE) return
-        val cards = preparedCards.value
-        val snapshot = SavedHomeCards(profileKey(), savedSignal.orEmpty(), pool.generation, lastDiscoveryRefresh,
-            cards.quick, cards.era, cards.chart, _listeningHistoryCard.value, cards.personalized,
-            _mostListenedArtists.value.take(15), pool.quick, pool.era, pool.chart,
-            _catalogTracks.value, chartRefreshedAt = lastRegionalRefresh,
-            inspiredTrack = cards.inspiredTrack,
-            personalizedCandidates = pool.personalized, inspiredTrackCandidates = pool.inspired, recommendationSource = pool.source,
-            seedKey = pool.seedKey, seedTitle = pool.seedTitle,
-            shelfLoads = shelfLoads.toMap(), readyShelves = pool.ready.mapTo(mutableSetOf()) { it.name },
+        val snapshot = SavedHomeCards(
+            profileKey = profileKey(),
+            generation = serverHomeGeneration,
+            refreshedAt = serverHomeFetchedAt.takeIf { it > 0 } ?: System.currentTimeMillis(),
+            history = _listeningHistoryCard.value,
+            artists = _mostListenedArtists.value.take(15),
             presentationComplete = initialComplete || !preparingInitialHome,
             serverShelves = _serverShelves.value,
             profileShelf = _profileShelf.value,
             continuationToken = homeContinuationToken,
-            inputRevision = historicalInputRevision?.takeIf { revision ->
-                revision == homeInputRevision.value && revision == rankedArtistsInputRevision
-            } ?: cachedCardsInputRevision?.takeIf { canReuseSavedHistory() && !historicalDemand.value })
+            recommendationSource = HomeRecommendationPolicy.SOURCE
+        )
         shelfCache.savePresentationCheckpoint(snapshot, initialComplete)
-        // A compact durable presentation never depends on decoding the old full
-        // pools; the optional full writer must still preserve those pools first.
-        if (additionalCacheRestored.isCompleted) shelfCache.saveAsync(snapshot)
+        shelfCache.saveAsync(snapshot)
     }
 
     // Smooth Pull-to-Refresh & Background Sync State
@@ -1156,15 +1180,19 @@ class HomeViewModel(
             _serverShelves.value = emptyList()
             _profileShelf.value = null
             homeContinuationToken = null
-            serverHomeJob?.cancel()
-            profileShelfJob?.cancel()
+            serverHomeDeferred?.cancel()
+            profileShelfDeferred?.cancel()
+            serverHomeGeneration++
+            profileShelfGeneration++
             ownerScope.launch {
                 loadServerHome(force = true)
                 loadProfileShelf(force = true)
             }
         } else if (languagesChanged) {
             // Language-only change: do not reload server home shelves, reload only profile shelf
-            profileShelfJob?.cancel()
+            _profileShelf.value = null
+            profileShelfDeferred?.cancel()
+            profileShelfGeneration++
             ownerScope.launch {
                 loadProfileShelf(force = true)
             }
@@ -1271,6 +1299,14 @@ class HomeViewModel(
             if (_mostListenedArtists.value != artists) _mostListenedArtists.value = artists
             cachedHero.value = cached.history.tracks.firstOrNull() ?: cached.catalog.firstOrNull()
             cachedHistory.value = cached.history.tracks
+        }
+        if (cached.serverShelves.isNotEmpty() && _serverShelves.value.isEmpty()) {
+            _serverShelves.value = cached.serverShelves
+            homeContinuationToken = cached.continuationToken
+            serverHomeFetchedAt = cached.refreshedAt
+        }
+        if (cached.profileShelf != null && _profileShelf.value == null) {
+            _profileShelf.value = cached.profileShelf
         }
         val catalogChanged = !additional || _catalogTracks.value.isEmpty() || _catalogTracks.value == restoredCatalogTracks
         if (catalogChanged && _catalogTracks.value != cached.catalog) {
@@ -1402,41 +1438,7 @@ class HomeViewModel(
                 }
             }
         }
-        ownerScope.launch {
-            initialHomePrepared.await()
-            BackgroundWorkCoordinator.awaitInitialPresentation()
-            // Prepare only the NEXT local section. Its visibility still belongs to
-            // real scroll intent, and no discovery/image request is started here.
-            combine(_feedWindow, candidates, personalizationHistory) { window, pool, history -> Triple(window, pool, history) }
-                .distinctUntilChanged().collectLatest { (window, pool, history) ->
-                    if (!history.ready) return@collectLatest
-                    val next = window.appendNext(eligibleHomeSections()).sections.lastOrNull()
-                        ?.takeIf { it !in window.sections } ?: return@collectLatest
-                    awaitHomeIdle(allowWhenEmpty = false, quietMillis = 15_000L)
-                    if (window != _feedWindow.value || pool !== candidates.value) return@collectLatest
-                    if (next == HomeFeedSection.ARTISTS) {
-                        artistWarmupRequested++
-                        listeningCardRequests.update { it + 1L }
-                    } else {
-                        val shelf = next.shelf ?: return@collectLatest
-                        val pools = mapOf(Shelf.QUICK to pool.quick, Shelf.ERA to pool.era, Shelf.CHART to pool.chart,
-                            Shelf.PERSONALIZED to pool.personalized, Shelf.INSPIRED to pool.inspired)
-                        if (pools[shelf].isNullOrEmpty()) return@collectLatest
-                        BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.DEFERRED,
-                            label = "Next cached Home section") {
-                            withContext(workerDispatcher) {
-                                val seen = HomeRecommendationPolicy.Recordings()
-                                val recent = (recentlyPlayed.value + _listeningHistoryCard.value.tracks +
-                                    listOfNotNull(activeRecommendationTrack())).filter(seen::add)
-                                shelfPreparation.prepare(pools, eligibleShelves().intersect(window.shelves + shelf),
-                                    recent, previousExposure,
-                                    pool.seedKey.isNotBlank() && pool.seedKey == HomeRecommendationPolicy.seedKey(activeRecommendationTrack()),
-                                    ::yieldHomePreparation)
-                            }
-                        }
-                    }
-                }
-        }
+        // Legacy shelfPreparation and candidate pool loops removed
         ownerScope.launch {
             initialHomePrepared.await()
             var displayedSeed = recommendationSeed.value
@@ -1557,56 +1559,7 @@ class HomeViewModel(
         }
         // These collectors belong to the ViewModel. Visibility only gates optional
         // processing, so changing tabs never restarts Room or replays discovery.
-        ownerScope.launch {
-            restored.await()
-            eventsLoaded.await()
-            combine(personalizationHistory.filter { it.ready }, ArtistPhotoRepository.identities) { history, revision -> history to revision }
-                .debounce(300L).map { (history, revision) ->
-                if (HomeFeedSection.ARTISTS !in _feedWindow.value.sections) {
-                    listeningCardRequests.update { it + 1L }
-                    return@map null
-                }
-                BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.DEFERRED,
-                    label = "Artist history signal") { withContext(workerDispatcher) {
-                    ArtistHistory(history.events.asSequence().filter(HomeRecommendationPolicy::played)
-                        .map { it.sessionId to it.trackId }.distinct().toList(), history.tracks.map { it.id }, revision) to history.tracks
-                } }
-            }.filterNotNull().distinctUntilChanged().collect { listeningCardRequests.update { it + 1 } }
-        }
-        ownerScope.launch {
-            combine(candidates, tasteProfile, favoriteTracks, _userProfile, recentlyPlayed) { pool, taste, favorites, profile, recent ->
-                RenderTrigger(listOf(pool.generation, pool.revision, pool.source, pool.contextKey), taste, favorites, profile, recent)
-            }.distinctUntilChanged().conflate().collect {
-                    // Retain a bounded preparation in progress instead of repeatedly
-                    // restarting it for every verified song. Publication still rejects
-                    // stale generations/revisions, then consumes only the latest input.
-                    if (!preparingInitialHome) {
-                        renderRecommendations()
-                        // Leading publication is immediate. A short bounded batching
-                        // window then consumes only the newest inputs, without a
-                        // trailing debounce that can starve a busy stream of results.
-                        if (!activeRefreshIsExplicit) delay(300L)
-                    }
-                }
-        }
-        ownerScope.launch {
-            // Only completed Room/taste snapshots establish a listening signal.
-            tasteSnapshot.map { snapshot -> snapshot.inputs?.let { inputs ->
-                snapshot.taste.topRecentTrackIds.toSet() to inputs.favorites.map { it.id }.toSet()
-            } }.filterNotNull().distinctUntilChanged().debounce(2_000L).collectLatest { signal ->
-                initialHomePrepared.await()
-                if (lastDiscoverySignal == null) {
-                    lastDiscoverySignal = signal
-                    return@collectLatest
-                }
-                if (signal != lastDiscoverySignal && (signal.first.isNotEmpty() || signal.second.isNotEmpty())) {
-                    awaitHomeIdle(allowWhenEmpty = false, quietMillis = 15_000L)
-                    delay((60_000 - (System.currentTimeMillis() - lastDiscoveryRefresh)).coerceAtLeast(0))
-                    lastDiscoverySignal = signal
-                    refreshHome(false)
-                }
-            }
-        }
+        // Obsolete legacy personalization and recommendation ranking loops removed
         ownerScope.launch {
             repository.recommendations.unavailable.collectLatest { failures ->
                 if (failures.isEmpty()) return@collectLatest
@@ -1712,82 +1665,37 @@ class HomeViewModel(
             homeVisible.first { it }
             essentialsLoaded.await()
             initialCachePrepared.await()
-            BackgroundWorkCoordinator.startupTask(StartupTask.PERSONALIZATION, StartupStatus.RUNNING)
-            val newUser = _userMode.value == HomeUserMode.NEW_USER
-            val useCachedPresentation = hasCachedInitialShelves()
-            val taste = if (newUser || useCachedPresentation) null
-                else withTimeoutOrNull(8_000L) { tasteSnapshot.first { it.inputs != null } }
-            BackgroundWorkCoordinator.startupTask(StartupTask.PERSONALIZATION,
-                if (newUser) StartupStatus.SKIPPED else if (taste != null) StartupStatus.READY else StartupStatus.FALLBACK_READY)
-            val visibleCache = withContext(workerDispatcher) {
-                hideRecentRecommendations(visibleCards(preparedCards.value),
-                    recentlyPlayed.value + _listeningHistoryCard.value.tracks + listOfNotNull(activeRecommendationTrack()))
+
+            // Skip legacy custom recommendation tasks
+            Shelf.entries.forEach { shelf ->
+                BackgroundWorkCoordinator.startupTask(shelf.startupTask(), StartupStatus.SKIPPED)
             }
-            val missing = Shelf.entries.filterTo(linkedSetOf()) { shelf ->
-                val eligible = shelf in eligibleShelves()
-                val cached = visibleCache.section(shelf).tracks.isNotEmpty()
-                BackgroundWorkCoordinator.startupTask(shelf.startupTask(), when {
-                    !eligible || shelf !in HomeFeedWindow.BOOTSTRAP_SHELVES -> StartupStatus.SKIPPED
-                    cached -> StartupStatus.FALLBACK_READY
-                    else -> StartupStatus.RUNNING
-                })
-                eligible && shelf in HomeFeedWindow.BOOTSTRAP_SHELVES && !cached
-            }
-            if (missing.isNotEmpty()) {
-                val request = refreshHome(false, missing, initialPresentation = true)
-                withTimeoutOrNull(DiscoveryRequestCoordinator.INITIAL_DISCOVERY_BUDGET_MS) {
-                    request.join()
-                    homeRefreshJob?.join()
-                    true
+            BackgroundWorkCoordinator.startupTask(StartupTask.PERSONALIZATION, StartupStatus.SKIPPED)
+
+            BackgroundWorkCoordinator.startupTask(StartupTask.HERO, StartupStatus.RUNNING)
+            val hero = playbackManager.uiState.value.currentTrack ?: heroSeedTrack.value ?: cachedHero.value
+            if (hero != null && cachedHero.value == null) cachedHero.value = hero
+            BackgroundWorkCoordinator.startupTask(StartupTask.HERO,
+                if (hero != null) StartupStatus.READY else StartupStatus.FALLBACK_READY)
+            BackgroundWorkCoordinator.startupTask(StartupTask.INITIAL_ARTWORK, StartupStatus.READY)
+
+            // Start loading server Home and profile shelf asynchronously without blocking startup
+            ownerScope.launch {
+                if (_serverShelves.value.isEmpty()) {
+                    loadServerHome()
+                }
+                if (_profileShelf.value == null) {
+                    loadProfileShelf()
                 }
             }
-            // Complete missing discovery while retaining the already prepared cached order.
-            // Reopening is not a new ranking signal.
-            if (!useCachedPresentation) renderRecommendations()
-            val ready = withContext(workerDispatcher) {
-                val cards = preparedCards.value
-                Shelf.entries.fold(cards) { result, shelf -> result.withSection(shelf, result.section(shelf).copy(isLoading = false)) }
-            }
-            val displayed = withContext(workerDispatcher) {
-                hideRecentRecommendations(visibleCards(ready),
-                    recentlyPlayed.value + _listeningHistoryCard.value.tracks + listOfNotNull(activeRecommendationTrack()))
-            }
-            preparedCards.value = ready
-            if (_recommendationCards.value != displayed) _recommendationCards.value = displayed
-            savePreparedCards(initialComplete = true)
-            // The retained per-section flows, including offscreen sections, must
-            // contain this snapshot before the final draw fence can be released.
-            Shelf.entries.forEach { shelf -> sectionStates.getValue(shelf).first { it == displayed.section(shelf) } }
-            Shelf.entries.forEach { shelf ->
-                BackgroundWorkCoordinator.startupTask(shelf.startupTask(),
-                    if (shelf !in HomeFeedWindow.BOOTSTRAP_SHELVES || shelf !in eligibleShelves()) StartupStatus.SKIPPED
-                    else if (displayed.section(shelf).tracks.isNotEmpty()) StartupStatus.READY else StartupStatus.UNAVAILABLE)
-            }
-            BackgroundWorkCoordinator.startupTask(StartupTask.HERO, StartupStatus.RUNNING)
-            val hero = playbackManager.uiState.value.currentTrack ?: heroSeedTrack.value
-                ?: ready.quick.tracks.firstOrNull() ?: ready.chart.tracks.firstOrNull()
-            if (hero != null && cachedHero.value == null) cachedHero.value = hero
-            if (hero != null && playbackManager.uiState.value.currentTrack == null)
-                withTimeoutOrNull(1_000L) { heroSeedTrack.first { it != null } }
-            BackgroundWorkCoordinator.startupTask(StartupTask.HERO,
-                if (hero != null) StartupStatus.READY else StartupStatus.UNAVAILABLE)
-            prepareInitialArtwork(hero, ready)
         } catch (e: CancellationException) { throw e }
         catch (e: Exception) {
             android.util.Log.w("HomeViewModel", "Initial Home preparation used retained content", e)
-            val retained = preparedCards.value
-            val fallback = Shelf.entries.fold(retained) { cards, shelf ->
-                cards.withSection(shelf, cards.section(shelf).copy(isLoading = false))
-            }
-            preparedCards.value = fallback
-            _recommendationCards.value = visibleCards(fallback)
-            // A bootstrap failure says nothing about intentionally unrevealed shelves.
             Shelf.entries.forEach { shelf ->
-                BackgroundWorkCoordinator.startupTask(shelf.startupTask(),
-                    if (shelf in HomeFeedWindow.BOOTSTRAP_SHELVES) StartupStatus.UNAVAILABLE else StartupStatus.SKIPPED)
+                BackgroundWorkCoordinator.startupTask(shelf.startupTask(), StartupStatus.SKIPPED)
             }
             listOf(StartupTask.HERO, StartupTask.PERSONALIZATION, StartupTask.INITIAL_ARTWORK).forEach {
-                BackgroundWorkCoordinator.startupTask(it, StartupStatus.UNAVAILABLE)
+                BackgroundWorkCoordinator.startupTask(it, StartupStatus.FALLBACK_READY)
             }
         } finally {
             preparingInitialHome = false
@@ -1870,168 +1778,39 @@ class HomeViewModel(
 
     fun refreshHome(isExplicitPull: Boolean = true, requestedShelves: Set<Shelf>? = null,
         initialPresentation: Boolean = false): Job = ownerScope.launch {
-            // Request ownership and short publication blocks share the IO owner.
             if (preparingInitialHome && !initialPresentation) {
                 if (isExplicitPull) pendingExplicitRefresh = true
                 return@launch
             }
-            if (!initialPresentation) BackgroundWorkCoordinator.awaitInitialPresentation()
-            restored.await()
-            if (!homeVisible.value) {
-                if (isExplicitPull) pendingExplicitRefresh = true else pendingSilentRefresh = true
-                return@launch
-            }
-            // Empty shelves are not necessarily in the viewport yet (hero/onboarding).
-            // Bootstrap only essential discovery; all lower shelves retain on-demand loading.
-            val bootstrap = if (preparedCards.value.quick.tracks.isEmpty() && preparedCards.value.chart.tracks.isEmpty())
-                setOf(Shelf.QUICK) else emptySet()
-            val demand = if (initialPresentation) requestedShelves.orEmpty() else
-                shelfDemand(allowDeferred = isExplicitPull || pendingExplicitRefresh || activeRefreshIsExplicit) + bootstrap
-            val requested = (requestedShelves ?: demand).intersect(demand).intersect(eligibleShelves())
-                .intersect(_feedWindow.value.shelves)
-                .filterTo(mutableSetOf()) { initialPresentation || isExplicitPull || pendingExplicitRefresh || needsShelfLoad(it) }
-                // A failed/negative-cached bootstrap must not discard another
-                // visible shelf's demand and leave a first installation empty.
-                .initialCardDemand(bootstrap, automaticStartup = !initialPresentation &&
-                    !BackgroundWorkCoordinator.startupReadiness.value.complete && !deferredHomeReady && !isExplicitPull && !pendingExplicitRefresh)
-            if (requested.isEmpty()) {
-                if (isExplicitPull) pendingExplicitRefresh = true
-                return@launch
-            }
-            if (!initialPresentation && completeCachePreview && !additionalCacheRestored.isCompleted) {
-                if (isExplicitPull) pendingExplicitRefresh = true
-                fullCacheRequested.complete(Unit)
-                fullCacheAttemptFinished.await()
-            }
-            if (!initialPresentation && !historicalRestorationStarted && !historicalRows.value.complete) {
-                requestHistoricalInputs()
-                historicalAttemptFinished.first { it }
-            }
-            if (homeRefreshJob?.isActive == true) {
-                pendingShelfRequests.addAll(requested - activeRecommendationShelves)
-                if (isExplicitPull && refreshWaitingForIdle) {
-                    // A user refresh can take over a deferred job before it has made any requests.
-                    ++refreshGeneration
-                    homeRefreshJob?.cancel()
-                    homeRefreshJob = null
-                    refreshWaitingForIdle = false
-                } else {
-                    if (isExplicitPull) {
-                        _isRefreshing.value = true
-                        _refreshErrorMessage.value = null
-                        // Promote this pass in place: a pull must not wait for a silent
-                        // refresh and then repeat all of its network requests.
-                        activeRefreshIsExplicit = true
-                        activeRefreshPriority?.promote()
-                    }
-                    return@launch
-                }
+            if (isExplicitPull) {
+                _isRefreshing.value = true
+                _refreshErrorMessage.value = null
             }
             val generation = ++refreshGeneration
-            pendingSilentRefresh = false
-            val initialExplicit = isExplicitPull || pendingExplicitRefresh || _isRefreshing.value
-            pendingExplicitRefresh = false
-            val foregroundDemand = foregroundShelf?.let { it in requested } == true
-            val startupBatch = initialPresentation || foregroundDemand || (!BackgroundWorkCoordinator.startupReadiness.value.complete &&
-                !deferredHomeReady && !initialExplicit && requested.any(bootstrap::contains))
-            val priority = DiscoveryRequestCoordinator.HomeRefresh(initialExplicit, initialShelf = startupBatch,
-                // Once initial content is prepared, automatic retries/revalidation
-                // are optional even for an empty shelf. A pull promotes its pass.
-                essentialShelves = if (initialPresentation || foregroundDemand) requested else emptySet(),
-                initialPresentation = initialPresentation)
-            activeRefreshPriority = priority
-            activeRefreshIsExplicit = initialExplicit
-            if (startupBatch) startupBatchShelves.addAll(requested)
-            _isRefreshing.value = initialExplicit
-            if (initialExplicit) _refreshErrorMessage.value = null
-            homeRefreshJob = ownerScope.launch {
-                val indicatorDeadline = launch {
-                    priority.requested.first { it }
-                    delay(12_000L)
-                    if (generation == refreshGeneration) _isRefreshing.value = false
+            try {
+                val serverJob = async { loadServerHome(force = isExplicitPull) }
+                val profileJob = launch { loadProfileShelf(force = isExplicitPull) }
+                val listeningJob = launch { refreshListeningCards() }
+                val success = serverJob.await()
+                if (!success && _serverShelves.value.isEmpty() && isExplicitPull) {
+                    _refreshErrorMessage.value = "Failed to load recommendations. Please tap to retry."
                 }
-                try {
-                    withContext(priority) {
-                        restored.await()
-                        essentialsLoaded.await()
-                        if (initialPresentation) awaitHomePresentation()
-                        else if (!activeRefreshIsExplicit && !foregroundDemand) {
-                            refreshWaitingForIdle = true
-                            try {
-                                // Empty shelves after initial preparation are still
-                                // optional retries, never a bypass of the 15s gate.
-                                awaitHomeIdle(allowWhenEmpty = false, quietMillis = 15_000L)
-                            }
-                            finally { if (generation == refreshGeneration) refreshWaitingForIdle = false }
-                        }
-                        lastDiscoveryAttempt = System.currentTimeMillis()
-                        lastAttemptProfile = profileKey()
-                        _isRefreshing.value = activeRefreshIsExplicit
-                        _refreshErrorMessage.value = null
-                        preparedCards.update { cards -> requested.fold(cards) { next, shelf ->
-                            val section = next.section(shelf)
-                            next.withSection(shelf, section.copy(isLoading = section.tracks.isEmpty() &&
-                                (initialPresentation || activeRefreshIsExplicit || foregroundDemand), isError = false, errorMessage = ""))
-                        } }
-                        try {
-                            val completed = priority.withBudget(if (initialPresentation) 20_000L else 40_000L) {
-                                refreshSuggestions(activeRefreshIsExplicit, requested, startupBatch && !activeRefreshIsExplicit)
-                                true
-                            }
-                            if (completed == null && generation == refreshGeneration && activeRefreshIsExplicit)
-                                _refreshErrorMessage.value = "Refresh took too long. Your existing cards have been kept. Please retry."
-                        } catch (e: CancellationException) { throw e }
-                        catch (e: Exception) {
-                            if (activeRefreshIsExplicit) {
-                                _refreshErrorMessage.value = e.message ?: "Recommendations are temporarily unavailable."
-                            }
-                        }
-                        // Finish the visible refresh only after the coherent shelf set
-                        // is ready; do not add the normal idle/debounce delay to a pull.
-                        if (activeRefreshIsExplicit || foregroundDemand) {
-                            manualRenderGeneration = candidates.value.generation
-                            // A drag, tab change or delayed taste snapshot must not hold
-                            // the pull indicator indefinitely; the retained render collector
-                            // still publishes the latest complete result when presentation is ready.
-                            withTimeoutOrNull(2_000L) { renderRecommendations() }
-                        }
-                    }
-                } finally {
-                    indicatorDeadline.cancel()
-                    if (startupBatch || initialExplicit) startupRecommendationsComplete.complete(Unit)
-                    // A canceled request must not hide the spinner or clear ownership of its replacement.
-                    if (generation == refreshGeneration) {
-                        _isRefreshing.value = false
-                        preparedCards.update { cards -> requested.fold(cards) { next, shelf ->
-                            val section = next.section(shelf)
-                            // Verification can finish before the renderer publishes.
-                            // Keep its skeleton instead of briefly hiding the ready shelf.
-                            next.withSection(shelf, section.finishPreparation(shelf in candidates.value.ready,
-                                showPending = initialPresentation || activeRefreshIsExplicit || foregroundDemand))
-                        } }
-                        if (manualRenderGeneration == candidates.value.generation) manualRenderGeneration = -1L
-                        activeRefreshIsExplicit = false
-                        activeRefreshPriority = null
-                        activeRecommendationShelves = emptySet()
-                        activeRecommendationSeed = ""
-                        refreshWaitingForIdle = false
-                        homeRefreshJob = null
-                        // A viewport/listening change during a running pass is demand,
-                        // not a reason to drop the next cards until manual refresh.
-                        val pending = pendingShelfRequests.toSet() + shelfDemand().filter(::needsShelfLoad)
-                        pendingShelfRequests.clear()
-                        if (!preparingInitialHome && !foregroundDemand && revealJob?.isActive != true &&
-                            pending.isNotEmpty() && homeVisible.value)
-                            refreshHome(false, pending)
-                    }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (isExplicitPull) {
+                    _refreshErrorMessage.value = e.message ?: "Failed to refresh"
+                }
+            } finally {
+                if (generation == refreshGeneration) {
+                    _isRefreshing.value = false
                 }
             }
     }
 
-    private suspend fun refreshSuggestions(force: Boolean, requested: Set<Shelf>, startupBatch: Boolean = false) = withContext(ownerDispatcher) {
+    private suspend fun refreshSuggestions(force: Boolean, requested: Set<Shelf> = emptySet(), startupBatch: Boolean = false) = withContext(ownerDispatcher) {
         val serverHome = ownerScope.async { loadServerHome(force = force) }
         ownerScope.launch { loadProfileShelf(force = force) }
-        // A slow profile search must not delay server Home publication or startup
         serverHome.await()
     }
 
