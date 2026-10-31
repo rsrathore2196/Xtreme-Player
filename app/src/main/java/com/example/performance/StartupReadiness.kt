@@ -17,9 +17,7 @@ enum class StartupTask(val group: StartupGroup) {
     LOCAL_TABS(StartupGroup.HOME),
     HOME_LAYOUT(StartupGroup.HOME), SEARCH_LAYOUT(StartupGroup.HOME), LIBRARY_LAYOUT(StartupGroup.HOME),
     INITIAL_ARTWORK(StartupGroup.HOME),
-    PERSONALIZATION(StartupGroup.HOME), QUICK(StartupGroup.HOME), ERA(StartupGroup.HOME),
-    CHART(StartupGroup.HOME), PERSONALIZED(StartupGroup.HOME),
-    INSPIRED(StartupGroup.HOME), HERO(StartupGroup.HOME), PRESENTATION(StartupGroup.HOME),
+    HERO(StartupGroup.HOME), PRESENTATION(StartupGroup.HOME),
     RECENT_HISTORY(StartupGroup.RECENTS), RECENT_ARTISTS(StartupGroup.RECENTS),
     PLAYER_SESSION(StartupGroup.PLAYER), PLAYER_CONNECTION(StartupGroup.PLAYER)
 }
@@ -44,11 +42,8 @@ data class StartupReadiness(
             StartupTask.LOCAL_TABS -> "Restoring Search and Library"
             StartupTask.HOME_LAYOUT, StartupTask.SEARCH_LAYOUT, StartupTask.LIBRARY_LAYOUT -> "Preparing your screens"
             StartupTask.INITIAL_ARTWORK -> "Preparing your album artwork"
-            StartupTask.PERSONALIZATION -> "Preparing your listening preferences"
             StartupTask.RECENT_HISTORY, StartupTask.RECENT_ARTISTS -> "Syncing your listening history"
             StartupTask.PLAYER_SESSION, StartupTask.PLAYER_CONNECTION -> "Restoring your last session"
-            StartupTask.QUICK, StartupTask.ERA, StartupTask.CHART, StartupTask.PERSONALIZED,
-            StartupTask.INSPIRED -> "Finding music for your taste"
             StartupTask.HERO, StartupTask.PRESENTATION -> "Preparing the final view"
             null -> "Preparing your music"
         }

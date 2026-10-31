@@ -1,228 +1,217 @@
 package com.example
 
 import android.app.Application
-import android.os.Looper
-import androidx.lifecycle.ViewModelStore
-import androidx.room.Room
+import androidx.lifecycle.*
 import androidx.test.core.app.ApplicationProvider
-import com.example.data.cache.HomeCardCache
-import com.example.data.cache.SavedHomeCards
-import com.example.data.local.UserProfile
-import com.example.data.local.UserProfilePreferences
-import com.example.data.model.MusicTrack
+import com.example.data.cache.*
+import com.example.data.local.*
+import com.example.data.model.*
+import com.example.data.remote.*
 import com.example.data.repository.MusicRepository
-import com.example.performance.BackgroundWorkCoordinator
-import com.example.performance.AppDispatchers
-import com.example.performance.StartupGroup
-import com.example.performance.StartupStatus
-import com.example.performance.StartupTask
 import com.example.playback.PlaybackManager
-import com.example.recommendation.HomeRecommendationPolicy
-import com.example.ui.viewmodel.HomeViewModel
-import com.example.ui.viewmodel.SectionState
-import java.time.Duration
-import java.util.concurrent.CopyOnWriteArrayList
-import java.util.concurrent.Executor
-import java.util.concurrent.atomic.AtomicBoolean
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.test.UnconfinedTestDispatcher
-import kotlinx.coroutines.test.resetMain
-import kotlinx.coroutines.test.setMain
-import kotlinx.coroutines.withTimeout
-import kotlinx.coroutines.asExecutor
+import com.example.ui.viewmodel.*
+import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.test.*
 import org.junit.Assert.*
+import org.junit.Before
+import org.junit.After
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
-import org.robolectric.Shadows.shadowOf
-import org.robolectric.shadows.ShadowSystemClock
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [31], application = Application::class)
+@Config(sdk = [34], application = Application::class)
 class InitialHomePreparationTest {
-    @Test fun confirmedEmptyHistoryUsesOnlyCachedDiscoveryShelvesWithoutANetworkBootstrapOrVisibleHome() = prepare(false)
-    @Test fun returningUserWithCachedShelvesDoesNotWaitForFreshTaste() = prepare(true)
-
-    @Test fun returningUserCanPrepareTheNextArtistSectionWithoutRevealingIt() = prepare(true, warmAhead = true)
-
-    private fun prepare(existingUser: Boolean, warmAhead: Boolean = false) = runBlocking {
+    private val app get() = ApplicationProvider.getApplicationContext<Application>()
+    private lateinit var db: MusicDatabase
+    private lateinit var player: PlaybackManager
+    private val stores = mutableListOf<ViewModelStore>()
+    private val preferences = UserProfile(name = "User", countryCode = "IN", country = "India", languages = listOf("Hindi"))
+    private val track = MusicTrack("yt_abcdefghijk", "Song", "Singer", "Album", 180_000, "", "")
+    private fun shelf(id: String) = ServerHomeShelf(id, id, tracks = listOf(track.copy(id = "yt_$id")))
+    private fun page(id: String, cursor: String? = null) = YouTubeHomeParser.ParsedHomeFeed(listOf(shelf(id)), cursor)
+    @Before fun setup() = runBlocking {
         Dispatchers.setMain(UnconfinedTestDispatcher())
-        val app = ApplicationProvider.getApplicationContext<Application>()
-        val store = ViewModelStore()
-        val historyQueries = CopyOnWriteArrayList<String>()
-        val historyReadOnMain = AtomicBoolean()
-        val database = Room.inMemoryDatabaseBuilder(app, com.example.data.local.MusicDatabase::class.java)
-            .setQueryExecutor(AppDispatchers.Database.asExecutor())
-            .setTransactionExecutor(AppDispatchers.Io.asExecutor())
-            .setQueryCallback({ sql, _ ->
-                if (sql.trimStart().startsWith("SELECT", true) && sql.contains("listening_events", true)) {
-                    historyQueries += sql
-                    if (Looper.myLooper() == Looper.getMainLooper()) historyReadOnMain.set(true)
-                }
-            }, Executor { it.run() }).build()
-        val databaseField = com.example.data.local.MusicDatabase::class.java.getDeclaredField("INSTANCE").apply { isAccessible = true }
-        val previousDatabase = databaseField.get(null)
-        databaseField.set(null, database)
-        fun assertNoDuplicateHistoryReads() {
-            val queries = historyQueries.map { it.replace(Regex("\\s+"), " ").trim().lowercase() }
-            assertTrue("Home must restore the coherent snapshot", queries.any { it.startsWith("select totals.total, recent.*") })
-            assertTrue("Home must reuse snapshot metadata instead of fetching the same events again: $queries",
-                queries.none { it.startsWith("select * from listening_events where eventtype = 'actual_play' order by") ||
-                    it.startsWith("select * from listening_events where id in") })
-            assertFalse("History reads must remain off Main", historyReadOnMain.get())
+        UserProfilePreferences.saveUserProfile(app, preferences)
+        db = MusicDatabase.createInMemoryDatabase(app)
+        player = PlaybackManager(app, MusicRepository(db.musicDao(), app))
+    }
+    @After fun stop() { stores.forEach { it.clear() }; player.release(); db.close(); Dispatchers.resetMain() }
+    private fun viewModel(loader: suspend (String, String?) -> YouTubeHomeParser.ParsedHomeFeed,
+        profile: suspend (UserProfile, Int) -> YouTubeMusicApiService.ProfileShelfResult = { _, _ -> YouTubeMusicApiService.ProfileShelfResult(null) },
+        account: kotlinx.coroutines.flow.StateFlow<String>? = null): HomeViewModel {
+        val store = ViewModelStore().also(stores::add)
+        val factory = object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST") override fun <T : ViewModel> create(modelClass: Class<T>): T =
+                HomeViewModel(MusicRepository(db.musicDao(), app), player, app, db, loader, profile,
+                    accountIdentity = { account?.value ?: YouTubeMusicApiService.discoveryAccountIdentity() },
+                    accountUpdates = account ?: YouTubeAudioStreamService.discoveryAccountChanges) as T
         }
-        var player: PlaybackManager? = null
-        val cache = HomeCardCache(app)
-        val coordinator = BackgroundWorkCoordinator
+        return ViewModelProvider(store, factory)[HomeViewModel::class.java]
+    }
+    private suspend fun cached() {
+        HomeCardCache(app).save(SavedHomeCards(HomeCacheIdentity.home(preferences), refreshedAt = System.currentTimeMillis(),
+            serverShelves = listOf(shelf("cached")), serverFetchSucceeded = true))
+    }
+    @Test fun returningUserAndLanguageOnlyColdStartupReuseFreshHome() = runBlocking {
+        cached(); val calls = AtomicInteger()
+        val vm = viewModel({ _, _ -> calls.incrementAndGet(); page("new") })
+        withTimeout(5_000) { vm.serverShelves.first { it.isNotEmpty() } }
+        assertTrue(vm.loadServerHome()); assertEquals(0, calls.get())
+        vm.updateUserProfile(preferences.copy(languages = listOf("Punjabi")))
+        withTimeout(5_000) { vm.userProfile.first { it.languages == listOf("Punjabi") } }
+        assertTrue(vm.loadServerHome()); assertEquals(0, calls.get())
+        val restarted = viewModel({ _, _ -> calls.incrementAndGet(); page("wrong") })
+        withTimeout(5_000) { restarted.serverShelves.first { it.isNotEmpty() } }
+        assertTrue(restarted.loadServerHome()); assertEquals(0, calls.get())
+    }
+    @Test fun failedExplicitRefreshKeepsCachedContentAndCompletesTheIndicator() = runBlocking {
+        cached(); val vm = viewModel({ _, _ -> YouTubeHomeParser.ParsedHomeFeed(emptyList(), null, isError = true) })
+        withTimeout(5_000) { vm.serverShelves.first { it.isNotEmpty() } }
+        val before = vm.serverShelves.value
+        withTimeout(5_000) { vm.refreshHome(true).join() }
+        assertEquals(before, vm.serverShelves.value); assertFalse(vm.isRefreshing.value)
+        assertNotNull(vm.refreshErrorMessage.value)
+    }
+    @Test fun explicitRefreshBypassesFreshHomeEvenWhileAutomaticProfileLoadingIsRunning() = runBlocking {
+        cached()
+        val started = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        val calls = AtomicInteger(); val profileCalls = AtomicInteger()
+        val vm = viewModel({ _, _ -> calls.incrementAndGet(); page("refreshed") }, { _, _ ->
+            profileCalls.incrementAndGet(); started.complete(Unit); release.await(); YouTubeMusicApiService.ProfileShelfResult(null)
+        })
+        val automatic = vm.refreshHome(false)
+        withTimeout(5_000) { started.await() }
+        assertEquals(0, calls.get())
+        val manual = vm.refreshHome(true)
+        withTimeout(5_000) { vm.serverShelves.first { it.singleOrNull()?.id == "refreshed" } }
+        assertTrue(vm.isRefreshing.value)
+        release.complete(Unit)
+        withTimeout(5_000) { manual.join(); automatic.join() }
+        assertEquals(1, calls.get()); assertEquals(1, profileCalls.get()); assertFalse(vm.isRefreshing.value)
+    }
+    @Test fun manualRefreshReusesBothActualRequestsWhenPromotingAnAutomaticRefresh() = runBlocking {
+        val serverStarted = CompletableDeferred<Unit>(); val profileStarted = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        val calls = AtomicInteger(); val profileCalls = AtomicInteger()
+        val vm = viewModel({ _, _ -> calls.incrementAndGet(); serverStarted.complete(Unit); release.await(); page("native") }, { _, _ ->
+            profileCalls.incrementAndGet(); profileStarted.complete(Unit); release.await(); YouTubeMusicApiService.ProfileShelfResult(null)
+        })
+        val automatic = vm.refreshHome(false)
+        withTimeout(5_000) { serverStarted.await(); profileStarted.await() }
+        val manual = vm.refreshHome(true)
+        withTimeout(5_000) { vm.isRefreshing.first { it } }
+        release.complete(Unit)
+        withTimeout(5_000) { manual.join(); automatic.join() }
+        assertEquals(1, calls.get()); assertEquals(1, profileCalls.get())
+        assertEquals("native", vm.serverShelves.value.single().id); assertFalse(vm.isRefreshing.value)
+    }
+    @Test fun refreshWaitsForTheActualProfileRequestRatherThanClearingItsIndicatorEarly() = runBlocking {
+        val started = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        val vm = viewModel({ _, _ -> page("native") }, { _, _ -> started.complete(Unit); release.await(); YouTubeMusicApiService.ProfileShelfResult(null) })
+        val refresh = vm.refreshHome(true)
+        withTimeout(5_000) { started.await() }
+        assertTrue(vm.isRefreshing.value)
+        release.complete(Unit); withTimeout(5_000) { refresh.join() }
+        assertFalse(vm.isRefreshing.value)
+    }
+    @Test fun failedContinuationRemainsRetryableAndSuccessfulAppendPersists() = runBlocking {
+        val requests = AtomicInteger()
+        val vm = viewModel({ _, token -> if (token == null) page("first", "cursor") else {
+            if (requests.incrementAndGet() == 1) YouTubeHomeParser.ParsedHomeFeed(emptyList(), null, isError = true) else page("next")
+        } })
+        assertTrue(vm.loadServerHome(true))
+        vm.revealNextHomeSection()
+        withTimeout(5_000) { while (requests.get() < 1) delay(10) }; delay(50)
+        vm.revealNextHomeSection()
+        withTimeout(5_000) { vm.serverShelves.first { it.size == 2 } }
+        assertEquals(2, requests.get()); assertEquals(listOf("first", "next"), vm.serverShelves.value.map { it.title })
+        withTimeout(5_000) { while (HomeCardCache(app).read(HomeCacheIdentity.home(preferences))?.serverShelves?.size != 2) delay(10) }
+        assertNull(HomeCardCache(app).read(HomeCacheIdentity.home(preferences))!!.continuationToken)
+    }
+    @Test fun lateContinuationCannotEnterANewRegionalFeed() = runBlocking {
+        val started = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        val vm = viewModel({ country, token -> if (token == null) page(country, "cursor") else {
+            started.complete(Unit); withContext(NonCancellable) { release.await() }; page("stale")
+        } })
+        vm.loadServerHome(true); vm.revealNextHomeSection(); withTimeout(5_000) { started.await() }
+        vm.updateUserProfile(preferences.copy(countryCode = "GB", country = "United Kingdom"))
+        withTimeout(5_000) { vm.userProfile.first { it.countryCode == "GB" } }
+        vm.loadServerHome(true); release.complete(Unit); delay(100)
+        assertEquals(listOf("GB"), vm.serverShelves.value.map { it.title })
+    }
+    @Test fun aPageWithUnsupportedCollectionsStillRetainsItsCursorToPlayableShelves() = runBlocking {
+        val vm = viewModel({ _, token -> if (token == null) YouTubeHomeParser.ParsedHomeFeed(emptyList(), "cursor")
+            else YouTubeHomeParser.ParsedHomeFeed((1..6).map { shelf("server-$it") }, null) })
+        assertTrue(vm.loadServerHome(true))
+        vm.revealNextHomeSection()
+        withTimeout(5_000) { vm.serverShelves.first { it.size == 6 } }
+        vm.revealNextHomeSection()
+        withTimeout(5_000) { vm.revealedShelfCount.first { it >= 4 } }
+        assertEquals((1..6).map { "server-$it" }, vm.serverShelves.value.map { it.title })
+    }
+    @Test fun initialArtistReadinessIsPublishedOnlyAfterActualRankingsAreAvailable() = runBlocking {
         @Suppress("UNCHECKED_CAST")
-        val readiness = BackgroundWorkCoordinator::class.java.getDeclaredField("_startupReadiness")
+        val readiness = com.example.performance.BackgroundWorkCoordinator::class.java.getDeclaredField("_startupReadiness")
             .apply { isAccessible = true }.get(null) as kotlinx.coroutines.flow.MutableStateFlow<com.example.performance.StartupReadiness>
         readiness.value = com.example.performance.StartupReadiness()
-        (BackgroundWorkCoordinator::class.java.getDeclaredField("initialStartedAt")
-            .apply { isAccessible = true }.get(null) as java.util.concurrent.atomic.AtomicLong).set(0L)
-        try {
-            com.example.data.local.MusicDatabase.getDatabase(app).listeningEventDao().pruneOldEvents(Long.MAX_VALUE)
-            val profile = UserProfile(countryCode = "US", country = "United States", languages = listOf("English"), isOnboardingCompleted = true)
-            UserProfilePreferences.saveUserProfile(app, profile)
-            fun track(id: String) = MusicTrack("online_$id", "Recording $id", "Original Artist", "Original Album",
-                180_000, "https://artwork/$id.jpg", "https://aac.saavncdn.com/$id.mp4",
-                language = "English", source = "JIOSAAVN", recommendationOnly = true)
-            fun section(id: String) = SectionState(id, tracks = listOf(track(id)), isLoaded = true)
-            val quick = section("quick"); val era = section("era"); val chart = section("chart")
-            cache.save(SavedHomeCards("US|English", "signal", 1, System.currentTimeMillis(), quick, era, chart,
-                SectionState("Recently Played"), SectionState("Recommended for You"), emptyList(),
-                quick.tracks, era.tracks, chart.tracks, quick.tracks + era.tracks + chart.tracks,
-                recommendationSource = HomeRecommendationPolicy.SOURCE))
-            coordinator.firstFrameRendered()
-            coordinator.foreground(true)
-            // Robolectric rewinds uptime between fixtures while keeping the
-            // process coordinator. Rebase its navigation/frame samples here.
-            coordinator.frame(2, 1)
-            (BackgroundWorkCoordinator::class.java.getDeclaredField("navigationUntil")
-                .apply { isAccessible = true }.get(null) as java.util.concurrent.atomic.AtomicLong).set(0L)
-            coordinator.startupTask(StartupTask.SETTINGS, StartupStatus.READY)
-            // This data-only fixture has no PlayerViewModel/local tab host.
-            coordinator.startupTask(StartupTask.LOCAL_TABS, StartupStatus.READY)
-            // This data-only fixture does not mount/measure the retained tab host.
-            listOf(StartupTask.HOME_LAYOUT, StartupTask.SEARCH_LAYOUT, StartupTask.LIBRARY_LAYOUT).forEach {
-                coordinator.startupTask(it, StartupStatus.READY)
-            }
-            ShadowSystemClock.advanceBy(Duration.ofSeconds(2))
-            if (existingUser) {
-                val db = com.example.data.local.MusicDatabase.getDatabase(app)
-                val played = track("previous-play")
-                db.musicDao().insertOrUpdateTrack(com.example.data.local.TrackEntity.fromMusicTrack(played))
-                repeat(300) { index ->
-                    db.listeningEventDao().insertListeningEvent(com.example.data.local.ListeningEventEntity.fromTrack(
-                        played, "saved-session-$index", 30_000L, played.durationMs, "ACTUAL_PLAY"))
-                }
-            }
-            historyQueries.clear()
-            val repository = MusicRepository(app)
-            player = PlaybackManager(app, repository)
-            val home = HomeViewModel(repository, player, app)
-            store.put("initial-home", home)
-            // Deliberately never setHomeVisible(true): this also covers restoring
-            // Search/Library, where startup must not require a visible Home page.
-            val ready = try {
-                withTimeout(10_000L) {
-                    // AppDispatchers may already retain Android's real Main
-                    // from another UI fixture. Drain its paused host looper as
-                    // IO returns; replacing Dispatchers.Main alone cannot do so.
-                    while (!coordinator.startupReadiness.value.preparationComplete) {
-                        shadowOf(Looper.getMainLooper()).idle()
-                        delay(10L)
-                    }
-                    coordinator.startupReadiness.value
-                }
-            } catch (error: kotlinx.coroutines.TimeoutCancellationException) {
-                throw AssertionError("Initial preparation stalled: ${coordinator.startupReadiness.value.tasks}", error)
-            }
-            assertFalse("A draw is still required", ready.complete)
-            assertEquals(StartupStatus.READY, ready.status(StartupGroup.RECENTS))
-            assertEquals(StartupStatus.READY, ready.status(StartupGroup.PLAYER))
-            assertEquals(StartupStatus.FALLBACK_READY, ready.tasks[StartupTask.QUICK])
-            assertEquals(StartupStatus.SKIPPED, ready.tasks[StartupTask.ERA])
-            assertEquals(if (existingUser) com.example.recommendation.HomeUserMode.EXISTING_USER else
-                com.example.recommendation.HomeUserMode.NEW_USER, home.userMode.value)
-            assertEquals(if (existingUser) StartupStatus.FALLBACK_READY else StartupStatus.SKIPPED,
-                ready.tasks[StartupTask.PERSONALIZATION])
-            listOf(StartupTask.PERSONALIZED, StartupTask.INSPIRED,
-                StartupTask.RECENT_ARTISTS).forEach { assertEquals("$it must not initialize", StartupStatus.SKIPPED, ready.tasks[it]) }
-            assertEquals(StartupStatus.FALLBACK_READY, ready.tasks[StartupTask.CHART])
-            assertEquals(!existingUser, home.listeningHistoryCard.value.tracks.isEmpty())
-            assertTrue(home.mostListenedArtists.value.isEmpty())
-            assertNull(player.uiState.value.currentTrack)
-            assertEquals(quick.tracks, home.recommendationCards.value.quick.tracks)
-            assertTrue(home.recommendationCards.value.era.tracks.isEmpty())
-            assertEquals(com.example.ui.viewmodel.HomeFeedWindow.INITIAL, home.feedWindow.value.sections)
-            assertEquals("Unrevealed cards must remain available in the cache", era.tracks,
-                cache.peek("US|English")?.era?.tracks)
-            assertFalse(home.eraCard.value.isLoading)
-            assertFalse(home.recommendationCards.value.quick.isLoading)
-            assertNotNull(home.heroSeedTrack.value)
-            assertNoDuplicateHistoryReads()
-            coordinator.initialContentDrawn()
-            repeat(3) { coordinator.frame(5, 10) }
-            withTimeout(2_000L) { coordinator.awaitInitialPresentationSettled() }
-            assertTrue(coordinator.startupReadiness.value.complete)
-            val completedPresentation = coordinator.startupReadiness.value
-            if (warmAhead) {
-                home.setHomeVisible(true)
-                ShadowSystemClock.advanceBy(Duration.ofSeconds(16))
-                withTimeout(6_000L) {
-                    while (home.mostListenedArtists.value.isEmpty()) {
-                        shadowOf(Looper.getMainLooper()).idle()
-                        ShadowSystemClock.advanceBy(Duration.ofMillis(100))
-                        delay(10L)
-                    }
-                }
-                assertEquals("Original Artist", home.mostListenedArtists.value.first().name)
-                assertEquals(300, home.mostListenedArtists.value.first().playCount)
-                assertEquals("Data preparation cannot reveal or insert a Home card",
-                    com.example.ui.viewmodel.HomeFeedWindow.INITIAL, home.feedWindow.value.sections)
-                assertTrue(home.eraCard.value.tracks.isEmpty())
-            }
-            val played = track("first-real-play")
-            database.musicDao().insertOrUpdateTrack(com.example.data.local.TrackEntity.fromMusicTrack(played))
-            val playedEvent = com.example.data.local.ListeningEventEntity.fromTrack(
-                played, "real-session", 30_000L, played.durationMs, "ACTUAL_PLAY")
-            val eventId = database.listeningEventDao().insertListeningEvent(playedEvent)
-            withTimeout(3_000L) {
-                while (home.userMode.value != com.example.recommendation.HomeUserMode.EXISTING_USER) {
-                    shadowOf(Looper.getMainLooper()).idle()
-                    delay(10L)
-                }
-            }
-            assertSame("New history must not restart startup or the modal", completedPresentation,
-                coordinator.startupReadiness.value)
-            @Suppress("UNCHECKED_CAST")
-            val liveEvents = HomeViewModel::class.java.getDeclaredField("actualPlays").apply { isAccessible = true }
-                .get(home) as kotlinx.coroutines.flow.StateFlow<List<com.example.data.local.ListeningEventEntity>>
-            withTimeout(3_000L) { liveEvents.first { events -> events.any { it.id == eventId } } }
-            val milestone = playedEvent.copy(id = eventId, playedDurationMs = 60_000, completionRatio = 1f / 3f)
-            database.listeningEventDao().insertListeningEvent(milestone)
-            val updated = withTimeout(3_000L) {
-                liveEvents.first { events -> events.any { it.id == eventId && it.playedDurationMs == 60_000L } }
-            }
-            assertEquals(milestone, updated.first { it.id == eventId })
-            assertNoDuplicateHistoryReads()
-        } finally {
-            coordinator.foreground(false)
-            store.clear(); player?.release(); cache.close()
-            // The process coordinator outlives this fixture's Application. Even
-            // an assertion failure must not leave other scheduler tests modal.
-            (BackgroundWorkCoordinator::class.java.getDeclaredField("initialPresentationPending")
-                .apply { isAccessible = true }.get(null) as java.util.concurrent.atomic.AtomicBoolean).set(false)
-            Dispatchers.resetMain()
-            database.close()
-            databaseField.set(null, previousDatabase)
-        }
+        db.musicDao().insertOrUpdateTrack(TrackEntity.fromMusicTrack(track))
+        db.listeningEventDao().insertListeningEvent(ListeningEventEntity(trackId = track.id, artistName = track.artist,
+            eventType = "ACTUAL_PLAY", playedDurationMs = 30_000))
+        val vm = viewModel({ _, _ -> page("native") })
+        withTimeout(5_000) { readiness.first { it.tasks[com.example.performance.StartupTask.RECENT_ARTISTS]?.terminal == true } }
+        assertEquals("Singer", vm.mostListenedArtists.value.single().name)
+        assertEquals(1, vm.mostListenedArtists.value.single().playCount)
+        assertTrue(vm.hasListenedArtists.value)
+    }
+    @Test fun artistsRefreshAfterNewPlaysOldHistoryRestorationAndDeletion() = runBlocking {
+        val older = track.copy(id = "old-track", artist = "Older Artist")
+        db.musicDao().insertOrUpdateTrack(TrackEntity.fromMusicTrack(track))
+        db.musicDao().insertOrUpdateTrack(TrackEntity.fromMusicTrack(older))
+        val dao = db.listeningEventDao()
+        repeat(301) { index -> dao.insertListeningEvent(ListeningEventEntity(trackId = track.id, artistName = track.artist,
+            timestamp = 1_000L + index, sessionId = "recent-$index", eventType = "ACTUAL_PLAY", playedDurationMs = 30_000)) }
+        val vm = viewModel({ _, _ -> page("native") })
+        withTimeout(5_000) { vm.mostListenedArtists.first { it.firstOrNull()?.playCount == 301 } }
+        // Restoration can affect an artist outside the observable 300-row recent window.
+        dao.insertListeningEvent(ListeningEventEntity(trackId = older.id, artistName = older.artist, timestamp = 1,
+            sessionId = "restored", eventType = "ACTUAL_PLAY", playedDurationMs = 30_000))
+        withTimeout(5_000) { vm.mostListenedArtists.first { it.any { artist -> artist.name == "Older Artist" && artist.playCount == 1 } } }
+        dao.insertListeningEvent(ListeningEventEntity(trackId = track.id, artistName = track.artist, timestamp = 2_000,
+            sessionId = "new-play", eventType = "ACTUAL_PLAY", playedDurationMs = 30_000))
+        withTimeout(5_000) { vm.mostListenedArtists.first { it.firstOrNull()?.playCount == 302 } }
+        dao.pruneOldEvents(Long.MAX_VALUE)
+        withTimeout(5_000) { vm.mostListenedArtists.first { it.isEmpty() } }
+        assertFalse(vm.hasListenedArtists.value)
+    }
+    @Test fun databaseFailureCannotEraseAValidCachedArtistRanking() = runBlocking {
+        HomeCardCache(app).saveLocal(SavedHomeCards(HomeCacheIdentity.home(preferences),
+            artists = listOf(MostListenedArtist("Singer", 250, listOf(track))), inputRevision = "known-valid"))
+        db.openHelper.writableDatabase.execSQL("DROP TABLE listening_events")
+        val vm = viewModel({ _, _ -> page("native") })
+        withTimeout(5_000) { vm.userMode.first { it == com.example.recommendation.HomeUserMode.UNAVAILABLE } }
+        assertEquals(250, vm.mostListenedArtists.value.single().playCount)
+    }
+    @Test fun accountSwitchCannotPublishAnOldAccountsResponseOrRetainItsCards() = runBlocking {
+        val account = kotlinx.coroutines.flow.MutableStateFlow("account-a")
+        val started = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        HomeCardCache(app).saveHome(SavedHomeCards(HomeCacheIdentity.home(preferences, "account-a"),
+            serverShelves = listOf(shelf("account-a"))))
+        val vm = viewModel({ _, _ ->
+            val identity = account.value
+            if (identity == "account-a") { started.complete(Unit); withContext(NonCancellable) { release.await() } }
+            page(identity)
+        }, account = account)
+        val old = async { vm.loadServerHome(true) }
+        withTimeout(5_000) { started.await() }
+        account.value = "account-b"
+        withTimeout(5_000) { vm.serverShelves.first { it.isEmpty() } }
+        vm.loadServerHome(true); release.complete(Unit)
+        runCatching { old.await() }
+        assertEquals(listOf("account-b"), vm.serverShelves.value.map { it.id })
+        assertEquals(listOf("account-a"), HomeCardCache(app).read(HomeCacheIdentity.home(preferences, "account-a"))!!.serverShelves.map { it.id })
     }
 }

@@ -136,7 +136,9 @@ internal object RecommendationTrackCodec {
         .put("duration", t.durationMs).put("cover", t.coverUrl).put("audio", if (t.id.startsWith("yt_")) "" else t.audioUrl)
         .put("bitrate", t.bitrateKbps).put("badge", t.qualityBadge).put("genre", t.genre)
         .put("singers", t.singers).put("primaryArtists", JSONArray(t.primaryArtists)).put("language", t.language).put("year", t.year)
-        .put("source", t.source).put("isrc", t.isrc) }).toString()
+        .put("source", t.source).put("isrc", t.isrc).put("writer", t.writer)
+        .put("liked", t.isLiked).put("cached", t.isCached).put("lossless", t.isLossless)
+        .put("motion", t.motionArtworkUrl).put("recommendationOnly", t.recommendationOnly) }).toString()
     fun decode(body: String, maxTracks: Int = 80): List<MusicTrack> = try {
         val rows = JSONArray(body)
         (0 until minOf(rows.length(), maxTracks)).mapNotNull { i -> rows.optJSONObject(i)?.let { t ->
@@ -145,7 +147,10 @@ internal object RecommendationTrackCodec {
                 audioUrl = t.optString("audio"), bitrateKbps = t.optInt("bitrate"), qualityBadge = t.optString("badge"),
                 genre = t.optString("genre", "Unknown"), singers = t.optString("singers"),
                 language = t.optString("language", "Unknown"), year = t.optString("year"),
-                source = t.optString("source"), isrc = t.optString("isrc"), primaryArtists = t.optJSONArray("primaryArtists")?.let { names ->
+                source = t.optString("source"), isrc = t.optString("isrc"), writer = t.optString("writer"),
+                isLiked = t.optBoolean("liked"), isCached = t.optBoolean("cached"), isLossless = t.optBoolean("lossless"),
+                motionArtworkUrl = t.optString("motion").takeIf { it.isNotBlank() && it != "null" },
+                recommendationOnly = t.optBoolean("recommendationOnly"), primaryArtists = t.optJSONArray("primaryArtists")?.let { names ->
                     (0 until names.length()).map { names.optString(it) }.filter(String::isNotBlank)
                 }.orEmpty())
         } }

@@ -111,7 +111,7 @@ class XtremeMusicApp : Application(), ImageLoaderFactory, androidx.work.Configur
             _startupReady.value = true
             startupSettings?.profile?.let { profile ->
                 com.example.data.cache.HomeCardCache.preloadAsync(this@XtremeMusicApp,
-                    "${profile.countryCode}|${profile.languages.joinToString(",")}", previewOnly = true)
+                    com.example.data.cache.HomeCacheIdentity.home(profile), previewOnly = true)
             }
         }
 

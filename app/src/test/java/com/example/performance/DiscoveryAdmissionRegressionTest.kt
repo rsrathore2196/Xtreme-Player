@@ -38,8 +38,8 @@ class DiscoveryAdmissionRegressionTest {
         coordinator.frame(20_000_000L, 8_000_000L)
         var firstShelfReady = false
         val bootstrap = async {
-            withContext(DiscoveryRequestCoordinator.HomeRefresh(false, initialShelf = true)) {
-                DiscoveryRequestCoordinator.network { firstShelfReady = true }
+            BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI) {
+                DiscoveryRequestCoordinator.network(essential = true) { firstShelfReady = true }
             }
         }
         runCurrent()
@@ -50,8 +50,8 @@ class DiscoveryAdmissionRegressionTest {
         val navigation = coordinator.navigationBusy()
         var nextBatchRan = false
         val next = async {
-            withContext(DiscoveryRequestCoordinator.HomeRefresh(false, initialShelf = true)) {
-                DiscoveryRequestCoordinator.network { nextBatchRan = true }
+            BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI) {
+                DiscoveryRequestCoordinator.network(essential = true) { nextBatchRan = true }
             }
         }
         try {
@@ -104,8 +104,8 @@ class DiscoveryAdmissionRegressionTest {
         BackgroundWorkCoordinator.frame(20_000_000L, 8_000_000L)
         var ran = false
         val request = async {
-            withContext(DiscoveryRequestCoordinator.HomeRefresh(false) + DiscoveryRequestCoordinator.HomeCard(true)) {
-                DiscoveryRequestCoordinator.shared("visible-empty-card", essential = false) {
+            kotlinx.coroutines.coroutineScope {
+                DiscoveryRequestCoordinator.shared("selected-recording", essential = true) {
                     withContext(AppDispatchers.CpuBounded) {
                         ran = true
                         emptyList()

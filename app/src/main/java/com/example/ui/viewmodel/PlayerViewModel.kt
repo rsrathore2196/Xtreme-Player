@@ -912,33 +912,31 @@ class PlayerViewModel(
         if (state.isInfiniteRadio && (state.isPlaying || state.isLoading)) return
         activePlaybackLaunchJob?.cancel()
         activePlaybackLaunchJob = viewModelScope.launch(AppDispatchers.Io) {
-            val recent = (recentlyPlayed.value + playbackManager.recommendationEngine.getSessionTracks() +
-                state.queue.take((state.currentIndex + 1).coerceAtLeast(0)) + listOfNotNull(state.currentTrack))
-            val excluded = (recent.map { it.id }).toSet()
-
-            val pivot = seedTrack
-                ?: state.currentTrack
-                ?: recentlyPlayed.value.firstOrNull()
-                ?: _catalogTracks.value.firstOrNull()
-
-            val radioTracks = if (pivot != null) {
-                repository.fetchYouTubeRadio(pivot, excluded, limit = 12)
-            } else {
-                repository.getYtmQuickPicks(limit = 12)
-            }
-
-            val chosen = seedTrack ?: radioTracks.firstOrNull() ?: pivot ?: run {
-                withContext(Dispatchers.Main.immediate) {
-                    playbackManager.reportPlaybackLookupFailure("No new recommendations are available. Please try again.")
+            try {
+                val requestKey = com.example.data.cache.HomeCacheIdentity.home(_userProfile.value)
+                val cached = com.example.data.cache.HomeCardCache(application).read(requestKey)
+                val cachedSeed = cached?.serverShelves?.firstNotNullOfOrNull { shelf -> shelf.tracks.firstOrNull() }
+                val pivot = seedTrack ?: state.currentTrack ?: recentlyPlayed.value.firstOrNull() ?: cachedSeed
+                    ?: com.example.data.remote.YouTubeMusicApiService.getHomeRecommendations(com.example.data.cache.HomeCacheIdentity.region(_userProfile.value))
+                        .shelves.firstNotNullOfOrNull { shelf -> shelf.tracks.firstOrNull() }
+                if (pivot == null) {
+                    withContext(Dispatchers.Main.immediate) { playbackManager.reportPlaybackLookupFailure("No music is available for radio. Please try again.") }
+                    return@launch
                 }
-                return@launch
-            }
-            val queueTracks = (listOf(chosen) + radioTracks.filter { it.id != chosen.id }).distinctBy { it.id }
-
-            withContext(Dispatchers.Main.immediate) {
-                playbackManager.setAutoplayEnabled(true)
-                playbackManager.playTrack(chosen, queueTracks, isExplicitPlaylist = false, isInfiniteRadio = true, preserveQueue = true)
-            }
+                val excluded = (recentlyPlayed.value.map { it.id } + state.queue.map { it.id } + pivot.id).toSet()
+                val radioTracks = repository.fetchYouTubeRadio(pivot, excluded, limit = 12)
+                ensureActive()
+                if (requestKey != com.example.data.cache.HomeCacheIdentity.home(_userProfile.value)) return@launch
+                val chosen = seedTrack ?: radioTracks.firstOrNull() ?: pivot
+                val queueTracks = (listOf(chosen) + radioTracks.filter { it.id != chosen.id }).distinctBy { it.id }
+                withContext(Dispatchers.Main.immediate) {
+                    playbackManager.setAutoplayEnabled(true)
+                    playbackManager.playTrack(chosen, queueTracks, isExplicitPlaylist = false, isInfiniteRadio = true, preserveQueue = true)
+                }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { withContext(Dispatchers.Main.immediate) {
+                playbackManager.reportPlaybackLookupFailure("Radio couldn't load. Please try again.")
+            } }
         }
     }
 

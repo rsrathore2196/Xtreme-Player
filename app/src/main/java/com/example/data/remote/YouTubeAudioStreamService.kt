@@ -20,6 +20,11 @@ import com.metrolist.innertubex.sabr.requireAllowedSabrUrl
 import com.metrolist.innertubex.extraction.strategy.PlaybackClientCatalog
 import com.metrolist.innertubex.extraction.strategy.PlaybackTransport
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import com.metrolist.innertubex.InnerTube
 import com.metrolist.innertubex.InnerTubeLogger
 import com.metrolist.innertubex.bodyAsTextLimited
@@ -83,6 +88,8 @@ object YouTubeAudioStreamService {
     private val slots = Semaphore(2)
     private val videoIdPattern = Regex("[A-Za-z0-9_-]{11}")
     private val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val accountChanges = MutableStateFlow<InnerTube.SessionSnapshot?>(null)
+    internal val discoveryAccountChanges = accountChanges.asStateFlow()
     @Volatile private var runtime: Runtime? = null
     private val runtimeLock = Any()
     private val mediaHeaders = setOf("user-agent", "accept", "accept-language", "origin", "referer", "authorization", "cookie", "x-goog-visitor-id", "x-youtube-client-name", "x-youtube-client-version")
@@ -119,6 +126,10 @@ object YouTubeAudioStreamService {
         private val cipher = YouTubeCipherService(cipherHttp, config, nativeLogger)
         private data class Engine(val http: HttpClient, val innerTube: InnerTube, val extractor: InnerTubeExtractor)
         private val engines = mutableMapOf<String, Engine>()
+        fun accountSession(): InnerTube.SessionSnapshot? = synchronized(engines) {
+            engines["320000:false"]?.innerTube?.sessionSnapshot()
+                ?.takeIf { !it.cookie.isNullOrBlank() && !it.sapisid.isNullOrBlank() }
+        }
         private fun engine(cap: Int, opusOnly: Boolean = false): Engine = synchronized(engines) {
             // Transport is a per-extraction ContentHints capability, not session identity.
             // Reuse visitor/config/cipher state across Direct -> HLS -> SABR recovery.
@@ -126,6 +137,13 @@ object YouTubeAudioStreamService {
                 val network = http.newBuilder().addInterceptor(YouTubeAudioFormatPolicy(cap, opusOnly)).build()
                 val apiHttp = client(network)
                 val innerTube = InnerTube(apiHttp, logger = nativeLogger)
+                if (cap == 320_000 && !opusOnly) cleanupScope.launch {
+                    innerTube.sessionFlow.map { session ->
+                        session.takeIf { !it.cookie.isNullOrBlank() && !it.sapisid.isNullOrBlank() }
+                    }.distinctUntilChanged { before, after ->
+                        before?.sapisid == after?.sapisid && before?.authUser == after?.authUser && before?.dataSyncId == after?.dataSyncId
+                    }.collect { accountChanges.value = it }
+                }
                 Engine(apiHttp, innerTube, InnerTubeExtractor(
                     configParser = YtConfigParserImpl(apiHttp, innerTube, config, logger = nativeLogger, cipherService = cipher),
                     // Keep the native strategy: the library enables visitor-backed and
@@ -167,10 +185,13 @@ object YouTubeAudioStreamService {
             // extractor's session or another concurrent search's regional context.
             val session = engine(320_000).innerTube.createIsolatedSession(includeAccount = includeAccount)
             try {
+                if (includeAccount) accountSession()?.let { account ->
+                    session.replaceSession(account.cookie, account.visitorData, account.dataSyncId, account.authUser, true)
+                }
                 session.locale = com.metrolist.innertubex.models.YouTubeLocale(
                     gl = countryCode.uppercase(java.util.Locale.ROOT).takeIf { it.matches(Regex("[A-Z]{2}")) }.orEmpty(),
                     hl = languageCode.takeIf { it.matches(Regex("[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8})*")) } ?: "en")
-                session.regionOverrideActive = true
+                session.regionOverrideActive = !includeAccount
                 return requestDiscovery(session, operation, value, params, continuation, setLogin = includeAccount)
             } finally { session.close() }
         }
@@ -213,6 +234,9 @@ object YouTubeAudioStreamService {
         params: String? = null, continuation: String? = null, languageCode: String = "en",
         includeAccount: Boolean = false): String =
         withContext(Dispatchers.IO) { runtime().discovery(operation, value, countryCode, params, continuation, languageCode, includeAccount) }
+
+    /** Does not construct the extractor, read disk, authenticate, or create a network session. */
+    internal fun discoveryAccountSession(): InnerTube.SessionSnapshot? = runtime?.accountSession()
 
     internal suspend fun requestDiscovery(session: InnerTube, operation: String, value: String,
         params: String? = null, continuation: String? = null, setLogin: Boolean = false): String {

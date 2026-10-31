@@ -91,10 +91,8 @@ import com.example.ui.util.rememberOptimizedImageRequest
 import com.example.ui.viewmodel.MostListenedArtist
 import com.example.ui.viewmodel.HomeViewModel
 import com.example.ui.viewmodel.SectionState
-import com.example.ui.viewmodel.HomeFeedSection
 import com.example.ui.viewmodel.HomeFeedWindow
 import com.example.ui.viewmodel.HomeRevealGesture
-import com.example.ui.viewmodel.Shelf
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -213,25 +211,6 @@ fun HomeScreen(
             homeViewModel.setHomeScrolling(activeLists.isNotEmpty())
         }
     }
-    val viewportOwner = remember(homeViewModel) { Any() }
-    androidx.compose.runtime.DisposableEffect(homeViewModel, viewportOwner) {
-        onDispose {
-            homeViewModel.setHomeScrolling(false)
-            homeViewModel.setRecommendationViewport(viewportOwner, emptySet())
-        }
-    }
-    androidx.compose.runtime.LaunchedEffect(homeViewModel, listState, viewportOwner) {
-        androidx.compose.runtime.snapshotFlow {
-            val layout = listState.layoutInfo
-            buildSet {
-                for (item in layout.visibleItemsInfo) {
-                    if (item.offset + item.size >= layout.viewportStartOffset && item.offset < layout.viewportEndOffset)
-                        (item.key as? String)?.let { add(it) }
-                }
-            }
-        }.distinctUntilChanged().collect { homeViewModel.setRecommendationViewport(viewportOwner, it) }
-    }
-
     androidx.compose.runtime.CompositionLocalProvider(LocalHomeScrollListener provides scrollMonitor) {
         HomePullRefreshOverscrollLayout(
             isRefreshing = isRefreshing,
@@ -262,66 +241,11 @@ fun HomeScreen(
     }
 }
 
-/**
- * Backward-compatible overload for tests and preview components.
- */
-@Composable
-fun HomeScreen(
-    catalogTracks: List<MusicTrack>,
-    recentlyPlayed: List<MusicTrack>,
-    playerUiState: PlayerUiState? = null,
-    currentPlayingTrackId: String? = null,
-    isPlaying: Boolean = playerUiState?.isPlaying == true,
-    isAutoplayEnabled: Boolean = playerUiState?.isAutoplayEnabled == true,
-    currentTrack: MusicTrack? = playerUiState?.currentTrack,
-    shelves: List<com.example.ui.ai.HomeShelf> = emptyList(),
-    userProfile: UserProfile? = null,
-    onTrackClick: (MusicTrack, List<MusicTrack>) -> Unit,
-    onToggleFavorite: (MusicTrack) -> Unit,
-    onOpenSettings: (() -> Unit)? = null,
-    onPlayInfiniteRadio: ((MusicTrack?) -> Unit)? = null,
-    onAddToQueue: ((MusicTrack) -> Unit)? = null,
-    modifier: Modifier = Modifier,
-    meaningfulUniqueTracks: Int = 0
-) {
-    val resolvedCountry = userProfile?.country?.trim()?.ifBlank { "India" } ?: "India"
-    val trendingTitle = if (resolvedCountry.equals("India", ignoreCase = true)) "Trending in India" else "Trending in $resolvedCountry"
-
-    HomeScreenContent(
-        heroSeedTrack = recentlyPlayed.firstOrNull() ?: catalogTracks.firstOrNull(),
-        pillsCardTracks = recentlyPlayed.take(com.example.ui.viewmodel.RECENTLY_PLAYED_CARD_LIMIT),
-        ytmCard = SectionState(title = "Quick Picks", tracks = com.example.recommendation.HomeRecommendationPolicy.diversify(catalogTracks, com.example.recommendation.HomeRecommendationPolicy.MAX_SHELF_TRACKS)),
-        eraCard = SectionState(title = "Era-Specific Hits", tracks = shelves.firstOrNull { it.id == "shelf_era_classics" }?.tracks.orEmpty()),
-        countryLanguageCard = SectionState(title = trendingTitle, tracks = shelves.firstOrNull { it.id == "shelf_country_trending" }?.tracks.orEmpty()),
-        listeningHistoryCard = SectionState(title = "Jump Back In", tracks = recentlyPlayed),
-        personalizedCard = SectionState(title = "Recommended for You", tracks =
-            shelves.filter { it.id in setOf("shelf_quick_picks", "shelf_top_artist", "shelf_mood_vibe") }
-                .takeIf { recentlyPlayed.isNotEmpty() || meaningfulUniqueTracks >= 1 }?.let { com.example.recommendation.HomeRecommendationPolicy.interleave(it.map { shelf -> shelf.tracks }) }.orEmpty()),
-        isRadioSession = playerUiState?.isInfiniteRadio == true,
-        isRadioLoading = playerUiState?.isLoading == true,
-        userProfile = userProfile,
-        currentTrack = currentTrack ?: playerUiState?.currentTrack,
-        isPlaying = isPlaying,
-        isAutoplayEnabled = isAutoplayEnabled,
-        currentPlayingTrackId = currentPlayingTrackId ?: currentTrack?.id ?: playerUiState?.currentTrack?.id,
-        onTrackClick = onTrackClick,
-        onToggleFavorite = onToggleFavorite,
-        onOpenSettings = onOpenSettings,
-        onPlayInfiniteRadio = onPlayInfiniteRadio,
-        onAddToQueue = onAddToQueue,
-        modifier = modifier
-    )
-}
-
 @Composable
 fun HomeScreenContent(
     heroSeedTrack: MusicTrack? = null,
     pillsCardTracks: List<MusicTrack> = emptyList(),
-    ytmCard: SectionState = SectionState(),
-    eraCard: SectionState = SectionState(),
-    countryLanguageCard: SectionState = SectionState(),
     listeningHistoryCard: SectionState = SectionState(),
-    personalizedCard: SectionState = SectionState(),
     userProfile: UserProfile? = null,
     currentTrack: MusicTrack? = null,
     isPlaying: Boolean = false,
@@ -333,7 +257,6 @@ fun HomeScreenContent(
     onPlayInfiniteRadio: ((MusicTrack?) -> Unit)? = null,
     onAddToQueue: ((MusicTrack) -> Unit)? = null,
     mostListenedArtists: List<MostListenedArtist> = emptyList(),
-    inspiredTrackCard: SectionState = SectionState(),
     isRadioSession: Boolean = false,
     isRadioLoading: Boolean = false,
     boundaryOffset: () -> Float = { 0f },
@@ -343,7 +266,9 @@ fun HomeScreenContent(
     modifier: Modifier = Modifier,
     listState: LazyListState = rememberLazyListState(),
     onOpenArtist: (com.example.data.repository.CatalogArtist) -> Unit = {},
-    homeViewModel: HomeViewModel? = null
+    homeViewModel: HomeViewModel? = null,
+    serverShelves: List<com.example.data.model.ServerHomeShelf> = emptyList(),
+    profileShelf: com.example.data.model.ServerHomeShelf? = null
 ) {
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     // Only structural visibility is observed by the lazy-list owner. Section
@@ -352,23 +277,12 @@ fun HomeScreenContent(
         ?: pillsCardTracks.isNotEmpty()
     val hasArtists = homeViewModel?.hasListenedArtists?.collectAsStateWithLifecycle()?.value
         ?: mostListenedArtists.isNotEmpty()
-    val retainedWindow = rememberSaveable(stateSaver = Saver<HomeFeedWindow, ArrayList<String>>(
-        save = { ArrayList(it.sections.map(HomeFeedSection::name)) },
-        restore = { names -> HomeFeedWindow(names.mapNotNull { runCatching { HomeFeedSection.valueOf(it) }.getOrNull() }) }
+    val retainedWindow = rememberSaveable(stateSaver = Saver<HomeFeedWindow, Int>(
+        save = { it.visibleCount }, restore = { HomeFeedWindow(it) }
     )) { mutableStateOf(HomeFeedWindow()) }
-    val window = homeViewModel?.feedWindow?.collectAsStateWithLifecycle()?.value ?: retainedWindow.value
     val revealModifier = rememberHomeRevealModifier(listState) {
         if (homeViewModel != null) homeViewModel.revealNextHomeSection()
-        else {
-            val eligible = HomeFeedSection.entries.filterTo(mutableSetOf()) { section -> when (section) {
-                HomeFeedSection.QUICK, HomeFeedSection.CHART -> true
-                HomeFeedSection.ARTISTS -> hasArtists
-                HomeFeedSection.ERA -> eraCard.tracks.isNotEmpty()
-                HomeFeedSection.PERSONALIZED -> personalizedCard.tracks.isNotEmpty()
-                HomeFeedSection.INSPIRED -> inspiredTrackCard.tracks.isNotEmpty()
-            } }
-            retainedWindow.value = retainedWindow.value.appendNext(eligible)
-        }
+        else retainedWindow.value = retainedWindow.value.appendNext(serverShelves.size)
     }
     val greeting = rememberGreeting()
     val resolvedCurrentTrack = currentTrack
@@ -382,9 +296,9 @@ fun HomeScreenContent(
     val textPrimaryColor = appColors.textPrimary
     val textMutedColor = appColors.textMuted
 
-    val serverShelves = homeViewModel?.serverShelves?.collectAsStateWithLifecycle()?.value.orEmpty()
-    val profileShelf = homeViewModel?.profileShelf?.collectAsStateWithLifecycle()?.value
-    val revealedCount = homeViewModel?.revealedShelfCount?.collectAsStateWithLifecycle()?.value ?: 4
+    val resolvedShelves = homeViewModel?.serverShelves?.collectAsStateWithLifecycle()?.value ?: serverShelves
+    val resolvedProfile = homeViewModel?.profileShelf?.collectAsStateWithLifecycle()?.value ?: profileShelf
+    val revealedCount = homeViewModel?.revealedShelfCount?.collectAsStateWithLifecycle()?.value ?: retainedWindow.value.visibleCount
 
     ObserveHomeScroll(listState)
 
@@ -650,34 +564,23 @@ fun HomeScreenContent(
             }
 
             // Direct YouTube Music Server Shelves and Profile-based Shelf
-            if (serverShelves.isNotEmpty() || profileShelf != null) {
-                if (profileShelf != null && profileShelf.tracks.isNotEmpty()) {
-                    artworkItem(state = listState, key = "profile_shelf_${profileShelf.id}", contentType = "server_song_shelf") {
-                        val section = remember(profileShelf) {
-                            SectionState(title = profileShelf.title, subtitle = profileShelf.subtitle, tracks = profileShelf.tracks, isLoaded = true)
+            if (resolvedShelves.isNotEmpty() || resolvedProfile != null) {
+                if (resolvedProfile != null && resolvedProfile.tracks.isNotEmpty()) {
+                    artworkItem(state = listState, key = "profile_shelf_${resolvedProfile.id}", contentType = "server_song_shelf") {
+                        val section = remember(resolvedProfile) {
+                            SectionState(title = resolvedProfile.title, subtitle = resolvedProfile.subtitle, tracks = resolvedProfile.tracks, isLoaded = true)
                         }
                         SectionCardLayout(state = section, tracksPrepared = true,
                             currentPlayingId = currentPlayingId, cardBg = cardBg, cardBorderColor = cardBorderColor,
                             textPrimaryColor = textPrimaryColor, textMutedColor = textMutedColor, onTrackClick = onTrackClick)
                     }
                 }
-                for (shelf in serverShelves.take(revealedCount)) {
+                for (shelf in resolvedShelves.take(revealedCount)) {
                     artworkItem(state = listState, key = "server_shelf_${shelf.id}", contentType = "server_song_shelf") {
                         val section = remember(shelf) {
                             SectionState(title = shelf.title, subtitle = shelf.subtitle, tracks = shelf.tracks, isLoaded = true)
                         }
                         SectionCardLayout(state = section, tracksPrepared = true,
-                            currentPlayingId = currentPlayingId, cardBg = cardBg, cardBorderColor = cardBorderColor,
-                            textPrimaryColor = textPrimaryColor, textMutedColor = textMutedColor, onTrackClick = onTrackClick)
-                    }
-                }
-            } else {
-                for (i in 0 until 2) {
-                    artworkItem(state = listState, key = "loading_shelf_$i", contentType = "loading_shelf") {
-                        val loadingSection = remember {
-                            SectionState(title = if (i == 0) "Top Recommendations" else "Recommended for You", isLoading = true)
-                        }
-                        SectionCardLayout(state = loadingSection, tracksPrepared = true,
                             currentPlayingId = currentPlayingId, cardBg = cardBg, cardBorderColor = cardBorderColor,
                             textPrimaryColor = textPrimaryColor, textMutedColor = textMutedColor, onTrackClick = onTrackClick)
                     }

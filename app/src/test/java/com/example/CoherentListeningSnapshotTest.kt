@@ -66,7 +66,11 @@ class CoherentListeningSnapshotTest {
             assertEquals("Room still observes table invalidations", initial, nextRaw())
             dao.insertListeningEvent(ListeningEventEntity(id = 1, trackId = "track-0", artistName = "Updated old artist",
                 timestamp = 0, eventType = "ACTUAL_PLAY"))
-            assertEquals("Metadata outside the 300-row window must not change recent results", initial, nextRaw())
+            val metadataUpdate = nextRaw()
+            assertEquals("Metadata outside the window preserves its recent payload", initial.map { it.event }, metadataUpdate.map { it.event })
+            assertEquals(initial.first().total, metadataUpdate.first().total)
+            assertNotEquals("Older metadata must invalidate artist rankings", initial.first().inputRevision, metadataUpdate.first().inputRevision)
+            assertEquals(metadataUpdate, nextChanged())
             dao.pruneOldEvents(1)
             val deletion = nextRaw()
             assertEquals(300, deletion.first().total)

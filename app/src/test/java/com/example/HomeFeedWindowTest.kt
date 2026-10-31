@@ -1,53 +1,33 @@
 package com.example
 
-import com.example.ui.viewmodel.HomeFeedSection
 import com.example.ui.viewmodel.HomeFeedWindow
 import com.example.ui.viewmodel.HomeRevealGesture
-import com.example.ui.viewmodel.Shelf
 import org.junit.Assert.*
 import org.junit.Test
 
 class HomeFeedWindowTest {
-    @Test fun initialWindowAndNetworkBootstrapContainOnlyTheTwoDiscoveryShelves() {
-        assertEquals(listOf(HomeFeedSection.QUICK, HomeFeedSection.CHART), HomeFeedWindow().sections)
-        assertEquals(setOf(Shelf.QUICK, Shelf.CHART), HomeFeedWindow().shelves)
-        assertEquals(HomeFeedWindow.BOOTSTRAP_SHELVES, HomeFeedWindow().shelves)
+    @Test fun initialWindowUsesTheExistingFourServerShelves() { assertEquals(4, HomeFeedWindow().visibleCount) }
+    @Test fun eachDemandRevealsTheNextTwoAlreadyFetchedShelves() {
+        val initial = HomeFeedWindow(); val next = initial.appendNext(9)
+        assertEquals(6, next.visibleCount); assertEquals(4, initial.visibleCount)
+        assertEquals(8, next.appendNext(9).visibleCount)
     }
-
-    @Test fun eachDemandAppendsExactlyOneEligibleSectionWithoutReorderingEarlierCards() {
-        var window = HomeFeedWindow()
-        val all = HomeFeedSection.entries.toSet()
-        for (section in listOf(HomeFeedSection.ARTISTS, HomeFeedSection.ERA, HomeFeedSection.PERSONALIZED,
-            HomeFeedSection.INSPIRED)) {
-            val previous = window.sections
-            window = window.appendNext(all)
-            assertEquals(previous + section, window.sections)
-        }
-        assertSame(window, window.appendNext(all))
-    }
-
-    @Test fun noHistoryDoesNotUnlockPersonalizedOrArtistShelves() {
+    @Test fun demandNeverInventsUnavailableSectionsOrExceedsTheAvailableFeed() {
         val initial = HomeFeedWindow()
-        assertSame(initial, initial.appendNext(HomeFeedWindow.INITIAL.toSet()))
-        val laterHistory = initial.appendNext(setOf(HomeFeedSection.ARTISTS, HomeFeedSection.ERA))
-        assertEquals(HomeFeedSection.ARTISTS, laterHistory.sections.last())
-        assertEquals(HomeFeedWindow.INITIAL, initial.sections)
+        assertSame(initial, initial.appendNext(2))
+        val complete = initial.appendNext(5)
+        assertEquals(5, complete.visibleCount); assertSame(complete, complete.appendNext(5))
     }
-
-    @Test fun cachedLateEligibilityAppendsWithoutChangingPreviouslyRevealedPositions() {
-        val era = HomeFeedWindow().appendNext(setOf(HomeFeedSection.ERA))
-        val artist = era.appendNext(setOf(HomeFeedSection.ARTISTS, HomeFeedSection.ERA))
-        assertEquals(era.sections + HomeFeedSection.ARTISTS, artist.sections)
+    @Test fun lateServerResultsDoNotChangeTheExistingDisplayWindow() {
+        val initial = HomeFeedWindow(); assertEquals(4, initial.visibleCount)
+        assertEquals(6, initial.appendNext(30).visibleCount)
     }
-
     @Test fun initialLayoutAndRepeatedTailMeasurementsNeverCountAsScrollIntent() {
         val gate = HomeRevealGesture()
         repeat(10) { assertFalse(gate.consumeNearTail(0L, nearTail = true)) }
         val intent = gate.forwardInput()
-        assertFalse(gate.consumeNearTail(intent, nearTail = false))
-        assertTrue(gate.consumeNearTail(intent, nearTail = true))
+        assertFalse(gate.consumeNearTail(intent, nearTail = false)); assertTrue(gate.consumeNearTail(intent, nearTail = true))
         repeat(10) { assertFalse(gate.consumeNearTail(gate.forwardInput(), nearTail = true)) }
-        gate.settled()
-        assertTrue(gate.consumeNearTail(gate.forwardInput(), nearTail = true))
+        gate.settled(); assertTrue(gate.consumeNearTail(gate.forwardInput(), nearTail = true))
     }
 }

@@ -2,219 +2,110 @@ package com.example
 
 import android.app.Application
 import androidx.test.core.app.ApplicationProvider
-import com.example.data.cache.HomeCardCache
-import com.example.data.cache.SavedHomeCards
-import com.example.data.model.MusicTrack
-import com.example.performance.BackgroundWorkCoordinator
-import com.example.recommendation.HomeRecommendationPolicy
-import com.example.ui.viewmodel.SectionState
-import java.time.Duration
-import java.util.concurrent.atomic.AtomicReference
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
-import org.junit.After
+import com.example.data.cache.*
+import com.example.data.local.UserProfile
+import com.example.data.model.*
+import com.example.ui.viewmodel.*
+import java.io.File
+import kotlinx.coroutines.*
+import org.json.*
 import org.junit.Assert.*
-import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
-import org.robolectric.shadows.ShadowSystemClock
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = Application::class)
 class HomeCardCacheRestorationTest {
-    private lateinit var app: Application
-    private val profile = "US|English"
-    @Before fun setup() {
-        app = ApplicationProvider.getApplicationContext()
-        clearMemory()
-        BackgroundWorkCoordinator.firstFrameRendered()
-        BackgroundWorkCoordinator.homeContentReady()
-        BackgroundWorkCoordinator.cachedHomeRestored()
-        BackgroundWorkCoordinator.foreground(true)
-        BackgroundWorkCoordinator.scrolling(false)
-        ShadowSystemClock.advanceBy(Duration.ofSeconds(2))
+    private val app get() = ApplicationProvider.getApplicationContext<Application>()
+    private val profile = UserProfile(countryCode = "IN", languages = listOf("Hindi"))
+    private fun song() = MusicTrack("yt_abcdefghijk", "Song", "Singer", "Album", 180_000, "https://cover", "",
+        primaryArtists = listOf("Singer"), singers = "Singer", writer = "Writer", isLiked = true)
+    private fun saved() = SavedHomeCards(HomeCacheIdentity.home(profile), refreshedAt = 1234,
+        history = SectionState("Jump Back In", tracks = listOf(song()), isLoaded = true),
+        artists = listOf(MostListenedArtist("Singer", 50, listOf(song()))), inputRevision = "revision",
+        serverShelves = listOf(ServerHomeShelf("native", "Native heading", tracks = listOf(song()))),
+        profileShelf = ServerHomeShelf("profile_shelf_music_for_you", "Music for You", tracks = listOf(song())),
+        continuationToken = "cursor", profileShelfKey = HomeCacheIdentity.profile(profile), profileFetchedAt = 5678,
+        serverFetchSucceeded = true, profileFetchSucceeded = true, consumedContinuations = setOf("previous"))
+    private fun clearMemory() = (HomeCardCache::class.java.getDeclaredField("memory").apply { isAccessible = true }
+        .get(null) as android.util.LruCache<*, *>).evictAll()
+    private suspend fun durable(name: String): File {
+        val file = File(app.filesDir, name)
+        withTimeout(5_000) { while (!file.isFile || file.length() == 0L) delay(10) }
+        return file
     }
-    @After fun cleanup() {
-        BackgroundWorkCoordinator.scrolling(false)
-        BackgroundWorkCoordinator.foreground(false)
-        clearMemory()
+    @Test fun nativeFeedAndLocalHistoryKeepCompleteMetadataAndOrdering() = runBlocking {
+        val cache = HomeCardCache(app); val value = saved(); cache.save(value)
+        val restored = cache.read(value.profileKey)!!
+        assertEquals(value.serverShelves.map { it.title }, restored.serverShelves.map { it.title })
+        assertEquals(value.history.tracks, restored.history.tracks)
+        assertEquals(value.artists, restored.artists); assertEquals("cursor", restored.continuationToken)
+        assertEquals(setOf("previous"), restored.consumedContinuations)
     }
-    private fun clearMemory() {
-        for (name in listOf("memory", "previews")) {
-            val field = HomeCardCache::class.java.getDeclaredField(name).apply { isAccessible = true }
-            (field.get(null) as AtomicReference<*>).set(null)
-        }
+    @Test fun homeAndProfileHaveIndependentKeysAndFreshnessAfterDiskRestoration() = runBlocking {
+        val cache = HomeCardCache(app); val value = saved(); cache.save(value)
+        durable("home_server_${HomeCacheIdentity.fileKey(value.profileKey)}_v3.json")
+        durable("home_profile_${HomeCacheIdentity.fileKey(value.profileShelfKey)}_v3.json")
+        durable("home_local_v3.json"); clearMemory()
+        val home = cache.read(value.profileKey)!!; val selected = cache.readProfile(value.profileShelfKey)!!
+        assertEquals(1234, home.refreshedAt); assertEquals(5678, selected.profileFetchedAt)
+        assertTrue(home.serverFetchSucceeded); assertTrue(selected.profileFetchSucceeded)
+        assertNull(home.profileShelf); assertEquals("Music for You", selected.profileShelf!!.title)
     }
-    private fun video(id: String) = "yt_" + id.padEnd(11, '_').take(11)
-    private fun snapshot(generation: Long = 1): SavedHomeCards {
-        fun track(id: String) = MusicTrack(video(id), "Song $id", "Real Artist", "Original Album",
-            180_000, "https://artwork/$id.jpg", "", bitrateKbps = 0, qualityBadge = "YouTube Music", source = "YouTube Music",
-            recommendationOnly = true)
-        fun section(id: String) = SectionState(title = id, tracks = listOf(track(id)), isLoaded = true)
-        val quick = section("quick"); val era = section("era"); val chart = section("chart")
-        return SavedHomeCards(profile, "signal", generation, System.currentTimeMillis(), quick, era, chart,
-            SectionState(title = "History"), SectionState(title = "Personalized"), emptyList(),
-            quick.tracks, era.tracks, chart.tracks, quick.tracks + era.tracks + chart.tracks,
-            recommendationSource = HomeRecommendationPolicy.SOURCE, readyShelves = setOf("QUICK", "ERA", "CHART"),
-            shelfLoads = mapOf("QUICK" to com.example.data.cache.RecommendationShelfLoad("profile", 123L, partial = true),
-                "ERA" to com.example.data.cache.RecommendationShelfLoad("profile", 123L)))
+    @Test fun languageOnlyChangeKeepsTheSameCachedHomeAndDoesNotReuseTheOldProfileShelf() = runBlocking {
+        val cache = HomeCardCache(app); val value = saved(); cache.save(value)
+        val changed = profile.copy(languages = listOf("Punjabi", "English"))
+        assertEquals(value.serverShelves.map { it.id }, cache.read(HomeCacheIdentity.home(changed))!!.serverShelves.map { it.id })
+        assertNull(cache.readProfile(HomeCacheIdentity.profile(changed)))
     }
-    private suspend fun writeSnapshot(value: SavedHomeCards) {
-        val cache = HomeCardCache(app)
-        cache.save(value)
-        cache.close()
-        val writer = HomeCardCache::class.java.getDeclaredField("writer").apply { isAccessible = true }
-            .get(cache) as kotlinx.coroutines.Job
-        withTimeout(5_000) { writer.join() }
-        clearMemory()
+    @Test fun accountAndRegionCachesNeverLeakButLocalHistoryRemainsAvailable() = runBlocking {
+        val cache = HomeCardCache(app); val value = saved(); cache.save(value)
+        val other = HomeCacheIdentity.home(profile, "another-account")
+        assertTrue(cache.read(other)!!.serverShelves.isEmpty())
+        assertEquals(value.history.tracks, cache.read(other)!!.history.tracks)
+        assertTrue(cache.read(HomeCacheIdentity.home(profile.copy(countryCode = "GB")))!!.serverShelves.isEmpty())
     }
-
-    @Test fun previewRestoresVisibleTracksAndFullReadEnrichesPools() = runBlocking {
-        writeSnapshot(snapshot().copy(inputRevision = "database:42"))
-        val cache = HomeCardCache(app)
-        try {
-            val preview = cache.readInitial(profile)!!
-            assertEquals(video("quick"), preview.quick.tracks.single().id)
-            assertEquals(video("era"), preview.era.tracks.single().id)
-            assertTrue(preview.presentationComplete)
-            assertEquals("database:42", preview.inputRevision)
-            assertTrue(preview.quickCandidates.isEmpty())
-            assertTrue(preview.shelfLoads.getValue("QUICK").partial)
-            assertFalse(preview.shelfLoads.getValue("ERA").partial)
-            val full = cache.read(profile)!!
-            assertEquals(preview.quick.tracks, full.quick.tracks)
-            assertEquals(preview.inputRevision, full.inputRevision)
-            assertEquals(preview.shelfLoads, full.shelfLoads)
-            assertEquals(video("era"), full.era.tracks.single().id)
-            assertEquals(video("quick"), full.quickCandidates.single().id)
-        } finally { cache.close() }
+    @Test fun validBackupFileRecoversAnInterruptedAtomicHomeWrite() = runBlocking {
+        val cache = HomeCardCache(app); val value = saved(); cache.save(value)
+        val file = durable("home_server_${HomeCacheIdentity.fileKey(value.profileKey)}_v3.json")
+        withTimeout(5_000) { while (runCatching { JSONObject(file.readText()).getString("key") }.getOrNull() != value.profileKey) delay(10) }
+        File(file.path + ".bak").writeBytes(file.readBytes()); file.writeText("interrupted")
+        clearMemory(); assertEquals("Native heading", cache.read(value.profileKey)!!.serverShelves.single().title)
     }
-
-    @Test fun concurrentFullRestorationsReuseOneRetainedSnapshot() = runBlocking {
-        writeSnapshot(snapshot())
-        val cache = HomeCardCache(app)
-        try {
-            coroutineScope {
-                val first = async { cache.read(profile) }
-                val second = async { cache.read(profile) }
-                assertSame(first.await(), second.await())
-            }
-        } finally { cache.close() }
+    @Test fun cachePersistenceContainsNoObsoleteCandidateOrTasteState() = runBlocking {
+        val cache = HomeCardCache(app); val value = saved(); cache.save(value)
+        val text = durable("home_server_${HomeCacheIdentity.fileKey(value.profileKey)}_v3.json").readText()
+        assertFalse(text.contains("quickCandidates")); assertFalse(text.contains("tasteSnapshot")); assertFalse(text.contains("shelfLoads"))
     }
-
-    @Test fun aLegacyCacheWithoutAPreviewStillRestoresVisibleCardsAndCompletePools() = runBlocking {
-        writeSnapshot(snapshot())
-        val file = java.io.File(app.filesDir, "home_cards_v1.json")
-        val legacy = org.json.JSONObject(file.readText()).apply { remove("preview"); put("version", 2) }
-        file.writeText(legacy.toString())
-        val cache = HomeCardCache(app)
-        try {
-            val preview = cache.readInitial(profile)!!
-            assertEquals(video("quick"), preview.quick.tracks.single().id)
-            assertFalse(preview.presentationComplete)
-            assertEquals(video("era"), cache.read(profile)!!.eraCandidates.single().id)
-        } finally { cache.close() }
+    @Test fun legacyCustomPoolsAreIgnoredWithoutLosingTheLocalHistory() = runBlocking {
+        File(app.filesDir, "home_cards_v1.json").writeText(JSONObject().put("profileKey", "IN|Hindi")
+            .put("quickCandidates", JSONArray().put(JSONObject().put("id", "fake")))
+            .put("history", JSONObject().put("tracks", JSONArray().put(JSONObject().put("id", "real")
+                .put("title", "Real played song").put("artist", "Real singer")))).toString())
+        val cached = HomeCardCache(app).read("IN|anonymous")!!
+        assertTrue(cached.serverShelves.isEmpty()); assertEquals("real", cached.history.tracks.single().id)
     }
-
-    @Test fun anOldDiskReadCannotReplaceANewerInMemoryGeneration() = runBlocking {
-        writeSnapshot(snapshot())
-        val cache = HomeCardCache(app)
-        try {
-            BackgroundWorkCoordinator.scrolling(true)
-            coroutineScope {
-                val oldRead = async { cache.read(profile) }
-                // The full decoder is cooperative and paused by the scroll; a new
-                // publication can be retained without waiting on a cache/file lock.
-                delay(50)
-                val newer = snapshot(generation = 2)
-                cache.save(newer)
-                val retained = cache.peekFull(profile)!!
-                assertEquals(newer.generation, retained.generation)
-                BackgroundWorkCoordinator.scrolling(false)
-                ShadowSystemClock.advanceBy(Duration.ofSeconds(1))
-                assertSame(retained, withTimeout(5_000) { oldRead.await() })
-                assertSame(retained, cache.peekFull(profile))
-            }
-        } finally { BackgroundWorkCoordinator.scrolling(false); cache.close() }
+    @Test fun previousServerCacheSurvivesALanguageOnlyChangeAfterColdStartup() = runBlocking {
+        File(app.filesDir, "home_cards_v2.json").writeText(JSONObject().put("profileKey", "IN|Hindi").put("refreshedAt", 123)
+            .put("serverShelves", JSONArray().put(JSONObject().put("id", "native-old").put("title", "Actual server heading")
+                .put("tracks", JSONArray().put(JSONObject().put("id", "yt_abcdefghijk").put("title", "Native song").put("artist", "Singer"))))).toString())
+        val cached = HomeCardCache(app).read(HomeCacheIdentity.home(profile.copy(languages = listOf("Punjabi"))))!!
+        assertEquals("Actual server heading", cached.serverShelves.single().title)
     }
-
-    private suspend fun awaitCheckpoint() = withTimeout(5_000) {
-        val file = java.io.File(app.filesDir, "home_cards_presentation_v1.json")
-        while (!file.exists() || file.length() == 0L) delay(10)
-    }
-
-    @Test fun firstUsablePresentationIsDurableWithoutOptionalAdmissionOrFullPools() = runBlocking {
-        java.io.File(app.filesDir, "home_cards_v1.json").delete()
-        java.io.File(app.filesDir, "home_cards_presentation_v1.json").delete()
-        val cache = HomeCardCache(app)
-        try {
-            // No 15-second optional-idle admission has happened. This checkpoint
-            // must still reach disk before a process termination can run close().
-            cache.savePresentationCheckpoint(snapshot().copy(presentationComplete = false))
-            awaitCheckpoint()
-            clearMemory()
-            val restored = HomeCardCache(app)
-            try {
-                val preview = restored.readInitial(profile)!!
-                assertEquals(video("quick"), preview.quick.tracks.single().id)
-                assertFalse(preview.presentationComplete)
-                assertTrue(preview.quickCandidates.isEmpty())
-                assertTrue(preview.checkpointRevision > 0)
-                assertFalse(java.io.File(app.filesDir, "home_cards_v1.json").exists())
-            } finally { restored.close() }
-        } finally { cache.close() }
-    }
-
-    @Test fun newerPresentationSurvivesLateFullEnrichmentWithoutDroppingUntouchedPools() = runBlocking {
-        java.io.File(app.filesDir, "home_cards_presentation_v1.json").delete()
-        val baseline = snapshot()
-        writeSnapshot(baseline)
-        val cache = HomeCardCache(app)
-        try {
-            val old = cache.readInitial(profile)!!
-            val quick = old.quick.copy(tracks = listOf(old.quick.tracks.single().copy(id = video("new"), title = "New recording")))
-            cache.savePresentationCheckpoint(old.copy(quick = quick, generation = 2), initialComplete = true)
-            awaitCheckpoint()
-            clearMemory()
-            val restored = HomeCardCache(app)
-            try {
-                val preview = restored.readInitial(profile)!!
-                val full = restored.read(profile)!!
-                assertEquals(quick.tracks, preview.quick.tracks)
-                assertEquals(quick.tracks, full.quick.tracks)
-                assertEquals(quick.tracks, full.quickCandidates)
-                assertEquals(baseline.eraCandidates, full.eraCandidates)
-                assertEquals(baseline.shelfLoads, full.shelfLoads)
-                assertNull(restored.readInitial("another-profile"))
-            } finally { restored.close() }
-        } finally { cache.close() }
-    }
-
-    @Test fun completedFullWriteCannotBeShadowedByAnOlderPresentationFile() = runBlocking {
-        java.io.File(app.filesDir, "home_cards_presentation_v1.json").delete()
-        val cache = HomeCardCache(app)
-        cache.savePresentationCheckpoint(snapshot())
-        awaitCheckpoint()
-        val newer = snapshot(generation = 2).let { old -> old.copy(
-            quick = old.quick.copy(tracks = listOf(old.quick.tracks.single().copy(title = "Updated recording")))) }
-        cache.save(newer)
-        cache.close()
-        val writer = HomeCardCache::class.java.getDeclaredField("writer").apply { isAccessible = true }
-            .get(cache) as kotlinx.coroutines.Job
-        val presentationWriter = HomeCardCache::class.java.getDeclaredField("presentationWriter").apply { isAccessible = true }
-            .get(cache) as kotlinx.coroutines.Job
-        withTimeout(5_000) { writer.join(); presentationWriter.join() }
-        clearMemory()
-        val restored = HomeCardCache(app)
-        try {
-            val initial = restored.readInitial(profile)!!
-            assertEquals(2L, initial.generation)
-            assertEquals("Updated recording", initial.quick.tracks.single().title)
-        } finally { restored.close() }
+    @Test fun olderArtistCacheRetainsItsPlayableRepresentativeWhileTheRankingIsRevalidated() = runBlocking {
+        val played = JSONObject().put("id", "played").put("title", "Actual song").put("artist", "Singer")
+            .put("album", "Actual album").put("durationMs", 234_000).put("coverUrl", "https://art.example/played.jpg")
+            .put("audioUrl", "https://audio.example/played").put("source", "YouTube Music")
+        File(app.filesDir, "home_cards_v2.json").writeText(JSONObject().put("profileKey", "IN|Hindi")
+            .put("artists", JSONArray().put(JSONObject().put("name", "Singer").put("playCount", 12)
+                .put("tracks", JSONArray().put(played)))).toString())
+        val cached = HomeCardCache(app).read("IN|anonymous")!!
+        val representative = cached.artists.single().tracks.single()
+        assertEquals(234_000, representative.durationMs)
+        assertEquals("https://art.example/played.jpg", representative.coverUrl)
+        assertEquals("https://audio.example/played", representative.audioUrl)
+        assertEquals(0, cached.artistDataVersion)
     }
 }

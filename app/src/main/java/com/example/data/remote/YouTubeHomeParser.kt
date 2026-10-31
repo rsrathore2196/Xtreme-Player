@@ -56,6 +56,12 @@ object YouTubeHomeParser {
     }
 
     private fun parseItem(itemJson: JSONObject): MusicTrack? {
+        for (key in listOf("musicResponsiveListItemRenderer", "musicTwoRowItemRenderer")) {
+            itemJson.optJSONObject(key)?.let { renderer ->
+                if (renderer.optJSONObject("navigationEndpoint")?.has("browseEndpoint") == true ||
+                    renderer.has("isPlayable") && !renderer.optBoolean("isPlayable")) return null
+            }
+        }
         // 1. Try musicResponsiveListItemRenderer
         val responsive = itemJson.optJSONObject("musicResponsiveListItemRenderer")
         if (responsive != null) {
@@ -146,30 +152,41 @@ object YouTubeHomeParser {
             .trim()
     }
 
-    fun parseHomeFeed(rootJson: JSONObject): ParsedHomeFeed {
+    fun parseHomeFeed(rootJson: JSONObject, pageIdentity: String? = null): ParsedHomeFeed {
+        if (rootJson.has("error") || listOf("contents", "continuationContents", "onResponseReceivedActions",
+                "onResponseReceivedCommands", "onResponseReceivedEndpoints").none(rootJson::has))
+            throw IOException("Invalid Home response")
         val shelves = mutableListOf<ServerHomeShelf>()
         var sectionContinuation: String? = null
 
         // Navigate sectionListRenderer
         val contentsNode = rootJson.optJSONObject("contents")
-        val tabs = contentsNode?.optJSONObject("singleColumnBrowseResultsRenderer")
+        val tabs = (contentsNode?.optJSONObject("singleColumnBrowseResultsRenderer")
+            ?: contentsNode?.optJSONObject("twoColumnBrowseResultsRenderer"))
             ?.optJSONArray("tabs")
         val tabContent = tabs?.optJSONObject(0)?.optJSONObject("tabRenderer")?.optJSONObject("content")
         val sectionList = tabContent?.optJSONObject("sectionListRenderer")
+            ?: contentsNode?.optJSONObject("sectionListRenderer")
             ?: rootJson.optJSONObject("continuationContents")?.optJSONObject("sectionListContinuation")
-            ?: rootJson.optJSONArray("onResponseReceivedActions")?.optJSONObject(0)
-                ?.optJSONObject("appendContinuationItemsAction")
-
-        val rawSections = sectionList?.optJSONArray("contents")
-            ?: sectionList?.optJSONArray("continuationItems")
-
-        sectionContinuation = extractContinuation(sectionList)
+        val containers = mutableListOf<JSONObject>()
+        sectionList?.let(containers::add)
+        for (key in listOf("onResponseReceivedActions", "onResponseReceivedCommands", "onResponseReceivedEndpoints")) {
+            val actions = rootJson.optJSONArray(key) ?: continue
+            for (index in 0 until actions.length()) actions.optJSONObject(index)?.optJSONObject("appendContinuationItemsAction")?.let(containers::add)
+        }
+        val rawSections = JSONArray()
+        for (container in containers) {
+            extractContinuation(container)?.let { sectionContinuation = it }
+            val rows = container.optJSONArray("contents") ?: container.optJSONArray("continuationItems") ?: continue
+            for (index in 0 until rows.length()) rawSections.put(rows.opt(index))
+        }
 
         if (rawSections != null) {
             for (i in 0 until rawSections.length()) {
                 val section = rawSections.optJSONObject(i) ?: continue
                 val shelfRenderer = section.optJSONObject("musicCarouselShelfRenderer")
                     ?: section.optJSONObject("musicShelfRenderer")
+                    ?: section.optJSONObject("musicPlaylistShelfRenderer")
                     ?: section.optJSONObject("musicImmersiveCarouselShelfRenderer")
 
                 if (shelfRenderer != null) {
@@ -194,8 +211,15 @@ object YouTubeHomeParser {
                     if (tracks.isNotEmpty() && title.isNotBlank()) {
                         val shelfContinuation = extractContinuation(shelfRenderer)
                         val titleSlug = title.lowercase(java.util.Locale.ROOT).replace(Regex("[^a-z0-9]+"), "_").take(30)
-                        val firstId = tracks.firstOrNull()?.id?.removePrefix("yt_")?.take(11).orEmpty()
-                        val baseShelfId = "server_shelf_${titleSlug}_${firstId}"
+                        val target = headerObj?.optJSONObject("moreContentButton")?.optJSONObject("buttonRenderer")
+                            ?.optJSONObject("navigationEndpoint")?.optJSONObject("browseEndpoint")
+                        val nativeId = shelfRenderer.optString("targetId").ifBlank { shelfRenderer.optString("shelfId") }
+                        val destination = target?.let { it.optString("browseId") + "|" + it.optString("params") }.orEmpty()
+                        val page = if (nativeId.isBlank() && destination.isBlank()) pageIdentity.orEmpty() else ""
+                        val descriptor = "$title|$nativeId|$destination|$page"
+                        val hash = java.security.MessageDigest.getInstance("SHA-256").digest(descriptor.toByteArray())
+                            .take(12).joinToString("") { "%02x".format(it) }
+                        val baseShelfId = "server_shelf_${titleSlug}_$hash"
                         var shelfId = baseShelfId
                         var collisionCounter = 1
                         while (shelves.any { it.id == shelfId }) {

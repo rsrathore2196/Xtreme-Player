@@ -2,41 +2,27 @@ package com.example.ui.viewmodel
 
 import androidx.compose.runtime.Immutable
 import com.example.data.model.MusicTrack
-import com.example.recommendation.HomeUserMode
+import com.example.data.model.ServerHomeShelf
 import com.example.recommendation.HomeRecommendationPolicy
-import java.util.concurrent.atomic.AtomicReference
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.ensureActive
 
 internal const val RECENTLY_PLAYED_CARD_LIMIT = 4
 
-@Immutable
-data class ShelfBatch(
-    val quick: List<MusicTrack> = emptyList(),
-    val era: List<MusicTrack> = emptyList(),
-    val chart: List<MusicTrack>? = null,
-    val personalized: List<MusicTrack> = emptyList(),
-    val inspiredTrack: List<MusicTrack> = emptyList(),
-    val chartFetchedAt: Long = 0,
-    val seedKey: String = "",
-    val seedTitle: String = "",
-    val requested: Set<Shelf> = emptySet(),
-    val fetchedAt: Map<Shelf, Long> = emptyMap()
-)
-
-/** Inspect only emitted shelves and retain their lists when no failed recording is removed. */
-internal fun ShelfBatch.availableShelfTracks(
-    unavailable: Map<String, Long>, now: Long, sameSeed: Boolean
-): Map<Shelf, List<MusicTrack>> = requested.mapNotNull { shelf ->
-    if (!sameSeed && (shelf == Shelf.INSPIRED)) return@mapNotNull null
-    val tracks = when (shelf) {
-        Shelf.QUICK -> quick; Shelf.ERA -> era; Shelf.CHART -> chart.orEmpty()
-        Shelf.PERSONALIZED -> personalized; Shelf.INSPIRED -> inspiredTrack
+/** Keep provider ordering and existing instances, merging only an identified continuation of the same shelf. */
+internal fun appendServerShelves(previous: List<ServerHomeShelf>, incoming: List<ServerHomeShelf>): List<ServerHomeShelf> {
+    val result = previous.toMutableList()
+    for (shelf in incoming) {
+        val index = result.indexOfFirst { it.id == shelf.id }
+        if (index >= 0) {
+            val old = result[index]
+            val ids = old.tracks.mapTo(mutableSetOf()) { it.id }
+            val added = shelf.tracks.filter { ids.add(it.id) }
+            if (added.isNotEmpty()) result[index] = old.copy(tracks = old.tracks + added)
+        } else if (result.none { it.title == shelf.title && it.tracks.map { track -> track.id } == shelf.tracks.map { track -> track.id } }) {
+            result.add(shelf)
+        }
     }
-    val usable = if (tracks.any { (unavailable[it.id] ?: 0L) > now })
-        tracks.filter { (unavailable[it.id] ?: 0L) <= now } else tracks
-    (shelf to usable).takeIf { usable.isNotEmpty() }
-}.toMap()
+    return if (result == previous) previous else result
+}
 
 @Immutable
 data class SectionState(
@@ -48,45 +34,6 @@ data class SectionState(
     val isError: Boolean = false,
     val errorMessage: String = ""
 )
-
-internal fun SectionState.limitShelf(): SectionState {
-    val unique = tracks.distinctBy { it.id }.take(HomeRecommendationPolicy.MAX_SHELF_TRACKS)
-    return if (unique.size == tracks.size) this else copy(tracks = unique)
-}
-
-/** Also upgrades retained/older cache headings without changing their tracks or keys. */
-internal fun SectionState.withSeedHeading(shelf: Shelf, seed: String): SectionState {
-    val (heading, legacySubtitle) = when (shelf) {
-        Shelf.INSPIRED -> "Because You Listened" to "Inspired by "
-        else -> return this
-    }
-    val name = seed.trim().ifBlank {
-        subtitle.takeIf { it.startsWith(legacySubtitle) }?.removePrefix(legacySubtitle)?.trim().orEmpty()
-    }
-    if (name.isBlank()) return this
-    val title = "$heading '$name'"
-    return if (this.title == title && subtitle.isBlank()) this else copy(title = title, subtitle = "")
-}
-
-/** Prioritize bootstrap only while it is eligible; failed attempts cannot starve other cards. */
-internal fun Set<Shelf>.initialCardDemand(bootstrap: Set<Shelf>, automaticStartup: Boolean): Set<Shelf> =
-    if (automaticStartup) intersect(bootstrap).takeIf { it.isNotEmpty() } ?: this else this
-
-/** Pending verification is not an error; silent work does not introduce a new skeleton. */
-internal fun SectionState.finishPreparation(hasVerifiedCandidate: Boolean, showPending: Boolean = true): SectionState {
-    val next = when {
-        tracks.isNotEmpty() -> copy(isLoading = false)
-        hasVerifiedCandidate -> copy(isLoading = showPending, isError = false, errorMessage = "")
-        else -> copy(isLoading = false, isError = true,
-            errorMessage = "Recommendations are temporarily unavailable. Tap Retry to try again.")
-    }
-    return if (next == this) this else next
-}
-
-@Immutable
-data class RecommendationCards(val quick: SectionState, val era: SectionState,
-    val chart: SectionState, val personalized: SectionState,
-    val inspiredTrack: SectionState = SectionState())
 
 @Immutable
 data class MostListenedArtist(
@@ -107,130 +54,4 @@ internal fun addPendingArtistPlays(cached: List<MostListenedArtist>, tracks: Col
             (listOf(track) + previous?.tracks.orEmpty()).distinctBy { it.id }.take(3))
     }
     return artists.values.sortedByDescending { it.playCount }.take(15)
-}
-internal fun RecommendationCards.section(shelf: Shelf): SectionState = when (shelf) {
-    Shelf.QUICK -> quick
-    Shelf.ERA -> era
-    Shelf.CHART -> chart
-    Shelf.PERSONALIZED -> personalized
-    Shelf.INSPIRED -> inspiredTrack
-}
-
-internal fun RecommendationCards.withSection(shelf: Shelf, section: SectionState): RecommendationCards {
-    if (this.section(shelf) == section) return this
-    return when (shelf) {
-        Shelf.QUICK -> copy(quick = section)
-        Shelf.ERA -> copy(era = section)
-        Shelf.CHART -> copy(chart = section)
-        Shelf.PERSONALIZED -> copy(personalized = section)
-        Shelf.INSPIRED -> copy(inspiredTrack = section)
-    }
-}
-
-/** Bounded memoization of the existing policy, not a second recommendation engine.
- * Upstream recording/artist/album constraints are part of the key: an earlier shelf
- * may change diversity downstream, but an unrelated later shelf cannot rerank it.
- * Each preparation owns its memo copy, so no lock is held across interaction yields. */
-internal class IncrementalShelfPreparation {
-    private data class LocalKey(val tracks: List<MusicTrack>, val recent: List<MusicTrack>,
-        val exposure: Set<String>, val enabled: Boolean)
-    private data class Constraint(val aliases: List<String>, val artists: List<String>, val album: String)
-    private data class Entry(val key: LocalKey, val local: List<MusicTrack>,
-        val upstream: List<Constraint>, val selected: List<MusicTrack>)
-    private val memo = AtomicReference<Map<Shelf, Entry>>(emptyMap())
-
-    suspend fun prepare(pools: Map<Shelf, List<MusicTrack>>, eligible: Set<Shelf>,
-        recent: List<MusicTrack>, exposure: Set<String>,
-        relevantSeed: Boolean, checkpoint: suspend () -> Unit): Map<Shelf, List<MusicTrack>> {
-        val before = memo.get()
-        val next = mutableMapOf<Shelf, Entry>()
-        val selected = linkedMapOf<Shelf, List<MusicTrack>>()
-        val seen = HomeRecommendationPolicy.Recordings()
-        val excluded = HomeRecommendationPolicy.Recordings().apply { recent.forEach { add(it) } }
-        val upstream = mutableListOf<Constraint>()
-        for (shelf in listOf(Shelf.CHART, Shelf.ERA, Shelf.PERSONALIZED, Shelf.QUICK, Shelf.INSPIRED)) {
-            checkpoint()
-            val enabled = shelf in eligible && (shelf !in setOf(Shelf.INSPIRED) || relevantSeed)
-            val key = LocalKey(pools[shelf].orEmpty(), recent,
-                if (shelf == Shelf.CHART) emptySet() else exposure, enabled)
-            val previous = before[shelf]
-            val local = if (previous?.key == key) previous.local else if (!enabled) emptyList() else {
-                fun notRecent(track: MusicTrack) = !excluded.contains(track)
-                if (shelf == Shelf.CHART) HomeRecommendationPolicy.originals(key.tracks).filter(::notRecent)
-                else key.tracks.filter(::notRecent).sortedBy { HomeRecommendationPolicy.metadataKey(it) in exposure }
-            }
-            val constraints = upstream.toList()
-            val tracks = if (previous?.key == key && previous.upstream == constraints) {
-                previous.selected.also { result -> result.forEach { seen.add(it) } }
-            } else if (shelf == Shelf.CHART) {
-                local.take(HomeRecommendationPolicy.MAX_SHELF_TRACKS).also { result -> result.forEach { seen.add(it) } }
-            } else HomeRecommendationPolicy.diversify(local, HomeRecommendationPolicy.MAX_SHELF_TRACKS, seen)
-            next[shelf] = Entry(key, local, constraints, tracks)
-            selected[shelf] = tracks
-            tracks.forEach { track -> upstream.add(Constraint(HomeRecommendationPolicy.aliases(track),
-                HomeRecommendationPolicy.artists(track), HomeRecommendationPolicy.normalize(track.album))) }
-        }
-        currentCoroutineContext().ensureActive()
-        memo.compareAndSet(before, next)
-        return selected
-    }
-}
-
-/** Only track/exclusion changes invalidate a section's final recent-song filter. */
-internal class RecentRecommendationFilter {
-    private data class Entry(val tracks: List<MusicTrack>, val recent: List<MusicTrack>, val result: List<MusicTrack>)
-    private val memo = AtomicReference<Map<Shelf, Entry>>(emptyMap())
-    fun prepare(cards: RecommendationCards, recent: List<MusicTrack>): RecommendationCards {
-        val before = memo.get()
-        val next = mutableMapOf<Shelf, Entry>()
-        val excluded = HomeRecommendationPolicy.Recordings().apply { recent.forEach { add(it) } }
-        val result = Shelf.entries.fold(cards) { prepared, shelf ->
-            val section = cards.section(shelf)
-            val old = before[shelf]
-            val tracks = if (old != null && old.tracks == section.tracks && old.recent == recent) old.result
-            else section.tracks.filterNot { excluded.contains(it) }
-                .let { if (it.size == section.tracks.size) section.tracks else it }
-            next[shelf] = Entry(section.tracks, recent, tracks)
-            prepared.withSection(shelf, if (tracks === section.tracks) section else
-                section.copy(tracks = tracks, isLoaded = tracks.isNotEmpty()))
-        }
-        memo.compareAndSet(before, next)
-        return result
-    }
-}
-
-/** Full cache reads may fill untouched sections, never replace a newer live result. */
-internal fun RecommendationCards.enrichFromCache(cached: RecommendationCards,
-    preview: RecommendationCards): RecommendationCards = Shelf.entries.fold(this) { result, shelf ->
-    val current = result.section(shelf)
-    val replacement = cached.section(shelf)
-    if (current != preview.section(shelf) || replacement.tracks.isEmpty()) result
-    else result.withSection(shelf, replacement)
-}
-
-/** Eligibility uses authoritative history, not the initially empty taste StateFlow.
- * Retained verified sections survive a history error or an incomplete taste load. */
-internal fun eligibleHomeShelves(
-    mode: HomeUserMode,
-    isColdStart: Boolean,
-    hasSeed: Boolean,
-    cards: RecommendationCards
-): Set<Shelf> {
-    return buildSet {
-        add(Shelf.QUICK); add(Shelf.CHART)
-        if (mode == HomeUserMode.NEW_USER) return@buildSet
-        if (mode != HomeUserMode.LOADING || cards.era.tracks.isNotEmpty()) add(Shelf.ERA)
-        if (!isColdStart || cards.personalized.tracks.isNotEmpty()) add(Shelf.PERSONALIZED)
-        if (hasSeed || cards.inspiredTrack.tracks.isNotEmpty()) add(Shelf.INSPIRED)
-    }
-}
-
-/** Usually 60 rows suffice; repeated plays must not truncate the 30-track Recents shelf. */
-internal fun initialRecentEventCount(trackIds: List<String>): Int {
-    val distinct = HashSet<String>()
-    for ((index, id) in trackIds.withIndex()) {
-        distinct.add(id)
-        if (index >= 59 && distinct.size >= 30) return index + 1
-    }
-    return trackIds.size.coerceAtLeast(60)
 }

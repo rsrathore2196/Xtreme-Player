@@ -1,101 +1,82 @@
 package com.example
 
+import android.app.Application
 import com.example.data.model.MusicTrack
-import com.example.ui.viewmodel.Shelf
-import com.example.ui.viewmodel.RecommendationCards
-import com.example.ui.viewmodel.SectionState
-import com.example.ui.viewmodel.enrichFromCache
-import com.example.ui.viewmodel.finishPreparation
-import com.example.ui.viewmodel.withSection
-import com.example.ui.viewmodel.initialCardDemand
-import com.example.ui.viewmodel.withSeedHeading
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertSame
+import com.example.data.model.ServerHomeShelf
+import com.example.data.remote.YouTubeHomeParser
+import com.example.ui.viewmodel.appendServerShelves
+import org.junit.Assert.*
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34], application = Application::class)
 class HomePresentationRegressionTest {
-    private fun section(id: String, cover: String = "cover") = SectionState(title = id,
-        tracks = listOf(MusicTrack(id, id, "Artist", "Album", 180_000, cover, "https://audio")), isLoaded = true)
-    private fun cards(quick: SectionState = section("quick"), era: SectionState = SectionState()) =
-        RecommendationCards(quick, era, SectionState(), SectionState())
-
-    @Test fun relatedHeadingsIncludeTheirActualSeedAndRemoveTheDuplicateSubtitle() {
-        val inspired = section("Inspired by this Track").copy(subtitle = "Inspired by old track")
-        val track = inspired.withSeedHeading(Shelf.INSPIRED, "On Top")
-        assertEquals("Because You Listened 'On Top'", track.title)
-        assertEquals("", track.subtitle)
-        assertSame(inspired.tracks, track.tracks)
+    private fun track(id: String) = MusicTrack(id, id, "Artist", "Album", 180_000, "", "")
+    private fun shelf(id: String, vararg songs: String) = ServerHomeShelf(id, "Native $id", tracks = songs.map(::track))
+    @Test fun serverHeadingsAndTrackOrderAreAuthoritative() {
+        val page = YouTubeHomeParser.parseHomeFeed(org.json.JSONObject(NativeFeedFixtures.home(NativeFeedFixtures.shelf("A native heading", 3, 1, 2))))
+        assertEquals("A native heading", page.shelves.single().title)
+        assertEquals(listOf(3, 1, 2).map { "yt_${NativeFeedFixtures.id(it)}" }, page.shelves.single().tracks.map { it.id })
     }
-
-    @Test fun oldCachedSubtitlesSupplyMissingSeedMetadataWithoutGuessing() {
-        assertEquals("Because You Listened 'Song'", section("old").copy(subtitle = "Inspired by Song")
-            .withSeedHeading(Shelf.INSPIRED, "").title)
-        val unknown = section("Because You Listened")
-        assertSame(unknown, unknown.withSeedHeading(Shelf.INSPIRED, ""))
-        assertSame(unknown, unknown.withSeedHeading(Shelf.QUICK, "Artist"))
+    @Test fun refreshedArtworkOrFirstTrackNeverChangesTheShelfIdentity() {
+        fun parse(vararg ids: Int) = YouTubeHomeParser.parseHomeFeed(org.json.JSONObject(NativeFeedFixtures.home(NativeFeedFixtures.shelf("Mix", *ids)))).shelves.single()
+        assertEquals(parse(1, 2).id, parse(2, 3).id)
     }
-
-    @Test fun lateFullCacheFillsAnUntouchedShelfWithoutReplacingNewerLiveTracks() {
-        val preview = cards()
-        val live = preview.copy(quick = section("new-selection"))
-        val full = preview.copy(era = section("era"))
-        val enriched = live.enrichFromCache(full, preview)
-        assertSame(live.quick, enriched.quick)
-        assertSame(full.era, enriched.era)
+    @Test fun continuationAppendKeepsAllEarlierPositions() {
+        val before = listOf(shelf("a", "one"), shelf("b", "two"))
+        val after = appendServerShelves(before, listOf(shelf("c", "three")))
+        assertEquals(listOf("a", "b", "c"), after.map { it.id }); assertSame(before[0], after[0]); assertSame(before[1], after[1])
     }
-
-    @Test fun identicalFullCacheRetainsTheEntireSnapshotAndArtworkIdentity() {
-        val preview = cards()
-        val decodedAgain = preview.copy(quick = preview.quick.copy(tracks = preview.quick.tracks.toList()))
-        assertSame(preview, preview.enrichFromCache(decodedAgain, preview))
+    @Test fun lateContinuationMergesOnlyItsOwnShelfWithoutReplacingEarlierTracks() {
+        val before = listOf(shelf("a", "one"), shelf("b", "two"))
+        val after = appendServerShelves(before, listOf(shelf("a", "one", "three")))
+        assertEquals(listOf("one", "three"), after[0].tracks.map { it.id }); assertSame(before[1], after[1])
     }
-
-    @Test fun anEmptyCacheSectionCannotClearAPopulatedShelf() {
-        val preview = cards(era = section("era"))
-        assertSame(preview, preview.enrichFromCache(cards(quick = SectionState()), preview))
+    @Test fun duplicateResponsesDoNotCauseNewCardInstances() {
+        val before = listOf(shelf("a", "one"))
+        assertSame(before, appendServerShelves(before, before))
     }
-
-    @Test fun verifiedCoverMetadataEnrichesAnUntouchedTrackWithoutChangingItsId() {
-        val preview = cards()
-        val full = cards(quick = section("quick", "verified-high-resolution-cover"))
-        val result = preview.enrichFromCache(full, preview)
-        assertEquals(preview.quick.tracks.single().id, result.quick.tracks.single().id)
-        assertEquals("verified-high-resolution-cover", result.quick.tracks.single().coverUrl)
+    @Test fun repeatedPageWithADifferentCursorCannotDuplicateAnIdenticalShelf() {
+        val before = listOf(shelf("a", "one")); val duplicate = before.single().copy(id = "another-page")
+        assertSame(before, appendServerShelves(before, listOf(duplicate)))
     }
-
-    @Test fun oneSectionUpdateRetainsAllOtherSectionReferences() {
-        val original = cards(era = section("era"))
-        val next = original.withSection(Shelf.QUICK, section("next"))
-        assertSame(original.era, next.era)
-        assertSame(original.chart, next.chart)
-        assertSame(original.personalized, next.personalized)
-        assertSame(original, original.withSection(Shelf.QUICK, original.quick.copy()))
+    @Test fun emptyPageCannotClearExistingCards() {
+        val before = listOf(shelf("a", "one")); assertSame(before, appendServerShelves(before, emptyList()))
     }
-
-    @Test fun firstInstallVerificationKeepsTheSkeletonUntilItsFirstSnapshotIsPresented() {
-        val loading = SectionState(title = "Quick Picks", isLoading = true)
-        assertSame(loading, loading.finishPreparation(hasVerifiedCandidate = true))
-        val staleError = loading.copy(isError = true, errorMessage = "old failure")
-        assertEquals(loading, staleError.finishPreparation(hasVerifiedCandidate = true))
+    @Test fun titleOnlyShelvesFromDifferentPagesHaveDistinctStableIds() {
+        val root = org.json.JSONObject(NativeFeedFixtures.home(NativeFeedFixtures.shelf("Mix", 1)))
+        val a = YouTubeHomeParser.parseHomeFeed(root, "page-a").shelves.single()
+        val b = YouTubeHomeParser.parseHomeFeed(root, "page-b").shelves.single()
+        assertNotEquals(a.id, b.id); assertEquals(a.id, YouTubeHomeParser.parseHomeFeed(root, "page-a").shelves.single().id)
     }
-
-    @Test fun aFailedRefreshRetainsUsableCachedTracks() {
-        val cached = section("cached")
-        assertSame(cached, cached.finishPreparation(hasVerifiedCandidate = false))
+    @Test fun unsupportedCollectionOverlaysCannotBecomeArbitrarySongs() {
+        val row = NativeFeedFixtures.album(1)
+        row.getJSONObject("musicTwoRowItemRenderer").put("overlay", org.json.JSONObject("""{"musicItemThumbnailOverlayRenderer":{"content":{"musicPlayButtonRenderer":{"playNavigationEndpoint":{"watchEndpoint":{"videoId":"abcdefghijk"}}}}}}"""))
+        val shelf = NativeFeedFixtures.shelf("Albums"); shelf.getJSONObject("musicCarouselShelfRenderer").getJSONArray("contents").put(row)
+        assertTrue(YouTubeHomeParser.parseHomeFeed(org.json.JSONObject(NativeFeedFixtures.home(shelf))).shelves.isEmpty())
     }
-
-    @Test fun firstInstallStartsWithOnlyTheEligibleBootstrapShelf() {
-        assertEquals(setOf(Shelf.QUICK), setOf(Shelf.QUICK, Shelf.CHART, Shelf.ERA)
-            .initialCardDemand(setOf(Shelf.QUICK), automaticStartup = true))
+    @Test fun continuationsKeepTheActualServerCursor() {
+        val page = YouTubeHomeParser.parseHomeFeed(org.json.JSONObject(NativeFeedFixtures.home(NativeFeedFixtures.shelf("Native", 1), continuation = "cursor")))
+        assertEquals("cursor", page.continuationToken)
     }
-
-    @Test fun aFailedOrNegativeCachedBootstrapCannotBlockOtherVisibleEmptyCards() {
-        val eligible = setOf(Shelf.CHART, Shelf.ERA)
-        assertSame(eligible, eligible.initialCardDemand(setOf(Shelf.QUICK), automaticStartup = true))
+    @Test fun allPlayableServerShelvesAreParsedWithoutATwoCardLimit() {
+        val page = YouTubeHomeParser.parseHomeFeed(org.json.JSONObject(NativeFeedFixtures.home(
+            *(1..8).map { NativeFeedFixtures.shelf("Server $it", it) }.toTypedArray())))
+        assertEquals((1..8).map { "Server $it" }, page.shelves.map { it.title })
     }
-
-    @Test fun explicitRefreshAndLaterViewportDemandKeepTheirRequestedSections() {
-        val requested = setOf(Shelf.QUICK, Shelf.CHART, Shelf.ERA)
-        assertSame(requested, requested.initialCardDemand(setOf(Shelf.QUICK), automaticStartup = false))
+    @Test fun continuationActionsAndCommandsRetainAllShelvesAndTheNextCursor() {
+        val root = org.json.JSONObject("""{"onResponseReceivedActions":[],"onResponseReceivedCommands":[]}""")
+        fun action(vararg rows: org.json.JSONObject) = org.json.JSONObject().put("appendContinuationItemsAction",
+            org.json.JSONObject().put("continuationItems", org.json.JSONArray(rows.toList())))
+        root.getJSONArray("onResponseReceivedActions").put(action(NativeFeedFixtures.shelf("A", 1)))
+            .put(action(NativeFeedFixtures.shelf("B", 2)))
+        root.getJSONArray("onResponseReceivedCommands").put(action(NativeFeedFixtures.shelf("C", 3),
+            org.json.JSONObject("""{"continuationItemRenderer":{"continuationEndpoint":{"continuationCommand":{"token":"next"}}}}""")))
+        val page = YouTubeHomeParser.parseHomeFeed(root, "current")
+        assertEquals(listOf("A", "B", "C"), page.shelves.map { it.title })
+        assertEquals("next", page.continuationToken)
     }
 }

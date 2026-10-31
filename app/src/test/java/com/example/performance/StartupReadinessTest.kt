@@ -6,24 +6,24 @@ import org.junit.Test
 class StartupReadinessTest {
     @Test fun deadlinePreservesCompletedWorkAndLabelsUnfinishedTasksUnavailable() {
         val before = StartupReadiness().withStatus(StartupTask.HOME_CACHE, StartupStatus.READY)
-            .withStatus(StartupTask.QUICK, StartupStatus.RUNNING)
+            .withStatus(StartupTask.RECENT_HISTORY, StartupStatus.RUNNING)
         val expired = before.expirePreparation()
         assertTrue(expired.complete)
         assertTrue(expired.hasUnavailable)
         assertEquals(StartupStatus.READY, expired.tasks[StartupTask.HOME_CACHE])
-        assertEquals(StartupStatus.UNAVAILABLE, expired.tasks[StartupTask.QUICK])
+        assertEquals(StartupStatus.UNAVAILABLE, expired.tasks[StartupTask.RECENT_HISTORY])
         assertEquals(StartupStatus.FALLBACK_READY, expired.tasks[StartupTask.PRESENTATION])
         assertSame(expired, expired.expirePreparation())
-        assertSame(expired, expired.withStatus(StartupTask.QUICK, StartupStatus.READY))
+        assertSame(expired, expired.withStatus(StartupTask.RECENT_HISTORY, StartupStatus.READY))
     }
 
     @Test fun skippedHistoryDependentWorkIsTerminalWithoutClaimingItWasFetched() {
-        val skipped = StartupReadiness().withStatus(StartupTask.ERA, StartupStatus.SKIPPED)
+        val skipped = StartupReadiness().withStatus(StartupTask.RECENT_ARTISTS, StartupStatus.SKIPPED)
         assertTrue(StartupStatus.SKIPPED.terminal)
-        assertEquals(StartupStatus.SKIPPED, skipped.tasks[StartupTask.ERA])
+        assertEquals(StartupStatus.SKIPPED, skipped.tasks[StartupTask.RECENT_ARTISTS])
         assertFalse(skipped.hasUnavailable)
         assertEquals(1f / StartupTask.entries.size, skipped.progress)
-        assertSame(skipped, skipped.withStatus(StartupTask.ERA, StartupStatus.READY))
+        assertSame(skipped, skipped.withStatus(StartupTask.RECENT_ARTISTS, StartupStatus.READY))
         assertFalse(skipped.preparationComplete)
     }
 
@@ -62,7 +62,7 @@ class StartupReadinessTest {
 
     @Test fun unavailableRemoteDataIsTerminalButNotMisrepresentedAsSuccess() {
         val ready = StartupTask.entries.fold(StartupReadiness()) { state, task ->
-            state.withStatus(task, if (task == StartupTask.CHART) StartupStatus.UNAVAILABLE else StartupStatus.READY)
+            state.withStatus(task, if (task == StartupTask.HOME_CACHE) StartupStatus.UNAVAILABLE else StartupStatus.READY)
         }
         assertTrue(ready.complete)
         assertTrue(ready.hasUnavailable)
@@ -85,15 +85,15 @@ class StartupReadinessTest {
         val ready = StartupTask.entries.fold(StartupReadiness()) { state, task -> state.withStatus(task, StartupStatus.READY) }
         assertSame(ready, ready.withStatus(StartupTask.HOME_CACHE, StartupStatus.RUNNING))
         assertSame(ready, ready.withStatus(StartupTask.PLAYER_CONNECTION, StartupStatus.READY))
-        val fallback = StartupReadiness().withStatus(StartupTask.CHART, StartupStatus.UNAVAILABLE)
-        assertSame(fallback, fallback.withStatus(StartupTask.CHART, StartupStatus.READY))
+        val fallback = StartupReadiness().withStatus(StartupTask.HOME_CACHE, StartupStatus.UNAVAILABLE)
+        assertSame(fallback, fallback.withStatus(StartupTask.HOME_CACHE, StartupStatus.READY))
     }
 
     @Test fun processingDetailsDescribeActualWorkWithoutExposingNavigationStyleGroups() {
         val pending = StartupReadiness()
         assertEquals("Preparing your music", pending.detail)
         assertEquals("Restoring your saved music", pending.withStatus(StartupTask.HOME_CACHE, StartupStatus.RUNNING).detail)
-        assertEquals("Finding music for your taste", pending.withStatus(StartupTask.ERA, StartupStatus.RUNNING).detail)
+        assertEquals("Syncing your listening history", pending.withStatus(StartupTask.RECENT_ARTISTS, StartupStatus.RUNNING).detail)
         assertEquals("Restoring your last session", pending.withStatus(StartupTask.PLAYER_CONNECTION, StartupStatus.RUNNING).detail)
     }
 }

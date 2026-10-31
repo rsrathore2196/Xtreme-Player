@@ -18,9 +18,13 @@ class AudioQualityBadgeClassificationTest {
     private fun lossless(bits: Int, hz: Int) = StreamQualityBadge("FLAC", 1500, hz, bits, lossless = true, verified = true)
 
     @Test fun sourceDepthAndRateDetermineLosslessBadgeAcrossProviders() {
-        for (bits in listOf(16, 24)) assertEquals("Lossless", lossless(bits, 44100).badgeLabel)
+        assertEquals("Lossless", lossless(16, 44100).badgeLabel)
         assertEquals("Lossless", lossless(16, 48000).badgeLabel)
-        for (hz in listOf(48000, 88200, 96000, 176400, 192000)) assertEquals("Hi-Res Lossless", lossless(24, hz).badgeLabel)
+        for (hz in listOf(44100, 48000, 88200, 96000, 176400, 192000)) assertEquals("Hi-Res Lossless", lossless(24, hz).badgeLabel)
+        assertEquals("Hi-Res Lossless", lossless(16, 96000).badgeLabel)
+        for (bits in listOf(16, 24, 32)) for (hz in listOf(44100, 48000, 96000, 192000)) {
+            assertEquals(LosslessStreamPrebuffer.AudioInfo("FLAC", 1500, hz, bits).badge, lossless(bits, hz).badgeLabel)
+        }
         assertEquals("ALAC • 24-bit/96.0 kHz", lossless(24, 96000).copy(codec = "ALAC").label)
         assertEquals("Hi-Res Lossless", lossless(24, 96000).copy(codec = "ALAC").badgeLabel)
     }
@@ -38,7 +42,7 @@ class AudioQualityBadgeClassificationTest {
 
     @Test fun popupKeepsCompressedBitrateSeparateFromUncompressedPcmDataRate() {
         val state = SignalPathState(quality = lossless(24, 44100).copy(bitrateKbps = 1658), sourceChannels = 2)
-        assertEquals("Lossless", state.quality.badgeLabel)
+        assertEquals("Hi-Res Lossless", state.quality.badgeLabel)
         assertEquals(2116L, state.sourcePcmDataRateKbps)
         assertEquals(1658, state.quality.bitrateKbps)
         assertNull(state.copy(sourceChannels = 0).sourcePcmDataRateKbps)

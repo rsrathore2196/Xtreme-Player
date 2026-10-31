@@ -27,7 +27,8 @@ data class StreamQualityBadge(
 ) {
     /** Compact source-quality classification; never infer depth from decoder/output precision. */
     val badgeLabel: String get() = when {
-        verified && lossless && bitDepth >= 24 && sampleRateHz >= 48_000 -> "Hi-Res Lossless"
+        verified && lossless && bitDepth >= 16 && sampleRateHz >= 44_100 &&
+            (bitDepth > 16 || sampleRateHz > 48_000) -> "Hi-Res Lossless"
         verified && lossless && bitDepth >= 16 && sampleRateHz >= 44_100 -> "Lossless"
         verified && codec == "E-AC-3 JOC" -> "Dolby Atmos"
         else -> label

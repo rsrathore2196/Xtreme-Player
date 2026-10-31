@@ -39,8 +39,15 @@ data class ActualPlayStamp(val id: Long, val trackId: String, val timestamp: Lon
 /** Count and complete recent events come from one SQLite read, including an empty database. */
 data class ActualPlaySnapshotRow(val total: Int, @Embedded val event: ListeningEventEntity?, val inputRevision: String? = null)
 
+data class ActualTrackPlayCount(val trackId: String, val artistName: String, val playCount: Int, val lastPlayed: Long)
+
 @Dao
 interface ListeningEventDao {
+    /** One service-owned occurrence counts once; playback milestones and feedback rows do not add plays. */
+    @Query("""SELECT trackId, artistName, COUNT(DISTINCT CASE WHEN sessionId != '' THEN 'session:' || sessionId ELSE 'event:' || id END) AS playCount,
+        MAX(timestamp) AS lastPlayed FROM listening_events
+        WHERE eventType = 'ACTUAL_PLAY' AND playedDurationMs > 0 GROUP BY trackId""")
+    suspend fun getActualTrackPlayCounts(): List<ActualTrackPlayCount>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertListeningEvent(event: ListeningEventEntity): Long
@@ -108,8 +115,8 @@ interface ListeningEventDao {
         SELECT artistName, COUNT(*) as playCount, AVG(completionRatio) as avgCompletion, 
                SUM(CASE WHEN completed = 1 THEN 1 ELSE 0 END) as completedCount 
         FROM listening_events 
-        WHERE timestamp >= :sinceTimestamp AND artistName != '' 
-        GROUP BY artistName 
+        WHERE timestamp >= :sinceTimestamp AND artistName != '' AND eventType = 'ACTUAL_PLAY' AND playedDurationMs > 0
+        GROUP BY LOWER(TRIM(artistName))
         ORDER BY playCount DESC 
         LIMIT :limit
     """)

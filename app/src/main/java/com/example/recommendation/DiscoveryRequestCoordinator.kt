@@ -5,78 +5,20 @@ import com.example.performance.AppDispatchers
 import com.example.performance.BackgroundWorkCoordinator
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.selects.select
 import java.text.Normalizer
 import java.util.Locale
 import kotlin.coroutines.AbstractCoroutineContextElement
 import kotlin.coroutines.CoroutineContext
-import kotlin.coroutines.EmptyCoroutineContext
 
 /** Shared discovery work: two bounded optional slots and a reserved urgent lane. */
 internal object DiscoveryRequestCoordinator {
-    const val INITIAL_DISCOVERY_BUDGET_MS = 6_000L
-
-    /** A pull can promote its existing refresh without launching another pass. */
-    class HomeRefresh(requested: Boolean, val initialShelf: Boolean = false,
-        val essentialShelves: Set<com.example.ui.viewmodel.Shelf> = emptySet(),
-        val initialPresentation: Boolean = false) : AbstractCoroutineContextElement(Key) {
-        companion object Key : CoroutineContext.Key<HomeRefresh>
-        val requested = MutableStateFlow(requested)
-        val waitingShelf = MutableStateFlow<com.example.ui.viewmodel.Shelf?>(null)
-        val activeShelf = MutableStateFlow<com.example.ui.viewmodel.Shelf?>(null)
-        fun promote() { requested.value = true }
-
-        /** Start the deadline on a pull, including promotion of a deferred silent pass. */
-        suspend fun <T> withBudget(milliseconds: Long, block: suspend () -> T): T? = coroutineScope {
-            val work = async { block() }
-            val deadline = async { if (!initialPresentation) requested.first { it }; delay(milliseconds) }
-            try {
-                select {
-                    work.onAwait { it }
-                    deadline.onAwait { null }
-                }
-            } finally {
-                work.cancel()
-                deadline.cancel()
-            }
-        }
-    }
-    class HomeCard(val essential: Boolean) : AbstractCoroutineContextElement(Key) {
-        companion object Key : CoroutineContext.Key<HomeCard>
-    }
-    suspend fun essentialHomeWork(): Boolean = currentCoroutineContext()[HomeRefresh]?.initialShelf == true ||
-        currentCoroutineContext()[HomeCard]?.essential == true
     private val scope = CoroutineScope(SupervisorJob() + AppDispatchers.Io)
-    private class Flight(val urgent: MutableStateFlow<Boolean>, val requested: MutableStateFlow<Boolean>,
+    private class Flight(val urgent: MutableStateFlow<Boolean>,
         val result: Deferred<List<MusicTrack>>, var readers: Int = 0)
     private class SharedPriority(val urgent: MutableStateFlow<Boolean>) : AbstractCoroutineContextElement(Key) {
         companion object Key : CoroutineContext.Key<SharedPriority>
     }
     private val flights = mutableMapOf<String, Flight>()
-    private val revalidations = mutableMapOf<String, Job>()
-    private val lastRevalidation = linkedMapOf<String, Long>()
-
-    /** Cache-only callers return immediately; stale metadata refreshes share idle admission. */
-    fun revalidateWhenIdle(key: String, block: suspend () -> Unit) {
-        val job = synchronized(revalidations) {
-            val now = android.os.SystemClock.elapsedRealtime()
-            if (revalidations[key]?.isActive == true ||
-                lastRevalidation[key]?.let { now - it < 60_000L } == true || revalidations.size >= 32) return
-            lastRevalidation[key] = now
-            while (lastRevalidation.size > 64) lastRevalidation.remove(lastRevalidation.keys.first())
-            scope.launch(start = CoroutineStart.LAZY) {
-                BackgroundWorkCoordinator.awaitInitialPresentation()
-                BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.DEFERRED,
-                    label = "Discovery cache revalidation") { block() }
-            }.also { pending ->
-                revalidations[key] = pending
-                pending.invokeOnCompletion {
-                    synchronized(revalidations) { if (revalidations[key] === pending) revalidations.remove(key) }
-                }
-            }
-        }
-        job.start()
-    }
     private val lock = Any()
     private val changed = MutableStateFlow(0L)
     private val scrolling = MutableStateFlow(false)
@@ -91,12 +33,11 @@ internal object DiscoveryRequestCoordinator {
     fun homeScrolling(active: Boolean) { scrolling.value = active }
 
     suspend fun <T> network(essential: Boolean = false, block: suspend () -> T): T {
-        val requested = currentCoroutineContext()[HomeRefresh]?.requested ?: MutableStateFlow(false)
         val urgent = currentCoroutineContext()[SharedPriority]?.urgent ?: MutableStateFlow(essential)
         if (essential) urgent.value = true
-        return permit(urgent, requested) {
+        return permit(urgent) {
             // Finish this bounded transport/parse batch and release its permit.
-            // Heavy ranking after the response remains interaction-preemptible.
+            // Catalog processing after the response remains interaction-preemptible.
             BackgroundWorkCoordinator.finishBoundedBatch {
                 withTimeoutOrNull(12_000L) { Result.success(block()) }?.getOrThrow()
                     ?: throw java.io.IOException("Discovery request timed out")
@@ -111,18 +52,14 @@ internal object DiscoveryRequestCoordinator {
 
     suspend fun shared(key: String, essential: Boolean, network: Boolean = true,
         block: suspend () -> List<MusicTrack>): List<MusicTrack> {
-        val priority = currentCoroutineContext()[HomeRefresh]
-        val card = currentCoroutineContext()[HomeCard]
         val flight = synchronized(flights) {
             flights.getOrPut(key) {
                 val urgent = MutableStateFlow(essential)
-                val requested = MutableStateFlow(priority?.requested?.value == true)
-                Flight(urgent, requested, scope.async((priority ?: EmptyCoroutineContext) +
-                    (card ?: EmptyCoroutineContext) + SharedPriority(urgent), start = CoroutineStart.LAZY) {
+                Flight(urgent, scope.async(SharedPriority(urgent), start = CoroutineStart.LAZY) {
                     BackgroundWorkCoordinator.optionalProcessing(urgent = {
-                        urgent.value || requested.value || card?.essential == true || priority?.initialShelf == true
+                        urgent.value
                     }) {
-                        if (network) permit(urgent, requested) {
+                        if (network) permit(urgent) {
                             BackgroundWorkCoordinator.finishBoundedBatch { withTimeoutOrNull(12_000L) { block() }.orEmpty() }
                         }
                         else block()
@@ -131,17 +68,11 @@ internal object DiscoveryRequestCoordinator {
             }.also {
                 it.readers++
                 if (essential) it.urgent.value = true
-                if (priority?.requested?.value == true) it.requested.value = true
             }
         }
         try {
             return coroutineScope {
-                val promotion = priority?.let { launch(start = CoroutineStart.UNDISPATCHED) {
-                    it.requested.first { requested -> requested }
-                    flight.requested.value = true
-                } }
-                try { flight.result.start(); flight.result.await() }
-                finally { promotion?.cancel() }
+                flight.result.start(); flight.result.await()
             }
         }
         finally {
@@ -154,8 +85,7 @@ internal object DiscoveryRequestCoordinator {
         }
     }
 
-    private suspend fun <T> permit(urgent: StateFlow<Boolean>, requested: StateFlow<Boolean>, block: suspend () -> T): T {
-        val awaitFrameQuiet = !essentialHomeWork()
+    private suspend fun <T> permit(urgent: StateFlow<Boolean>, block: suspend () -> T): T {
         var acquired = false
         var optional = false
         fun release() {
@@ -171,16 +101,13 @@ internal object DiscoveryRequestCoordinator {
             // No request is cancelled or restarted, and playback's urgent lane stays open.
             while (true) {
                 if (!urgent.value) com.example.performance.BackgroundWorkCoordinator.yieldToInteraction(
-                    awaitFrameQuiet = awaitFrameQuiet,
-                    bypass = { urgent.value || requested.value })
-                combine(changed, urgent, requested, scrolling, resolving) { _, _, _, _, _ -> Unit }.first {
+                    bypass = { urgent.value })
+                combine(changed, urgent, scrolling, resolving) { _, _, _, _ -> Unit }.first {
                     synchronized(lock) {
-                        // Explicit refresh can use two slots during the pull's
-                        // settling scroll. A third slot remains available to radio;
-                        // selected-track resolution still takes priority over Home.
-                        val homeAllowed = resolving.value == 0 && if (requested.value)
-                            optionalRunning < 2 else optionalRunning < 2 && !scrolling.value
-                        if (running < 3 && (urgent.value || homeAllowed)) {
+                        // Optional metadata shares two slots; a third remains reserved
+                        // for urgent playback, which also takes priority over discovery.
+                        val discoveryAllowed = resolving.value == 0 && optionalRunning < 2 && !scrolling.value
+                        if (running < 3 && (urgent.value || discoveryAllowed)) {
                             optional = !urgent.value
                             running++
                             if (optional) optionalRunning++
@@ -193,8 +120,7 @@ internal object DiscoveryRequestCoordinator {
                 // A navigation gesture may begin while queued for a slot. Release
                 // it before waiting again; paused Home work must not reserve IO
                 // capacity needed by other consumers. No request has started yet.
-                if (urgent.value || requested.value ||
-                    com.example.performance.BackgroundWorkCoordinator.isInteractionIdle(awaitFrameQuiet = awaitFrameQuiet)) break
+                if (urgent.value || com.example.performance.BackgroundWorkCoordinator.isInteractionIdle()) break
                 release()
             }
             return block()
