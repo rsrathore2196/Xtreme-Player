@@ -89,6 +89,7 @@ object MusicCache {
     }.getOrNull()
 
     fun getSimpleCache(context: Context): SimpleCache {
+        com.example.performance.MaintenanceScheduler.onCacheUsed(context)
         simpleCacheInstance?.let { return it }
         return synchronized(this) { simpleCacheInstance ?: run {
             val cacheDir = File(context.cacheDir, "xtreme_audio_cache")

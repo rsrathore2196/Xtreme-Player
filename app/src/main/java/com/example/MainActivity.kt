@@ -127,6 +127,7 @@ class MainActivity : ComponentActivity() {
         }
 
         val app = application as XtremeMusicApp
+        app.prepareLaunchSettings()
         // Keep the Android launch window until local settings are ready, avoiding
         // a frame of onboarding/default colours for a returning user.
         window.decorView.viewTreeObserver.addOnPreDrawListener(object : android.view.ViewTreeObserver.OnPreDrawListener {
@@ -137,10 +138,10 @@ class MainActivity : ComponentActivity() {
             }
         })
         setContent {
-            val coreReady by app.startupReady.collectAsStateWithLifecycle()
-            if (!coreReady) return@setContent
-            val settingsReady by playerViewModel.settingsReady.collectAsStateWithLifecycle()
-            if (!settingsReady) return@setContent
+            // Only the tiny local appearance/profile snapshot belongs behind the
+            // normal Android launch window. Player/network/tab data never gates it.
+            val launchSettings by app.launchSettings.collectAsStateWithLifecycle()
+            if (launchSettings == null) return@setContent
             androidx.compose.runtime.SideEffect { initialContentReady = true }
             val themeSelection by playerViewModel.themeSelection.collectAsStateWithLifecycle()
             val themeMode = themeSelection.mode
@@ -222,7 +223,7 @@ class MainActivity : ComponentActivity() {
         mediaSearchIntentJob?.cancel()
         mediaSearchIntentJob = lifecycleScope.launch {
             val app = application as XtremeMusicApp
-            app.startupReady.first { it }
+            app.launchSettings.first { it != null }
             playerViewModel.settingsReady.first { it }
             playerViewModel.isOnboardingCompleted.first { it }
             playerViewModel.playMediaSearch(query, requestId)
@@ -267,9 +268,7 @@ class MainActivity : ComponentActivity() {
                             com.example.performance.BackgroundWorkCoordinator.firstFrameRendered()
                     }
                 }
-                val onboarding = (application as XtremeMusicApp).startupSettings?.profile?.isOnboardingCompleted == false
-                if (!fullyDrawnPosted && (onboarding ||
-                    com.example.performance.BackgroundWorkCoordinator.startupReadiness.value.complete)) {
+                if (!fullyDrawnPosted) {
                     fullyDrawnPosted = true
                     decor.post {
                         if (firstDrawListener === this && uiResumed) {

@@ -173,7 +173,7 @@ class LosslessPrebufferRegressionTest {
     }
     @Test fun optionalPreparationReleasesItsWorkerDuringNavigationWithoutRejectingTheFile() = runBlocking {
         val coordinator = com.example.performance.BackgroundWorkCoordinator
-        coordinator.firstFrameRendered(); coordinator.cachedHomeRestored(); coordinator.homeContentReady()
+        coordinator.firstFrameRendered()
         coordinator.foreground(true); coordinator.frame(2, 1)
         ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(16))
         val navigation = CompletableDeferred<AutoCloseable>()

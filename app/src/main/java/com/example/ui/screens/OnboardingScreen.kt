@@ -112,7 +112,7 @@ import com.example.data.model.CountryData
 import com.example.data.model.CountryItem
 import com.example.data.model.LanguageData
 import com.example.data.model.LanguageOption
-import com.example.ui.components.awaitStartupContentDraw
+import com.example.ui.components.awaitContentDraw
 import com.example.performance.BackgroundWorkCoordinator
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -849,11 +849,11 @@ internal fun RetainedOnboardingPages(step: OnboardingStep, content: @Composable 
             }
             // Real traversals, not a timer. Compose/measure stays on Main and the
             // existing admission gate protects this one-time preparation as well.
-            view.awaitStartupContentDraw { }
+            view.awaitContentDraw { }
             val work = BackgroundWorkCoordinator.navigationBusy()
             try {
                 detailsPrepared = true
-                view.awaitStartupContentDraw { }
+                view.awaitContentDraw { }
             } finally { work.close() }
         }
     }

@@ -31,6 +31,20 @@ class ExploreCategoriesUiTest {
     private val mood = ExploreCategory("Feel Good", "FEmusic_moods_and_genres_category", "mood-endpoint", ExploreCategoryKind.MOOD)
     private val genre = ExploreCategory("Feel Good", "FEmusic_moods_and_genres_category", "genre-endpoint", ExploreCategoryKind.GENRE)
 
+    @Test fun missingIndexShowsLocalCardShapesAndReplacesThemOnlyWhenDataArrives() {
+        var state by mutableStateOf(SearchUiState())
+        content {
+            SearchScreen(state, onQueryChange = {}, onSelectGenre = {},
+                onTrackClick = { _, _ -> }, onToggleFavorite = {})
+        }
+        compose.onNodeWithTag("search_genres_loading_0").assertExists()
+        compose.onNodeWithTag("genre_chip_pop").assertDoesNotExist()
+        compose.runOnIdle { state = state.copy(exploreCategories = listOf(mood), exploreIndexReady = true) }
+        compose.onNodeWithTag("search_genres_loading_0").assertDoesNotExist()
+        compose.onNodeWithTag("search_screen").performScrollToNode(hasTestTag("explore_chip_${mood.key}"))
+        compose.onNodeWithTag("explore_chip_${mood.key}").assertIsDisplayed()
+    }
+
     @Test fun retainedHiddenSearchAndTypingNeverRequestTheExploreIndex() {
         var active by mutableStateOf(false)
         var state by mutableStateOf(SearchUiState())

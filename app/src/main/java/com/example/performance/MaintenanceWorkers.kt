@@ -26,6 +26,23 @@ object MaintenanceScheduler {
     internal const val INITIAL_DELAY_MINUTES = 15L
     private val workerLock = Mutex()
     private val requested = java.util.concurrent.atomic.AtomicBoolean()
+    private val periodicRegistered = java.util.concurrent.atomic.AtomicBoolean()
+
+    /** Persistent scheduling is owned by actual cache use, never Application startup. */
+    fun onCacheUsed(context: Context) {
+        if (!periodicRegistered.compareAndSet(false, true)) return
+        val app = context.applicationContext
+        schedulingScope.launch {
+            try {
+                BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.MAINTENANCE,
+                    requireForeground = false, label = "Register cache maintenance") { schedule(app) }
+            } catch (cancelled: CancellationException) { periodicRegistered.set(false); throw cancelled }
+            catch (error: Exception) {
+                periodicRegistered.set(false)
+                android.util.Log.w("CacheMaintenance", "Persistent scheduling unavailable", error)
+            }
+        }
+    }
 
     internal fun cacheRequest() = OneTimeWorkRequestBuilder<CacheMaintenanceWorker>()
         .setInitialDelay(INITIAL_DELAY_MINUTES, TimeUnit.MINUTES)
@@ -77,6 +94,7 @@ class CacheMaintenanceWorker(context: Context, parameters: WorkerParameters) : C
     override suspend fun doWork(): Result = withContext(AppDispatchers.Io) {
         try {
             BackgroundWorkCoordinator.maintenance { MaintenanceScheduler.serial {
+                DeferredLibraryInitialization.initialize(applicationContext)
                 MaintenanceScheduler.cacheWorkStarted()
                 BackgroundWorkCoordinator.awaitMaintenanceIdle()
                 val app = applicationContext as? com.example.XtremeMusicApp

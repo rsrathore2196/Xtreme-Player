@@ -2,6 +2,8 @@ package com.example.ui.screens
 
 import android.content.res.Configuration
 import com.example.data.model.ServerHomeItem
+import com.example.ui.viewmodel.HomeShelfPresentation
+import com.example.ui.viewmodel.ShelfLoadStatus
 import com.example.data.repository.CatalogDestination
 import androidx.compose.ui.platform.LocalConfiguration
 import com.example.ui.util.landscapeContentBounds
@@ -54,6 +56,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
@@ -68,6 +72,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.LinearGradientShader
 import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
@@ -143,7 +148,7 @@ private fun ArtistPageButton(forward: Boolean, tint: Color, onClick: () -> Unit)
 
 @Composable
 private fun rememberShimmerBackground(): Modifier {
-    // Keep the same phase, colors and gradient geometry; only drawing observes each frame.
+    // Keep the existing phase and gradient geometry; only drawing observes each frame.
     val translation = rememberVisibleInfiniteFloat(
         initialValue = -800f,
         targetValue = 1200f,
@@ -153,10 +158,10 @@ private fun rememberShimmerBackground(): Modifier {
         ),
         label = "shimmer_float"
     )
-    val isDark = LocalAppColors.current.isDark
-    val colors = remember(isDark) {
-        val base = if (isDark) Color(0xFF142033) else Color(0xFFE2E8F0)
-        val highlight = if (isDark) Color(0xFF20324E) else Color(0xFFF1F5F9)
+    val palette = LocalAppColors.current
+    val colors = remember(palette.cardBackground, palette.textMuted) {
+        val base = palette.textMuted.copy(alpha = .10f).compositeOver(palette.cardBackground)
+        val highlight = palette.textMuted.copy(alpha = .18f).compositeOver(base)
         listOf(base, highlight, base)
     }
     return remember(translation, colors) {
@@ -174,18 +179,8 @@ private fun rememberShimmerBackground(): Modifier {
     }
 }
 
-/**
- * Primary Home Screen:
- * - Dynamic Content & Systematic Fresh Fetching on launch
- * - Smooth Material 3 Pull-to-Refresh with 120Hz high refresh rate target
- * - Maximum 6 Cards layout adhering strictly to requirements:
- *   1. 1x Small Pills-Based Card (2x3 Grid Layout - 6 items total)
- *   2. YouTube Music Home Screen-Based Card ("Quick Picks")
- *   3. Era-Specific Hits Card ("Era-Specific Hits", 90s, 2000s classics)
- *   4. User Selected Country & Language Card (Dynamically powered by user prefs)
- *   5. User Listening History Based Card (Room DB history DAO & frequency analysis)
- *   6. Direct YouTube Music Server Shelves & Music for You Shelf
- */
+/** Cache-first native shelves, local listening cards and the existing radio hero.
+ * Missing content uses the same card geometry while requests complete independently. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
@@ -301,7 +296,22 @@ fun HomeScreenContent(
     val textPrimaryColor = appColors.textPrimary
     val textMutedColor = appColors.textMuted
 
-    val resolvedShelves = homeViewModel?.serverShelves?.collectAsStateWithLifecycle()?.value ?: serverShelves
+    val nativeCards = homeViewModel?.serverCards?.collectAsStateWithLifecycle()?.value
+        ?: remember(serverShelves) { serverShelves.map { HomeShelfPresentation("server_shelf_${it.id}", it, ShelfLoadStatus.SUCCESS) } }
+    val profileStatus = homeViewModel?.profileStatus?.collectAsStateWithLifecycle()?.value ?: ShelfLoadStatus.EMPTY
+    val continuationStatus = homeViewModel?.continuationStatus?.collectAsStateWithLifecycle()?.value ?: ShelfLoadStatus.EMPTY
+    val artworkActive = com.example.ui.util.LocalArtworkRequestsActive.current
+    LaunchedEffect(homeViewModel, listState, artworkActive) {
+        if (homeViewModel == null) return@LaunchedEffect
+        if (!artworkActive) { homeViewModel.setArtistSectionRelevant(false); return@LaunchedEffect }
+        try {
+            snapshotFlow { listState.layoutInfo.visibleItemsInfo.any { item ->
+                val key = item.key.toString()
+                key == "card_1_recently_played_grid" || key == "most_listened_artists" ||
+                    key.startsWith("native_") || key.startsWith("server_shelf_") || key.startsWith("profile_shelf")
+            } }.distinctUntilChanged().collect(homeViewModel::setArtistSectionRelevant)
+        } finally { homeViewModel.setArtistSectionRelevant(false) }
+    }
     val resolvedProfile = homeViewModel?.profileShelf?.collectAsStateWithLifecycle()?.value ?: profileShelf
     val revealedCount = homeViewModel?.revealedShelfCount?.collectAsStateWithLifecycle()?.value ?: retainedWindow.value.visibleCount
 
@@ -568,28 +578,48 @@ fun HomeScreenContent(
                 }
             }
 
-            // Direct YouTube Music Server Shelves and Profile-based Shelf
-            if (resolvedShelves.isNotEmpty() || resolvedProfile != null) {
-                if (resolvedProfile != null && resolvedProfile.tracks.isNotEmpty()) {
-                    artworkItem(state = listState, key = "profile_shelf_${resolvedProfile.id}", contentType = "server_song_shelf") {
-                        val section = remember(resolvedProfile) {
-                            SectionState(title = resolvedProfile.title, subtitle = resolvedProfile.subtitle, tracks = resolvedProfile.tracks, isLoaded = true)
+            // Independent shelf slots keep successful content and scroll anchors stable.
+            if (resolvedProfile != null && resolvedProfile.tracks.isNotEmpty() || profileStatus == ShelfLoadStatus.LOADING) {
+                artworkItem(state = listState, key = "profile_shelf", contentType = "server_song_shelf") {
+                    val section = remember(resolvedProfile, profileStatus) {
+                        SectionState(title = resolvedProfile?.title.orEmpty(), subtitle = resolvedProfile?.subtitle.orEmpty(),
+                            tracks = resolvedProfile?.tracks.orEmpty(), isLoaded = resolvedProfile != null,
+                            isLoading = resolvedProfile == null && profileStatus == ShelfLoadStatus.LOADING)
+                    }
+                    SectionCardLayout(state = section, tracksPrepared = true,
+                        currentPlayingId = currentPlayingId, cardBg = cardBg, cardBorderColor = cardBorderColor,
+                        textPrimaryColor = textPrimaryColor, textMutedColor = textMutedColor, onTrackClick = onTrackClick)
+                }
+            }
+            val cardsToShow = if (nativeCards.firstOrNull()?.let { it.shelf == null && it.status == ShelfLoadStatus.LOADING } == true)
+                nativeCards else nativeCards.take(revealedCount.coerceAtLeast(1))
+            for (card in cardsToShow) {
+                artworkItem(state = listState, key = card.key, contentType = "server_song_shelf") {
+                    when (card.status) {
+                        ShelfLoadStatus.LOADING, ShelfLoadStatus.SUCCESS -> {
+                            val shelf = card.shelf
+                            val section = remember(card) { SectionState(title = shelf?.title.orEmpty(), subtitle = shelf?.subtitle.orEmpty(),
+                                tracks = shelf?.tracks.orEmpty(), isLoaded = card.status == ShelfLoadStatus.SUCCESS,
+                                isLoading = card.status == ShelfLoadStatus.LOADING) }
+                            SectionCardLayout(state = section, tracksPrepared = true,
+                                currentPlayingId = currentPlayingId, cardBg = cardBg, cardBorderColor = cardBorderColor,
+                                textPrimaryColor = textPrimaryColor, textMutedColor = textMutedColor, onTrackClick = onTrackClick,
+                                shelfItems = shelf?.items.orEmpty(), onOpenCatalog = onOpenCatalog)
                         }
-                        SectionCardLayout(state = section, tracksPrepared = true,
-                            currentPlayingId = currentPlayingId, cardBg = cardBg, cardBorderColor = cardBorderColor,
-                            textPrimaryColor = textPrimaryColor, textMutedColor = textMutedColor, onTrackClick = onTrackClick)
+                        ShelfLoadStatus.EMPTY -> if (card.shelf == null) HomeFeedNotice("No recommendations are available.", onRetryRefresh)
+                        ShelfLoadStatus.ERROR -> HomeFeedNotice(card.message.ifBlank { "Recommendations are temporarily unavailable." }, onRetryRefresh)
                     }
                 }
-                for (shelf in resolvedShelves.take(revealedCount)) {
-                    artworkItem(state = listState, key = "server_shelf_${shelf.id}", contentType = "server_song_shelf") {
-                        val section = remember(shelf) {
-                            SectionState(title = shelf.title, subtitle = shelf.subtitle, tracks = shelf.tracks, isLoaded = true)
-                        }
-                        SectionCardLayout(state = section, tracksPrepared = true,
-                            currentPlayingId = currentPlayingId, cardBg = cardBg, cardBorderColor = cardBorderColor,
-                            textPrimaryColor = textPrimaryColor, textMutedColor = textMutedColor, onTrackClick = onTrackClick,
-                            shelfItems = shelf.items, onOpenCatalog = onOpenCatalog)
-                    }
+            }
+            if (continuationStatus == ShelfLoadStatus.LOADING) {
+                artworkItem(state = listState, key = "native_continuation_loading", contentType = "server_song_shelf") {
+                    SectionCardLayout(SectionState(isLoading = true), currentPlayingId, cardBg, cardBorderColor,
+                        textPrimaryColor, textMutedColor, onTrackClick, tracksPrepared = true)
+                }
+            }
+            if (continuationStatus == ShelfLoadStatus.ERROR) {
+                item(key = "native_continuation_error") {
+                    HomeFeedNotice("More recommendations are temporarily unavailable.") { homeViewModel?.revealNextHomeSection() }
                 }
             }
 
@@ -632,6 +662,14 @@ private fun rememberHomeRevealModifier(state: LazyListState, reveal: () -> Unit)
         }
     }
     return Modifier.nestedScroll(connection)
+}
+
+@Composable
+private fun HomeFeedNotice(message: String, retry: (() -> Unit)? = null) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 22.dp).testTag("home_feed_notice")) {
+        Text(message, style = MaterialTheme.typography.bodyMedium, color = LocalAppColors.current.textMuted)
+        if (retry != null) androidx.compose.material3.TextButton(onClick = retry) { Text("Retry", color = LocalAppColors.current.primaryAccent) }
+    }
 }
 
 @Composable
@@ -733,7 +771,9 @@ fun SectionCardLayout(
     ObserveHomeScroll(shelfListState)
     Column(modifier = Modifier.padding(top = 22.dp)) {
         Column(modifier = Modifier.padding(horizontal = 20.dp)) {
-            Text(
+            if (state.isLoading && state.title.isBlank()) Box(Modifier.width(148.dp).height(22.dp)
+                .clip(RoundedCornerShape(4.dp)).then(rememberShimmerBackground()).testTag("home_shelf_heading_loading"))
+            else Text(
                 text = state.title,
                 style = MaterialTheme.typography.titleMedium.copy(
                     fontWeight = FontWeight.Bold,

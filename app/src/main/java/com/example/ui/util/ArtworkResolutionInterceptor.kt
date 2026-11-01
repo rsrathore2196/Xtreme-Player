@@ -34,16 +34,8 @@ const val ARTWORK_METADATA_PARAMETER = "com.example.artwork.metadata"
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class ArtworkVisibility internal constructor(active: Boolean) {
     internal val active = MutableStateFlow(active)
-    internal val preparation = MutableStateFlow<ViewportArtworkPreparation.Ticket?>(null)
-    @Volatile private var completed = false
-    internal val permitted = preparation.flatMapLatest { ticket ->
-        combine(this.active, ticket?.allowed ?: flowOf(false)) { visible, preparing -> visible || preparing }
-    }
-    internal fun prepare(ticket: ViewportArtworkPreparation.Ticket?) {
-        preparation.value = ticket
-        if (completed) ticket?.finish()
-    }
-    internal fun complete() { completed = true; preparation.value?.finish() }
+    internal val permitted = this.active
+
 }
 
 /** Provider identity and viewport ownership; no metadata search or cross-provider matching. */
@@ -54,8 +46,6 @@ data class ArtworkRequestMetadata(
     val preferStableArtwork: Boolean = false,
     val targetSize: Int = sourceDimension,
     val visibleContent: Boolean = true,
-    val startupPreparation: Boolean = false,
-    val cacheOnlyPreparation: Boolean = false,
     val visibility: ArtworkVisibility? = null,
     val currentTrack: Boolean = false
 )
@@ -139,21 +129,9 @@ class ArtworkResolutionInterceptor : Interceptor {
         visibility?.let { visibility ->
             while (true) {
                 visibility.permitted.first { it }
-                val ticket = visibility.preparation.value?.takeIf { it.allowed.value }
                 val result = coroutineScope {
                     val hidden = async(start = CoroutineStart.UNDISPATCHED) { visibility.permitted.first { !it } }
-                    val loading = async(com.example.performance.AppDispatchers.Io) {
-                        try {
-                            if (ticket == null) load() else ticket.load(visible = { visibility.active.value }) {
-                                if (playlist) playlistCover(chain, preparation = true, cacheOnly = !visibility.active.value)
-                                else resolve(chain, checkNotNull(metadata).copy(startupPreparation = true, cacheOnlyPreparation = !visibility.active.value))
-                            }
-                        } catch (error: Exception) {
-                            if (error is kotlinx.coroutines.CancellationException) throw error
-                            if (ticket != null && !visibility.active.value) ErrorResult(null, chain.request, error)
-                            else { visibility.complete(); throw error }
-                        }
-                    }
+                    val loading = async(com.example.performance.AppDispatchers.Io) { load() }
                     try {
                         select<ImageResult?> {
                             loading.onAwait { it }
@@ -163,17 +141,7 @@ class ArtworkResolutionInterceptor : Interceptor {
                 }
                 // Successful requests finish once. Hiding a retained tab then
                 // leaves its painter intact; only unfinished work resumes later.
-                if (result != null) {
-                    if (result is ErrorResult && ticket != null && !visibility.active.value) {
-                        // A failed hidden warm-up is not a failed visible request.
-                        // Stop this preparation attempt; retry normally on first visit.
-                        ticket.allowed.value = false
-                        ticket.finish()
-                        continue
-                    }
-                    visibility.complete()
-                    return result
-                }
+                if (result != null) return result
             }
         }
         if (metadata?.visibleContent == false) {
@@ -186,33 +154,32 @@ class ArtworkResolutionInterceptor : Interceptor {
     }
 
     /** Raw playlist cover URLs never need song matching or provider URL upgrades. */
-    private suspend fun playlistCover(chain: Interceptor.Chain, preparation: Boolean = false, cacheOnly: Boolean = false): ImageResult {
+    private suspend fun playlistCover(chain: Interceptor.Chain): ImageResult {
         val request = chain.request
         val cachedRequest = request.newBuilder().networkCachePolicy(CachePolicy.DISABLED).build()
         val memory = chain.proceed(cachedRequest.newBuilder().diskCachePolicy(CachePolicy.DISABLED).build())
         if (memory is SuccessResult) return memory
         val url = request.data.toString()
-        return admittedArtwork(url, startup = preparation) {
+        return admittedArtwork(url) {
             val prepared = chain.proceed(cachedRequest)
-            if (prepared is SuccessResult || cacheOnly) prepared else chain.proceed(request)
+            if (prepared is SuccessResult) prepared else chain.proceed(request)
         }
     }
 
     /** Recheck after BOTH resource waits; never wait for interaction holding a slot/URL lock. */
-    private suspend fun <T> admittedArtwork(url: String, startup: Boolean = false, block: suspend () -> T): T {
+    private suspend fun <T> admittedArtwork(url: String, current: Boolean = false, block: suspend () -> T): T {
         val coordinator = com.example.performance.BackgroundWorkCoordinator
         val lock = artworkFlights[(url.hashCode() and Int.MAX_VALUE) % artworkFlights.size]
         // Foreground/current player artwork must execute immediately without waiting for background permits
-        if (startup) {
+        if (current) {
             lock.lock()
             try {
                 return block()
             } finally { lock.unlock() }
         }
         while (true) {
-            // Visible cache misses need the short gesture-idle gate, not optional
-            // enrichment's fifteen-second admission. Explicit startup prefetch is
-            // already bounded by the initial presentation's own artwork budget.
+            // Visible cache misses wait only for the current gesture to finish.
+            // No offscreen preparation or global readiness milestone owns images.
             coordinator.yieldToInteraction(awaitFrameQuiet = false)
             coldArtworkRequests.acquire()
             try {
@@ -247,7 +214,7 @@ class ArtworkResolutionInterceptor : Interceptor {
         val attempted = mutableSetOf<String>()
         val cachedImages = mutableMapOf<String, SuccessResult?>()
         var lastError: ImageResult? = null
-        var networkBudgetMs = if (metadata.startupPreparation) 1_000L else if (metadata.currentTrack) 6_000L else 3_000L
+        var networkBudgetMs = if (metadata.currentTrack) 6_000L else 3_000L
         // A native, unsampled image can still be much smaller than this viewport.
         // Only actual bitmap pixels can finish resolution; provider caps are fallbacks.
         fun sufficient(result: SuccessResult) = sufficientSize(result, chain.size)
@@ -265,7 +232,7 @@ class ArtworkResolutionInterceptor : Interceptor {
                 if (cacheOnly || memoryOnly) networkCachePolicy(CachePolicy.DISABLED)
                 if (memoryOnly) diskCachePolicy(CachePolicy.DISABLED)
             }.build()
-            val result = if (memoryOnly) chain.proceed(candidate) else admittedArtwork(url, metadata.startupPreparation || metadata.currentTrack) {
+            val result = if (memoryOnly) chain.proceed(candidate) else admittedArtwork(url, metadata.currentTrack) {
                 if (cacheOnly) chain.proceed(candidate) else {
                     // Recheck after resource waits so duplicate cards share Coil's file.
                     val hit = chain.proceed(candidate.newBuilder().networkCachePolicy(CachePolicy.DISABLED).build())
@@ -320,10 +287,6 @@ class ArtworkResolutionInterceptor : Interceptor {
         val persisted = better(memory, best(cacheUrls, cacheOnly = true))
         if (persisted != null && sufficient(persisted)) return persisted
         present(persisted)
-        // Hidden first-view preparation never spends another tab's budget on the
-        // network. Keep small cached pixels as a placeholder, then upgrade on visibility.
-        if (metadata.cacheOnlyPreparation)
-            return ErrorResult(persisted?.drawable, request, IOException("Artwork not cached at viewport size"))
         val loaded = better(persisted, best(urls))
         return loaded ?: lastError ?: ErrorResult(null, request, IOException("Provider artwork unavailable"))
     }

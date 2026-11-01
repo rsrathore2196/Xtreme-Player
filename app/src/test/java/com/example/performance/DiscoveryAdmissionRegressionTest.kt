@@ -119,10 +119,6 @@ class DiscoveryAdmissionRegressionTest {
         assertTrue("Slow placeholder frames cannot indefinitely starve a newly visible empty card", ran)
     }
     @Test fun manualArchiveMetadataPromotesTheExistingRequestWithoutLosingItsUrgency() = kotlinx.coroutines.runBlocking {
-        @Suppress("UNCHECKED_CAST") val readiness = BackgroundWorkCoordinator::class.java.getDeclaredField("_startupReadiness")
-            .apply { isAccessible = true }.get(null) as kotlinx.coroutines.flow.MutableStateFlow<StartupReadiness>
-        val original = readiness.value
-        readiness.value = StartupReadiness(StartupTask.entries.associateWith { StartupStatus.READY })
         val navigation = BackgroundWorkCoordinator.navigationBusy()
         val entered = CompletableDeferred<Unit>()
         val key = "manual-archive-metadata-priority"
@@ -144,7 +140,7 @@ class DiscoveryAdmissionRegressionTest {
             kotlinx.coroutines.withTimeout(3_000L) { manual.await(); automatic.await() }
             assertEquals(1, calls)
         } finally {
-            navigation.close(); automatic.cancelAndJoin(); readiness.value = original
+            navigation.close(); automatic.cancelAndJoin();
         }
     }
     @Test fun aSharedAutomaticRequestReturnsToOptionalPriorityWhenItsManualConsumerLeaves() = kotlinx.coroutines.runBlocking<Unit> {
@@ -172,10 +168,6 @@ class DiscoveryAdmissionRegressionTest {
         } finally { release.complete(Unit); manual?.cancelAndJoin(); automatic.cancelAndJoin() }
     }
     @Test fun aManualRecordingCannotBeStarvedByTwoParkedOptionalArchiveLookups() = kotlinx.coroutines.runBlocking<Unit> {
-        @Suppress("UNCHECKED_CAST") val readiness = BackgroundWorkCoordinator::class.java.getDeclaredField("_startupReadiness")
-            .apply { isAccessible = true }.get(null) as kotlinx.coroutines.flow.MutableStateFlow<StartupReadiness>
-        val previous = readiness.value
-        readiness.value = StartupReadiness(StartupTask.entries.associateWith { StartupStatus.READY })
         val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO)
         val entered = List(2) { CompletableDeferred<Unit>() }
         val releaseOptional = CompletableDeferred<Unit>()
@@ -201,7 +193,7 @@ class DiscoveryAdmissionRegressionTest {
                 kotlinx.coroutines.withTimeout(2_000L) { manual.await() })
         } finally {
             navigation?.close(); releaseOptional.complete(Unit); optional.forEach { it.cancelAndJoin() }
-            resolver.clear(); scope.coroutineContext[kotlinx.coroutines.Job]?.cancelAndJoin(); readiness.value = previous
+            resolver.clear(); scope.coroutineContext[kotlinx.coroutines.Job]?.cancelAndJoin();
         }
     }
     @Test fun anExplicitHomeRefreshPromotesItsExistingRequestWithoutAnotherNetworkCall() = runTest {

@@ -338,7 +338,7 @@ class MusicRepository private constructor(
                 if (error is CancellationException) throw error
                 _libraryFailures.update { failures -> failures + (name to "Local library unavailable. Please retry.") }
             }
-        }.shareIn(initialCatalogScope, SharingStarted.Lazily, replay = 1)
+        }.shareIn(initialCatalogScope, SharingStarted.WhileSubscribed(stopTimeoutMillis = 5_000, replayExpirationMillis = 0), replay = 1)
 
     private val favoriteSnapshots by lazy {
         sharedTrackSnapshots("favorites", flow { emitAll(musicDao.getFavoriteTracks()) }) { retainedFavoriteTracks = it }

@@ -19,15 +19,15 @@ import org.robolectric.annotation.Config
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33], application = android.app.Application::class)
-class StartupContentDrawTest {
-    @Test fun aViewTraversalAcknowledgesPreparedContentWithoutAComposeParentRedraw() = runTest {
+class ContentDrawTest {
+    @Test fun aViewTraversalAcknowledgesVisibleContentWithoutAComposeParentRedraw() = runTest {
         val controller = Robolectric.buildActivity(Activity::class.java).setup()
         val view = FrameLayout(controller.get())
         controller.get().setContentView(view)
         shadowOf(Looper.getMainLooper()).idle()
         try {
             var draws = 0
-            val waiting = launch(start = CoroutineStart.UNDISPATCHED) { view.awaitStartupContentDraw { draws++ } }
+            val waiting = launch(start = CoroutineStart.UNDISPATCHED) { view.awaitContentDraw { draws++ } }
             assertFalse(waiting.isCompleted)
             // The View tree draws even if its Compose parent's recorded layer is
             // reused. No parent drawWithContent or animation callback is invoked.
@@ -49,12 +49,12 @@ class StartupContentDrawTest {
         shadowOf(Looper.getMainLooper()).idle()
         try {
             var draws = 0
-            val cancelled = launch(start = CoroutineStart.UNDISPATCHED) { view.awaitStartupContentDraw { draws++ } }
+            val cancelled = launch(start = CoroutineStart.UNDISPATCHED) { view.awaitContentDraw { draws++ } }
             cancelled.cancelAndJoin()
             shadowOf(Looper.getMainLooper()).idle()
             view.viewTreeObserver.dispatchOnDraw()
             assertEquals(0, draws)
-            val resumed = launch(start = CoroutineStart.UNDISPATCHED) { view.awaitStartupContentDraw { draws++ } }
+            val resumed = launch(start = CoroutineStart.UNDISPATCHED) { view.awaitContentDraw { draws++ } }
             view.viewTreeObserver.dispatchOnDraw()
             shadowOf(Looper.getMainLooper()).idle()
             runCurrent()

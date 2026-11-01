@@ -47,12 +47,12 @@ class AsyncImageLoaderTest {
             ImageLoader.Builder(context).diskCache(null).memoryCache(null).build()
         }
         try {
-            loader.start()
-            assertTrue(started.await(3, TimeUnit.SECONDS))
+            assertEquals("Constructing the singleton does not prewarm caches", 0, builds.get())
             val request = ImageRequest.Builder(context).data(ColorDrawable(android.graphics.Color.RED)).size(32).build()
             val first = async { loader.execute(request) }
             val second = async { loader.execute(request) }
             runCurrent()
+            assertTrue(started.await(3, TimeUnit.SECONDS))
             assertFalse(first.isCompleted)
             assertFalse(second.isCompleted)
             // A UI command can execute while both image requests await cache initialization.

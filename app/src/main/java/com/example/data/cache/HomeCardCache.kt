@@ -21,6 +21,19 @@ import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 
+/** Small files allocate small buffers; oversized/corrupt snapshots remain bounded. */
+internal fun readBoundedHomeCache(input: java.io.InputStream, limit: Int): String? {
+    val output = java.io.ByteArrayOutputStream(minOf(8_192, limit + 1))
+    val buffer = ByteArray(minOf(8_192, limit + 1))
+    while (output.size() <= limit) {
+        val count = input.read(buffer, 0, minOf(buffer.size, limit + 1 - output.size()))
+        if (count < 0) return output.toString("UTF-8")
+        if (count == 0) continue
+        output.write(buffer, 0, count)
+    }
+    return null
+}
+
 /** Retry each captured key once; a failed file must not starve unrelated checkpoints. */
 internal suspend fun <T : Any> persistHomeCheckpoints(pending: MutableMap<String, T>,
     persist: (T) -> Unit, failed: (String, Exception) -> Unit = { _, _ -> }) {
@@ -105,8 +118,6 @@ class HomeCardCache(context: Context, private val workerDispatcher: CoroutineDis
         internal fun retryPendingWrites() {
             if (synchronized(pending) { pending.isNotEmpty() }) signal.trySend(Unit)
         }
-        fun preloadAsync(context: Context, profileKey: String, @Suppress("UNUSED_PARAMETER") previewOnly: Boolean = false): Deferred<SavedHomeCards?> =
-            scope.async { HomeCardCache(context).read(profileKey) }
     }
     private fun file(name: String) = File(directory, "home_${name}_v3.json")
     private fun memoryKey(name: String) = "$namespace:$name"
@@ -119,11 +130,7 @@ class HomeCardCache(context: Context, private val workerDispatcher: CoroutineDis
                 val file = AtomicFile(file(name))
                 synchronized(pending) { pending[file.baseFile.path]?.bytes }?.let { return@withLock it.toString(Charsets.UTF_8) }
                 if (!file.baseFile.exists() && !File(file.baseFile.path + ".bak").exists()) return@withLock null
-                file.openRead().bufferedReader().use { reader ->
-                    val chars = CharArray(MAX_BYTES + 1); var count = 0
-                    while (count < chars.size) { val next = reader.read(chars, count, chars.size - count); if (next < 0) break; count += next }
-                    if (count > MAX_BYTES) null else String(chars, 0, count)
-                }
+                file.openRead().use { readBoundedHomeCache(it, MAX_BYTES) }
             } ?: return@withContext null
             BackgroundWorkCoordinator.finishBoundedBatch { withContext(AppDispatchers.CpuBounded) {
                 JSONObject(text).takeIf { it.optInt("version") == VERSION }
@@ -228,6 +235,16 @@ class HomeCardCache(context: Context, private val workerDispatcher: CoroutineDis
         val history = readJson("local")
         if (home == null && history == null) return@withContext legacy(profile)
         withContext(AppDispatchers.CpuBounded) { local(profile, home, history) }
+    }
+    suspend fun readServer(profile: String): SavedHomeCards? {
+        val home = readJson("server_${HomeCacheIdentity.fileKey(profile)}")?.takeIf { validHome(it, profile) } ?: return null
+        return withContext(AppDispatchers.CpuBounded) { local(profile, home, null) }
+    }
+    suspend fun readLocal(profile: String): SavedHomeCards? {
+        val history = readJson("local")
+        return withContext(AppDispatchers.CpuBounded) {
+            if (history == null) legacy(profile) else local(profile, null, history)
+        }
     }
     suspend fun readProfile(key: String): SavedHomeCards? {
         val row = readJson("profile_${HomeCacheIdentity.fileKey(key)}")?.takeIf { it.optString("key") == key } ?: return null

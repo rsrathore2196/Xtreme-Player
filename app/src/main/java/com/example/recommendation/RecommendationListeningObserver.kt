@@ -6,12 +6,16 @@ import com.example.performance.AppDispatchers
 import com.example.playback.PlaybackManager
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 
 /** Home milestones reuse service-owned measurements, with no second clock or persistence loop. */
 class RecommendationListeningObserver(private val context: Context) {
     private val scope = CoroutineScope(SupervisorJob() + AppDispatchers.Io)
     fun start(player: PlaybackManager) {
         scope.launch {
+            // Recording belongs to the service. Do not open/replay the stats
+            // journal merely because a paused UI player was constructed.
+            player.listeningState.first { it.track != null }
             ListeningStatsRepository.get(context).progress.filterNotNull().collect { snapshot ->
                 withContext(Dispatchers.Main.immediate) {
                     val state = player.listeningState.value

@@ -22,7 +22,7 @@ import com.example.data.model.MusicTrack
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
-/** Ordinary hidden tabs reuse memory; only bounded viewport preparation may load ahead. */
+/** Hidden tabs retain cached painters; unfinished requests follow actual visibility. */
 val LocalArtworkRequestsActive = compositionLocalOf { true }
 
 internal const val ARTWORK_VISIBILITY_PARAMETER = "com.example.artwork.visibility"
@@ -39,13 +39,11 @@ fun rememberPlaylistCoverRequest(
     val context = LocalContext.current
     val active = LocalArtworkRequestsActive.current && loadAllowed
     val visibility = remember(context, url, targetSize) { ArtworkVisibility(active) }
-    val ticket = rememberViewportArtwork(visibility, "playlist:$url:$targetSize", enabled = loadAllowed && url.isNotBlank())
     SideEffect { visibility.active.value = active }
     val previouslyRequested = remember(url) { mutableStateOf(false) }
-    // Retain existing painters when a tab hides. New hidden rows need an
-    // explicit, bounded viewport-preparation ticket before starting artwork.
-    SideEffect { if (active || ticket != null) previouslyRequested.value = true }
-    if (url.isBlank() || !active && ticket == null && !previouslyRequested.value) return null
+    // Retain existing painters when a tab hides; never start new hidden artwork.
+    SideEffect { if (active) previouslyRequested.value = true }
+    if (url.isBlank() || !active && !previouslyRequested.value) return null
     val dimension = mapTargetSizeToArtworkDimension(targetSize)
     return remember(context, url, dimension, visibility) {
         buildPlaylistCoverRequest(context, url, dimension, visibility)
@@ -54,7 +52,7 @@ fun rememberPlaylistCoverRequest(
 
 internal fun buildPlaylistCoverRequest(context: android.content.Context, url: String,
     dimension: Int, visibility: ArtworkVisibility): ImageRequest {
-        val source = providerArtworkUrl(url, maxOf(600, dimension))
+    val source = providerArtworkUrl(url, maxOf(600, dimension))
     val memoryKey = "playlist-cover:$dimension:$source"
         return ImageRequest.Builder(context)
             .data(source)
@@ -226,8 +224,6 @@ fun rememberOptimizedImageRequest(
         track?.durationMs, track?.coverUrl, targetSize, decodeSize) {
         ArtworkVisibility(visibleContent)
     }
-    rememberViewportArtwork(visibility, "song:$url:${track?.id}:$targetSize:$decodeSize",
-        enabled = url.isNotBlank() || youtubeArtworkAlternatives(track?.id, emptyList()).isNotEmpty())
     SideEffect { visibility.active.value = visibleContent }
     // Transport URL/bitrate changes do not change artwork. Metadata edits and a larger
     // destination do create a new request, including when a recycled row keeps its ID.
@@ -239,19 +235,7 @@ fun rememberOptimizedImageRequest(
 }
 
 /** Register during composition, so the prepared draw cannot race image enqueue on IO. */
-@Composable
-private fun rememberViewportArtwork(visibility: ArtworkVisibility, key: String, enabled: Boolean = true): ViewportArtworkPreparation.Ticket? {
-    val preparation = LocalViewportArtworkPreparation.current ?: return null
-    val ticket = remember(preparation, key, enabled) { if (enabled) preparation.register(key) else null }
-    SideEffect { visibility.prepare(ticket) }
-    DisposableEffect(visibility, ticket) { onDispose {
-        if (visibility.preparation.value === ticket) visibility.prepare(null)
-        ticket?.finish()
-    } }
-    return ticket
-}
-
-/** Same identity/cache keys for bounded startup prefetch and the eventual visible target. */
+/** Stable cache identities for visible artwork and explicit player prefetch. */
 internal fun buildOptimizedImageRequest(
     context: android.content.Context,
     url: String,
@@ -261,7 +245,6 @@ internal fun buildOptimizedImageRequest(
     preferStableArtwork: Boolean = true,
     decodeSize: IntSize? = null,
     visibleContent: Boolean = true,
-    startupPreparation: Boolean = false,
     visibility: ArtworkVisibility? = null,
     currentTrack: Boolean = false,
     sourceSize: IntSize? = decodeSize
@@ -273,7 +256,6 @@ internal fun buildOptimizedImageRequest(
         preferStableArtwork = preferStableArtwork,
         targetSize = targetSize,
         visibleContent = visibleContent,
-        startupPreparation = startupPreparation,
         visibility = visibility,
         currentTrack = currentTrack
     )

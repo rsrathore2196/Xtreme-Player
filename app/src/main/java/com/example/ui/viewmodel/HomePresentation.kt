@@ -7,9 +7,30 @@ import com.example.data.model.ServerHomeItem
 import com.example.recommendation.HomeRecommendationPolicy
 
 internal const val RECENTLY_PLAYED_CARD_LIMIT = 4
-internal const val INITIAL_SERVER_SHELF_TARGET = 3
 // Bound optional network work per visit/refresh; scrolling can request further pages.
 internal const val BACKGROUND_HOME_PAGE_LIMIT = 3
+
+enum class ShelfLoadStatus { LOADING, SUCCESS, EMPTY, ERROR }
+
+@Immutable
+data class HomeShelfPresentation(val key: String, val shelf: ServerHomeShelf? = null,
+    val status: ShelfLoadStatus = ShelfLoadStatus.LOADING, val message: String = "")
+
+internal fun initialHomeSkeletons() = List(3) { HomeShelfPresentation("native_initial_slot_$it") }
+
+/** Keep the loading slot's identity at first publication and native identities on subsequent updates. */
+internal fun presentNativeShelves(previous: List<HomeShelfPresentation>, shelves: List<ServerHomeShelf>,
+    status: ShelfLoadStatus, message: String = ""): List<HomeShelfPresentation> {
+    if (shelves.isEmpty()) return if (status == ShelfLoadStatus.LOADING) initialHomeSkeletons()
+        else listOf(HomeShelfPresentation(previous.firstOrNull()?.key ?: "native_initial_slot_0", status = status, message = message))
+    val existing = previous.mapNotNull { it.shelf?.id?.let { id -> id to it } }.toMap()
+    return shelves.mapIndexed { index, shelf ->
+        val old = existing[shelf.id]
+        val key = old?.key ?: previous.getOrNull(index)?.takeIf { it.shelf == null }?.key ?: "server_shelf_${shelf.id}"
+        val next = HomeShelfPresentation(key, shelf, if (shelf.tracks.isEmpty() && shelf.items.isEmpty()) ShelfLoadStatus.EMPTY else ShelfLoadStatus.SUCCESS)
+        if (old == next) old else next
+    }
+}
 
 private fun ServerHomeShelf.entries(): List<ServerHomeItem> = items.ifEmpty { tracks.map { ServerHomeItem.Song(it) } }
 

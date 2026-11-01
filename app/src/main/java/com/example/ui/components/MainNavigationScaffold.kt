@@ -130,13 +130,6 @@ fun MainNavigationScaffold(
     viewModel: PlayerViewModel,
     modifier: Modifier = Modifier
 ) {
-    // Preparation is process-retained; the lightweight modal observes progress separately.
-    remember { BackgroundWorkCoordinator.beginInitialPresentation() }
-    val preparingStartup by remember {
-        BackgroundWorkCoordinator.startupReadiness.map { !it.complete }.distinctUntilChanged()
-    }.collectAsStateWithLifecycle(initialValue = !BackgroundWorkCoordinator.startupReadiness.value.complete)
-    if (preparingStartup) com.example.ui.screens.PrepareInitialHome()
-    ObserveInitialContentReadiness()
     val playerUiState by viewModel.navigationPlayerUiState.collectAsStateWithLifecycle()
     val currentPlayingTrackId = playerUiState.currentTrack?.id
     val catalogDetail by viewModel.catalogBrowser.detail.collectAsStateWithLifecycle()
@@ -190,17 +183,8 @@ fun MainNavigationScaffold(
                     tabPagerState.animateScrollToPage(selectedTabIndex)
                 }
             }
-            if (selectedTabIndex != 0) {
-                // A restored Search/Library/Settings page must not need to create
-                // a hidden Home ViewModel to release application maintenance.
-                com.example.performance.BackgroundWorkCoordinator.awaitFirstFrame()
-                com.example.performance.BackgroundWorkCoordinator.nonHomeContentReady()
-            }
+
         } finally { navigation.close() }
-    }
-    LaunchedEffect(viewModel, selectedTabIndex, catalogDetail != null, preparingStartup) {
-        viewModel.prepareCatalogUi(searchVisible = !preparingStartup && selectedTabIndex == 1,
-            detailVisible = !preparingStartup && catalogDetail != null)
     }
     val tabState = rememberSaveableStateHolder()
     // Allocate these outside the Settings overlay; tab disposal never serializes or
@@ -210,8 +194,13 @@ fun MainNavigationScaffold(
     val libraryListState = rememberLazyListState()
     // Settings has one overlay transition. Retained primary tabs share the pager's
     // position/velocity and keep their prepared content across navigation.
-    val tabTransition = updateTransition(if (selectedTabIndex == 3 && !preparingStartup) 3 else 0, label = "settings_navigation_transition")
+    val tabTransition = updateTransition(if (selectedTabIndex == 3) 3 else 0, label = "settings_navigation_transition")
     var isPlayerExpanded by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(viewModel, selectedTabIndex, catalogDetail != null, isPlayerExpanded) {
+        viewModel.prepareCatalogUi(searchVisible = selectedTabIndex == 1 && !isPlayerExpanded && catalogDetail == null,
+            detailVisible = catalogDetail != null && !isPlayerExpanded,
+            libraryVisible = selectedTabIndex == 2 && !isPlayerExpanded)
+    }
     val playerVisibility = remember {
         androidx.compose.animation.core.MutableTransitionState(isPlayerExpanded && playerUiState.currentTrack != null)
     }
@@ -230,7 +219,7 @@ fun MainNavigationScaffold(
     val dockProgress = rememberScrollDockProgress(scrollDock)
     SideEffect {
         if (isPlayerExpanded || playerVisibility.currentState || !playerVisibility.isIdle) scrollDock.suspendForPlayer()
-        else scrollDock.enabled = !preparingStartup && !isSettingsSubpageOpen && !isEqualizerOpen
+        else scrollDock.enabled = !isSettingsSubpageOpen && !isEqualizerOpen
     }
     LaunchedEffect(selectedTabIndex, catalogDetail?.destination?.key, selectedPlaylistWithTracks?.playlist?.playlistId,
         isSettingsSubpageOpen) { scrollDock.expand() }
@@ -258,12 +247,12 @@ fun MainNavigationScaffold(
 
     val startupLifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
     val startupView = androidx.compose.ui.platform.LocalView.current
-    LaunchedEffect(viewModel, startupLifecycle, startupView, selectedTabIndex, preparingStartup) {
+    LaunchedEffect(viewModel, startupLifecycle, startupView, selectedTabIndex) {
       startupLifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.RESUMED) {
-        if (preparingStartup || selectedTabIndex != 0) return@repeatOnLifecycle
+        if (selectedTabIndex != 0) return@repeatOnLifecycle
         // Ask as soon as Home has actually drawn, rather than waiting behind
         // recommendation loading or the optional background-work idle budget.
-        startupView.awaitStartupContentDraw { }
+        startupView.awaitContentDraw { }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && viewModel.canRequestNotificationPermission &&
             androidx.core.content.ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
                 android.content.pm.PackageManager.PERMISSION_GRANTED) {
@@ -333,7 +322,7 @@ fun MainNavigationScaffold(
     ) {
         Box(modifier = modifier.fillMaxSize().background(appColors.scaffoldBackground)) {
             Scaffold(
-                modifier = if (preparingStartup) Modifier.clearAndSetSemantics { } else Modifier,
+                modifier = Modifier,
                 contentWindowInsets = WindowInsets(0.dp),
                 containerColor = appColors.scaffoldBackground
             ) { _ ->
@@ -365,7 +354,7 @@ fun MainNavigationScaffold(
                                 val catalogSearch by viewModel.catalogBrowser.search.collectAsStateWithLifecycle()
                                 SearchScreen(
                                     searchState = searchState,
-                                    isScreenActive = !preparingStartup && selectedTabIndex == 1 && !isPlayerExpanded && catalogDetail == null,
+                                    isScreenActive = selectedTabIndex == 1 && !isPlayerExpanded && catalogDetail == null,
                                     listState = searchListState,
                                     catalogState = catalogSearch,
                                     onSelectType = viewModel.catalogBrowser::selectType,
@@ -435,11 +424,9 @@ fun MainNavigationScaffold(
                         }
                       }
                     }
-                    val primaryCovered = !preparingStartup && (playerCoversContent || catalogDetail != null ||
-                        currentPlaylist != null)
+                    val primaryCovered = playerCoversContent || catalogDetail != null || currentPlaylist != null
                     RetainedPrimaryTabHost(state = tabPagerState, transition = tabTransition,
-                        covered = primaryCovered, inputBlocked = primaryCovered || selectedTabIndex == 3,
-                        prepareStartup = preparingStartup) { tabIndex -> tabContent(tabIndex) }
+                        covered = primaryCovered, inputBlocked = primaryCovered || selectedTabIndex == 3) { tabIndex -> tabContent(tabIndex) }
                     SettingsNavigationOverlay(tabTransition) { tabContent(3) }
 
                 }
@@ -625,7 +612,7 @@ fun MainNavigationScaffold(
                 lyrics = currentLyrics,
                 onRetryLyrics = { viewModel.retryLyrics() },
                 onLyricsVisibilityChanged = viewModel::setLyricsVisible,
-                isScreenVisible = isPlayerExpanded && !preparingStartup,
+                isScreenVisible = isPlayerExpanded,
                 availableAudioDevices = availableAudioDevices,
                 onSelectAudioDevice = { deviceId -> viewModel.selectAudioOutputDevice(deviceId) },
                 playbackPositionFlow = viewModel.playbackPosition,
@@ -636,7 +623,7 @@ fun MainNavigationScaffold(
         }
 
         // QUEUE BOTTOM SHEET
-        if (isQueueOpen && !preparingStartup) {
+        if (isQueueOpen) {
           PlayerPresentationHost(viewModel) { playerUiState ->
             QueueBottomSheet(
                 queue = playerUiState.queue,
@@ -652,7 +639,7 @@ fun MainNavigationScaffold(
         }
 
         // EQUALIZER DIALOG
-        if (isEqualizerOpen && !preparingStartup) {
+        if (isEqualizerOpen) {
             val effectsState by viewModel.effectsState.collectAsStateWithLifecycle()
             EqualizerDialog(
                 effectsState = effectsState,
@@ -667,7 +654,7 @@ fun MainNavigationScaffold(
         }
 
         // ADD TO PLAYLIST DIALOG
-        trackToAddToPlaylist?.takeUnless { preparingStartup }?.let { track ->
+        trackToAddToPlaylist?.let { track ->
             val playlists by viewModel.playlists.collectAsStateWithLifecycle()
             AddToPlaylistDialog(
                 track = track,
@@ -686,7 +673,7 @@ fun MainNavigationScaffold(
         }
 
         // CREATE PLAYLIST DIALOG
-        if (isCreatePlaylistOpen && !preparingStartup) {
+        if (isCreatePlaylistOpen) {
             CreatePlaylistDialog(
                 isDarkMode = isDarkMode,
                 onDismiss = { isCreatePlaylistOpen = false },
@@ -698,8 +685,7 @@ fun MainNavigationScaffold(
         }
 
         // PLAYLIST IMPORT DIALOG (Spotify, YouTube Music, Apple Music, CSV)
-        if (importDialogOpen && !preparingStartup) ImportDialogHost(viewModel, isDarkMode)
-        StartupInitializationOverlay()
+        if (importDialogOpen) ImportDialogHost(viewModel, isDarkMode)
     }
 }
 }

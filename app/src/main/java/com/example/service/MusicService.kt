@@ -743,7 +743,10 @@ class MusicService : MediaLibraryService() {
 
     override fun onCreate() {
         super.onCreate()
-        serviceScope.launch(AppDispatchers.Io) { com.example.playback.AudioDeviceManager.init(this@MusicService) }
+        serviceScope.launch(AppDispatchers.Io) {
+            com.example.playback.AudioEffectsManager.initializePreferences(this@MusicService)
+            com.example.playback.AudioDeviceManager.init(this@MusicService)
+        }
 
         // 1. Audio Focus & Interruption Handling
         val audioAttributes = AudioAttributes.Builder()

@@ -84,43 +84,35 @@ class ArtworkLoadingWorkloadTest {
     }
 
     @Test fun hiddenCacheMissDoesNotStartNetworkWorkAndLoadsNormallyOnFirstVisit() = runBlocking {
-        val batch = ViewportArtworkPreparation()
         val visibility = ArtworkVisibility(false)
-        visibility.prepare(checkNotNull(batch.register("cover")))
         val req = request().newBuilder().setParameter(ARTWORK_METADATA_PARAMETER,
             ArtworkRequestMetadata(provider, 600, visibility = visibility), null).build()
         var attempts = 0
         val chain = Chain(req, onNetwork = { attempts++ })
-        val image = async { ArtworkResolutionInterceptor().intercept(chain) }
+        val image = async(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) { ArtworkResolutionInterceptor().intercept(chain) }
         try {
-            withTimeout(3_000) { batch.awaitCompletion() }
             assertEquals(0, attempts)
             assertTrue(image.isActive)
-            batch.close()
             visibility.active.value = true
             assertTrue(withTimeout(3_000) { image.await() } is SuccessResult)
             assertEquals(1, attempts)
-        } finally { batch.close(); image.cancelAndJoin() }
+        } finally { image.cancelAndJoin() }
     }
 
-    @Test fun hiddenPlaylistCacheMissCompletesPreparationWithoutDownloading() = runBlocking {
-        val batch = ViewportArtworkPreparation()
+    @Test fun hiddenPlaylistCacheMissDoesNoWorkUntilVisible() = runBlocking {
         val visibility = ArtworkVisibility(false)
-        visibility.prepare(checkNotNull(batch.register("playlist")))
         val req = ImageRequest.Builder(context).data(provider).size(300, 300)
             .setParameter(PLAYLIST_COVER_PARAMETER, true, null)
             .setParameter(ARTWORK_VISIBILITY_PARAMETER, visibility, null).build()
         val downloads = AtomicInteger()
-        val image = async { ArtworkResolutionInterceptor().intercept(Chain(req, onNetwork = { downloads.incrementAndGet() })) }
+        val image = async(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) { ArtworkResolutionInterceptor().intercept(Chain(req, onNetwork = { downloads.incrementAndGet() })) }
         try {
-            withTimeout(3_000) { batch.awaitCompletion() }
             assertEquals(0, downloads.get())
             assertTrue(image.isActive)
-            batch.close()
             visibility.active.value = true
             assertTrue(withTimeout(3_000) { image.await() } is SuccessResult)
             assertEquals(1, downloads.get())
-        } finally { batch.close(); image.cancelAndJoin() }
+        } finally { image.cancelAndJoin() }
     }
 
     @Test fun providerArtworkLoadsDirectlyWithoutAnyMetadataSearch() = runBlocking {
@@ -375,13 +367,13 @@ class ArtworkLoadingWorkloadTest {
         }
     }
 
-    @Test fun explicitStartupArtworkKeepsItsBoundedPreparationPath() = runBlocking {
+    @Test fun currentPlayerArtworkBypassesOptionalScrollingAdmission() = runBlocking {
         val coordinator = com.example.performance.BackgroundWorkCoordinator
         val scrollOwner = Any()
         coordinator.scrolling(scrollOwner, true)
         try {
             val initial = request().newBuilder().setParameter(ARTWORK_METADATA_PARAMETER,
-                ArtworkRequestMetadata(provider, 600, startupPreparation = true), null).build()
+                ArtworkRequestMetadata(provider, 600, currentTrack = true), null).build()
             val chain = Chain(initial)
             assertTrue(withTimeout(3_000) {
                 ArtworkResolutionInterceptor().intercept(chain)

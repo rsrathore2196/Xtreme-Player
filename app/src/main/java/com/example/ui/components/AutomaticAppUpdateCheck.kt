@@ -18,7 +18,6 @@ internal fun AutomaticAppUpdateCheck(owner: Any, claim: () -> Boolean, check: ()
     LaunchedEffect(owner, lifecycle) {
         lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             BackgroundWorkCoordinator.awaitFirstFrame()
-            BackgroundWorkCoordinator.awaitInitialPresentation()
             if (currentClaim()) currentCheck()
         }
     }

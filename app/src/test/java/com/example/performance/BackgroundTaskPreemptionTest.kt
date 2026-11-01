@@ -24,8 +24,6 @@ class BackgroundTaskPreemptionTest {
 
     @Before fun ready() {
         coordinator.firstFrameRendered()
-        coordinator.cachedHomeRestored()
-        coordinator.homeContentReady()
         coordinator.foreground(true)
         coordinator.frame(2, 1)
         for (name in listOf("lastOptionalCompleted", "navigationUntil")) {

@@ -49,4 +49,31 @@ class SharedLibrarySnapshotsTest {
             db.close()
         }
     }
+    @Test fun unusedLibraryObservationStopsWithoutDiscardingItsRetainedRows() = runBlocking {
+        val db = MusicDatabase.createInMemoryDatabase(ApplicationProvider.getApplicationContext())
+        val active = AtomicInteger(); val starts = AtomicInteger()
+        val row = TrackEntity("one", "Song", "Artist", "Album", 180_000, "cover", "url", isLiked = true)
+        val source = MutableStateFlow(listOf(row))
+        val dao = object : MusicDao by db.musicDao() {
+            override fun getFavoriteTracks() = source.onStart { starts.incrementAndGet(); active.incrementAndGet() }
+                .onCompletion { active.decrementAndGet() }
+        }
+        val repo = MusicRepository(dao)
+        try {
+            val snapshot = withTimeout(5_000) { repo.getFavoriteTracks().first() }
+            withTimeout(7_000) { while (active.get() != 0) delay(20) }
+            assertEquals(snapshot, repo.retainedFavoriteTracks)
+            assertEquals(1, starts.get())
+            source.value = listOf(row.copy(title = "Updated while hidden"))
+            val updated = withTimeout(5_000) { repo.getFavoriteTracks().first { it.single().title == "Updated while hidden" } }
+            assertEquals("Updated while hidden", updated.single().title)
+            assertEquals(2, starts.get())
+            assertEquals(1, active.get())
+        } finally {
+            (MusicRepository::class.java.getDeclaredField("initialCatalogScope").apply { isAccessible = true }
+                .get(repo) as CoroutineScope).coroutineContext[Job]!!.cancelAndJoin()
+            db.close()
+        }
+    }
+
 }

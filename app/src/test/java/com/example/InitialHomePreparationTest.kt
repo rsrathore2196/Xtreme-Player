@@ -161,16 +161,18 @@ class InitialHomePreparationTest {
         withTimeout(5_000) { vm.revealedShelfCount.first { it >= 4 } }
         assertEquals((1..6).map { "server-$it" }, vm.serverShelves.value.map { it.title })
     }
-    @Test fun initialArtistReadinessIsPublishedOnlyAfterActualRankingsAreAvailable() = runBlocking {
-        @Suppress("UNCHECKED_CAST")
-        val readiness = com.example.performance.BackgroundWorkCoordinator::class.java.getDeclaredField("_startupReadiness")
-            .apply { isAccessible = true }.get(null) as kotlinx.coroutines.flow.MutableStateFlow<com.example.performance.StartupReadiness>
-        readiness.value = com.example.performance.StartupReadiness()
+    @Test fun artistAggregationWaitsForItsSectionWithoutBlockingNativeHome() = runBlocking {
         db.musicDao().insertOrUpdateTrack(TrackEntity.fromMusicTrack(track))
         db.listeningEventDao().insertListeningEvent(ListeningEventEntity(trackId = track.id, artistName = track.artist,
             eventType = "ACTUAL_PLAY", playedDurationMs = 30_000))
         val vm = viewModel({ _, _ -> page("native") })
-        withTimeout(5_000) { readiness.first { it.tasks[com.example.performance.StartupTask.RECENT_ARTISTS]?.terminal == true } }
+        assertTrue(vm.loadServerHome())
+        assertEquals(com.example.recommendation.HomeUserMode.LOADING, vm.userMode.value)
+        vm.setHomeVisible(true)
+        withTimeout(5_000) { vm.userMode.first { it != com.example.recommendation.HomeUserMode.LOADING } }
+        assertTrue("Room artist aggregation is not a startup prerequisite", vm.mostListenedArtists.value.isEmpty())
+        vm.setArtistSectionRelevant(true)
+        withTimeout(5_000) { vm.mostListenedArtists.first { it.isNotEmpty() } }
         assertEquals("Singer", vm.mostListenedArtists.value.single().name)
         assertEquals(1, vm.mostListenedArtists.value.single().playCount)
         assertTrue(vm.hasListenedArtists.value)
@@ -183,7 +185,7 @@ class InitialHomePreparationTest {
         repeat(301) { index -> dao.insertListeningEvent(ListeningEventEntity(trackId = track.id, artistName = track.artist,
             timestamp = 1_000L + index, sessionId = "recent-$index", eventType = "ACTUAL_PLAY", playedDurationMs = 30_000)) }
         val vm = viewModel({ _, _ -> page("native") })
-        vm.setHomeVisible(true)
+        vm.setHomeVisible(true); vm.setArtistSectionRelevant(true)
         withTimeout(5_000) { vm.mostListenedArtists.first { it.firstOrNull()?.playCount == 301 } }
         // Restoration can affect an artist outside the observable 300-row recent window.
         dao.insertListeningEvent(ListeningEventEntity(trackId = older.id, artistName = older.artist, timestamp = 1,
@@ -200,7 +202,7 @@ class InitialHomePreparationTest {
         HomeCardCache(app).saveLocal(SavedHomeCards(HomeCacheIdentity.home(preferences),
             artists = listOf(MostListenedArtist("Singer", 250, listOf(track))), inputRevision = "known-valid"))
         db.openHelper.writableDatabase.execSQL("DROP TABLE listening_events")
-        val vm = viewModel({ _, _ -> page("native") })
+        val vm = viewModel({ _, _ -> page("native") }); vm.setHomeVisible(true)
         withTimeout(5_000) { vm.userMode.first { it == com.example.recommendation.HomeUserMode.UNAVAILABLE } }
         assertEquals(250, vm.mostListenedArtists.value.single().playCount)
     }
@@ -247,7 +249,7 @@ class InitialHomePreparationTest {
         val vm = viewModel({ _, _ -> homeCalls.incrementAndGet(); page("wrong") }, { _, _ ->
             profileCalls.incrementAndGet(); YouTubeMusicApiService.ProfileShelfResult(shelf("wrong"))
         })
-        vm.setHomeVisible(true)
+        vm.setHomeVisible(true); vm.setArtistSectionRelevant(true)
         withTimeout(5_000) { vm.profileShelf.first { it?.id == "Hindi" } }
         vm.updateUserProfile(country)
         withTimeout(5_000) { vm.serverShelves.first { it.singleOrNull()?.id == "GB" }; vm.profileShelf.first { it?.id == "Hindi" } }
@@ -268,7 +270,7 @@ class InitialHomePreparationTest {
             started.complete(Unit)
             try { awaitCancellation() } finally { canceled.complete(Unit) }
         })
-        vm.setHomeVisible(true); withTimeout(5_000) { started.await() }
+        vm.setHomeVisible(true); vm.setArtistSectionRelevant(true); withTimeout(5_000) { started.await() }
         vm.setHomeVisible(false); withTimeout(5_000) { canceled.await() }
         // Home and optional profile requests finish independently.
         withTimeout(5_000) { vm.serverShelves.first { it.singleOrNull()?.id == "native" } }
@@ -280,18 +282,16 @@ class InitialHomePreparationTest {
         dao.insertListeningEvent(ListeningEventEntity(trackId = track.id, artistName = track.artist,
             sessionId = "first", eventType = "ACTUAL_PLAY", playedDurationMs = 30_000))
         val vm = viewModel({ _, _ -> page("native") })
-        vm.setHomeVisible(true)
+        vm.setHomeVisible(true); vm.setArtistSectionRelevant(true)
         @Suppress("UNCHECKED_CAST")
         val shown = vm.javaClass.getDeclaredField("homeVisible").apply { isAccessible = true }.get(vm) as kotlinx.coroutines.flow.StateFlow<Boolean>
-        @Suppress("UNCHECKED_CAST")
-        val prepared = vm.javaClass.getDeclaredField("localPrepared").apply { isAccessible = true }.get(vm) as kotlinx.coroutines.flow.StateFlow<Boolean>
-        withTimeout(5_000) { shown.first { it }; prepared.first { it }; vm.mostListenedArtists.first { it.singleOrNull()?.playCount == 1 } }
+        withTimeout(5_000) { shown.first { it }; vm.mostListenedArtists.first { it.singleOrNull()?.playCount == 1 } }
         vm.setHomeVisible(false); withTimeout(5_000) { shown.first { !it } }
         dao.insertListeningEvent(ListeningEventEntity(trackId = track.id, artistName = track.artist,
             sessionId = "second", eventType = "ACTUAL_PLAY", playedDurationMs = 30_000))
         assertEquals(2, dao.getActualTrackPlayCounts().single().playCount)
         assertNull(withTimeoutOrNull(200) { vm.mostListenedArtists.first { it.singleOrNull()?.playCount == 2 } })
-        vm.setHomeVisible(true)
+        vm.setHomeVisible(true); vm.setArtistSectionRelevant(true)
         withTimeout(5_000) { vm.mostListenedArtists.first { it.singleOrNull()?.playCount == 2 } }
         assertEquals(1, vm.pillsCardTracks.value.size)
     }
@@ -300,7 +300,7 @@ class InitialHomePreparationTest {
         val dao = db.listeningEventDao()
         dao.insertListeningEvent(ListeningEventEntity(trackId = track.id, artistName = track.artist, timestamp = 100,
             sessionId = "one", eventType = "ACTUAL_PLAY", playedDurationMs = 30_000))
-        val vm = viewModel({ _, _ -> page("native") }); vm.setHomeVisible(true)
+        val vm = viewModel({ _, _ -> page("native") }); vm.setHomeVisible(true); vm.setArtistSectionRelevant(true)
         withTimeout(5_000) { vm.mostListenedArtists.first { it.singleOrNull()?.playCount == 1 } }
         val field = vm.javaClass.getDeclaredField("recentMetadata").apply { isAccessible = true }
         val before = field.get(vm)
@@ -320,10 +320,8 @@ class InitialHomePreparationTest {
         val event = ListeningEventEntity(id = 1, trackId = track.id, artistName = track.artist, timestamp = 100,
             sessionId = "one", eventType = "ACTUAL_PLAY", playedDurationMs = 0)
         dao.insertListeningEvent(event)
-        val vm = viewModel({ _, _ -> page("native") }); vm.setHomeVisible(true)
-        @Suppress("UNCHECKED_CAST")
-        val ready = vm.javaClass.getDeclaredField("localPrepared").apply { isAccessible = true }.get(vm) as kotlinx.coroutines.flow.StateFlow<Boolean>
-        withTimeout(5_000) { ready.first { it } }
+        val vm = viewModel({ _, _ -> page("native") }); vm.setHomeVisible(true); vm.setArtistSectionRelevant(true)
+        withTimeout(5_000) { vm.userMode.first { it != com.example.recommendation.HomeUserMode.LOADING } }
         assertTrue(vm.pillsCardTracks.value.isEmpty())
         dao.insertListeningEvent(event.copy(playedDurationMs = 1))
         withTimeout(5_000) { vm.pillsCardTracks.first { it.singleOrNull()?.id == track.id } }
@@ -338,7 +336,7 @@ class InitialHomePreparationTest {
             dao.insertListeningEvent(ListeningEventEntity(trackId = value.id, artistName = value.artist, timestamp = (100 + index).toLong(),
                 sessionId = "$index", eventType = "ACTUAL_PLAY", playedDurationMs = 30_000))
         }
-        val vm = viewModel({ _, _ -> page("native") }); vm.setHomeVisible(true)
+        val vm = viewModel({ _, _ -> page("native") }); vm.setHomeVisible(true); vm.setArtistSectionRelevant(true)
         withTimeout(5_000) { vm.pillsCardTracks.first { it.size == 2 }; vm.mostListenedArtists.first { it.singleOrNull()?.playCount == 2 } }
         val field = vm.javaClass.getDeclaredField("recentMetadata").apply { isAccessible = true }
         val before = field.get(vm)
@@ -349,7 +347,7 @@ class InitialHomePreparationTest {
         assertEquals(listOf(track.id, other.id), vm.pillsCardTracks.value.map { it.id })
     }
 
-    @Test fun initialPreparationPublishesThreeNativeShelfKindsWithOneHomeRequestAndNoProfileFanout() = runBlocking {
+    @Test fun theFirstResponsePublishesAllSupportedShelfKindsWithoutProfileFanout() = runBlocking {
         val calls = AtomicInteger(); val profileCalls = AtomicInteger()
         val response = YouTubeHomeParser.parseHomeFeed(org.json.JSONObject(NativeFeedFixtures.home(
             NativeFeedFixtures.collectionShelf("Albums & Singles", NativeFeedFixtures.album(1)),
@@ -358,28 +356,32 @@ class InitialHomePreparationTest {
         val vm = viewModel({ _, token -> assertNull(token); calls.incrementAndGet(); response }, { _, _ ->
             profileCalls.incrementAndGet(); error("Optional profile discovery must not block initial Home")
         })
-        withTimeout(5_000) { vm.prepareInitialServerFeed() }
+        withTimeout(5_000) { vm.loadServerHome() }
         assertEquals(listOf("Albums & Singles", "Quick Picks", "Trending Playlists"), vm.serverShelves.value.map { it.title })
         assertTrue(vm.revealedShelfCount.value >= 3)
         assertEquals(1, calls.get()); assertEquals(0, profileCalls.get())
-        vm.prepareInitialServerFeed(); assertEquals(1, calls.get())
+        vm.loadServerHome(); assertEquals(1, calls.get())
     }
-    @Test fun aShortInitialFeedUsesOnlyTwoBoundedContinuationsAndCachesAllThreeCards() = runBlocking {
+    @Test fun aShortInitialFeedPublishesBeforeAnyContinuationAndCachesItsCursor() = runBlocking {
         val tokens = mutableListOf<String?>()
         val vm = viewModel({ _, token -> tokens += token
-            when (token) { null -> page("quick", "albums"); "albums" -> page("albums", "playlists"); else -> page("playlists", "later") }
+            if (token == null) page("quick", "albums") else page("albums", "later")
         })
-        vm.prepareInitialServerFeed()
-        assertEquals(listOf(null, "albums", "playlists"), tokens)
-        assertEquals(listOf("quick", "albums", "playlists"), vm.serverShelves.value.map { it.id })
+        assertTrue(vm.loadServerHome())
+        assertEquals(listOf<String?>(null), tokens)
+        assertEquals(listOf("quick"), vm.serverShelves.value.map { it.id })
+        assertEquals(ShelfLoadStatus.SUCCESS, vm.serverCards.value.single().status)
         val saved = HomeCardCache(app).read(HomeCacheIdentity.home(preferences))!!
-        assertEquals(listOf("quick", "albums", "playlists"), saved.serverShelves.map { it.id }); assertEquals("later", saved.continuationToken)
+        assertEquals(listOf("quick"), saved.serverShelves.map { it.id }); assertEquals("albums", saved.continuationToken)
+        vm.revealNextHomeSection()
+        withTimeout(5_000) { vm.serverShelves.first { it.size == 2 } }
+        assertEquals(listOf(null, "albums"), tokens)
     }
     @Test fun aFreshThreeShelfCacheRestoresWithoutAnyHomeOrContinuationRequests() = runBlocking {
         HomeCardCache(app).saveHome(SavedHomeCards(HomeCacheIdentity.home(preferences), System.currentTimeMillis(),
             serverShelves = listOf(shelf("albums"), shelf("quick"), shelf("playlists")), serverFetchSucceeded = true))
         val vm = viewModel({ _, _ -> error("Fresh retained server cards require no network") })
-        withTimeout(5_000) { vm.prepareInitialServerFeed() }
+        withTimeout(5_000) { vm.loadServerHome() }
         assertEquals(3, vm.serverShelves.value.size)
     }
     @Test fun visibleHomeExpandsAfterInitialPreparationWithoutMountingAllFetchedShelves() = runBlocking {
@@ -394,10 +396,10 @@ class InitialHomePreparationTest {
                 else -> page("native-7")
             }
         })
-        vm.prepareInitialServerFeed()
+        vm.loadServerHome()
         assertEquals(listOf<String?>(null), tokens)
         assertEquals(3, vm.serverShelves.value.size)
-        vm.setHomeVisible(true)
+        vm.setHomeVisible(true); vm.setArtistSectionRelevant(true)
         withTimeout(5_000) { entered.await() }
         assertEquals(3, vm.serverShelves.value.size)
         assertFalse(vm.isRefreshing.value)
@@ -465,12 +467,12 @@ class InitialHomePreparationTest {
             }
             page("next")
         })
-        vm.setHomeVisible(true)
+        vm.setHomeVisible(true); vm.setArtistSectionRelevant(true)
         withTimeout(5_000) { entered.await() }
         vm.setHomeVisible(false)
         withTimeout(5_000) { cancelled.await() }
         assertEquals(3, vm.serverShelves.value.size)
-        vm.setHomeVisible(true)
+        vm.setHomeVisible(true); vm.setArtistSectionRelevant(true)
         withTimeout(5_000) { vm.serverShelves.first { it.size == 4 } }
         assertEquals(2, attempts.get())
     }
@@ -485,18 +487,21 @@ class InitialHomePreparationTest {
         assertEquals(BACKGROUND_HOME_PAGE_LIMIT, pages.get())
         assertTrue(vm.revealedShelfCount.value <= 4)
     }
-    @Test fun initialPreparationTimeoutCancelsThePageAndKeepsItsCursorAndPartialCacheRetryable() = runBlocking {
+    @Test fun cancellingOptionalContinuationKeepsTheCursorAndPublishedContentRetryable() = runBlocking {
         val entered = CompletableDeferred<Unit>(); val cancelled = CompletableDeferred<Unit>(); var slow = true
         val vm = viewModel({ _, token -> if (token == null) page("quick", "next") else {
             if (slow) { entered.complete(Unit); try { awaitCancellation() } finally { cancelled.complete(Unit) } }
             YouTubeHomeParser.ParsedHomeFeed(listOf(shelf("albums"), shelf("playlists")), null)
         } })
-        val prepare = async { vm.prepareInitialServerFeed(budgetMs = 1_000) }
-        withTimeout(3_000) { entered.await(); prepare.await(); cancelled.await() }
+        assertTrue(vm.loadServerHome())
+        vm.setHomeVisible(true)
+        withTimeout(5_000) { entered.await() }
+        vm.setHomeVisible(false)
+        withTimeout(5_000) { cancelled.await() }
         assertEquals(listOf("quick"), vm.serverShelves.value.map { it.id })
         assertEquals("next", HomeCardCache(app).read(HomeCacheIdentity.home(preferences))!!.continuationToken)
         slow = false; vm.revealNextHomeSection()
-        withTimeout(3_000) { vm.serverShelves.first { it.size == 3 } }
+        withTimeout(5_000) { vm.serverShelves.first { it.size == 3 } }
         Unit
     }
     @Test fun obsoleteSongOnlyCacheIsDisplayedThenRefreshedInsteadOfBeingConsideredCompleteForTenMinutes() = runBlocking {
@@ -508,7 +513,7 @@ class InitialHomePreparationTest {
         val calls = AtomicInteger()
         val vm = viewModel({ _, _ -> calls.incrementAndGet(); YouTubeHomeParser.ParsedHomeFeed(listOf(shelf("albums"), shelf("quick"), shelf("playlists")), null) })
         withTimeout(5_000) { vm.serverShelves.first { it.singleOrNull()?.id == "legacy" } }
-        vm.prepareInitialServerFeed()
+        vm.loadServerHome()
         assertEquals(1, calls.get()); assertEquals(3, vm.serverShelves.value.size)
     }
 

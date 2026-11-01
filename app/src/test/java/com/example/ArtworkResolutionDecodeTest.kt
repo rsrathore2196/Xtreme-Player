@@ -130,7 +130,7 @@ class ArtworkResolutionDecodeTest {
         val source = providerArtworkUrl(original, 2000)
         fixture(mapOf(source to 2000)) { loader, fetched ->
             val request = buildOptimizedImageRequest(context, original, ImageConfig.HERO_BANNER_SIZE, null,
-                decodeSize = IntSize(1800, 720), startupPreparation = true).newBuilder().allowHardware(false).build()
+                decodeSize = IntSize(1800, 720), currentTrack = true).newBuilder().allowHardware(false).build()
             assertEquals(source, request.data)
             val result = loader.execute(request) as SuccessResult
             val bitmap = (result.drawable as BitmapDrawable).bitmap

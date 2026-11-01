@@ -24,12 +24,11 @@ data class StartupSettings(
     val uiScale get() = OtherSettingsPreferences.UI_SIZE_OPTIONS[uiSizeIndex].scale
     companion object {
         fun read(context: Context): StartupSettings {
-            com.example.playback.AudioEffectsManager.initializePreferences(context)
             return StartupSettings(
                 ThemePreferences.getThemeMode(context), ThemePreferences.getCustomThemeState(context),
                 OtherSettingsPreferences.getTextSizeIndex(context), OtherSettingsPreferences.getUiSizeIndex(context),
                 OtherSettingsPreferences.isDynamicGlassEnabled(context), UserProfilePreferences.getUserProfile(context),
-                AudioQualityPreferences.getSelectedQuality(context)
+                AudioQuality.EXTREME_320
             )
         }
     }
@@ -46,14 +45,12 @@ internal class StartupSettingsCache(private val context: Context) : AutoCloseabl
     private var memoryPreferences: List<SharedPreferences> = emptyList()
     private val memoryListener = SharedPreferences.OnSharedPreferenceChangeListener { prefs, key ->
         val index = memoryPreferences.indexOf(prefs)
-        if (index != 2 && index != 3 || key == null ||
-            index == 2 && key in appearanceKeys || index == 3 && key in networkKeys) revision.incrementAndGet()
+        if (index != 2 || key == null || key in appearanceKeys) revision.incrementAndGet()
     }
     private val listener = SharedPreferences.OnSharedPreferenceChangeListener { prefs, key ->
         // Listening statistics and lyrics settings do not invalidate appearance/profile.
         val relevant = when (prefs) {
             preferences.getOrNull(2) -> key == null || key in appearanceKeys
-            preferences.getOrNull(3) -> key == null || key in networkKeys
             else -> true
         }
         if (relevant)
@@ -66,12 +63,12 @@ internal class StartupSettingsCache(private val context: Context) : AutoCloseabl
         loading.withLock {
             if (preferences.isEmpty()) {
                 preferences = listOf("xtreme_theme_prefs", "xtreme_user_profile_prefs",
-                    "xtreme_other_settings", "xtreme_audio_quality_prefs").map {
+                    "xtreme_other_settings").map {
                     context.applicationContext.getSharedPreferences(it, Context.MODE_PRIVATE)
                 }
                 preferences.forEach { it.registerOnSharedPreferenceChangeListener(listener) }
                 memoryPreferences = listOf("xtreme_theme_prefs", "xtreme_user_profile_prefs",
-                    "xtreme_other_settings", "xtreme_audio_quality_prefs").map {
+                    "xtreme_other_settings").map {
                     ReactiveSettingsRepository.preferences(context, it)
                 }
                 memoryPreferences.forEach { it.registerOnSharedPreferenceChangeListener(memoryListener) }
@@ -107,6 +104,5 @@ internal class StartupSettingsCache(private val context: Context) : AutoCloseabl
 
     private companion object {
         val appearanceKeys = setOf("text_size_index", "ui_size_index", "dynamic_glass_enabled")
-        val networkKeys = setOf("wifi_quality_ceiling", "cellular_quality_ceiling", "treat_metered_wifi_as_cellular")
     }
 }

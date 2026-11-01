@@ -23,10 +23,6 @@ private fun retainedHomeFeed(): HomeViewModel {
     return viewModel(factory = factory)
 }
 
-/** Data only: a restored Search/Library destination must not strand Home startup readiness. */
-@Composable
-internal fun PrepareInitialHome() { retainedHomeFeed() }
-
 /**
  * Feed ownership stays inside the Home destination. The pager and dock have no
  * dependency on feed loading, cache restoration, or recommendation publication.

@@ -13,11 +13,10 @@ import com.example.data.local.MusicDatabase
 import com.example.data.repository.MusicRepository
 import com.example.data.remote.OnlineMusicApiService
 import com.example.playback.PlaybackManager
-import com.example.performance.BackgroundWorkCoordinator
-import com.example.performance.BackgroundWorkCoordinator.StartupPriority
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.asStateFlow
 
 class XtremeMusicApp : Application(), ImageLoaderFactory, androidx.work.Configuration.Provider {
     override val workManagerConfiguration: androidx.work.Configuration
@@ -36,8 +35,24 @@ class XtremeMusicApp : Application(), ImageLoaderFactory, androidx.work.Configur
     internal fun takeInitialStartupSettings(): com.example.data.local.StartupSettings? =
         settingsCache.peek()
     internal suspend fun loadStartupSettings() = settingsCache.load()
-    private val _startupReady = kotlinx.coroutines.flow.MutableStateFlow(false)
-    val startupReady: kotlinx.coroutines.flow.StateFlow<Boolean> = _startupReady
+    private val _launchSettings = kotlinx.coroutines.flow.MutableStateFlow<com.example.data.local.StartupSettings?>(null)
+    val launchSettings = _launchSettings.asStateFlow()
+    private var launchSettingsJob: kotlinx.coroutines.Job? = null
+
+    fun prepareLaunchSettings() {
+        settingsCache.peek()?.let { _launchSettings.value = it; return }
+        if (launchSettingsJob?.isActive == true) return
+        _launchSettings.value = null
+        launchSettingsJob = startupScope.launch {
+            _launchSettings.value = try { loadStartupSettings() }
+            catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+            catch (error: Exception) {
+                android.util.Log.w("XtremeMusicApp", "Launch preferences unavailable", error)
+                com.example.data.local.StartupSettings(profile =
+                    com.example.data.local.UserProfilePreferences.peekUserProfile() ?: com.example.data.local.UserProfile())
+            }
+        }
+    }
 
     val playbackManager: PlaybackManager by lazy {
         PlaybackManager(this, repository).also {
@@ -56,6 +71,7 @@ class XtremeMusicApp : Application(), ImageLoaderFactory, androidx.work.Configur
     internal suspend fun awaitImageLoader(): ImageLoader = asynchronousImageLoader.await()
 
     private fun createImageLoader(): ImageLoader {
+        com.example.performance.MaintenanceScheduler.onCacheUsed(this)
         return ImageLoader.Builder(this)
             .components { add(com.example.ui.util.ArtworkResolutionInterceptor()) }
             // Bound actual decode work, without putting instant memory-cache hits
@@ -96,55 +112,11 @@ class XtremeMusicApp : Application(), ImageLoaderFactory, androidx.work.Configur
     override fun onCreate() {
         super.onCreate()
         _instance = this
-        // Install a lightweight handle before Compose. Construction and opening both
-        // caches happen eagerly on IO; early requests await the same instance.
+        // Coil remains a lazy singleton; the first visible image owns cache creation.
         coil.Coil.setImageLoader(asynchronousImageLoader)
-        asynchronousImageLoader.start()
-        // Only the local appearance/profile snapshot gates the first themed frame.
-        startupScope.launch {
-            BackgroundWorkCoordinator.startupTask(com.example.performance.StartupTask.SETTINGS,
-                com.example.performance.StartupStatus.RUNNING)
-            settingsRepository.preload()
-            loadStartupSettings()
-            BackgroundWorkCoordinator.startupTask(com.example.performance.StartupTask.SETTINGS,
-                com.example.performance.StartupStatus.READY)
-            _startupReady.value = true
-        }
-
-        startupScope.launch { com.example.playback.SleepTimerManager.preload(this@XtremeMusicApp) }
-        startupScope.launch {
-            // Even creating WorkManager's own database is optional IO work. Do not
-            // launch it directly from the first-frame notification.
-            BackgroundWorkCoordinator.startup(StartupPriority.DEFERRED, label = "Maintenance scheduling") {
-                com.example.data.cache.SmartCacheManager.initialize(this@XtremeMusicApp)
-                com.example.performance.MaintenanceScheduler.schedule(this@XtremeMusicApp)
-            }
-        }
-
-        startupScope.launch {
-            BackgroundWorkCoordinator.awaitFirstFrame()
-            com.example.performance.DeferredLibraryInitialization.initialize(this@XtremeMusicApp)
-        }
-
-        // Context registration does not read storage or initialize the network client.
+        // Registration only: the client is initialized by an actual request.
         OnlineMusicApiService.initialize(this)
 
-        // Every heavy prewarm competes in the same admission queue as catalog,
-        // history and cache work. On-demand playback/images bypass this queue.
-        startupScope.launch {
-            val coordinator = BackgroundWorkCoordinator
-            coordinator.startup(StartupPriority.DEFERRED, label = "Palette prewarm") { runCatching { com.example.ui.util.TrackPaletteCache.initialize(this@XtremeMusicApp) }
-                .onFailure { android.util.Log.w("XtremeMusicApp", "Palette prewarm unavailable", it) } }
-            coordinator.startup(StartupPriority.DEFERRED, label = "Playback key prewarm") { runCatching { SecurityConfig.getDESKey(this@XtremeMusicApp) } }
-            // Reuse the small shared portrait cache restore. Visible portraits can
-            // request it independently, without waiting for optional prewarming.
-            coordinator.startup(StartupPriority.DEFERRED, label = "Artist portrait prewarm") {
-                runCatching { com.example.data.repository.ArtistPhotoRepository.prewarm(this@XtremeMusicApp, automatic = true).await() }
-                    .onFailure { android.util.Log.w("XtremeMusicApp", "Artist prewarm unavailable", it) }
-            }
-            coordinator.startup(StartupPriority.DEFERRED, label = "Audio devices prewarm") { runCatching { com.example.playback.AudioDeviceManager.init(this@XtremeMusicApp) }
-                .onFailure { android.util.Log.w("XtremeMusicApp", "Audio devices unavailable", it) } }
-        }
     }
 
     override fun onTerminate() {

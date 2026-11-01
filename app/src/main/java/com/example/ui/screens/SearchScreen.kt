@@ -710,6 +710,18 @@ fun SearchScreen(
                 )
             }
 
+            if (explorePills.isEmpty() && !searchState.exploreIndexReady) {
+                items(3, key = { "search_genres_loading_$it" }, contentType = { "genre_grid_row" }) { index ->
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 5.dp)
+                        .testTag("search_genres_loading_$index"), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        repeat(2) {
+                            Box(Modifier.weight(1f).height(88.dp).clip(RoundedCornerShape(16.dp))
+                                .background(appColors.cardBackground))
+                        }
+                    }
+                }
+            }
+
             items(
                 items = explorePills.chunked(2),
                 key = { row -> "genre_grid_row_${row.first().second?.key ?: row.first().first}" },

@@ -200,7 +200,6 @@ class PlayerViewModel(
 
     private var searchJob: Job? = null
     private var exploreIndexJob: Job? = null
-    @Volatile private var preparingExploreIndex = false
     @Volatile private var exploreVisible = false
     private val exploreIndexGeneration = AtomicLong()
     private var exploreIndexContext = ""
@@ -215,42 +214,27 @@ class PlayerViewModel(
 
     // Reuse the ViewModel's lifecycle job while keeping large-list publication off Main.
     private val libraryDataScope = viewModelScope + derivedStateDispatcher
-    private val localLibraryLoaded = List(3) { kotlinx.coroutines.CompletableDeferred<Unit>() }
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-    private fun <T> retainedLibraryData(initial: T, loaded: kotlinx.coroutines.CompletableDeferred<Unit>,
-        source: () -> kotlinx.coroutines.flow.Flow<T>): StateFlow<T> =
+    private fun <T> retainedLibraryData(initial: T, source: () -> kotlinx.coroutines.flow.Flow<T>): StateFlow<T> =
         com.example.performance.BackgroundWorkCoordinator.uiForeground.flatMapLatest { foreground ->
             if (foreground) kotlinx.coroutines.flow.flow {
                 com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
                 try {
                     source().collect {
                         emit(it)
-                        loaded.complete(Unit)
                     }
                 } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
                 catch (error: Exception) {
-                    loaded.completeExceptionally(error)
                     android.util.Log.w("PlayerViewModel", "Local library snapshot unavailable", error)
                 }
             } else emptyFlow()
-        }.stateIn(libraryDataScope, SharingStarted.Lazily, initial)
+        }.stateIn(libraryDataScope, SharingStarted.WhileSubscribed(5_000), initial)
 
     private val _libraryMessages = kotlinx.coroutines.flow.MutableSharedFlow<String>(extraBufferCapacity = 8)
     val libraryMessages = _libraryMessages.asSharedFlow()
     val libraryFailures = repository.libraryFailures
     fun retryLocalLibrary() = repository.retryLocalLibrary()
-
-    init {
-        viewModelScope.launch(AppDispatchers.Io) {
-            repository.libraryFailures.collect { failures ->
-                listOf("favorites", "recents", "playlists").forEachIndexed { index, key ->
-                    if (key in failures) localLibraryLoaded[index].completeExceptionally(
-                        java.io.IOException(failures.getValue(key)))
-                }
-            }
-        }
-    }
 
     private fun libraryCommand(operation: String, block: suspend () -> Unit) = viewModelScope.launch {
         try { block() }
@@ -261,17 +245,17 @@ class PlayerViewModel(
         }
     }
 
-    val favoriteTracks: StateFlow<List<MusicTrack>> = retainedLibraryData(repository.retainedFavoriteTracks, localLibraryLoaded[0]) {
+    val favoriteTracks: StateFlow<List<MusicTrack>> = retainedLibraryData(repository.retainedFavoriteTracks) {
         repository.getFavoriteTracks()
     }
 
-    val recentlyPlayed: StateFlow<List<MusicTrack>> = retainedLibraryData(repository.retainedRecentlyPlayed, localLibraryLoaded[1]) {
+    val recentlyPlayed: StateFlow<List<MusicTrack>> = retainedLibraryData(repository.retainedRecentlyPlayed) {
         repository.getRecentlyPlayedTracks()
     }
 
     // Foreground collectors replay the repository's one shared Room snapshot.
-    // Tab changes never restart observation; backgrounding retains the last value.
-    val playlists: StateFlow<List<PlaylistEntity>> = retainedLibraryData(repository.retainedPlaylists, localLibraryLoaded[2]) { repository.getAllPlaylists() }
+    // Hidden screens retain the last value and stop observing when no consumer remains.
+    val playlists: StateFlow<List<PlaylistEntity>> = retainedLibraryData(repository.retainedPlaylists) { repository.getAllPlaylists() }
 
     private val preparedSettings = (application as? com.example.XtremeMusicApp)?.takeInitialStartupSettings()
     private val initialSettings = preparedSettings ?: com.example.data.local.StartupSettings()
@@ -298,7 +282,17 @@ class PlayerViewModel(
 
     private var searchDataStarted = false
     private var catalogFavoritesStarted = false
-    fun prepareCatalogUi(searchVisible: Boolean, detailVisible: Boolean) {
+    private val catalogUiVisible = MutableStateFlow(false)
+    private var textSupportRequested = false
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    fun prepareCatalogUi(searchVisible: Boolean, detailVisible: Boolean, libraryVisible: Boolean = false) {
+        catalogUiVisible.value = searchVisible || detailVisible
+        if ((searchVisible || detailVisible || libraryVisible) && !textSupportRequested) {
+            textSupportRequested = true
+            viewModelScope.launch(AppDispatchers.Io) {
+                com.example.performance.DeferredLibraryInitialization.initializeTextSupport(application)
+            }
+        }
         if (searchVisible && !searchDataStarted) {
             searchDataStarted = true
             viewModelScope.launch(recentSearchDispatcher) {
@@ -314,9 +308,10 @@ class PlayerViewModel(
             catalogFavoritesStarted = true
             derivedStateScope.launch {
                 com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
-                // Reuse the local snapshot/observer already warmed for Library.
-                // First Search entry must not start another Room favorites query.
-                favoriteTracks.map { tracks -> tracks.mapTo(hashSetOf()) { it.id } }
+                // Observe shared local favorites only while Search/details use them.
+                catalogUiVisible.flatMapLatest { active ->
+                    if (active) repository.getFavoriteTracks() else emptyFlow()
+                }.map { tracks -> tracks.mapTo(hashSetOf()) { it.id } }
                     .distinctUntilChanged().collect { catalogBrowser.updateFavorites(it) }
             }
         }
@@ -521,75 +516,6 @@ class PlayerViewModel(
     ) }
 
     init {
-        if (application is com.example.XtremeMusicApp &&
-            !com.example.performance.BackgroundWorkCoordinator.startupReadiness.value.complete) {
-            preparingExploreIndex = true
-            viewModelScope.launch(AppDispatchers.Io) {
-                val startup = com.example.performance.BackgroundWorkCoordinator
-                val task = com.example.performance.StartupTask.LOCAL_TABS
-                startup.startupTask(task, com.example.performance.StartupStatus.RUNNING)
-                try {
-                    startup.startup(com.example.performance.BackgroundWorkCoordinator.StartupPriority.ESSENTIAL_UI,
-                        boundToInitialPresentation = true,
-                        label = "Local tab snapshots") {
-                        kotlinx.coroutines.withTimeout(5_000L) {
-                            kotlinx.coroutines.coroutineScope {
-                                // Restore the same cached category index used by Search,
-                                // before its first measured layout. Never extend the modal
-                                // deadline for an unavailable remote catalogue.
-                                val generation = exploreIndexGeneration.incrementAndGet()
-                                val explore = launch(AppDispatchers.Io) {
-                                    kotlinx.coroutines.withTimeoutOrNull(1_500L) {
-                                        loadExploreIndex(generation, initialPreparation = true)
-                                    }
-                                }
-                                exploreIndexJob = explore
-                                // Subscribe to the existing retained local flows;
-                                // the category index above is metadata only.
-                                val consumers = listOf(
-                                    launch { favoriteTracks.collect { } },
-                                    launch { recentlyPlayed.collect { } },
-                                    launch { playlists.collect { } })
-                                try {
-                                    val revision = recentSearchRevision.get()
-                                    recentSearchMutex.withLock {
-                                        val recent = com.example.data.local.RecentSearchPreferences.getRecentSearches(application)
-                                        if (recentSearchRevision.get() == revision)
-                                            _searchState.update { it.copy(recentSearches = recent) }
-                                    }
-                                    withContext(AppDispatchers.Main) { searchDataStarted = true }
-                                    localLibraryLoaded.forEach { it.await() }
-                                    withContext(derivedStateDispatcher) {
-                                        catalogBrowser.updateFavorites(favoriteTracks.value.mapTo(hashSetOf()) { it.id })
-                                    }
-                                    withContext(AppDispatchers.Main) {
-                                        prepareCatalogUi(searchVisible = true, detailVisible = false)
-                                    }
-                                    explore.join()
-                                    if (_searchState.value.exploreIndexReady) searchState.first {
-                                        it.exploreIndexReady && it.exploreCategories == _searchState.value.exploreCategories
-                                    }
-                                } finally { consumers.forEach { it.cancel() } }
-                            }
-                        }
-                    }
-                    startup.startupTask(task, com.example.performance.StartupStatus.READY)
-                } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
-                    startup.startupTask(task, com.example.performance.StartupStatus.UNAVAILABLE)
-                } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
-                catch (error: Exception) {
-                    android.util.Log.w("PlayerViewModel", "Initial local tabs unavailable", error)
-                    startup.startupTask(task, com.example.performance.StartupStatus.UNAVAILABLE)
-                } finally {
-                    preparingExploreIndex = false
-                    // A deadline may reveal Search before its startup owner
-                    // finishes cancelling. Hand an unfinished request to the
-                    // visible page instead of requiring another tab visit.
-                    if (exploreVisible && !_searchState.value.exploreIndexReady)
-                        viewModelScope.launch { setExploreVisible(true) }
-                }
-            }
-        }
         viewModelScope.launch(AppDispatchers.Io) {
             if (preparedSettings != null) return@launch
             try {
@@ -638,10 +564,6 @@ class PlayerViewModel(
         viewModelScope.launch {
             com.example.data.local.OtherSettingsPreferences.observePlaybackIntegrations(application)
                 .collect(catalogBrowser::setStreamingAddon)
-        }
-        viewModelScope.launch(AppDispatchers.Io) {
-            _settingsReady.first { it }
-            loadCatalog(com.example.performance.BackgroundWorkCoordinator.StartupPriority.DEFERRED)
         }
         observeCurrentTrackForLyrics()
         viewModelScope.launch {
@@ -991,9 +913,6 @@ class PlayerViewModel(
     /** Hidden tabs reuse initial preparation; subsequent requests belong to visible Explore. */
     fun setExploreVisible(visible: Boolean) {
         exploreVisible = visible
-        // The startup owner prepares hidden Search before its first draw. Its
-        // initial visibility callback must not cancel that shared preparation.
-        if (preparingExploreIndex) return
         if (!visible) {
             exploreIndexGeneration.incrementAndGet()
             exploreIndexJob?.cancel()
@@ -1011,7 +930,7 @@ class PlayerViewModel(
         }
     }
 
-    private suspend fun loadExploreIndex(generation: Long, initialPreparation: Boolean = false) {
+    private suspend fun loadExploreIndex(generation: Long) {
         kotlinx.coroutines.currentCoroutineContext().ensureActive()
         if (generation != exploreIndexGeneration.get()) return
         val profile = com.example.data.local.UserProfilePreferences.getUserProfile(application)
@@ -1025,15 +944,14 @@ class PlayerViewModel(
         if (exploreIndexLoadedAt > 0L && now - exploreIndexLoadedAt in 0 until 24 * 60 * 60_000L &&
             _searchState.value.exploreCategories.isNotEmpty()) return
         if (exploreIndexFailedAt > 0L && now - exploreIndexFailedAt in 0 until 60_000L) return
-        if ((!initialPreparation && !exploreVisible) || generation != exploreIndexGeneration.get()) return
+        if (!exploreVisible || generation != exploreIndexGeneration.get()) return
         _searchState.update { it.copy(isExploreLoading = true) }
         try {
             val categories = repository.getExploreCategories(profile)
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
             // A response may arrive during a later navigation gesture.
-            if (!initialPreparation)
-                com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
-            if ((!initialPreparation && !exploreVisible) || generation != exploreIndexGeneration.get()) return
+            com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
+            if (!exploreVisible || generation != exploreIndexGeneration.get()) return
             if (categories.isNotEmpty()) {
                 exploreIndexLoadedAt = android.os.SystemClock.elapsedRealtime()
                 exploreIndexFailedAt = 0L
@@ -1045,7 +963,7 @@ class PlayerViewModel(
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (_: Exception) {
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
-            if (generation == exploreIndexGeneration.get() && (initialPreparation || exploreVisible)) {
+            if (generation == exploreIndexGeneration.get() && exploreVisible) {
                 exploreIndexFailedAt = android.os.SystemClock.elapsedRealtime()
                 _searchState.update { it.copy(exploreIndexReady = true) }
             }

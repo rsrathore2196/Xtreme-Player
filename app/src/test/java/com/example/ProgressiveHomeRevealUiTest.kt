@@ -29,6 +29,7 @@ import kotlinx.coroutines.launch
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = Application::class, qualifiers = "w411dp-h891dp-port")
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 class ProgressiveHomeRevealUiTest {
     @get:Rule val compose = createComposeRule()
     private lateinit var list: LazyListState
@@ -40,7 +41,17 @@ class ProgressiveHomeRevealUiTest {
             MaterialTheme { CompositionLocalProvider(LocalAppColors provides DarkAppColors.copy(dynamicGlassEnabled = false),
                 LocalDynamicGlassEnabled provides false, LocalVisualEffectsActive provides false,
                 LocalArtworkRequestsActive provides false) {
-                list = rememberLazyListState()
+                // Robolectric has no advancing Android frame deadline while
+                // Espresso drains a programmatic scroll. Keep real lazy rows and
+                // scrolling, without its speculative prefetch repost loop.
+                val prefetch = androidx.compose.runtime.remember {
+                    object : androidx.compose.foundation.lazy.LazyListPrefetchStrategy {
+                        override fun androidx.compose.foundation.lazy.LazyListPrefetchScope.onScroll(delta: Float, layoutInfo: androidx.compose.foundation.lazy.LazyListLayoutInfo) {}
+                        override fun androidx.compose.foundation.lazy.LazyListPrefetchScope.onVisibleItemsUpdated(layoutInfo: androidx.compose.foundation.lazy.LazyListLayoutInfo) {}
+                        override fun androidx.compose.foundation.lazy.layout.NestedPrefetchScope.onNestedPrefetch(firstVisibleItemIndex: Int) {}
+                    }
+                }
+                list = rememberLazyListState(prefetchStrategy = prefetch)
                 scope = rememberCoroutineScope()
                 HomeScreenContent(serverShelves = (1..8).map { shelf("Native $it") },
                     listState = list, onTrackClick = { _, _ -> }, onToggleFavorite = {})

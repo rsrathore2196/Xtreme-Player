@@ -9,9 +9,6 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.performance.BackgroundWorkCoordinator
-import com.example.performance.StartupReadiness
-import com.example.performance.StartupStatus
-import com.example.performance.StartupTask
 import com.example.ui.components.AutomaticAppUpdateCheck
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -29,10 +26,6 @@ class AutomaticAppUpdateCheckTest {
 
     @Test fun startupSchedulesOneCheckWithoutHomeAboutOrNotificationPermissionAndSurvivesResume() {
         val coordinator = BackgroundWorkCoordinator
-        @Suppress("UNCHECKED_CAST")
-        val state = coordinator.javaClass.getDeclaredField("_startupReadiness").apply { isAccessible = true }
-            .get(null) as MutableStateFlow<StartupReadiness>
-        state.value = StartupReadiness()
         coordinator.firstFrameRendered()
         val owner = object : LifecycleOwner {
             val registry = LifecycleRegistry(this)
@@ -49,9 +42,6 @@ class AutomaticAppUpdateCheckTest {
                 Text(selected)
             }
         }
-        compose.waitForIdle()
-        assertEquals("No optional startup request before preparation completes", 0, checks)
-        compose.runOnIdle { state.value = StartupReadiness(StartupTask.entries.associateWith { StartupStatus.READY }) }
         compose.waitForIdle()
         assertEquals(1, checks)
         compose.runOnIdle { selected = "Library" }

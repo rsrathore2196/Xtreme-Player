@@ -39,7 +39,6 @@ class AsyncImageLoader(
             }
         }
     }
-    fun start() { ready.start() }
     suspend fun await(): ImageLoader = ready.await()
 
     override val defaults = DefaultRequestOptions().copy(

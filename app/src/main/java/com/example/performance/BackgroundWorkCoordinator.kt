@@ -8,7 +8,6 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
@@ -22,110 +21,6 @@ import kotlin.coroutines.CoroutineContext
 /** Coordinates optional work; never drives frames or controls the audio engine. */
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 object BackgroundWorkCoordinator {
-    private val _startupReadiness = MutableStateFlow(StartupReadiness())
-    val startupReadiness = _startupReadiness.asStateFlow()
-    private val initialPresentationPending = AtomicBoolean(false)
-    private val preparedContentDrawn = AtomicBoolean(false)
-    private val healthyFrames = AtomicInteger()
-    private val preparedDrawAt = AtomicLong()
-    val initialPresentationInProgress: Boolean get() = initialPresentationPending.get()
-    /** Data survives recreation; measurements/draws belong to the current window. */
-    fun beginTabPreparation() {
-        if (_startupReadiness.value.complete) return
-        initialPresentationPending.set(true)
-        preparedContentDrawn.set(false)
-        _startupReadiness.update { state ->
-            if (state.complete) state else state.copy(presentationGeneration = state.presentationGeneration + 1L,
-                tasks = state.tasks + listOf(
-                StartupTask.HOME_LAYOUT, StartupTask.SEARCH_LAYOUT, StartupTask.LIBRARY_LAYOUT,
-                StartupTask.PRESENTATION).associateWith { StartupStatus.PENDING })
-        }
-        if (_startupReadiness.value.complete) initialPresentationPending.set(false)
-    }
-
-    // Leave 200ms for the existing 180ms exit animation within the seven-second budget.
-    internal const val INITIAL_PREPARATION_MS = 6_800L
-    private val initialStartedAt = AtomicLong(0L)
-    private var initialDeadlineJob: Job? = null
-    private val deadlineScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + AppDispatchers.Io)
-    val initialPreparationRemainingMillis: Long get() = initialStartedAt.get().let { start ->
-        if (start == 0L) INITIAL_PREPARATION_MS
-        else (INITIAL_PREPARATION_MS - (SystemClock.elapsedRealtime() - start)).coerceIn(0L, INITIAL_PREPARATION_MS)
-    }
-    fun beginInitialPresentation() {
-        if (_startupReadiness.value.complete) return
-        initialPresentationPending.set(true)
-        if (initialStartedAt.compareAndSet(0L, SystemClock.elapsedRealtime().coerceAtLeast(1L))) {
-            initialDeadlineJob?.cancel()
-            initialDeadlineJob = deadlineScope.launch {
-                // Scheduling latency must consume the budget, not extend the popup.
-                delay(initialPreparationRemainingMillis)
-                if (!_startupReadiness.value.complete) {
-                    _startupReadiness.update { it.expirePreparation() }
-                    // A deadline is a fallback, never evidence that a remote fetch succeeded.
-                    interaction()
-                    initialPresentationPending.set(false)
-                }
-            }
-        }
-    }
-    fun startupTask(task: StartupTask, status: StartupStatus, presentationGeneration: Long? = null) {
-        _startupReadiness.update {
-            if (presentationGeneration != null && it.presentationGeneration != presentationGeneration) it
-            else it.withStatus(task, status)
-        }
-    }
-    /** Called by the View tree's actual draw observer, including cached Compose layers. */
-    fun initialContentDrawn() {
-        if (initialPresentationPending.get() && _startupReadiness.value.preparationComplete) {
-            preparedDrawAt.set(SystemClock.elapsedRealtime())
-            healthyFrames.set(0)
-            preparedContentDrawn.set(true)
-        }
-    }
-    /** Optional continuations cannot wake between data preparation and presentation. */
-    suspend fun awaitInitialPresentation() { startupReadiness.first { it.complete } }
-
-    suspend fun awaitInitialPresentationSettled() {
-        val generation = startupReadiness.value.presentationGeneration
-        startupReadiness.first { it.preparationComplete || it.presentationGeneration != generation }
-        if (startupReadiness.value.presentationGeneration != generation) return
-        if (startupReadiness.value.complete) return
-        startupTask(StartupTask.PRESENTATION, StartupStatus.RUNNING)
-        while (true) {
-            currentCoroutineContext().ensureActive()
-            if (startupReadiness.value.presentationGeneration != generation) return
-            if (startupReadiness.value.complete) return
-            // A hand-off between essential jobs is not a settled UI. Waiting
-            // tickets must drain as well; optional tickets remain independent
-            // and can never keep the modal presentation fence open.
-            val essentialFinished = synchronized(admissionLock) {
-                !essentialActive && waiting.none { it.essential() && (!it.foregroundOnly || foreground.get()) }
-            }
-            val now = SystemClock.elapsedRealtime()
-            val drawnFor = now - preparedDrawAt.get()
-            // A static screen need not submit another frame. Telemetry can also
-            // be absent or continuously over budget on a busy device. It guides
-            // a bounded settling observation, never an unbounded readiness latch.
-            val settled = healthyFrames.get() >= 3 ||
-                now - maxOf(preparedDrawAt.get(), lastSlowFrame.get()) >= 250L || drawnFor >= 1_000L
-            if (foreground.get() && preparedContentDrawn.get() && !foregroundDrawPending.get() &&
-                essentialFinished && navigationJobs.get() == 0 && settled) break
-            delay(50L)
-        }
-        // Revealing interactive controls is itself a foreground interaction
-        // boundary. Reuse the existing idle budget so optional waiters cannot
-        // all wake in the popup's exit frames after a slow network lookup.
-        _startupReadiness.update { state ->
-            if (state.presentationGeneration != generation || !state.preparationComplete) state
-            else state.withStatus(StartupTask.PRESENTATION, StartupStatus.READY)
-        }
-        if (startupReadiness.value.presentationGeneration == generation && startupReadiness.value.complete) {
-            interaction()
-            initialPresentationPending.set(false)
-        }
-    }
-    internal const val OPTIONAL_IDLE_MS = 15_000L
     internal const val BETWEEN_JOBS_MS = 750L
     // One shared execution budget for Home transforms, artwork matching and Coil
     // bitmap decoding. Separate limitedParallelism views would multiply this budget.
@@ -151,10 +46,6 @@ object BackgroundWorkCoordinator {
     }
     private val foregroundDrawPending = AtomicBoolean(false)
     private val firstFrame = kotlinx.coroutines.CompletableDeferred<Unit>()
-    private val homeReady = kotlinx.coroutines.CompletableDeferred<Unit>()
-    private val cachedHomeReady = kotlinx.coroutines.CompletableDeferred<Unit>()
-    private val playbackReady = kotlinx.coroutines.CompletableDeferred<Unit>()
-    private val maintenanceReady = kotlinx.coroutines.CompletableDeferred<Unit>()
     fun expectForegroundDraw() {
         if (!foregroundDrawPending.getAndSet(true))
             androidx.tracing.Trace.beginAsyncSection("Xtreme/Foreground first draw", 0)
@@ -167,27 +58,7 @@ object BackgroundWorkCoordinator {
         finishForegroundDrawTrace()
         firstFrame.complete(Unit)
     }
-    fun homeContentReady() { homeReady.complete(Unit) }
-    fun cachedHomeRestored() { cachedHomeReady.complete(Unit) }
-    /** A restored non-Home destination has no feed/cache prerequisite for optional app work. */
-    fun nonHomeContentReady() {
-        homeReady.complete(Unit)
-        cachedHomeReady.complete(Unit)
-    }
-    fun playbackSessionRestored() { playbackReady.complete(Unit) }
     suspend fun awaitFirstFrame() { firstFrame.await() }
-    suspend fun awaitHomeContent() { homeReady.await() }
-    suspend fun awaitPlaybackSession() { playbackReady.await() }
-    suspend fun awaitMaintenanceReady() { maintenanceReady.await() }
-    /** Readiness fences, followed by actual quiet; no fixed startup wake-up timer. */
-    suspend fun awaitStartupIdle() {
-        awaitFirstFrame()
-        awaitHomeContent()
-        cachedHomeReady.await()
-        if (initialPresentationPending.get()) awaitInitialPresentation()
-        awaitIdle(quietMillis = 750L, minimumUptimeMillis = 0L)
-        awaitNavigationIdle(requireForeground = true)
-    }
 
     /** WorkManager can wake a headless process or coincide with a warm reopen.
      * Check BEFORE acquiring cache/database locks; workers do not own a busy lease.
@@ -199,8 +70,7 @@ object BackgroundWorkCoordinator {
             // Headless workers must not wait for a UI that will not draw.
             if (!foreground.get()) return
             val now = SystemClock.elapsedRealtime()
-            val uiReady = firstFrame.isCompleted && homeReady.isCompleted &&
-                cachedHomeReady.isCompleted && optionalInteractionIdle(now)
+            val uiReady = firstFrame.isCompleted && optionalInteractionIdle(now)
             if (uiReady && jobs.get() == 0 && isInteractionIdle()) return
             delay(250L)
         }
@@ -211,14 +81,9 @@ object BackgroundWorkCoordinator {
         companion object Key : CoroutineContext.Key<Admission>
     }
     private class Ticket(val priority: StartupPriority, val foregroundOnly: Boolean,
-        val cardWork: Boolean, val urgent: () -> Boolean, val initialPreparation: Boolean) {
+        val cardWork: Boolean, val urgent: () -> Boolean) {
         val queuedAt = SystemClock.elapsedRealtime()
-        // Once Home is usable, queued startup enrichment loses its priority at
-        // reveal. Required local restoration must not wait on its own readiness
-        // signal; explicitly requested screen work also remains essential.
-        fun essential() = priority == StartupPriority.ESSENTIAL_UI &&
-            (!initialPreparation || !startupReadiness.value.complete ||
-                !homeReady.isCompleted || !cachedHomeReady.isCompleted) || cardWork &&
+        fun essential() = priority == StartupPriority.ESSENTIAL_UI || cardWork &&
             (priority == StartupPriority.CRITICAL || urgent())
     }
     private val admissionLock = Any()
@@ -231,7 +96,6 @@ object BackgroundWorkCoordinator {
     private fun optionalCanRun(requireForeground: Boolean, urgent: () -> Boolean): Boolean {
         if (urgent()) return true
         if (com.example.recommendation.DiscoveryRequestCoordinator.playbackResolving) return false
-        if (foreground.get() && initialPresentationPending.get()) return false
         if (requireForeground && !foreground.get()) return false
         if (!foreground.get()) return true
         return isInteractionIdle() && optionalInteractionIdle(SystemClock.elapsedRealtime())
@@ -251,12 +115,11 @@ object BackgroundWorkCoordinator {
      * Admission is not permission to keep consuming CPU through a later gesture.
      * Retain required UI work and its lane, but park CPU continuations during
      * interactive frames. Unlike optional enrichment this uses the short interaction
-     * fence: waiting for the optional lane/15s idle here could block local tab data
+     * fence: waiting for the optional lane here could block local tab data
      * behind the very restoration that owns the essential lane.
      */
     private suspend fun uiContinuationContext(urgent: () -> Boolean): NonEssentialWork {
         fun canRun() = urgent() || !foreground.get() ||
-            (!startupReadiness.value.complete && initialPreparationRemainingMillis > 0L) ||
             (isInteractionIdle() && !com.example.recommendation.DiscoveryRequestCoordinator.playbackResolving)
         return NonEssentialWork(currentCoroutineContext()[Job], ::canRun) {
             while (!canRun()) {
@@ -298,28 +161,18 @@ object BackgroundWorkCoordinator {
     suspend fun <T> startup(priority: StartupPriority, requireForeground: Boolean = true,
         urgent: () -> Boolean = { false },
         cardWork: Boolean = false,
-        // Long-lived settings/history collectors must survive a presentation timeout.
-        // Only caller-owned, disposable preparation opts into cancellation.
-        boundToInitialPresentation: Boolean = false,
         label: String = priority.name,
         block: suspend () -> T): T {
         if (currentCoroutineContext()[Admission] != null) return traceWork(label, block)
         if (!cardWork && (priority == StartupPriority.CRITICAL || urgent()))
             return withContext(Admission(StartupPriority.CRITICAL)) { work { traceWork(label, block) } }
-        // Capture before any suspension: the first frame/admission wait can
-        // outlive the modal budget. Disposable preparation must still time out.
-        val initialRequest = priority == StartupPriority.ESSENTIAL_UI &&
-            (boundToInitialPresentation || !startupReadiness.value.complete)
-        val initialWork = boundToInitialPresentation && initialRequest
         if (requireForeground || foreground.get()) awaitFirstFrame()
-        val ticket = Ticket(priority, requireForeground, cardWork, urgent, initialRequest)
+        val ticket = Ticket(priority, requireForeground, cardWork, urgent)
         synchronized(admissionLock) { waiting.add(ticket) }
         var admitted = false
         var admittedEssential = false
         try {
             while (!admitted) {
-                if (initialWork && (startupReadiness.value.complete || initialPreparationRemainingMillis == 0L))
-                    throw kotlinx.coroutines.CancellationException("Initial preparation deadline reached")
                 currentCoroutineContext().ensureActive()
                 if (!cardWork && urgent()) {
                     synchronized(admissionLock) { waiting.remove(ticket) }
@@ -330,8 +183,6 @@ object BackgroundWorkCoordinator {
                     val essential = ticket.essential()
                     val eligible = waiting.filter { next ->
                         (!next.foregroundOnly || foreground.get()) &&
-                            (next.essential() || !next.foregroundOnly && !foreground.get() ||
-                                homeReady.isCompleted && cachedHomeReady.isCompleted && !initialPresentationPending.get()) &&
                             (!next.cardWork || !cardActive && (lastCardCompleted == 0L ||
                                 now - lastCardCompleted >= BETWEEN_JOBS_MS))
                     }
@@ -344,11 +195,11 @@ object BackgroundWorkCoordinator {
                     }
                     val interacting = foregroundDrawPending.get() || scrolling.get() ||
                         navigationJobs.get() != 0 || now < navigationUntil.get()
-                    val idle15sMet = !foreground.get() || optionalInteractionIdle(now)
+                    val interactionQuiet = !foreground.get() || optionalInteractionIdle(now)
                     val breathingGapMet = lastOptionalCompleted.get() == 0L ||
                         now - lastOptionalCompleted.get() >= BETWEEN_JOBS_MS
                     val quiet = jobs.get() == 0 && (!foreground.get() ||
-                        !interacting && now - lastSlowFrame.get() >= 250L) && idle15sMet && breathingGapMet
+                        !interacting && now - lastSlowFrame.get() >= 250L) && interactionQuiet && breathingGapMet
                     if (next === ticket && (if (essential) !essentialActive && !interacting
                         else !optionalActive && !essentialActive && quiet)) {
                         waiting.remove(ticket)
@@ -360,18 +211,15 @@ object BackgroundWorkCoordinator {
                 }
                 if (!admitted) delay(50L)
             }
-            if (priority == StartupPriority.MAINTENANCE) maintenanceReady.complete(Unit)
             val effectivePriority = if (admittedEssential) StartupPriority.ESSENTIAL_UI
-                else if (initialRequest) StartupPriority.DEFERRED else priority
+                else priority
             val admission = Admission(effectivePriority, cardWork)
             val context = when {
                 admittedEssential -> admission + uiContinuationContext(urgent)
                 else -> admission + optionalContext(requireForeground, urgent)
             }
             return withContext(context) {
-                if (initialWork) withTimeout(initialPreparationRemainingMillis.coerceAtLeast(1L)) {
-                    work { traceWork(label, block) }
-                } else work { traceWork(label, block) }
+                work { traceWork(label, block) }
             }
         } finally {
             synchronized(admissionLock) {
@@ -426,8 +274,7 @@ object BackgroundWorkCoordinator {
             now - lastInteraction.get() >= 250L && (!awaitFrameQuiet || now - lastSlowFrame.get() >= 250L)
     }
     private fun optionalInteractionIdle(now: Long): Boolean =
-        !initialPresentationPending.get() && now - lastInteraction.get() >= OPTIONAL_IDLE_MS &&
-            now - lastForegroundResume.get() >= OPTIONAL_IDLE_MS
+        isInteractionIdle() && now - lastInteraction.get() >= 250L
 
     private val startedAt = SystemClock.elapsedRealtime()
     private val foreground = AtomicBoolean(false)
@@ -436,7 +283,6 @@ object BackgroundWorkCoordinator {
     private val lastInteraction = AtomicLong(startedAt)
     private val lastSlowFrame = AtomicLong(startedAt)
     private val lastWork = AtomicLong(startedAt)
-    private val lastForegroundResume = AtomicLong(startedAt)
     private val lastOptionalCompleted = AtomicLong(0L)
     private val jobs = AtomicInteger(0)
     private val navigationJobs = AtomicInteger(0)
@@ -512,7 +358,6 @@ object BackgroundWorkCoordinator {
         if (foreground.getAndSet(visible) == visible) return
         if (visible) {
             interaction()
-            lastForegroundResume.set(SystemClock.elapsedRealtime())
             com.example.data.cache.HomeCardCache.retryPendingWrites()
         } else {
             finishForegroundDrawTrace()
@@ -522,9 +367,8 @@ object BackgroundWorkCoordinator {
     fun interaction() { lastInteraction.set(SystemClock.elapsedRealtime()) }
     fun frame(durationNanos: Long, budgetNanos: Long) {
         if (durationNanos > budgetNanos) {
-            healthyFrames.set(0)
             lastSlowFrame.set(SystemClock.elapsedRealtime())
-        } else healthyFrames.updateAndGet { (it + 1).coerceAtMost(3) }
+        }
     }
     fun busy(): AutoCloseable {
         jobs.incrementAndGet()
@@ -540,9 +384,9 @@ object BackgroundWorkCoordinator {
         val lease = busy()
         try { return block() } finally { lease.close() }
     }
-    /** Wait for actual quiet (defaulting to 15s after reopen/interaction), not just a quick pulse. */
-    suspend fun awaitIdle(quietMillis: Long = 15_000L, requireForeground: Boolean = true,
-        minimumUptimeMillis: Long = 15_000L, userRequested: () -> Boolean = { false }) {
+    /** Wait for observed interaction/frame quiet; no process-wide initialization prerequisite. */
+    suspend fun awaitIdle(quietMillis: Long = 750L, requireForeground: Boolean = true,
+        minimumUptimeMillis: Long = 0L, userRequested: () -> Boolean = { false }) {
         // An admitted task owns a busy lease. Waiting for jobs == 0 here would
         // wait for itself (including nested cache/repository calls).
         if (currentCoroutineContext()[Admission] != null) {

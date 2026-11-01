@@ -29,6 +29,7 @@ import org.robolectric.annotation.GraphicsMode
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = Application::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 class ListeningStatsUiTest {
     @get:Rule val compose = createComposeRule()
     private val song = MusicTrack("one", "Favorite Song", "Main Artist", "Album", 120_000, "", "local-source", isLiked = true)
@@ -37,6 +38,16 @@ class ListeningStatsUiTest {
             LocalDynamicGlassEnabled provides false, LocalArtworkRequestsActive provides false,
             LocalVisualEffectsActive provides false) { Box(Modifier.width(400.dp).fillMaxHeight()) { block() } } }
     }
+    @Composable private fun scrollingFixture() = androidx.compose.foundation.lazy.rememberLazyListState(
+        // Keep Android's speculative prefetch from endlessly reposting while
+        // Robolectric/Espresso drains a programmatic scroll on a paused clock.
+        prefetchStrategy = remember {
+            object : androidx.compose.foundation.lazy.LazyListPrefetchStrategy {
+                override fun androidx.compose.foundation.lazy.LazyListPrefetchScope.onScroll(delta: Float, layoutInfo: androidx.compose.foundation.lazy.LazyListLayoutInfo) {}
+                override fun androidx.compose.foundation.lazy.LazyListPrefetchScope.onVisibleItemsUpdated(layoutInfo: androidx.compose.foundation.lazy.LazyListLayoutInfo) {}
+                override fun androidx.compose.foundation.lazy.layout.NestedPrefetchScope.onNestedPrefetch(firstVisibleItemIndex: Int) {}
+            }
+        })
     @Test fun likedPlayConsumesItsClickAndTheWholeRowOpensTheExistingList() {
         var plays = 0
         var queue = emptyList<MusicTrack>()
@@ -148,7 +159,7 @@ class ListeningStatsUiTest {
         var period by mutableStateOf(ListeningPeriod.WEEKLY)
         val empty = ListeningSummary(0, 0, emptyList(), emptyList())
         content(light = true) {
-            ListeningStatsContent(empty, period, { period = it }, {}, { _, _ -> }, {})
+            ListeningStatsContent(empty, period, { period = it }, {}, { _, _ -> }, {}, listState = scrollingFixture())
         }
         val tags = listOf("stats_card_Minutes Played", "stats_card_Top Song", "stats_card_Top Artist", "stats_card_Songs Played")
         val bounds = tags.map { compose.onNodeWithTag(it).fetchSemanticsNode().boundsInRoot }
@@ -175,7 +186,7 @@ class ListeningStatsUiTest {
         var playing: MusicTrack? = null
         var artist: CatalogArtist? = null
         content {
-            ListeningStatsContent(summary, ListeningPeriod.MONTHLY, {}, {}, { track, _ -> playing = track }, { artist = it })
+            ListeningStatsContent(summary, ListeningPeriod.MONTHLY, {}, {}, { track, _ -> playing = track }, { artist = it }, listState = scrollingFixture())
         }
         compose.onNodeWithTag("listening_stats_page").performScrollToNode(hasText("2 plays"))
         compose.onNodeWithText("2 plays").performClick()

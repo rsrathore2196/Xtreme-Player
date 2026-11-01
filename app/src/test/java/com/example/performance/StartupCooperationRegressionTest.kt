@@ -32,19 +32,17 @@ class StartupCooperationRegressionTest {
     private val coordinator = BackgroundWorkCoordinator
     @Before fun ready() {
         coordinator.firstFrameRendered()
-        coordinator.cachedHomeRestored()
-        coordinator.homeContentReady()
         coordinator.foreground(true)
         coordinator.scrolling(false)
         // Robolectric resets its clock between methods but retains this singleton.
         // Rebase the sampled frame time before advancing to the fixture's idle state.
         coordinator.frame(2L, 1L)
-        // Optional work has a 15s policy; reset completion clocks because this
+        // Reset completion clocks because this
         // singleton survives Robolectric's per-method clock reset.
         (BackgroundWorkCoordinator::class.java.getDeclaredField("lastOptionalCompleted").apply { isAccessible = true }
             .get(null) as java.util.concurrent.atomic.AtomicLong).set(0L)
         BackgroundWorkCoordinator::class.java.getDeclaredField("lastCardCompleted").apply { isAccessible = true }.setLong(null, 0L)
-        ShadowSystemClock.advanceBy(Duration.ofSeconds(16))
+        ShadowSystemClock.advanceBy(Duration.ofSeconds(1))
     }
     @After fun stop() {
         coordinator.scrolling(false)
@@ -209,12 +207,12 @@ class StartupCooperationRegressionTest {
         assertTrue(visibleRan)
         runCurrent()
         assertFalse(optionalRan)
-        ShadowSystemClock.advanceBy(Duration.ofMillis(14_999))
+        ShadowSystemClock.advanceBy(Duration.ofMillis(249))
         advanceTimeBy(100)
         runCurrent()
         assertFalse(optionalRan)
-        coordinator.interaction() // Interaction restarts the whole optional window.
-        ShadowSystemClock.advanceBy(Duration.ofMillis(14_999))
+        coordinator.interaction() // Interaction restarts the short quiet window.
+        ShadowSystemClock.advanceBy(Duration.ofMillis(249))
         advanceTimeBy(100)
         runCurrent()
         assertFalse(optionalRan)

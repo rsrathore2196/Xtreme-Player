@@ -84,61 +84,33 @@ class FeedNavigationIsolationTest {
         repeat(3) { compose.mainClock.advanceTimeBy(32); compose.waitForIdle() }
         compose.runOnIdle {
             assertTrue(pager.isScrollInProgress)
-            assertArrayEquals(intArrayOf(0, 0, 0), rendered)
+            assertArrayEquals(intArrayOf(0, 0, -1), rendered)
         }
         compose.mainClock.advanceTimeBy(1600)
         repeat(3) { compose.mainClock.advanceTimeByFrame(); compose.waitForIdle() }
         compose.runOnIdle { assertEquals(9, rendered[1]); assertEquals(0, rendered[0]) }
     }
 
-    @Test fun startupPreparationBindsHiddenCachedDataBeforeFirstNavigation() {
-        val coordinator = com.example.performance.BackgroundWorkCoordinator
-        // Other navigation fixtures intentionally leave startup incomplete. This
-        // fixture models a fresh process and owns its presentation generation.
-        @Suppress("UNCHECKED_CAST")
-        val readiness = coordinator.javaClass.getDeclaredField("_startupReadiness").apply { isAccessible = true }
-            .get(null) as MutableStateFlow<com.example.performance.StartupReadiness>
-        readiness.value = com.example.performance.StartupReadiness()
-        (coordinator.javaClass.getDeclaredField("initialDeadlineJob").apply { isAccessible = true }
-            .get(null) as? kotlinx.coroutines.Job)?.cancel()
-        for (name in listOf("initialStartedAt", "navigationUntil")) {
-            (coordinator.javaClass.getDeclaredField(name).apply { isAccessible = true }.get(null)
-                as java.util.concurrent.atomic.AtomicLong).set(0L)
-        }
-        coordinator.firstFrameRendered()
-        coordinator.foreground(true)
-        coordinator.startupTask(com.example.performance.StartupTask.HOME_CACHE, com.example.performance.StartupStatus.READY)
-        coordinator.startupTask(com.example.performance.StartupTask.LOCAL_TABS, com.example.performance.StartupStatus.READY)
+    @Test fun unopenedTabsDoNotMountOrSubscribeToCachedData() {
         val collected = IntArray(3)
         val rendered = IntArray(3) { -1 }
-        lateinit var view: android.view.View
-        compose.mainClock.autoAdvance = false
         compose.setContent { MaterialTheme {
-            view = androidx.compose.ui.platform.LocalView.current
             val pager = rememberPagerState(pageCount = { 3 })
-            MainTabPager(pager, pageCovered = false, prepareStartup = true) { page ->
+            MainTabPager(pager, pageCovered = false) { page ->
                 val source = remember { flow { collected[page]++; emit(42); awaitCancellation() } }
                 val value by source.collectAsStateWithLifecycle(-1)
                 SideEffect { rendered[page] = value }
                 Text("Cached $page: $value")
             }
         } }
-        try { compose.waitUntil(5_000) {
-            compose.mainClock.advanceTimeBy(32); compose.waitForIdle()
-            compose.runOnIdle { view.viewTreeObserver.dispatchOnDraw() }
-            collected.all { it > 0 }
-        } } catch (error: androidx.compose.ui.test.ComposeTimeoutException) {
-            throw AssertionError("Preparation stalled: ${readiness.value}; collected=${collected.toList()}", error)
-        }
-        repeat(3) { compose.mainClock.advanceTimeByFrame(); compose.waitForIdle() }
+        compose.waitForIdle()
         compose.runOnIdle {
-            assertArrayEquals("Startup: ${coordinator.startupReadiness.value}", intArrayOf(1, 1, 1), collected)
-            assertArrayEquals(intArrayOf(42, 42, 42), rendered)
+            assertArrayEquals(intArrayOf(1, 0, 0), collected)
+            assertArrayEquals(intArrayOf(42, -1, -1), rendered)
         }
     }
 
-    @Test fun endingPreparationDoesNotMountAllUnfinishedTabsAtOnce() {
-        var preparing by mutableStateOf(true)
+    @Test fun selectingATabMountsOnlyTheRequestedDestination() {
         val mounts = IntArray(3)
         lateinit var pager: PagerState
         lateinit var scope: kotlinx.coroutines.CoroutineScope
@@ -146,13 +118,12 @@ class FeedNavigationIsolationTest {
         compose.setContent { MaterialTheme {
             pager = rememberPagerState(pageCount = { 3 })
             scope = rememberCoroutineScope()
-            MainTabPager(pager, pageCovered = false, prepareStartup = preparing) { page ->
+            MainTabPager(pager, pageCovered = false) { page ->
                 DisposableEffect(page) { mounts[page]++; onDispose { } }
                 Text("Prepared page $page")
             }
         } }
         compose.mainClock.advanceTimeBy(100)
-        compose.runOnIdle { preparing = false }
         repeat(3) { compose.mainClock.advanceTimeBy(100); compose.waitForIdle() }
         assertArrayEquals(intArrayOf(1, 0, 0), mounts)
         compose.runOnIdle { scope.launch { pager.scrollToPage(2) } }
@@ -196,7 +167,7 @@ class FeedNavigationIsolationTest {
             compose.onNodeWithTag("retained_page_0").performTouchInput { click() }
             assertEquals("Uncovered content must accept taps again", before + 1, taps)
         }
-        assertArrayEquals(intArrayOf(1, 1, 1), mounts)
+        assertArrayEquals(intArrayOf(1, 0, 0), mounts)
         assertArrayEquals(intArrayOf(0, 0, 0), disposals)
     }
 
@@ -336,7 +307,7 @@ class FeedNavigationIsolationTest {
         compose.mainClock.advanceTimeBy(600)
         compose.waitForIdle()
         compose.onNodeWithTag("settings_navigation_overlay").assertDoesNotExist()
-        assertArrayEquals(intArrayOf(1, 1, 1), mounts)
+        assertArrayEquals(intArrayOf(1, 0, 0), mounts)
         assertArrayEquals(intArrayOf(0, 0, 0), disposals)
     }
 
@@ -386,11 +357,11 @@ class FeedNavigationIsolationTest {
         compose.onNodeWithTag("settings_navigation_overlay").assertDoesNotExist()
         compose.runOnIdle {
             assertEquals(1, settingsDisposals)
-            assertArrayEquals(intArrayOf(1, 1, 1), pageMounts)
+            assertArrayEquals(intArrayOf(1, 0, 0), pageMounts)
         }
     }
 
-    @Test fun allPagesStayMountedButOnlyVisiblePagesCollectScreenData() {
+    @Test fun visitedPagesStayMountedButOnlyVisiblePagesCollectScreenData() {
         val mounts = IntArray(3)
         val collectors = IntArray(3)
         lateinit var pager: PagerState
@@ -414,7 +385,7 @@ class FeedNavigationIsolationTest {
         } }
         compose.mainClock.advanceTimeBy(100)
         compose.runOnIdle {
-            assertArrayEquals(intArrayOf(1, 1, 1), mounts)
+            assertArrayEquals(intArrayOf(1, 0, 0), mounts)
             assertArrayEquals(intArrayOf(1, 0, 0), collectors)
         }
         for (target in listOf(2, 1, 0, 1, 2, 0)) {
@@ -482,7 +453,7 @@ class FeedNavigationIsolationTest {
             }
         } }
         compose.waitForIdle()
-        compose.runOnIdle { assertEquals(setOf(0, 1, 2), mounted) }
+        compose.runOnIdle { assertEquals(setOf(0), mounted) }
         // Start in the visible feed, above the floating dock. Its outer glass
         // now observes touches too, so a gesture beginning behind the dock is
         // a dock interaction rather than a feed scroll.
