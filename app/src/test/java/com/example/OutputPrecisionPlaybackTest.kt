@@ -98,6 +98,7 @@ class OutputPrecisionPlaybackTest {
             when (method.name) {
                 "configure" -> { encoding = (args!![0] as Format).pcmEncoding; null }
                 "hasPendingData" -> pending
+                "isEnded" -> !pending && held == null
                 "getCurrentPositionUs" -> 250_000L
                 "setVolume" -> { volume = args!![0] as Float; null }
                 "release" -> { releases++; null }

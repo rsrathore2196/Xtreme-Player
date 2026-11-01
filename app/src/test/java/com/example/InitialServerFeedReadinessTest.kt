@@ -49,18 +49,26 @@ class InitialServerFeedReadinessTest {
         readiness.value = StartupReadiness()
         coordinator.beginInitialPresentation()
         val entered = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        val expanded = CompletableDeferred<Unit>()
         val calls = AtomicInteger(); val store = ViewModelStore()
         val db = MusicDatabase.createInMemoryDatabase(app)
         val repo = MusicRepository(db.musicDao(), app); val player = PlaybackManager(app, repo)
         try {
             val factory = object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST") override fun <T : ViewModel> create(modelClass: Class<T>): T = HomeViewModel(repo, player, app, db,
-                    homeLoader = { _, _, _ ->
+                    homeLoader = { _, token, _ ->
+                        if (token != null) {
+                            assertTrue(readiness.value.complete)
+                            assertEquals("extra", token)
+                            expanded.complete(Unit)
+                            YouTubeHomeParser.parseHomeFeed(JSONObject(NativeFeedFixtures.home(NativeFeedFixtures.shelf("More native music", 4))))
+                        } else {
                         calls.incrementAndGet(); entered.complete(Unit); release.await()
                         YouTubeHomeParser.parseHomeFeed(JSONObject(NativeFeedFixtures.home(
                             NativeFeedFixtures.collectionShelf("Albums & Singles", NativeFeedFixtures.album(1)),
                             NativeFeedFixtures.shelf("Quick Picks", 2),
-                            NativeFeedFixtures.collectionShelf("Trending Playlists", NativeFeedFixtures.playlist(3)))))
+                            NativeFeedFixtures.collectionShelf("Trending Playlists", NativeFeedFixtures.playlist(3)), continuation = "extra")))
+                        }
                     }, profileLoader = { _, _, _ -> error("Optional discovery is not an initialization requirement") }) as T
             }
             val vm = ViewModelProvider(store, factory)[HomeViewModel::class.java]
@@ -72,6 +80,15 @@ class InitialServerFeedReadinessTest {
             assertEquals(3, vm.serverShelves.value.size)
             assertTrue(vm.serverShelves.value[0].items.single() is ServerHomeItem.Album)
             assertTrue(vm.serverShelves.value[2].items.single() is ServerHomeItem.Playlist)
+            assertEquals(1, calls.get())
+            vm.setHomeVisible(true)
+            withTimeout(4_000) { vm.refreshHome(false).join() }
+            assertFalse(expanded.isCompleted)
+            // Simulate the existing presentation fence completing, not a fixed delay.
+            (field("initialDeadlineJob").get(null) as? Job)?.cancel()
+            (field("initialPresentationPending").get(null) as AtomicBoolean).set(false)
+            readiness.value = readiness.value.expirePreparation()
+            withTimeout(4_000) { expanded.await(); vm.serverShelves.first { it.size == 4 } }
             assertEquals(1, calls.get())
         } finally {
             release.complete(Unit); store.clear(); player.release(); db.close()

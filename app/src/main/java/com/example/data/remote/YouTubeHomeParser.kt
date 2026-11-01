@@ -38,23 +38,36 @@ object YouTubeHomeParser {
     private fun extractContinuation(obj: JSONObject?): String? {
         if (obj == null) return null
         val continuations = obj.optJSONArray("continuations")
-        if (continuations != null && continuations.length() > 0) {
-            val first = continuations.optJSONObject(0)
-            val data = first?.optJSONObject("nextContinuationData") ?: first?.optJSONObject("reloadContinuationData")
-            val token = data?.optString("continuation").orEmpty()
-            if (token.isNotBlank()) return token
+        if (continuations != null) {
+            for (index in 0 until continuations.length()) {
+                val entry = continuations.optJSONObject(index)
+                val data = entry?.optJSONObject("nextContinuationData") ?: entry?.optJSONObject("reloadContinuationData")
+                val token = data?.optString("continuation").orEmpty()
+                if (token.isNotBlank()) return token
+            }
         }
         val items = obj.optJSONArray("continuationItems") ?: obj.optJSONArray("contents")
         if (items != null) {
             for (i in 0 until items.length()) {
                 val item = items.optJSONObject(i)?.optJSONObject("continuationItemRenderer") ?: continue
-                val ep = item.optJSONObject("continuationEndpoint")
-                val cmd = ep?.optJSONObject("continuationCommand")
-                    ?: ep?.optJSONObject("innertubeCommand")?.optJSONObject("continuationCommand")
-                val token = cmd?.optString("token").orEmpty()
-                if (token.isNotBlank()) return token
+                continuationCommand(item.optJSONObject("continuationEndpoint"))?.let { return it }
+                val button = item.optJSONObject("button")?.optJSONObject("buttonRenderer")
+                continuationCommand(button?.optJSONObject("command"))?.let { return it }
+                continuationCommand(button?.optJSONObject("navigationEndpoint"))?.let { return it }
             }
         }
+        return null
+    }
+
+    private fun continuationCommand(endpoint: JSONObject?): String? {
+        if (endpoint == null) return null
+        endpoint.optJSONObject("continuationCommand")?.let {
+            string(it, "token").takeIf(String::isNotBlank)?.let { token -> return token }
+        }
+        endpoint.optJSONObject("innertubeCommand")?.let { continuationCommand(it)?.let { token -> return token } }
+        val commands = endpoint.optJSONObject("commandExecutorCommand")?.optJSONArray("commands") ?: return null
+        for (index in 0 until commands.length())
+            continuationCommand(commands.optJSONObject(index))?.let { return it }
         return null
     }
 
@@ -176,7 +189,11 @@ object YouTubeHomeParser {
         sectionList?.let(containers::add)
         for (key in listOf("onResponseReceivedActions", "onResponseReceivedCommands", "onResponseReceivedEndpoints")) {
             val actions = rootJson.optJSONArray(key) ?: continue
-            for (index in 0 until actions.length()) actions.optJSONObject(index)?.optJSONObject("appendContinuationItemsAction")?.let(containers::add)
+            for (index in 0 until actions.length()) {
+                val action = actions.optJSONObject(index) ?: continue
+                (action.optJSONObject("appendContinuationItemsAction")
+                    ?: action.optJSONObject("reloadContinuationItemsCommand"))?.let(containers::add)
+            }
         }
         if (containers.isEmpty()) throw IOException("Unsupported Home response")
         val rawSections = JSONArray()

@@ -5,6 +5,7 @@ import com.example.data.model.MusicTrack
 import com.example.data.model.ServerHomeShelf
 import com.example.data.remote.YouTubeHomeParser
 import com.example.ui.viewmodel.appendServerShelves
+import com.example.ui.viewmodel.refreshServerShelves
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -80,5 +81,34 @@ class HomePresentationRegressionTest {
         val page = YouTubeHomeParser.parseHomeFeed(root, "current")
         assertEquals(listOf("A", "B", "C"), page.shelves.map { it.title })
         assertEquals("next", page.continuationToken)
+    }
+    @Test fun refreshUpdatesTheFirstPageInServerOrderAndRetainsExpandedPages() {
+        val old = listOf(shelf("a", "old"), shelf("b", "retained"))
+        val refreshed = listOf(shelf("c", "new"), shelf("a", "updated"))
+        val result = refreshServerShelves(old, refreshed)
+        assertEquals(listOf("c", "a", "b"), result.map { it.id })
+        assertEquals(listOf("updated"), result[1].tracks.map { it.id })
+        assertSame(old[1], result[2])
+    }
+    @Test fun continuationButtonCommandsAndReloadResponsesPreserveNativeItemsAndCursor() {
+        for (endpoint in listOf(
+            """{"continuationCommand":{"token":"next"}}""",
+            """{"innertubeCommand":{"continuationCommand":{"token":"next"}}}""",
+            """{"commandExecutorCommand":{"commands":[{"clickTrackingParams":"ignore"},{"continuationCommand":{"token":"next"}}]}}""")) {
+            val row = org.json.JSONObject("""{"continuationItemRenderer":{"button":{"buttonRenderer":{"command":$endpoint}}}}""")
+            val root = org.json.JSONObject().put("onResponseReceivedCommands", org.json.JSONArray().put(
+                org.json.JSONObject().put("reloadContinuationItemsCommand", org.json.JSONObject().put("continuationItems",
+                    org.json.JSONArray().put(NativeFeedFixtures.shelf("Native", 2, 1)).put(row)))))
+            val parsed = YouTubeHomeParser.parseHomeFeed(root, "previous")
+            assertEquals("next", parsed.continuationToken)
+            assertEquals(listOf(2, 1).map { "yt_${NativeFeedFixtures.id(it)}" }, parsed.shelves.single().tracks.map { it.id })
+        }
+    }
+    @Test fun emptyFirstContinuationEntryCannotHideALaterValidToken() {
+        val root = org.json.JSONObject(NativeFeedFixtures.home(NativeFeedFixtures.shelf("Native", 1)))
+        root.getJSONObject("contents").getJSONObject("singleColumnBrowseResultsRenderer").getJSONArray("tabs")
+            .getJSONObject(0).getJSONObject("tabRenderer").getJSONObject("content").getJSONObject("sectionListRenderer")
+            .put("continuations", org.json.JSONArray("""[{"nextContinuationData":{}},{"nextContinuationData":{"continuation":"next"}}]"""))
+        assertEquals("next", YouTubeHomeParser.parseHomeFeed(root).continuationToken)
     }
 }

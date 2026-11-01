@@ -29,7 +29,8 @@ internal class CrossfadeController(
     private val scope: CoroutineScope,
     private val createTail: () -> Player,
     private val canMix: () -> Boolean = { true },
-    private val now: () -> Long = SystemClock::elapsedRealtime
+    private val now: () -> Long = SystemClock::elapsedRealtime,
+    private val sourcePolicy: () -> String = { "" }
 ) : AutoCloseable {
     companion object {
         internal const val FADE_MS = 3_000L
@@ -47,6 +48,7 @@ internal class CrossfadeController(
     private var generation = 0L
     private var tail: Player? = null
     private var outgoingKey: String? = null
+    private var warmedPolicy: String? = null
     private var expectedNext: String? = null
     private var failedKey: String? = null
     private var syncAttempts = 0
@@ -114,6 +116,7 @@ internal class CrossfadeController(
         watch = scope.launch {
             try {
                 while (isActive && enabled && player.playWhenReady) {
+                    if (tail != null && warmedPolicy != sourcePolicy()) { skipCurrentTransition(); continue }
                     if (overlap) { tickOverlap(); delay(40L); continue }
                     val duration = player.duration
                     val remaining = duration - player.currentPosition
@@ -127,19 +130,21 @@ internal class CrossfadeController(
                         releaseTail(); delay(500L); continue
                     }
                     if (remaining !in 250L..WARM_MS) { releaseTail(); delay(1_000L); continue }
-                    val nextKey = key(player.getMediaItemAt(next))
-                    if (tail == null) warmTail(current)
+                    val nextItem = player.getMediaItemAt(next)
+                    val nextKey = key(nextItem)
+                    if (tail == null) warmTail(current, next)
                     if (expectedNext != null && expectedNext != nextKey) { releaseTail(); continue }
                     expectedNext = nextKey
                     val outgoing = tail ?: continue
-                    if (outgoing.playerError != null) { failedKey = current; releaseTail(); continue }
+                    if (outgoing.playerError != null || key(outgoing.currentMediaItem) != outgoingKey) {
+                        failedKey = current; releaseTail(); continue
+                    }
                     if (outgoing.isPlaying) {
                         val drift = outgoing.currentPosition - player.currentPosition
                         if (abs(drift) > 100L && remaining > FADE_MS + 300L && now() >= nextSyncAt && syncAttempts < 2) {
                             syncAttempts++; nextSyncAt = now() + 500L
                             outgoing.seekTo(player.currentPosition)
-                        } else if (remaining <= FADE_MS && abs(drift) <= 100L &&
-                            player.totalBufferedDuration >= remaining + 500L) {
+                        } else if (remaining <= FADE_MS && abs(drift) <= 100L && incomingPrepared(outgoing, nextItem)) {
                             beginOverlap(outgoing, next)
                         }
                     }
@@ -153,23 +158,38 @@ internal class CrossfadeController(
         }
     }
 
-    private fun warmTail(current: String?) {
+    private fun warmTail(current: String?, next: Int) {
         val item = player.currentMediaItem ?: return
         outgoingKey = current
+        warmedPolicy = sourcePolicy()
         baseVolume = player.volume
         syncAttempts = 0; nextSyncAt = 0L
         tail = createTail()
         tail?.also {
             it.volume = 0f
             it.repeatMode = Player.REPEAT_MODE_OFF
-            it.setMediaItem(item, player.currentPosition)
+            // Preparing both periods independently proves that the next source
+            // has usable buffered audio. The shared media cache also warms the
+            // session player's handoff without changing its queue or ownership.
+            it.setMediaItems(listOf(item, player.getMediaItemAt(next)), 0, player.currentPosition)
             it.prepare()
             it.play()
         }
     }
 
+    private fun incomingPrepared(outgoing: Player, next: MediaItem): Boolean {
+        if (outgoing.mediaItemCount != 2 || outgoing.currentMediaItemIndex != 0 ||
+            outgoing.getMediaItemAt(1).mediaId != next.mediaId || outgoing.duration == C.TIME_UNSET ||
+            warmedPolicy != sourcePolicy()) return false
+        // The lazy source may replace a catalog URI with its verified transport.
+        // Its slot/recording identity remains stable; queue edits are checked separately.
+        val outgoingRemaining = (outgoing.duration - outgoing.currentPosition).coerceAtLeast(0L)
+        return outgoing.totalBufferedDuration - outgoingRemaining >= FADE_MS
+    }
+
     private suspend fun beginOverlap(outgoing: Player, next: Int) {
-        val nextKey = key(player.getMediaItemAt(next))
+        val nextItem = player.getMediaItemAt(next)
+        val nextKey = key(nextItem)
         fun targetStillValid() = next in 0 until player.mediaItemCount && player.nextMediaItemIndex == next &&
             key(player.getMediaItemAt(next)) == nextKey
         // Transfer the same outgoing PCM gently before advancing the session player.
@@ -180,14 +200,14 @@ internal class CrossfadeController(
                 skipCurrentTransition()
                 return
             }
-            if (!targetStillValid()) { skipCurrentTransition(); return }
+            if (!targetStillValid() || !incomingPrepared(outgoing, nextItem)) { skipCurrentTransition(); return }
             val fraction = step / 3f
             setVolume(baseVolume * (1f - fraction))
             outgoing.volume = baseVolume * fraction
             delay(20L)
         }
         currentCoroutineContext().ensureActive()
-        if (!targetStillValid()) { skipCurrentTransition(); return }
+        if (!targetStillValid() || !incomingPrepared(outgoing, nextItem)) { skipCurrentTransition(); return }
         expectedNext = nextKey
         overlap = true
         fadeStarted = 0L
@@ -202,7 +222,9 @@ internal class CrossfadeController(
         if (key(player.currentMediaItem) != expectedNext || !canMix() || player.playbackParameters != PlaybackParameters.DEFAULT) {
             releaseTail(); setVolume(baseVolume); return
         }
-        if (outgoing.playbackState == Player.STATE_ENDED || outgoing.playerError != null) {
+        // pauseAtEndOfMediaItems leaves the tail READY but paused. It must not
+        // hold the incoming player muted, or advance and play the next song twice.
+        if (!outgoing.isPlaying || key(outgoing.currentMediaItem) != outgoingKey || outgoing.playerError != null) {
             releaseTail(); setVolume(baseVolume); return
         }
         if (!player.isPlaying) return // Let the outgoing tail cover a short incoming buffer.
@@ -223,7 +245,7 @@ internal class CrossfadeController(
     }
     private fun releaseTail() {
         val old = tail
-        tail = null; outgoingKey = null; expectedNext = null; overlap = false; fadeStarted = 0L
+        tail = null; outgoingKey = null; warmedPolicy = null; expectedNext = null; overlap = false; fadeStarted = 0L
         if (old != null) runCatching { old.release() }
             .onFailure { android.util.Log.w("Crossfade", "Tail cleanup failed", it) }
     }

@@ -865,14 +865,16 @@ class MusicService : MediaLibraryService() {
         exoPlayer = player
         crossfade = com.example.playback.CrossfadeController(player, serviceScope,
             canMix = { !com.example.playback.AudioSignalPath.state.value.directApproved },
+            sourcePolicy = { networkQuality.sourcePolicy.value.key },
             createTail = {
-                // A cache-backed outgoing tail only; no MediaSession, focus owner,
-                // provider search or competing signal-path publication is created.
+                // The muted tail preloads the next period through the shared
+                // source/cache path, without a second MediaSession or focus owner.
                 ExoPlayer.Builder(this, audioRenderersFactory(reportSignalPath = false))
                     .setMediaSourceFactory(mediaSourceFactory)
                     .setTrackSelector(DefaultTrackSelector(this).apply { parameters = trackSelector.parameters })
                     .setAudioAttributes(audioAttributes, false)
                     .setHandleAudioBecomingNoisy(false)
+                    .setPauseAtEndOfMediaItems(true)
                     .setLoadControl(androidx.media3.exoplayer.DefaultLoadControl.Builder()
                         .setBufferDurationsMs(1_000, 8_000, 500, 500).build())
                     .setWakeMode(C.WAKE_MODE_NETWORK)

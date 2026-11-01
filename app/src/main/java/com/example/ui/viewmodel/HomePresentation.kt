@@ -8,6 +8,8 @@ import com.example.recommendation.HomeRecommendationPolicy
 
 internal const val RECENTLY_PLAYED_CARD_LIMIT = 4
 internal const val INITIAL_SERVER_SHELF_TARGET = 3
+// Bound optional network work per visit/refresh; scrolling can request further pages.
+internal const val BACKGROUND_HOME_PAGE_LIMIT = 3
 
 private fun ServerHomeShelf.entries(): List<ServerHomeItem> = items.ifEmpty { tracks.map { ServerHomeItem.Song(it) } }
 
@@ -39,6 +41,13 @@ internal fun appendServerShelves(previous: List<ServerHomeShelf>, incoming: List
         }
     }
     return if (result == previous) previous else result
+}
+
+/** Refresh the native first page, retaining previously fetched continuation shelves. */
+internal fun refreshServerShelves(previous: List<ServerHomeShelf>, incoming: List<ServerHomeShelf>): List<ServerHomeShelf> {
+    if (incoming.isEmpty()) return incoming
+    val refreshedIds = incoming.mapTo(hashSetOf()) { it.id }
+    return appendServerShelves(incoming, previous.filterNot { it.id in refreshedIds })
 }
 
 @Immutable

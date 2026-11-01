@@ -182,12 +182,18 @@ class BitPerfectAudioSink private constructor(
         observation.refresh()
     }
     override fun configure(inputFormat: Format, specifiedBufferSize: Int, outputChannels: IntArray?) {
-        // Drain a previous native item before replacing it at a normal queue boundary.
-        // Media3 normally calls configure after its renderer has drained the old format.
-        if (hasPendingData()) {
+        // AudioTrack's pending frames do not include PCM retained by the silence
+        // processor. Keep the old configuration until its entire EOS pipeline ends.
+        if (native != null && hasPendingData() || native == null && sharedConfigured &&
+            (pending != null || !shared.isEnded())) {
             pendingConfiguration = PendingConfiguration(inputFormat, specifiedBufferSize, outputChannels?.clone())
             return
         }
+        pendingConfiguration = null
+        applyConfiguration(inputFormat, specifiedBufferSize, outputChannels)
+    }
+
+    private fun applyConfiguration(inputFormat: Format, specifiedBufferSize: Int, outputChannels: IntArray?) {
         closeNative()
         directUnavailable = false
         format = inputFormat
@@ -295,10 +301,12 @@ class BitPerfectAudioSink private constructor(
     }
 
     override fun handleBuffer(buffer: ByteBuffer, presentationTimeUs: Long, encodedAccessUnitCount: Int): Boolean {
-        pendingConfiguration?.let { configuration ->
-            if (hasPendingData()) return false
+        pendingConfiguration?.takeIf { pending == null && nativeInput == null }?.let { configuration ->
+            if (native != null) {
+                if (hasPendingData()) return false
+            } else if (!drainShared()) return false
             pendingConfiguration = null
-            configure(configuration.format, configuration.bufferSize, configuration.channels)
+            applyConfiguration(configuration.format, configuration.bufferSize, configuration.channels)
         }
         // Route loss changes only the sink. Drain the already-written native audio,
         // then continue at the next unconsumed PCM buffer without a queue/source reset.
@@ -312,14 +320,7 @@ class BitPerfectAudioSink private constructor(
         if (lease == null) {
             if (sharedFactory != null && (sharedDraining || sharedSkipSilence != skipSilence ||
                 sharedEncoding != desiredEncoding()) && pending == null) {
-                if (!sharedDraining) {
-                    previousPositionUs = shared.getCurrentPositionUs(false)
-                    sharedDraining = true
-                }
-                shared.playToEndOfStream()
-                if (shared.hasPendingData()) return false
-                shared.getCurrentPositionUs(true).takeUnless { it == AudioSink.CURRENT_POSITION_NOT_SET }
-                    ?.let { previousPositionUs = it }
+                if (!drainShared()) return false
                 configureShared(format.buildUpon().setEncoderDelay(0).build(), configuredBufferSize,
                     configuredChannels, resetProcessor = false)
             }
@@ -408,7 +409,18 @@ class BitPerfectAudioSink private constructor(
     private fun writtenFrames() = bytesWritten / Util.getPcmFrameSize(native?.encoding ?: format.pcmEncoding, format.channelCount)
     override fun hasPendingData() = if (native == null) shared.hasPendingData() else playedFrames() < writtenFrames()
     override fun isEnded() = if (native == null) shared.isEnded() else draining && !hasPendingData()
-    override fun playToEndOfStream() { if (native == null) shared.playToEndOfStream() else draining = true }
+    private fun drainShared(): Boolean {
+        if (!sharedDraining) {
+            previousPositionUs = shared.getCurrentPositionUs(false)
+            sharedDraining = true
+        }
+        shared.playToEndOfStream()
+        if (!shared.isEnded()) return false
+        shared.getCurrentPositionUs(true).takeUnless { it == AudioSink.CURRENT_POSITION_NOT_SET }
+            ?.let { previousPositionUs = it }
+        return true
+    }
+    override fun playToEndOfStream() { if (native == null) drainShared() else draining = true }
     override fun handleDiscontinuity() { if (native == null) shared.handleDiscontinuity() else discontinuity = true }
     override fun play() { playing = true; lastWriteMs = 0; native?.track?.play() ?: shared.play() }
     override fun pause() { playing = false; native?.track?.pause() ?: shared.pause() }
@@ -439,12 +451,17 @@ class BitPerfectAudioSink private constructor(
     override fun getSkipSilenceEnabled() = if (native != null) false else shared.getSkipSilenceEnabled()
     override fun flush() {
         native?.track?.let { it.pause(); it.flush() }
-        pendingConfiguration?.let {
-            pendingConfiguration = null
+        val configuration = pendingConfiguration
+        pendingConfiguration = null
+        // A seek/renderer flush deliberately discards old PCM. Flush BEFORE
+        // applying its pending format, otherwise configure can requeue it forever.
+        resetCounters(); processor.flush(); shared.flush(); sharedDraining = false
+        if (configuration != null) {
             closeNative()
-            configure(it.format, it.bufferSize, it.channels)
+            applyConfiguration(configuration.format, configuration.bufferSize, configuration.channels)
+        } else if (native == null && sharedConfigured) {
+            configureShared(format, configuredBufferSize, configuredChannels, resetProcessor = false)
         }
-        resetCounters(); processor.flush(); shared.flush()
         if (playing) native?.track?.play()
     }
     private fun resetCounters() {
@@ -472,7 +489,10 @@ class BitPerfectAudioSink private constructor(
         }
         native = null
     }
-    override fun reset() { pendingConfiguration = null; closeNative(); observation.detach(); processor.reset(); resetCounters(); shared.reset() }
+    override fun reset() {
+        pendingConfiguration = null; closeNative(); observation.detach(); processor.reset(); resetCounters()
+        shared.reset(); sharedConfigured = false; sharedDraining = false
+    }
     override fun release() { pendingConfiguration = null; closeNative(); observation.detach(); processor.reset(); shared.release() }
 
     private data class DirectLease(val track: AudioTrack, val bufferBytes: Int, val encoding: Int,

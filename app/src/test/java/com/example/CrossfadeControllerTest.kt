@@ -80,7 +80,13 @@ class CrossfadeControllerTest {
                 "addListener" -> { listeners.add(args!![0] as Player.Listener); null }
                 "removeListener" -> { listeners.remove(args!![0] as Player.Listener); null }
                 "setMediaItem" -> { items = listOf(args!![0] as MediaItem); index = 0; position = args[1] as Long; null }
-                "setMediaItems" -> { queueRebuilds++; null }
+                "setMediaItems" -> {
+                    queueRebuilds++
+                    @Suppress("UNCHECKED_CAST")
+                    items = args!![0] as List<MediaItem>
+                    index = args[1] as Int; position = args[2] as Long
+                    null
+                }
                 "prepare" -> { state = Player.STATE_READY; null }
                 "play" -> { play(); null }
                 "pause" -> { pause(); null }
@@ -97,9 +103,11 @@ class CrossfadeControllerTest {
     private inner class Harness(private val scope: TestScope, var mixAllowed: Boolean = true) : AutoCloseable {
         val primary = Audio(listOf(item("first"), item("second"), item("third")))
         val tails = mutableListOf<Audio>()
+        var incomingBuffered = 5_000L
+        var policy = "initial-policy"
         val controller = CrossfadeController(primary.player, scope,
-            createTail = { Audio(emptyList()).also { tails.add(it) }.player },
-            canMix = { mixAllowed }, now = { scope.testScheduler.currentTime })
+            createTail = { Audio(emptyList()).also { it.bufferedAhead = incomingBuffered; tails.add(it) }.player },
+            canMix = { mixAllowed }, now = { scope.testScheduler.currentTime }, sourcePolicy = { policy })
         fun advance(ms: Long) {
             repeat((ms / 20).toInt()) {
                 primary.advance(20)
@@ -124,7 +132,7 @@ class CrossfadeControllerTest {
         Harness(this).use { h ->
             h.start()
             assertEquals(1, h.tails.size)
-            assertEquals(h.primary.items[0], h.tails.single().items.single())
+            assertEquals(h.primary.items.take(2), h.tails.single().items)
             assertEquals(53_000L, h.tails.single().position)
             h.advance(5_500)
             assertEquals(1, h.primary.index)
@@ -166,7 +174,7 @@ class CrossfadeControllerTest {
     }
     @Test fun insufficientIncomingBufferAndDirectOutputKeepNormalPlayback() = runTest {
         Harness(this).use { h ->
-            h.primary.bufferedAhead = 0
+            h.incomingBuffered = 0
             h.start(); h.advance(5_500)
             assertEquals(0, h.primary.seekCount)
             assertEquals(0.8f, h.primary.volume, 0f)
@@ -175,6 +183,86 @@ class CrossfadeControllerTest {
             h.start(); h.advance(5_500)
             assertTrue(h.tails.isEmpty())
             assertEquals(0, h.primary.seekCount)
+        }
+    }
+    @Test fun primaryOutgoingOnlyBufferDoesNotPreventAnIndependentlyPreparedOverlap() = runTest {
+        Harness(this).use { h ->
+            h.primary.bufferedAhead = 0
+            h.start(); h.advance(5_500)
+            assertEquals(1, h.primary.seekCount)
+            assertTrue(h.primary.volume > 0f)
+            assertTrue(h.tails.single().volume > 0f)
+        }
+    }
+    @Test fun uncachedIncomingCanBecomeReadyDuringWarmupWithoutBlockingNormalPlayback() = runTest {
+        Harness(this).use { h ->
+            h.incomingBuffered = 0
+            h.start(); h.advance(3_000)
+            assertEquals(0, h.primary.seekCount)
+            h.tails.single().bufferedAhead = CrossfadeController.FADE_MS
+            h.advance(2_500)
+            assertEquals(1, h.primary.seekCount)
+            assertEquals(0, h.primary.queueRebuilds)
+        }
+    }
+    @Test fun pausedAtItemEndTailCannotLeaveTheIncomingPlayerMuted() = runTest {
+        Harness(this).use { h ->
+            h.primary.bufferOnSeek = true
+            h.start(); h.advance(5_000)
+            h.tails.single().wanted = false // Real ExoPlayer pause-at-item-end behavior.
+            h.advance(100)
+            assertEquals(1, h.tails.single().releaseCount)
+            assertEquals(0.8f, h.primary.volume, 0f)
+            assertEquals(1, h.primary.index)
+        }
+    }
+    @Test fun preparationFailureKeepsTheOriginalQueueAudibleAndDoesNotRetryEveryTick() = runTest {
+        Harness(this).use { h ->
+            h.start()
+            h.tails.single().error = PlaybackException("Incoming preparation failed", null, PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED)
+            h.advance(5_500)
+            assertEquals(1, h.tails.size)
+            assertEquals(1, h.tails.single().releaseCount)
+            assertEquals(0, h.primary.seekCount)
+            assertEquals(0, h.primary.queueRebuilds)
+            assertTrue(h.primary.playing)
+            assertEquals(0.8f, h.primary.volume, 0f)
+        }
+    }
+    @Test fun incomingFailureDuringOverlapRestoresSessionGainAndReleasesSecondaryAudio() = runTest {
+        Harness(this).use { h ->
+            h.start(); h.advance(5_000)
+            h.primary.error = PlaybackException("Decoder failed", null, PlaybackException.ERROR_CODE_DECODING_FAILED)
+            h.primary.event(); runCurrent()
+            assertEquals(1, h.tails.single().releaseCount)
+            assertEquals(0.8f, h.primary.volume, 0f)
+            h.primary.error = null; h.primary.event(); h.advance(200)
+            assertTrue(h.primary.playing)
+            assertEquals(1, h.primary.index)
+        }
+    }
+    @Test fun lazyResolutionCanChangeTheIncomingTransportWithoutChangingItsQueuedIdentity() = runTest {
+        Harness(this).use { h ->
+            h.start()
+            val secondary = h.tails.single()
+            secondary.items = listOf(secondary.items[0], secondary.items[1].buildUpon()
+                .setUri("https://resolved.example/second.flac").build())
+            h.advance(5_500)
+            assertEquals(1, h.primary.seekCount)
+            assertEquals(1, h.primary.index)
+            assertTrue(h.primary.volume > 0f && secondary.volume > 0f)
+        }
+    }
+    @Test fun sourcePolicyChangesCancelWarmupAndOverlapWithoutChangingTheQueue() = runTest {
+        for (elapsed in listOf(200L, 5_000L)) Harness(this).use { h ->
+            h.start(); h.advance(elapsed)
+            val seeks = h.primary.seekCount
+            h.policy = "new-quality-or-sources"
+            h.advance(200)
+            assertEquals(1, h.tails.single().releaseCount)
+            assertEquals(seeks, h.primary.seekCount)
+            assertEquals(0, h.primary.queueRebuilds)
+            assertEquals(0.8f, h.primary.volume, 0f)
         }
     }
     @Test fun anIncomingStallCannotLeaveTheSessionMutedAfterTheTailEnds() = runTest {

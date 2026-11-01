@@ -88,8 +88,8 @@ class SpatialAndSilencePlaybackTest {
         }
     }
 
-    private fun skippedFrames(silentFrames: Int): Long {
-        val processor = BitPerfectAudioSink.silenceProcessor()
+    private fun skippedFrames(silentFrames: Int,
+        processor: androidx.media3.exoplayer.audio.SilenceSkippingAudioProcessor = BitPerfectAudioSink.silenceProcessor()): Long {
         processor.setEnabled(true)
         processor.configure(AudioProcessor.AudioFormat(48000, 2, C.ENCODING_PCM_16BIT)); processor.flush()
         var outputFrames = 0L
@@ -107,6 +107,8 @@ class SpatialAndSilencePlaybackTest {
         processor.queueEndOfStream()
         val tail = processor.output
         outputFrames += tail.remaining() / 4
+        tail.position(tail.limit())
+        assertTrue(processor.isEnded)
         assertEquals(silentFrames + 4096L, outputFrames + processor.skippedFrames)
         return processor.skippedFrames
     }
@@ -115,9 +117,21 @@ class SpatialAndSilencePlaybackTest {
         assertEquals(0L, skippedFrames(24000))
         assertTrue(skippedFrames(144000) > 48000)
     }
+    @Test fun actualSkippedFramesAndEosResetAcrossSuccessiveTracksAndEnableChanges() {
+        val processor = BitPerfectAudioSink.silenceProcessor()
+        val first = skippedFrames(144000, processor)
+        assertTrue(first > 48000)
+        processor.setEnabled(false)
+        processor.configure(AudioProcessor.AudioFormat(48000, 2, C.ENCODING_PCM_16BIT)); processor.flush()
+        assertFalse(processor.isActive)
+        assertEquals(0L, processor.skippedFrames)
+        assertEquals(first, skippedFrames(144000, processor))
+        assertEquals(0L, skippedFrames(24000, processor))
+    }
 
     private class SinkProbe {
         var pending = false
+        var processorPending = false
         var partial = false
         var releases = 0
         var drains = 0
@@ -125,9 +139,13 @@ class SpatialAndSilencePlaybackTest {
         var volume = 1f
         var frames = 0
         var retained: ByteBuffer? = null
+        var configured: Format? = null
         val sink = Proxy.newProxyInstance(AudioSink::class.java.classLoader, arrayOf(AudioSink::class.java)) { _, method, args ->
             when (method.name) {
                 "hasPendingData" -> pending
+                "isEnded" -> !pending && !processorPending && retained == null
+                "configure" -> { configured = args!![0] as Format; null }
+                "flush" -> { pending = false; processorPending = false; retained = null; null }
                 "getCurrentPositionUs" -> 100_000L
                 "getSkipSilenceEnabled" -> skip
                 "setSkipSilenceEnabled" -> { skip = args!![0] as Boolean; null }
@@ -146,6 +164,94 @@ class SpatialAndSilencePlaybackTest {
                 else -> null
             }
         } as AudioSink
+    }
+
+    @Test fun processorEosMustFinishEvenWhenAudioTrackHasNoPendingFrames() {
+        val original = SinkProbe()
+        val replacements = mutableListOf<SinkProbe>()
+        val sink = BitPerfectAudioSink(app, original.sink, sharedFactory = { _, _ ->
+            SinkProbe().also(replacements::add).sink
+        })
+        sink.configure(pcm(C.ENCODING_PCM_16BIT), 0, null)
+        original.processorPending = true
+        sink.setSkipSilenceEnabled(true)
+        val next = ByteBuffer.allocateDirect(64)
+        assertFalse(sink.handleBuffer(next, 0, 1))
+        assertEquals(0, next.position())
+        assertEquals(1, original.drains)
+        assertEquals(0, original.releases)
+        original.processorPending = false
+        assertTrue(sink.handleBuffer(next, 0, 1))
+        assertEquals(1, original.releases)
+        assertTrue(replacements.single().skip)
+        sink.release()
+    }
+
+    @Test fun nextFormatDrivesProcessorEosAndFlushCannotRequeueStaleConfiguration() {
+        val original = SinkProbe()
+        val replacements = mutableListOf<SinkProbe>()
+        val sink = BitPerfectAudioSink(app, original.sink, sharedFactory = { _, _ ->
+            SinkProbe().also(replacements::add).sink
+        })
+        sink.configure(pcm(C.ENCODING_PCM_16BIT), 0, null)
+        original.processorPending = true
+        val mono = pcm(C.ENCODING_PCM_16BIT, 1)
+        sink.configure(mono, 0, null)
+        val buffer = ByteBuffer.allocateDirect(64)
+        assertFalse(sink.handleBuffer(buffer, 0, 1))
+        assertTrue(original.drains > 0)
+        assertEquals(2, original.configured!!.channelCount)
+        original.processorPending = false
+        assertTrue(sink.handleBuffer(buffer, 0, 1))
+        val active = replacements.single()
+        assertEquals(1, active.configured!!.channelCount)
+        active.pending = true
+        sink.configure(pcm(C.ENCODING_PCM_16BIT), 0, null)
+        sink.setSkipSilenceEnabled(true)
+        sink.flush()
+        val flushed = replacements.last()
+        assertEquals(2, flushed.configured!!.channelCount)
+        assertTrue(flushed.skip)
+        assertTrue(sink.handleBuffer(ByteBuffer.allocateDirect(64), 100, 1))
+        assertEquals(2, flushed.configured!!.channelCount)
+        sink.reset()
+        sink.configure(mono, 0, null)
+        assertTrue(sink.handleBuffer(ByteBuffer.allocateDirect(64), 200, 1))
+        sink.release()
+    }
+
+    @Test fun aNewerFormatSupersedesAnOlderPendingConfigurationAfterTheDrainEnds() {
+        val original = SinkProbe()
+        val sink = BitPerfectAudioSink(app, original.sink)
+        sink.configure(pcm(C.ENCODING_PCM_16BIT), 0, null)
+        original.processorPending = true
+        sink.configure(pcm(C.ENCODING_PCM_16BIT, 1), 0, null)
+        original.processorPending = false
+        sink.configure(pcm(C.ENCODING_PCM_16BIT, 6), 0, null)
+        assertEquals(6, original.configured!!.channelCount)
+        assertTrue(sink.handleBuffer(ByteBuffer.allocateDirect(96), 0, 1))
+        assertEquals(6, original.configured!!.channelCount)
+        sink.release()
+    }
+
+    @Test fun aPendingFormatCannotDiscardTheOldPartiallyWrittenPcmBuffer() {
+        val original = SinkProbe()
+        val replacements = mutableListOf<SinkProbe>()
+        val sink = BitPerfectAudioSink(app, original.sink, sharedFactory = { _, _ ->
+            SinkProbe().also(replacements::add).sink
+        })
+        sink.configure(pcm(C.ENCODING_PCM_16BIT), 0, null)
+        val previous = ByteBuffer.allocateDirect(64)
+        original.partial = true
+        assertFalse(sink.handleBuffer(previous, 0, 1))
+        sink.configure(pcm(C.ENCODING_PCM_16BIT, 1), 0, null)
+        assertTrue(sink.handleBuffer(previous, 0, 1))
+        assertEquals(previous.limit(), previous.position())
+        assertEquals(0, original.releases)
+        assertTrue(sink.handleBuffer(ByteBuffer.allocateDirect(32), 100, 1))
+        assertEquals(1, original.releases)
+        assertEquals(1, replacements.single().configured!!.channelCount)
+        sink.release()
     }
 
     @Test fun togglesDrainPartialWritesAndRestoreFloatWithoutReplacingTheTrackOrLosingPcm() {

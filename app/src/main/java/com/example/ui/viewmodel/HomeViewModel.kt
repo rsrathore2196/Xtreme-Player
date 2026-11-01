@@ -85,6 +85,8 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
     private var profileRequestJob: Job? = null
     private var profileRequestIsExplicit = false
     private var pageJob: Job? = null
+    private var expansionJob: Job? = null
+    private var expansionUrgent = MutableStateFlow(false)
     private var refreshJob: Job? = null
     private var refreshIsExplicit = false
     private val artistRequests = MutableStateFlow(0L)
@@ -294,6 +296,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
                 if (!finished && !refreshIsExplicit) serverJob?.cancel()
                 BackgroundWorkCoordinator.startupTask(StartupTask.HOME_CACHE,
                     if (_serverShelves.value.size >= INITIAL_SERVER_SHELF_TARGET) StartupStatus.READY else StartupStatus.FALLBACK_READY)
+                if (visible) expandServerHome()
             }
         }
         initialFeedJob = job
@@ -303,13 +306,16 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
     suspend fun loadServerHome(force: Boolean = false, initial: Boolean = false): Boolean = withContext(AppDispatchers.HomeBookkeeping) {
         restored.await()
         if (!force && fresh(serverSuccess, serverFetchedAt, _serverShelves.value.isEmpty()) &&
-            (serverCacheKey == homeKey || serverAttemptAt > 0L)) return@withContext true
+            (serverCacheKey == homeKey || serverAttemptAt > 0L)) {
+            if (visible && !initial) expandServerHome()
+            return@withContext true
+        }
         serverJob?.takeIf { it.isActive }?.let { if (force || initial) serverUrgent.value = true; return@withContext it.await() }
         val now = System.currentTimeMillis()
         if (!force && now - serverAttemptAt in 0 until 60_000L) return@withContext false
         serverAttemptAt = now
         val key = homeKey; val generation = ++serverGeneration; val region = HomeCacheIdentity.region(_userProfile.value)
-        pageJob?.cancel()
+        expansionJob?.cancel(); pageJob?.cancel()
         val urgent = MutableStateFlow(force || initial).also { serverUrgent = it }
         val job = owner.async {
             try {
@@ -320,20 +326,26 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
                 if (response.isError) { _refreshErrorMessage.value = response.errorMessage ?: "Recommendations are temporarily unavailable. Tap to retry."; return@async false }
                 val responseAccount = response.accountIdentity ?: key.substringAfter('|')
                 if (responseAccount != "anonymous" && responseAccount != key.substringAfter('|')) return@async false
-                serverCacheKey = HomeCacheIdentity.home(_userProfile.value, responseAccount)
+                val responseKey = HomeCacheIdentity.home(_userProfile.value, responseAccount)
+                val previous = _serverShelves.value.takeIf { serverSuccess && serverCacheKey == responseKey }.orEmpty()
+                val shelves = withContext(AppDispatchers.CpuBounded) { refreshServerShelves(previous, response.shelves) }
+                if (generation != serverGeneration || key != homeKey || key != currentHomeKey(_userProfile.value)) return@async false
+                serverCacheKey = responseKey
                 serverFetchedAt = System.currentTimeMillis(); serverSuccess = true
                 homeContinuationToken = response.continuationToken
                 consumedContinuations.clear()
                 _refreshErrorMessage.value = null
-                _serverShelves.value = response.shelves
-                _revealedShelfCount.value = maxOf(4, _revealedShelfCount.value).coerceAtMost(response.shelves.size)
+                _serverShelves.value = shelves
+                _revealedShelfCount.value = maxOf(4, _revealedShelfCount.value).coerceAtMost(shelves.size)
                 if (response.shelves.isEmpty()) _refreshErrorMessage.value = "No recommendations are available. Tap to retry."
                 cache.saveHome(snapshot()); true
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { _refreshErrorMessage.value = "Recommendations are temporarily unavailable. Tap to retry."; false }
         }
         serverJob = job
-        try { job.await() } finally { if (serverJob === job && job.isCompleted) serverJob = null }
+        val loaded = try { job.await() } finally { if (serverJob === job && job.isCompleted) serverJob = null }
+        if (loaded && visible && !initial) expandServerHome()
+        loaded
     }
     suspend fun loadProfileShelf(force: Boolean = false): Boolean = withContext(AppDispatchers.HomeBookkeeping) {
         restored.await()
@@ -367,7 +379,31 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
             pageJob = owner.launch { loadContinuation() }
         }
     }
-    private suspend fun loadContinuation(initial: Boolean = false): Boolean {
+    /** One optional, cancellable expansion owner; no artwork is mounted by prefetching. */
+    private fun expandServerHome(explicit: Boolean = false) {
+        expansionJob?.takeIf { it.isActive }?.let {
+            if (explicit) expansionUrgent.value = true
+            return
+        }
+        if (homeContinuationToken == null || !visible && !explicit) return
+        val key = homeKey; val generation = serverGeneration
+        val urgent = MutableStateFlow(explicit).also { expansionUrgent = it }
+        expansionJob = owner.launch {
+            // Extra pages are never part of the bounded, three-shelf startup task.
+            if (BackgroundWorkCoordinator.initialPresentationInProgress) BackgroundWorkCoordinator.awaitInitialPresentation()
+            initialFeedJob?.takeIf { it.isActive }?.join()
+            BackgroundWorkCoordinator.optionalProcessing(urgent = { urgent.value }) {
+                repeat(BACKGROUND_HOME_PAGE_LIMIT) {
+                    BackgroundWorkCoordinator.awaitOptionalBatch()
+                    if (key != homeKey || generation != serverGeneration || !visible && !urgent.value) return@optionalProcessing
+                    if (!loadContinuation(urgent = urgent, reveal = false)) return@optionalProcessing
+                }
+            }
+        }
+    }
+
+    private suspend fun loadContinuation(initial: Boolean = false, urgent: MutableStateFlow<Boolean> = MutableStateFlow(initial),
+        reveal: Boolean = true): Boolean {
         val token = homeContinuationToken?.takeUnless { it in consumedContinuations } ?: return false
         val requestOwner = currentCoroutineContext()[Job] ?: return false
         pageJob?.takeIf { it !== requestOwner && it.isActive }?.let { it.join(); return homeContinuationToken != token }
@@ -378,10 +414,9 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
             suspend fun request() = withContext(AppDispatchers.Io) {
                 homeLoader(HomeCacheIdentity.region(_userProfile.value), token, responseAccount != "anonymous")
             }
-            val result = if (initial) com.example.recommendation.DiscoveryRequestCoordinator.withPriority(MutableStateFlow(true)) { request() }
-            else BackgroundWorkCoordinator.localDataPreparation {
-                request()
-            }
+            val result = if (initial || !reveal)
+                com.example.recommendation.DiscoveryRequestCoordinator.withPriority(urgent) { request() }
+            else BackgroundWorkCoordinator.localDataPreparation { request() }
             if (generation != serverGeneration || key != homeKey || key != currentHomeKey(_userProfile.value) || token != homeContinuationToken) return false
             if (result.accountIdentity != null && result.accountIdentity != responseAccount) return false
             if (result.isError) return false // Failed tokens remain retryable.
@@ -392,7 +427,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
             consumedContinuations.add(token)
             _serverShelves.value = appended
             homeContinuationToken = result.continuationToken?.takeUnless { it in consumedContinuations }
-            _revealedShelfCount.value = (_revealedShelfCount.value + 2).coerceAtMost(_serverShelves.value.size)
+            if (reveal) _revealedShelfCount.value = (_revealedShelfCount.value + 2).coerceAtMost(_serverShelves.value.size)
             cache.saveHome(snapshot())
             return true
         } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { return false /* Keep the cursor and visible content. */ }
@@ -402,7 +437,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
         val nextHome = currentHomeKey(profile); val nextProfile = currentProfileKey(profile)
         _userProfile.value = profile
         if (nextHome != homeKey) {
-            serverGeneration++; serverJob?.cancel(); pageJob?.cancel(); homeKey = nextHome
+            serverGeneration++; serverJob?.cancel(); expansionJob?.cancel(); pageJob?.cancel(); homeKey = nextHome
             serverCacheKey = nextHome
             _serverShelves.value = emptyList(); homeContinuationToken = null; consumedContinuations.clear()
             serverFetchedAt = 0; serverSuccess = false; serverAttemptAt = 0
@@ -426,7 +461,10 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
                 if (artistIdentityDirty) { artistIdentityDirty = false; artistRequests.update { it + 1 } }
                 refreshHome(false)
             }
-            else { profileGeneration++; profileRequestJob?.cancel(); profileJob?.cancel(); profileAttemptAt = 0L }
+            else {
+                expansionJob?.cancel()
+                profileGeneration++; profileRequestJob?.cancel(); profileJob?.cancel(); profileAttemptAt = 0L
+            }
         }
     }
     fun setHomeScrolling(active: Boolean) {
@@ -449,7 +487,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
             try {
                 if (historyUnavailable) historyRetry.update { it + 1 }
                 if (artistFailed) artistRequests.update { it + 1 }
-                loadServerHome(isExplicitPull)
+                if (loadServerHome(isExplicitPull)) expandServerHome(isExplicitPull)
             } finally { _isRefreshing.value = false }
         }
         refreshJob?.join()

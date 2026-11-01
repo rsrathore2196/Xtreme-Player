@@ -91,12 +91,13 @@ class InitialHomePreparationTest {
         withTimeout(5_000) { started.await() }
         assertEquals(0, calls.get())
         val manual = vm.refreshHome(true)
-        withTimeout(5_000) { vm.serverShelves.first { it.singleOrNull()?.id == "refreshed" } }
+        withTimeout(5_000) { vm.serverShelves.first { it.firstOrNull()?.id == "refreshed" } }
         withTimeout(5_000) { manual.join() }
         assertFalse(vm.isRefreshing.value)
         release.complete(Unit)
         withTimeout(5_000) { manual.join(); automatic.join() }
         assertEquals(1, calls.get()); assertEquals(1, profileCalls.get()); assertFalse(vm.isRefreshing.value)
+        assertEquals(listOf("refreshed", "cached"), vm.serverShelves.value.map { it.id })
     }
     @Test fun manualRefreshReusesBothActualRequestsWhenPromotingAnAutomaticRefresh() = runBlocking {
         val serverStarted = CompletableDeferred<Unit>(); val profileStarted = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
@@ -380,6 +381,109 @@ class InitialHomePreparationTest {
         val vm = viewModel({ _, _ -> error("Fresh retained server cards require no network") })
         withTimeout(5_000) { vm.prepareInitialServerFeed() }
         assertEquals(3, vm.serverShelves.value.size)
+    }
+    @Test fun visibleHomeExpandsAfterInitialPreparationWithoutMountingAllFetchedShelves() = runBlocking {
+        val entered = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        val tokens = java.util.Collections.synchronizedList(mutableListOf<String?>())
+        val vm = viewModel({ _, token ->
+            tokens += token
+            when (token) {
+                null -> YouTubeHomeParser.ParsedHomeFeed((1..3).map { shelf("native-$it") }, "more")
+                "more" -> { entered.complete(Unit); release.await()
+                    YouTubeHomeParser.ParsedHomeFeed((4..6).map { shelf("native-$it") }, "last") }
+                else -> page("native-7")
+            }
+        })
+        vm.prepareInitialServerFeed()
+        assertEquals(listOf<String?>(null), tokens)
+        assertEquals(3, vm.serverShelves.value.size)
+        vm.setHomeVisible(true)
+        withTimeout(5_000) { entered.await() }
+        assertEquals(3, vm.serverShelves.value.size)
+        assertFalse(vm.isRefreshing.value)
+        release.complete(Unit)
+        withTimeout(5_000) { vm.serverShelves.first { it.size == 7 } }
+        assertEquals(listOf(null, "more", "last"), tokens)
+        assertTrue(vm.revealedShelfCount.value <= 4)
+        withTimeout(5_000) { while (HomeCardCache(app).read(HomeCacheIdentity.home(preferences))?.serverShelves?.size != 7) delay(10) }
+        assertNull(HomeCardCache(app).read(HomeCacheIdentity.home(preferences))!!.continuationToken)
+        Unit
+    }
+    @Test fun explicitRefreshMergesExpandedCacheAndFetchesUniquePagesIndependentlyOfItsIndicator() = runBlocking {
+        val key = HomeCacheIdentity.home(preferences)
+        HomeCardCache(app).saveHome(SavedHomeCards(key, System.currentTimeMillis(),
+            serverShelves = listOf(shelf("first"), shelf("retained")), serverFetchSucceeded = true))
+        val entered = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        val calls = AtomicInteger()
+        val vm = viewModel({ _, token ->
+            calls.incrementAndGet()
+            if (token == null) YouTubeHomeParser.ParsedHomeFeed(listOf(shelf("first").copy(tracks = listOf(track))), "more")
+            else { entered.complete(Unit); release.await()
+                YouTubeHomeParser.ParsedHomeFeed(listOf(shelf("retained"), shelf("added")), "more") }
+        })
+        withTimeout(5_000) { vm.refreshHome(true).join(); entered.await() }
+        assertFalse(vm.isRefreshing.value)
+        assertEquals(listOf("first", "retained"), vm.serverShelves.value.map { it.id })
+        assertEquals(listOf(track), vm.serverShelves.value.first().tracks)
+        release.complete(Unit)
+        withTimeout(5_000) { vm.serverShelves.first { it.size == 3 } }
+        assertEquals(listOf("first", "retained", "added"), vm.serverShelves.value.map { it.id })
+        assertEquals(2, calls.get()) // A repeated cursor is exhausted, not fetched again.
+        withTimeout(5_000) { while (HomeCardCache(app).read(key)?.serverShelves?.size != 3) delay(10) }
+        val restarted = viewModel({ _, _ -> error("The expanded cache is fresh") })
+        assertTrue(restarted.loadServerHome())
+        // The cache codec marks restored catalog metadata as recommendation-only.
+        assertEquals(vm.serverShelves.value.map { it.copy(tracks = it.tracks.map { song -> song.copy(recommendationOnly = true) }) },
+            restarted.serverShelves.value)
+    }
+    @Test fun backgroundPageFailureStopsAndExplicitRefreshCanRetryWithoutLosingCachedShelves() = runBlocking {
+        val attempts = AtomicInteger()
+        val failed = CompletableDeferred<Unit>()
+        val vm = viewModel({ _, token -> if (token == null) page("first", "more") else {
+            if (attempts.incrementAndGet() == 1) { failed.complete(Unit); YouTubeHomeParser.ParsedHomeFeed(emptyList(), null, isError = true) }
+            else page("next")
+        } })
+        vm.refreshHome(true).join()
+        withTimeout(5_000) { failed.await() }
+        assertEquals(listOf("first"), vm.serverShelves.value.map { it.id })
+        // Await the completed failed job before deliberately requesting a fresh generation.
+        withTimeout(5_000) { while (HomeCardCache(app).read(HomeCacheIdentity.home(preferences))?.continuationToken != "more") delay(10) }
+        vm.refreshHome(true).join()
+        withTimeout(5_000) { vm.serverShelves.first { it.size == 2 } }
+        assertEquals(2, attempts.get())
+    }
+    @Test fun hidingHomeCancelsOptionalExpansionAndReturningCanReuseItsUnconsumedCursor() = runBlocking {
+        HomeCardCache(app).saveHome(SavedHomeCards(HomeCacheIdentity.home(preferences), System.currentTimeMillis(),
+            serverShelves = (1..3).map { shelf("native-$it") }, continuationToken = "more", serverFetchSucceeded = true))
+        val entered = CompletableDeferred<Unit>(); val cancelled = CompletableDeferred<Unit>()
+        val attempts = AtomicInteger()
+        val vm = viewModel({ _, token ->
+            assertEquals("more", token)
+            if (attempts.incrementAndGet() == 1) {
+                entered.complete(Unit)
+                try { awaitCancellation() } finally { cancelled.complete(Unit) }
+            }
+            page("next")
+        })
+        vm.setHomeVisible(true)
+        withTimeout(5_000) { entered.await() }
+        vm.setHomeVisible(false)
+        withTimeout(5_000) { cancelled.await() }
+        assertEquals(3, vm.serverShelves.value.size)
+        vm.setHomeVisible(true)
+        withTimeout(5_000) { vm.serverShelves.first { it.size == 4 } }
+        assertEquals(2, attempts.get())
+    }
+    @Test fun anEndlessServerCursorCannotCreateUnboundedBackgroundRequests() = runBlocking {
+        val pages = AtomicInteger()
+        val vm = viewModel({ _, token ->
+            if (token == null) YouTubeHomeParser.ParsedHomeFeed((1..3).map { shelf("native-$it") }, "page-1")
+            else pages.incrementAndGet().let { page("extra-$it", "page-${it + 1}") }
+        })
+        vm.refreshHome(true).join()
+        withTimeout(5_000) { vm.serverShelves.first { it.size == 3 + BACKGROUND_HOME_PAGE_LIMIT } }
+        assertEquals(BACKGROUND_HOME_PAGE_LIMIT, pages.get())
+        assertTrue(vm.revealedShelfCount.value <= 4)
     }
     @Test fun initialPreparationTimeoutCancelsThePageAndKeepsItsCursorAndPartialCacheRetryable() = runBlocking {
         val entered = CompletableDeferred<Unit>(); val cancelled = CompletableDeferred<Unit>(); var slow = true
