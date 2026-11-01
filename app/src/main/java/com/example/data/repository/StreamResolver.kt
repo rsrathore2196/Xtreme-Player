@@ -152,8 +152,8 @@ internal class StreamResolver(
         clearVerifiedLosslessCache()
     }
 
-    /** The repository owns the bounded lookup, not the short startup waiter.
-     * Track/policy owners cancel stale flights; the audible fallback never does. */
+    /** All readers share the bounded lookup. Only a retained audible owner may
+     * keep it alive after the final reader leaves; track/policy changes still win. */
     private suspend fun losslessPage(track: MusicTrack, excluded: Set<String>, policyKey: String,
         requestAllowed: () -> Boolean, retain: Boolean = true, urgent: Boolean = false,
         requestedVersion: Long? = null, retainOnDetach: Boolean = false): InternetArchiveApiService.LosslessSearchPage {
@@ -195,7 +195,7 @@ internal class StreamResolver(
             }
             return page
         }
-        val owner = lookupScope?.takeIf { retain } ?: return lookup()
+        val owner = lookupScope ?: return lookup()
         val key = "$identity|$policyKey|$version|${excludedArchive.joinToString()}"
         val urgency = com.example.recommendation.DiscoveryRequestCoordinator.requestUrgency()
         val reader = ArchiveReader(requestAllowed) { urgent || urgency?.value == true }
@@ -234,9 +234,9 @@ internal class StreamResolver(
         }
         try { return flight.result.await() }
         catch (timeout: TimeoutCancellationException) {
-            // A bounded waiter timing out is not a negative lookup result. Keep
-            // its policy-owned producer available for the audible fallback.
-            synchronized(archiveFlights) { flight.retainedOwner = requestAllowed }
+            // Timing out is not a negative result. Speculative readers still
+            // detach normally; only an audible/background owner retains work.
+            if (retain) synchronized(archiveFlights) { flight.retainedOwner = requestAllowed }
             throw timeout
         }
         finally { synchronized(archiveFlights) {
@@ -478,7 +478,15 @@ internal class StreamResolver(
             failure().stage = PlaybackDiagnostics.Stage.DISCOVERY
             // Initial playback keeps its short deadline. An explicit enhancement
             // can finish the same bounded lookup while the existing stream plays.
-            val found = attempt(if (manualUpgrade) MANUAL_LOSSLESS_LOOKUP_TIMEOUT_MS else LOSSLESS_LOOKUP_TIMEOUT_MS) {
+            val lookupBudget = when {
+                manualUpgrade -> MANUAL_LOSSLESS_LOOKUP_TIMEOUT_MS
+                retainLosslessLookup -> LOSSLESS_LOOKUP_TIMEOUT_MS
+                // An unretained queue reader must stay attached while it is
+                // the only usable provider. The deferred race still cancels it
+                // immediately when an audible fallback wins or its source releases.
+                else -> InternetArchiveApiService.BACKGROUND_TIMEOUT_MS
+            }
+            val found = attempt(lookupBudget) {
                 val candidates = if (searchLossless != null) searchLossless.invoke("$title ${primary.ifBlank { artist }}".trim())
                     else losslessPage(track, rejectedUrls + listOfNotNull(failedUrl), policy.key,
                         ::archiveCurrent, retain = retainLosslessLookup, urgent = true, requestedVersion = archiveGeneration,

@@ -172,7 +172,10 @@ class MusicService : MediaLibraryService() {
             val returnToYouTube = policy.shouldReturnToYouTube(selected, origin?.sourceId)
             val restoring = !policy.enhancer && (origin != null || returnToYouTube)
             val resolved = app.repository.resolvePlayableTrack(if (restoring && !returnToYouTube) origin!!.track else selected,
-                preferredSourceId = if (returnToYouTube) policy.sourceId(com.example.playback.PlaybackSourceKind.YOUTUBE) else origin?.sourceId.takeIf { restoring })
+                preferredSourceId = if (returnToYouTube) policy.sourceId(com.example.playback.PlaybackSourceKind.YOUTUBE) else origin?.sourceId.takeIf { restoring },
+                // A lazy source can be read ahead, removed or released before it
+                // becomes audible. Active playback owns its guarded Archive upgrade.
+                retainLosslessLookup = false)
             currentCoroutineContext().ensureActive()
             if (policy.key != networkQuality.sourcePolicySnapshot().key) return@repeat
             val address = Uri.parse(YouTubeAudioStreamService.playbackUri(resolved.id, resolved.audioUrl))

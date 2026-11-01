@@ -533,6 +533,19 @@ class LosslessArchivePolicyTest {
         assertEquals(121_000L, losslessRecoveryPosition(45_000L, 121_000L, true))
         assertEquals(0L, losslessRecoveryPosition(0L, 0L, false)) // A real user seek to the beginning.
     }
+    @Test fun policyReconciliationClearsBothTheCancelledDiscoveryJobAndItsOwnershipKey() {
+        val monitor = field("networkQualityMonitor").get(manager) as NetworkQualityMonitor
+        val old = Job()
+        set("losslessDiscoveryJob", old)
+        set("losslessDiscoveryKey", "obsolete-track-uri-policy")
+        set("appliedSourcePolicyKey", "obsolete-policy")
+        PlaybackManager::class.java.getDeclaredMethod("reconcileSourcePolicy", PlaybackSourcePolicy::class.java,
+            Boolean::class.javaPrimitiveType, String::class.java, MusicTrack::class.java, Boolean::class.javaPrimitiveType)
+            .apply { isAccessible = true }.invoke(manager, monitor.sourcePolicy.value, true, null, null, false)
+        assertTrue(old.isCancelled)
+        assertNull(field("losslessDiscoveryJob").get(manager))
+        assertNull(field("losslessDiscoveryKey").get(manager))
+    }
     @Test fun transientDiscoveryCanRetryTheSamePlayingUriAfterItsShortFailureCacheExpires() = runBlocking {
         val app = ApplicationProvider.getApplicationContext<Application>()
         com.example.data.local.PlaybackSourcesPreferences.save(app, PlaybackSource.builtIns)

@@ -485,6 +485,7 @@ class PlaybackManager(
         youtubeQualityJob?.cancel()
         losslessDiscoveryJob?.cancel()
         losslessDiscoveryJob = null
+        losslessDiscoveryKey = null
         if (pendingSelectionId != null && playResolutionJob?.isActive == true) {
             val restart = pendingPolicyRestart ?: return
             playResolutionJob?.cancel()
