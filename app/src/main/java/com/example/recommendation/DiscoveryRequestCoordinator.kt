@@ -14,7 +14,7 @@ import kotlin.coroutines.CoroutineContext
 internal object DiscoveryRequestCoordinator {
     private val scope = CoroutineScope(SupervisorJob() + AppDispatchers.Io)
     private class Flight(val urgent: MutableStateFlow<Boolean>,
-        val result: Deferred<List<MusicTrack>>, var readers: Int = 0)
+        val result: Deferred<List<MusicTrack>>, var readers: Int = 0, var essentialReaders: Int = 0)
     private class SharedPriority(val urgent: MutableStateFlow<Boolean>) : AbstractCoroutineContextElement(Key) {
         companion object Key : CoroutineContext.Key<SharedPriority>
     }
@@ -32,6 +32,9 @@ internal object DiscoveryRequestCoordinator {
         .trim().lowercase(Locale.ROOT).replace(spaces, " ")
 
     fun homeScrolling(active: Boolean) { scrolling.value = active }
+
+    /** Shared producers read promotion dynamically; no extra collector or coroutine. */
+    suspend fun requestUrgency(): StateFlow<Boolean>? = currentCoroutineContext()[SharedPriority]?.urgent
 
     /** A retained Home request can be promoted without starting another transport. */
     suspend fun <T> withPriority(urgent: MutableStateFlow<Boolean>, block: suspend () -> T): T =
@@ -70,12 +73,13 @@ internal object DiscoveryRequestCoordinator {
                         }
                         else block()
                     }
-                    if (playbackMetadata) BackgroundWorkCoordinator.localDataPreparation { work() }
+                    if (playbackMetadata) BackgroundWorkCoordinator.localDataPreparation(urgent = { urgent.value }) { work() }
                     else BackgroundWorkCoordinator.optionalProcessing(urgent = { urgent.value }) { work() }
                 })
             }.also {
                 it.readers++
-                if (essential) it.urgent.value = true
+                if (essential) it.essentialReaders++
+                it.urgent.value = it.essentialReaders > 0
             }
         }
         try {
@@ -85,6 +89,8 @@ internal object DiscoveryRequestCoordinator {
         }
         finally {
             synchronized(flights) {
+                if (essential) flight.essentialReaders--
+                flight.urgent.value = flight.essentialReaders > 0
                 if (--flight.readers == 0) {
                     if (flights[key] === flight) flights.remove(key)
                     if (!flight.result.isCompleted) flight.result.cancel()

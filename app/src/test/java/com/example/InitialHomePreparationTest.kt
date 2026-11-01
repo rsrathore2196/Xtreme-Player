@@ -269,6 +269,8 @@ class InitialHomePreparationTest {
         })
         vm.setHomeVisible(true); withTimeout(5_000) { started.await() }
         vm.setHomeVisible(false); withTimeout(5_000) { canceled.await() }
+        // Home and optional profile requests finish independently.
+        withTimeout(5_000) { vm.serverShelves.first { it.singleOrNull()?.id == "native" } }
         assertNull(vm.profileShelf.value); assertEquals("native", vm.serverShelves.value.single().id)
     }
     @Test fun hiddenHomeRetainsLocalCardsAndCatchesUpFromActualRecordsWhenShownAgain() = runBlocking {

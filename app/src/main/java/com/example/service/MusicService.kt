@@ -68,11 +68,13 @@ class MusicService : MediaLibraryService() {
     private var sourceRecoveryJob: Job? = null
     private var losslessDiscoveryJob: Job? = null
     private var losslessDiscoveryKey: String? = null
+    private var archiveSelectionVersion: Long? = null
     private var jioFallback: JioSaavnPlaybackFallback? = null
     private val networkQuality by lazy { com.example.playback.NetworkQualityMonitor.getInstance(this) }
     private var networkQueueJob: Job? = null
     private var applyingNetworkPolicy = false
     private var policyRevision = 0L
+    private var currentOccurrenceKey: String? = null
     private var headlessPolicyOwner: String? = null
     private var headlessTransition: Pair<String, Long>? = null
     private var volumeObserver: android.database.ContentObserver? = null
@@ -88,6 +90,24 @@ class MusicService : MediaLibraryService() {
     private var verifiedDecoderName: String? = null
     private var audioStartupTrace = 0L
     private val app: XtremeMusicApp get() = application as XtremeMusicApp
+
+    /** Event evidence only; Media3 getters stay on the application's Looper. */
+    private fun recordQueueState(event: String, error: Throwable? = null) {
+        val player = exoPlayer ?: return
+        val item = player.currentMediaItem ?: return
+        val uri = item.localConfiguration?.uri
+        val audio = player.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO && it.isSelected }.take(4).flatMap { group ->
+            (0 until group.length).filter(group::isTrackSelected).take(4).map { index ->
+                val format = group.getTrackFormat(index)
+                "${format.sampleMimeType}/${format.sampleRate}/${format.channelCount}"
+            }
+        }
+        PlaybackDiagnostics.queueState(item.mediaId, PlaybackDiagnostics.QueueSnapshot(event, player.playbackState,
+            player.playWhenReady, player.playbackSuppressionReason, player.currentTimeline.windowCount,
+            player.currentMediaItemIndex, player.currentPosition, player.bufferedPosition,
+            uri?.buildUpon()?.clearQuery()?.fragment(null)?.build()?.toString().orEmpty(), audio,
+            error?.let { "${it.javaClass.simpleName}: ${it.message.orEmpty().take(160)}" }.orEmpty()))
+    }
 
     private fun applyAudioCeiling(selector: DefaultTrackSelector, player: Player) {
         val item = player.currentMediaItem
@@ -115,42 +135,10 @@ class MusicService : MediaLibraryService() {
                 if (index >= player.mediaItemCount) break
                 if (index <= player.currentMediaItemIndex) continue
                 val before = player.getMediaItemAt(index)
-                var after = NetworkAudioQualityPolicy.constrain(before, ceiling)
-                val address = before.localConfiguration?.uri ?: Uri.EMPTY
-                val extras = before.mediaMetadata.extras
-                val checked = NetworkAudioQualityPolicy.preparedFor(before, policy)
-                // Resolve just the next item after sound starts. The other entries
-                // receive cheap ceiling updates without competing for extraction slots.
-                val needsProvider = player.isPlaying && index == start && !checked &&
-                    address.scheme !in setOf("file", "content")
-                if (needsProvider && networkQuality.activeQualityCeiling.value.connectionType != com.example.playback.NetworkConnectionType.OFFLINE) {
-                    val metadata = before.mediaMetadata
-                    val selected = MusicTrack(before.mediaId, metadata.title?.toString().orEmpty(),
-                        metadata.artist?.toString().orEmpty(), metadata.albumTitle?.toString().orEmpty(),
-                        extras?.getLong("duration", 0L) ?: 0L, metadata.artworkUri?.toString().orEmpty(), address.toString(),
-                        bitrateKbps = extras?.getInt("bitrate", 0) ?: 0,
-                        source = extras?.getString("media_source").orEmpty(), isrc = extras?.getString("isrc").orEmpty(),
-                        primaryArtists = extras?.getStringArrayList("primaryArtists")?.toList().orEmpty(),
-                        isLossless = extras?.getBoolean("isLossless") == true,
-                        recommendationOnly = extras?.getBoolean("recommendation_only") == true)
-                    val resolved = try { app.repository.resolvePlayableTrack(selected, retainLosslessLookup = false) }
-                        catch (e: CancellationException) { throw e } catch (_: Exception) { null }
-                    if (resolved != null) {
-                        val uri = Uri.parse(YouTubeAudioStreamService.playbackUri(resolved.id, resolved.audioUrl))
-                        val updated = Bundle(after.mediaMetadata.extras ?: Bundle()).apply {
-                            putInt("bitrate", resolved.bitrateKbps); putString("qualityBadge", resolved.qualityBadge)
-                            putString("media_source", resolved.source); putBoolean("isLossless", resolved.isLossless)
-                            putBoolean("audio_actual", false)
-                            putString("audio_policy_tier", policy.ceiling.audioQuality.name)
-                            putString("source_policy_key", policy.key)
-                            putLong("audio_policy_checked_at", System.currentTimeMillis())
-                        }
-                        after = after.buildUpon().setUri(uri).setCustomCacheKey(null)
-                            .setMimeType(if (uri.lastPathSegment?.endsWith(".m3u8") == true) androidx.media3.common.MimeTypes.APPLICATION_M3U8 else null)
-                            .setRequestMetadata(after.requestMetadata.buildUpon().setMediaUri(uri).build())
-                            .setMediaMetadata(after.mediaMetadata.buildUpon().setExtras(updated).build()).build()
-                    }
-                }
+                val after = NetworkAudioQualityPolicy.constrain(before, ceiling)
+                // Media3's lazy next-period preparation is the sole provider
+                // resolver. Only apply cheap ceilings here; replacing its in-flight
+                // MediaItem would release and restart the preparing source.
                 if (after === before) continue
                 ensureActive()
                 // Navigation/advance or another policy update always wins over this result.
@@ -450,9 +438,6 @@ class MusicService : MediaLibraryService() {
                 if (losslessDiscoveryJob === kotlinx.coroutines.currentCoroutineContext()[Job]) {
                     losslessDiscoveryJob = null
                     losslessDiscoveryKey = null
-                    // A connected controller may have taken over the same lookup.
-                    if (SabrSessionRegistry.controllerHandlesRecovery?.invoke() != true)
-                        app.repository.cancelLosslessDiscovery(track.id)
                 }
             }
         }
@@ -463,6 +448,9 @@ class MusicService : MediaLibraryService() {
     private fun reconcileHeadlessPolicy(policy: com.example.playback.PlaybackSourcePolicy, failedUrl: String? = null,
         preparedSource: MusicTrack? = null, automatic: Boolean = false) {
         if (!policy.ready) return
+        val preparing = exoPlayer
+        if (preparedSource == null && failedUrl == null && preparing != null &&
+            NetworkAudioQualityPolicy.awaitingResolution(preparing.currentMediaItem, policy, preparing.playbackState)) return
         losslessDiscoveryJob?.cancel()
         losslessDiscoveryJob = null
         losslessDiscoveryKey = null
@@ -851,7 +839,8 @@ class MusicService : MediaLibraryService() {
                 if (address?.scheme in setOf("file", "content") ||
                     item.mediaMetadata.extras?.getString("source_policy_key") == networkQuality.sourcePolicy.value.key)
                     return transportSources.createMediaSource(item)
-                return PolicyResolvingMediaSource(item, transportSources, serviceScope) { requested ->
+                return PolicyResolvingMediaSource(item, transportSources, serviceScope,
+                    resolvedIsCurrent = { it.mediaMetadata.extras?.getString("source_policy_key") == networkQuality.sourcePolicy.value.key }) { requested ->
                     resolveQueuedSource(requested)
                 }
             }
@@ -927,6 +916,7 @@ class MusicService : MediaLibraryService() {
         serviceScope.launch {
             networkQuality.sourcePolicy.collect { policy ->
                 if (!policy.ready) return@collect
+                player.currentMediaItem?.mediaId?.let { app.repository.cancelObsoleteLosslessDiscovery(it, policy.key) }
                 // Updating ABR constraints cannot re-prepare a progressive source.
                 applyAudioCeiling(trackSelector, player)
                 reconcileHeadlessPolicy(policy)
@@ -1051,6 +1041,8 @@ class MusicService : MediaLibraryService() {
                 player.currentMediaItem?.takeIf { it.mediaId == id && it.localConfiguration?.uri.toString() == uri }
                     ?.let { recoverAudioOutput(player, androidx.media3.common.PlaybackException("Audio output did not start", null,
                         androidx.media3.common.PlaybackException.ERROR_CODE_AUDIO_TRACK_WRITE_FAILED)) } ?: false
+            }, awaitingSource = {
+                NetworkAudioQualityPolicy.awaitingResolution(player.currentMediaItem, networkQuality.sourcePolicy.value, player.playbackState)
             })
         nativePlaybackProgress = {
             if (android.os.Looper.myLooper() != player.applicationLooper) null
@@ -1068,6 +1060,20 @@ class MusicService : MediaLibraryService() {
                 }
             }
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                val entry = mediaItem?.mediaMetadata?.extras?.getLong("playlist_entry_id", 0L) ?: 0L
+                val occurrence = mediaItem?.let { "${it.mediaId}:${if (entry > 0L) "entry:$entry" else "index:${player.currentMediaItemIndex}"}" }
+                if (occurrence != currentOccurrenceKey || reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO ||
+                    reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) {
+                    // Same-song repeats are new occurrences too. A late source
+                    // upgrade for the old occurrence must not replace the new one.
+                    ++policyRevision
+                    sourceRecoveryGuard.select(mediaItem?.mediaId, newRequest = true)
+                    outputRecoveryGuard.select(mediaItem?.mediaId, newRequest = true)
+                    headlessPolicyOwner = null; headlessTransition = null
+                    losslessDiscoveryJob?.cancel(); losslessDiscoveryJob = null; losslessDiscoveryKey = null
+                    sourceRecoveryJob?.cancel(); sourceRecoveryJob = null
+                }
+                currentOccurrenceKey = occurrence
                 val taggedTrace = mediaItem?.mediaMetadata?.extras?.getLong(PlaybackDiagnostics.STARTUP_TRACE_EXTRA) ?: 0L
                 if (audioStartupTrace != taggedTrace)
                     PlaybackDiagnostics.markStartup(audioStartupTrace, StartupStage.CANCELLED)
@@ -1085,10 +1091,8 @@ class MusicService : MediaLibraryService() {
                 }
                 publishSignalSource(mediaItem)
                 if (sabrRecoveryTrackId != mediaItem?.mediaId) {
-                    sabrRecoveryTrackId?.let { app.repository.cancelLosslessDiscovery(it) }
-                    losslessDiscoveryJob?.cancel()
-                    losslessDiscoveryKey = null
-                    sourceRecoveryJob?.cancel()
+                    sabrRecoveryTrackId?.let { app.repository.cancelLosslessDiscovery(it, archiveSelectionVersion) }
+                    archiveSelectionVersion = mediaItem?.mediaId?.let(app.repository::losslessDiscoveryVersion)
                     sabrRecoveryTrackId = mediaItem?.mediaId
                     sourceRecoveryGuard.select(mediaItem?.mediaId)
                     outputRecoveryGuard.select(mediaItem?.mediaId)
@@ -1105,7 +1109,9 @@ class MusicService : MediaLibraryService() {
                 applyAudioCeiling(trackSelector, player)
             }
             override fun onIsPlayingChanged(isPlaying: Boolean) {
-                if (isPlaying) scheduleUpcomingCeilings() else networkQueueJob?.cancel()
+                // Buffering during a natural transition is not a user stop. The
+                // lazy MediaSource retains ownership of the required next item.
+                if (isPlaying) scheduleUpcomingCeilings()
                 checkpointJob?.cancel()
                 checkpoint(sampleListeningTime = false)
                 if (isPlaying) checkpointJob = serviceScope.launch {
@@ -1120,6 +1126,10 @@ class MusicService : MediaLibraryService() {
             }
 
             override fun onEvents(player: Player, events: Player.Events) {
+                if (events.contains(Player.EVENT_MEDIA_ITEM_TRANSITION) || events.contains(Player.EVENT_PLAYBACK_STATE_CHANGED) ||
+                    events.contains(Player.EVENT_PLAY_WHEN_READY_CHANGED) || events.contains(Player.EVENT_PLAYBACK_SUPPRESSION_REASON_CHANGED) ||
+                    events.contains(Player.EVENT_TRACKS_CHANGED) || events.contains(Player.EVENT_PLAYER_ERROR))
+                    recordQueueState("events", player.playerError)
                 // Measure once per Media3 event batch, using the position BEFORE
                 // a seek as liveness evidence. A jump cannot turn stalled time into listening.
                 if (events.contains(Player.EVENT_IS_PLAYING_CHANGED) || events.contains(Player.EVENT_PLAYBACK_STATE_CHANGED) ||
@@ -1342,7 +1352,7 @@ class MusicService : MediaLibraryService() {
     }
 
     override fun onDestroy() {
-        exoPlayer?.currentMediaItem?.mediaId?.let { app.repository.cancelLosslessDiscovery(it) }
+        exoPlayer?.currentMediaItem?.mediaId?.let { app.repository.cancelLosslessDiscovery(it, archiveSelectionVersion) }
         PlaybackDiagnostics.markStartup(audioStartupTrace, StartupStage.CANCELLED)
         volumeObserver?.let(contentResolver::unregisterContentObserver)
         volumeObserver = null

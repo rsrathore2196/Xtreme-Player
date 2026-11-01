@@ -10,6 +10,13 @@ import com.example.playback.AudioQualityCeiling
 /** Pure, cheap queue-item transformation. Call only for new or upcoming items, never active audio. */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 internal object NetworkAudioQualityPolicy {
+    /** The factory's lazy source owns unresolved items until it publishes a child timeline. */
+    fun awaitingResolution(item: MediaItem?, policy: com.example.playback.PlaybackSourcePolicy, state: Int): Boolean {
+        if (item == null || state != androidx.media3.common.Player.STATE_IDLE && state != androidx.media3.common.Player.STATE_BUFFERING) return false
+        val scheme = (item.localConfiguration?.uri ?: item.requestMetadata.mediaUri)?.scheme
+        return scheme != "file" && scheme != "content" && item.mediaMetadata.extras?.getString("source_policy_key") != policy.key
+    }
+
     fun preparedFor(item: MediaItem, policy: com.example.playback.PlaybackSourcePolicy,
         now: Long = System.currentTimeMillis()): Boolean {
         val extras = item.mediaMetadata.extras ?: return false

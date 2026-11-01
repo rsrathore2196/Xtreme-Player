@@ -11,6 +11,16 @@ internal const val INITIAL_SERVER_SHELF_TARGET = 3
 
 private fun ServerHomeShelf.entries(): List<ServerHomeItem> = items.ifEmpty { tracks.map { ServerHomeItem.Song(it) } }
 
+/** The legacy broad revision is not a Home input; every actual event remains compared. */
+internal fun sameLocalHomeSnapshot(previous: List<com.example.data.local.ActualPlaySnapshotRow>,
+    next: List<com.example.data.local.ActualPlaySnapshotRow>): Boolean {
+    if (previous.size != next.size) return false
+    val old = previous.firstOrNull(); val new = next.firstOrNull()
+    if (old?.total != new?.total || old?.artistInputRevision != new?.artistInputRevision ||
+        old?.trackMetadataRevision != new?.trackMetadataRevision || old?.artistMetadataRevision != new?.artistMetadataRevision) return false
+    return previous.indices.all { previous[it].event == next[it].event }
+}
+
 /** Keep provider ordering and existing instances, merging only an identified continuation of the same shelf. */
 internal fun appendServerShelves(previous: List<ServerHomeShelf>, incoming: List<ServerHomeShelf>): List<ServerHomeShelf> {
     val result = previous.toMutableList()

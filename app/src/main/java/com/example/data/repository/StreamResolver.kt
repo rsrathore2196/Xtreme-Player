@@ -94,9 +94,12 @@ internal class StreamResolver(
         synchronized(archiveAttempts) { (archiveAttempts[key] ?: 0L) > android.os.SystemClock.elapsedRealtime() }
     }
     private val archiveMisses = LinkedHashMap<String, Long>()
+    private class ArchiveReader(val allowed: () -> Boolean, val urgent: () -> Boolean)
     private class ArchiveFlight(val trackId: String, val policyKey: String,
-        val urgent: kotlinx.coroutines.flow.MutableStateFlow<Boolean>,
-        val result: Deferred<InternetArchiveApiService.LosslessSearchPage>, var urgentReaders: Int = 0)
+        val result: Deferred<InternetArchiveApiService.LosslessSearchPage>) {
+        val readers = mutableSetOf<ArchiveReader>()
+        var retainedOwner: (() -> Boolean)? = null
+    }
     private val archiveFlights = mutableMapOf<String, ArchiveFlight>()
     private val archiveVersions = LinkedHashMap<String, Long>(256, .75f, true)
     private var archiveVersion = 0L
@@ -108,19 +111,34 @@ internal class StreamResolver(
     fun isLosslessDiscoveryCurrent(trackId: String, version: Long): Boolean = synchronized(archiveFlights) {
         archiveVersions[trackId] == version
     }
-    private val archiveSlots = Semaphore(2)
     fun hasPendingLosslessDiscovery(trackId: String, policyKey: String): Boolean = synchronized(archiveFlights) {
         archiveFlights.values.any { it.trackId == trackId && it.policyKey == policyKey && it.result.isActive }
     }
-    fun cancelLosslessDiscovery(trackId: String? = null) {
+    fun cancelLosslessDiscovery(trackId: String? = null, expectedVersion: Long? = null) {
         synchronized(archiveFlights) {
+            if (trackId != null && expectedVersion != null && archiveVersions[trackId] != expectedVersion) return
             if (trackId == null) archiveVersions.clear()
             else {
                 archiveVersions[trackId] = ++archiveVersion
                 while (archiveVersions.size > 256) archiveVersions.remove(archiveVersions.keys.first())
             }
             val stale = archiveFlights.filterValues { trackId == null || it.trackId == trackId }
-            stale.forEach { (key, flight) -> archiveFlights.remove(key); flight.result.cancel() }
+            stale.forEach { (key, flight) ->
+                archiveFlights.remove(key)
+                com.example.playback.LosslessDiagnostics.record(flight.trackId,
+                    com.example.playback.LosslessDiagnostics.Reason.CANCELLED, "archive-selection-ended")
+                flight.result.cancel()
+            }
+        }
+    }
+    fun cancelObsoleteLosslessDiscovery(trackId: String, activePolicyKey: String) = synchronized(archiveFlights) {
+        // Policy changes cannot invalidate a newer request for the same track.
+        val stale = archiveFlights.filterValues { it.trackId == trackId && it.policyKey != activePolicyKey }
+        stale.forEach { (key, flight) ->
+            archiveFlights.remove(key)
+            com.example.playback.LosslessDiagnostics.record(flight.trackId,
+                com.example.playback.LosslessDiagnostics.Reason.CANCELLED, "archive-policy-superseded")
+            flight.result.cancel()
         }
     }
     private val cache = LinkedHashMap<StreamKey, CachedStream>(128, 0.75f, true)
@@ -138,33 +156,33 @@ internal class StreamResolver(
      * Track/policy owners cancel stale flights; the audible fallback never does. */
     private suspend fun losslessPage(track: MusicTrack, excluded: Set<String>, policyKey: String,
         requestAllowed: () -> Boolean, retain: Boolean = true, urgent: Boolean = false,
-        requestedVersion: Long? = null): InternetArchiveApiService.LosslessSearchPage {
+        requestedVersion: Long? = null, retainOnDetach: Boolean = false): InternetArchiveApiService.LosslessSearchPage {
         val version = requestedVersion ?: losslessDiscoveryVersion(track.id)
         val allowed = { requestAllowed() && isLosslessDiscoveryCurrent(track.id, version) }
         val excludedArchive = excluded.filterTo(sortedSetOf(), ::archiveTransport)
         val identity = withContext(AppDispatchers.CpuBounded) { RecordingIdentity.key(track) }
-        suspend fun lookup(): InternetArchiveApiService.LosslessSearchPage {
-            if (!allowed()) return InternetArchiveApiService.LosslessSearchPage(isSuccessful = false,
+        suspend fun lookup(isAllowed: () -> Boolean = allowed): InternetArchiveApiService.LosslessSearchPage {
+            if (!isAllowed()) return InternetArchiveApiService.LosslessSearchPage(isSuccessful = false,
                 exhaustive = false, failure = com.example.playback.LosslessDiagnostics.Reason.NETWORK_POLICY_BLOCKED)
             // The previous flight can commit between the caller's cache probe
             // and admission here. Recheck before starting another HTTP lookup.
             val cached = getCachedLosslessMatch(track)
-            if (cached != null && cached.audioUrl !in excludedArchive && supportsLossless(cached) && allowed())
+            if (cached != null && cached.audioUrl !in excludedArchive && supportsLossless(cached) && isAllowed())
                 return InternetArchiveApiService.LosslessSearchPage(listOf(cached))
             if (synchronized(archiveMisses) { (archiveMisses[identity] ?: 0L) > android.os.SystemClock.elapsedRealtime() })
                 return InternetArchiveApiService.LosslessSearchPage(failure = com.example.playback.LosslessDiagnostics.Reason.NO_RESULTS)
             val page = if (searchLossless != null) InternetArchiveApiService.LosslessSearchPage(
                 searchLossless.invoke("${extractCleanTitle(track.title, track.artist)} ${extractCleanArtist(track.artist)}".trim()))
-                else findLossless(track, excludedArchive, allowed)
+                else findLossless(track, excludedArchive, isAllowed)
             currentCoroutineContext().ensureActive()
-            if (!allowed()) return page.copy(tracks = emptyList(), isSuccessful = false, exhaustive = false,
+            if (!isAllowed()) return page.copy(tracks = emptyList(), isSuccessful = false, exhaustive = false,
                 failure = com.example.playback.LosslessDiagnostics.Reason.NETWORK_POLICY_BLOCKED)
             val verified = withContext(AppDispatchers.CpuBounded) {
                 page.tracks.firstOrNull { it.audioUrl !in excludedArchive && !isLosslessUrlRejected(it.audioUrl) &&
                     matchesLosslessUpgrade(track, it) && supportsLossless(it) }
             }
             currentCoroutineContext().ensureActive()
-            if (!allowed()) return page.copy(tracks = emptyList(), isSuccessful = false, exhaustive = false,
+            if (!isAllowed()) return page.copy(tracks = emptyList(), isSuccessful = false, exhaustive = false,
                 failure = com.example.playback.LosslessDiagnostics.Reason.NETWORK_POLICY_BLOCKED)
             if (verified != null) cacheVerifiedLosslessMatch(track, verified)
             else if (excludedArchive.isEmpty() && page.isSuccessful && page.exhaustive && page.nextPage == null &&
@@ -179,23 +197,56 @@ internal class StreamResolver(
         }
         val owner = lookupScope?.takeIf { retain } ?: return lookup()
         val key = "$identity|$policyKey|$version|${excludedArchive.joinToString()}"
+        val urgency = com.example.recommendation.DiscoveryRequestCoordinator.requestUrgency()
+        val reader = ArchiveReader(requestAllowed) { urgent || urgency?.value == true }
         val flight = synchronized(archiveFlights) {
-            (archiveFlights[key] ?: run {
-                val priority = kotlinx.coroutines.flow.MutableStateFlow(false)
-                ArchiveFlight(track.id, policyKey, priority, owner.async(start = CoroutineStart.LAZY) {
-                    com.example.performance.BackgroundWorkCoordinator.localDataPreparation(urgent = { priority.value }) {
-                        archiveSlots.withPermit { lookup() }
-                    }
-                }).also { created ->
-                    archiveFlights[key] = created
-                    created.result.invokeOnCompletion {
-                        synchronized(archiveFlights) { if (archiveFlights[key] === created) archiveFlights.remove(key) }
+            (archiveFlights[key]?.takeIf { !it.result.isCancelled } ?: run {
+                lateinit var created: ArchiveFlight
+                val result = owner.async(start = CoroutineStart.LAZY) {
+                    com.example.performance.BackgroundWorkCoordinator.localDataPreparation(urgent = {
+                        synchronized(archiveFlights) { created.readers.any { it.urgent() } }
+                    }) {
+                        // The API bounds HTTP, metadata and header requests.
+                        // A whole-recording permit would stay held while optional
+                        // batches yield to UI, starving a different manual request.
+                        lookup {
+                            val owners = synchronized(archiveFlights) {
+                                created.readers.map { it.allowed } + listOfNotNull(created.retainedOwner)
+                            }
+                            // Policy snapshots can touch connectivity/preferences.
+                            // Never hold a lock needed by the player's Looper while reading them.
+                            isLosslessDiscoveryCurrent(track.id, version) && owners.any { it() }
+                        }
                     }
                 }
-            }).also { if (urgent) { it.urgentReaders++; it.urgent.value = true } }
+                created = ArchiveFlight(track.id, policyKey, result)
+                archiveFlights[key] = created
+                result.invokeOnCompletion {
+                    synchronized(archiveFlights) { if (archiveFlights[key] === created) archiveFlights.remove(key) }
+                }
+                created
+            }).also {
+                it.readers.add(reader)
+                // Only initial playback may leave an explicitly retained lookup
+                // behind for the already audible fallback's guarded upgrade.
+                if (retainOnDetach) it.retainedOwner = requestAllowed
+            }
         }
         try { return flight.result.await() }
-        finally { if (urgent) synchronized(archiveFlights) { flight.urgent.value = --flight.urgentReaders > 0 } }
+        catch (timeout: TimeoutCancellationException) {
+            // A bounded waiter timing out is not a negative lookup result. Keep
+            // its policy-owned producer available for the audible fallback.
+            synchronized(archiveFlights) { flight.retainedOwner = requestAllowed }
+            throw timeout
+        }
+        finally { synchronized(archiveFlights) {
+            flight.readers.remove(reader)
+            if (flight.readers.isEmpty() && flight.retainedOwner == null && !flight.result.isCompleted) {
+                if (archiveFlights[key] === flight) archiveFlights.remove(key)
+                flight.result.cancel()
+            }
+        } }
+
     }
 
     suspend fun resolve(track: MusicTrack, preference: com.example.playback.AudioQualityPreference): MusicTrack =
@@ -430,7 +481,8 @@ internal class StreamResolver(
             val found = attempt(if (manualUpgrade) MANUAL_LOSSLESS_LOOKUP_TIMEOUT_MS else LOSSLESS_LOOKUP_TIMEOUT_MS) {
                 val candidates = if (searchLossless != null) searchLossless.invoke("$title ${primary.ifBlank { artist }}".trim())
                     else losslessPage(track, rejectedUrls + listOfNotNull(failedUrl), policy.key,
-                        ::archiveCurrent, retain = retainLosslessLookup, urgent = true, requestedVersion = archiveGeneration)
+                        ::archiveCurrent, retain = retainLosslessLookup, urgent = true, requestedVersion = archiveGeneration,
+                        retainOnDetach = retainLosslessLookup)
                         .also { page = it }.tracks
                 withContext(AppDispatchers.CpuBounded) { candidates.firstOrNull { usable(it) && matchesInitialLossless(track, it) && supportsLossless(it) && !isLosslessUrlRejected(it.audioUrl) } }
                     .also { completed = page?.let { it.isSuccessful && it.exhaustive } ?: true }
@@ -627,6 +679,10 @@ internal class StreamResolver(
                     if (candidate.audioUrl !in allExcluded && !matchesLosslessUpgrade(track, candidate)) {
                         com.example.playback.LosslessDiagnostics.record(track.id,
                             com.example.playback.LosslessDiagnostics.Reason.SOURCE_VERIFICATION_FAILED, "candidate-verification")
+                    } else if (candidate.audioUrl !in allExcluded && !isLosslessUrlRejected(candidate.audioUrl)) {
+                        com.example.playback.LosslessDiagnostics.record(track.id,
+                            com.example.playback.LosslessDiagnostics.Reason.DECODER_UNSUPPORTED, "candidate-decoder",
+                            "file=${Uri.parse(candidate.audioUrl).lastPathSegment}")
                     }
                     null
                 } else RecordingIdentity.losslessConfidence(track, candidate)?.let { candidate to it }

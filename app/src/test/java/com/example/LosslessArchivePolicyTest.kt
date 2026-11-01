@@ -279,7 +279,9 @@ class LosslessArchivePolicyTest {
                 } catch (timeout: kotlinx.coroutines.TimeoutCancellationException) {
                     throw AssertionError("attempt=$attempt resolutions=$resolutions native=${native.currentMediaItem?.localConfiguration?.uri} " +
                         "controller=${connected.currentMediaItem?.requestMetadata?.mediaUri} error=${manager.uiState.value.errorMessage} " +
-                        "job=${field("recoveryJob").get(manager)} policy=${monitor.sourcePolicy.value.key}", timeout)
+                        "job=${field("recoveryJob").get(manager)} policy=${monitor.sourcePolicy.value.key} " +
+                        "attempts=${PlaybackDiagnostics.recent(track.id, monitor.sourcePolicy.value)} " +
+                        "blocked=${guard.rejectedUrls(track.id, generation)}", timeout)
                 }
                 assertFalse("A buffering replacement is still loading", manager.uiState.value.isPlaying)
                 assertTrue(manager.uiState.value.isLoading)
@@ -298,6 +300,47 @@ class LosslessArchivePolicyTest {
             set("controller", null)
             session.release(); native.release()
         }
+    }
+
+    @Test fun aLazyQueueSourceFailureCannotBeSwallowedByTheJioTransportWatchdogGuard() = runBlocking {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val sources = com.example.data.local.PlaybackSourcesPreferences
+        sources.save(app, PlaybackSource.builtIns.map { it.copy(enabled = it.kind != PlaybackSourceKind.INTERNET_ARCHIVE) })
+        val monitor = field("networkQualityMonitor").get(manager) as NetworkQualityMonitor
+        awaitCondition {
+            monitor.sourcePolicy.value.playbackSources.map { it.id } == listOf(PlaybackSource.jio.id, PlaybackSource.youtube.id) &&
+                field("appliedSourcePolicyKey").get(manager) == monitor.sourcePolicy.value.key
+        }
+        val replacementUrl = "https://aac.saavncdn.com/queued-ready_320.mp4"
+        val repo = MusicRepository(app)
+        MusicRepository::class.java.getDeclaredField("streamResolver").apply { isAccessible = true }.set(repo,
+            StreamResolver(fetchById = { _, _ -> track.copy(audioUrl = replacementUrl) },
+                searchStandard = { _, _ -> emptyList() }, resolveYouTube = { _, _, _, _ -> null }, searchYouTube = { emptyList() }))
+        manager.repository = repo
+        val unresolved = MediaItem.Builder().setMediaId(track.id).setUri(track.audioUrl)
+            .setRequestMetadata(MediaItem.RequestMetadata.Builder().setMediaUri(android.net.Uri.parse(track.audioUrl)).build())
+            .setMediaMetadata(MediaMetadata.Builder().setTitle(track.title).setArtist(track.artist).build()).build()
+        val native = BufferingSessionPlayer(listOf(unresolved))
+        val session = MediaSession.Builder(app, native).build()
+        val future = MediaController.Builder(app, session.token).setApplicationLooper(Looper.getMainLooper()).buildAsync()
+        var connected: MediaController? = null
+        try {
+            awaitCondition { future.isDone }; connected = future.get()
+            PlaybackManager::class.java.getDeclaredMethod("setController", MediaController::class.java)
+                .apply { isAccessible = true }.invoke(manager, connected)
+            set("activeQueue", mutableStateListOf(track))
+            @Suppress("UNCHECKED_CAST") val ui = field("_uiState").get(manager) as MutableStateFlow<PlayerUiState>
+            ui.value = ui.value.copy(currentTrack = track, queue = listOf(track))
+            (field("recoveryGuard").get(manager) as PlaybackRecoveryGuard).select(track.id, newRequest = true)
+            assertTrue(com.example.service.JioSaavnPlaybackFallback.handles(connected.currentMediaItem))
+            assertTrue(com.example.service.NetworkAudioQualityPolicy.awaitingResolution(connected.currentMediaItem,
+                monitor.sourcePolicy.value, connected.playbackState))
+            manager.handlePlaybackFailure(androidx.media3.common.PlaybackException("Queue source cancelled",
+                java.io.IOException("No child timeline"), androidx.media3.common.PlaybackException.ERROR_CODE_IO_UNSPECIFIED))
+            assertNotNull("The controller must own a lazy-source failure even when its outer URI is Jio", field("recoveryJob").get(manager))
+            awaitCondition { native.currentMediaItem?.localConfiguration?.uri?.toString() == replacementUrl }
+            assertEquals(listOf(track.id), manager.uiState.value.queue.map { it.id })
+        } finally { connected?.release(); set("controller", null); session.release(); native.release() }
     }
 
     @Test fun youtubeOnlyFailureCannotCascadeThroughTheRestOfTheQueue() = runBlocking {

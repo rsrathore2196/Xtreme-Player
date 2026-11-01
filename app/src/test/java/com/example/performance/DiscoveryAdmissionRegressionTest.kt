@@ -7,6 +7,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -116,6 +117,92 @@ class DiscoveryAdmissionRegressionTest {
         // The shared request is owned by the IO scope, not the test dispatcher.
         kotlinx.coroutines.withTimeout(2_000L) { request.await() }
         assertTrue("Slow placeholder frames cannot indefinitely starve a newly visible empty card", ran)
+    }
+    @Test fun manualArchiveMetadataPromotesTheExistingRequestWithoutLosingItsUrgency() = kotlinx.coroutines.runBlocking {
+        @Suppress("UNCHECKED_CAST") val readiness = BackgroundWorkCoordinator::class.java.getDeclaredField("_startupReadiness")
+            .apply { isAccessible = true }.get(null) as kotlinx.coroutines.flow.MutableStateFlow<StartupReadiness>
+        val original = readiness.value
+        readiness.value = StartupReadiness(StartupTask.entries.associateWith { StartupStatus.READY })
+        val navigation = BackgroundWorkCoordinator.navigationBusy()
+        val entered = CompletableDeferred<Unit>()
+        val key = "manual-archive-metadata-priority"
+        var calls = 0
+        val automatic = async {
+            DiscoveryRequestCoordinator.shared(key, essential = false, network = false, playbackMetadata = true) {
+                BackgroundWorkCoordinator.awaitOptionalBatch()
+                calls++; entered.complete(Unit); emptyList()
+            }
+        }
+        try {
+            // Verify that optional metadata really is waiting on this interaction.
+            assertNull(kotlinx.coroutines.withTimeoutOrNull(100L) { entered.await() })
+            val manual = async {
+                DiscoveryRequestCoordinator.shared(key, essential = true, network = false, playbackMetadata = true) {
+                    error("Manual join must reuse the automatic producer")
+                }
+            }
+            kotlinx.coroutines.withTimeout(3_000L) { manual.await(); automatic.await() }
+            assertEquals(1, calls)
+        } finally {
+            navigation.close(); automatic.cancelAndJoin(); readiness.value = original
+        }
+    }
+    @Test fun aSharedAutomaticRequestReturnsToOptionalPriorityWhenItsManualConsumerLeaves() = kotlinx.coroutines.runBlocking<Unit> {
+        val entered = CompletableDeferred<kotlinx.coroutines.flow.StateFlow<Boolean>>()
+        val release = CompletableDeferred<Unit>()
+        val automatic = async {
+            DiscoveryRequestCoordinator.shared("temporary-manual-priority", essential = false, network = false, playbackMetadata = true) {
+                entered.complete(checkNotNull(DiscoveryRequestCoordinator.requestUrgency()))
+                release.await(); emptyList()
+            }
+        }
+        var manual: kotlinx.coroutines.Deferred<*>? = null
+        try {
+            val urgency = kotlinx.coroutines.withTimeout(3_000L) { entered.await() }
+            assertFalse(urgency.value)
+            manual = async {
+                DiscoveryRequestCoordinator.shared("temporary-manual-priority", essential = true, network = false, playbackMetadata = true) {
+                    error("A second producer must not start")
+                }
+            }
+            kotlinx.coroutines.withTimeout(3_000L) { urgency.first { it } }
+            manual.cancelAndJoin()
+            assertFalse("A departing manual owner must not leave optional discovery permanently urgent", urgency.value)
+            release.complete(Unit); automatic.await()
+        } finally { release.complete(Unit); manual?.cancelAndJoin(); automatic.cancelAndJoin() }
+    }
+    @Test fun aManualRecordingCannotBeStarvedByTwoParkedOptionalArchiveLookups() = kotlinx.coroutines.runBlocking<Unit> {
+        @Suppress("UNCHECKED_CAST") val readiness = BackgroundWorkCoordinator::class.java.getDeclaredField("_startupReadiness")
+            .apply { isAccessible = true }.get(null) as kotlinx.coroutines.flow.MutableStateFlow<StartupReadiness>
+        val previous = readiness.value
+        readiness.value = StartupReadiness(StartupTask.entries.associateWith { StartupStatus.READY })
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO)
+        val entered = List(2) { CompletableDeferred<Unit>() }
+        val releaseOptional = CompletableDeferred<Unit>()
+        val resolver = com.example.data.repository.StreamResolver(lookupScope = scope, supportsLossless = { true },
+            findLossless = { track, _, _ ->
+                if (track.id != "manual") {
+                    entered[track.id.toInt()].complete(Unit)
+                    releaseOptional.await()
+                    BackgroundWorkCoordinator.awaitOptionalBatch()
+                    kotlinx.coroutines.awaitCancellation()
+                }
+                com.example.data.remote.InternetArchiveApiService.LosslessSearchPage(listOf(track.copy(
+                    audioUrl = "https://archive.org/download/priority/manual.flac", source = "INTERNET_ARCHIVE", isLossless = true)))
+            })
+        fun track(id: String) = com.example.data.model.MusicTrack(id, "Song $id", "Artist", "Album", 180_000, "", "")
+        val optional = (0..1).map { index -> async { resolver.discoverLosslessBackground(track(index.toString()), policyKey = "policy") } }
+        var navigation: AutoCloseable? = null
+        try {
+            kotlinx.coroutines.withTimeout(3_000L) { entered.forEach { it.await() } }
+            navigation = BackgroundWorkCoordinator.navigationBusy(); releaseOptional.complete(Unit)
+            val manual = async { resolver.discoverLosslessBackground(track("manual"), policyKey = "policy", urgent = true) }
+            assertNotNull("Paused optional batches cannot reserve every recording slot",
+                kotlinx.coroutines.withTimeout(2_000L) { manual.await() })
+        } finally {
+            navigation?.close(); releaseOptional.complete(Unit); optional.forEach { it.cancelAndJoin() }
+            resolver.clear(); scope.coroutineContext[kotlinx.coroutines.Job]?.cancelAndJoin(); readiness.value = previous
+        }
     }
     @Test fun anExplicitHomeRefreshPromotesItsExistingRequestWithoutAnotherNetworkCall() = runTest {
         val urgent = kotlinx.coroutines.flow.MutableStateFlow(false)

@@ -263,7 +263,7 @@ internal object LosslessStreamPrebuffer {
                 currentCheck(automatic)
             }
             checkpoint() // Recheck after waiting for the single preparation worker.
-            LosslessDiagnostics.clear(item.mediaId)
+            LosslessDiagnostics.beginPreparation(item.mediaId)
             val uri = item.localConfiguration?.uri ?: return@withLock null
             fun allowed(): Boolean {
                 if (uri.scheme in setOf("file", "content")) return true
@@ -312,7 +312,7 @@ internal object LosslessStreamPrebuffer {
                 var input = openAt(0L)
                 val extractor = extractors.firstOrNull { candidate ->
                     try { candidate.sniff(input) } finally { input.resetPeekPosition() }
-                } ?: throw PreparationFailure(LosslessDiagnostics.Reason.DECODER_UNSUPPORTED, "Unsupported audio container")
+                } ?: throw PreparationFailure(LosslessDiagnostics.Reason.INVALID_FORMAT, "No supported audio container was detected")
                 var format: Format? = null
                 var seekMap: SeekMap? = null
                 var firstSampleUs = Long.MAX_VALUE
@@ -368,8 +368,13 @@ internal object LosslessStreamPrebuffer {
                 if (actualDuration != null && expectedDurationMs > 0L &&
                     abs(actualDuration - expectedDurationMs) > durationToleranceMs) throw PreparationFailure(
                         LosslessDiagnostics.Reason.RECORDING_MISMATCH, "Actual duration conflicts with the recording")
-                if (actualDuration == null && !allowUnknownDuration) throw PreparationFailure(
-                    LosslessDiagnostics.Reason.METADATA_INCOMPLETE, "Duration is unavailable without independent identity evidence")
+                val initialPosition = withContext(Dispatchers.Main.immediate) {
+                    if (stillCurrent()) currentPosition().coerceAtLeast(0L) else null
+                } ?: return@withLock null
+                // Unknown STREAMINFO duration does not prevent real FLAC playback
+                // from the beginning. It does prevent an unproven mid-song switch.
+                if (actualDuration == null && !allowUnknownDuration && initialPosition > 0L) throw PreparationFailure(
+                    LosslessDiagnostics.Reason.SEEK_UNAVAILABLE, "Container duration cannot verify a position-preserving replacement")
                 val bitrate = info.bitrateKbps.takeIf { it > 0 } ?: if (fullLength > 0L)
                     (fullLength * 8 / (actualDuration ?: expectedDurationMs).coerceAtLeast(1L))
                         .coerceAtMost(Int.MAX_VALUE.toLong()).toInt() else 0
@@ -379,7 +384,8 @@ internal object LosslessStreamPrebuffer {
                     val position = withContext(Dispatchers.Main.immediate) {
                         if (stillCurrent()) currentPosition().coerceAtLeast(0L) else null
                     } ?: return@withLock null
-                    if ((actualDuration ?: expectedDurationMs) - position < 2_000L) return@withLock null
+                    if ((actualDuration ?: expectedDurationMs).let { it > 0L && it - position < 2_000L })
+                        throw PreparationFailure(LosslessDiagnostics.Reason.BUFFER_COVERAGE, "Insufficient remaining audio for a safe replacement")
                     if (map.isSeekable) {
                         val point = map.getSeekPoints(position * 1000).first
                         input = openAt(point.position)
@@ -391,7 +397,7 @@ internal object LosslessStreamPrebuffer {
                     while (lastSampleUs < (position + 3_000L) * 1000) if (!step())
                         throw PreparationFailure(LosslessDiagnostics.Reason.PREBUFFER_FAILED, "Stream ended before the target position")
                     if (!map.isSeekable && position > 0L) {
-                        if (actualDuration == null) throw PreparationFailure(LosslessDiagnostics.Reason.METADATA_INCOMPLETE,
+                        if (actualDuration == null) throw PreparationFailure(LosslessDiagnostics.Reason.SEEK_UNAVAILABLE,
                             "No safe seek index or complete duration")
                         // FLAC with neither a seek table nor HTTP Content-Length can
                         // become seekable after a bounded complete disk-cache fill.
@@ -401,7 +407,7 @@ internal object LosslessStreamPrebuffer {
                         while (step()) Unit
                         source.close(); opened = false
                         if (!MusicCache.fullyCached(context, uri.toString())) throw PreparationFailure(
-                            LosslessDiagnostics.Reason.PREBUFFER_FAILED, "Cannot guarantee position-preserving activation")
+                            LosslessDiagnostics.Reason.SEEK_UNAVAILABLE, "Cannot guarantee position-preserving activation")
                     }
                     val warmed = Prepared(info.copy(bitrateKbps = bitrate), firstSampleUs / 1000, lastSampleUs / 1000)
                     val latest = withContext(Dispatchers.Main.immediate) {
@@ -419,7 +425,7 @@ internal object LosslessStreamPrebuffer {
                     is SocketTimeoutException -> LosslessDiagnostics.Reason.NETWORK_TIMEOUT
                     else -> LosslessDiagnostics.Reason.PREBUFFER_FAILED
                 }
-                LosslessDiagnostics.record(item.mediaId, reason, "prebuffer")
+                LosslessDiagnostics.record(item.mediaId, reason, "prebuffer", "${e.javaClass.simpleName}: ${e.message.orEmpty()}")
                 null
             }
             finally {

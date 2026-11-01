@@ -14,7 +14,8 @@ internal class JioSaavnPlaybackFallback(
     private val scope: CoroutineScope,
     private val requestRecovery: (String, String) -> Unit,
     private val status: (Bundle) -> Unit,
-    private val requestOutputRecovery: (String, String) -> Boolean = { _, _ -> false }
+    private val requestOutputRecovery: (String, String) -> Boolean = { _, _ -> false },
+    private val awaitingSource: () -> Boolean = { false }
 ) {
     private var key = ""
     private var generation = 0L
@@ -72,6 +73,7 @@ internal class JioSaavnPlaybackFallback(
             if (handles(item)) notifyStatus(Bundle().apply { putString("track_id", item?.mediaId); putString("state", "idle") })
         }
         if (!handles(item)) { watchdog?.cancel(); watchdog = null; return }
+        if (awaitingSource()) { watchdog?.cancel(); watchdog = null; return }
         if (player.playbackState == Player.STATE_IDLE) audioConfirmed = false
         if (player.isPlaying && audioConfirmed) {
             hasPlayed = true
@@ -116,12 +118,13 @@ internal class JioSaavnPlaybackFallback(
     }
 
     fun onError(): Boolean {
-        if (!handles(player.currentMediaItem)) return false
+        if (!handles(player.currentMediaItem) || awaitingSource()) return false
         audioConfirmed = false
         recover()
         return true
     }
     private fun recover() {
+        if (awaitingSource()) return
         if (attempted) return
         val item = player.currentMediaItem?.takeIf(::handles) ?: return
         attempted = true

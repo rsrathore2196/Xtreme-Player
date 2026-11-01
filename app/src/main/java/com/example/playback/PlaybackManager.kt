@@ -316,6 +316,8 @@ class PlaybackManager(
             networkQualityMonitor = monitor
             monitor.sourcePolicy.collect { policy ->
                 if (policy.ready) updateLosslessPolicy(policy.ceiling)
+                if (policy.ready && !MusicService.liveSession.value)
+                    _uiState.value.currentTrack?.id?.let { repository?.cancelObsoleteLosslessDiscovery(it, policy.key) }
                 reconcileSourcePolicy(policy)
             }
         }
@@ -410,7 +412,6 @@ class PlaybackManager(
         losslessDiscoveryJob?.cancel()
         losslessDiscoveryJob = null
         losslessDiscoveryKey = null
-        _uiState.value.currentTrack?.id?.let { repository?.cancelLosslessDiscovery(it) }
         ++losslessRequestEpoch
     }
 
@@ -456,7 +457,6 @@ class PlaybackManager(
                 if (losslessDiscoveryJob === currentCoroutineContext()[Job]) {
                     losslessDiscoveryJob = null
                     losslessDiscoveryKey = null
-                    repo.cancelLosslessDiscovery(track.id)
                 }
             }
         }
@@ -470,6 +470,9 @@ class PlaybackManager(
     private fun reconcileSourcePolicy(policy: PlaybackSourcePolicy, force: Boolean = false, failedUrl: String? = null,
         preparedSource: MusicTrack? = null, automatic: Boolean = false) {
         if (!policy.ready) return
+        val preparing = controller
+        if (preparedSource == null && failedUrl == null && preparing != null &&
+            com.example.service.NetworkAudioQualityPolicy.awaitingResolution(preparing.currentMediaItem, policy, preparing.playbackState)) return
         if (!force && appliedSourcePolicyKey == policy.key) return
         val onlyAtmosChanged = policy.onlyAtmosChanged(appliedSourcePolicyKey)
         val qualityRaised = appliedQualityCeiling?.let { policy.ceiling.maxBitrateBps > it.maxBitrateBps } == true
@@ -815,6 +818,30 @@ class PlaybackManager(
             recommendationOnly = extras?.getBoolean("recommendation_only", false) == true)
     }
 
+    /** A lazy child's SOURCE_UPDATE need not emit a new item transition. Adopt
+     * its verified transport without replacing Media3's preparing/playing item. */
+    private fun adoptPreparedQueueSource(player: MediaController) {
+        if (pendingSelectionId != null || losslessFallback != null) return
+        val item = player.currentMediaItem ?: return
+        val current = _uiState.value.currentTrack?.takeIf { it.id == item.mediaId } ?: return
+        val extras = item.mediaMetadata.extras ?: return
+        val key = extras.getString("source_policy_key")?.takeIf(String::isNotBlank) ?: return
+        if (key == networkQualityMonitor?.sourcePolicy?.value?.key) appliedSourcePolicyKey = key
+        // Ordinary actual-bitrate events retain the catalog's quality ceiling;
+        // the existing format acknowledgement owns their badge publication.
+        if (current.audioUrl == item.playbackUri()?.toString() && current.source == extras.getString("media_source") &&
+            current.isLossless == extras.getBoolean("isLossless")) return
+        val resolved = controllerTrack(item)
+        val updated = current.copy(audioUrl = resolved.audioUrl, source = resolved.source,
+            bitrateKbps = resolved.bitrateKbps, isLossless = resolved.isLossless,
+            qualityBadge = resolved.qualityBadge)
+        if (updated == current) return
+        val index = player.currentMediaItemIndex
+        if (activeQueue.getOrNull(index)?.queueIdentity != current.queueIdentity) return
+        replaceQueueTrack(index, updated)
+        _uiState.update { it.copy(currentTrack = updated, queue = queueSnapshot()) }
+    }
+
     private var queueSyncJob: Job? = null
     private var queueSyncEpoch = 0L
 
@@ -892,6 +919,8 @@ class PlaybackManager(
             override fun onEvents(player: Player, events: Player.Events) {
                 val controller = this@PlaybackManager.controller ?: return
                 if (pendingSelectionId != null && controller.currentMediaItem?.mediaId != pendingSelectionId) return
+                if (events.contains(Player.EVENT_TIMELINE_CHANGED) || events.contains(Player.EVENT_MEDIA_METADATA_CHANGED))
+                    adoptPreparedQueueSource(controller)
                 rememberLosslessPosition(controller)
                 if (queueContentsChanged) {
                     queueContentsChanged = false
@@ -908,6 +937,7 @@ class PlaybackManager(
                 if (isPlaying) autoplaySuppressedBySleepTimer = false
                 _uiState.update { it.copy(isPlaying = isPlaying) }
                 if (isPlaying) {
+                    adoptPreparedQueueSource(player)
                     startProgressTicker()
                     confirmLosslessActivation(player)
                     // Genuinely playing: persist track into Room DB listening history immediately
@@ -1162,6 +1192,7 @@ class PlaybackManager(
                 handlePlaybackFailure(error)
             }
             override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
+                controller?.let(::adoptPreparedQueueSource)
                 val current = _uiState.value.currentTrack ?: return
                 val extras = mediaMetadata.extras ?: return
                 val player = controller ?: return
@@ -1239,7 +1270,9 @@ class PlaybackManager(
             showPlaybackFailure("Audio output failed. Please try playing again.")
             return
         }
-        if (!fromWatchdog && com.example.service.JioSaavnPlaybackFallback.handles(player.currentMediaItem)) {
+        if (!fromWatchdog && com.example.service.JioSaavnPlaybackFallback.handles(player.currentMediaItem) &&
+            failedPolicy?.let { !com.example.service.NetworkAudioQualityPolicy.awaitingResolution(
+                player.currentMediaItem, it, player.playbackState) } != false) {
             _uiState.update { it.copy(isLoading = true, errorMessage = null) }
             return
         }
@@ -1261,7 +1294,8 @@ class PlaybackManager(
         if (restoreLosslessFallback(player, current)) return
         val policy = NetworkQualityMonitor.getInstance(context).sourcePolicy.value
         if (!policyAllows(current, policy)) {
-            if (youtubeQualityJob?.isActive != true) reconcileSourcePolicy(policy, force = true)
+            if (youtubeQualityJob?.isActive != true) reconcileSourcePolicy(policy, force = true,
+                failedUrl = player.currentMediaItem?.playbackUri()?.toString() ?: current.audioUrl)
             return
         }
         val repo = repository
@@ -1557,7 +1591,6 @@ class PlaybackManager(
         losslessDiscoveryJob?.cancel()
         losslessDiscoveryJob = null
         losslessDiscoveryKey = null
-        _uiState.value.currentTrack?.id?.let { repository?.cancelLosslessDiscovery(it) }
         _uiState.value.currentTrack?.id?.let { AudioSignalPath.sourceRequest(it, false) }
         ++losslessRequestEpoch
         losslessFallback = null

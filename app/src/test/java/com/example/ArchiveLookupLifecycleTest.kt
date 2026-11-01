@@ -174,4 +174,84 @@ class ArchiveLookupLifecycleTest {
         assertEquals(selected.audioUrl, result.audioUrl); assertEquals(archive.id, result.id); assertFalse(result.isLossless)
     }
 
+    private suspend fun awaitReaders(resolver: StreamResolver, count: Int) = withTimeout(3_000L) {
+        val field = StreamResolver::class.java.getDeclaredField("archiveFlights").apply { isAccessible = true }
+        while (true) {
+            val flights = field.get(resolver) as Map<*, *>
+            val size = synchronized(flights) { flights.values.sumOf { value ->
+                (value!!.javaClass.getDeclaredField("readers").apply { isAccessible = true }.get(value) as Set<*>).size
+            } }
+            if (size >= count) break
+            delay(5)
+        }
+    }
+
+    @Test fun detachingAnOldConsumerDoesNotInvalidateAnotherConsumersSharedRecording() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val entered = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        var calls = 0; var firstAllowed = true
+        val resolver = StreamResolver(lookupScope = scope, supportsLossless = { true }, findLossless = { _, _, allowed ->
+            calls++; entered.complete(Unit); release.await()
+            assertTrue("The surviving owner still permits this recording", allowed())
+            LosslessSearchPage(listOf(archive))
+        })
+        try {
+            val first = async { resolver.discoverLosslessBackground(selected, allowed = { firstAllowed }, policyKey = policy.key) }
+            entered.await()
+            val second = async { resolver.discoverLosslessBackground(selected, policyKey = policy.key) }
+            awaitReaders(resolver, 2)
+            firstAllowed = false; first.cancelAndJoin(); release.complete(Unit)
+            assertEquals(archive.audioUrl, second.await()?.audioUrl); assertEquals(1, calls)
+        } finally { release.complete(Unit); resolver.clear(); scope.cancel() }
+    }
+
+    @Test fun cancellingTheLastUnretainedConsumerReleasesItsProducerWithoutPoisoningANewLookup() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val entered = CompletableDeferred<Unit>(); val cancelled = CompletableDeferred<Unit>()
+        var calls = 0
+        val resolver = StreamResolver(lookupScope = scope, supportsLossless = { true }, findLossless = { _, _, _ ->
+            if (++calls == 1) { entered.complete(Unit); try { awaitCancellation() } finally { cancelled.complete(Unit) } }
+            LosslessSearchPage(listOf(archive))
+        })
+        try {
+            val first = async { resolver.discoverLosslessBackground(selected, policyKey = policy.key) }
+            entered.await(); first.cancelAndJoin(); withTimeout(2_000) { cancelled.await() }
+            assertEquals(archive.audioUrl, resolver.discoverLosslessBackground(selected, policyKey = policy.key)?.audioUrl)
+            assertEquals(2, calls)
+        } finally { resolver.clear(); scope.cancel() }
+    }
+
+    @Test fun anOldSelectionCleanupCannotCancelTheNewSelectionsGeneration() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val entered = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        val resolver = StreamResolver(lookupScope = scope, supportsLossless = { true }, findLossless = { _, _, _ ->
+            entered.complete(Unit); release.await(); LosslessSearchPage(listOf(archive))
+        })
+        try {
+            val previous = resolver.losslessDiscoveryVersion(selected.id)
+            resolver.cancelLosslessDiscovery(selected.id, previous)
+            val next = async { resolver.discoverLosslessBackground(selected, policyKey = policy.key) }
+            entered.await(); resolver.cancelLosslessDiscovery(selected.id, previous); release.complete(Unit)
+            assertEquals(archive.audioUrl, next.await()?.audioUrl)
+        } finally { release.complete(Unit); resolver.clear(); scope.cancel() }
+    }
+    @Test fun aPolicyChangeCancelsOnlyObsoleteFlightsForTheSameRecording() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val firstEntered = CompletableDeferred<Unit>(); val secondEntered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>(); var calls = 0
+        val resolver = StreamResolver(lookupScope = scope, supportsLossless = { true }, findLossless = { _, _, _ ->
+            if (++calls == 1) { firstEntered.complete(Unit); awaitCancellation() }
+            secondEntered.complete(Unit); release.await(); LosslessSearchPage(listOf(archive))
+        })
+        try {
+            val first = async { resolver.discoverLosslessBackground(selected, policyKey = "old-policy") }
+            firstEntered.await()
+            val second = async { resolver.discoverLosslessBackground(selected, policyKey = "active-policy") }
+            secondEntered.await(); resolver.cancelObsoleteLosslessDiscovery(selected.id, "active-policy")
+            try { first.await(); fail("Obsolete policy work must terminate") } catch (_: CancellationException) { }
+            release.complete(Unit)
+            assertEquals(archive.audioUrl, second.await()?.audioUrl); assertEquals(2, calls)
+        } finally { release.complete(Unit); resolver.clear(); scope.cancel() }
+    }
+
 }

@@ -171,9 +171,13 @@ object InternetArchiveApiService {
                 return@withContext null
             val identifier = url.pathSegments.getOrNull(1)?.takeIf(String::isNotBlank) ?: return@withContext null
             val doc = withContext(AppDispatchers.CpuBounded) { JSONObject().put("identifier", identifier) }
-            cachedLosslessItem(doc, RecordingSearch(track, emptySet(), allowed))?.firstOrNull {
-                it.audioUrl == track.audioUrl && RecordingIdentity.losslessConfidence(track, it) != null
-            }
+            val files = cachedLosslessItem(doc, RecordingSearch(track, emptySet(), allowed)) ?: return@withContext null
+            val file = files.firstOrNull { it.audioUrl == track.audioUrl }
+            if (file != null && RecordingIdentity.losslessConfidence(track, file) == null) {
+                com.example.playback.LosslessDiagnostics.record(track.id, Reason.RECORDING_MISMATCH,
+                    "archive-direct-file", "item=$identifier, file=${url.pathSegments.drop(2).joinToString("/")}")
+                null
+            } else file
         }
 
     internal fun searchExpression(expression: String, targeted: Boolean): String {
@@ -351,7 +355,7 @@ object InternetArchiveApiService {
                     throw e
                 } catch (e: Exception) {
                     Log.w(TAG, "Internet Archive search failed: ${e.message}")
-                    val reason = if (e is java.net.SocketTimeoutException) Reason.NETWORK_TIMEOUT else Reason.METADATA_INCOMPLETE
+                    val reason = archiveFailureReason(e)
                     cached?.second?.copy(isSuccessful = false, failure = reason) ?:
                         LosslessSearchPage(isSuccessful = false, failure = reason, exhaustive = false)
                 }
@@ -499,23 +503,31 @@ object InternetArchiveApiService {
                 .header("User-Agent", "XtremePlayer/2.5.0 (Android)").build()
             val encoded = requestMetadata(request)
             val root = withContext(AppDispatchers.CpuBounded) { JSONObject(encoded) }
-            if (!authorized(root.optJSONObject("metadata"))) {
+            if (root.optBoolean("is_dark", false) || !authorized(root.optJSONObject("metadata"))) {
                 recording?.failure = Reason.UNAUTHORIZED
+                recording?.track?.id?.let { com.example.playback.LosslessDiagnostics.record(it,
+                    Reason.UNAUTHORIZED, "archive-license", "item=$identifier: access restriction or no explicit reuse license") }
                 return emptyList()
             }
             val searchHeaders = AtomicInteger(2)
-            return parseLosslessItem(doc, root, recording?.track) { url ->
+            return parseLosslessItem(doc, root, recording?.track, onRejected = { reason, detail ->
+                recording?.failure = reason
+                if (reason == Reason.METADATA_INCOMPLETE) recording?.incomplete = true
+                recording?.track?.id?.let { com.example.playback.LosslessDiagnostics.record(it, reason, "archive-file", detail) }
+            }) { url ->
                 if (recording == null) {
                     if (searchHeaders.getAndDecrement() > 0) readFlacHeader(url) else null
                 } else if (recording.headers.getAndDecrement() <= 0) {
                     recording.truncated = true
                     null
                 } else if (!withContext(AppDispatchers.Io) { recording.allowed() }) null
-                else readFlacHeader(url).also { if (it == null) recording.incomplete = true }
+                else readFlacHeader(url, recording.track.id).also { if (it == null) recording.incomplete = true }
             }
         } catch (e: kotlinx.coroutines.CancellationException) { throw e }
         catch (e: Exception) {
-            recording?.failure = if (e is java.net.SocketTimeoutException) Reason.NETWORK_TIMEOUT else Reason.METADATA_INCOMPLETE
+            recording?.failure = archiveFailureReason(e)
+            recording?.track?.id?.let { com.example.playback.LosslessDiagnostics.record(it, archiveFailureReason(e),
+                "archive-metadata", "item=$identifier: ${e.javaClass.simpleName}") }
             Log.w(TAG, "Failed to verify metadata for $identifier: ${e.message}")
             return null
         }
@@ -543,7 +555,15 @@ object InternetArchiveApiService {
         throw IOException("Incomplete Archive response")
     }
 
-    private suspend fun readFlacHeader(url: String): ArchiveAudioMetadata.Tags? = withContext(AppDispatchers.Io) {
+    internal fun archiveFailureReason(error: Exception): Reason = when {
+        error is java.net.SocketTimeoutException -> Reason.NETWORK_TIMEOUT
+        error is CatalogHttpException && error.status in setOf(401, 403, 451) -> Reason.UNAUTHORIZED
+        error is CatalogHttpException && error.status in setOf(404, 410) -> Reason.SOURCE_VERIFICATION_FAILED
+        else -> Reason.METADATA_INCOMPLETE
+    }
+
+    private suspend fun readFlacHeader(url: String): ArchiveAudioMetadata.Tags? = readFlacHeader(url, null)
+    private suspend fun readFlacHeader(url: String, trackId: String?): ArchiveAudioMetadata.Tags? = withContext(AppDispatchers.Io) {
         headerRequests.withPermit {
             if (SystemClock.elapsedRealtime() < retryNotBeforeMs) return@withPermit null
             try {
@@ -559,7 +579,7 @@ object InternetArchiveApiService {
                         override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
                             response.use {
                                 try {
-                                    if (!response.isSuccessful) throw IOException("Archive header HTTP ${response.code}")
+                                    if (!response.isSuccessful) throw CatalogHttpException(response.code, null)
                                     val body = response.body ?: throw IOException("Empty Archive header")
                                     val buffer = okio.Buffer()
                                     val source = body.source()
@@ -574,14 +594,22 @@ object InternetArchiveApiService {
                         }
                     })
                 }
-                withContext(AppDispatchers.CpuBounded) { ArchiveAudioMetadata.flac(bytes) }
+                withContext(AppDispatchers.CpuBounded) { ArchiveAudioMetadata.flac(bytes) }.also { tags ->
+                    if (tags == null && trackId != null) com.example.playback.LosslessDiagnostics.record(trackId,
+                        Reason.METADATA_INCOMPLETE, "archive-flac-header", "No complete STREAMINFO in the bounded header")
+                }
             } catch (e: CancellationException) { throw e }
-            catch (_: IOException) { null }
+            catch (error: IOException) {
+                if (trackId != null) com.example.playback.LosslessDiagnostics.record(trackId, archiveFailureReason(error),
+                    "archive-flac-header", error.javaClass.simpleName)
+                null
+            }
         }
     }
 
     /** Interpret actual per-file tags, without borrowing a collection's title/duration. */
     internal suspend fun parseLosslessItem(doc: JSONObject, root: JSONObject, requested: MusicTrack? = null,
+        onRejected: (Reason, String) -> Unit = { _, _ -> },
         readHeader: suspend (String) -> ArchiveAudioMetadata.Tags? = ::readFlacHeader
     ): List<MusicTrack> = withContext(AppDispatchers.CpuBounded) {
             val identifier = text(doc, "identifier")
@@ -647,12 +675,18 @@ object InternetArchiveApiService {
                     code = header.isrc.ifBlank { code }
                     if (header.durationMs > 0L) duration = header.durationMs
                 }
-                if (fileTitle.isBlank() || genericTitle.matches(fileTitle.trim())) return@mapNotNull null
+                if (fileTitle.isBlank() || genericTitle.matches(fileTitle.trim())) {
+                    onRejected(Reason.METADATA_INCOMPLETE, "item=$identifier, file=$name: missing recording title")
+                    return@mapNotNull null
+                }
                 val verifiedCode = requested != null && RecordingIdentity.isrc(code)?.let {
                     it == RecordingIdentity.isrc(requested.isrc)
                 } == true
                 if ((duration <= 0L || artist.equals("Unknown Artist", true) || artist.equals("Various Artists", true)) &&
-                    !verifiedCode) return@mapNotNull null
+                    !verifiedCode) {
+                    onRejected(Reason.METADATA_INCOMPLETE, "item=$identifier, file=$name: missing individual artist/duration/ISRC")
+                    return@mapNotNull null
+                }
                 val reportedBitrate = text(file, "bitrate").toDoubleOrNull()?.takeIf { it.isFinite() && it > 0 }?.toInt()
                 val bitrate = reportedBitrate ?: if (duration > 0L) {
                     ((text(file, "size").toLongOrNull() ?: 0L) * 8L / duration).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()

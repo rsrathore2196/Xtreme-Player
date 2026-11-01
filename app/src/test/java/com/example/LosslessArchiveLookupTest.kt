@@ -60,7 +60,7 @@ class LosslessArchiveLookupTest {
         val repo = MusicRepository(dao, app) { _, _ -> error("Disabled Archive must never be searched") }
         assertEquals(AudioQualityCeiling.MAX, NetworkQualityMonitor.getInstance(app).snapshot().effectiveCeiling)
         assertNull(repo.findLosslessUpgrade(track))
-        assertEquals(LosslessDiagnostics.Reason.NETWORK_POLICY_BLOCKED, LosslessDiagnostics.last(track.id)?.reason)
+        assertEquals(LosslessDiagnostics.Reason.SOURCE_DISABLED, LosslessDiagnostics.last(track.id)?.reason)
     }
 
     @After fun clear() = runBlocking {

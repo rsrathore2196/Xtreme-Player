@@ -119,5 +119,24 @@ internal object HomeInputRevisionTriggers {
         trigger("home_metadata_track_delete", "AFTER DELETE", "tracks",
             "EXISTS (SELECT 1 FROM listening_events WHERE trackId = OLD.id AND eventType = 'ACTUAL_PLAY') " +
                 "AND NOT EXISTS (SELECT 1 FROM home_input_revision WHERE id = 3 AND replacingTrack = OLD.id)", metadataAdvance)
+
+        // Home restores metadata only for its 300-event window. Older changes
+        // still refresh artist representatives via row 3, without rereading all
+        // current Recently Played tracks. Uses the existing event/order index.
+        val recentSeed = "INSERT INTO home_input_revision (id, epoch, generation) SELECT 4, hex(randomblob(16)), 0 WHERE NOT EXISTS (SELECT 1 FROM home_input_revision WHERE id = 4);"
+        db.execSQL(recentSeed)
+        val recentAdvance = "$recentSeed UPDATE home_input_revision SET generation = generation + 1 WHERE id = 4;"
+        val recentIds = "SELECT trackId FROM listening_events WHERE eventType = 'ACTUAL_PLAY' ORDER BY timestamp DESC, id DESC LIMIT 300"
+        trigger("home_recent_metadata_insert", "BEFORE INSERT", "tracks", "NEW.id IN ($recentIds)",
+            "$recentSeed UPDATE home_input_revision SET generation = generation + 1 WHERE id = 4 AND NOT EXISTS " +
+                "(SELECT 1 FROM tracks t WHERE t.id = NEW.id AND $sameMetadata); " +
+                "UPDATE home_input_revision SET replacingTrack = NEW.id WHERE id = 4;")
+        trigger("home_recent_metadata_insert_end", "AFTER INSERT", "tracks",
+            "EXISTS (SELECT 1 FROM home_input_revision WHERE id = 4 AND replacingTrack = NEW.id)",
+            "UPDATE home_input_revision SET replacingTrack = NULL WHERE id = 4;")
+        trigger("home_recent_metadata_update", "AFTER UPDATE", "tracks",
+            "NEW.id IN ($recentIds) AND (${metadataFields.joinToString(" OR ") { "OLD.$it IS NOT NEW.$it" }})", recentAdvance)
+        trigger("home_recent_metadata_delete", "AFTER DELETE", "tracks",
+            "OLD.id IN ($recentIds) AND NOT EXISTS (SELECT 1 FROM home_input_revision WHERE id = 4 AND replacingTrack = OLD.id)", recentAdvance)
     }
 }

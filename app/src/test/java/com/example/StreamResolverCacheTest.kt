@@ -90,8 +90,8 @@ class StreamResolverCacheTest {
         resolver.resolve(selected, maximum.ceiling.audioQuality, sourcePolicy = maximum)
         assertEquals(1, verifications)
         try { resolver.resolve(selected, maximum.ceiling.audioQuality, sourcePolicy = maximum,
-            rejectedUrls = setOf(selected.audioUrl)) }
+            rejectedUrls = setOf(selected.audioUrl)); fail("An explicitly rejected Archive URL must not play") }
         catch (_: com.example.data.repository.TrackUnavailableException) { }
-        assertEquals(2, verifications)
+        assertEquals("A known rejected file must not be verified or replayed again", 1, verifications)
     }
 }

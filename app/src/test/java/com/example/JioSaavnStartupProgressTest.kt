@@ -79,6 +79,23 @@ class JioSaavnStartupProgressTest {
             assertEquals("READY/isPlaying alone does not prove audio output", 1, recoveries)
         } finally { watchdog.cancel(); native.release() }
     }
+    @Test fun anUnresolvedQueueEntryCannotStartACompetingJioWatchdogOrRecovery() {
+        val native = FrozenPlayer(ready = false)
+        val dispatcher = StandardTestDispatcher()
+        var sourcePending = true
+        var recoveries = 0
+        val watchdog = JioSaavnPlaybackFallback(native, CoroutineScope(dispatcher),
+            requestRecovery = { _, _ -> recoveries++ }, status = {}, awaitingSource = { sourcePending })
+        try {
+            watchdog.update()
+            dispatcher.scheduler.advanceTimeBy(20_000L); dispatcher.scheduler.runCurrent()
+            assertEquals(0, recoveries)
+            assertFalse(watchdog.onError())
+            sourcePending = false; watchdog.update()
+            dispatcher.scheduler.advanceTimeBy(6_001L); dispatcher.scheduler.runCurrent()
+            assertEquals("Only the resolved Jio transport owns its startup deadline", 1, recoveries)
+        } finally { watchdog.cancel(); native.release() }
+    }
 
     @Test fun foregroundProgressUsesTheNativeOutputInsteadOfTheControllerEstimate() = runBlocking {
         Dispatchers.setMain(StandardTestDispatcher())

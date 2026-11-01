@@ -93,6 +93,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
     private var artistFailed = false
     private val historyRetry = MutableStateFlow(0L)
     private var recentMetadataRevision: String? = null
+    private var artistMetadataRevision: String? = null
     private var recentTrackIds: List<String> = emptyList()
     private var recentPlayedIds: List<String> = emptyList()
     private var recentMetadata: List<MusicTrack> = emptyList()
@@ -130,7 +131,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
             restored.await()
             combine(historyRetry, homeVisible, localPrepared) { retry, active, prepared -> retry.takeIf { active || !prepared } }
                 .distinctUntilChanged().flatMapLatest { retry -> if (retry == null) emptyFlow() else flow {
-                    emitAll(database.listeningEventDao().observeActualPlaySnapshot().distinctUntilChanged())
+                    emitAll(database.listeningEventDao().observeActualPlaySnapshot().distinctUntilChanged(::sameLocalHomeSnapshot))
                 }.catch { error ->
                     if (error is CancellationException) throw error
                     historyUnavailable = true
@@ -141,6 +142,8 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
                     try {
                         val metadataRevision = rowsSnapshot.firstOrNull()?.trackMetadataRevision
                         val metadataChanged = metadataRevision == null || metadataRevision != recentMetadataRevision
+                        val representativeRevision = rowsSnapshot.firstOrNull()?.artistMetadataRevision
+                        val representativesChanged = representativeRevision == null || representativeRevision != artistMetadataRevision
                         val previousIds = recentTrackIds
                         val (ids, playedIds, missingIds) = BackgroundWorkCoordinator.localDataPreparation { withContext(AppDispatchers.CpuBounded) {
                             val events = rowsSnapshot.mapNotNull { it.event }
@@ -174,7 +177,8 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
                         _userMode.value = HomeUserMode.confirmed(rowsSnapshot.firstOrNull()?.total ?: 0, false)
                         val historyChanged = _listeningHistoryCard.value.tracks != recent
                         _listeningHistoryCard.update { it.copy(tracks = recent, isLoaded = recent.isNotEmpty(), isLoading = false) }
-                        if (artistRevision == null || artistRevision != revision || metadataChanged) {
+                        artistMetadataRevision = representativeRevision
+                        if (artistRevision == null || artistRevision != revision || representativesChanged) {
                             BackgroundWorkCoordinator.startupTask(StartupTask.RECENT_ARTISTS, StartupStatus.RUNNING)
                             artistRequests.update { it + 1 }
                         } else {

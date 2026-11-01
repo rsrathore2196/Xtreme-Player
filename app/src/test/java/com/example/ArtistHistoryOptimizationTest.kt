@@ -193,4 +193,53 @@ class ArtistHistoryOptimizationTest {
         } finally { db.close() }
     }
 
+    @Test fun oldTrackMetadataRefreshesArtistRepresentativesWithoutInvalidatingTheRecentWindow() = runBlocking {
+        val db = MusicDatabase.createInMemoryDatabase(app)
+        try {
+            val old = song("old", "Historical Singer"); val recent = song("recent", "Recent Singer")
+            db.withTransaction {
+                db.musicDao().insertOrUpdateTrack(TrackEntity.fromMusicTrack(old))
+                db.musicDao().insertOrUpdateTrack(TrackEntity.fromMusicTrack(recent))
+                db.listeningEventDao().insertListeningEvent(ListeningEventEntity(trackId = old.id, artistName = old.artist,
+                    timestamp = 1L, sessionId = "old", eventType = "ACTUAL_PLAY", playedDurationMs = 30_000))
+                repeat(301) { index -> db.listeningEventDao().insertListeningEvent(ListeningEventEntity(trackId = recent.id,
+                    artistName = recent.artist, timestamp = index + 2L, sessionId = "recent-$index", eventType = "ACTUAL_PLAY", playedDurationMs = 30_000)) }
+            }
+            val reader = LocalArtistHistory.Reader(db)
+            reader.read()
+            val before = db.listeningEventDao().observeActualPlaySnapshot().first()
+            db.musicDao().insertOrUpdateTrack(TrackEntity.fromMusicTrack(old.copy(coverUrl = "historical art corrected", isLiked = true)))
+            val after = db.listeningEventDao().observeActualPlaySnapshot().first()
+            assertEquals(before.first().trackMetadataRevision, after.first().trackMetadataRevision)
+            assertNotEquals(before.first().artistMetadataRevision, after.first().artistMetadataRevision)
+            assertEquals(before.first().artistInputRevision, after.first().artistInputRevision)
+            assertEquals(before.map { it.event }, after.map { it.event })
+            assertEquals("historical art corrected", reader.read().first { it.name == old.artist }.tracks.single().coverUrl)
+            db.musicDao().insertOrUpdateTrack(TrackEntity.fromMusicTrack(recent.copy(isLiked = true)))
+            assertNotEquals(after.first().trackMetadataRevision,
+                db.listeningEventDao().observeActualPlaySnapshot().first().first().trackMetadataRevision)
+        } finally { db.close() }
+    }
+
+    @Test fun aLargeHistoryReusesItsAggregateInsteadOfIntroducingIncrementalCounters() = runBlocking {
+        val aggregations = java.util.concurrent.atomic.AtomicInteger()
+        val db = Room.inMemoryDatabaseBuilder(app, MusicDatabase::class.java)
+            .addCallback(object : androidx.room.RoomDatabase.Callback() {
+                override fun onOpen(db: androidx.sqlite.db.SupportSQLiteDatabase) { HomeInputRevisionTriggers.install(db) }
+            }).setQueryCallback({ sql, _ -> if (sql.contains("COUNT(DISTINCT CASE WHEN sessionId")) aggregations.incrementAndGet() }, Executor { it.run() }).build()
+        try {
+            db.withTransaction {
+                repeat(200) { index -> db.musicDao().insertOrUpdateTrack(TrackEntity.fromMusicTrack(song("track-$index", "Singer ${index / 4}"))) }
+                repeat(4_000) { index -> db.listeningEventDao().insertListeningEvent(ListeningEventEntity(trackId = "track-${index % 200}",
+                    artistName = "Singer ${(index % 200) / 4}", timestamp = index.toLong(), sessionId = "occurrence-$index",
+                    eventType = "ACTUAL_PLAY", playedDurationMs = 30_000)) }
+            }
+            val reader = LocalArtistHistory.Reader(db)
+            val started = System.nanoTime(); val first = reader.read(); val firstMs = (System.nanoTime() - started) / 1_000_000
+            val reused = System.nanoTime(); val second = reader.read(); val reusedMs = (System.nanoTime() - reused) / 1_000_000
+            assertEquals(first, second); assertEquals(15, first.size); assertEquals(1, aggregations.get())
+            println("Artist fixture: 4000 events/200 tracks/50 artists; first=${firstMs}ms, cached=${reusedMs}ms; aggregate queries=${aggregations.get()}")
+        } finally { db.close() }
+    }
+
 }

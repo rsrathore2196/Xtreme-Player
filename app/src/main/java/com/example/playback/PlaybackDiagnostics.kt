@@ -59,6 +59,18 @@ internal object PlaybackDiagnostics {
     }
     fun startup(id: Long): Startup? = synchronized(startups) { startups[id] }
 
+    data class QueueSnapshot(val event: String, val state: Int, val playWhenReady: Boolean,
+        val suppression: Int, val timelineWindows: Int, val index: Int, val positionMs: Long,
+        val bufferedMs: Long, val transport: String, val audio: List<String>, val error: String = "")
+    private val queueHistory = linkedMapOf<String, List<QueueSnapshot>>()
+    fun queueState(id: String, snapshot: QueueSnapshot) = synchronized(queueHistory) {
+        if (queueHistory[id]?.lastOrNull() == snapshot) return@synchronized
+        queueHistory[id] = (queueHistory[id].orEmpty() + snapshot).takeLast(16)
+        while (queueHistory.size > 64) queueHistory.remove(queueHistory.keys.first())
+        Log.d("PlaybackQueue", "track=$id, $snapshot")
+    }
+    fun recentQueue(id: String): List<QueueSnapshot> = synchronized(queueHistory) { queueHistory[id].orEmpty() }
+
     data class YouTubeEvent(val code: String, val client: String, val transport: String,
         val httpStatus: Int?, val reason: Reason?, val atMs: Long)
     private val youtubeHistory = linkedMapOf<String, List<YouTubeEvent>>()

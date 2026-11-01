@@ -143,4 +143,75 @@ class PolicyResolvingMediaSourceTest {
             assertEquals(0, factory.prepared)
         } finally { source.releaseSource(caller); scope.cancel() }
     }
+
+    @Test fun cancellationInsideASharedResolverCannotLeaveTheSelectedSourceBufferingForever() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val started = CompletableDeferred<Unit>()
+        val factory = Factory()
+        val source = PolicyResolvingMediaSource(original, factory, scope) {
+            started.complete(Unit); throw CancellationException("Old shared flight was invalidated")
+        }
+        val caller = MediaSource.MediaSourceCaller { _, _ -> fail("A cancelled lookup cannot publish a child") }
+        source.prepareSource(caller, null)
+        try {
+            started.await()
+            var failure: IOException? = null
+            until { try { source.maybeThrowSourceInfoRefreshError() } catch (error: IOException) { failure = error }; failure != null }
+            assertTrue(failure!!.cause is CancellationException)
+            assertEquals(0, factory.prepared)
+        } finally { source.releaseSource(caller); scope.cancel() }
+    }
+
+    @Test fun anExpiredPreparationBudgetPublishesATerminalSourceError() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val factory = Factory()
+        val source = PolicyResolvingMediaSource(original, factory, scope, resolutionTimeoutMs = 50L) { awaitCancellation() }
+        val caller = MediaSource.MediaSourceCaller { _, _ -> fail("No usable timeline") }
+        source.prepareSource(caller, null)
+        try {
+            var failed = false
+            until { try { source.maybeThrowSourceInfoRefreshError() } catch (_: IOException) { failed = true }; failed }
+            assertEquals(0, factory.prepared)
+        } finally { source.releaseSource(caller); scope.cancel() }
+    }
+
+    @Test fun cancellingTheServiceScopeBeforePreparationAlsoHasATerminalOutcome() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO).apply { cancel() }
+        val source = PolicyResolvingMediaSource(original, Factory(), scope) { error("A cancelled scope cannot resolve") }
+        val caller = MediaSource.MediaSourceCaller { _, _ -> fail("No usable timeline") }
+        source.prepareSource(caller, null)
+        try {
+            var failed = false
+            until { try { source.maybeThrowSourceInfoRefreshError() } catch (_: IOException) { failed = true }; failed }
+        } finally { source.releaseSource(caller) }
+    }
+
+    @Test fun aQueuedMaskingPeriodReceivesResolverFailureInsteadOfWaitingForATimelineForever() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val deferred = PolicyResolvingMediaSource(original, Factory(), scope) { throw CancellationException("Shared flight cancelled") }
+        val source = MaskingMediaSource(deferred, true)
+        val caller = MediaSource.MediaSourceCaller { _, _ -> }
+        source.prepareSource(caller, null)
+        val period = source.createPeriod(MediaSource.MediaPeriodId(source.timeline.getUidOfPeriod(0)), DefaultAllocator(true, 65536), 0)
+        try {
+            var failed = false
+            until { try { period.maybeThrowPrepareError() } catch (_: IOException) { failed = true }; failed }
+        } finally { source.releasePeriod(period); source.releaseSource(caller); scope.cancel() }
+    }
+    @Test fun aPolicyChangeBetweenResolutionAndTheLooperHandoffCannotInstallTheOldTransport() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val factory = Factory()
+        val resolved = CompletableDeferred<Unit>()
+        val source = PolicyResolvingMediaSource(original, factory, scope, resolvedIsCurrent = { false }) {
+            resolved.complete(Unit); youtube
+        }
+        val caller = MediaSource.MediaSourceCaller { _, _ -> fail("A superseded policy cannot publish a timeline") }
+        source.prepareSource(caller, null)
+        try {
+            resolved.await()
+            var failed = false
+            until { try { source.maybeThrowSourceInfoRefreshError() } catch (_: IOException) { failed = true }; failed }
+            assertEquals(0, factory.prepared)
+        } finally { source.releaseSource(caller); scope.cancel() }
+    }
 }

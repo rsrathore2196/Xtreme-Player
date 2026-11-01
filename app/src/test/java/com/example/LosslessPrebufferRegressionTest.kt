@@ -76,6 +76,16 @@ class LosslessPrebufferRegressionTest {
                 exchange.sendResponseHeaders(200, invalid.size.toLong())
                 exchange.responseBody.use { it.write(invalid) }; exchange.close()
             }
+            createContext("/unknown-duration.flac") { exchange ->
+                val unknown = bytes.copyOf().apply {
+                    // A valid STREAMINFO may leave its 36-bit total-sample count unknown.
+                    this[21] = (this[21].toInt() and 0xf0).toByte()
+                    for (i in 22..25) this[i] = 0
+                }
+                exchange.responseHeaders.add("Content-Type", "audio/flac")
+                exchange.sendResponseHeaders(200, 0)
+                exchange.responseBody.use { it.write(unknown) }; exchange.close()
+            }
             start()
         }
         val base = "http://127.0.0.1:${server.address.port}"
@@ -134,12 +144,21 @@ class LosslessPrebufferRegressionTest {
         assertEquals(LosslessDiagnostics.Reason.RECORDING_MISMATCH, LosslessDiagnostics.last(real.mediaId)?.reason)
         val fake = item("fake.flac")
         assertNull(LosslessStreamPrebuffer.prepare(app, fake, 20_000, { 6_000 }, { true }))
-        assertEquals(LosslessDiagnostics.Reason.DECODER_UNSUPPORTED, LosslessDiagnostics.last(fake.mediaId)?.reason)
+        assertEquals(LosslessDiagnostics.Reason.INVALID_FORMAT, LosslessDiagnostics.last(fake.mediaId)?.reason)
     }
     @Test fun nonMaximumProfileRejectsPreparationBeforeItTouchesPlayerOrNetwork() = runBlocking {
         AudioQualityPreferences.setWifiQualityCeiling(app, AudioQualityCeiling.HIGH)
         assertNull(LosslessStreamPrebuffer.prepare(app, item("song.flac"), 20_000,
             { error("Capped profile must not read the player") }, { error("Capped profile must not reach Main") }))
+    }
+    @Test fun unknownFlacDurationCanPlayFromTheBeginningWithoutInventingSeekEvidence() = runBlocking {
+        val item = item("unknown-duration.flac")
+        val prepared = withTimeout(10_000) { LosslessStreamPrebuffer.prepare(app, item, 24_000, { 0L }, { true }) }
+        assertNotNull("${LosslessDiagnostics.last(item.mediaId)}", prepared)
+        assertEquals("FLAC", prepared!!.audio.codec)
+        assertTrue(prepared.covers(0L))
+        assertNull(LosslessStreamPrebuffer.prepare(app, item, 24_000, { 6_000L }, { true }))
+        assertEquals(LosslessDiagnostics.Reason.SEEK_UNAVAILABLE, LosslessDiagnostics.last(item.mediaId)?.reason)
     }
     @Test fun disabledSourceRejectsEvenAnAlreadyRegisteredAndCachedTransport() = runBlocking {
         val candidate = item("song.flac")

@@ -15,6 +15,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import java.io.IOException
 
 /** Lazy Media3 boundary for unresolved queue entries. Resolution uses the same
@@ -26,6 +27,8 @@ internal class PolicyResolvingMediaSource(
     item: MediaItem,
     private val factory: MediaSource.Factory,
     private val scope: CoroutineScope,
+    private val resolutionTimeoutMs: Long = com.example.data.repository.StreamResolver.PLAYBACK_RESOLUTION_TIMEOUT_MS,
+    private val resolvedIsCurrent: (MediaItem) -> Boolean = { true },
     private val resolve: suspend (MediaItem) -> MediaItem
 ) : CompositeMediaSource<Unit>() {
     private var item = item
@@ -43,21 +46,35 @@ internal class PolicyResolvingMediaSource(
         val requested = item
         job = scope.launch(AppDispatchers.Io) {
             try {
-                val resolved = resolve(requested)
+                val resolved = withTimeout(resolutionTimeoutMs) { resolve(requested) }
                 ensureActive()
                 check(resolved.mediaId == requested.mediaId) { "Resolved a different catalog identity" }
                 handler.post {
                     if (generation == revision) try {
+                        if (!resolvedIsCurrent(resolved)) throw com.example.playback.PlaybackDiagnostics.Failure(
+                            com.example.playback.PlaybackDiagnostics.Reason.POLICY,
+                            com.example.playback.PlaybackDiagnostics.Stage.VALIDATION)
                         item = resolved
                         val prepared = factory.createMediaSource(resolved)
                         child = prepared // A cached child can publish its timeline synchronously.
                         prepareChildSource(Unit, prepared)
                     } catch (error: Exception) { failure = IOException("Unable to prepare the resolved stream", error) }
                 }
-            } catch (cancelled: CancellationException) { throw cancelled }
+            } catch (cancelled: CancellationException) {
+                // A nested/shared lookup may be cancelled while this source is
+                // still selected. It must fail, rather than buffer without a child.
+                handler.post { if (generation == revision && child == null)
+                    failure = IOException("Queue stream resolution cancelled before preparation", cancelled) }
+                throw cancelled
+            }
             catch (error: Exception) {
                 handler.post { if (generation == revision) failure = error as? IOException ?: IOException(error) }
             }
+        }
+        job?.invokeOnCompletion { error ->
+            // Also covers a scope already cancelled before launch could execute.
+            if (error != null) handler.post { if (generation == revision && child == null && failure == null)
+                failure = IOException("Queue stream preparation did not complete", error) }
         }
     }
 

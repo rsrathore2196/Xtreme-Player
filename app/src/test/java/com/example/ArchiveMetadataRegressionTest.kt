@@ -5,6 +5,7 @@ import com.example.data.remote.InternetArchiveApiService
 import com.example.data.remote.ArchiveAudioMetadata
 import com.example.data.model.MusicTrack
 import com.example.data.repository.StreamResolver
+import com.example.playback.LosslessDiagnostics.Reason
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import org.junit.Assert.*
@@ -82,5 +83,20 @@ class ArchiveMetadataRegressionTest {
         assertTrue(plans.any { it == "title:\"original album\"" })
         assertTrue(plans.any { it.contains("USABC2000001") })
         assertFalse(plans.any { it.contains("official audio", true) })
+    }
+    @Test fun incompleteIndividualTagsAreNotReportedAsAConfirmedEmptyCatalogue() = runBlocking {
+        val root = JSONObject("""{"metadata":{"title":"Collection","creator":"Various Artists","rights":"public domain"},
+            "files":[{"name":"track01.flac","format":"Flac"},{"name":"track02.flac","format":"Flac"}]}""")
+        val rejected = mutableListOf<Pair<com.example.playback.LosslessDiagnostics.Reason, String>>()
+        assertTrue(InternetArchiveApiService.parseLosslessItem(doc, root,
+            onRejected = { reason, detail -> rejected.add(reason to detail) }, readHeader = { null }).isEmpty())
+        assertEquals(2, rejected.size)
+        assertTrue(rejected.all { it.first == com.example.playback.LosslessDiagnostics.Reason.METADATA_INCOMPLETE })
+        assertTrue(rejected.first().second.contains("track01.flac"))
+    }
+    @Test fun archiveAccessDenialMissingFilesAndTimeoutsHaveDifferentDiagnosticOutcomes() {
+        assertEquals(Reason.UNAUTHORIZED, InternetArchiveApiService.archiveFailureReason(com.example.data.remote.CatalogHttpException(403, null)))
+        assertEquals(Reason.SOURCE_VERIFICATION_FAILED, InternetArchiveApiService.archiveFailureReason(com.example.data.remote.CatalogHttpException(404, null)))
+        assertEquals(Reason.NETWORK_TIMEOUT, InternetArchiveApiService.archiveFailureReason(java.net.SocketTimeoutException()))
     }
 }

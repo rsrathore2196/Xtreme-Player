@@ -38,7 +38,8 @@ data class ActualPlayStamp(val id: Long, val trackId: String, val timestamp: Lon
 
 /** Count and complete recent events come from one SQLite read, including an empty database. */
 data class ActualPlaySnapshotRow(val total: Int, @Embedded val event: ListeningEventEntity?, val inputRevision: String? = null,
-    val artistInputRevision: String? = null, val trackMetadataRevision: String? = null)
+    val artistInputRevision: String? = null, val trackMetadataRevision: String? = null,
+    val artistMetadataRevision: String? = null)
 
 data class ActualTrackPlayCount(val trackId: String, val artistName: String, val playCount: Int, val lastPlayed: Long)
 
@@ -77,7 +78,8 @@ interface ListeningEventDao {
     @Query("""
         SELECT totals.total, recent.*, (SELECT epoch || ':' || generation FROM home_input_revision WHERE id = 1) AS inputRevision,
         (SELECT 'artists:' || epoch || ':' || generation FROM home_input_revision WHERE id = 2) AS artistInputRevision,
-        (SELECT epoch || ':' || generation FROM home_input_revision WHERE id = 3) AS trackMetadataRevision FROM
+        (SELECT epoch || ':' || generation FROM home_input_revision WHERE id = 4) AS trackMetadataRevision,
+        (SELECT epoch || ':' || generation FROM home_input_revision WHERE id = 3) AS artistMetadataRevision FROM
         (SELECT COUNT(*) AS total FROM listening_events WHERE eventType = 'ACTUAL_PLAY') AS totals
         LEFT JOIN (SELECT * FROM listening_events WHERE eventType = 'ACTUAL_PLAY'
             ORDER BY timestamp DESC, id DESC LIMIT 300) AS recent ON 1 = 1
