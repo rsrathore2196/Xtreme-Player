@@ -1,6 +1,9 @@
 package com.example.ui.screens
 
 import android.content.Intent
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -49,18 +52,21 @@ internal fun ListeningStatsShareDialog(request: ListeningStatsImageRequest, onDi
     var saving by remember { mutableStateOf(false) }
     var launching by remember { mutableStateOf(false) }
     var pendingSave by remember { mutableStateOf<File?>(null) }
-    val save = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("image/png")) { destination ->
-        val source = pendingSave
-        pendingSave = null
-        if (destination != null && source != null) scope.launch {
-            saving = true
+    fun saveImage(source: File) {
+        saving = true; error = null
+        scope.launch {
             try {
-                ListeningStatsImage.save(app, source, destination)
-                Toast.makeText(context, "Stats image saved", Toast.LENGTH_SHORT).show()
+                ListeningStatsImage.saveToGallery(app, source, "Xtreme-Player-" + request.period.label + "-Stats.png")
+                Toast.makeText(context, "Stats image saved to Gallery", Toast.LENGTH_SHORT).show()
             } catch (cancelled: CancellationException) { throw cancelled }
-              catch (_: Exception) { error = "The image couldn't be saved. Please choose another location." }
+              catch (_: Exception) { error = "The image couldn't be saved to Gallery. Please retry." }
             finally { saving = false }
         }
+    }
+    val storagePermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        val source = pendingSave; pendingSave = null
+        if (granted && source != null) saveImage(source)
+        else { saving = false; error = "Storage permission is needed to save the image to Gallery." }
     }
     LaunchedEffect(request, retry) {
         image = null; error = null
@@ -101,8 +107,13 @@ internal fun ListeningStatsShareDialog(request: ListeningStatsImageRequest, onDi
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     OutlinedButton(onClick = {
-                        pendingSave = image
-                        save.launch("Xtreme-Player-" + request.period.label + "-Stats.png")
+                        image?.let { source ->
+                            if (Build.VERSION.SDK_INT < 29 && androidx.core.content.ContextCompat.checkSelfPermission(context,
+                                    Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+                                pendingSave = source; saving = true
+                                storagePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                            } else saveImage(source)
+                        }
                     }, enabled = image != null && !saving && !launching, modifier = Modifier.weight(1f).testTag("save_stats_image"),
                         shape = RoundedCornerShape(16.dp),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = foreground),

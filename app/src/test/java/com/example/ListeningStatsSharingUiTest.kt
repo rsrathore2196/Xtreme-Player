@@ -140,7 +140,7 @@ class ListeningStatsSharingUiTest {
             layouts.single().layoutInput.style.color.toArgb(), android.graphics.Color.rgb(48, 48, 48)) >= 7.0)
     }
 
-    @Test fun popupSharesThePngAndSaveOpensTheAndroidImageDocumentPicker() {
+    @Test fun popupSharesThePngAndSaveWritesDirectlyToGalleryWithoutAStoragePicker() {
         UserProfilePreferences.saveUserProfile(compose.activity, UserProfile(name = "Maya"))
         val request = ListeningStatsImageRequest(summary.copy(songs = emptyList(), artists = emptyList()),
             ListeningPeriod.MONTHLY, Color.Cyan.toArgb())
@@ -168,17 +168,20 @@ class ListeningStatsSharingUiTest {
             shadowOf(android.os.Looper.getMainLooper()).idle()
             !compose.onNodeWithTag("save_stats_image").fetchSemanticsNode().config.contains(SemanticsProperties.Disabled)
         }
+        val gallery = StatsGalleryProvider(compose.activity.applicationContext)
+        org.robolectric.shadows.ShadowContentResolver.registerProviderInternal("media", gallery)
         compose.onNodeWithTag("save_stats_image").performClick()
-        var picker: Intent? = null
-        compose.waitUntil(3_000) {
-            shadowOf(android.os.Looper.getMainLooper()).idle()
-            // Robolectric also records startActivity's chooser in this separate result queue.
-            val next = shadowOf(compose.activity).nextStartedActivityForResult?.intent
-            if (next?.action == Intent.ACTION_CREATE_DOCUMENT) picker = next
-            picker != null
+        compose.waitUntil(5_000) { gallery.published != null }
+        assertEquals("Xtreme-Player-Monthly-Stats.png", gallery.inserted!!.getAsString(android.provider.MediaStore.Images.Media.DISPLAY_NAME))
+        assertTrue(gallery.bytes.size() > 0)
+        assertFalse(gallery.deleted)
+        var next = shadowOf(compose.activity).nextStartedActivityForResult
+        while (next != null) {
+            assertNotEquals(Intent.ACTION_CREATE_DOCUMENT, next.intent.action)
+            assertNotEquals(Intent.ACTION_OPEN_DOCUMENT, next.intent.action)
+            next = shadowOf(compose.activity).nextStartedActivityForResult
         }
-        assertEquals("image/png", picker!!.type)
-        assertEquals("Xtreme-Player-Monthly-Stats.png", picker!!.getStringExtra(Intent.EXTRA_TITLE))
+
     }
 
     @Test fun fullFeaturedNamesFitBelowTheirArtworkInTheSameSquareCards() = verifyFullNames(false)

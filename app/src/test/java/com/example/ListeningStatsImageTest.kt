@@ -116,17 +116,19 @@ class ListeningStatsImageTest {
     @Test fun sharedLogoUsesTheOnboardingDrawableAndTheAppNameUsesAccentAndWhite() {
         val request = ListeningStatsImageRequest(ListeningSummary(0, 0, emptyList(), emptyList()), ListeningPeriod.WEEKLY, Color.MAGENTA)
         val poster = ListeningStatsImage.render(context, request, "Maya")
-        val expected = Bitmap.createBitmap(192, 192, Bitmap.Config.ARGB_8888)
+        val expected = Bitmap.createBitmap(174, 174, Bitmap.Config.ARGB_8888)
         try {
             val logo = context.getDrawable(R.drawable.ic_onboarding_logo)!!
             logo.setBounds(0, 0, 192, 192)
-            logo.draw(android.graphics.Canvas(expected))
+            android.graphics.Canvas(expected).apply {
+                translate(.6f, .6f); scale(.9f, .9f); logo.draw(this)
+            }
             var compared = 0
-            for (y in 1 until 191) for (x in 1 until 177) {
+            for (y in 1 until 173) for (x in 1 until 168) {
                 val color = expected.getPixel(x, y)
                 if (Color.alpha(color) == 255 && Color.alpha(expected.getPixel(x - 1, y)) == 255 &&
                     Color.alpha(expected.getPixel(x + 1, y)) == 255) {
-                    val actual = poster.getPixel(642 + x, 102 + y)
+                    val actual = poster.getPixel(651 + x, 111 + y)
                     val shade = ((.2126f * Color.red(color) + .7152f * Color.green(color) + .0722f * Color.blue(color)) / .65f)
                         .coerceIn(0f, 255f).toInt()
                     assertTrue("The original logo's shaded artwork must use the selected accent",
@@ -141,8 +143,9 @@ class ListeningStatsImageTest {
                 for (y in top until bottom) for (x in 822 until 1018) if (poster.getPixel(x, y) == color) count++
                 return count
             }
-            assertTrue("Xtreme uses the selected accent", countColor(150, 199, Color.MAGENTA) > 100)
-            assertTrue("Player remains white", countColor(203, 243, Color.WHITE) > 100)
+            assertTrue("XTREME uses the selected accent", countColor(150, 199, Color.MAGENTA) > 100)
+            assertTrue("PLAYER remains white", countColor(203, 243, Color.WHITE) > 100)
+            File("/tmp/listening-stats-updated-brand.png").outputStream().use { poster.compress(Bitmap.CompressFormat.PNG, 100, it) }
         } finally { poster.recycle(); expected.recycle() }
     }
 

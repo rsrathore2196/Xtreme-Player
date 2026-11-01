@@ -2,10 +2,14 @@ package com.example.ui.util
 
 import android.content.ClipData
 import android.content.Context
+import android.content.ContentValues
 import android.content.Intent
 import android.graphics.*
 import android.graphics.drawable.BitmapDrawable
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import android.text.TextPaint
 import android.text.TextUtils
 import android.text.Layout
@@ -48,7 +52,7 @@ internal fun listeningStatsPosterText(request: ListeningStatsImageRequest, name:
 internal object ListeningStatsImage {
     private val regular by lazy { Typeface.create("sans-serif", Typeface.NORMAL) }
     private val bold by lazy { Typeface.create("sans-serif", Typeface.BOLD) }
-    private val brandTypeface by lazy { Typeface.create("sans-serif-black", Typeface.NORMAL) }
+    private val brandTypeface by lazy { Typeface.create("sans-serif-black", Typeface.BOLD) }
     private const val NAVY = 0xFF020A18.toInt()
     private const val SECONDARY = 0xFFB9C5D9.toInt()
 
@@ -111,6 +115,36 @@ internal object ListeningStatsImage {
         context.contentResolver.openOutputStream(destination, "w")?.use { output ->
             file.inputStream().use { input -> input.copyTo(output) }
         } ?: throw IOException("The selected location could not be opened")
+    }
+
+    suspend fun saveToGallery(context: Context, file: File, displayName: String): Uri = withContext(AppDispatchers.Io) {
+        ensureActive()
+        val resolver = context.contentResolver
+        val values = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, displayName)
+            put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+            if (Build.VERSION.SDK_INT >= 29) {
+                put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/Xtreme Player")
+                put(MediaStore.Images.Media.IS_PENDING, 1)
+            }
+        }
+        val collection = if (Build.VERSION.SDK_INT >= 29)
+            MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY) else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+        val destination = resolver.insert(collection, values) ?: throw IOException("Gallery could not create the image")
+        var complete = false
+        try {
+            save(context, file, destination)
+            ensureActive()
+            if (Build.VERSION.SDK_INT >= 29 && resolver.update(destination,
+                    ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }, null, null) <= 0)
+                throw IOException("Gallery could not publish the image")
+            complete = true
+            destination
+        } finally {
+            if (!complete) withContext(kotlinx.coroutines.NonCancellable + AppDispatchers.Io) {
+                resolver.delete(destination, null, null)
+            }
+        }
     }
 
     /** Pure fixed-ratio poster renderer: never captures or alters any app screen. */
@@ -187,14 +221,17 @@ internal object ListeningStatsImage {
                 0f, 0f, 0f, 1f, 0f
             )))
             it.setBounds(428, 68, 556, 196)
+            canvas.save()
+            canvas.scale(.9f, .9f, 492f, 132f)
             it.draw(canvas)
+            canvas.restore()
         }
         val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
             textSize = 26f; typeface = brandTypeface; letterSpacing = 1f / 26f; color = accent
         }
-        canvas.drawText("Xtreme", 547f, 130f, paint)
+        canvas.drawText("XTREME", 547f, 130f, paint)
         paint.color = Color.WHITE
-        canvas.drawText("Player", 547f, 157f, paint)
+        canvas.drawText("PLAYER", 547f, 157f, paint)
     }
 
     internal fun wrappedFeatureName(value: String): StaticLayout = wrappedText(value, 22f, Color.WHITE, true)
