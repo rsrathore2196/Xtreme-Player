@@ -133,7 +133,7 @@ class MusicService : MediaLibraryService() {
                         primaryArtists = extras?.getStringArrayList("primaryArtists")?.toList().orEmpty(),
                         isLossless = extras?.getBoolean("isLossless") == true,
                         recommendationOnly = extras?.getBoolean("recommendation_only") == true)
-                    val resolved = try { app.repository.resolvePlayableTrack(selected) }
+                    val resolved = try { app.repository.resolvePlayableTrack(selected, retainLosslessLookup = false) }
                         catch (e: CancellationException) { throw e } catch (_: Exception) { null }
                     if (resolved != null) {
                         val uri = Uri.parse(YouTubeAudioStreamService.playbackUri(resolved.id, resolved.audioUrl))
@@ -422,27 +422,38 @@ class MusicService : MediaLibraryService() {
             policy.returnsToYouTube(item.mediaId) || sourceRecoveryJob?.isActive == true ||
             item.mediaMetadata.extras?.getBoolean("isLossless") == true || uri.scheme in setOf("file", "content")) return
         val key = "${item.mediaId}:$uri:${policy.key}"
-        if (losslessDiscoveryKey == key) return
+        if (losslessDiscoveryKey == key && losslessDiscoveryJob?.isActive == true) return
         losslessDiscoveryKey = key
         losslessDiscoveryJob?.cancel()
         val revision = policyRevision
         val track = currentPolicyTrack(player, item)
         losslessDiscoveryJob = serviceScope.launch {
             try {
-                val candidate = com.example.performance.BackgroundWorkCoordinator.startup(
-                    com.example.performance.BackgroundWorkCoordinator.StartupPriority.DEFERRED, requireForeground = false,
-                    label = "Headless lossless discovery") { app.repository.findLosslessUpgrade(track, automatic = true) }
+                val candidate = com.example.performance.BackgroundWorkCoordinator.localDataPreparation {
+                    app.repository.findLosslessUpgrade(track, automatic = true)
+                }
                 if (candidate == null || revision != policyRevision || networkQuality.sourcePolicy.value.key != policy.key ||
                     !player.isPlaying || sourceRecoveryJob?.isActive == true ||
                     player.currentMediaItem?.mediaId != item.mediaId || player.currentMediaItem?.localConfiguration?.uri != uri ||
                     SabrSessionRegistry.controllerHandlesRecovery?.invoke() == true) return@launch
                 losslessDiscoveryJob = null
-                if (policy.allowsAutomaticReplacement(track, candidate))
-                    reconcileHeadlessPolicy(policy, preparedSource = candidate, automatic = true)
+                losslessDiscoveryKey = null
+                val replacement = candidate.copy(id = track.id)
+                if (policy.allowsAutomaticReplacement(track, replacement))
+                    reconcileHeadlessPolicy(policy, preparedSource = replacement, automatic = true)
             } catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) {
+            catch (error: Exception) {
                 com.example.playback.LosslessDiagnostics.record(track.id,
-                    com.example.playback.LosslessDiagnostics.Reason.PREBUFFER_FAILED, "headless-discovery")
+                    if (error is java.net.SocketTimeoutException) com.example.playback.LosslessDiagnostics.Reason.NETWORK_TIMEOUT
+                    else com.example.playback.LosslessDiagnostics.Reason.METADATA_INCOMPLETE, "headless-discovery")
+            } finally {
+                if (losslessDiscoveryJob === kotlinx.coroutines.currentCoroutineContext()[Job]) {
+                    losslessDiscoveryJob = null
+                    losslessDiscoveryKey = null
+                    // A connected controller may have taken over the same lookup.
+                    if (SabrSessionRegistry.controllerHandlesRecovery?.invoke() != true)
+                        app.repository.cancelLosslessDiscovery(track.id)
+                }
             }
         }
     }
@@ -454,6 +465,7 @@ class MusicService : MediaLibraryService() {
         if (!policy.ready) return
         losslessDiscoveryJob?.cancel()
         losslessDiscoveryJob = null
+        losslessDiscoveryKey = null
         if (SabrSessionRegistry.controllerHandlesRecovery?.invoke() == true) {
             sourceRecoveryJob?.cancel()
             headlessPolicyOwner = null
@@ -1073,6 +1085,7 @@ class MusicService : MediaLibraryService() {
                 }
                 publishSignalSource(mediaItem)
                 if (sabrRecoveryTrackId != mediaItem?.mediaId) {
+                    sabrRecoveryTrackId?.let { app.repository.cancelLosslessDiscovery(it) }
                     losslessDiscoveryJob?.cancel()
                     losslessDiscoveryKey = null
                     sourceRecoveryJob?.cancel()
@@ -1261,6 +1274,16 @@ class MusicService : MediaLibraryService() {
         val uri = item.localConfiguration?.uri ?: return
         if (item.mediaMetadata.extras?.getBoolean("lossless_upgrade_pending") == true ||
             item.mediaMetadata.extras?.getBoolean("source_transition_pending") == true) return
+        val host = uri.host.orEmpty()
+        if (host == "archive.org" || host.endsWith(".archive.org")) {
+            val signal = com.example.playback.AudioSignalPath.state.value
+            if (signal.trackId != item.mediaId || signal.streamUri != uri.toString() || !signal.quality.verified) {
+                // An installed/authorized URL is not an active decoded source yet.
+                // READY plus the matching native audio Format publishes the provider.
+                com.example.playback.AudioSignalPath.source(item.mediaId, "Unknown", uri = uri.toString())
+                return
+            }
+        }
         publishSignalSource(item, uri)
     }
 
@@ -1319,6 +1342,7 @@ class MusicService : MediaLibraryService() {
     }
 
     override fun onDestroy() {
+        exoPlayer?.currentMediaItem?.mediaId?.let { app.repository.cancelLosslessDiscovery(it) }
         PlaybackDiagnostics.markStartup(audioStartupTrace, StartupStage.CANCELLED)
         volumeObserver?.let(contentResolver::unregisterContentObserver)
         volumeObserver = null

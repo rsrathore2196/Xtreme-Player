@@ -68,20 +68,35 @@ class HomeCardCache(context: Context, private val workerDispatcher: CoroutineDis
         private val signal = Channel<Unit>(Channel.CONFLATED)
         private val scope = CoroutineScope(SupervisorJob() + AppDispatchers.Io)
         init { scope.launch {
-            for (ignored in signal) fileMutex.withLock {
-                persistHomeCheckpoints(pending, persist = { write ->
-                    val file = AtomicFile(write.target)
-                    var output: java.io.FileOutputStream? = null
-                    try {
-                        output = file.startWrite(); output.write(write.bytes); file.finishWrite(output)
-                    } catch (cancelled: CancellationException) { file.failWrite(output); throw cancelled }
-                    catch (error: Exception) {
-                        file.failWrite(output)
-                        throw error
+            for (ignored in signal) {
+                // Only a failed batch schedules backoff. No timer or disk work
+                // runs while idle, and unrelated/newer checkpoints keep priority.
+                for (retry in 0..2) {
+                    fileMutex.withLock {
+                        persistHomeCheckpoints(pending, persist = { write ->
+                            val file = AtomicFile(write.target)
+                            var output: java.io.FileOutputStream? = null
+                            try {
+                                output = file.startWrite(); output.write(write.bytes); file.finishWrite(output)
+                                // AtomicFile logs some rename failures instead of throwing.
+                                // Never acknowledge a checkpoint that did not replace its target.
+                                if (!write.target.isFile || write.target.length() != write.bytes.size.toLong() ||
+                                    File(write.target.path + ".new").exists()) throw java.io.IOException("Home cache commit did not complete")
+                            } catch (cancelled: CancellationException) { file.failWrite(output); throw cancelled }
+                            catch (error: Exception) {
+                                file.failWrite(output)
+                                throw error
+                            }
+                        }, failed = { _, error -> android.util.Log.w("HomeCardCache", "Home cache write remains pending", error) })
                     }
-                }, failed = { _, error -> android.util.Log.w("HomeCardCache", "Home cache write remains pending", error) })
+                    if (synchronized(pending) { pending.isEmpty() } || retry == 2) break
+                    delay(250L shl retry)
+                }
             }
         } }
+        internal fun retryPendingWrites() {
+            if (synchronized(pending) { pending.isNotEmpty() }) signal.trySend(Unit)
+        }
         fun preloadAsync(context: Context, profileKey: String, @Suppress("UNUSED_PARAMETER") previewOnly: Boolean = false): Deferred<SavedHomeCards?> =
             scope.async { HomeCardCache(context).read(profileKey) }
     }
@@ -90,7 +105,7 @@ class HomeCardCache(context: Context, private val workerDispatcher: CoroutineDis
     private fun peekJson(name: String) = synchronized(memory) { memory.get(memoryKey(name))?.json }
     private fun submission(name: String) = submissions[(memoryKey(name).hashCode() and Int.MAX_VALUE) % submissions.size]
     private suspend fun readJson(name: String): JSONObject? = withContext(workerDispatcher) {
-        if (synchronized(pending) { pending.isNotEmpty() }) signal.trySend(Unit)
+        retryPendingWrites()
         submission(name).withLock { peekJson(name) ?: try {
             val text = fileMutex.withLock {
                 val file = AtomicFile(file(name))
@@ -119,7 +134,11 @@ class HomeCardCache(context: Context, private val workerDispatcher: CoroutineDis
                 if (encoded.size > MAX_BYTES) return@withContext
                 synchronized(memory) { memory.put(memoryKey(name), CachedJson(json, checkpoint)) }
                 val target = file(name)
-                synchronized(pending) { pending[target.path] = Pending(target, encoded); while (pending.size > 12) pending.remove(pending.keys.first()) }
+                synchronized(pending) {
+                    pending.remove(target.path)
+                    pending[target.path] = Pending(target, encoded)
+                    while (pending.size > 12) pending.remove(pending.keys.first())
+                }
             }
             signal.trySend(Unit)
         }

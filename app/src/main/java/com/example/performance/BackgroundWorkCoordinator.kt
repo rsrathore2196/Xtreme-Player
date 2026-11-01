@@ -267,8 +267,8 @@ object BackgroundWorkCoordinator {
     }
 
     /** Local snapshots use the existing short interaction fence without taking a startup/network lease. */
-    internal suspend fun <T> localDataPreparation(block: suspend () -> T): T =
-        withContext(uiContinuationContext { false }) { block() }
+    internal suspend fun <T> localDataPreparation(urgent: () -> Boolean = { false }, block: suspend () -> T): T =
+        withContext(uiContinuationContext(urgent)) { block() }
 
     /** WorkManager also participates in dock preemption, without requiring a headless Home. */
     internal suspend fun <T> maintenance(block: suspend () -> T): T =
@@ -513,6 +513,7 @@ object BackgroundWorkCoordinator {
         if (visible) {
             interaction()
             lastForegroundResume.set(SystemClock.elapsedRealtime())
+            com.example.data.cache.HomeCardCache.retryPendingWrites()
         } else {
             finishForegroundDrawTrace()
         }

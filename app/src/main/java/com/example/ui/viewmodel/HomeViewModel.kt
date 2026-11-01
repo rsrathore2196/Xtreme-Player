@@ -29,6 +29,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
     private val owner = viewModelScope + AppDispatchers.HomeBookkeeping
     private val cache = HomeCardCache(application)
     private val database by lazy { suppliedDatabase ?: MusicDatabase.getDatabase(application) }
+    private val artistHistory by lazy { LocalArtistHistory.Reader(database) }
     private val _userProfile = MutableStateFlow(UserProfilePreferences.peekUserProfile()
         ?: (application as? com.example.XtremeMusicApp)?.startupSettings?.profile ?: UserProfile())
     val userProfile = _userProfile.asStateFlow()
@@ -78,6 +79,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
     private var homeContinuationToken: String? = null
     private val consumedContinuations = linkedSetOf<String>()
     private var serverJob: Deferred<Boolean>? = null
+    private var serverUrgent = MutableStateFlow(false)
     private var profileJob: Deferred<Boolean>? = null
     private var profileRequestJob: Job? = null
     private var profileRequestIsExplicit = false
@@ -91,6 +93,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
     private val historyRetry = MutableStateFlow(0L)
     private var recentMetadataRevision: String? = null
     private var recentTrackIds: List<String> = emptyList()
+    private var recentPlayedIds: List<String> = emptyList()
     private var recentMetadata: List<MusicTrack> = emptyList()
     private var historyPrepared = false
     private var artistsPrepared = false
@@ -132,29 +135,42 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
                     finishArtistReadiness(StartupStatus.FALLBACK_READY)
                 } }.collectLatest { rowsSnapshot ->
                     try {
-                        val (events, ids) = BackgroundWorkCoordinator.localDataPreparation { withContext(AppDispatchers.CpuBounded) {
+                        val metadataRevision = rowsSnapshot.firstOrNull()?.trackMetadataRevision
+                        val metadataChanged = metadataRevision == null || metadataRevision != recentMetadataRevision
+                        val previousIds = recentTrackIds
+                        val (ids, playedIds, missingIds) = BackgroundWorkCoordinator.localDataPreparation { withContext(AppDispatchers.CpuBounded) {
                             val events = rowsSnapshot.mapNotNull { it.event }
-                            events to events.map { it.trackId }.distinct()
+                            val ids = events.map { it.trackId }.distinct()
+                            val missing = if (metadataChanged) ids else if (ids == previousIds) emptyList()
+                                else previousIds.toHashSet().let { known -> ids.filterNot(known::contains) }
+                            Triple(ids, events.asSequence().filter(HomeRecommendationPolicy::played)
+                                .map { it.trackId }.distinct().toList(), missing)
                         } }
                         val revision = rowsSnapshot.firstOrNull()?.artistInputRevision
-                        val reuseMetadata = revision != null && revision == recentMetadataRevision && ids == recentTrackIds
-                        val tracks = if (reuseMetadata) recentMetadata else {
-                            val records = withContext(AppDispatchers.Database) {
-                                ids.chunked(900).flatMap { database.musicDao().getTracksByIds(it) }
+                        val reuseMetadata = !metadataChanged && missingIds.isEmpty()
+                        val tracks = if (reuseMetadata && ids.size == previousIds.size) recentMetadata else {
+                            val records = if (missingIds.isEmpty()) emptyList() else withContext(AppDispatchers.Database) {
+                                missingIds.chunked(900).flatMap { database.musicDao().getTracksByIds(it) }
                             }
-                            BackgroundWorkCoordinator.localDataPreparation { withContext(AppDispatchers.CpuBounded) { records.map { it.toMusicTrack() } } }
+                            BackgroundWorkCoordinator.localDataPreparation { withContext(AppDispatchers.CpuBounded) {
+                                val existing = if (metadataChanged) emptyList() else ids.toHashSet().let { wanted -> recentMetadata.filter { it.id in wanted } }
+                                existing + records.map { it.toMusicTrack() }
+                            } }
                         }
-                        val recent = if (reuseMetadata) _listeningHistoryCard.value.tracks else BackgroundWorkCoordinator.localDataPreparation { withContext(AppDispatchers.CpuBounded) {
+                        // The order/actual-audio predicate can change without track metadata
+                        // changing (for example a zero-time occurrence starts playing).
+                        val recent = if (reuseMetadata && playedIds == recentPlayedIds) _listeningHistoryCard.value.tracks
+                        else BackgroundWorkCoordinator.localDataPreparation { withContext(AppDispatchers.CpuBounded) {
                             val byId = tracks.associateBy { it.id }; val seen = HomeRecommendationPolicy.Recordings()
-                            events.asSequence().filter(HomeRecommendationPolicy::played).mapNotNull { byId[it.trackId] }
+                            playedIds.asSequence().mapNotNull { byId[it] }
                                 .filter(seen::add).take(30).toList()
                         } }
-                        recentMetadataRevision = revision; recentTrackIds = ids; recentMetadata = tracks
+                        recentMetadataRevision = metadataRevision; recentTrackIds = ids; recentPlayedIds = playedIds; recentMetadata = tracks
                         historyUnavailable = false
                         _userMode.value = HomeUserMode.confirmed(rowsSnapshot.firstOrNull()?.total ?: 0, false)
                         val historyChanged = _listeningHistoryCard.value.tracks != recent
                         _listeningHistoryCard.update { it.copy(tracks = recent, isLoaded = recent.isNotEmpty(), isLoading = false) }
-                        if (artistRevision == null || artistRevision != revision) {
+                        if (artistRevision == null || artistRevision != revision || metadataChanged) {
                             BackgroundWorkCoordinator.startupTask(StartupTask.RECENT_ARTISTS, StartupStatus.RUNNING)
                             artistRequests.update { it + 1 }
                         } else {
@@ -176,10 +192,10 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
             artistRequests.filter { it > 0 }.collectLatest {
                 try {
                     val before = withContext(AppDispatchers.Database) { database.listeningEventDao().getArtistInputRevision() }
-                    val artists = BackgroundWorkCoordinator.localDataPreparation { LocalArtistHistory.read(database) }
+                    val artists = BackgroundWorkCoordinator.localDataPreparation { artistHistory.read(before) }
                     if (before != withContext(AppDispatchers.Database) { database.listeningEventDao().getArtistInputRevision() }) { artistRequests.update { it + 1 }; return@collectLatest }
-                    _mostListenedArtists.value = artists
                     _hasListenedArtists.value = artists.isNotEmpty()
+                    _mostListenedArtists.value = artists
                     artistRevision = before; artistFailed = false
                     cache.saveLocal(snapshot())
                     finishArtistReadiness(StartupStatus.READY)
@@ -226,6 +242,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
             _mostListenedArtists.value = saved.artists.take(15)
             _hasListenedArtists.value = _mostListenedArtists.value.isNotEmpty()
             artistRevision = saved.inputRevision.takeIf { saved.artistDataVersion == 2 }
+            artistRevision?.let { artistHistory.restore(it, _mostListenedArtists.value) }
         }
     }
     private suspend fun restoreCachedHome() {
@@ -247,15 +264,16 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
         restored.await()
         if (!force && fresh(serverSuccess, serverFetchedAt, _serverShelves.value.isEmpty()) &&
             (serverCacheKey == homeKey || serverAttemptAt > 0L)) return@withContext true
-        serverJob?.takeIf { it.isActive }?.let { return@withContext it.await() }
+        serverJob?.takeIf { it.isActive }?.let { if (force) serverUrgent.value = true; return@withContext it.await() }
         val now = System.currentTimeMillis()
         if (!force && now - serverAttemptAt in 0 until 60_000L) return@withContext false
         serverAttemptAt = now
         val key = homeKey; val generation = ++serverGeneration; val region = HomeCacheIdentity.region(_userProfile.value)
         pageJob?.cancel()
+        val urgent = MutableStateFlow(force).also { serverUrgent = it }
         val job = owner.async {
             try {
-                val response = BackgroundWorkCoordinator.localDataPreparation {
+                val response = com.example.recommendation.DiscoveryRequestCoordinator.withPriority(urgent) {
                     withContext(AppDispatchers.Io) { homeLoader(region, null, key.substringAfter('|') != "anonymous") }
                 }
                 if (generation != serverGeneration || key != homeKey || key != currentHomeKey(_userProfile.value)) return@async false

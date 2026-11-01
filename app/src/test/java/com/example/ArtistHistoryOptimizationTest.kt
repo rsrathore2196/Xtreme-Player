@@ -12,6 +12,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.flow.first
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -88,6 +89,11 @@ class ArtistHistoryOptimizationTest {
                         timestamp = index.toLong(), sessionId = "$index", eventType = "ACTUAL_PLAY", playedDurationMs = 30_000))
                 }
             }
+            // Finish Room's asynchronous post-fixture invalidation transaction
+            // before measuring the read itself; it is not an artist read transaction.
+            kotlinx.coroutines.withContext(com.example.performance.AppDispatchers.Database) {
+                db.invalidationTracker.refreshVersionsSync()
+            }
             recording.set(true)
             val result = LocalArtistHistory.read(db)
             assertEquals(15, result.size); assertTrue(result.all { it.tracks.size == 3 })
@@ -98,4 +104,93 @@ class ArtistHistoryOptimizationTest {
             assertFalse(queries.any { it.main })
         } finally { recording.set(false); db.close() }
     }
+    @Test fun artworkFavoritesAndOtherMetadataNeverInvalidateArtistCountsOnReplaceOrUpdate() = runBlocking {
+        val db = MusicDatabase.createInMemoryDatabase(app)
+        try {
+            val track = song("song"); val dao = db.listeningEventDao()
+            db.musicDao().insertOrUpdateTrack(TrackEntity.fromMusicTrack(track))
+            dao.insertListeningEvent(ListeningEventEntity(trackId = track.id, artistName = track.artist,
+                sessionId = "one", eventType = "ACTUAL_PLAY", playedDurationMs = 30_000))
+            val before = dao.getArtistInputRevision()
+            val metadata = dao.observeActualPlaySnapshot().first().first().trackMetadataRevision
+            db.musicDao().insertOrUpdateTrack(TrackEntity.fromMusicTrack(track.copy(title = "Corrected title", album = "Compilation",
+                durationMs = 190_000, coverUrl = "new artwork", genre = "Pop", isLiked = true, language = "Hindi", isrc = "USABC2100012")))
+            assertEquals(before, dao.getArtistInputRevision())
+            assertNotEquals(metadata, dao.observeActualPlaySnapshot().first().first().trackMetadataRevision)
+            db.openHelper.writableDatabase.execSQL("UPDATE tracks SET coverUrl = 'newer artwork', isLiked = 0 WHERE id = 'song'")
+            assertEquals(before, dao.getArtistInputRevision())
+            db.openHelper.writableDatabase.execSQL("UPDATE tracks SET primaryArtists = '[\"Corrected Singer\"]' WHERE id = 'song'")
+            assertNotEquals(before, dao.getArtistInputRevision())
+            assertEquals("Corrected Singer", LocalArtistHistory.read(db).single().name)
+        } finally { db.close() }
+    }
+    @Test fun upgradingExistingTriggerDefinitionsPreservesHistoryAndRevisionEpochs() = runBlocking {
+        val db = MusicDatabase.createInMemoryDatabase(app)
+        try {
+            val track = song("song"); val dao = db.listeningEventDao()
+            db.musicDao().insertOrUpdateTrack(TrackEntity.fromMusicTrack(track))
+            dao.insertListeningEvent(ListeningEventEntity(trackId = track.id, artistName = track.artist,
+                sessionId = "one", eventType = "ACTUAL_PLAY", playedDurationMs = 1))
+            val sql = db.openHelper.writableDatabase
+            sql.execSQL("DROP TRIGGER home_artist_track_insert_v2")
+            sql.execSQL("DROP TRIGGER home_artist_track_update_v2")
+            sql.execSQL("DROP TRIGGER IF EXISTS home_artist_track_update")
+            sql.execSQL("CREATE TRIGGER home_artist_track_update AFTER UPDATE ON tracks BEGIN UPDATE home_input_revision SET generation = generation + 1 WHERE id = 2; END")
+            val before = dao.getArtistInputRevision()
+            HomeInputRevisionTriggers.install(sql); HomeInputRevisionTriggers.install(sql)
+            sql.execSQL("UPDATE tracks SET coverUrl = 'changed' WHERE id = 'song'")
+            assertEquals(before, dao.getArtistInputRevision())
+            db.musicDao().insertOrUpdateTrack(TrackEntity.fromMusicTrack(track.copy(coverUrl = "changed again", isLiked = true)))
+            assertEquals(before, dao.getArtistInputRevision())
+            assertEquals(1, dao.getActualTrackPlayCounts().single().playCount)
+            sql.execSQL("UPDATE tracks SET artist = 'Another Singer' WHERE id = 'song'")
+            assertNotEquals(before, dao.getArtistInputRevision())
+        } finally { db.close() }
+    }
+    @Test fun readerReusesLifetimeAggregationButRefreshesRepresentativeMetadataAndNewPlays() = runBlocking {
+        val aggregations = java.util.concurrent.atomic.AtomicInteger()
+        val db = Room.inMemoryDatabaseBuilder(app, MusicDatabase::class.java)
+            .addCallback(object : androidx.room.RoomDatabase.Callback() {
+                override fun onOpen(db: androidx.sqlite.db.SupportSQLiteDatabase) { HomeInputRevisionTriggers.install(db) }
+            })
+            .setQueryCallback({ sql, _ -> if (sql.contains("COUNT(DISTINCT CASE WHEN sessionId")) aggregations.incrementAndGet() }, Executor { it.run() }).build()
+        try {
+            val track = song("song"); val dao = db.listeningEventDao()
+            db.musicDao().insertOrUpdateTrack(TrackEntity.fromMusicTrack(track))
+            dao.insertListeningEvent(ListeningEventEntity(id = 1, trackId = track.id, artistName = track.artist,
+                sessionId = "one", eventType = "ACTUAL_PLAY", playedDurationMs = 30_000))
+            val reader = LocalArtistHistory.Reader(db)
+            assertEquals(1, reader.read().single().playCount)
+            db.musicDao().insertOrUpdateTrack(TrackEntity.fromMusicTrack(track.copy(coverUrl = "new artwork", isLiked = true)))
+            val result = reader.read().single()
+            assertEquals(1, aggregations.get()); assertEquals("new artwork", result.tracks.single().coverUrl); assertTrue(result.tracks.single().isLiked)
+            dao.insertListeningEvent(ListeningEventEntity(id = 2, trackId = track.id, artistName = track.artist,
+                sessionId = "two", eventType = "ACTUAL_PLAY", playedDurationMs = 30_000))
+            assertEquals(2, reader.read().single().playCount); assertEquals(2, aggregations.get())
+            dao.pruneOldEvents(Long.MAX_VALUE)
+            assertTrue(reader.read().isEmpty()); assertEquals(3, aggregations.get())
+        } finally { db.close() }
+    }
+
+    @Test fun validRestoredArtistRankingsRefreshMetadataWithoutALifetimeAggregation() = runBlocking {
+        val aggregations = java.util.concurrent.atomic.AtomicInteger()
+        val db = Room.inMemoryDatabaseBuilder(app, MusicDatabase::class.java)
+            .addCallback(object : androidx.room.RoomDatabase.Callback() {
+                override fun onOpen(db: androidx.sqlite.db.SupportSQLiteDatabase) { HomeInputRevisionTriggers.install(db) }
+            })
+            .setQueryCallback({ sql, _ -> if (sql.contains("COUNT(DISTINCT CASE WHEN sessionId")) aggregations.incrementAndGet() }, Executor { it.run() }).build()
+        try {
+            val track = song("song"); val dao = db.listeningEventDao()
+            db.musicDao().insertOrUpdateTrack(TrackEntity.fromMusicTrack(track))
+            dao.insertListeningEvent(ListeningEventEntity(trackId = track.id, artistName = track.artist,
+                sessionId = "one", eventType = "ACTUAL_PLAY", playedDurationMs = 30_000))
+            val revision = dao.getArtistInputRevision()!!
+            val reader = LocalArtistHistory.Reader(db)
+            reader.restore(revision, listOf(com.example.ui.viewmodel.MostListenedArtist(track.artist, 1, listOf(track))))
+            db.musicDao().insertOrUpdateTrack(TrackEntity.fromMusicTrack(track.copy(coverUrl = "fresh art")))
+            val result = reader.read(revision).single()
+            assertEquals(0, aggregations.get()); assertEquals(1, result.playCount); assertEquals("fresh art", result.tracks.single().coverUrl)
+        } finally { db.close() }
+    }
+
 }

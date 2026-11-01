@@ -150,7 +150,9 @@ class MusicRepository private constructor(
     private val searchCache = android.util.LruCache<String, Pair<Long, SearchResultCategory>>(80)
     private val losslessMisses = android.util.LruCache<String, Long>(128)
     private val rejectedLosslessUrls = android.util.LruCache<String, Long>(64)
-    private val streamResolver = StreamResolver(resolveAddon = { source, track, policy, rejected ->
+    private val streamResolver = StreamResolver(lookupScope = initialCatalogScope, archiveAllowed = { policy ->
+        context?.let { com.example.playback.NetworkQualityMonitor.getInstance(it).sourcePolicySnapshot().key == policy.key } ?: true
+    }, resolveAddon = { source, track, policy, rejected ->
         context?.let { com.example.data.remote.StreamingAddons.resolve(it, track, policy, rejected, source) }
     })
     internal suspend fun searchArchive(query: String, page: Int,
@@ -449,22 +451,25 @@ class MusicRepository private constructor(
         rejectedUrls: Set<String> = emptySet(),
         onAddonLookupFinished: (suspend (Long) -> Unit)? = null,
         preferredSourceId: String? = null,
-        manualUpgrade: Boolean = false
+        manualUpgrade: Boolean = false,
+        retainLosslessLookup: Boolean = true
     ): MusicTrack = withContext(AppDispatchers.Io) {
         repeat(3) {
             context?.let { com.example.data.local.OtherSettingsPreferences.loadPlaybackSources(it) }
             val monitor = context?.let { com.example.playback.NetworkQualityMonitor.getInstance(it) }
             val sourcePolicy = monitor?.sourcePolicySnapshot()
+            val losslessVersion = sourcePolicy?.takeIf { it.allowsArchive }?.let { streamResolver.losslessDiscoveryVersion(track.id) }
             val quality = sourcePolicy?.ceiling?.audioQuality ?: AudioQuality.ULTRA_HD_320
             try {
                 val identity = withContext(AppDispatchers.CpuBounded) { RecordingIdentity.key(track) }
-                val requestKey = "playback-source:${track.id}:$identity:${sourcePolicy?.key}:$forceRefresh:$currentSourceOnly:$preferYouTube:$preferredSourceId:$manualUpgrade:${failedUrl.orEmpty()}:${rejectedUrls.sorted().joinToString()}"
+                val requestKey = "playback-source:${track.id}:$identity:${sourcePolicy?.key}:$forceRefresh:$currentSourceOnly:$preferYouTube:$preferredSourceId:$manualUpgrade:$retainLosslessLookup:$losslessVersion:${failedUrl.orEmpty()}:${rejectedUrls.sorted().joinToString()}"
                 val result = com.example.recommendation.DiscoveryRequestCoordinator.shared(requestKey, essential = true, network = false) {
                     com.example.recommendation.DiscoveryRequestCoordinator.playback {
                         streamResolver.resolve(track, quality, forceRefresh, failedUrl, preferYouTube = preferYouTube, jioDeadlineMs = jioDeadlineMs,
                             currentSourceOnly = currentSourceOnly, rejectedUrls = rejectedUrls,
                             maxBitrateBps = sourcePolicy?.ceiling?.maxBitrateBps ?: Int.MAX_VALUE, sourcePolicy = sourcePolicy,
-                            preferredSourceId = preferredSourceId, manualUpgrade = manualUpgrade)
+                            preferredSourceId = preferredSourceId, manualUpgrade = manualUpgrade, retainLosslessLookup = retainLosslessLookup,
+                            losslessVersion = losslessVersion)
                     }.let(::listOf)
                 }.firstOrNull() ?: throw TrackUnavailableException(track.title)
                 currentCoroutineContext().ensureActive()
@@ -635,6 +640,7 @@ class MusicRepository private constructor(
     }
 
     internal suspend fun hasRecentLosslessAttempt(track: MusicTrack) = streamResolver.hasRecentLosslessAttempt(track)
+    internal fun cancelLosslessDiscovery(trackId: String) = streamResolver.cancelLosslessDiscovery(trackId)
 
     suspend fun findLosslessUpgrade(track: MusicTrack, automatic: Boolean = false): MusicTrack? = withContext(AppDispatchers.Io) {
         val monitor = context?.let(com.example.playback.NetworkQualityMonitor::getInstance)
@@ -645,7 +651,9 @@ class MusicRepository private constructor(
                 com.example.playback.LosslessDiagnostics.Reason.NETWORK_POLICY_BLOCKED, "discovery")
             return@withContext null
         }
-        fun allowed() = monitor?.sourcePolicySnapshot()?.let { it.allowsArchive && it.key == policy.key } == true
+        val generation = streamResolver.losslessDiscoveryVersion(track.id)
+        fun allowed() = streamResolver.isLosslessDiscoveryCurrent(track.id, generation) &&
+            monitor?.sourcePolicySnapshot()?.let { it.allowsArchive && it.key == policy.key } == true
         val key = withContext(AppDispatchers.CpuBounded) { RecordingIdentity.key(track) }
         if (track.id.startsWith("ia_")) {
             val originalUrl = InternetArchiveApiService.originalFileUrl(track)
@@ -656,25 +664,26 @@ class MusicRepository private constructor(
                 ?.let { return@withContext it }
         }
         fun missedRecently() = losslessMisses.get(key)?.let { android.os.SystemClock.elapsedRealtime() < it } == true
-        if (missedRecently()) return@withContext null
+        fun pending() = streamResolver.hasPendingLosslessDiscovery(track.id, policy.key)
+        if (missedRecently() && !pending()) return@withContext null
         if (losslessPageSearch == null) {
             val cached = StreamResolver.getCachedLosslessMatch(track)
             if (cached != null && (rejectedLosslessUrls.get(cached.audioUrl) ?: 0L) <= android.os.SystemClock.elapsedRealtime() &&
                 !StreamResolver.isLosslessUrlRejected(cached.audioUrl)) {
-                return@withContext cached
+                return@withContext cached.takeIf { allowed() }
             }
         }
         // Reuse the process-wide reference-counted request sharing. Cancelling one
         // consumer cannot cancel a lookup another consumer still needs.
         val found = com.example.recommendation.DiscoveryRequestCoordinator.shared("archive-recording:$key:${policy.key}",
-            essential = !automatic, network = false) {
+            essential = !automatic, network = false, playbackMetadata = true) {
             run lookup@{
-                if (missedRecently() || !allowed()) return@lookup emptyList()
+                if (missedRecently() && !pending() || !allowed()) return@lookup emptyList()
                 val rejected = (rejectedLosslessUrls.snapshot().filterValues {
                     it > android.os.SystemClock.elapsedRealtime()
                 }.keys + StreamResolver.getActiveRejectedUrls()).toSet()
                 val matches = if (losslessPageSearch == null) {
-                    val match = streamResolver.discoverLosslessBackground(track, rejected, ::allowed)
+                    val match = streamResolver.discoverLosslessBackground(track, rejected, ::allowed, policy.key, requestedVersion = generation)
                     if (match == null) {
                         val reason = com.example.playback.LosslessDiagnostics.last(track.id)?.reason
                         val ttl = if (reason == com.example.playback.LosslessDiagnostics.Reason.NO_RESULTS) 90_000L else 10_000L

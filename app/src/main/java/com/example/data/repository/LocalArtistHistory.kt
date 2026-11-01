@@ -7,22 +7,57 @@ import com.example.performance.AppDispatchers
 import com.example.recommendation.HomeRecommendationPolicy
 import com.example.ui.viewmodel.MostListenedArtist
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 
 /** Aggregate in SQLite, then normalize only distinct track credits, never the raw listening log. */
 internal object LocalArtistHistory {
-    suspend fun read(database: MusicDatabase): List<MostListenedArtist> {
-        val counts = withContext(AppDispatchers.Database) { database.listeningEventDao().getActualTrackPlayCounts() }
+    suspend fun read(database: MusicDatabase): List<MostListenedArtist> = Reader(database).read()
+
+    /** Home-owned cache of distinct-track counts, not a second listening store. */
+    class Reader(private val database: MusicDatabase) {
+        private val mutex = Mutex()
+        private var revision: String? = null
+        private var identities = -1L
+        private var counts: List<ActualTrackPlayCount>? = null
+        private var ranked = emptyList<MostListenedArtist>()
+        /** Called only during Home's cache restoration, before readers are admitted. */
+        fun restore(inputRevision: String, artists: List<MostListenedArtist>) {
+            revision = inputRevision; ranked = artists.take(15); counts = null
+            identities = ArtistPhotoRepository.identities.value
+        }
+        suspend fun read(expectedRevision: String? = null): List<MostListenedArtist> = mutex.withLock {
+            // Home already brackets this read with a revision check. Reuse its
+            // token rather than repeating those same scalar queries here.
+            val current = expectedRevision ?: withContext(AppDispatchers.Database) { database.listeningEventDao().getArtistInputRevision() }
+            val aliases = ArtistPhotoRepository.identities.value
+            val changed = current == null || revision != current
+            val input = if (changed || identities != aliases && counts == null) withContext(AppDispatchers.Database) {
+                database.listeningEventDao().getActualTrackPlayCounts()
+            } else counts
+            val next = if (changed || identities != aliases) prepareRanking(database, input.orEmpty()) else ranked
+            // Commit only coherent inputs; a cancelled/replaced request cannot poison reuse.
+            if (current != null && (expectedRevision != null || current == withContext(AppDispatchers.Database) { database.listeningEventDao().getArtistInputRevision() })) {
+                counts = input; ranked = next; revision = current; identities = aliases
+            }
+            loadRepresentatives(database, next)
+        }
+    }
+
+    private suspend fun prepareRanking(database: MusicDatabase, counts: List<ActualTrackPlayCount>): List<MostListenedArtist> {
         val credits = withContext(AppDispatchers.Database) {
             counts.map { it.trackId }.chunked(900).flatMap { database.musicDao().getArtistCreditsByIds(it) }
         }
-        val ranked = withContext(AppDispatchers.CpuBounded) {
+        return withContext(AppDispatchers.CpuBounded) {
             rank(counts, credits.map { credit -> MusicTrack(credit.id, "", credit.artist, "", 0L, "", "",
                 singers = credit.singers, writer = credit.writer,
                 primaryArtists = runCatching { JSONArray(credit.primaryArtists).let { names ->
                     (0 until names.length()).map { names.optString(it) }.filter(String::isNotBlank)
                 } }.getOrDefault(emptyList())) })
         }
+    }
+    private suspend fun loadRepresentatives(database: MusicDatabase, ranked: List<MostListenedArtist>): List<MostListenedArtist> {
         val ids = ranked.flatMap { it.tracks }.map { it.id }.distinct()
         val representatives = if (ids.isEmpty()) emptyList() else withContext(AppDispatchers.Database) {
             database.musicDao().getTracksByIds(ids)

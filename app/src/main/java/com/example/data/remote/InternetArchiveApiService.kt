@@ -11,7 +11,6 @@ import com.example.data.repository.RecordingIdentity
 import com.example.data.repository.StreamResolver
 import com.example.playback.LosslessDiagnostics.Reason
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -165,7 +164,7 @@ object InternetArchiveApiService {
 
     /** Revalidate an exact file, including its current explicit license; never search a substitute. */
     internal suspend fun verifyDirectRecording(track: MusicTrack, allowed: () -> Boolean): MusicTrack? =
-        withContext(Dispatchers.IO) {
+        withContext(AppDispatchers.Io) {
             if (!allowed()) return@withContext null
             val url = track.audioUrl.toHttpUrlOrNull() ?: return@withContext null
             if (url.scheme != "https" || url.host != "archive.org" || url.pathSegments.firstOrNull() != "download")
@@ -318,7 +317,7 @@ object InternetArchiveApiService {
                     val request = Request.Builder().url(searchUrl)
                         .header("User-Agent", "XtremePlayer/2.5.0 (Android; Lossless Audio Search)")
                         .header("Accept", "application/json").build()
-                    if (recording != null && !withContext(Dispatchers.IO) { recording.allowed() })
+                    if (recording != null && !withContext(AppDispatchers.Io) { recording.allowed() })
                         return@withTimeoutOrNull LosslessSearchPage(isSuccessful = false,
                             failure = Reason.NETWORK_POLICY_BLOCKED, exhaustive = false)
                     val response = JSONObject(requestMetadata(request)).optJSONObject("response")
@@ -437,7 +436,7 @@ object InternetArchiveApiService {
                 return@withLock cached.second
             }
             metadataRequests.withPermit {
-                if (recording != null && !withContext(Dispatchers.IO) { recording.allowed() }) return@withPermit null
+                if (recording != null && !withContext(AppDispatchers.Io) { recording.allowed() }) return@withPermit null
                 verifyAndParseLosslessItem(doc, recording)?.also { tracks ->
                     if (tracks.isNotEmpty()) itemCache.put(identifier,
                         SystemClock.elapsedRealtime() to (tracks + cached?.second.orEmpty()).distinctBy { it.id })
@@ -498,7 +497,8 @@ object InternetArchiveApiService {
                 .addPathSegment("metadata").addPathSegment(identifier).build()
             val request = Request.Builder().url(metadataUrl)
                 .header("User-Agent", "XtremePlayer/2.5.0 (Android)").build()
-            val root = JSONObject(requestMetadata(request))
+            val encoded = requestMetadata(request)
+            val root = withContext(AppDispatchers.CpuBounded) { JSONObject(encoded) }
             if (!authorized(root.optJSONObject("metadata"))) {
                 recording?.failure = Reason.UNAUTHORIZED
                 return emptyList()
@@ -510,7 +510,7 @@ object InternetArchiveApiService {
                 } else if (recording.headers.getAndDecrement() <= 0) {
                     recording.truncated = true
                     null
-                } else if (!withContext(Dispatchers.IO) { recording.allowed() }) null
+                } else if (!withContext(AppDispatchers.Io) { recording.allowed() }) null
                 else readFlacHeader(url).also { if (it == null) recording.incomplete = true }
             }
         } catch (e: kotlinx.coroutines.CancellationException) { throw e }
@@ -543,7 +543,7 @@ object InternetArchiveApiService {
         throw IOException("Incomplete Archive response")
     }
 
-    private suspend fun readFlacHeader(url: String): ArchiveAudioMetadata.Tags? = withContext(Dispatchers.IO) {
+    private suspend fun readFlacHeader(url: String): ArchiveAudioMetadata.Tags? = withContext(AppDispatchers.Io) {
         headerRequests.withPermit {
             if (SystemClock.elapsedRealtime() < retryNotBeforeMs) return@withPermit null
             try {

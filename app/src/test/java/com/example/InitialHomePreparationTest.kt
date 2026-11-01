@@ -292,4 +292,58 @@ class InitialHomePreparationTest {
         withTimeout(5_000) { vm.mostListenedArtists.first { it.singleOrNull()?.playCount == 2 } }
         assertEquals(1, vm.pillsCardTracks.value.size)
     }
+    @Test fun aNewOccurrenceReusesRecentTrackMetadataButArtworkAndFavoritesRemainFresh() = runBlocking {
+        db.musicDao().insertOrUpdateTrack(TrackEntity.fromMusicTrack(track))
+        val dao = db.listeningEventDao()
+        dao.insertListeningEvent(ListeningEventEntity(trackId = track.id, artistName = track.artist, timestamp = 100,
+            sessionId = "one", eventType = "ACTUAL_PLAY", playedDurationMs = 30_000))
+        val vm = viewModel({ _, _ -> page("native") }); vm.setHomeVisible(true)
+        withTimeout(5_000) { vm.mostListenedArtists.first { it.singleOrNull()?.playCount == 1 } }
+        val field = vm.javaClass.getDeclaredField("recentMetadata").apply { isAccessible = true }
+        val before = field.get(vm)
+        dao.insertListeningEvent(ListeningEventEntity(trackId = track.id, artistName = track.artist, timestamp = 200,
+            sessionId = "two", eventType = "ACTUAL_PLAY", playedDurationMs = 30_000))
+        withTimeout(5_000) { vm.mostListenedArtists.first { it.singleOrNull()?.playCount == 2 } }
+        assertSame("Another occurrence needs no repeated recent metadata read", before, field.get(vm))
+        db.musicDao().insertOrUpdateTrack(TrackEntity.fromMusicTrack(track.copy(coverUrl = "new artwork", isLiked = true)))
+        withTimeout(5_000) { vm.pillsCardTracks.first { it.singleOrNull()?.let { row -> row.coverUrl == "new artwork" && row.isLiked } == true } }
+        assertNotSame(before, field.get(vm))
+        withTimeout(5_000) { vm.mostListenedArtists.first { it.singleOrNull()?.tracks?.singleOrNull()?.coverUrl == "new artwork" } }
+        assertEquals(2, vm.mostListenedArtists.value.single().playCount)
+    }
+    @Test fun actualAudioCanEnterRecentlyPlayedWithoutChangingItsTrackMetadata() = runBlocking {
+        db.musicDao().insertOrUpdateTrack(TrackEntity.fromMusicTrack(track))
+        val dao = db.listeningEventDao()
+        val event = ListeningEventEntity(id = 1, trackId = track.id, artistName = track.artist, timestamp = 100,
+            sessionId = "one", eventType = "ACTUAL_PLAY", playedDurationMs = 0)
+        dao.insertListeningEvent(event)
+        val vm = viewModel({ _, _ -> page("native") }); vm.setHomeVisible(true)
+        @Suppress("UNCHECKED_CAST")
+        val ready = vm.javaClass.getDeclaredField("localPrepared").apply { isAccessible = true }.get(vm) as kotlinx.coroutines.flow.StateFlow<Boolean>
+        withTimeout(5_000) { ready.first { it } }
+        assertTrue(vm.pillsCardTracks.value.isEmpty())
+        dao.insertListeningEvent(event.copy(playedDurationMs = 1))
+        withTimeout(5_000) { vm.pillsCardTracks.first { it.singleOrNull()?.id == track.id } }
+        Unit
+    }
+
+    @Test fun replayingAnExistingRecentSongReordersHistoryWithoutRefetchingUnchangedMetadata() = runBlocking {
+        val other = track.copy(id = "yt_12345678901", title = "Other Song")
+        val dao = db.listeningEventDao()
+        for ((index, value) in listOf(track, other).withIndex()) {
+            db.musicDao().insertOrUpdateTrack(TrackEntity.fromMusicTrack(value))
+            dao.insertListeningEvent(ListeningEventEntity(trackId = value.id, artistName = value.artist, timestamp = (100 + index).toLong(),
+                sessionId = "$index", eventType = "ACTUAL_PLAY", playedDurationMs = 30_000))
+        }
+        val vm = viewModel({ _, _ -> page("native") }); vm.setHomeVisible(true)
+        withTimeout(5_000) { vm.pillsCardTracks.first { it.size == 2 }; vm.mostListenedArtists.first { it.singleOrNull()?.playCount == 2 } }
+        val field = vm.javaClass.getDeclaredField("recentMetadata").apply { isAccessible = true }
+        val before = field.get(vm)
+        dao.insertListeningEvent(ListeningEventEntity(trackId = track.id, artistName = track.artist, timestamp = 200,
+            sessionId = "replay", eventType = "ACTUAL_PLAY", playedDurationMs = 30_000))
+        withTimeout(5_000) { vm.pillsCardTracks.first { it.firstOrNull()?.id == track.id }; vm.mostListenedArtists.first { it.singleOrNull()?.playCount == 3 } }
+        assertSame(before, field.get(vm))
+        assertEquals(listOf(track.id, other.id), vm.pillsCardTracks.value.map { it.id })
+    }
+
 }

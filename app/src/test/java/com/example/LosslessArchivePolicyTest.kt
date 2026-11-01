@@ -128,6 +128,7 @@ class LosslessArchivePolicyTest {
             .setPlaybackState(Player.STATE_BUFFERING).build()
         private fun entry(index: Int, item: MediaItem) = MediaItemData.Builder(index)
             .setMediaItem(item).setDurationUs(180_000_000L).setIsSeekable(true).build()
+        fun ready() { snapshot = snapshot.buildUpon().setPlaybackState(Player.STATE_READY).build(); invalidateState() }
         override fun getState(): State = snapshot
         override fun handleSetMediaItems(mediaItems: List<MediaItem>, startIndex: Int, startPositionMs: Long): ListenableFuture<*> {
             snapshot = snapshot.buildUpon().setPlaylist(mediaItems.mapIndexed { index, item -> entry(index, item) })
@@ -489,4 +490,45 @@ class LosslessArchivePolicyTest {
         assertEquals(121_000L, losslessRecoveryPosition(45_000L, 121_000L, true))
         assertEquals(0L, losslessRecoveryPosition(0L, 0L, false)) // A real user seek to the beginning.
     }
+    @Test fun transientDiscoveryCanRetryTheSamePlayingUriAfterItsShortFailureCacheExpires() = runBlocking {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        com.example.data.local.PlaybackSourcesPreferences.save(app, PlaybackSource.builtIns)
+        withTimeout(3_000) { while (com.example.data.local.PlaybackSourcesPreferences.load(app) != PlaybackSource.builtIns) delay(10) }
+        val monitor = NetworkQualityMonitor.getInstance(app)
+        awaitCondition { monitor.sourcePolicy.value.allowsArchive }
+        val queries = java.util.concurrent.atomic.AtomicInteger()
+        val dao = java.lang.reflect.Proxy.newProxyInstance(com.example.data.local.MusicDao::class.java.classLoader,
+            arrayOf(com.example.data.local.MusicDao::class.java)) { _, method, _ -> error("Discovery queried Room: ${method.name}") } as com.example.data.local.MusicDao
+        val repo = MusicRepository(dao, app) { _, _ ->
+            queries.incrementAndGet()
+            com.example.data.remote.InternetArchiveApiService.LosslessSearchPage(isSuccessful = false,
+                exhaustive = false, failure = LosslessDiagnostics.Reason.NETWORK_TIMEOUT)
+        }
+        set("repository", repo)
+        withConnectedQueue { native, connected ->
+            set("activeQueue", mutableStateListOf(track))
+            @Suppress("UNCHECKED_CAST") val ui = field("_uiState").get(manager) as MutableStateFlow<PlayerUiState>
+            ui.value = PlayerUiState(currentTrack = track, queue = listOf(track), isPlaying = true,
+                selectedQuality = AudioQuality.HI_RES_LOSSLESS, isAutoplayEnabled = false)
+            val item = MediaItem.Builder().setMediaId(track.id).setUri(track.audioUrl)
+                .setMediaMetadata(MediaMetadata.Builder().setTitle(track.title).setArtist(track.artist).setExtras(Bundle().apply {
+                    putString("media_source", "JIOSAAVN"); putInt("bitrate", 320); putLong("duration", track.durationMs)
+                    putString("source_policy_key", monitor.sourcePolicy.value.key)
+                }).build()).build()
+            native.setMediaItem(item); native.ready()
+            awaitCondition { connected.isPlaying && connected.currentMediaItem?.mediaId == track.id }
+            val schedule = PlaybackManager::class.java.getDeclaredMethod("scheduleLosslessDiscovery", PlaybackSourcePolicy::class.java).apply { isAccessible = true }
+            schedule.invoke(manager, monitor.sourcePolicy.value)
+            awaitCondition { queries.get() >= 2 && field("losslessDiscoveryJob").get(manager).let { it !is Job || !it.isActive } }
+            assertNull("A failed lookup cannot own this URI forever", field("losslessDiscoveryKey").get(manager))
+            val first = queries.get(); assertEquals(2, first)
+            org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(11))
+            schedule.invoke(manager, monitor.sourcePolicy.value)
+            awaitCondition { queries.get() > first && field("losslessDiscoveryJob").get(manager).let { it !is Job || !it.isActive } }
+            assertEquals(first + 2, queries.get())
+            assertEquals(track.audioUrl, connected.currentMediaItem!!.localConfiguration!!.uri.toString())
+            assertNull(field("losslessDiscoveryKey").get(manager))
+        }
+    }
+
 }

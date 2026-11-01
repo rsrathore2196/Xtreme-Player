@@ -409,6 +409,8 @@ class PlaybackManager(
     private fun stopPendingLosslessUpgrade() {
         losslessDiscoveryJob?.cancel()
         losslessDiscoveryJob = null
+        losslessDiscoveryKey = null
+        _uiState.value.currentTrack?.id?.let { repository?.cancelLosslessDiscovery(it) }
         ++losslessRequestEpoch
     }
 
@@ -422,7 +424,7 @@ class PlaybackManager(
         val uri = player.currentMediaItem?.playbackUri()?.toString() ?: return
         if (player.currentMediaItem?.mediaId != track.id || Uri.parse(uri).scheme in setOf("file", "content")) return
         val key = "${track.id}:$uri:${policy.key}"
-        if (losslessDiscoveryKey == key) return
+        if (losslessDiscoveryKey == key && losslessDiscoveryJob?.isActive == true) return
         losslessDiscoveryJob?.cancel()
         losslessDiscoveryKey = key
         val generation = selectionGeneration
@@ -431,20 +433,31 @@ class PlaybackManager(
         val recording = if (track.durationMs <= 0L && player.duration > 0L) track.copy(durationMs = player.duration) else track
         losslessDiscoveryJob = scope.launch {
             try {
-                val candidate = com.example.performance.BackgroundWorkCoordinator.startup(
-                    com.example.performance.BackgroundWorkCoordinator.StartupPriority.DEFERRED, requireForeground = false,
-                    label = "Lossless recording discovery") { repo.findLosslessUpgrade(recording, automatic = true) }
+                val candidate = com.example.performance.BackgroundWorkCoordinator.localDataPreparation {
+                    repo.findLosslessUpgrade(recording, automatic = true)
+                }
                 if (candidate == null || epoch != losslessRequestEpoch || !ownsSelection(track.id, generation) ||
                     !player.isPlaying || recoveryJob?.isActive == true || youtubeQualityJob?.isActive == true ||
                     player.currentMediaItem?.playbackUri()?.toString() != uri ||
                     networkQualityMonitor?.sourcePolicy?.value?.key != policy.key) return@launch
                 // Release discovery's admission before the prebuffer requests its own slot.
                 losslessDiscoveryJob = null
-                if (policy.allowsAutomaticReplacement(recording, candidate))
-                    reconcileSourcePolicy(policy, force = true, preparedSource = candidate, automatic = true)
+                losslessDiscoveryKey = null
+                // The lookup proves the recording; the transport change must keep
+                // the active catalog/queue identity, not adopt the Archive file ID.
+                val replacement = candidate.copy(id = recording.id)
+                if (policy.allowsAutomaticReplacement(recording, replacement))
+                    reconcileSourcePolicy(policy, force = true, preparedSource = replacement, automatic = true)
             } catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) {
-                LosslessDiagnostics.record(track.id, LosslessDiagnostics.Reason.PREBUFFER_FAILED, "background-discovery")
+            catch (error: Exception) {
+                LosslessDiagnostics.record(track.id, if (error is java.net.SocketTimeoutException)
+                    LosslessDiagnostics.Reason.NETWORK_TIMEOUT else LosslessDiagnostics.Reason.METADATA_INCOMPLETE, "background-discovery")
+            } finally {
+                if (losslessDiscoveryJob === currentCoroutineContext()[Job]) {
+                    losslessDiscoveryJob = null
+                    losslessDiscoveryKey = null
+                    repo.cancelLosslessDiscovery(track.id)
+                }
             }
         }
     }
@@ -1543,6 +1556,8 @@ class PlaybackManager(
     private fun cancelLosslessUpgrade() {
         losslessDiscoveryJob?.cancel()
         losslessDiscoveryJob = null
+        losslessDiscoveryKey = null
+        _uiState.value.currentTrack?.id?.let { repository?.cancelLosslessDiscovery(it) }
         _uiState.value.currentTrack?.id?.let { AudioSignalPath.sourceRequest(it, false) }
         ++losslessRequestEpoch
         losslessFallback = null
@@ -1936,9 +1951,13 @@ class PlaybackManager(
     private fun publishQueueState() {
         val index = controller?.currentMediaItemIndex?.coerceAtLeast(0) ?: 0
         val upcoming = upcomingTracks(index)
+        val snapshot = queueSnapshot()
+        val current = _uiState.value
+        if (current.queue === snapshot && current.currentIndex == index &&
+            current.infiniteAutoplayTracks === upcoming && current.nextRecommendedTrack == upcoming.firstOrNull()) return
         _uiState.update {
             it.copy(
-                queue = queueSnapshot(),
+                queue = snapshot,
                 currentIndex = index,
                 nextRecommendedTrack = upcoming.firstOrNull(),
                 infiniteAutoplayTracks = upcoming
@@ -1990,7 +2009,7 @@ class PlaybackManager(
                     emptyList()
                 }
                 val queuedIds = withContext(AppDispatchers.CpuBounded) {
-                    (nativeSnapshot + radioSnapshot).mapTo(mutableSetOf()) { it.id }
+                    (nativeSnapshot.asSequence() + radioSnapshot.asSequence()).mapTo(mutableSetOf()) { it.id }
                         .apply { addAll(recommendationEngine.getSessionTrackIds()); addAll(sessionHistory); add(seed.id) }
                 }
 
@@ -2001,58 +2020,74 @@ class PlaybackManager(
                     limit = needed
                 ).orEmpty()
 
-                for (candidate in radioTracks) {
+                // Capture immutable snapshots on the controller Looper. Filtering,
+                // virtual URI/metadata preparation never reads the live snapshot list.
+                var candidates = radioTracks
+                var staleAttempts = 0
+                while (candidates.isNotEmpty()) {
                     if (!isActive || queueGeneration != generation || !_uiState.value.isAutoplayEnabled) return@launch
-                    if (availableUpcoming() >= upcomingQueueTarget) return@launch
-                    if (activeQueue.any { it.id == candidate.id }) continue
-
-                    val resolved = if (!candidate.audioUrl.isBlank() && !com.example.data.repository.StreamResolver.needsResolution(candidate)) {
-                        candidate
-                    } else if (candidate.id.startsWith("yt_") || YouTubeAudioStreamService.isVideoId(candidate.id)) {
-                        // Metadata-first queue item with virtual playback URI; stream resolves just-in-time on play
-                        val vid = candidate.id.removePrefix("yt_")
-                        candidate.copy(audioUrl = YouTubeAudioStreamService.playbackUri("yt_$vid", "").toString())
-                    } else {
-                        try {
-                            withContext(AppDispatchers.Io) {
-                                repository?.resolvePlayableTrack(candidate)
-                            }
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (e: Exception) {
-                            Log.w(TAG, "Skipping unavailable radio track '${candidate.title}': ${e.message}")
-                            null
+                    val capacity = (upcomingQueueTarget - availableUpcoming()).coerceAtLeast(0)
+                    if (capacity == 0) return@launch
+                    val revision = queueRevision
+                    val queued = queueSnapshot()
+                    val pending = pendingCollectionRadio
+                    val quality = _uiState.value.selectedQuality
+                    val metadata = queueMetadata()
+                    val prepared = withContext(AppDispatchers.CpuBounded) {
+                        val seen = (queued.asSequence() + pending.asSequence()).mapTo(mutableSetOf()) { it.id }
+                        val eligible = candidates.filter { seen.add(it.id) }.take(capacity)
+                        fun metadataOnly(candidate: MusicTrack) = candidate.id.startsWith("yt_") ||
+                            YouTubeAudioStreamService.isVideoId(candidate.id) ||
+                            candidate.audioUrl.isNotBlank() && !com.example.data.repository.StreamResolver.needsResolution(candidate)
+                        // Publish an already playable prefix before waiting for an
+                        // exceptional non-native candidate's network resolution.
+                        val batch = eligible.takeWhile(::metadataOnly).ifEmpty { eligible.take(1) }
+                        val resolved = batch.mapNotNull { candidate ->
+                            when {
+                                candidate.audioUrl.isNotBlank() && !com.example.data.repository.StreamResolver.needsResolution(candidate) -> candidate
+                                candidate.id.startsWith("yt_") || YouTubeAudioStreamService.isVideoId(candidate.id) -> {
+                                    val vid = candidate.id.removePrefix("yt_")
+                                    candidate.copy(audioUrl = YouTubeAudioStreamService.playbackUri("yt_$vid", "").toString())
+                                }
+                                else -> try {
+                                    withContext(AppDispatchers.Io) { repository?.resolvePlayableTrack(candidate) }
+                                } catch (cancelled: CancellationException) { throw cancelled }
+                                catch (_: Exception) { null }
+                            }?.takeIf { it.audioUrl.isNotBlank() }
                         }
-                    } ?: continue
-
-                    if (resolved.audioUrl.isBlank()) continue
+                        val consumed = batch.mapTo(mutableSetOf()) { it.id }
+                        Triple(candidates.filterNot { it.id in consumed }, resolved,
+                            resolved.map { it.toMediaItem(targetQuality = quality, metadata = metadata) })
+                    }
                     if (!isActive || queueGeneration != generation || !_uiState.value.isAutoplayEnabled) return@launch
-                    if (activeQueue.any { it.id == resolved.id }) continue
-
+                    if (revision != queueRevision || pending !== pendingCollectionRadio || quality != _uiState.value.selectedQuality ||
+                        metadata != queueMetadata()) {
+                        if (++staleAttempts >= 3) return@launch
+                        continue
+                    }
+                    val (remainingCandidates, tracks, items) = prepared
+                    if (remainingCandidates.size == candidates.size) return@launch
+                    candidates = remainingCandidates
+                    if (tracks.isEmpty()) continue
                     if (isCurrentSessionExplicitPlaylist) {
-                        pendingCollectionRadio = pendingCollectionRadio + resolved
+                        pendingCollectionRadio = pending + tracks
                         if (advanceWhenQueueReady || player.playbackState == Player.STATE_ENDED) {
-                            startCollectionRadio()
-                            return@launch
+                            startCollectionRadio(); return@launch
                         }
                         continue
                     }
-
-                    activeQueue.add(resolved)
-                    queueRevision++
-                    try {
-                        player.addMediaItem(resolved.toMediaItem())
-                    } catch (e: Exception) {
-                        activeQueue.removeAt(activeQueue.lastIndex)
+                    val oldSize = activeQueue.size
+                    activeQueue.addAll(tracks); queueRevision++
+                    try { player.addMediaItems(items) }
+                    catch (error: Exception) {
+                        while (activeQueue.size > oldSize) activeQueue.removeAt(activeQueue.lastIndex)
                         queueRevision++
-                        throw e
+                        throw error
                     }
                     publishQueueState()
                     if (advanceWhenQueueReady && player.hasNextMediaItem()) {
                         advanceWhenQueueReady = false
-                        player.seekToNextMediaItem()
-                        player.prepare()
-                        player.play()
+                        player.seekToNextMediaItem(); player.prepare(); player.play()
                     }
                 }
             } catch (e: CancellationException) {
@@ -2533,8 +2568,13 @@ class PlaybackManager(
             remove("jio_youtube_fallback")
         }).build()).build()
 
+    private data class QueueMetadata(val collection: Boolean, val currentId: String?, val deadline: Long,
+        val origin: SourceTransitionOrigin?, val maxBitrate: Int)
+    private fun queueMetadata() = QueueMetadata(isCurrentSessionExplicitPlaylist, _uiState.value.currentTrack?.id,
+        initialJioDeadlineMs, enhancerOrigin, NetworkQualityMonitor.getInstance(context).currentMaxBitrateBps)
     private fun MusicTrack.toMediaItem(targetQuality: AudioQuality = _uiState.value.selectedQuality,
-        preparedPolicy: PlaybackSourcePolicy? = null, startupTrace: Long = 0L): MediaItem {
+        preparedPolicy: PlaybackSourcePolicy? = null, startupTrace: Long = 0L,
+        metadata: QueueMetadata = queueMetadata()): MediaItem {
         val availableBitrate = saavnBitrateFor(targetQuality)
         val effectiveUrl = if (audioUrl.contains("saavncdn.com")) {
             com.example.data.remote.OnlineMusicApiService.formatUrlForQuality(audioUrl, availableBitrate.toString())
@@ -2572,8 +2612,8 @@ class PlaybackManager(
                         putString("genre", genre)
                         putString("media_source", source)
                         putBoolean("recommendation_only", recommendationOnly)
-                        putBoolean("queue_collection", isCurrentSessionExplicitPlaylist)
-                        putLong("jio_start_deadline", if (id == _uiState.value.currentTrack?.id) initialJioDeadlineMs else 0L)
+                        putBoolean("queue_collection", metadata.collection)
+                        putLong("jio_start_deadline", if (id == metadata.currentId) metadata.deadline else 0L)
                         putLong("duration", durationMs)
                         putBoolean("isLiked", isLiked)
                         putBoolean("isLossless", isLossless)
@@ -2586,13 +2626,13 @@ class PlaybackManager(
                         putStringArrayList("primaryArtists", ArrayList(primaryArtists))
                         putLong("playlist_entry_id", playlistEntryId)
                         putString("language", language); putString("year", year); putString("isrc", isrc)
-                        SourceTransitionOrigin.write(this, enhancerOrigin?.takeIf { it.track.id == id })
+                        SourceTransitionOrigin.write(this, metadata.origin?.takeIf { it.track.id == id })
                     })
                     .build()
             )
             .build()
         return com.example.service.NetworkAudioQualityPolicy.constrain(mediaItem,
-            NetworkQualityMonitor.getInstance(context).currentMaxBitrateBps)
+            metadata.maxBitrate)
     }
 }
 

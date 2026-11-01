@@ -117,4 +117,24 @@ class DiscoveryAdmissionRegressionTest {
         kotlinx.coroutines.withTimeout(2_000L) { request.await() }
         assertTrue("Slow placeholder frames cannot indefinitely starve a newly visible empty card", ran)
     }
+    @Test fun anExplicitHomeRefreshPromotesItsExistingRequestWithoutAnotherNetworkCall() = runTest {
+        val urgent = kotlinx.coroutines.flow.MutableStateFlow(false)
+        val navigation = BackgroundWorkCoordinator.navigationBusy()
+        DiscoveryRequestCoordinator.homeScrolling(true)
+        var calls = 0
+        val request = async {
+            DiscoveryRequestCoordinator.withPriority(urgent) {
+                DiscoveryRequestCoordinator.network { calls++ }
+            }
+        }
+        try {
+            runCurrent(); assertEquals(0, calls)
+            urgent.value = true
+            advanceTimeBy(100); runCurrent()
+            request.await(); assertEquals(1, calls)
+        } finally {
+            navigation.close(); DiscoveryRequestCoordinator.homeScrolling(false); request.cancelAndJoin()
+        }
+    }
+
 }

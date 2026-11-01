@@ -33,6 +33,12 @@ internal object DiscoveryRequestCoordinator {
 
     fun homeScrolling(active: Boolean) { scrolling.value = active }
 
+    /** A retained Home request can be promoted without starting another transport. */
+    suspend fun <T> withPriority(urgent: MutableStateFlow<Boolean>, block: suspend () -> T): T =
+        withContext(SharedPriority(urgent)) {
+            BackgroundWorkCoordinator.optionalProcessing(urgent = { urgent.value }, block = block)
+        }
+
     suspend fun <T> network(essential: Boolean = false, block: suspend () -> T): T {
         val urgent = currentCoroutineContext()[SharedPriority]?.urgent ?: MutableStateFlow(essential)
         if (essential) urgent.value = true
@@ -52,20 +58,20 @@ internal object DiscoveryRequestCoordinator {
         finally { resolving.update { (it - 1).coerceAtLeast(0) } }
     }
 
-    suspend fun shared(key: String, essential: Boolean, network: Boolean = true,
+    suspend fun shared(key: String, essential: Boolean, network: Boolean = true, playbackMetadata: Boolean = false,
         block: suspend () -> List<MusicTrack>): List<MusicTrack> {
         val flight = synchronized(flights) {
             flights.getOrPut(key) {
                 val urgent = MutableStateFlow(essential)
                 Flight(urgent, scope.async(SharedPriority(urgent), start = CoroutineStart.LAZY) {
-                    BackgroundWorkCoordinator.optionalProcessing(urgent = {
-                        urgent.value
-                    }) {
-                        if (network) permit(urgent) {
+                    suspend fun work(): List<MusicTrack> {
+                        return if (network) permit(urgent) {
                             BackgroundWorkCoordinator.finishBoundedBatch { withTimeoutOrNull(12_000L) { block() }.orEmpty() }
                         }
                         else block()
                     }
+                    if (playbackMetadata) BackgroundWorkCoordinator.localDataPreparation { work() }
+                    else BackgroundWorkCoordinator.optionalProcessing(urgent = { urgent.value }) { work() }
                 })
             }.also {
                 it.readers++

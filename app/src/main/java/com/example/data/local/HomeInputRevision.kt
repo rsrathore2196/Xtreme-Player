@@ -80,17 +80,44 @@ internal object HomeInputRevisionTriggers {
         trigger("home_artist_history_delete", "AFTER DELETE", "listening_events",
             "($actualOld) AND NOT EXISTS (SELECT 1 FROM home_input_revision WHERE id = 2 AND replacingEvent = OLD.id)", artistAdvance)
         val artistTrackRelevant = "EXISTS (SELECT 1 FROM listening_events WHERE trackId = NEW.id AND eventType = 'ACTUAL_PLAY' AND playedDurationMs > 0)"
-        trigger("home_artist_track_insert", "BEFORE INSERT", "tracks", artistTrackRelevant,
+        val artistFields = listOf("artist", "singers", "writer", "primaryArtists")
+        val sameArtist = artistFields.joinToString(" AND ") { "t.$it IS NEW.$it" }
+        // Retire the broad old definitions once. Versioned names keep later
+        // opens idempotent instead of rewriting SQLite's schema every startup.
+        db.execSQL("DROP TRIGGER IF EXISTS home_artist_track_insert")
+        db.execSQL("DROP TRIGGER IF EXISTS home_artist_track_update")
+        trigger("home_artist_track_insert_v2", "BEFORE INSERT", "tracks", artistTrackRelevant,
             "$artistSeed UPDATE home_input_revision SET generation = generation + 1 WHERE id = 2 AND NOT EXISTS " +
-                "(SELECT 1 FROM tracks t WHERE t.id = NEW.id AND $same); " +
+                "(SELECT 1 FROM tracks t WHERE t.id = NEW.id AND $sameArtist); " +
                 "UPDATE home_input_revision SET replacingTrack = NEW.id WHERE id = 2;")
         trigger("home_artist_track_insert_end", "AFTER INSERT", "tracks",
             "EXISTS (SELECT 1 FROM home_input_revision WHERE id = 2 AND replacingTrack = NEW.id)",
             "UPDATE home_input_revision SET replacingTrack = NULL WHERE id = 2;")
-        trigger("home_artist_track_update", "AFTER UPDATE", "tracks",
-            "$artistTrackRelevant AND (${fields.joinToString(" OR ") { "OLD.$it IS NOT NEW.$it" }})", artistAdvance)
+        trigger("home_artist_track_update_v2", "AFTER UPDATE", "tracks",
+            "$artistTrackRelevant AND (${artistFields.joinToString(" OR ") { "OLD.$it IS NOT NEW.$it" }})", artistAdvance)
         trigger("home_artist_track_delete", "AFTER DELETE", "tracks",
             "EXISTS (SELECT 1 FROM listening_events WHERE trackId = OLD.id AND eventType = 'ACTUAL_PLAY' AND playedDurationMs > 0) " +
                 "AND NOT EXISTS (SELECT 1 FROM home_input_revision WHERE id = 2 AND replacingTrack = OLD.id)", artistAdvance)
+
+        // Track metadata freshness is independent of playback counts and credits.
+        // This internal row needs no schema change or destructive data migration.
+        val metadataSeed = "INSERT INTO home_input_revision (id, epoch, generation) SELECT 3, hex(randomblob(16)), 0 WHERE NOT EXISTS (SELECT 1 FROM home_input_revision WHERE id = 3);"
+        db.execSQL(metadataSeed)
+        val metadataAdvance = "$metadataSeed UPDATE home_input_revision SET generation = generation + 1 WHERE id = 3;"
+        val metadataFields = fields + listOf("audioUrl", "bitrateKbps", "qualityBadge", "isCached")
+        val sameMetadata = metadataFields.joinToString(" AND ") { "t.$it IS NEW.$it" }
+        val metadataRelevant = "EXISTS (SELECT 1 FROM listening_events WHERE trackId = NEW.id AND eventType = 'ACTUAL_PLAY')"
+        trigger("home_metadata_track_insert", "BEFORE INSERT", "tracks", metadataRelevant,
+            "$metadataSeed UPDATE home_input_revision SET generation = generation + 1 WHERE id = 3 AND NOT EXISTS " +
+                "(SELECT 1 FROM tracks t WHERE t.id = NEW.id AND $sameMetadata); " +
+                "UPDATE home_input_revision SET replacingTrack = NEW.id WHERE id = 3;")
+        trigger("home_metadata_track_insert_end", "AFTER INSERT", "tracks",
+            "EXISTS (SELECT 1 FROM home_input_revision WHERE id = 3 AND replacingTrack = NEW.id)",
+            "UPDATE home_input_revision SET replacingTrack = NULL WHERE id = 3;")
+        trigger("home_metadata_track_update", "AFTER UPDATE", "tracks",
+            "$metadataRelevant AND (${metadataFields.joinToString(" OR ") { "OLD.$it IS NOT NEW.$it" }})", metadataAdvance)
+        trigger("home_metadata_track_delete", "AFTER DELETE", "tracks",
+            "EXISTS (SELECT 1 FROM listening_events WHERE trackId = OLD.id AND eventType = 'ACTUAL_PLAY') " +
+                "AND NOT EXISTS (SELECT 1 FROM home_input_revision WHERE id = 3 AND replacingTrack = OLD.id)", metadataAdvance)
     }
 }

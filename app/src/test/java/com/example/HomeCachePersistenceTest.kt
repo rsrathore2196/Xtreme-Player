@@ -86,4 +86,23 @@ class HomeCachePersistenceTest {
         assertTrue(cache.read(key)?.serverShelves.isNullOrEmpty())
         assertTrue(cache.peek(key)?.serverShelves.isNullOrEmpty())
     }
+    @Test fun aWriteThatFailsBothImmediateAttemptsRecoversWithoutAnotherReadOrSave() = runBlocking {
+        val key = "CA|anonymous"
+        val target = File(app.filesDir, "home_server_${HomeCacheIdentity.fileKey(key)}_v3.json")
+        target.delete(); assertTrue(target.mkdirs()) // A transiently unavailable destination.
+        File(target, "busy").writeText("temporary")
+        val cache = HomeCardCache(app)
+        val previous = org.robolectric.shadows.ShadowLog.getLogsForTag("HomeCardCache").size
+        cache.saveHome(SavedHomeCards(key, 99, serverShelves = listOf(shelf("recovered")), serverFetchSucceeded = true))
+        withTimeout(5_000) {
+            while (org.robolectric.shadows.ShadowLog.getLogsForTag("HomeCardCache").size == previous) delay(5)
+        }
+        assertTrue(target.deleteRecursively())
+        // Inspect disk directly: readJson() itself must not be what re-enqueues the write.
+        withTimeout(5_000) {
+            while (withContext(Dispatchers.IO) { runCatching { JSONObject(target.readText()).optLong("refreshedAt") }.getOrNull() } != 99L) delay(10)
+        }
+        assertEquals("recovered", JSONObject(target.readText()).getJSONArray("serverShelves").getJSONObject(0).getString("id"))
+    }
+
 }
