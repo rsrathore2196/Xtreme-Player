@@ -403,4 +403,58 @@ object BackgroundWorkCoordinator {
             delay(250L)
         }
     }
+
+    private val _startupReadiness = MutableStateFlow(StartupReadiness())
+    val startupReadiness = _startupReadiness.asStateFlow()
+    private var initialDeadlineJob: Job? = null
+    private val initialStartedAt = AtomicLong(0L)
+    private val initialPresentationPending = AtomicBoolean(false)
+    private val preparedContentDrawn = AtomicBoolean(false)
+    private val homeReady = kotlinx.coroutines.CompletableDeferred<Unit>()
+    private val cachedHomeReady = kotlinx.coroutines.CompletableDeferred<Unit>()
+
+    val initialPreparationRemainingMillis: Long
+        get() {
+            val started = initialStartedAt.get()
+            if (started == 0L || !initialPresentationPending.get()) return 0L
+            val elapsed = SystemClock.elapsedRealtime() - started
+            return (15_000L - elapsed).coerceAtLeast(0L)
+        }
+
+    fun beginInitialPresentation() {
+        initialPresentationPending.set(true)
+        initialStartedAt.set(SystemClock.elapsedRealtime())
+    }
+
+    suspend fun awaitInitialPresentation() {
+        while (initialPresentationPending.get()) {
+            if (initialPreparationRemainingMillis <= 0L) {
+                initialPresentationPending.set(false)
+                break
+            }
+            delay(50L)
+        }
+    }
+
+    fun startupTask(task: StartupTask, status: StartupStatus) {
+        _startupReadiness.update { it.withStatus(task, status) }
+    }
+
+    fun cachedHomeRestored() {
+        cachedHomeReady.complete(Unit)
+    }
+
+    fun homeContentReady() {
+        homeReady.complete(Unit)
+    }
+
+    fun initialContentDrawn() {
+        preparedContentDrawn.set(true)
+        initialPresentationPending.set(false)
+        _startupReadiness.update { it.withStatus(StartupTask.PRESENTATION, StartupStatus.READY) }
+    }
+
+    suspend fun awaitInitialPresentationSettled() {
+        awaitIdle(quietMillis = 250L)
+    }
 }
