@@ -3,9 +3,13 @@ package com.example.ui.viewmodel
 import androidx.compose.runtime.Immutable
 import com.example.data.model.MusicTrack
 import com.example.data.model.ServerHomeShelf
+import com.example.data.model.ServerHomeItem
 import com.example.recommendation.HomeRecommendationPolicy
 
 internal const val RECENTLY_PLAYED_CARD_LIMIT = 4
+internal const val INITIAL_SERVER_SHELF_TARGET = 3
+
+private fun ServerHomeShelf.entries(): List<ServerHomeItem> = items.ifEmpty { tracks.map { ServerHomeItem.Song(it) } }
 
 /** Keep provider ordering and existing instances, merging only an identified continuation of the same shelf. */
 internal fun appendServerShelves(previous: List<ServerHomeShelf>, incoming: List<ServerHomeShelf>): List<ServerHomeShelf> {
@@ -14,10 +18,13 @@ internal fun appendServerShelves(previous: List<ServerHomeShelf>, incoming: List
         val index = result.indexOfFirst { it.id == shelf.id }
         if (index >= 0) {
             val old = result[index]
-            val ids = old.tracks.mapTo(mutableSetOf()) { it.id }
-            val added = shelf.tracks.filter { ids.add(it.id) }
-            if (added.isNotEmpty()) result[index] = old.copy(tracks = old.tracks + added)
-        } else if (result.none { it.title == shelf.title && it.tracks.map { track -> track.id } == shelf.tracks.map { track -> track.id } }) {
+            val oldItems = old.entries()
+            val ids = oldItems.mapTo(mutableSetOf()) { it.key }
+            val added = shelf.entries().filter { ids.add(it.key) }
+            if (added.isNotEmpty()) result[index] = old.copy(
+                tracks = old.tracks + added.filterIsInstance<ServerHomeItem.Song>().map { it.track },
+                items = if (old.items.isEmpty() && shelf.items.isEmpty()) emptyList() else oldItems + added)
+        } else if (result.none { it.title == shelf.title && it.entries().map { item -> item.key } == shelf.entries().map { item -> item.key } }) {
             result.add(shelf)
         }
     }

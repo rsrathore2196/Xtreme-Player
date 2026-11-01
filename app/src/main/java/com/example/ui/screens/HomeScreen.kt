@@ -1,6 +1,8 @@
 package com.example.ui.screens
 
 import android.content.res.Configuration
+import com.example.data.model.ServerHomeItem
+import com.example.data.repository.CatalogDestination
 import androidx.compose.ui.platform.LocalConfiguration
 import com.example.ui.util.landscapeContentBounds
 
@@ -200,7 +202,8 @@ fun HomeScreen(
     onAddToQueue: ((MusicTrack) -> Unit)? = null,
     modifier: Modifier = Modifier,
     listState: LazyListState = rememberLazyListState(),
-    onOpenArtist: (com.example.data.repository.CatalogArtist) -> Unit = {}
+    onOpenArtist: (com.example.data.repository.CatalogArtist) -> Unit = {},
+    onOpenCatalog: (CatalogDestination) -> Unit = {}
 ) {
     val isRefreshing by homeViewModel.isRefreshing.collectAsStateWithLifecycle()
     val refreshErrorMessage by homeViewModel.refreshErrorMessage.collectAsStateWithLifecycle()
@@ -221,6 +224,7 @@ fun HomeScreen(
                 homeViewModel = homeViewModel,
                 listState = listState,
                 onOpenArtist = onOpenArtist,
+                onOpenCatalog = onOpenCatalog,
                 isRadioSession = playerUiState?.isInfiniteRadio == true,
                 isRadioLoading = playerUiState?.isLoading == true,
                 currentTrack = currentTrack ?: playerUiState?.currentTrack,
@@ -268,7 +272,8 @@ fun HomeScreenContent(
     onOpenArtist: (com.example.data.repository.CatalogArtist) -> Unit = {},
     homeViewModel: HomeViewModel? = null,
     serverShelves: List<com.example.data.model.ServerHomeShelf> = emptyList(),
-    profileShelf: com.example.data.model.ServerHomeShelf? = null
+    profileShelf: com.example.data.model.ServerHomeShelf? = null,
+    onOpenCatalog: (CatalogDestination) -> Unit = {}
 ) {
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     // Only structural visibility is observed by the lazy-list owner. Section
@@ -582,7 +587,8 @@ fun HomeScreenContent(
                         }
                         SectionCardLayout(state = section, tracksPrepared = true,
                             currentPlayingId = currentPlayingId, cardBg = cardBg, cardBorderColor = cardBorderColor,
-                            textPrimaryColor = textPrimaryColor, textMutedColor = textMutedColor, onTrackClick = onTrackClick)
+                            textPrimaryColor = textPrimaryColor, textMutedColor = textMutedColor, onTrackClick = onTrackClick,
+                            shelfItems = shelf.items, onOpenCatalog = onOpenCatalog)
                     }
                 }
             }
@@ -710,10 +716,12 @@ fun SectionCardLayout(
     textPrimaryColor: Color,
     textMutedColor: Color,
     onTrackClick: (MusicTrack, List<MusicTrack>) -> Unit,
-    tracksPrepared: Boolean = false
+    tracksPrepared: Boolean = false,
+    shelfItems: List<ServerHomeItem> = emptyList(),
+    onOpenCatalog: (CatalogDestination) -> Unit = {}
 ) {
     // If no verified tracks and not loading, completely hide the entire shelf
-    if (!state.isLoading && state.tracks.isEmpty()) {
+    if (!state.isLoading && state.tracks.isEmpty() && shelfItems.isEmpty()) {
         return
     }
 
@@ -746,14 +754,32 @@ fun SectionCardLayout(
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        if (state.isLoading && state.tracks.isEmpty()) {
+        if (state.isLoading && state.tracks.isEmpty() && shelfItems.isEmpty()) {
             SectionShimmerRow()
-        } else if (state.tracks.isNotEmpty()) {
+        } else if (state.tracks.isNotEmpty() || shelfItems.isNotEmpty()) {
             LazyRow(
                 state = shelfListState,
                 contentPadding = PaddingValues(horizontal = 20.dp),
                 horizontalArrangement = Arrangement.spacedBy(14.dp)
             ) {
+                if (shelfItems.isNotEmpty()) items(shelfItems, key = { it.key }, contentType = { "home_item" }) { item ->
+                    VisibleItemArtwork(shelfListState, item.key) {
+                        when (item) {
+                            is ServerHomeItem.Song -> ShelfTrackCard(item.track, item.track.id == currentPlayingId,
+                                cardBg, cardBorderColor, textPrimaryColor, textMutedColor) { onTrackClick(item.track, safeTracks) }
+                            is ServerHomeItem.Album -> ShelfContentCard(item.album.title,
+                                item.subtitle.ifBlank { item.album.artists.joinToString { it.name } },
+                                rememberOptimizedImageRequest(item.album.image, com.example.ui.util.ImageConfig.RECOMMENDATION_CARD_SIZE,
+                                    crossfadeEnabled = false, preferStableArtwork = true), false,
+                                cardBg, cardBorderColor, textPrimaryColor, textMutedColor) { onOpenCatalog(CatalogDestination.Album(item.album)) }
+                            is ServerHomeItem.Playlist -> ShelfContentCard(item.playlist.title, item.subtitle,
+                                rememberOptimizedImageRequest(item.playlist.image, com.example.ui.util.ImageConfig.RECOMMENDATION_CARD_SIZE,
+                                    crossfadeEnabled = false, preferStableArtwork = true), false,
+                                cardBg, cardBorderColor, textPrimaryColor, textMutedColor) { onOpenCatalog(CatalogDestination.Playlist(item.playlist)) }
+                        }
+                    }
+                }
+                else
                 itemsIndexed(safeTracks, key = { _, track -> track.id }, contentType = { _, _ -> "home_track" }) { _, track ->
                     VisibleItemArtwork(shelfListState, track.id) {
                         ShelfTrackCard(
@@ -910,6 +936,16 @@ fun ShelfTrackCard(
     textMutedColor: Color = if (LocalAppColors.current.isDark) Color(0xFFA1A1AA) else Color(0xFF71717A),
     onClick: () -> Unit
 ) {
+    ShelfContentCard(remember(track.title) { track.cleanTitle }, track.artist,
+        rememberOptimizedImageRequest(track = track, targetSize = com.example.ui.util.ImageConfig.RECOMMENDATION_CARD_SIZE,
+            crossfadeEnabled = false, preferStableArtwork = true), isPlaying,
+        cardBg, cardBorderColor, textPrimaryColor, textMutedColor, artworkDescription = track.title, onClick = onClick)
+}
+
+@Composable
+private fun ShelfContentCard(title: String, subtitle: String, artwork: coil.request.ImageRequest, isPlaying: Boolean,
+    cardBg: Color, cardBorderColor: Color, textPrimaryColor: Color, textMutedColor: Color,
+    artworkDescription: String = title, onClick: () -> Unit) {
     val appColors = LocalAppColors.current
 
     Column(
@@ -932,9 +968,8 @@ fun ShelfTrackCard(
                 )
         ) {
             AsyncImage(
-                model = rememberOptimizedImageRequest(track = track, targetSize = com.example.ui.util.ImageConfig.RECOMMENDATION_CARD_SIZE,
-                    crossfadeEnabled = false, preferStableArtwork = true),
-                contentDescription = track.title,
+                model = artwork,
+                contentDescription = artworkDescription,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
             )
@@ -959,7 +994,7 @@ fun ShelfTrackCard(
         Spacer(modifier = Modifier.height(8.dp))
 
         Text(
-            text = remember(track.title) { track.cleanTitle },
+            text = title,
             fontSize = 13.sp,
             fontWeight = FontWeight.Bold,
             color = if (isPlaying) appColors.primaryAccent else textPrimaryColor,
@@ -968,7 +1003,7 @@ fun ShelfTrackCard(
         )
         Spacer(modifier = Modifier.height(2.dp))
         Text(
-            text = track.artist,
+            text = subtitle,
             fontSize = 11.sp,
             color = textMutedColor,
             maxLines = 1,

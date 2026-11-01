@@ -52,11 +52,13 @@ class HomePresentationRegressionTest {
         val b = YouTubeHomeParser.parseHomeFeed(root, "page-b").shelves.single()
         assertNotEquals(a.id, b.id); assertEquals(a.id, YouTubeHomeParser.parseHomeFeed(root, "page-a").shelves.single().id)
     }
-    @Test fun unsupportedCollectionOverlaysCannotBecomeArbitrarySongs() {
+    @Test fun collectionOverlaysRemainCollectionsAndCannotBecomeArbitrarySongs() {
         val row = NativeFeedFixtures.album(1)
         row.getJSONObject("musicTwoRowItemRenderer").put("overlay", org.json.JSONObject("""{"musicItemThumbnailOverlayRenderer":{"content":{"musicPlayButtonRenderer":{"playNavigationEndpoint":{"watchEndpoint":{"videoId":"abcdefghijk"}}}}}}"""))
         val shelf = NativeFeedFixtures.shelf("Albums"); shelf.getJSONObject("musicCarouselShelfRenderer").getJSONArray("contents").put(row)
-        assertTrue(YouTubeHomeParser.parseHomeFeed(org.json.JSONObject(NativeFeedFixtures.home(shelf))).shelves.isEmpty())
+        val parsed = YouTubeHomeParser.parseHomeFeed(org.json.JSONObject(NativeFeedFixtures.home(shelf))).shelves.single()
+        assertTrue(parsed.tracks.isEmpty())
+        assertEquals("MPRE1", (parsed.items.single() as com.example.data.model.ServerHomeItem.Album).album.id)
     }
     @Test fun continuationsKeepTheActualServerCursor() {
         val page = YouTubeHomeParser.parseHomeFeed(org.json.JSONObject(NativeFeedFixtures.home(NativeFeedFixtures.shelf("Native", 1), continuation = "cursor")))

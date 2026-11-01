@@ -403,7 +403,7 @@ object YouTubeMusicApiService {
                     YouTubeAudioStreamService.discoveryResponseWithIdentity("browse", "FEmusic_home", region,
                         continuation = continuation, languageCode = languageCode, includeAccount = includeAccount)
                 } ?: throw java.io.IOException("Home request timed out")
-                withContext(AppDispatchers.CpuBounded) { YouTubeHomeParser.parseHomeFeed(JSONObject(body.body), continuation)
+                withContext(AppDispatchers.CpuBounded) { YouTubeHomeParser.parseHomeFeed(JSONObject(body.body), continuation, region, languageCode)
                     .copy(accountIdentity = body.accountIdentity) }
             }
         }, fallback = {
@@ -422,7 +422,7 @@ object YouTubeMusicApiService {
                     .header("X-YouTube-Client-Version", client.clientVersion).build()
                 val body = kotlinx.coroutines.withTimeoutOrNull(4_000L) { httpClient.catalogRequest(request) }
                     ?: throw java.io.IOException("Home fallback timed out")
-                withContext(AppDispatchers.CpuBounded) { YouTubeHomeParser.parseHomeFeed(JSONObject(body), continuation)
+                withContext(AppDispatchers.CpuBounded) { YouTubeHomeParser.parseHomeFeed(JSONObject(body), continuation, region, languageCode)
                     .copy(accountIdentity = "anonymous") }
             }
         })

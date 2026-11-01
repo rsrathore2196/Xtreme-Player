@@ -134,6 +134,24 @@ internal object YouTubeExploreParser {
     internal fun performingArtists(value: JSONObject): List<String> = artists(value).map { it.name }
         .distinctBy(CatalogNames::normalize)
 
+    internal fun collection(value: JSONObject, country: String, language: String): CatalogDestination? {
+        val target = browseEndpoint(value) ?: return null
+        val id = string(target, "browseId")
+        val name = text(title(value))
+        if (id.isBlank() || name.isBlank()) return null
+        val type = pageType(target)
+        val params = nullable(target, "params")
+        return when {
+            type == "MUSIC_PAGE_TYPE_ALBUM" || id.startsWith("MPRE") || id.startsWith("OLAK5uy_") ->
+                CatalogDestination.Album(CatalogAlbum(id, name, artists(value), thumbnail(value), "",
+                    CatalogProvider.YOUTUBE_MUSIC, params, country, language))
+            type == "MUSIC_PAGE_TYPE_PLAYLIST" || id.startsWith("VL") ->
+                CatalogDestination.Playlist(CatalogPlaylist(id, name, thumbnail(value),
+                    CatalogProvider.YOUTUBE_MUSIC, params, country, language))
+            else -> null
+        }
+    }
+
     private fun twoRowTrack(value: JSONObject): MusicTrack? {
         val id = value.optJSONObject("navigationEndpoint")?.optJSONObject("watchEndpoint")?.optString("videoId")
             ?: value.optJSONObject("overlay")?.optJSONObject("musicItemThumbnailOverlayRenderer")
@@ -181,20 +199,10 @@ internal object YouTubeExploreParser {
             }
             val item = node.optJSONObject("musicTwoRowItemRenderer") ?: node.optJSONObject("musicResponsiveListItemRenderer")
             if (item != null && !collectionOnly) {
-                val target = browseEndpoint(item)
-                val id = target?.let { string(it, "browseId") }.orEmpty()
-                val name = text(title(item))
-                val type = target?.let(::pageType).orEmpty()
-                val params = target?.let { nullable(it, "params") }
-                if (id.isNotBlank() && name.isNotBlank()) {
-                    when {
-                        type == "MUSIC_PAGE_TYPE_ALBUM" || id.startsWith("MPRE") || id.startsWith("OLAK5uy_") ->
-                            albums.putIfAbsent("$id|${params.orEmpty()}", CatalogAlbum(id, name, artists(item), thumbnail(item), "",
-                                CatalogProvider.YOUTUBE_MUSIC, params, country, language))
-                        type == "MUSIC_PAGE_TYPE_PLAYLIST" || id.startsWith("VL") ->
-                            playlists.putIfAbsent("$id|${params.orEmpty()}", CatalogPlaylist(id, name, thumbnail(item),
-                                CatalogProvider.YOUTUBE_MUSIC, params, country, language))
-                    }
+                when (val destination = collection(item, country, language)) {
+                    is CatalogDestination.Album -> destination.album.let { albums.putIfAbsent("${it.id}|${it.browseParams.orEmpty()}", it) }
+                    is CatalogDestination.Playlist -> destination.playlist.let { playlists.putIfAbsent("${it.id}|${it.browseParams.orEmpty()}", it) }
+                    else -> Unit
                 }
             }
             val song = YouTubeMusicApiService.parseAnyRenderer(node)

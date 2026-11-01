@@ -2,6 +2,8 @@ package com.example.data.remote
 
 import com.example.data.model.MusicTrack
 import com.example.data.model.ServerHomeShelf
+import com.example.data.model.ServerHomeItem
+import com.example.data.repository.CatalogDestination
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
@@ -153,7 +155,8 @@ object YouTubeHomeParser {
             .trim()
     }
 
-    fun parseHomeFeed(rootJson: JSONObject, pageIdentity: String? = null): ParsedHomeFeed {
+    fun parseHomeFeed(rootJson: JSONObject, pageIdentity: String? = null,
+        countryCode: String = "US", languageCode: String = "en"): ParsedHomeFeed {
         if (rootJson.has("error") || listOf("contents", "continuationContents", "onResponseReceivedActions",
                 "onResponseReceivedCommands", "onResponseReceivedEndpoints").none(rootJson::has))
             throw IOException("Invalid Home response")
@@ -200,17 +203,27 @@ object YouTubeHomeParser {
 
                     val itemsArray = shelfRenderer.optJSONArray("contents")
                     val tracks = mutableListOf<MusicTrack>()
+                    val items = mutableListOf<ServerHomeItem>()
+                    val seen = hashSetOf<String>()
                     if (itemsArray != null) {
                         for (j in 0 until itemsArray.length()) {
                             val itemObj = itemsArray.optJSONObject(j) ?: continue
-                            val parsedTrack = parseItem(itemObj)
-                            if (parsedTrack != null && tracks.none { it.id == parsedTrack.id }) {
-                                tracks.add(parsedTrack)
+                            val renderer = itemObj.optJSONObject("musicTwoRowItemRenderer")
+                                ?: itemObj.optJSONObject("musicResponsiveListItemRenderer")
+                            val collection = renderer?.let { YouTubeExploreParser.collection(it, countryCode, languageCode) }
+                            val item = when (collection) {
+                                is CatalogDestination.Album -> ServerHomeItem.Album(collection.album, text(renderer?.optJSONObject("subtitle")))
+                                is CatalogDestination.Playlist -> ServerHomeItem.Playlist(collection.playlist, text(renderer?.optJSONObject("subtitle")))
+                                else -> parseItem(itemObj)?.let { ServerHomeItem.Song(it) }
+                            }
+                            if (item != null && seen.add(item.key)) {
+                                items.add(item)
+                                if (item is ServerHomeItem.Song) tracks.add(item.track)
                             }
                         }
                     }
 
-                    if (tracks.isNotEmpty() && title.isNotBlank()) {
+                    if (items.isNotEmpty() && title.isNotBlank()) {
                         val shelfContinuation = extractContinuation(shelfRenderer)
                         val titleSlug = title.lowercase(java.util.Locale.ROOT).replace(Regex("[^a-z0-9]+"), "_").take(30)
                         val target = headerObj?.optJSONObject("moreContentButton")?.optJSONObject("buttonRenderer")
@@ -233,7 +246,8 @@ object YouTubeHomeParser {
                                 title = title,
                                 subtitle = subtitle,
                                 tracks = tracks,
-                                continuationToken = shelfContinuation
+                                continuationToken = shelfContinuation,
+                                items = items
                             )
                         )
                     }

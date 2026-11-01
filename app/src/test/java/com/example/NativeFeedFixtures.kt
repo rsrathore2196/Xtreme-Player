@@ -20,6 +20,14 @@ internal object NativeFeedFixtures {
     fun album(number: Int): JSONObject = JSONObject().put("musicTwoRowItemRenderer", JSONObject()
         .put("title", text("Album $number")).put("navigationEndpoint", JSONObject().put("browseEndpoint",
             JSONObject().put("browseId", "MPRE$number"))))
+    fun playlist(number: Int): JSONObject = JSONObject().put("musicTwoRowItemRenderer", JSONObject()
+        .put("title", text("Playlist $number")).put("subtitle", text("YouTube Music"))
+        .put("navigationEndpoint", JSONObject().put("browseEndpoint", JSONObject().put("browseId", "VLplaylist-$number")
+            .put("params", "playlist-params-$number").put("browseEndpointContextSupportedConfigs", JSONObject()
+                .put("browseEndpointContextMusicConfig", JSONObject().put("pageType", "MUSIC_PAGE_TYPE_PLAYLIST"))))))
+    fun collectionShelf(title: String, vararg entries: JSONObject): JSONObject = shelf(title).apply {
+        getJSONObject("musicCarouselShelfRenderer").put("contents", JSONArray(entries.toList()))
+    }
     fun shelf(title: String, vararg numbers: Int): JSONObject = JSONObject().put("musicCarouselShelfRenderer", JSONObject()
         .put("header", JSONObject().put("musicCarouselShelfBasicHeaderRenderer", JSONObject().put("title", text(title))))
         .put("contents", JSONArray(numbers.map { song(it) })))

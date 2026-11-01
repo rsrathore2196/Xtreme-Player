@@ -42,7 +42,8 @@ internal fun HomeFeedRoute(
     onToggleFavorite: (MusicTrack) -> Unit,
     onOpenSettings: () -> Unit,
     onPlayInfiniteRadio: (MusicTrack?) -> Unit,
-    onAddToQueue: (MusicTrack) -> Unit
+    onAddToQueue: (MusicTrack) -> Unit,
+    onOpenCatalog: (com.example.data.repository.CatalogDestination) -> Unit = {}
 ) {
     val feed = retainedHomeFeed()
     val lifecycle = LocalLifecycleOwner.current.lifecycle
@@ -56,6 +57,7 @@ internal fun HomeFeedRoute(
         homeViewModel = feed,
         listState = listState,
         onOpenArtist = onOpenArtist,
+        onOpenCatalog = onOpenCatalog,
         currentPlayingTrackId = player.currentTrack?.id,
         isPlaying = player.isPlaying,
         isAutoplayEnabled = player.isAutoplayEnabled,

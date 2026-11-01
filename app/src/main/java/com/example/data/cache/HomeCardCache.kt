@@ -4,6 +4,11 @@ import android.content.Context
 import android.util.AtomicFile
 import com.example.data.model.MusicTrack
 import com.example.data.model.ServerHomeShelf
+import com.example.data.model.ServerHomeItem
+import com.example.data.repository.CatalogAlbum
+import com.example.data.repository.CatalogArtist
+import com.example.data.repository.CatalogPlaylist
+import com.example.data.repository.CatalogProvider
 import com.example.performance.AppDispatchers
 import com.example.performance.BackgroundWorkCoordinator
 import com.example.ui.viewmodel.MostListenedArtist
@@ -49,8 +54,11 @@ data class SavedHomeCards(
     val serverFetchSucceeded: Boolean = false,
     val profileFetchSucceeded: Boolean = false,
     val consumedContinuations: Set<String> = emptySet(),
-    val artistDataVersion: Int = 2
+    val artistDataVersion: Int = 2,
+    val serverContentVersion: Int = SERVER_HOME_CONTENT_VERSION
 )
+
+internal const val SERVER_HOME_CONTENT_VERSION = 2
 
 class HomeCardCache(context: Context, private val workerDispatcher: CoroutineDispatcher = AppDispatchers.Io) {
     private val app = context.applicationContext
@@ -150,8 +158,47 @@ class HomeCardCache(context: Context, private val workerDispatcher: CoroutineDis
         (key.substringAfter('|') == "anonymous" || row.optString("accountIdentity") == key.substringAfter('|'))
     private fun shelf(row: ServerHomeShelf) = JSONObject().put("id", row.id).put("title", row.title).put("subtitle", row.subtitle)
         .put("tracks", tracks(row.tracks)).put("continuationToken", row.continuationToken)
-    private fun shelf(row: JSONObject): ServerHomeShelf = ServerHomeShelf(row.getString("id"), row.getString("title"), row.optString("subtitle"),
-        tracks(row.optJSONArray("tracks")).map { it.copy(recommendationOnly = true) }, nullable(row, "continuationToken"))
+        .put("items", JSONArray(row.items.map(::item)))
+    private fun item(entry: ServerHomeItem): JSONObject {
+        if (entry is ServerHomeItem.Song) return JSONObject().put("type", "song").put("id", entry.track.id)
+        val album = (entry as? ServerHomeItem.Album)?.album
+        val playlist = (entry as? ServerHomeItem.Playlist)?.playlist
+        return JSONObject().put("type", if (album != null) "album" else "playlist")
+            .put("id", album?.id ?: playlist!!.id).put("title", album?.title ?: playlist!!.title)
+            .put("image", album?.image ?: playlist!!.image).put("params", album?.browseParams ?: playlist?.browseParams)
+            .put("country", album?.countryCode ?: playlist!!.countryCode).put("language", album?.languageCode ?: playlist!!.languageCode)
+            .put("subtitle", when (entry) { is ServerHomeItem.Album -> entry.subtitle; is ServerHomeItem.Playlist -> entry.subtitle; else -> "" })
+            .apply { if (album != null) {
+                put("year", album.year)
+                put("artists", JSONArray(album.artists.map { JSONObject().put("id", it.id).put("name", it.name) }))
+            } }
+    }
+    private fun shelf(row: JSONObject): ServerHomeShelf {
+        val tracks = tracks(row.optJSONArray("tracks")).map { it.copy(recommendationOnly = true) }
+        val byId = tracks.associateBy { it.id }
+        val rows = row.optJSONArray("items")
+        val items = (0 until minOf(250, rows?.length() ?: 0)).mapNotNull { index -> runCatching {
+            val value = rows!!.getJSONObject(index)
+            val id = value.getString("id").takeIf(String::isNotBlank) ?: return@runCatching null
+            val title = value.optString("title")
+            val country = value.optString("country", "US"); val language = value.optString("language", "en")
+            when (value.optString("type")) {
+                "song" -> byId[id]?.let { ServerHomeItem.Song(it) }
+                "album" -> if (title.isBlank()) null else {
+                    val artists = value.optJSONArray("artists")
+                    ServerHomeItem.Album(CatalogAlbum(id, title,
+                        (0 until (artists?.length() ?: 0)).mapNotNull { artists?.optJSONObject(it)?.let { a -> CatalogArtist(a.optString("id"), a.getString("name")) } },
+                        value.optString("image"), value.optString("year"), CatalogProvider.YOUTUBE_MUSIC,
+                        nullable(value, "params"), country, language), value.optString("subtitle"))
+                }
+                "playlist" -> if (title.isBlank()) null else ServerHomeItem.Playlist(CatalogPlaylist(id, title,
+                    value.optString("image"), CatalogProvider.YOUTUBE_MUSIC, nullable(value, "params"), country, language), value.optString("subtitle"))
+                else -> null
+            }
+        }.getOrNull() }
+        return ServerHomeShelf(row.getString("id"), row.getString("title"), row.optString("subtitle"), tracks,
+            nullable(row, "continuationToken"), items)
+    }
     private fun shelves(row: JSONObject?): List<ServerHomeShelf> = row?.optJSONArray("serverShelves")?.let { array ->
         (0 until minOf(60, array.length())).mapNotNull { runCatching { shelf(array.getJSONObject(it)) }.getOrNull() }
     }.orEmpty()
@@ -165,7 +212,8 @@ class HomeCardCache(context: Context, private val workerDispatcher: CoroutineDis
             }.getOrNull() }, inputRevision = local?.let { nullable(it, "inputRevision") }, serverShelves = shelves(home),
             continuationToken = home?.let { nullable(it, "continuationToken") }, serverFetchSucceeded = home?.optBoolean("success") == true,
             consumedContinuations = home?.optJSONArray("consumedContinuations")?.let { a -> (0 until a.length()).map(a::getString).toSet() }.orEmpty(),
-            artistDataVersion = local?.optInt("artistDataVersion", 0) ?: 0)
+            artistDataVersion = local?.optInt("artistDataVersion", 0) ?: 0,
+            serverContentVersion = home?.optInt("contentVersion", 0) ?: 0)
     }
     fun peek(profile: String): SavedHomeCards? {
         val home = peekJson("server_${HomeCacheIdentity.fileKey(profile)}")?.takeIf { validHome(it, profile) }
@@ -194,7 +242,8 @@ class HomeCardCache(context: Context, private val workerDispatcher: CoroutineDis
         write("server_${HomeCacheIdentity.fileKey(cards.profileKey)}",
             HomeCheckpoint(cards.profileKey, cards.refreshedAt, cards.serverFetchSucceeded, cards.serverShelves, cards.continuationToken, cards.consumedContinuations)) {
             JSONObject().put("key", cards.profileKey).put("accountIdentity", cards.profileKey.substringAfter('|')).put("refreshedAt", cards.refreshedAt)
-            .put("success", cards.serverFetchSucceeded).put("serverShelves", JSONArray(cards.serverShelves.map(::shelf)))
+            .put("success", cards.serverFetchSucceeded).put("contentVersion", SERVER_HOME_CONTENT_VERSION)
+            .put("serverShelves", JSONArray(cards.serverShelves.map(::shelf)))
             .put("continuationToken", cards.continuationToken).put("consumedContinuations", JSONArray(cards.consumedContinuations.toList()))
         }
     }

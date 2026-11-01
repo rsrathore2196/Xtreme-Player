@@ -346,4 +346,64 @@ class InitialHomePreparationTest {
         assertEquals(listOf(track.id, other.id), vm.pillsCardTracks.value.map { it.id })
     }
 
+    @Test fun initialPreparationPublishesThreeNativeShelfKindsWithOneHomeRequestAndNoProfileFanout() = runBlocking {
+        val calls = AtomicInteger(); val profileCalls = AtomicInteger()
+        val response = YouTubeHomeParser.parseHomeFeed(org.json.JSONObject(NativeFeedFixtures.home(
+            NativeFeedFixtures.collectionShelf("Albums & Singles", NativeFeedFixtures.album(1)),
+            NativeFeedFixtures.shelf("Quick Picks", 2),
+            NativeFeedFixtures.collectionShelf("Trending Playlists", NativeFeedFixtures.playlist(3)))))
+        val vm = viewModel({ _, token -> assertNull(token); calls.incrementAndGet(); response }, { _, _ ->
+            profileCalls.incrementAndGet(); error("Optional profile discovery must not block initial Home")
+        })
+        withTimeout(5_000) { vm.prepareInitialServerFeed() }
+        assertEquals(listOf("Albums & Singles", "Quick Picks", "Trending Playlists"), vm.serverShelves.value.map { it.title })
+        assertTrue(vm.revealedShelfCount.value >= 3)
+        assertEquals(1, calls.get()); assertEquals(0, profileCalls.get())
+        vm.prepareInitialServerFeed(); assertEquals(1, calls.get())
+    }
+    @Test fun aShortInitialFeedUsesOnlyTwoBoundedContinuationsAndCachesAllThreeCards() = runBlocking {
+        val tokens = mutableListOf<String?>()
+        val vm = viewModel({ _, token -> tokens += token
+            when (token) { null -> page("quick", "albums"); "albums" -> page("albums", "playlists"); else -> page("playlists", "later") }
+        })
+        vm.prepareInitialServerFeed()
+        assertEquals(listOf(null, "albums", "playlists"), tokens)
+        assertEquals(listOf("quick", "albums", "playlists"), vm.serverShelves.value.map { it.id })
+        val saved = HomeCardCache(app).read(HomeCacheIdentity.home(preferences))!!
+        assertEquals(listOf("quick", "albums", "playlists"), saved.serverShelves.map { it.id }); assertEquals("later", saved.continuationToken)
+    }
+    @Test fun aFreshThreeShelfCacheRestoresWithoutAnyHomeOrContinuationRequests() = runBlocking {
+        HomeCardCache(app).saveHome(SavedHomeCards(HomeCacheIdentity.home(preferences), System.currentTimeMillis(),
+            serverShelves = listOf(shelf("albums"), shelf("quick"), shelf("playlists")), serverFetchSucceeded = true))
+        val vm = viewModel({ _, _ -> error("Fresh retained server cards require no network") })
+        withTimeout(5_000) { vm.prepareInitialServerFeed() }
+        assertEquals(3, vm.serverShelves.value.size)
+    }
+    @Test fun initialPreparationTimeoutCancelsThePageAndKeepsItsCursorAndPartialCacheRetryable() = runBlocking {
+        val entered = CompletableDeferred<Unit>(); val cancelled = CompletableDeferred<Unit>(); var slow = true
+        val vm = viewModel({ _, token -> if (token == null) page("quick", "next") else {
+            if (slow) { entered.complete(Unit); try { awaitCancellation() } finally { cancelled.complete(Unit) } }
+            YouTubeHomeParser.ParsedHomeFeed(listOf(shelf("albums"), shelf("playlists")), null)
+        } })
+        val prepare = async { vm.prepareInitialServerFeed(budgetMs = 1_000) }
+        withTimeout(3_000) { entered.await(); prepare.await(); cancelled.await() }
+        assertEquals(listOf("quick"), vm.serverShelves.value.map { it.id })
+        assertEquals("next", HomeCardCache(app).read(HomeCacheIdentity.home(preferences))!!.continuationToken)
+        slow = false; vm.revealNextHomeSection()
+        withTimeout(3_000) { vm.serverShelves.first { it.size == 3 } }
+        Unit
+    }
+    @Test fun obsoleteSongOnlyCacheIsDisplayedThenRefreshedInsteadOfBeingConsideredCompleteForTenMinutes() = runBlocking {
+        val key = HomeCacheIdentity.home(preferences)
+        val row = org.json.JSONObject().put("version", 3).put("key", key).put("success", true)
+            .put("refreshedAt", System.currentTimeMillis()).put("serverShelves", org.json.JSONArray().put(org.json.JSONObject()
+                .put("id", "legacy").put("title", "Quick Picks").put("tracks", org.json.JSONArray(com.example.data.cache.RecommendationTrackCodec.encode(listOf(track))))))
+        java.io.File(app.filesDir, "home_server_${HomeCacheIdentity.fileKey(key)}_v3.json").writeText(row.toString())
+        val calls = AtomicInteger()
+        val vm = viewModel({ _, _ -> calls.incrementAndGet(); YouTubeHomeParser.ParsedHomeFeed(listOf(shelf("albums"), shelf("quick"), shelf("playlists")), null) })
+        withTimeout(5_000) { vm.serverShelves.first { it.singleOrNull()?.id == "legacy" } }
+        vm.prepareInitialServerFeed()
+        assertEquals(1, calls.get()); assertEquals(3, vm.serverShelves.value.size)
+    }
+
 }

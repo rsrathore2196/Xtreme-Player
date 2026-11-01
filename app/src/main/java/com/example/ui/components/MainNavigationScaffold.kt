@@ -353,6 +353,7 @@ fun MainNavigationScaffold(
                                 isVisible = homeIsVisible,
                                 listState = homeListState,
                                 onOpenArtist = { viewModel.catalogBrowser.open(com.example.data.repository.CatalogDestination.Artist(it)) },
+                                onOpenCatalog = viewModel.catalogBrowser::open,
                                 onTrackClick = { track, queue -> viewModel.playTrack(track, queue) },
                                 onToggleFavorite = { track -> viewModel.toggleLike(track) },
                                 onOpenSettings = { selectTab(3) },
